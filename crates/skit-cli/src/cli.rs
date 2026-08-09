@@ -7029,11 +7029,17 @@ fn tui_submit_settings(
 ) -> Result<(), CliError> {
     let entry = service.show(selector)?;
     let name = tui_required(values, "name")?;
-    let description = tui_value(values, "description");
+    let description = if values.contains_key("description") {
+        tui_value(values, "description")
+    } else {
+        entry.meta.description.as_str()
+    };
     let stored_settings = EntrySettings::from_meta(&entry.meta);
     let baseline_settings = effective_settings(store, &entry);
     let mut settings = stored_settings.clone();
-    settings.interpreter = tui_value(values, "interpreter").to_owned();
+    if values.contains_key("interpreter") {
+        settings.interpreter = tui_value(values, "interpreter").to_owned();
+    }
     if !settings.interpreter.is_empty()
         && !matches!(
             entry.meta.kind.as_str(),
@@ -7044,9 +7050,19 @@ fn tui_submit_settings(
             "the entry does not use a pinnable interpreter",
         )));
     }
-    settings.runner = tui_value(values, "runner").trim().to_owned();
-    let submitted_dependencies = tui_dependency_list(tui_value(values, "dependencies"));
-    let submitted_python = tui_value(values, "python").to_owned();
+    if values.contains_key("runner") {
+        settings.runner = tui_value(values, "runner").trim().to_owned();
+    }
+    let submitted_dependencies = if values.contains_key("dependencies") {
+        tui_dependency_list(tui_value(values, "dependencies"))
+    } else {
+        baseline_settings.dependencies.clone()
+    };
+    let submitted_python = if values.contains_key("python") {
+        tui_value(values, "python").to_owned()
+    } else {
+        baseline_settings.requires_python.clone()
+    };
     if !submitted_dependencies.is_empty()
         && !matches!(entry.meta.kind.as_str(), "python" | "js" | "ts")
     {
@@ -7078,14 +7094,31 @@ fn tui_submit_settings(
             }
         }
     } else {
-        settings.dependencies = submitted_dependencies;
-        settings.requires_python = submitted_python;
+        if values.contains_key("dependencies") {
+            settings.dependencies = submitted_dependencies;
+        }
+        if values.contains_key("python") {
+            settings.requires_python = submitted_python;
+        }
     }
-    settings.needs = tui_split_list(tui_value(values, "needs"));
+    if values.contains_key("needs") {
+        settings.needs = tui_split_list(tui_value(values, "needs"));
+    }
     let previous_template = settings.template.clone();
-    settings.template = tui_value(values, "template").to_owned();
-    settings.interpolate = tui_bool(tui_value(values, "interpolate"))?;
-    let mut declarations = tui_declarations_from_values(values)?;
+    if values.contains_key("template") {
+        settings.template = tui_value(values, "template").to_owned();
+    }
+    if values.contains_key("interpolate") {
+        settings.interpolate = tui_bool(tui_value(values, "interpolate"))?;
+    }
+    // A screen with no parameter section submits no parameter row, so the stored declarations are
+    // what a save keeps. Reading the absent rows as an empty set would delete every one of them.
+    let parameters_carried = values.keys().any(|key| key.starts_with("parameter:"));
+    let mut declarations = if parameters_carried {
+        tui_declarations_from_values(values)?
+    } else {
+        stored_settings.parameters.clone()
+    };
     let removed = tui_split_list(tui_value(values, "parameter:remove"));
     declarations.retain(|parameter| !removed.contains(&parameter.name));
     for name in tui_split_list(tui_value(values, "parameter:add")) {
@@ -7203,7 +7236,11 @@ fn tui_submit_settings(
             name: name.to_owned(),
             description: description.to_owned(),
             settings: settings.clone(),
-            workdir: tui_value(values, "workdir").to_owned(),
+            workdir: if values.contains_key("workdir") {
+                tui_value(values, "workdir").to_owned()
+            } else {
+                entry.meta.workdir.clone()
+            },
             source: rewritten_source,
             expected_source_hash: entry.meta.source_hash.clone(),
         },

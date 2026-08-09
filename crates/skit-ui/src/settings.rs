@@ -488,8 +488,13 @@ impl SettingsView {
     /// work silently (`src/skit/tui_settings.py:43-46` is the guard it opens).
     pub fn update(&mut self, action: SettingsAction) -> SettingsEffect {
         match action {
+            // Touching a control moves the keyboard to it. A click that changed a value and left
+            // the cursor elsewhere would send the next arrow key to a control the user is not
+            // looking at. Typing already satisfies this, so it changes nothing there.
             SettingsAction::SetField { key, value } => {
-                self.set_value(&key, value);
+                if self.set_value(&key, value) {
+                    self.focus(&key);
+                }
                 SettingsEffect::None
             }
             SettingsAction::Focus { key } => {

@@ -30,8 +30,8 @@ pub use screens::picker::{
     render_prompt_candidate_picker,
 };
 pub use screens::settings::{
-    SettingsControlId, SettingsHitRegion, SettingsScreenGeometry, SettingsScreenSession,
-    render_settings,
+    SettingsControlId, SettingsHitRegion, SettingsScreenEvent, SettingsScreenGeometry,
+    SettingsScreenSession, render_settings,
 };
 pub use session::{EventHandling, TuiSession};
 pub use terminal::{TuiError, collect_form, collect_run_form, run, run_add_workflow};

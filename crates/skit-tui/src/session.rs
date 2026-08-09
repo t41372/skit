@@ -56,7 +56,9 @@ use crate::{
     },
     screens::preferences::{PreferencesEventHandling, PreferencesWidgetSession},
     screens::run_modal::{RunModalEvent, RunModalSession},
-    screens::settings::{SettingsScreenSession, render_settings},
+    screens::settings::{
+        SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, render_settings,
+    },
     theme::{ACCENT, BOX_DIM, BOX_MAROON, SELECT_BG, SELECT_FG, panel_block},
 };
 
@@ -84,6 +86,7 @@ pub struct TuiSession {
     run_modal: RunModalSession,
     preferences: PreferencesWidgetSession,
     settings: SettingsScreenSession,
+    settings_geometry: SettingsScreenGeometry,
     add: AddScreenSession,
     add_geometry: AddScreenGeometry,
     add_overlay: Option<AddOverlay>,
@@ -347,6 +350,19 @@ impl TuiSession {
         if let Screen::Add(view) = state.screen() {
             return self.handle_add_event(event, state, view, geometry);
         }
+        if let Screen::Settings(view) = state.screen() {
+            return match self
+                .settings
+                .handle_event(event.clone(), view, &self.settings_geometry)
+            {
+                Some(SettingsScreenEvent::Action(action)) => {
+                    EventHandling::Action(Action::Settings(action))
+                }
+                Some(SettingsScreenEvent::Changed) => EventHandling::Consumed,
+                None => map_event(event, state, geometry)
+                    .map_or(EventHandling::Ignored, EventHandling::Action),
+            };
+        }
         if let Screen::Preferences(view) = state.screen() {
             return match self.preferences.handle_event(event, view) {
                 PreferencesEventHandling::Action(action) => {
@@ -475,6 +491,8 @@ impl TuiSession {
             self.run.sync(form);
         } else if let Screen::Add(view) = state.screen() {
             self.add.sync(view);
+        } else if let Screen::Settings(view) = state.screen() {
+            self.settings.sync(view);
         } else if let Screen::Form(form) = state.screen() {
             self.form.sync(form);
         } else {
@@ -786,10 +804,10 @@ impl TuiSession {
         view: &skit_ui::SettingsView,
         locale: Locale,
     ) -> ViewGeometry {
-        let geometry = render_settings(frame, area, view, &mut self.settings, locale);
+        self.settings_geometry = render_settings(frame, area, view, &mut self.settings, locale);
         ViewGeometry {
-            rows: geometry.body,
-            first_visible: geometry.first_visible,
+            rows: self.settings_geometry.body,
+            first_visible: self.settings_geometry.first_visible,
             hits: Vec::new(),
         }
     }
@@ -1916,7 +1934,7 @@ fn widget_control(field: &RunField) -> WidgetControl {
     }
 }
 
-fn edit_textarea(
+pub(crate) fn edit_textarea(
     state: &mut RichTextArea<'static>,
     key: KeyEvent,
     undo_group: &mut usize,

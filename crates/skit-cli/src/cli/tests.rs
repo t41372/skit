@@ -7,7 +7,9 @@ use skit_domain::{
     parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
 };
 use skit_store::FileStore;
-use skit_ui::{FormControl, FormField, FormPurpose, FormView, Screen};
+use skit_ui::{
+    FormControl, FormField, FormPurpose, FormView, Screen, SettingsInputs, SettingsView,
+};
 use tempfile::TempDir;
 
 use super::*;
@@ -4493,4 +4495,68 @@ fn a_source_that_moves_between_open_and_save_cannot_change_which_rows_persist() 
         undisturbed,
         "an unreadable source changed which rows persist"
     );
+}
+
+/// A save that carries only the axes its screen showed must not clear the ones it did not.
+///
+/// Version 0.4's settings save reads one widget per axis, and a widget that is not on the screen is
+/// not read at all — an absent control is never an instruction to clear
+/// (`src/skit/tui_settings.py:928-1001`). The typed entry-settings screen carries six sections and
+/// no parameters section yet, so its submitted values name no template, no interpolation switch and
+/// no parameter rows. Reading a missing key as an empty value would delete a command's program and
+/// every declared parameter on the first save of an unrelated field.
+#[test]
+fn tui_settings_leave_every_axis_the_screen_did_not_carry_alone() {
+    let root = TempDir::new().unwrap();
+    let state_dir = root.path().join("state");
+    let store = FileStore::new(root.path());
+    let service = LibraryService::new(store.clone());
+    let entry = add_command(&service, "Deploy", "deploy {{target}} --force");
+
+    // Give it a declared parameter and a needs list, so there is something to lose.
+    let mut complete = form_values(tui_settings_form(&store, &entry));
+    complete.insert("needs".to_owned(), "ssh".to_owned());
+    complete.insert("parameter:add".to_owned(), "region".to_owned());
+    tui_submit_settings(&service, &store, &state_dir, "deploy", &complete).unwrap();
+    let before = service.show("deploy").unwrap();
+    let stored = EntrySettings::from_meta(&before.meta);
+    assert_eq!(stored.template, "deploy {{target}} --force");
+    assert!(
+        stored.parameters.iter().any(|item| item.name == "region"),
+        "the declared parameter is stored: {:?}",
+        stored.parameters
+    );
+
+    // Exactly what the typed entry-settings screen submits: its six sections and nothing else.
+    // Derived from the screen itself, so this stays true as the model grows.
+    let view = SettingsView::from_inputs(&SettingsInputs {
+        selector: "deploy".to_owned(),
+        kind: "command".to_owned(),
+        name: before.meta.name.clone(),
+        workdir: before.meta.workdir.clone(),
+        needs: stored.needs.clone(),
+        ..SettingsInputs::default()
+    });
+    let mut narrow = view.submitted_values();
+    narrow.insert("name".to_owned(), "Deploy again".to_owned());
+    assert!(!narrow.contains_key("template"));
+    assert!(!narrow.contains_key("interpolate"));
+    assert!(!narrow.keys().any(|key| key.starts_with("parameter:")));
+
+    tui_submit_settings(&service, &store, &state_dir, "deploy", &narrow).unwrap();
+
+    let after = service.show("deploy").unwrap();
+    let kept = EntrySettings::from_meta(&after.meta);
+    assert_eq!(after.meta.name, "Deploy again", "the edit landed");
+    assert_eq!(
+        kept.template, stored.template,
+        "a save that showed no template must not delete the program"
+    );
+    assert_eq!(
+        kept.parameters, stored.parameters,
+        "a save that showed no parameter row must not delete the parameters"
+    );
+    assert_eq!(kept.interpolate, stored.interpolate);
+    assert_eq!(kept.needs, stored.needs, "needs travelled and is unchanged");
+    assert_eq!(after.meta.workdir, before.meta.workdir);
 }

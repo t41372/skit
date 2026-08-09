@@ -23,16 +23,25 @@ use ratatui_core::{
     terminal::Frame,
     text::{Line, Span},
 };
-use ratatui_interact::components::{CheckBox, CheckBoxState, ScrollableContentState};
+use ratatui_crossterm::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
+use ratatui_interact::components::{
+    CheckBox, CheckBoxState, ScrollableContentState, handle_scrollable_content_key,
+    handle_scrollable_content_mouse,
+};
 use ratatui_textarea::TextArea as RichTextArea;
 use ratatui_widgets::paragraph::{Paragraph, Wrap};
-use skit_form::field::{ChoiceOption, Field, FieldKind, ReadOnlyReason, TypedValue};
+use skit_form::field::{ChoiceOption, Field, FieldKind, FieldValue, ReadOnlyReason, TypedValue};
 use skit_i18n::{Locale, format_text, text};
-use skit_ui::{SettingsNote, SettingsSectionId, SettingsView};
-use tui_input::Input as LineInput;
+use skit_ui::{SettingsAction, SettingsNote, SettingsSectionId, SettingsView};
+use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
-    session::{checkbox_style, new_textarea, render_line_input, render_textarea, textarea_text},
+    session::{
+        checkbox_style, edit_textarea, new_textarea, render_line_input, render_textarea,
+        textarea_text,
+    },
     theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel},
 };
 
@@ -63,6 +72,15 @@ pub struct SettingsHitRegion {
     pub area: Rect,
     /// Semantic target.
     pub target: SettingsControlId,
+}
+
+/// Terminal-only result. The host dispatches [`SettingsAction`] through the reducer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SettingsScreenEvent {
+    /// Frontend-neutral reducer action.
+    Action(SettingsAction),
+    /// Ephemeral cursor or scroll state changed and nothing else.
+    Changed,
 }
 
 /// Responsive settings geometry.
@@ -156,6 +174,24 @@ pub struct SettingsScreenSession {
     visible_height: usize,
     spans: BTreeMap<String, (usize, usize)>,
     rendered: BTreeMap<String, Rect>,
+    undo_group: usize,
+    redo_group: usize,
+    aligned: Option<Alignment>,
+}
+
+/// What the viewport was last aligned for.
+///
+/// Every member is read from live data on each render and compared to the last render's. This is a
+/// change detector, never a resolver: nothing is ever looked up through it, so a stale member can
+/// only cost one extra alignment, never a wrong one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Alignment {
+    /// Key of the control that owned the keyboard.
+    focused: String,
+    /// Rows the viewport could show.
+    visible_height: usize,
+    /// Rows the screen laid out.
+    total: usize,
 }
 
 impl SettingsScreenSession {
@@ -171,7 +207,7 @@ impl SettingsScreenSession {
     }
 
     /// Rebuild the text cursors when the control shape changes, and refresh their text otherwise.
-    fn sync(&mut self, view: &SettingsView) {
+    pub(crate) fn sync(&mut self, view: &SettingsView) {
         let signature = fields(view)
             .map(|field| (field.key.clone(), shape(field)))
             .collect::<Vec<_>>();
@@ -209,21 +245,35 @@ impl SettingsScreenSession {
         }
     }
 
-    /// Put the focused control inside the viewport.
-    ///
-    /// This runs on every render, and it is the only thing that moves the offset on its own. The
-    /// invariant is the one a person can see — the control that owns the keyboard is drawn — so it
-    /// is checked against the rows this same render laid out, never against a remembered position.
+    /// Put the focused control inside the viewport when something moved it out.
     ///
     /// There is no deferred flag. A flag records that focus moved and asks a later call to act on
-    /// it, and every call site that moves focus has to remember to set it. Here the focused key is
-    /// read from the model each frame, so a move made anywhere, by any input, is followed with no
-    /// cooperation at all. The same read covers the case a flag cannot see: a resize or a section
-    /// that appeared moves the rows underneath a focus that never changed.
+    /// it, so every call site that moves focus has to remember to set it. Here the focused key is
+    /// read from the model each render, so a move made anywhere, by any input, is followed with no
+    /// cooperation at all.
+    ///
+    /// It aligns when the keyboard went somewhere new, and when the rows moved underneath a focus
+    /// that did not — a resize, or a control that appeared. It does not align when neither
+    /// happened, which is exactly the render after a wheel scroll: the reader put the viewport
+    /// there, and it stays until the keyboard gives a new intent.
+    ///
+    /// The comparison is deliberately not "did the offset change". That answer is true on the
+    /// render right after a scroll and false on the one after that, so the viewport would spring
+    /// back one frame later.
     fn follow_focus(&mut self, focused: &str, total: usize) {
         let maximum = total.saturating_sub(self.visible_height);
         if self.scroll.scroll_offset() > maximum {
             self.scroll.set_scroll_offset(maximum);
+        }
+        let current = Alignment {
+            focused: focused.to_owned(),
+            visible_height: self.visible_height,
+            total,
+        };
+        let settled = self.aligned.as_ref() == Some(&current);
+        self.aligned = Some(current);
+        if settled {
+            return;
         }
         // A screen with nothing to edit has no focused row, and it still draws.
         let Some((start, height)) = self.spans.get(focused).copied() else {
@@ -237,6 +287,168 @@ impl SettingsScreenSession {
             self.scroll
                 .set_scroll_offset(end.saturating_sub(self.visible_height));
         }
+    }
+
+    /// Dispatch one terminal event through the focused settings control.
+    ///
+    /// `None` means no control claimed the event, so the caller maps it through the shared command
+    /// registry. Every chord the footer advertises reaches the registry that way: a control never
+    /// sees a `Ctrl` chord except the text undo pair, so `Ctrl+S` cannot be eaten by a text box.
+    #[must_use]
+    pub fn handle_event(
+        &mut self,
+        event: Event,
+        view: &SettingsView,
+        geometry: &SettingsScreenGeometry,
+    ) -> Option<SettingsScreenEvent> {
+        self.sync(view);
+        if let Event::Mouse(mouse) = &event {
+            return self.handle_mouse(mouse, view, geometry);
+        }
+        if let Event::Paste(value) = &event {
+            return self.handle_paste(view, value);
+        }
+        let Event::Key(key) = event else {
+            return None;
+        };
+        if key.kind == KeyEventKind::Release {
+            return None;
+        }
+        // The nav pair wins over every control, so a text box can never strand the keyboard.
+        match key.code {
+            KeyCode::Tab => return Some(SettingsScreenEvent::Action(SettingsAction::FocusNext)),
+            KeyCode::BackTab => {
+                return Some(SettingsScreenEvent::Action(SettingsAction::FocusPrevious));
+            }
+            _ => {}
+        }
+        let undo_pair = matches!(key.code, KeyCode::Char('z' | 'y'));
+        if key.modifiers.contains(KeyModifiers::CONTROL) && !undo_pair {
+            return None;
+        }
+        let focused = view.focused();
+        let field = view.field(focused)?;
+        match &field.kind {
+            FieldKind::Multiline => self.edit_body(focused, key),
+            FieldKind::Boolean if matches!(key.code, KeyCode::Char(' ') | KeyCode::Enter) => {
+                set_field(
+                    focused,
+                    FieldValue::boolean(field.value().as_text() != "true"),
+                )
+            }
+            FieldKind::Boolean => nav(key),
+            FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
+                choice_key(field, options, key)
+            }
+            FieldKind::ReadOnly => None,
+            FieldKind::Text
+            | FieldKind::Secret
+            | FieldKind::Number { .. }
+            | FieldKind::Path { .. }
+            | FieldKind::ArgumentList { .. } => self.edit_line(focused, key),
+        }
+        .or_else(|| self.scroll_key(key))
+    }
+
+    fn handle_mouse(
+        &mut self,
+        mouse: &MouseEvent,
+        view: &SettingsView,
+        geometry: &SettingsScreenGeometry,
+    ) -> Option<SettingsScreenEvent> {
+        if matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            return handle_scrollable_content_mouse(
+                &mut self.scroll,
+                mouse,
+                self.viewport,
+                self.visible_height,
+            )
+            .map(|_| SettingsScreenEvent::Changed);
+        }
+        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+            return None;
+        }
+        let target = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.area.contains((mouse.column, mouse.row).into()))
+            .map(|hit| hit.target.clone())?;
+        match target {
+            // A click on a toggle both moves the keyboard and flips it, which is the one thing a
+            // person means by clicking a checkbox.
+            SettingsControlId::Field(key) => {
+                let field = view.field(&key)?;
+                if matches!(field.kind, FieldKind::Boolean) {
+                    return set_field(&key, FieldValue::boolean(field.value().as_text() != "true"));
+                }
+                Some(SettingsScreenEvent::Action(SettingsAction::Focus { key }))
+            }
+            SettingsControlId::Option { field, value } => {
+                let owner = view.field(&field)?;
+                set_field(&field, picked(owner, &value))
+            }
+            SettingsControlId::NewRunner => {
+                Some(SettingsScreenEvent::Action(SettingsAction::NewRunner))
+            }
+        }
+    }
+
+    fn handle_paste(&mut self, view: &SettingsView, value: &str) -> Option<SettingsScreenEvent> {
+        let focused = view.focused().to_owned();
+        if let Some(body) = self.bodies.get_mut(&focused) {
+            body.insert_str(value);
+            self.undo_group = 1;
+            self.redo_group = 0;
+            return set_field(&focused, FieldValue::text(textarea_text(body)));
+        }
+        let input = self.inputs.get_mut(&focused)?;
+        for character in value.chars() {
+            let _ = input.handle(InputRequest::InsertChar(character));
+        }
+        set_field(&focused, FieldValue::text(input.value()))
+    }
+
+    fn edit_body(&mut self, key: &str, event: KeyEvent) -> Option<SettingsScreenEvent> {
+        let body = self.bodies.get_mut(key)?;
+        let before = textarea_text(body);
+        let consumed = edit_textarea(body, event, &mut self.undo_group, &mut self.redo_group);
+        if !consumed {
+            return None;
+        }
+        let after = textarea_text(body);
+        Some(if before == after {
+            SettingsScreenEvent::Changed
+        } else {
+            SettingsScreenEvent::Action(SettingsAction::SetField {
+                key: key.to_owned(),
+                value: FieldValue::text(after),
+            })
+        })
+    }
+
+    fn edit_line(&mut self, key: &str, event: KeyEvent) -> Option<SettingsScreenEvent> {
+        let input = self.inputs.get_mut(key)?;
+        let before = input.value().to_owned();
+        if input.handle_event(&Event::Key(event)).is_none() {
+            // A single-line box does not use the vertical arrows, so they move the keyboard.
+            return nav(event);
+        }
+        Some(if before == input.value() {
+            SettingsScreenEvent::Changed
+        } else {
+            SettingsScreenEvent::Action(SettingsAction::SetField {
+                key: key.to_owned(),
+                value: FieldValue::text(input.value()),
+            })
+        })
+    }
+
+    fn scroll_key(&mut self, key: KeyEvent) -> Option<SettingsScreenEvent> {
+        handle_scrollable_content_key(&mut self.scroll, &key, self.visible_height)
+            .map(|_| SettingsScreenEvent::Changed)
     }
 
     /// Return where one virtual span lands on screen at its full height, clipped by nothing.
@@ -338,6 +550,81 @@ impl SettingsScreenSession {
             }
         }
     }
+}
+
+/// Move the keyboard when a control does not use the vertical arrows itself.
+///
+/// Version 0.4 gives every form screen the same arrow twins for Tab, and they fire only where the
+/// focused widget lets the key through (`src/skit/tui_footer.py:72-79`).
+fn nav(key: KeyEvent) -> Option<SettingsScreenEvent> {
+    match key.code {
+        KeyCode::Down => Some(SettingsScreenEvent::Action(SettingsAction::FocusNext)),
+        KeyCode::Up => Some(SettingsScreenEvent::Action(SettingsAction::FocusPrevious)),
+        _ => None,
+    }
+}
+
+fn set_field(key: &str, value: FieldValue) -> Option<SettingsScreenEvent> {
+    Some(SettingsScreenEvent::Action(SettingsAction::SetField {
+        key: key.to_owned(),
+        value,
+    }))
+}
+
+/// Return the value one field holds after a person picks one option.
+///
+/// A closed single choice replaces its value; an open one adds or removes the option. Both read the
+/// field's own current value, so a list that changed while the screen was open cannot make an
+/// option mean a different row.
+fn picked(field: &Field, value: &str) -> FieldValue {
+    let FieldKind::MultiChoice { options } = &field.kind else {
+        return FieldValue::Explicit(TypedValue::Choice(value.to_owned()));
+    };
+    let mut selected = options
+        .iter()
+        .filter(|option| option.value != value && is_selected(field, option))
+        .map(|option| option.value.clone())
+        .collect::<Vec<_>>();
+    if !options
+        .iter()
+        .any(|option| option.value == value && is_selected(field, option))
+        && let Some(position) = options.iter().position(|option| option.value == value)
+    {
+        // Keep the field's own option order, so the stored list never depends on click order.
+        let ahead = options[..position]
+            .iter()
+            .filter(|option| selected.contains(&option.value))
+            .count();
+        selected.insert(ahead, value.to_owned());
+    }
+    FieldValue::Explicit(TypedValue::Choices(selected))
+}
+
+/// Move a closed option set with the arrows, or take the highlighted one with Space or Enter.
+fn choice_key(
+    field: &Field,
+    options: &[ChoiceOption],
+    key: KeyEvent,
+) -> Option<SettingsScreenEvent> {
+    if options.is_empty() {
+        return None;
+    }
+    let multiple = matches!(field.kind, FieldKind::MultiChoice { .. });
+    let current = options
+        .iter()
+        .position(|option| is_selected(field, option))
+        .unwrap_or_default();
+    let next = match key.code {
+        // An open set has no single cursor to walk, so the arrows move the keyboard instead.
+        KeyCode::Down | KeyCode::Right if !multiple => current
+            .saturating_add(1)
+            .min(options.len().saturating_sub(1)),
+        KeyCode::Up | KeyCode::Left if !multiple => current.saturating_sub(1),
+        KeyCode::Char(' ') | KeyCode::Enter => current,
+        _ => return nav(key),
+    };
+    let option = options.get(next)?;
+    set_field(&field.key, picked(field, &option.value))
 }
 
 /// Draw the entry-settings screen and return its mouse hit map.
@@ -733,16 +1020,18 @@ fn fields(view: &SettingsView) -> impl Iterator<Item = &Field> {
 #[cfg(test)]
 mod tests {
     use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+    use ratatui_crossterm::crossterm::event::MouseButton;
     use skit_form::field::{
         ArgumentDialect, FieldCapabilities, FieldOwner, FieldValue, ReadOnlyReason,
     };
     use skit_ui::{
-        DependencyFlavor, NAME_KEY, SettingsAction, SettingsInputs, SettingsSection,
-        SettingsSectionId, WORKDIR_CUSTOM, WORKDIR_KEY,
+        DESCRIPTION_KEY, DependencyFlavor, NAME_KEY, NEEDS_KEY, SettingsAction, SettingsInputs,
+        SettingsSection, SettingsSectionId, WORKDIR_CUSTOM, WORKDIR_KEY,
     };
 
     use super::{
-        ChoiceOption, Field, FieldKind, Locale, SettingsControlId, SettingsScreenGeometry,
+        ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyModifiers, Locale, MouseEvent,
+        MouseEventKind, Rect, SettingsControlId, SettingsScreenEvent, SettingsScreenGeometry,
         SettingsScreenSession, SettingsView, TypedValue, render_settings,
     };
 
@@ -952,6 +1241,366 @@ mod tests {
         assert_eq!(geometry.first_visible, 0);
         assert!(frame.contains("Source: /home/ada/brief.md"), "{frame}");
         assert!(frame.contains("skit doesn't write to this file"), "{frame}");
+    }
+
+    fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
+        Event::Key(KeyEvent::new(code, modifiers))
+    }
+
+    fn click(area: Rect) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    /// Drive one event and apply whatever action it produced.
+    fn dispatch(
+        session: &mut SettingsScreenSession,
+        view: &mut SettingsView,
+        geometry: &SettingsScreenGeometry,
+        event: Event,
+    ) -> Option<SettingsScreenEvent> {
+        let handled = session.handle_event(event, view, geometry);
+        if let Some(SettingsScreenEvent::Action(action)) = handled.clone() {
+            view.update(action);
+        }
+        handled
+    }
+
+    /// Typing reaches the focused box, and the model keeps every character.
+    #[test]
+    fn typing_reaches_the_focused_box_and_the_model_keeps_it() {
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        assert_eq!(view.focused(), NAME_KEY);
+
+        for character in ['!', '\u{301}', '🧑'] {
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                key(KeyCode::Char(character), KeyModifiers::NONE),
+            );
+        }
+        assert_eq!(
+            view.field(NAME_KEY).unwrap().value().as_text(),
+            "Brief!\u{301}🧑"
+        );
+        assert!(view.is_dirty(), "typing is an edit the discard guard sees");
+
+        // The cursor a person sees is the terminal's own.
+        let (terminal, _) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        assert!(
+            session
+                .field_area(NAME_KEY)
+                .unwrap()
+                .contains(terminal.backend().cursor_position()),
+            "the cursor must sit in the focused box"
+        );
+    }
+
+    /// A control chord is never eaten by a text box, so the footer's keys always work.
+    ///
+    /// Version 0.4 puts Save on `Ctrl+S` and Back on Esc for this screen
+    /// (`src/skit/tui_settings.py:408-420`). Both must reach the shared registry from inside an
+    /// input, which is where a person is when they finish typing.
+    #[test]
+    fn a_control_chord_is_never_eaten_by_a_text_box() {
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+
+        // Both text controls, because they have different appetites. A multi-line body carries
+        // emacs-style editing bindings, so `Ctrl+N` reads as "next line" to it unless the chord is
+        // taken away first.
+        for focus in [NAME_KEY, DESCRIPTION_KEY] {
+            view.update(SettingsAction::Focus {
+                key: focus.to_owned(),
+            });
+            let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+            let before = view.field(focus).unwrap().value().as_text();
+            for chord in [
+                key(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                key(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                key(KeyCode::Esc, KeyModifiers::NONE),
+            ] {
+                assert_eq!(
+                    session.handle_event(chord.clone(), &view, &geometry),
+                    None,
+                    "{chord:?} must fall through to the command registry from {focus}"
+                );
+            }
+            assert_eq!(
+                view.field(focus).unwrap().value().as_text(),
+                before,
+                "a chord must not edit {focus}"
+            );
+        }
+        assert!(!view.is_dirty(), "no chord is an edit");
+    }
+
+    /// Tab and the arrow twins move the keyboard, and a choice keeps the arrows for its own rows.
+    ///
+    /// Version 0.4 gives every form footer both directions and lets the focused widget win the
+    /// arrows when it needs them (`src/skit/tui_footer.py:72-94`).
+    #[test]
+    fn tab_always_moves_focus_and_a_choice_keeps_the_arrows_for_its_options() {
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+
+        assert_eq!(view.focused(), NAME_KEY);
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Tab, KeyModifiers::NONE),
+        );
+        assert_eq!(view.focused(), DESCRIPTION_KEY);
+        // A multi-line box owns the vertical arrows, so Tab is the way out of it.
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Down, KeyModifiers::NONE),
+        );
+        assert_eq!(view.focused(), DESCRIPTION_KEY, "the body took the arrow");
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::BackTab, KeyModifiers::SHIFT),
+        );
+        assert_eq!(view.focused(), NAME_KEY);
+        // A single-line box does not use them, so they move the keyboard.
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Down, KeyModifiers::NONE),
+        );
+        assert_eq!(view.focused(), DESCRIPTION_KEY);
+
+        // On a closed option set the arrows walk the options and clamp at both ends.
+        view.update(SettingsAction::Focus {
+            key: WORKDIR_KEY.to_owned(),
+        });
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        assert_eq!(view.field(WORKDIR_KEY).unwrap().value().as_text(), "invoke");
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Up, KeyModifiers::NONE),
+        );
+        assert_eq!(view.field(WORKDIR_KEY).unwrap().value().as_text(), "store");
+        assert_eq!(
+            view.focused(),
+            WORKDIR_KEY,
+            "the option set kept the keyboard"
+        );
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Down, KeyModifiers::NONE),
+        );
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Down, KeyModifiers::NONE),
+        );
+        assert_eq!(
+            view.field(WORKDIR_KEY).unwrap().value().as_text(),
+            WORKDIR_CUSTOM
+        );
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Down, KeyModifiers::NONE),
+        );
+        assert_eq!(
+            view.field(WORKDIR_KEY).unwrap().value().as_text(),
+            WORKDIR_CUSTOM,
+            "the last option holds rather than wrapping"
+        );
+        // Choosing the typed folder reveals its box, and Tab now reaches it.
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Tab, KeyModifiers::NONE),
+        );
+        assert_eq!(view.focused(), skit_ui::WORKDIR_PATH_KEY);
+    }
+
+    /// Every control a person can click does what its key does.
+    ///
+    /// Product rule 2: each action is available by keyboard and mouse, and each visible affordance
+    /// is a click target.
+    #[test]
+    fn every_visible_control_has_a_mouse_twin() {
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+
+        // Clicking a text box moves the keyboard to it.
+        let needs = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.target == SettingsControlId::Field(NEEDS_KEY.to_owned()))
+            .expect("the needs box is clickable");
+        dispatch(&mut session, &mut view, &geometry, click(needs.area));
+        assert_eq!(view.focused(), NEEDS_KEY);
+
+        // Clicking one option picks it, by value, and takes the keyboard with it.
+        let store = geometry
+            .hits
+            .iter()
+            .find(|hit| {
+                hit.target
+                    == SettingsControlId::Option {
+                        field: WORKDIR_KEY.to_owned(),
+                        value: "store".to_owned(),
+                    }
+            })
+            .expect("every option is clickable");
+        dispatch(&mut session, &mut view, &geometry, click(store.area));
+        assert_eq!(view.field(WORKDIR_KEY).unwrap().value().as_text(), "store");
+        assert_eq!(view.focused(), WORKDIR_KEY);
+
+        // The new-agent chip is the same door Ctrl+N opens.
+        let door = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.target == SettingsControlId::NewRunner)
+            .expect("the new-agent chip is clickable");
+        assert_eq!(
+            session.handle_event(click(door.area), &view, &geometry),
+            Some(SettingsScreenEvent::Action(SettingsAction::NewRunner))
+        );
+    }
+
+    /// The wheel moves the viewport and keeps it there until the keyboard goes somewhere new.
+    #[test]
+    fn the_wheel_keeps_what_the_reader_scrolled_to() {
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, DEMO_HEIGHT);
+        assert_eq!(geometry.first_visible, 0);
+
+        let wheel = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: geometry.body.x,
+            row: geometry.body.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        for _ in 0..4 {
+            assert_eq!(
+                session.handle_event(wheel.clone(), &view, &geometry),
+                Some(SettingsScreenEvent::Changed)
+            );
+        }
+        let (_, scrolled) = draw(&mut session, &view, DEMO_WIDTH, DEMO_HEIGHT);
+        assert!(scrolled.first_visible > 0, "the wheel moved the viewport");
+
+        // Re-rendering does not yank it back, on this frame or any later one. Springing back one
+        // frame late is the defect an "did the offset change" test would miss.
+        for _ in 0..3 {
+            let (_, again) = draw(&mut session, &view, DEMO_WIDTH, DEMO_HEIGHT);
+            assert_eq!(
+                again.first_visible, scrolled.first_visible,
+                "the viewport must stay where the reader put it"
+            );
+        }
+
+        // Moving the keyboard is a new intent, and the control it lands on comes back into view.
+        dispatch(
+            &mut session,
+            &mut view,
+            &scrolled,
+            key(KeyCode::Tab, KeyModifiers::NONE),
+        );
+        assert_eq!(view.focused(), DESCRIPTION_KEY);
+        let (_, followed) = draw(&mut session, &view, DEMO_WIDTH, DEMO_HEIGHT);
+        let area = session
+            .field_area(DESCRIPTION_KEY)
+            .expect("the focused box is drawn");
+        assert!(
+            area.y >= followed.body.y
+                && area.y.saturating_add(area.height)
+                    <= followed.body.y.saturating_add(followed.body.height),
+            "focus landed at {area:?}, outside the viewport {:?}",
+            followed.body
+        );
+    }
+
+    /// A toggle answers Space and a click, and a read-only row answers neither.
+    #[test]
+    fn a_toggle_answers_the_keyboard_and_the_mouse_and_read_only_text_answers_neither() {
+        let mut view = prompt_view();
+        view.sections.push(SettingsSection {
+            id: SettingsSectionId::Basics,
+            notes: Vec::new(),
+            fields: vec![
+                Field::new(
+                    "kind:boolean",
+                    "Dry run",
+                    FieldKind::Boolean,
+                    FieldOwner::Declared,
+                    FieldValue::boolean(false),
+                ),
+                Field::read_only(
+                    "kind:read-only",
+                    "Delivery",
+                    FieldOwner::Declared,
+                    FieldValue::text("flag"),
+                    ReadOnlyReason::FixedAtAddTime,
+                ),
+            ],
+        });
+        let mut session = SettingsScreenSession::default();
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+
+        view.update(SettingsAction::Focus {
+            key: "kind:boolean".to_owned(),
+        });
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            view.field("kind:boolean").unwrap().value().as_text(),
+            "true"
+        );
+
+        let toggle = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.target == SettingsControlId::Field("kind:boolean".to_owned()))
+            .expect("a toggle is clickable");
+        dispatch(&mut session, &mut view, &geometry, click(toggle.area));
+        assert_eq!(
+            view.field("kind:boolean").unwrap().value().as_text(),
+            "false",
+            "one click is one flip"
+        );
+
+        // Read-only text has no target at all, so a click on it reaches the registry instead.
+        assert!(
+            !geometry
+                .hits
+                .iter()
+                .any(|hit| hit.target == SettingsControlId::Field("kind:read-only".to_owned()))
+        );
     }
 
     /// The panel names the entry, and every option of a closed set is its own click target.
