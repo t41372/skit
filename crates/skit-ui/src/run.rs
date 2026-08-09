@@ -513,7 +513,7 @@ impl RunFormView {
             validation_error: None,
             feedback: RunFieldFeedback::default(),
         });
-        Self {
+        let mut view = Self {
             selector: selector.into(),
             name: name.into(),
             fields,
@@ -527,7 +527,28 @@ impl RunFormView {
             context: None,
             drift_lines: Vec::new(),
             degraded_reason: None,
-        }
+        };
+        view.focus_first_typeable();
+        view
+    }
+
+    /// Put the boot focus on the first control the user can type or toggle.
+    ///
+    /// Version 0.4 auto-focuses `"Input, Checkbox, RadioSet"` (`src/skit/tui_form.py:566`), which
+    /// the runner and preset dropdowns do not match: the form must be typeable the moment it
+    /// opens, whatever optional rows sit above the first parameter.
+    fn focus_first_typeable(&mut self) {
+        self.focused = self
+            .fields
+            .iter()
+            .position(|field| {
+                matches!(
+                    field.role,
+                    RunFieldRole::Parameter { .. } | RunFieldRole::ExtraArguments
+                )
+            })
+            .unwrap_or(0)
+            .min(self.fields.len().saturating_sub(1));
     }
 
     /// Apply invocation-only state without presenting fake text controls.
@@ -560,7 +581,7 @@ impl RunFormView {
             let field = self.fields.remove(index);
             self.hidden_values.insert(field.key, field.control.value());
         }
-        self.focused = self.focused.min(self.fields.len().saturating_sub(1));
+        self.focus_first_typeable();
         self
     }
 

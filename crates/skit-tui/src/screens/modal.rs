@@ -85,7 +85,6 @@ impl ConfirmRemoveSession {
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
         });
         popup.render(frame);
-        drop(popup);
         self.config = Some(config);
         ViewGeometry::default()
     }

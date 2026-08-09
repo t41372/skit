@@ -1114,23 +1114,62 @@ fn params_cli_can_set_every_frontend_neutral_parameter_axis() {
             "name",
             "--env-target",
             "name=SKIT_NAME",
-            "--action",
-            "name=store_true",
         ])
         .assert()
         .success();
-    let output = sandbox
-        .command()
-        .args(["params", "demo", "--json"])
-        .output()
-        .unwrap();
-    let record: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let field = &record["parameters"][0];
+    let parameter = |sandbox: &Sandbox, index: usize| -> Value {
+        let output = sandbox
+            .command()
+            .args(["params", "demo", "--json"])
+            .output()
+            .unwrap();
+        let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+        record["parameters"][index].clone()
+    };
+    let field = parameter(&sandbox, 0);
     assert_eq!(field["binding"], "none");
     assert_eq!(field["multiple"], true);
     assert_eq!(field["repeat"], true);
     assert_eq!(field["env_target"], "SKIT_NAME");
-    assert_eq!(field["action"], "store_true");
+    // A non-bool row carries no action: an edit that moves a type off bool sheds the stale
+    // value (`src/skit/params.py:492-493` `if decl.type != "bool": decl.action = ""`).
+    assert_eq!(field["action"], "");
+
+    // The action axis belongs to a bool flag. Declaring one with no action records
+    // store_true, because "pass the flag when on" is what the checkbox means
+    // (`src/skit/params.py:488-491`).
+    sandbox
+        .command()
+        .args([
+            "params",
+            "demo",
+            "--add",
+            "verbose",
+            "--type",
+            "verbose=bool",
+            "--deliver",
+            "verbose=flag",
+            "--flag",
+            "verbose=--verbose",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parameter(&sandbox, 1)["action"], "store_true");
+
+    sandbox
+        .command()
+        .args(["params", "demo", "--action", "verbose=store_false"])
+        .assert()
+        .success();
+    assert_eq!(parameter(&sandbox, 1)["action"], "store_false");
+
+    // Moving the same row off bool sheds the action again.
+    sandbox
+        .command()
+        .args(["params", "demo", "--type", "verbose=str"])
+        .assert()
+        .success();
+    assert_eq!(parameter(&sandbox, 1)["action"], "");
 
     sandbox
         .command()

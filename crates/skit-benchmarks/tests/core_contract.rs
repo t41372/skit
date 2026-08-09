@@ -269,7 +269,7 @@ fn budget_predicates_and_report_symbols_keep_all_decay_channels_visible() {
     let mut empty_runner = measured.clone();
     empty_runner.meta.host.ci_runner = Some(String::new());
     assert_eq!(
-        evaluate(&[base.clone()], &empty_runner).rows[0].outcome,
+        evaluate(std::slice::from_ref(&base), &empty_runner).rows[0].outcome,
         BudgetOutcome::PredicateUnevaluable
     );
     let mut ci_only = base.clone();

@@ -171,7 +171,11 @@ fn run_focus_uses_the_complete_control_order() {
         .unwrap();
     assert_eq!(submit.bindings[0].key, UiKey::Enter);
 
-    for expected in [1, 2, 3, 3] {
+    // The form must be typeable the moment it opens, so the runner and preset pickers are
+    // skipped at boot. Version 0.4 focuses `"Input, Checkbox, RadioSet"`, which no picker
+    // matches (`src/skit/tui_form.py:566`).
+    assert_eq!(state.focused_form_field(), Some(2));
+    for expected in [3, 3] {
         state.update(Action::FocusNext);
         assert_eq!(state.focused_form_field(), Some(expected));
     }
@@ -179,6 +183,51 @@ fn run_focus_uses_the_complete_control_order() {
         state.update(Action::FocusPrevious);
         assert_eq!(state.focused_form_field(), Some(expected));
     }
+}
+
+#[test]
+fn run_focus_starts_on_the_first_typeable_control_in_every_shape() {
+    let with_pickers = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[ParamDecl::new("name")],
+        &BTreeMap::new(),
+        &["codex".to_owned()],
+        "codex",
+        &BTreeMap::from([("daily".to_owned(), BTreeMap::new())]),
+        "",
+    );
+    assert_eq!(with_pickers.focused(), 2);
+
+    // No parameters means no preset row at all, so the extra-arguments input is first.
+    let pickers_only = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[],
+        &BTreeMap::new(),
+        &["codex".to_owned()],
+        "codex",
+        &BTreeMap::from([("daily".to_owned(), BTreeMap::new())]),
+        "",
+    );
+    assert_eq!(pickers_only.focused(), 1);
+
+    // Fixing every parameter removes its control, and focus must stay inside the form.
+    let reduced = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[ParamDecl::new("name")],
+        &BTreeMap::new(),
+        &["codex".to_owned()],
+        "codex",
+        &BTreeMap::from([("daily".to_owned(), BTreeMap::new())]),
+        "",
+    )
+    .with_options(RunFormOptions {
+        fixed_values: BTreeMap::from([("name".to_owned(), "Ada".to_owned())]),
+        ..RunFormOptions::default()
+    });
+    assert_eq!(reduced.focused(), 2);
 }
 
 #[test]
@@ -229,7 +278,7 @@ fn run_commands_match_the_latest_main_contract_and_target_typed_fields() {
         ]
     );
 
-    state.update(Action::FocusNext);
+    // The runner picker is control 0, so the boot focus is already the first typed field.
     assert_eq!(state.focused_form_field(), Some(1));
     state.update(Action::ResetFocusedRunField);
     assert_eq!(

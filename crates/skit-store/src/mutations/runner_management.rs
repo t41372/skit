@@ -117,8 +117,10 @@ mod tests {
     use crate::PromptRunner;
 
     fn prompt_request(runner: &str) -> CreateEntry {
-        let mut settings = EntrySettings::default();
-        settings.runner = runner.to_owned();
+        let settings = EntrySettings {
+            runner: runner.to_owned(),
+            ..EntrySettings::default()
+        };
         CreateEntry {
             name: "Pinned prompt".to_owned(),
             kind: EntryKind::parse("prompt").unwrap(),

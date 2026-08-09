@@ -429,13 +429,16 @@ fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
     );
     assert_eq!(code, 0, "{output}");
 
+    // Enter opens the run form; Ctrl+R is the run form's explicit run chord
+    // (`src/skit/tui_form.py:555` `Binding("ctrl+r", "submit", …)`). Ctrl+S there means
+    // "Save as preset" (tui_form.py:548), so it would open a modal and wait for a name.
     fs::write(config.path().join("config.toml"), "after_run = \"exit\"\n").unwrap();
     let (code, output) = run_in_pty(
         &["tui"],
         data.path(),
         state.path(),
         config.path(),
-        &[b"\r", b"\x1b[1;1R", b"\x13"],
+        &[b"\r", b"\x1b[1;1R", b"\x12"],
     );
     assert_eq!(code, 0, "{output}");
 }
@@ -447,12 +450,39 @@ fn terminal_run_form_can_submit_or_cancel_without_plain_input() {
     let config = TempDir::new().unwrap();
     write_command_entry(data.path(), true);
 
+    // Ctrl+R is the run form's explicit run chord (`src/skit/tui_form.py:555`).
     let (code, output) = run_in_pty(
         &["run", "demo", "--dry-run"],
         data.path(),
         state.path(),
         config.path(),
-        &[b"\x05", b"Ada", b"\x13"],
+        &[b"Ada", b"\x12"],
+    );
+    assert_eq!(code, 0, "{output}");
+
+    // Ctrl+S opens the preset name modal (`tui_form.py:548`). Enter saves the typed name and
+    // returns to the form (`tui_form.py:363-366`), so the run still happens afterwards.
+    let (code, output) = run_in_pty(
+        &["run", "demo", "--dry-run"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"Ada", b"\x13", b"nightly", b"\r", b"\x12"],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("Preset \"nightly\" saved."), "{output}");
+    let saved = fs::read_to_string(state.path().join("values/demo.toml")).unwrap();
+    assert!(saved.contains("nightly"), "{saved}");
+    assert!(saved.contains("Ada"), "{saved}");
+
+    // Escape inside the modal dismisses only the modal (`tui_form.py:376-377`), so the form
+    // survives and the following Ctrl+R still runs.
+    let (code, output) = run_in_pty(
+        &["run", "demo", "--dry-run"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"Ada", b"\x13", b"\x1b", b"\x12"],
     );
     assert_eq!(code, 0, "{output}");
 
@@ -475,12 +505,15 @@ fn terminal_authoring_and_confirmation_paths_need_no_hidden_cli_knowledge() {
     fs::write(&source, "echo ok\n").unwrap();
     let source_input = source.display().to_string().into_bytes();
 
+    // The source step advertises Enter Continue; the review panel that follows advertises
+    // Ctrl+S Add. The panel arrives after a host round trip, which re-enters the terminal and
+    // asks for the cursor position again.
     let (code, output) = run_in_pty(
         &["add"],
         data.path(),
         state.path(),
         config.path(),
-        &[source_input.as_slice(), b"\x13"],
+        &[source_input.as_slice(), b"\r", b"\x1b[1;1R", b"\x13"],
     );
     assert_eq!(code, 0, "{output}");
     assert!(data.path().join("scripts/source/meta.toml").is_file());

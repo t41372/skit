@@ -1298,7 +1298,16 @@ fn run_entry(
         )
         .map_err(plain_form_error)?
     } else {
-        skit_tui::collect_run_form(forms.enhanced, active_locale())?.ok_or(CliError::Aborted)?
+        // The inline run window serves the same host effects the workbench serves, so its
+        // advertised chips (Ctrl+S saves a preset) work there too.
+        let state_dir = resolve_state_dir()?;
+        let config_dir = resolve_config_dir()?;
+        skit_tui::collect_run_form(
+            forms.enhanced,
+            |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
+            active_locale(),
+        )?
+        .ok_or(CliError::Aborted)?
     };
     apply_interactive_run_values(&mut args, &values, &forms.baseline)?;
     args.no_input = true;
@@ -5638,6 +5647,7 @@ fn tui_selector(selector: &Option<String>) -> Result<&str, CliError> {
         .ok_or_else(|| CliError::Usage(Message::new("select an entry first")))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tui_run_form(
     entry: &Entry,
     plan: &PreparedFormPlan,

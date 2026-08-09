@@ -214,25 +214,44 @@ where
 }
 
 /// Collect one generic form and restore the terminal before returning its values.
-pub fn collect_form(
+pub fn collect_form<F, E>(
     form: FormView,
+    host: F,
     locale: Locale,
-) -> Result<Option<BTreeMap<String, String>>, TuiError> {
-    collect_screen(Screen::Form(form), locale)
+) -> Result<Option<BTreeMap<String, String>>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    collect_screen(Screen::Form(form), host, locale)
 }
 
 /// Collect one typed launch form and restore the terminal before returning its values.
-pub fn collect_run_form(
+///
+/// The host serves the same effects the full workbench serves. A form chip that the footer
+/// advertises — `Ctrl+S Save as preset` above all — must do its work here too, exactly as version
+/// 0.4 saves a preset from the inline run window (`src/skit/tui_form.py:929-959`).
+pub fn collect_run_form<F, E>(
     form: RunFormView,
+    host: F,
     locale: Locale,
-) -> Result<Option<BTreeMap<String, String>>, TuiError> {
-    collect_screen(Screen::Run(Box::new(form)), locale)
+) -> Result<Option<BTreeMap<String, String>>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    collect_screen(Screen::Run(Box::new(form)), host, locale)
 }
 
-fn collect_screen(
+fn collect_screen<F, E>(
     screen: Screen,
-    locale: Locale,
-) -> Result<Option<BTreeMap<String, String>>, TuiError> {
+    mut host: F,
+    mut locale: Locale,
+) -> Result<Option<BTreeMap<String, String>>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
     let mut state = LibraryState::default();
     state.update(Action::Present(screen));
     enable_raw_mode()?;
@@ -252,13 +271,58 @@ fn collect_screen(
         else {
             continue;
         };
-        if action == Action::Back || action == Action::Quit {
+        if action == Action::Quit {
             return Ok(None);
         }
-        if let Effect::Submit { values, .. } = state.update(action) {
-            return Ok(Some(values));
+        // Escape inside a modal closes only that modal and keeps the form
+        // (`src/skit/tui_form.py:376-377` `action_cancel` dismisses the preset modal). The form
+        // itself is the last screen here, so Escape outside a modal cancels the collection.
+        if action == Action::Back && state.modal().is_none() {
+            return Ok(None);
+        }
+        let effect = state.update(action);
+        if let Some(values) = drain_collect_effects(&mut state, &mut host, effect, &mut locale)? {
+            return Ok(values);
         }
     }
+}
+
+/// Serve one effect chain for a collected form.
+///
+/// `Ok(None)` continues the event loop. `Ok(Some(values))` finishes the collection, and
+/// `Ok(Some(None))` inside it means the user quit.
+type CollectOutcome = Option<Option<BTreeMap<String, String>>>;
+
+fn drain_collect_effects<F, E>(
+    state: &mut LibraryState,
+    host: &mut F,
+    mut effect: Effect,
+    locale: &mut Locale,
+) -> Result<CollectOutcome, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    for _ in 0..HOST_EFFECT_LIMIT {
+        match effect {
+            Effect::None => return Ok(None),
+            Effect::Quit => return Ok(Some(None)),
+            Effect::Submit { values, .. } => return Ok(Some(Some(values))),
+            current => match host(current) {
+                Ok(action) => {
+                    if let Some(next_locale) = action_locale(&action) {
+                        *locale = next_locale;
+                    }
+                    effect = state.update(action);
+                }
+                Err(error) => {
+                    state.update(Action::SetStatus(localized_status(&error, *locale)));
+                    return Ok(None);
+                }
+            },
+        }
+    }
+    Err(TuiError::EffectCycle)
 }
 
 #[derive(Debug)]
