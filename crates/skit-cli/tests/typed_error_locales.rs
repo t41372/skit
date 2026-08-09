@@ -135,8 +135,10 @@ fn repository_errors_localize_their_template_and_keep_the_query_verbatim() {
         sandbox
             .command(locale)
             .args(["show", query])
+            // `show` is a management command, so a missing name exits 1
+            // (src/skit/cli.py:2483). 127 belongs to the run path (cli.py:3008).
             .assert()
-            .code(127)
+            .code(1)
             .stderr(predicate::str::contains(template))
             .stderr(predicate::str::contains(query));
     }

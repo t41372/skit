@@ -88,7 +88,11 @@ pub struct PromptRunnerRow {
 }
 
 impl PromptRunnerRow {
-    /// Return the validation reason in the selected locale.
+    /// Return the human row status in the selected locale.
+    ///
+    /// [`Self::reason`] stays the stable English machine token that `--json` and `doctor` report.
+    /// This text is the human wording that version 0.4 shows in the same column
+    /// (`src/skit/config.py:592-624` `prompt_runner_row_reason`).
     #[must_use]
     pub fn localized_reason(&self, locale: Locale) -> Option<String> {
         self.reason_message
@@ -171,6 +175,33 @@ impl PromptRunnerIssue {
             Self::ArgvType => Message::new("a prompt runner argv must be a list of strings"),
             Self::RowNotTable => Message::new("the prompt runner row is not a table"),
             Self::Duplicate => Message::new("another row already uses this prompt runner name"),
+        }
+    }
+
+    /// Return the human status wording that management surfaces show for one raw row.
+    ///
+    /// Version 0.4 keeps this set separate from the refusal wording above
+    /// (`src/skit/config.py:592-624`): the machine token stays in [`Self::code`], and a human
+    /// surface never shows it. The Ratatui management screen already uses these exact sentences,
+    /// so the CLI table must show the same text.
+    fn status_message(self) -> Message {
+        match self {
+            // Version 0.4 reuses the container error text here (`src/skit/config.py:603-606`).
+            Self::PromptSectionNotTable | Self::RunnersNotList => self.message(),
+            Self::Empty => Message::new("Type the agent's command, e.g. mycli run {{prompt}}"),
+            Self::PromptSlotCount => Message::new(
+                "The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+            ),
+            Self::PromptInBinary => Message::new(
+                "{{prompt}} can't be the command itself — the first word must be the program to run.",
+            ),
+            Self::StrayHole => Message::new(
+                "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",
+            ),
+            Self::Name => Message::new("A name is required."),
+            Self::ArgvType => Message::new("The command must be a list of text arguments."),
+            Self::RowNotTable => Message::new("This runner row isn't a table."),
+            Self::Duplicate => Message::new("Another row already uses this runner name."),
         }
     }
 }
@@ -1149,7 +1180,7 @@ fn container_runner_row(
         argv: None,
         reason: Some(issue.code().to_owned()),
         descriptor: descriptor.to_owned(),
-        reason_message: Some(issue.message()),
+        reason_message: Some(issue.status_message()),
         descriptor_message: None,
         raw: value.clone(),
     }
@@ -1204,7 +1235,7 @@ fn runner_row(
             .filter(|name| !name.trim().is_empty())
             .map_or_else(|| legacy_value_descriptor(value), str::to_owned)
     };
-    let reason_message = issue.map(PromptRunnerIssue::message);
+    let reason_message = issue.map(PromptRunnerIssue::status_message);
     PromptRunnerRow {
         index: Some(index),
         name,

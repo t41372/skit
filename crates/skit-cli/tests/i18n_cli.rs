@@ -34,8 +34,10 @@ fn human_errors_use_the_requested_simplified_chinese_catalog() {
         .env("SKIT_CONFIG_DIR", config.path())
         .env("SKIT_LANG", "zh-CN")
         .args(["show", "missing"])
+        // Management commands report a missing name with exit 1. Only the run path uses
+        // 127 (src/skit/cli.py:2483 `raise _fail(str(exc), 1)` against cli.py:3008).
         .assert()
-        .code(127)
+        .code(1)
         .stderr(predicate::str::contains("找不到条目"));
 }
 
@@ -134,15 +136,48 @@ fn scalar_report_labels_translate_in_every_supported_locale() {
         .assert()
         .success();
 
-    // These are whole catalog rows, so an exact lookup must translate each one.
+    // These are whole catalog rows, so an exact lookup must translate each one. The row set
+    // and its order come from `_print_show_human` (`src/skit/cli.py:2366-2427`): identity,
+    // description, source, work directory, the prompt runner, the field table, then the run
+    // hint. Version 0.4 prints no "missing" and no "drift" row for a healthy entry — the
+    // missing marker appears only when `launcher.missing_marker` returns one
+    // (`src/skit/cli.py:2382-2384`), and the interpolation row appears only when insertion is
+    // off (`src/skit/cli.py:2412-2413`).
     command("zh-CN")
         .args(["show", "report"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("缺失：否"))
-        .stdout(predicate::str::contains("漂移：否"))
-        .stdout(predicate::str::contains("提示词运行器：未设置"))
-        .stdout(predicate::str::contains("插值：开启"));
+        .stdout(predicate::str::contains("(提示词 · copy)"))
+        .stdout(predicate::str::contains("来源:"))
+        .stdout(predicate::str::contains("工作目录:invoke"))
+        .stdout(predicate::str::contains("执行器:(运行时询问)"))
+        .stdout(predicate::str::contains("运行:skit run Report"))
+        .stdout(predicate::str::contains("缺失").not())
+        .stdout(predicate::str::contains("漂移").not());
+
+    command("zh-TW")
+        .args(["show", "report"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(提示詞 · copy)"))
+        .stdout(predicate::str::contains("來源:"))
+        .stdout(predicate::str::contains("工作目錄:invoke"))
+        .stdout(predicate::str::contains("執行器:(執行時詢問)"))
+        .stdout(predicate::str::contains("執行:skit run Report"));
+
+    // The pinned runner and the insertion switch are the two conditional prompt rows.
+    command("en")
+        .args(["add", "--prompt", "--name", "Pinned", "--no-input"])
+        .args(["--runner", "claude", "--no-interpolate"])
+        .write_stdin("Body {{subject}}\n")
+        .assert()
+        .success();
+    command("zh-CN")
+        .args(["show", "pinned"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("执行器:claude"))
+        .stdout(predicate::str::contains("变量插入:关闭(正文原样送达)"));
 
     // Hong Kong, Macau, and Singapore resolve to a Chinese catalog, not to English.
     for (locale, expected) in [
@@ -183,18 +218,25 @@ runners = [
         command
     };
 
+    // Version 0.4 prints Row/Runner/Command/Status (`src/skit/cli.py:3306-3319`), the raw index
+    // is zero-based (`src/skit/config.py:687` `enumerate`), and the Status column carries the
+    // closed human wording of `prompt_runner_row_reason` (`src/skit/config.py:592-624`) — never
+    // the English machine code that `--json` reports.
     command()
         .args(["runner", "list", "--all"])
         .assert()
         .success()
+        .stdout(predicate::str::contains("行"))
+        .stdout(predicate::str::contains("执行器"))
+        .stdout(predicate::str::contains("状态"))
+        .stdout(predicate::str::contains("│ 0 "))
+        .stdout(predicate::str::contains("│ 1 "))
         .stdout(predicate::str::contains(
-            "提示词运行器命令必须在程序之后正好包含一次 {{prompt}}",
+            "命令必须恰好包含一个 {{prompt}} 槽位——渲染后的提示词会放在那里。",
         ))
-        .stdout(predicate::str::contains("第 2 行"))
-        .stdout(predicate::str::contains(
-            "运行器行需要名称和字符串 argv 数组",
-        ))
-        .stdout(predicate::str::contains("runner row needs").not());
+        .stdout(predicate::str::contains("必须提供名称。"))
+        .stdout(predicate::str::contains("prompt-slot-count").not())
+        .stdout(predicate::str::contains("A name is required").not());
 
     let source = data.path().join("future.sh");
     fs::write(&source, "printf ok\n").unwrap();
@@ -214,25 +256,28 @@ runners = [
         .code(2)
         .stderr(predicate::str::contains("环境目标需要 NAME=VALUE"))
         .stderr(predicate::str::contains("environment target").not());
-    command()
-        .args(["runner", "remove", "--row", "99", "--no-input"])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains(
-            "移除提示词运行器需要确认；请传入 --yes",
-        ));
-    command()
-        .args(["runner", "remove", "--row", "99", "--yes"])
-        .assert()
-        .code(2)
-        .stderr(predicate::str::contains("未知的提示词运行器：第 99 行"))
-        .stderr(predicate::str::contains("row 99").not());
+    // Version 0.4 resolves the row before it asks anything, so an absent row refuses with
+    // exit 1 and the same wording with or without a confirmation flag
+    // (`src/skit/cli.py:3471-3477`).
+    for extra in ["--no-input", "--yes"] {
+        command()
+            .args(["runner", "remove", "--row", "99", extra])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains(
+                "未知执行器行：99。请用 skit runner list --all 检查",
+            ))
+            .stderr(predicate::str::contains("Unknown runner row").not());
+    }
+    // An unreadable add source is a store failure, so it exits 1 — 125 belongs to the run
+    // path (`src/skit/cli.py:418-422` raises `StoreError`, and every add lane turns that into
+    // `_fail(str(exc), 1)`).
     command()
         .arg("add")
         .arg(data.path().join("does-not-exist.sh"))
         .args(["--name", "Missing"])
         .assert()
-        .code(125)
+        .code(1)
         .stderr(predicate::str::contains("无法解析"))
         .stderr(predicate::str::contains("无法resolve").not());
     let meta_path = data.path().join("scripts/future/meta.toml");
@@ -241,10 +286,20 @@ runners = [
     assert!(meta.contains("kind = \"future-kind\""), "{meta}");
     fs::write(&meta_path, meta).unwrap();
 
+    // An open-ended kind stays visible and is not an issue: `doctor` skips it without a word
+    // (`src/skit/healthcheck.py:89` `spec_for(entry.meta.kind) is None` → continue), and the
+    // library keeps listing it. Only the malformed runner rows are reported, in Chinese.
+    command()
+        .arg("list")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("future-kind"));
     command()
         .arg("doctor")
         .assert()
         .success()
-        .stdout(predicate::str::contains("未知的条目类型：future-kind"))
+        .stdout(predicate::str::contains("{'future': 1}"))
+        .stdout(predicate::str::contains("broken"))
+        .stdout(predicate::str::contains("malformed").not())
         .stdout(predicate::str::contains("unknown entry kind").not());
 }

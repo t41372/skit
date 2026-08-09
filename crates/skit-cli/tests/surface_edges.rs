@@ -428,20 +428,38 @@ fn agent_skill_installation_needs_one_convention() {
     fs::create_dir(home.path().join(".claude")).unwrap();
     fs::create_dir(home.path().join(".codex")).unwrap();
 
+    // Without a terminal there is nobody to ask, so skit refuses before it looks at any
+    // directory — however many it would have found (`src/skit/cli.py:5112-5116`).
     sandbox
         .command()
         .env("HOME", home.path())
         .args(["agent", "install"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("more than one agent directory"));
+        .stderr(predicate::str::contains(
+            "Nothing installed: name a target (claude, codex, agents) or pass --to DIR.",
+        ));
 
     let project = TempDir::new().unwrap();
     fs::create_dir(project.path().join(".agents")).unwrap();
+    // `--project` selects a scope, not a target, so it reaches the same refusal.
     sandbox
         .command()
         .current_dir(project.path())
         .args(["agent", "install", "--project"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "Nothing installed: name a target (claude, codex, agents) or pass --to DIR.",
+        ));
+    assert!(!project.path().join(".agents/skills/skit/SKILL.md").exists());
+
+    // A named target is consent by itself. `agents` is a project convention, so it lands in
+    // ./.agents whatever --project says (`src/skit/agentskill.py:69-70`).
+    sandbox
+        .command()
+        .current_dir(project.path())
+        .args(["agent", "install", "agents", "--project"])
         .assert()
         .success();
     assert!(
@@ -453,9 +471,11 @@ fn agent_skill_installation_needs_one_convention() {
 }
 
 #[test]
-fn agent_skill_installation_needs_a_user_directory() {
+fn agent_skill_installation_refuses_before_it_resolves_the_user_directory() {
     let sandbox = Sandbox::new();
 
+    // The non-interactive refusal comes first, so an unresolvable home never changes it
+    // (`src/skit/cli.py:5112-5116` runs before `agentskill.default_roots`).
     sandbox
         .command()
         .env_remove("HOME")
@@ -463,7 +483,7 @@ fn agent_skill_installation_needs_a_user_directory() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "could not determine the user directory",
+            "Nothing installed: name a target (claude, codex, agents) or pass --to DIR.",
         ));
 }
 
@@ -526,8 +546,10 @@ fn a_pi_prompt_that_starts_with_a_flag_reports_the_added_newline() {
         ])
         .assert()
         .success()
+        // The exact sentence version 0.4 ships (`src/skit/langs/launch.py:762-767`,
+        // catalogued at `locales/zh_CN/LC_MESSAGES/skit.po:2227`).
         .stderr(predicate::str::contains(
-            "Added a newline to keep the Pi prompt in message mode",
+            "Warning: Pi would interpret the beginning of this prompt as a CLI option, file, or package command. skit prepended one newline and is continuing; the prompt delivered to Pi is one character longer than the rendered text.",
         ));
 }
 

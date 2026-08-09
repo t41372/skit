@@ -122,7 +122,17 @@ fn a_delayed_interpreter_reads_the_identity_checked_snapshot() {
     let output = child.wait_with_output().unwrap();
 
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"OLD");
+    // A run prints one transparency line on stdout before the child writes anything
+    // (`src/skit/flows.py:931` appends `"→ " + env_prefix + described`, and
+    // `src/skit/cli.py:3218` emits it with the stdout console). The line names the private
+    // staged snapshot, and everything after it is the child's own output.
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let (transparency, child_output) = stdout
+        .split_once('\n')
+        .unwrap_or_else(|| panic!("no transparency line in {stdout:?}"));
+    assert!(transparency.starts_with("→ "), "{stdout:?}");
+    assert!(transparency.contains("/.run-"), "{stdout:?}");
+    assert_eq!(child_output, "OLD", "{stdout:?}");
     assert_eq!(
         fs::read(store.payload_path(&store.resolve("demo").unwrap()).unwrap()).unwrap(),
         b"printf NEW"

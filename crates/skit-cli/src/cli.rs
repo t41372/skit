@@ -4094,23 +4094,47 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                         .collect::<Vec<_>>();
                     println!("{}", serde_json::to_string(&output)?);
                 } else {
-                    for row in rows {
-                        let locale = active_locale();
-                        let index = row.index.map_or_else(
-                            || text(locale, "container").into_owned(),
-                            |index| index.to_string(),
+                    let locale = active_locale();
+                    if rows.is_empty() {
+                        humanln!(
+                            "No agents are configured. Add one with: skit runner add mycli -- mycli run {{prompt}}"
                         );
-                        let status = row
-                            .localized_reason(locale)
-                            .unwrap_or_else(|| text(locale, "valid").into_owned());
-                        let name = row.name.as_deref().unwrap_or(row.descriptor.as_str());
-                        let command = row
-                            .argv
-                            .as_deref()
-                            .map(runner_command_text)
-                            .unwrap_or_default();
-                        println!("{}\t{}\t{}\t{}", index, name, command, status);
+                        return Ok(());
                     }
+                    // Version 0.4 prints a four-column table here (`src/skit/cli.py:3306-3319`).
+                    // The raw index is zero-based (`src/skit/config.py:687` `enumerate`), and a
+                    // malformed enclosing value shows `container` in its place.
+                    let table = rows
+                        .into_iter()
+                        .map(|row| {
+                            let index = row.index.map_or_else(
+                                || text(locale, "container").into_owned(),
+                                |index| index.to_string(),
+                            );
+                            let status = row
+                                .localized_reason(locale)
+                                .unwrap_or_else(|| text(locale, "valid").into_owned());
+                            let name = row
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| row.localized_descriptor(locale));
+                            let command = row
+                                .argv
+                                .as_deref()
+                                .map(runner_command_text)
+                                .unwrap_or_default();
+                            [index, name, command, status]
+                        })
+                        .collect::<Vec<_>>();
+                    let headers = [
+                        text(locale, "Row").into_owned(),
+                        text(locale, "Runner").into_owned(),
+                        text(locale, "Command").into_owned(),
+                        text(locale, "Status").into_owned(),
+                    ];
+                    let stdout = io::stdout();
+                    let mut output = stdout.lock();
+                    write_table(&mut output, &headers, &table)?;
                 }
                 return Ok(());
             }
@@ -4130,8 +4154,20 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                 let amp_seeded = runners.iter().any(|runner| {
                     runner.name == "amp" && runner.argv == ["amp", "-x", "{{prompt}}"]
                 });
-                for runner in &runners {
-                    println!("{}\t{}", runner.name, runner_command_text(&runner.argv));
+                if !runners.is_empty() {
+                    // Version 0.4 prints Runner/Command as a table (`src/skit/cli.py:3336-3342`).
+                    let locale = active_locale();
+                    let table = runners
+                        .iter()
+                        .map(|runner| [runner.name.clone(), runner_command_text(&runner.argv)])
+                        .collect::<Vec<_>>();
+                    let headers = [
+                        text(locale, "Runner").into_owned(),
+                        text(locale, "Command").into_owned(),
+                    ];
+                    let stdout = io::stdout();
+                    let mut output = stdout.lock();
+                    write_table(&mut output, &headers, &table)?;
                 }
                 if amp_seeded {
                     humanln!(

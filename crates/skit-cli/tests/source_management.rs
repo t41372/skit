@@ -136,10 +136,13 @@ fn shell_normalize_is_explicit_and_never_changes_the_original() {
         .args(["params", "tool", "--normalize", "NAME"])
         .assert()
         .success();
+    // The canonical form keeps the expansion inside double quotes, so a default that holds
+    // spaces or globs stays one word (`src/skit/langs/shell/normalize.py:125` emits
+    // `f'"${{{name}:-{literal}}}"'`).
     assert!(
         fs::read_to_string(sandbox.data.path().join("scripts/tool/script.sh"))
             .unwrap()
-            .contains("NAME=${NAME:-world}")
+            .contains("NAME=\"${NAME:-world}\"")
     );
     assert_eq!(
         fs::read_to_string(original).unwrap(),
