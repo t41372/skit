@@ -16,7 +16,7 @@ use ratatui_widgets::{
     paragraph::Paragraph,
 };
 use skit_i18n::{Locale, format_text, render as localize, text};
-use skit_ui::{CommandContext, LibraryState, Screen, UiCommand, command_specs};
+use skit_ui::{CommandContext, LibraryState, Screen, UiCommand, UiKey, command_specs};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{HitRegion, HitTarget};
@@ -468,6 +468,29 @@ fn footer_groups(state: &LibraryState, locale: Locale) -> Vec<Vec<(String, Strin
         .filter(|spec| state.command_enabled(spec.command))
         .filter_map(|spec| {
             let binding = spec.bindings.first()?;
+            // Version 0.4's shared navigation hint is two key-only pills that name BOTH keys for
+            // each direction (`src/skit/tui_footer.py:82-94`): the arrows already say which way,
+            // and a footer that advertises only Tab strands anyone who tabs one field too far. The
+            // full words stay on the binding, so the help screen still shows them.
+            if matches!(
+                spec.command,
+                UiCommand::FocusNext | UiCommand::FocusPrevious
+            ) && spec.bindings.len() > 1
+            {
+                let keys = spec
+                    .bindings
+                    .iter()
+                    .filter(|binding| !matches!(binding.key, UiKey::Enter))
+                    .map(|binding| match binding.key {
+                        // The arrow reads as the direction; spelling it "Down" says nothing the
+                        // glyph does not (`src/skit/tui_footer.py:88-89`).
+                        UiKey::Down | UiKey::Up => binding.compact_hint,
+                        _ => binding.hint,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("/");
+                return Some((keys, String::new(), spec.command));
+            }
             let label = match (spec.command, state.form()) {
                 (UiCommand::Submit, Some(form)) => text(locale, &form.submit_label),
                 _ => text(locale, spec.label),

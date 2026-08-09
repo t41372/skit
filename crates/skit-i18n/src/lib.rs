@@ -222,6 +222,7 @@ const CATALOG: &[Translation] = &[
     ),
     row!("No matching entries", "没有匹配的条目", "沒有相符的項目"),
     row!("valid", "有效", "有效"),
+    row!("Preset:", "参数组合：", "參數組合："),
     row!(
         "Network to PyPI / GitHub looks slow or blocked.",
         "检测到访问 PyPI / GitHub 缓慢或受阻。",

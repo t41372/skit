@@ -924,3 +924,190 @@ fn multiline_input_supports_selection_replacement_and_undo() {
     );
     assert_eq!(state.form().unwrap().fields[0].value, "ab");
 }
+
+/// The run form the demo tape records: the `greet` argparse surface.
+///
+/// `docs/assets/demo/scripts/en/greet.py` declares name, count, shout and names, and
+/// `docs/assets/demo/shots.tape` records it at 1280x780 with JetBrains Mono 20 and padding 20.
+/// Measuring the shipped frames gives a 12.19 px column and a 26.33 px row, so the terminal is
+/// 101x28 cells.
+fn demo_greet_form() -> RunFormView {
+    let mut name = ParamDecl::new("name");
+    name.help = "Who to greet".to_owned();
+    name.default = Some(ParameterValue::String("World".to_owned()));
+
+    let mut count = ParamDecl::new("count");
+    count.parameter_type = ParameterType::Int;
+    count.help = "How many times to greet".to_owned();
+    count.default = Some(ParameterValue::Integer(1));
+
+    let mut shout = ParamDecl::new("shout");
+    shout.parameter_type = ParameterType::Bool;
+    shout.help = "Greet in UPPERCASE".to_owned();
+    shout.default = Some(ParameterValue::Bool(false));
+
+    let mut names = ParamDecl::new("names");
+    names.parameter_type = ParameterType::Path;
+    names.help = "Also greet everyone in this file, one per line".to_owned();
+
+    RunFormView::from_declarations(
+        "greet",
+        "greet",
+        &[name, count, shout, names],
+        &BTreeMap::from([
+            ("name".to_owned(), "Ada".to_owned()),
+            ("count".to_owned(), "3".to_owned()),
+            ("shout".to_owned(), "true".to_owned()),
+            ("names".to_owned(), "names.txt".to_owned()),
+        ]),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/demo".to_owned(),
+            invoke_cwd: "/demo".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/demo".to_owned(),
+            home: Some("/root".to_owned()),
+            env: BTreeMap::new(),
+            today: "2026-08-09".to_owned(),
+            now: "12-00-00".to_owned(),
+        },
+    })
+}
+
+/// The demo terminal must show every field the demo is about, and say so when it cannot.
+///
+/// Version 0.4 fits this exact form in this exact window: the label carries its own chips
+/// (`src/skit/tui_form.py:190-215` builds one `Static` from label plus browse/insert/default), the
+/// preset row is one line reading `Preset: …` (`:741-757`), and the body is a `VerticalScroll`
+/// whose scrollbar tells the user the content continues (`:380-384`). The Rust form spent an extra
+/// row per field on a second chip line plus three rows on a duplicated title, so the path field —
+/// the scene the README builds around — was off screen with nothing to say so.
+#[test]
+fn the_demo_run_form_fits_its_recorded_terminal_and_shows_a_scroll_affordance() {
+    let state = state_with_form(demo_greet_form());
+    let mut session = TuiSession::default();
+    let (terminal, _) = draw(&mut session, &state, 101, 28);
+    let rendered = buffer_text(terminal.backend().buffer());
+
+    // The preset row keeps its label, exactly as version 0.4 writes it.
+    assert!(
+        rendered.contains("Preset: none yet"),
+        "no labelled preset row:\n{rendered}"
+    );
+    // Every field the demo tape shows must be on screen.
+    for fact in [
+        "name",
+        "Who to greet",
+        "count",
+        "How many times to greet",
+        "shout",
+        "Greet in UPPERCASE",
+        "names",
+        "names.txt",
+        "Also greet everyone in this file",
+    ] {
+        assert!(rendered.contains(fact), "missing {fact}:\n{rendered}");
+    }
+    // The title belongs to the form panel alone, never twice.
+    assert_eq!(
+        rendered.matches("Run greet").count(),
+        1,
+        "the title is duplicated:\n{rendered}"
+    );
+    // Content still taller than the viewport must advertise itself.
+    assert!(
+        rendered.contains('█') || rendered.contains('▐') || rendered.contains('║'),
+        "no scroll affordance:\n{rendered}"
+    );
+
+    // The tail of the form is reachable: focus moves into it and the viewport follows.
+    let mut state = state;
+    let (_, geometry) = draw(&mut session, &state, 101, 28);
+    for _ in 1..form_field_count(&state) {
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Tab, KeyModifiers::NONE),
+        );
+    }
+    let (terminal, _) = draw(&mut session, &state, 101, 28);
+    let rendered = buffer_text(terminal.backend().buffer());
+    assert!(
+        rendered.contains("Extra arguments"),
+        "the argument tail never comes into view:\n{rendered}"
+    );
+}
+
+fn form_field_count(state: &LibraryState) -> usize {
+    state.run_form().map_or(0, |form| form.fields().len())
+}
+
+/// A window too short for the form must still say the content continues.
+#[test]
+fn a_short_run_form_window_renders_a_scroll_affordance() {
+    let state = state_with_form(demo_greet_form());
+    let mut session = TuiSession::default();
+    let (terminal, _) = draw(&mut session, &state, 101, 14);
+    let rendered = buffer_text(terminal.backend().buffer());
+    assert!(
+        rendered.contains('█') || rendered.contains('▐') || rendered.contains('║'),
+        "no scroll affordance in a short window:\n{rendered}"
+    );
+}
+
+/// The footer must advertise the arrow keys, which already move between fields.
+///
+/// Version 0.4's shared nav chip is two key-only pills, `Tab/↓` and `Shift+Tab/↑`
+/// (`src/skit/tui_footer.py:82-94`), bound to the same actions Tab and Shift+Tab fire
+/// (`:76-79`). Advertising only Tab strands anyone who tabs one field too far.
+#[test]
+fn the_run_footer_advertises_both_navigation_directions() {
+    let state = state_with_form(demo_greet_form());
+    let mut session = TuiSession::default();
+    let (terminal, geometry) = draw(&mut session, &state, 101, 28);
+    let rendered = buffer_text(terminal.backend().buffer());
+    assert!(rendered.contains("Tab/↓"), "{rendered}");
+    assert!(rendered.contains("Shift+Tab/↑"), "{rendered}");
+
+    // The advertised keys really move focus, forward and back.
+    let mut state = state;
+    let focused = |state: &LibraryState| state.run_form().map(RunFormView::focused);
+    assert_eq!(focused(&state), Some(0));
+    drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        key(KeyCode::Down, KeyModifiers::NONE),
+    );
+    assert_eq!(focused(&state), Some(1));
+    drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        key(KeyCode::Up, KeyModifiers::NONE),
+    );
+    assert_eq!(focused(&state), Some(0));
+    // Tab and Shift+Tab are the same movement the chip pairs the arrows with.
+    drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        key(KeyCode::Tab, KeyModifiers::NONE),
+    );
+    assert_eq!(focused(&state), Some(1));
+    drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        key(KeyCode::BackTab, KeyModifiers::SHIFT),
+    );
+    assert_eq!(focused(&state), Some(0));
+}

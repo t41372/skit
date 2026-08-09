@@ -26,6 +26,7 @@ use ratatui_widgets::{
     block::Block,
     borders::Borders,
     paragraph::{Paragraph, Wrap},
+    scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use skit_domain::parameters::ParameterType;
 use skit_i18n::{Locale, format_text, text};
@@ -181,7 +182,14 @@ struct PositionedRunItem {
 #[derive(Clone, Debug)]
 enum RunRenderItem {
     Copy(RunCopy),
-    Chips(Vec<RunChip>),
+    /// One label row and the chips that share it.
+    ///
+    /// Version 0.4 builds a single `Static` from the label plus its browse/insert/default links
+    /// (`src/skit/tui_form.py:190-215`), so a field costs one row here, not two.
+    Chips {
+        label: Option<RunCopy>,
+        chips: Vec<RunChip>,
+    },
     Control(usize),
     Spacer,
 }
@@ -681,8 +689,20 @@ impl TuiSession {
         );
         let inner = block.inner(area);
         frame.render_widget(block, area);
-        let layout = run_layout(form, locale, inner.width);
-        self.run.prepare_layout(&layout, form.focused(), inner);
+        // Version 0.4 hosts the form in a `VerticalScroll`, whose scrollbar is the only thing that
+        // tells a user the content continues below the fold (`src/skit/tui_form.py:380-384`).
+        // Measure against the full width first, then keep a column for the bar when it is needed.
+        let overflows = run_layout(form, locale, inner.width).height > usize::from(inner.height);
+        let content = if overflows {
+            Rect {
+                width: inner.width.saturating_sub(1),
+                ..inner
+            }
+        } else {
+            inner
+        };
+        let layout = run_layout(form, locale, content.width);
+        self.run.prepare_layout(&layout, form.focused(), content);
         self.run.select_areas = vec![Rect::default(); self.run.controls.len()];
         self.run.dropdown_regions = vec![Vec::new(); self.run.controls.len()];
 
@@ -704,7 +724,10 @@ impl TuiSession {
                         visible,
                     );
                 }
-                RunRenderItem::Chips(chips) => {
+                RunRenderItem::Chips { label, chips } => {
+                    if let Some(label) = label {
+                        frame.render_widget(Paragraph::new(label.line.clone()), visible);
+                    }
                     self.render_run_chips(frame, visible, chips, &mut hits);
                 }
                 RunRenderItem::Control(index) if usize::from(visible.height) == item.height => {
@@ -713,10 +736,21 @@ impl TuiSession {
                 RunRenderItem::Control(_) | RunRenderItem::Spacer => {}
             }
         }
+        if layout.height > usize::from(content.height) {
+            let mut scrollbar =
+                ScrollbarState::new(layout.height.saturating_sub(usize::from(content.height)))
+                    .position(self.run.scroll.scroll_offset())
+                    .viewport_content_length(usize::from(content.height));
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight).style(run_scrollbar_style()),
+                inner,
+                &mut scrollbar,
+            );
+        }
         self.render_open_dropdowns(frame);
 
         ViewGeometry {
-            rows: inner,
+            rows: content,
             first_visible: self.run.scroll.scroll_offset(),
             hits,
         }
@@ -1488,6 +1522,9 @@ impl TuiSession {
         } else {
             self.run.focus.prev();
         }
+        // The session moves its own cursor here, so the next sync sees no change and would never
+        // scroll. Without this the keyboard can focus a field that stays off screen.
+        self.run.pending_ensure_focus = true;
         self.run
             .focus
             .current()
@@ -1503,6 +1540,7 @@ impl TuiSession {
         } else {
             self.form.focus.prev();
         }
+        self.form.pending_ensure_focus = true;
         self.form
             .focus
             .current()
@@ -1968,17 +2006,28 @@ fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
         );
     }
     if form.has_parameters() && form.preset_names().len() == 0 {
+        // Version 0.4 keeps the row labelled even when it is empty: `Preset:` then the hint, on
+        // one line (`src/skit/tui_form.py:741-757`). Without the label the sentence floats free
+        // and never says which control it is about.
         push_run_copy(
             &mut items,
             &mut start,
-            run_copy(
-                text(
-                    locale,
-                    "none yet — fill the form and press Ctrl+S to save one",
-                )
-                .into_owned(),
-                Style::default().fg(Color::DarkGray),
-            ),
+            RunCopy {
+                line: Line::from(vec![
+                    Span::styled(
+                        format!("{} ", text(locale, "Preset:")),
+                        Style::default().fg(Color::White),
+                    ),
+                    Span::styled(
+                        text(
+                            locale,
+                            "none yet — fill the form and press Ctrl+S to save one",
+                        )
+                        .into_owned(),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]),
+            },
             width,
         );
     }
@@ -1987,16 +2036,29 @@ fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
     let mut field_heights = Vec::with_capacity(form.fields().len());
     for (index, field) in form.fields().iter().enumerate() {
         let field_start = start;
-        push_run_copy(
+        let label = run_field_label(field, locale);
+        let label_width = u16::try_from(label.width()).unwrap_or(u16::MAX);
+        // The chips continue the label's own row, two columns after it, exactly as version 0.4
+        // joins the pieces with two spaces (`src/skit/tui_form.py:215`).
+        let chip_start = label_width.saturating_add(2);
+        let mut chip_rows =
+            run_chip_rows(form, index, field, locale, width, chip_start).into_iter();
+        push_run_item(
             &mut items,
             &mut start,
-            RunCopy {
-                line: run_field_label(field, locale),
+            RunRenderItem::Chips {
+                label: Some(RunCopy { line: label }),
+                chips: chip_rows.next().unwrap_or_default(),
             },
-            width,
+            1,
         );
-        for chips in run_chip_rows(form, index, field, locale, width) {
-            push_run_item(&mut items, &mut start, RunRenderItem::Chips(chips), 1);
+        for chips in chip_rows {
+            push_run_item(
+                &mut items,
+                &mut start,
+                RunRenderItem::Chips { label: None, chips },
+                1,
+            );
         }
         push_run_item(
             &mut items,
@@ -2263,16 +2325,17 @@ fn run_chip_rows(
     field: &RunField,
     locale: Locale,
     width: u16,
+    first_row_x: u16,
 ) -> Vec<Vec<RunChip>> {
     let available = width.max(1);
     let mut rows = Vec::<Vec<RunChip>>::new();
     let mut row = Vec::new();
-    let mut x = 0_u16;
+    let mut x = first_row_x.min(available.saturating_sub(1));
     for (label, target) in run_field_chips(form, index, field, locale) {
         let wanted = u16::try_from(label.width().saturating_add(2))
             .unwrap_or(u16::MAX)
             .min(available);
-        if x > 0 && x.saturating_add(wanted) > available {
+        if x > 0 && x.saturating_add(wanted) > available && !(row.is_empty() && rows.is_empty()) {
             rows.push(row);
             row = Vec::new();
             x = 0;
@@ -2319,6 +2382,11 @@ fn packed_row_count(labels: &[String], width: u16) -> usize {
         x = x.saturating_add(wanted).saturating_add(1);
     }
     rows
+}
+
+/// The run form's scroll affordance colour.
+fn run_scrollbar_style() -> Style {
+    Style::default().fg(Color::DarkGray)
 }
 
 fn run_chip_style() -> ButtonStyle {

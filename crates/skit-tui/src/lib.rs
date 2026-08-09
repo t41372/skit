@@ -92,9 +92,11 @@ pub fn render_with_session(
     session.begin_render(state);
     let footer_height =
         footer::required_height(frame.area().width, frame.area().height, state, locale);
-    let areas = layout::split(frame.area(), footer_height);
+    let areas = layout::split_with_header(frame.area(), footer_height, header_height(state));
 
-    session.render_header(frame, areas.header, state, locale);
+    if areas.header.height > 0 {
+        session.render_header(frame, areas.header, state, locale);
+    }
     let mut geometry = match state.modal() {
         Some(ModalState::Help) => session.render_help(frame, areas.body, locale),
         Some(ModalState::ConfirmRemove {
@@ -126,6 +128,18 @@ pub fn render_with_session(
     session.register_geometry(&geometry);
     session.render_quit_toast(frame, locale);
     geometry
+}
+
+/// Return the rows the shared header takes on one screen.
+///
+/// A form titles its own panel, so it gets the whole body (`src/skit/tui_form.py:606-611`). A
+/// modal keeps the header because that is where its own title lives.
+fn header_height(state: &LibraryState) -> u16 {
+    if state.modal().is_none() && matches!(state.screen(), Screen::Run(_) | Screen::Form(_)) {
+        0
+    } else {
+        3
+    }
 }
 
 fn render_screen(
