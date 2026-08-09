@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     env,
     fs::{self, File, Metadata},
@@ -76,11 +77,12 @@ use skit_store::{
 use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
     Action as UiAction, AddAction, AddEffect, AddWorkflowState, DraftKind, DraftSummary,
-    Effect as UiEffect, FormField, FormPurpose, FormView, HealthAction, HealthView, HostRequest,
-    LibraryState, PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults,
-    RunFormContext, RunFormOptions, RunFormView, RunPathContext, RunnerManagerAction,
-    RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner,
-    RunnerSaveRequest, RunnerSaveTarget, Screen, SourceSnapshot as AddSourceSnapshot,
+    Effect as UiEffect, FieldValue, FormField, FormPurpose, FormView, HealthAction, HealthView,
+    HostRequest, LibraryState, PreferencesAction, PreferencesEffect, PreferencesView,
+    ReviewDefaults, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
+    RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity,
+    RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
+    SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
 };
 use thiserror::Error;
 use unicode_width::UnicodeWidthStr as _;
@@ -1630,7 +1632,7 @@ fn run_fixed_values(
 
 fn apply_interactive_run_values(
     args: &mut RunArgs,
-    values: &BTreeMap<String, String>,
+    values: &SubmittedValues,
     baseline: &BTreeMap<String, String>,
 ) -> Result<(), CliError> {
     args.values.extend(changed_form_values(values, baseline));
@@ -1643,21 +1645,22 @@ fn apply_interactive_run_values(
     if values.contains_key("_skit_runner") {
         args.runner = tui_nonempty_owned(values, "_skit_runner");
     }
-    if let Some(value) = values.get("_skit_dry_run") {
-        args.dry_run = tui_bool(value)?;
+    if values.contains_key("_skit_dry_run") {
+        args.dry_run = tui_flag(values, "_skit_dry_run")?;
     }
     Ok(())
 }
 
 fn changed_form_values(
-    values: &BTreeMap<String, String>,
+    values: &SubmittedValues,
     baseline: &BTreeMap<String, String>,
 ) -> Vec<String> {
     values
         .iter()
         .filter_map(|(key, value)| {
             let name = key.strip_prefix("value:")?;
-            (baseline.get(name) != Some(value)).then(|| format!("{name}={value}"))
+            let value = value.as_text();
+            (baseline.get(name) != Some(&value)).then(|| format!("{name}={value}"))
         })
         .collect()
 }
@@ -1789,7 +1792,7 @@ fn collect_plain_form<R, W, F>(
     input: &mut R,
     output: &mut W,
     mut read_secret: F,
-) -> io::Result<BTreeMap<String, String>>
+) -> io::Result<SubmittedValues>
 where
     R: io::BufRead,
     W: io::Write,
@@ -1830,7 +1833,9 @@ where
                 value.to_owned()
             }
         };
-        values.insert(field.key.clone(), value);
+        // A terminal prompt yields text; the payload keeps that honest rather than guessing a
+        // richer type from what a person typed.
+        values.insert(field.key.clone(), FieldValue::text(value));
     }
     Ok(values)
 }
@@ -6774,27 +6779,28 @@ fn tui_parameter_value(value: &ParameterValue) -> String {
 /// Version 0.4 merges onto the widget's own `spec` for the same reason
 /// (`src/skit/tui_settings.py:115-133`): a fresh read at save time lets a concurrent write change
 /// what the user's edit means.
-fn tui_declarations_from_values(
-    values: &BTreeMap<String, String>,
-) -> Result<Vec<ParamDecl>, CliError> {
+fn tui_declarations_from_values(values: &SubmittedValues) -> Result<Vec<ParamDecl>, CliError> {
     let mut declarations = Vec::new();
     for index in 0.. {
         let prefix = format!("parameter:{index}");
-        let Some(baseline) = values.get(&format!("{prefix}:baseline")) else {
+        let Some(baseline) = values
+            .get(&format!("{prefix}:baseline"))
+            .map(FieldValue::as_text)
+        else {
             break;
         };
-        let mut declaration: ParamDecl = serde_json::from_str(baseline).map_err(|error| {
+        let mut declaration: ParamDecl = serde_json::from_str(&baseline).map_err(|error| {
             CliError::Usage(Message::new("could not read a parameter row: {}").with(error))
         })?;
         let get = |field: &str| {
             values
                 .get(&format!("{prefix}:{field}"))
-                .map(|value| value.trim())
+                .map(|value| value.as_text().trim().to_owned())
         };
         // A row that was unticked is removed, exactly as version 0.4's keep checkbox returns None
         // (`src/skit/tui_settings.py:115-117`).
         if let Some(keep) = get("keep")
-            && !tui_bool(keep)?
+            && !tui_bool(&keep)?
         {
             continue;
         }
@@ -6810,14 +6816,14 @@ fn tui_declarations_from_values(
         // control the screen never drew can never change a stored value.
         if let Some(value) = get("type") {
             declaration.parameter_type =
-                parse_parameter_type(if value.is_empty() { "str" } else { value })?;
+                parse_parameter_type(if value.is_empty() { "str" } else { &value })?;
         }
         if let Some(value) = get("default") {
             declaration.default = if value.is_empty() {
                 None
             } else {
                 Some(
-                    coerce_default(value, declaration.parameter_type)
+                    coerce_default(&value, declaration.parameter_type)
                         .map_err(|error| CliError::Usage(error.message()))?,
                 )
             };
@@ -6837,14 +6843,14 @@ fn tui_declarations_from_values(
             declaration.flag = value.to_owned();
         }
         if let Some(value) = get("required") {
-            declaration.required = tui_bool(value)?;
+            declaration.required = tui_bool(&value)?;
         }
         if let Some(value) = get("prompt") {
             declaration.prompt = value.to_owned();
         }
         let was_secret = declaration.secret;
         if let Some(value) = get("secret") {
-            declaration.secret = tui_bool(value)?;
+            declaration.secret = tui_bool(&value)?;
         }
         if let Some(value) = get("env_source") {
             declaration.env_source = value.to_owned();
@@ -6869,7 +6875,7 @@ fn tui_submit(
     config_dir: &Path,
     purpose: FormPurpose,
     selector: Option<String>,
-    values: &BTreeMap<String, String>,
+    values: &SubmittedValues,
 ) -> Result<UiAction, CliError> {
     match purpose {
         FormPurpose::Run => tui_submit_run(
@@ -6883,22 +6889,22 @@ fn tui_submit(
         FormPurpose::Add => {
             let source = tui_value(values, "source");
             let template = tui_value(values, "template");
-            let kind = tui_value(values, "kind");
+            let kind = tui_value(values, "kind").into_owned();
             add_with_config(
                 service,
                 config_dir,
                 AddOptions {
-                    source: (!source.is_empty()).then(|| PathBuf::from(source)),
-                    kind: (!kind.is_empty()).then_some(kind.to_owned()),
+                    source: (!source.is_empty()).then(|| PathBuf::from(source.as_ref())),
+                    kind: (!kind.is_empty()).then(|| kind.clone()),
                     name: tui_nonempty_owned(values, "name"),
                     description: tui_nonempty_owned(values, "description"),
                     reference: tui_value(values, "mode").eq_ignore_ascii_case("reference"),
-                    command_template: (!template.is_empty()).then_some(template.to_owned()),
+                    command_template: (!template.is_empty()).then(|| template.into_owned()),
                     prompt: kind == "prompt",
                     executable: kind == "exe",
                     runner: tui_nonempty_owned(values, "runner"),
                     no_interpolate: false,
-                    dependencies: tui_dependency_list(tui_value(values, "dependencies")),
+                    dependencies: tui_dependency_list(&tui_value(values, "dependencies")),
                     dependencies_explicit: !tui_value(values, "dependencies").is_empty(),
                     requires_python: tui_nonempty_owned(values, "python"),
                     no_input: false,
@@ -6912,25 +6918,30 @@ fn tui_submit(
         }
         FormPurpose::Preferences => {
             let config = FileConfigStore::new(config_dir);
-            config.set_many(values)?;
+            config.set_many(
+                &values
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.as_text()))
+                    .collect(),
+            )?;
             tui_complete(service, state_dir, "Preferences saved")
         }
         FormPurpose::Runners => {
             let config = FileConfigStore::new(config_dir);
             let name = tui_required(values, "name")?;
-            if tui_bool(tui_value(values, "remove"))? {
-                if !config.remove_runner(name)? {
+            if tui_flag(values, "remove")? {
+                if !config.remove_runner(&name)? {
                     return Err(CliError::Usage(
                         Message::new("unknown prompt runner: {}").with(name),
                     ));
                 }
             } else {
-                let argv = shlex::split(tui_required(values, "argv")?).ok_or_else(|| {
+                let argv = shlex::split(&tui_required(values, "argv")?).ok_or_else(|| {
                     CliError::Usage(Message::new("the runner arguments have invalid quoting"))
                 })?;
                 config.set_runner(
                     PromptRunner {
-                        name: name.to_owned(),
+                        name: name.clone().into_owned(),
                         argv,
                     },
                     true,
@@ -6945,7 +6956,7 @@ fn tui_submit(
             let state = FormStateService::new(FileFormStateStore::new(state_dir));
             let name = tui_required(values, "name")?;
             if tui_value(values, "action").eq_ignore_ascii_case("delete") {
-                if !state.delete_preset(&entry.slug, name)? {
+                if !state.delete_preset(&entry.slug, &name)? {
                     return Err(CliError::Usage(
                         Message::new("unknown preset: {}").with(name),
                     ));
@@ -6953,7 +6964,7 @@ fn tui_submit(
             } else {
                 refuse_empty_preset_schema(&declarations)?;
                 let current = state.load(&entry.slug);
-                state.save_preset(&entry.slug, name, &declarations, &current.values)?;
+                state.save_preset(&entry.slug, &name, &declarations, &current.values)?;
             }
             tui_complete(service, state_dir, "Presets saved")
         }
@@ -6961,7 +6972,7 @@ fn tui_submit(
             rename(
                 service,
                 tui_selector(&selector)?,
-                tui_required(values, "name")?,
+                &tui_required(values, "name")?,
             )?;
             tui_complete(service, state_dir, "Entry renamed")
         }
@@ -6984,12 +6995,12 @@ fn tui_submit_run(
     state_dir: &Path,
     config_dir: &Path,
     selector: &str,
-    values: &BTreeMap<String, String>,
+    values: &SubmittedValues,
 ) -> Result<UiAction, CliError> {
     let entry = service.show(selector)?;
     let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
     let run_values = changed_form_values(values, &saved.values);
-    let extra_args = split_editable_arguments(tui_value(values, "_skit_args"))?;
+    let extra_args = split_editable_arguments(&tui_value(values, "_skit_args"))?;
     let exit = crate::run::run_with_roots(
         service,
         store,
@@ -7001,7 +7012,7 @@ fn tui_submit_run(
             preset: tui_nonempty_owned(values, "_skit_preset"),
             save_preset: tui_nonempty_owned(values, "_skit_save_preset"),
             runner: tui_nonempty_owned(values, "_skit_runner"),
-            dry_run: tui_bool(tui_value(values, "_skit_dry_run"))?,
+            dry_run: tui_flag(values, "_skit_dry_run")?,
             no_input: true,
             plain: true,
             raw: false,
@@ -7025,20 +7036,20 @@ fn tui_submit_settings(
     store: &FileStore,
     state_dir: &Path,
     selector: &str,
-    values: &BTreeMap<String, String>,
+    values: &SubmittedValues,
 ) -> Result<(), CliError> {
     let entry = service.show(selector)?;
     let name = tui_required(values, "name")?;
     let description = if values.contains_key("description") {
-        tui_value(values, "description")
+        tui_value(values, "description").into_owned()
     } else {
-        entry.meta.description.as_str()
+        entry.meta.description.clone()
     };
     let stored_settings = EntrySettings::from_meta(&entry.meta);
     let baseline_settings = effective_settings(store, &entry);
     let mut settings = stored_settings.clone();
     if values.contains_key("interpreter") {
-        settings.interpreter = tui_value(values, "interpreter").to_owned();
+        settings.interpreter = tui_value(values, "interpreter").into_owned();
     }
     if !settings.interpreter.is_empty()
         && !matches!(
@@ -7054,12 +7065,12 @@ fn tui_submit_settings(
         settings.runner = tui_value(values, "runner").trim().to_owned();
     }
     let submitted_dependencies = if values.contains_key("dependencies") {
-        tui_dependency_list(tui_value(values, "dependencies"))
+        tui_dependency_list(&tui_value(values, "dependencies"))
     } else {
         baseline_settings.dependencies.clone()
     };
     let submitted_python = if values.contains_key("python") {
-        tui_value(values, "python").to_owned()
+        tui_value(values, "python").into_owned()
     } else {
         baseline_settings.requires_python.clone()
     };
@@ -7102,14 +7113,14 @@ fn tui_submit_settings(
         }
     }
     if values.contains_key("needs") {
-        settings.needs = tui_split_list(tui_value(values, "needs"));
+        settings.needs = tui_list(values, "needs");
     }
     let previous_template = settings.template.clone();
     if values.contains_key("template") {
-        settings.template = tui_value(values, "template").to_owned();
+        settings.template = tui_value(values, "template").into_owned();
     }
     if values.contains_key("interpolate") {
-        settings.interpolate = tui_bool(tui_value(values, "interpolate"))?;
+        settings.interpolate = tui_flag(values, "interpolate")?;
     }
     // A screen with no parameter section submits no parameter row, so the stored declarations are
     // what a save keeps. Reading the absent rows as an empty set would delete every one of them.
@@ -7119,9 +7130,9 @@ fn tui_submit_settings(
     } else {
         stored_settings.parameters.clone()
     };
-    let removed = tui_split_list(tui_value(values, "parameter:remove"));
+    let removed = tui_list(values, "parameter:remove");
     declarations.retain(|parameter| !removed.contains(&parameter.name));
-    for name in tui_split_list(tui_value(values, "parameter:add")) {
+    for name in tui_list(values, "parameter:add") {
         if declarations.iter().any(|parameter| parameter.name == name) {
             return Err(CliError::Usage(
                 Message::new("parameter already exists: {}").with(name),
@@ -7179,7 +7190,7 @@ fn tui_submit_settings(
         settings.dependencies = plan.stored.dependencies;
         settings.requires_python = plan.stored.requires_python;
     }
-    let source_requested = tui_bool(tui_value(values, "source:resync"))?
+    let source_requested = tui_flag(values, "source:resync")?
         || !tui_value(values, "source:manage").is_empty()
         || !tui_value(values, "source:unmanage").is_empty()
         || !tui_value(values, "source:normalize").is_empty();
@@ -7193,10 +7204,10 @@ fn tui_submit_settings(
             entry.meta.kind.as_str(),
             entry.meta.mode,
             original_text.clone(),
-            tui_bool(tui_value(values, "source:resync"))?,
-            &tui_split_list(tui_value(values, "source:manage")),
-            &tui_split_list(tui_value(values, "source:unmanage")),
-            &tui_split_list(tui_value(values, "source:normalize")),
+            tui_flag(values, "source:resync")?,
+            &tui_list(values, "source:manage"),
+            &tui_list(values, "source:unmanage"),
+            &tui_list(values, "source:normalize"),
         )?;
         for parameter in &mut managed {
             if let Some(submitted) = declarations
@@ -7233,11 +7244,11 @@ fn tui_submit_settings(
     let entry = service.update_entry(
         &claimed,
         UpdateEntry {
-            name: name.to_owned(),
+            name: name.clone().into_owned(),
             description: description.to_owned(),
             settings: settings.clone(),
             workdir: if values.contains_key("workdir") {
-                tui_value(values, "workdir").to_owned()
+                tui_value(values, "workdir").into_owned()
             } else {
                 entry.meta.workdir.clone()
             },
@@ -7264,21 +7275,58 @@ fn tui_complete(
     })
 }
 
-fn tui_value<'a>(values: &'a BTreeMap<String, String>, key: &str) -> &'a str {
-    values.get(key).map_or("", String::as_str).trim()
+/// Render one submitted value as the text an axis stores.
+///
+/// The payload is typed, so this is presentation, not inference: a control that produced a choice
+/// or a list is asked for its text here rather than having one guessed from a string. An axis the
+/// screen never offered, or never moved, is absent and reads as empty — every caller that must
+/// tell those apart asks [`BTreeMap::contains_key`] instead.
+fn tui_text<'a>(values: &'a SubmittedValues, key: &str) -> Cow<'a, str> {
+    match values.get(key) {
+        Some(FieldValue::Explicit(TypedValue::Text(text))) => Cow::Borrowed(text.trim()),
+        Some(value) => Cow::Owned(value.as_text().trim().to_owned()),
+        None => Cow::Borrowed(""),
+    }
 }
 
-fn tui_nonempty_owned(values: &BTreeMap<String, String>, key: &str) -> Option<String> {
+fn tui_value<'a>(values: &'a SubmittedValues, key: &str) -> Cow<'a, str> {
+    tui_text(values, key)
+}
+
+fn tui_nonempty_owned(values: &SubmittedValues, key: &str) -> Option<String> {
     let value = tui_value(values, key);
-    (!value.is_empty()).then(|| value.to_owned())
+    (!value.is_empty()).then(|| value.into_owned())
 }
 
-fn tui_required<'a>(values: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, CliError> {
+fn tui_required<'a>(values: &'a SubmittedValues, key: &str) -> Result<Cow<'a, str>, CliError> {
     let value = tui_value(values, key);
     if value.is_empty() {
         Err(CliError::Usage(Message::new("{} is required").with(key)))
     } else {
         Ok(value)
+    }
+}
+
+/// Read one submitted toggle.
+///
+/// A Boolean renders as the same word a person types, so there is deliberately no separate typed
+/// branch here: it would be a second path with no behaviour of its own. The list helper below does
+/// need one, because a list and its text are not interchangeable.
+fn tui_flag(values: &SubmittedValues, key: &str) -> Result<bool, CliError> {
+    tui_bool(&tui_value(values, key))
+}
+
+/// Read one submitted list.
+///
+/// A control that produced a closed selection is read as one. Splitting its text on commas would
+/// be the same inference the typed payload exists to remove, and it would merge a value that
+/// carries a comma into its neighbour.
+fn tui_list(values: &SubmittedValues, key: &str) -> Vec<String> {
+    match values.get(key) {
+        Some(FieldValue::Explicit(TypedValue::Choices(items) | TypedValue::Arguments(items))) => {
+            items.clone()
+        }
+        _ => tui_split_list(&tui_value(values, key)),
     }
 }
 

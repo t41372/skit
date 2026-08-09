@@ -51,14 +51,24 @@ fn add_command(service: &LibraryService<FileStore>, name: &str, template: &str) 
     service.show(name).unwrap()
 }
 
-fn form_values(screen: Screen) -> BTreeMap<String, String> {
+fn form_values(screen: Screen) -> SubmittedValues {
     let Screen::Form(form) = screen else {
         panic!("expected a form");
     };
     form.fields
         .into_iter()
-        .map(|field| (field.key, field.value))
+        .map(|field| (field.key, FieldValue::text(field.value)))
         .collect()
+}
+
+/// Put one text value on a submission, the way a text control would.
+fn set(values: &mut SubmittedValues, key: &str, value: &str) {
+    values.insert(key.to_owned(), FieldValue::text(value));
+}
+
+/// Read one submitted value as the text an axis stores.
+fn got(values: &SubmittedValues, key: &str) -> String {
+    values.get(key).map(FieldValue::as_text).unwrap_or_default()
 }
 
 #[test]
@@ -1089,17 +1099,23 @@ fn tui_parameter_rows_merge_edits_onto_the_baseline_they_opened_with() {
     let values = BTreeMap::from([
         (
             "parameter:0:baseline".to_owned(),
-            serde_json::to_string(&baseline).unwrap(),
+            FieldValue::text(serde_json::to_string(&baseline).unwrap()),
         ),
-        ("parameter:0:keep".to_owned(), "true".to_owned()),
-        ("parameter:0:type".to_owned(), "choice".to_owned()),
-        ("parameter:0:default".to_owned(), "green".to_owned()),
-        ("parameter:0:choices".to_owned(), "red, green".to_owned()),
-        ("parameter:0:required".to_owned(), "true".to_owned()),
-        ("parameter:0:prompt".to_owned(), "Token".to_owned()),
-        ("parameter:0:help".to_owned(), "Select a token.".to_owned()),
-        ("parameter:0:secret".to_owned(), "false".to_owned()),
-        ("parameter:0:env_source".to_owned(), String::new()),
+        ("parameter:0:keep".to_owned(), FieldValue::text("true")),
+        ("parameter:0:type".to_owned(), FieldValue::text("choice")),
+        ("parameter:0:default".to_owned(), FieldValue::text("green")),
+        (
+            "parameter:0:choices".to_owned(),
+            FieldValue::text("red, green"),
+        ),
+        ("parameter:0:required".to_owned(), FieldValue::text("true")),
+        ("parameter:0:prompt".to_owned(), FieldValue::text("Token")),
+        (
+            "parameter:0:help".to_owned(),
+            FieldValue::text("Select a token."),
+        ),
+        ("parameter:0:secret".to_owned(), FieldValue::text("false")),
+        ("parameter:0:env_source".to_owned(), FieldValue::text("")),
     ]);
 
     let declarations = tui_declarations_from_values(&values).unwrap();
@@ -1129,7 +1145,7 @@ fn tui_parameter_rows_merge_edits_onto_the_baseline_they_opened_with() {
 
     // Unticking keep removes the row, exactly as version 0.4's checkbox returns None (`:115-117`).
     let mut removed = values.clone();
-    removed.insert("parameter:0:keep".to_owned(), "false".to_owned());
+    set(&mut removed, "parameter:0:keep", "false");
     assert!(tui_declarations_from_values(&removed).unwrap().is_empty());
 
     // Marking a public row secret drops the cached literal (`:125-131`).
@@ -1138,11 +1154,14 @@ fn tui_parameter_rows_merge_edits_onto_the_baseline_they_opened_with() {
     let secret = BTreeMap::from([
         (
             "parameter:0:baseline".to_owned(),
-            serde_json::to_string(&plain).unwrap(),
+            FieldValue::text(serde_json::to_string(&plain).unwrap()),
         ),
-        ("parameter:0:keep".to_owned(), "true".to_owned()),
-        ("parameter:0:secret".to_owned(), "true".to_owned()),
-        ("parameter:0:env_source".to_owned(), "TOKEN_ENV".to_owned()),
+        ("parameter:0:keep".to_owned(), FieldValue::text("true")),
+        ("parameter:0:secret".to_owned(), FieldValue::text("true")),
+        (
+            "parameter:0:env_source".to_owned(),
+            FieldValue::text("TOKEN_ENV"),
+        ),
     ]);
     let secret = tui_declarations_from_values(&secret).unwrap();
     assert!(secret[0].secret);
@@ -1156,7 +1175,7 @@ fn tui_parameter_rows_merge_edits_onto_the_baseline_they_opened_with() {
     let mut duplicate = values.clone();
     duplicate.insert(
         "parameter:1:baseline".to_owned(),
-        serde_json::to_string(&baseline).unwrap(),
+        FieldValue::text(serde_json::to_string(&baseline).unwrap()),
     );
     assert!(
         tui_declarations_from_values(&duplicate)
@@ -1273,9 +1292,9 @@ fn plain_form_collection_uses_defaults_masks_secrets_and_refuses_end_of_input() 
         |_| Ok("hidden".to_owned()),
     )
     .unwrap();
-    assert_eq!(values["name"], "default");
-    assert_eq!(values["token"], "hidden");
-    assert_eq!(values["raw"], "custom");
+    assert_eq!(got(&values, "name"), "default");
+    assert_eq!(got(&values, "token"), "hidden");
+    assert_eq!(got(&values, "raw"), "custom");
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("Name [default]: "));
     assert!(output.contains("Token: "));
@@ -1311,8 +1330,8 @@ fn interactive_run_submission_keeps_explicit_clears_and_cli_fixed_values() {
         ("count".to_owned(), "2".to_owned()),
     ]);
     let submitted = BTreeMap::from([
-        ("value:name".to_owned(), String::new()),
-        ("value:count".to_owned(), "3".to_owned()),
+        ("value:name".to_owned(), FieldValue::text("")),
+        ("value:count".to_owned(), FieldValue::text("3")),
     ]);
     assert_eq!(
         changed_form_values(&submitted, &baseline),
@@ -1523,28 +1542,28 @@ fn tui_scalar_helpers_reject_incomplete_and_incompatible_rows() {
         BTreeMap::from([
             (
                 "parameter:0:baseline".to_owned(),
-                serde_json::to_string(&ParamDecl::new("item")).unwrap(),
+                FieldValue::text(serde_json::to_string(&ParamDecl::new("item")).unwrap()),
             ),
-            (format!("parameter:0:{axis}"), value.to_owned()),
+            (format!("parameter:0:{axis}"), FieldValue::text(value)),
         ])
     };
     assert!(tui_declarations_from_values(&row("type", "future")).is_err());
     assert!(tui_declarations_from_values(&row("keep", "maybe")).is_err());
     let mut invalid_default = row("type", "int");
-    invalid_default.insert("parameter:0:default".to_owned(), "not-an-int".to_owned());
+    set(&mut invalid_default, "parameter:0:default", "not-an-int");
     assert!(tui_declarations_from_values(&invalid_default).is_err());
     // A choice type with no choices is refused before anything is written.
     assert!(tui_declarations_from_values(&row("type", "choice")).is_err());
     // A baseline the host cannot read is a refusal, never a silently empty row.
-    let corrupt = BTreeMap::from([("parameter:0:baseline".to_owned(), "{".to_owned())]);
+    let corrupt = BTreeMap::from([("parameter:0:baseline".to_owned(), FieldValue::text("{"))]);
     assert!(tui_declarations_from_values(&corrupt).is_err());
 
     assert!(tui_selector(&None).is_err());
     assert_eq!(tui_selector(&Some(String::new())).unwrap(), "");
     assert_eq!(tui_selector(&Some("item".to_owned())).unwrap(), "item");
     let values = BTreeMap::from([
-        ("key".to_owned(), " value ".to_owned()),
-        ("yes".to_owned(), "YES".to_owned()),
+        ("key".to_owned(), FieldValue::text(" value ")),
+        ("yes".to_owned(), FieldValue::text("YES")),
     ]);
     assert_eq!(tui_value(&values, "key"), "value");
     assert_eq!(tui_nonempty_owned(&values, "key"), Some("value".to_owned()));
@@ -2711,13 +2730,13 @@ fn tui_host_submits_every_form_without_global_process_state() {
     let runnable = add_command(&service, "Runnable", "true");
 
     let add_values = BTreeMap::from([
-        ("name".to_owned(), "Added".to_owned()),
-        ("kind".to_owned(), "command".to_owned()),
-        ("description".to_owned(), "From TUI".to_owned()),
-        ("mode".to_owned(), "copy".to_owned()),
-        ("template".to_owned(), "echo {value}".to_owned()),
-        ("dependencies".to_owned(), String::new()),
-        ("python".to_owned(), String::new()),
+        ("name".to_owned(), FieldValue::text("Added")),
+        ("kind".to_owned(), FieldValue::text("command")),
+        ("description".to_owned(), FieldValue::text("From TUI")),
+        ("mode".to_owned(), FieldValue::text("copy")),
+        ("template".to_owned(), FieldValue::text("echo {value}")),
+        ("dependencies".to_owned(), FieldValue::text("")),
+        ("python".to_owned(), FieldValue::text("")),
     ]);
     assert!(matches!(
         tui_submit(
@@ -2734,10 +2753,10 @@ fn tui_host_submits_every_form_without_global_process_state() {
     ));
     assert_eq!(service.show("Added").unwrap().meta.description, "From TUI");
     let invalid_add = BTreeMap::from([
-        ("name".to_owned(), "Invalid add".to_owned()),
-        ("kind".to_owned(), "command".to_owned()),
-        ("template".to_owned(), "true".to_owned()),
-        ("dependencies".to_owned(), "not-supported".to_owned()),
+        ("name".to_owned(), FieldValue::text("Invalid add")),
+        ("kind".to_owned(), FieldValue::text("command")),
+        ("template".to_owned(), FieldValue::text("true")),
+        ("dependencies".to_owned(), FieldValue::text("not-supported")),
     ]);
     assert!(
         tui_submit(
@@ -2759,7 +2778,7 @@ fn tui_host_submits_every_form_without_global_process_state() {
             &config_dir,
             FormPurpose::Rename,
             Some(alpha.slug.as_str().to_owned()),
-            &BTreeMap::from([("name".to_owned(), "Runnable".to_owned())]),
+            &BTreeMap::from([("name".to_owned(), FieldValue::text("Runnable"))]),
         )
         .is_err()
     );
@@ -2772,7 +2791,7 @@ fn tui_host_submits_every_form_without_global_process_state() {
             &config_dir,
             FormPurpose::Rename,
             Some(alpha.slug.as_str().to_owned()),
-            &BTreeMap::from([("name".to_owned(), "Renamed Tool".to_owned())]),
+            &BTreeMap::from([("name".to_owned(), FieldValue::text("Renamed Tool"))]),
         )
         .unwrap(),
         UiAction::Complete { .. }
@@ -2780,16 +2799,16 @@ fn tui_host_submits_every_form_without_global_process_state() {
     let renamed = service.show("Renamed Tool").unwrap();
 
     let preferences = BTreeMap::from([
-        ("lang".to_owned(), "en".to_owned()),
-        ("editor".to_owned(), "vi".to_owned()),
-        ("form".to_owned(), "plain".to_owned()),
-        ("after_run".to_owned(), "stay".to_owned()),
-        ("shell.bash_path".to_owned(), String::new()),
-        ("js.runner".to_owned(), String::new()),
-        ("mirror".to_owned(), "off".to_owned()),
-        ("mirror.pypi".to_owned(), "off".to_owned()),
-        ("mirror.github".to_owned(), "off".to_owned()),
-        ("mirror.npm".to_owned(), "off".to_owned()),
+        ("lang".to_owned(), FieldValue::text("en")),
+        ("editor".to_owned(), FieldValue::text("vi")),
+        ("form".to_owned(), FieldValue::text("plain")),
+        ("after_run".to_owned(), FieldValue::text("stay")),
+        ("shell.bash_path".to_owned(), FieldValue::text("")),
+        ("js.runner".to_owned(), FieldValue::text("")),
+        ("mirror".to_owned(), FieldValue::text("off")),
+        ("mirror.pypi".to_owned(), FieldValue::text("off")),
+        ("mirror.github".to_owned(), FieldValue::text("off")),
+        ("mirror.npm".to_owned(), FieldValue::text("off")),
     ]);
     assert!(matches!(
         tui_submit(
@@ -2806,9 +2825,9 @@ fn tui_host_submits_every_form_without_global_process_state() {
     ));
 
     let runner = BTreeMap::from([
-        ("name".to_owned(), "local".to_owned()),
-        ("argv".to_owned(), "printf {{prompt}}".to_owned()),
-        ("remove".to_owned(), "false".to_owned()),
+        ("name".to_owned(), FieldValue::text("local")),
+        ("argv".to_owned(), FieldValue::text("printf {{prompt}}")),
+        ("remove".to_owned(), FieldValue::text("false")),
     ]);
     tui_submit(
         &service,
@@ -2821,8 +2840,8 @@ fn tui_host_submits_every_form_without_global_process_state() {
     )
     .unwrap();
     let invalid_runner = BTreeMap::from([
-        ("name".to_owned(), "bad".to_owned()),
-        ("argv".to_owned(), "'unterminated".to_owned()),
+        ("name".to_owned(), FieldValue::text("bad")),
+        ("argv".to_owned(), FieldValue::text("'unterminated")),
     ]);
     assert!(
         tui_submit(
@@ -2837,8 +2856,8 @@ fn tui_host_submits_every_form_without_global_process_state() {
         .is_err()
     );
     let invalid_definition = BTreeMap::from([
-        ("name".to_owned(), "bad-definition".to_owned()),
-        ("argv".to_owned(), "true".to_owned()),
+        ("name".to_owned(), FieldValue::text("bad-definition")),
+        ("argv".to_owned(), FieldValue::text("true")),
     ]);
     assert!(
         tui_submit(
@@ -2853,8 +2872,8 @@ fn tui_host_submits_every_form_without_global_process_state() {
         .is_err()
     );
     let remove_unknown = BTreeMap::from([
-        ("name".to_owned(), "missing".to_owned()),
-        ("remove".to_owned(), "true".to_owned()),
+        ("name".to_owned(), FieldValue::text("missing")),
+        ("remove".to_owned(), FieldValue::text("true")),
     ]);
     assert!(
         tui_submit(
@@ -2869,8 +2888,8 @@ fn tui_host_submits_every_form_without_global_process_state() {
         .is_err()
     );
     let remove_runner = BTreeMap::from([
-        ("name".to_owned(), "local".to_owned()),
-        ("remove".to_owned(), "true".to_owned()),
+        ("name".to_owned(), FieldValue::text("local")),
+        ("remove".to_owned(), FieldValue::text("true")),
     ]);
     tui_submit(
         &service,
@@ -2884,8 +2903,8 @@ fn tui_host_submits_every_form_without_global_process_state() {
     .unwrap();
 
     let preset_save = BTreeMap::from([
-        ("name".to_owned(), "empty".to_owned()),
-        ("action".to_owned(), "save".to_owned()),
+        ("name".to_owned(), FieldValue::text("empty")),
+        ("action".to_owned(), FieldValue::text("save")),
     ]);
     tui_submit(
         &service,
@@ -2898,8 +2917,8 @@ fn tui_host_submits_every_form_without_global_process_state() {
     )
     .unwrap();
     let preset_delete = BTreeMap::from([
-        ("name".to_owned(), "empty".to_owned()),
-        ("action".to_owned(), "delete".to_owned()),
+        ("name".to_owned(), FieldValue::text("empty")),
+        ("action".to_owned(), FieldValue::text("delete")),
     ]);
     tui_submit(
         &service,
@@ -2936,7 +2955,7 @@ fn tui_host_submits_every_form_without_global_process_state() {
         .unwrap(),
     );
     let mut duplicate = settings.clone();
-    duplicate.insert("parameter:add".to_owned(), "same same".to_owned());
+    set(&mut duplicate, "parameter:add", "same same");
     assert!(
         tui_submit(
             &service,
@@ -2949,11 +2968,11 @@ fn tui_host_submits_every_form_without_global_process_state() {
         )
         .is_err()
     );
-    settings.insert("name".to_owned(), "Configured".to_owned());
-    settings.insert("description".to_owned(), "Configured in TUI".to_owned());
-    settings.insert("workdir".to_owned(), "invoke".to_owned());
-    settings.insert("template".to_owned(), "printf %s {name}".to_owned());
-    settings.insert("parameter:add".to_owned(), "fresh".to_owned());
+    set(&mut settings, "name", "Configured");
+    set(&mut settings, "description", "Configured in TUI");
+    set(&mut settings, "workdir", "invoke");
+    set(&mut settings, "template", "printf %s {name}");
+    set(&mut settings, "parameter:add", "fresh");
     tui_submit(
         &service,
         &store,
@@ -2968,10 +2987,10 @@ fn tui_host_submits_every_form_without_global_process_state() {
     assert_eq!(configured.meta.description, "Configured in TUI");
 
     let run_values = BTreeMap::from([
-        ("value:name".to_owned(), "Ada".to_owned()),
-        ("_skit_save_preset".to_owned(), "from-tui".to_owned()),
-        ("_skit_args".to_owned(), "tail".to_owned()),
-        ("_skit_dry_run".to_owned(), "false".to_owned()),
+        ("value:name".to_owned(), FieldValue::text("Ada")),
+        ("_skit_save_preset".to_owned(), FieldValue::text("from-tui")),
+        ("_skit_args".to_owned(), FieldValue::text("tail")),
+        ("_skit_dry_run".to_owned(), FieldValue::text("false")),
     ]);
     assert!(matches!(
         tui_submit(
@@ -2993,7 +3012,7 @@ fn tui_host_submits_every_form_without_global_process_state() {
             .contains_key("from-tui")
     );
 
-    let invalid_args = BTreeMap::from([("_skit_args".to_owned(), "'bad".to_owned())]);
+    let invalid_args = BTreeMap::from([("_skit_args".to_owned(), FieldValue::text("'bad"))]);
     assert!(
         tui_submit_run(
             &service,
@@ -3091,9 +3110,9 @@ fn tui_python_dependencies_use_the_same_pep_723_source_as_the_cli() {
     .unwrap();
     let entry = service.show("python-tool").unwrap();
     let mut values = form_values(tui_settings_form(&store, &entry));
-    assert_eq!(values["dependencies"], "requests>=2,<3");
-    values.insert("dependencies".to_owned(), "requests>=2,<3\nrich".to_owned());
-    values.insert("python".to_owned(), ">=3.13".to_owned());
+    assert_eq!(got(&values, "dependencies"), "requests>=2,<3");
+    set(&mut values, "dependencies", "requests>=2,<3\nrich");
+    set(&mut values, "python", ">=3.13");
 
     tui_submit_settings(&service, &store, &state_dir, "python-tool", &values).unwrap();
 
@@ -3150,9 +3169,9 @@ fn tui_settings_source_refusal_does_not_commit_other_fields() {
     let source_before = fs::read(&source_path).unwrap();
     let meta_before = fs::read(&meta_path).unwrap();
     let mut values = form_values(tui_settings_form(&store, &entry));
-    values.insert("name".to_owned(), "Must not land".to_owned());
-    values.insert("description".to_owned(), "must not land".to_owned());
-    values.insert("source:normalize".to_owned(), "MISSING".to_owned());
+    set(&mut values, "name", "Must not land");
+    set(&mut values, "description", "must not land");
+    set(&mut values, "source:normalize", "MISSING");
 
     assert!(tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).is_err());
     assert_eq!(fs::read(source_path).unwrap(), source_before);
@@ -3169,7 +3188,7 @@ fn tui_template_updates_reconcile_the_placeholder_schema() {
     let service = LibraryService::new(store.clone());
     let entry = add_command(&service, "Template form", "echo {old}");
     let mut values = form_values(tui_settings_form(&store, &entry));
-    values.insert("template".to_owned(), "echo {new}".to_owned());
+    set(&mut values, "template", "echo {new}");
 
     tui_submit_settings(&service, &store, &state_dir, "template-form", &values).unwrap();
 
@@ -3205,10 +3224,10 @@ fn tui_selected_preset_replaces_unchanged_last_used_values() {
         .save_preset(&entry.slug, "work", &declarations, &preset)
         .unwrap();
     let values = BTreeMap::from([
-        ("value:name".to_owned(), "last".to_owned()),
-        ("_skit_preset".to_owned(), "work".to_owned()),
-        ("_skit_save_preset".to_owned(), "snapshot".to_owned()),
-        ("_skit_dry_run".to_owned(), "true".to_owned()),
+        ("value:name".to_owned(), FieldValue::text("last")),
+        ("_skit_preset".to_owned(), FieldValue::text("work")),
+        ("_skit_save_preset".to_owned(), FieldValue::text("snapshot")),
+        ("_skit_dry_run".to_owned(), FieldValue::text("true")),
     ]);
 
     tui_submit_run(
@@ -3236,7 +3255,7 @@ fn tui_run_refuses_an_unknown_boolean_value() {
     let store = FileStore::new(&data_dir);
     let service = LibraryService::new(store.clone());
     let entry = add_command(&service, "Boolean form", "true");
-    let values = BTreeMap::from([("_skit_dry_run".to_owned(), "sometimes".to_owned())]);
+    let values = BTreeMap::from([("_skit_dry_run".to_owned(), FieldValue::text("sometimes"))]);
 
     assert!(matches!(
         tui_submit_run(
@@ -3490,7 +3509,7 @@ fn tui_settings_refuse_axes_that_do_not_apply_to_the_entry_kind() {
         ),
     ] {
         let mut values = base.clone();
-        values.insert(field.to_owned(), value.to_owned());
+        values.insert(field.to_owned(), FieldValue::text(value));
         let error =
             tui_submit_settings(&service, &store, &state_dir, "command-form", &values).unwrap_err();
         assert!(error.to_string().contains(detail), "{error}");
@@ -3530,8 +3549,8 @@ fn tui_settings_accept_a_pinnable_interpreter_and_a_managed_binding() {
     .unwrap();
     let entry = service.show("pin-tool").unwrap();
     let mut values = form_values(tui_settings_form(&store, &entry));
-    values.insert("interpreter".to_owned(), "/opt/bash".to_owned());
-    values.insert("source:manage".to_owned(), "NAME".to_owned());
+    set(&mut values, "interpreter", "/opt/bash");
+    set(&mut values, "source:manage", "NAME");
 
     tui_submit_settings(&service, &store, &state_dir, "pin-tool", &values).unwrap();
 
@@ -3581,7 +3600,7 @@ fn tui_settings_offers_no_binding_control_so_unmanaging_goes_through_its_own_key
     .unwrap();
     let entry = service.show("shell-tool").unwrap();
     let mut values = form_values(tui_settings_form(&store, &entry));
-    values.insert("source:manage".to_owned(), "NAME".to_owned());
+    set(&mut values, "source:manage", "NAME");
     tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap();
 
     // The stored source now manages NAME. Version 0.4 offers no binding control at all — a
@@ -3604,7 +3623,7 @@ fn tui_settings_offers_no_binding_control_so_unmanaging_goes_through_its_own_key
 
     // Unmanaging goes through the source control that owns it, and it still works.
     let mut values = values;
-    values.insert("source:unmanage".to_owned(), "NAME".to_owned());
+    set(&mut values, "source:unmanage", "NAME");
     tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap();
     let stored = fs::read_to_string(data_dir.join("scripts/shell-tool/script.sh")).unwrap();
     assert!(!stored.contains("[[tool.skit.params]]"), "{stored}");
@@ -3644,7 +3663,7 @@ fn tui_settings_manage_source_parameters_without_losing_non_utf8_bytes() {
     .unwrap();
     let entry = service.show("bytes-tool").unwrap();
     let mut requested = form_values(tui_settings_form(&store, &entry));
-    requested.insert("source:manage".to_owned(), "NAME".to_owned());
+    set(&mut requested, "source:manage", "NAME");
 
     tui_submit_settings(&service, &store, &state_dir, "bytes-tool", &requested).unwrap();
 
@@ -3734,7 +3753,7 @@ fn tui_settings_store_a_dependency_edit_for_non_utf8_python_without_a_block() {
     .unwrap();
     let entry = service.show("python-bytes").unwrap();
     let mut values = form_values(tui_settings_form(&store, &entry));
-    values.insert("dependencies".to_owned(), "httpx>=0.28".to_owned());
+    set(&mut values, "dependencies", "httpx>=0.28");
 
     tui_submit_settings(&service, &store, &state_dir, "python-bytes", &values).unwrap();
 
@@ -3784,7 +3803,7 @@ fn tui_settings_refuse_an_edit_to_a_non_utf8_authoritative_python_block() {
     let entry = service.show("python-bytes").unwrap();
     let before_settings = EntrySettings::from_meta(&entry.meta);
     let mut values = form_values(tui_settings_form(&store, &entry));
-    values.insert("dependencies".to_owned(), String::new());
+    set(&mut values, "dependencies", "");
 
     let error =
         tui_submit_settings(&service, &store, &state_dir, "python-bytes", &values).unwrap_err();
@@ -4463,7 +4482,7 @@ fn a_source_that_moves_between_open_and_save_cannot_change_which_rows_persist() 
             .find(|key| key.ends_with(":prompt"))
             .expect("the rider row has a form label")
             .clone();
-        values.insert(prompt_key, "Access token".to_owned());
+        values.insert(prompt_key, FieldValue::text("Access token"));
 
         // The interference happens after the form is built and before it is submitted.
         let stored = data_dir.join("scripts/ps/script.ps1");
@@ -4515,8 +4534,8 @@ fn tui_settings_leave_every_axis_the_screen_did_not_carry_alone() {
 
     // Give it a declared parameter and a needs list, so there is something to lose.
     let mut complete = form_values(tui_settings_form(&store, &entry));
-    complete.insert("needs".to_owned(), "ssh".to_owned());
-    complete.insert("parameter:add".to_owned(), "region".to_owned());
+    set(&mut complete, "needs", "ssh");
+    set(&mut complete, "parameter:add", "region");
     tui_submit_settings(&service, &store, &state_dir, "deploy", &complete).unwrap();
     let before = service.show("deploy").unwrap();
     let stored = EntrySettings::from_meta(&before.meta);
@@ -4538,7 +4557,7 @@ fn tui_settings_leave_every_axis_the_screen_did_not_carry_alone() {
         ..SettingsInputs::default()
     });
     let mut narrow = view.submitted_values();
-    narrow.insert("name".to_owned(), "Deploy again".to_owned());
+    set(&mut narrow, "name", "Deploy again");
     assert!(!narrow.contains_key("template"));
     assert!(!narrow.contains_key("interpolate"));
     assert!(!narrow.keys().any(|key| key.starts_with("parameter:")));
@@ -4559,4 +4578,60 @@ fn tui_settings_leave_every_axis_the_screen_did_not_carry_alone() {
     assert_eq!(kept.interpolate, stored.interpolate);
     assert_eq!(kept.needs, stored.needs, "needs travelled and is unchanged");
     assert_eq!(after.meta.workdir, before.meta.workdir);
+}
+
+/// A typed payload is read as its type, never re-parsed from text.
+///
+/// The field model already refuses to let a string stand for an intent: a toggle is a Boolean and a
+/// closed selection is a list. Flattening those to text at the effect boundary would put the
+/// inference back on every host, and a value that carries a comma is where the two answers diverge
+/// — a PEP 508 requirement carries one inside its own specifier
+/// (`src/skit/tui_settings.py:988-993`).
+#[test]
+fn a_typed_submission_is_read_as_its_type_and_never_re_split() {
+    let values: SubmittedValues = BTreeMap::from([
+        ("flag".to_owned(), FieldValue::boolean(true)),
+        ("spelled".to_owned(), FieldValue::text("yes")),
+        (
+            "picked".to_owned(),
+            FieldValue::Explicit(TypedValue::Choices(vec![
+                "requests>=2,<3".to_owned(),
+                "rich".to_owned(),
+            ])),
+        ),
+        ("typed".to_owned(), FieldValue::text("ffmpeg, jq")),
+    ]);
+
+    // A Boolean renders as the same word a person types, so both reach the same answer. This is
+    // why the toggle needs no typed branch of its own.
+    assert!(tui_flag(&values, "flag").unwrap());
+    assert!(tui_flag(&values, "spelled").unwrap());
+    // An absent toggle is off, and it is not an error.
+    assert!(!tui_flag(&values, "missing").unwrap());
+
+    // The selection keeps its own members. Splitting its text would merge the requirement's
+    // internal comma into a neighbour and deliver a dependency nobody asked for.
+    assert_eq!(
+        tui_list(&values, "picked"),
+        ["requests>=2,<3".to_owned(), "rich".to_owned()]
+    );
+    assert_eq!(
+        tui_split_list(&tui_value(&values, "picked")),
+        ["requests>=2".to_owned(), "<3".to_owned(), "rich".to_owned()],
+        "this is what re-splitting the text would have produced"
+    );
+    // A text control still splits, because text is all it produced.
+    assert_eq!(
+        tui_list(&values, "typed"),
+        ["ffmpeg".to_owned(), "jq".to_owned()]
+    );
+
+    // Presence is the "was this offered" answer, and it survives an explicit clear.
+    let cleared: SubmittedValues = BTreeMap::from([("needs".to_owned(), FieldValue::text(""))]);
+    assert!(
+        cleared.contains_key("needs"),
+        "a cleared axis is still offered"
+    );
+    assert!(tui_value(&cleared, "needs").is_empty());
+    assert!(!cleared.contains_key("template"));
 }

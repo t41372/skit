@@ -556,8 +556,8 @@ fn forms_are_frontend_neutral_editable_models_and_submit_typed_requests() {
     };
     assert_eq!(purpose, FormPurpose::Run);
     assert_eq!(selector.as_deref(), Some("alpha"));
-    assert_eq!(values["name"], "ol!");
-    assert_eq!(values["token"], "x");
+    assert_eq!(values["name"], FieldValue::text("ol!"));
+    assert_eq!(values["token"], FieldValue::text("x"));
 
     state.update(Action::FocusPrevious);
     assert_eq!(state.form().unwrap().focused, 0);
@@ -1060,8 +1060,9 @@ fn every_advertised_settings_key_reaches_the_reducer() {
             purpose: FormPurpose::Settings,
             selector: Some(ref selector),
             ref values,
-        } if selector == "brief" && values.get(DESCRIPTION_KEY).map(String::as_str)
-            == Some("Summarize a document")
+        } if selector == "brief"
+            && values.get(DESCRIPTION_KEY).map(FieldValue::as_text).as_deref()
+                == Some("Summarize a document")
     ));
 }
 

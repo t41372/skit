@@ -1,6 +1,6 @@
 //! Crossterm lifecycle and blocking event loop.
 
-use std::{collections::BTreeMap, io};
+use std::io;
 
 use ratatui_core::terminal::Terminal;
 use ratatui_crossterm::{
@@ -13,7 +13,9 @@ use ratatui_crossterm::{
 };
 use skit_domain::Slug;
 use skit_i18n::{Locale, Localize, Message, detect_locale};
-use skit_ui::{Action, AddWorkflowState, Effect, FormView, LibraryState, RunFormView, Screen};
+use skit_ui::{
+    Action, AddWorkflowState, Effect, FormView, LibraryState, RunFormView, Screen, SubmittedValues,
+};
 use thiserror::Error;
 
 use crate::{EventHandling, TuiSession, ViewGeometry, render_with_session};
@@ -218,7 +220,7 @@ pub fn collect_form<F, E>(
     form: FormView,
     host: F,
     locale: Locale,
-) -> Result<Option<BTreeMap<String, String>>, TuiError>
+) -> Result<Option<SubmittedValues>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
@@ -235,7 +237,7 @@ pub fn collect_run_form<F, E>(
     form: RunFormView,
     host: F,
     locale: Locale,
-) -> Result<Option<BTreeMap<String, String>>, TuiError>
+) -> Result<Option<SubmittedValues>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
@@ -247,7 +249,7 @@ fn collect_screen<F, E>(
     screen: Screen,
     mut host: F,
     mut locale: Locale,
-) -> Result<Option<BTreeMap<String, String>>, TuiError>
+) -> Result<Option<SubmittedValues>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
@@ -291,7 +293,7 @@ where
 ///
 /// `Ok(None)` continues the event loop. `Ok(Some(values))` finishes the collection, and
 /// `Ok(Some(None))` inside it means the user quit.
-type CollectOutcome = Option<Option<BTreeMap<String, String>>>;
+type CollectOutcome = Option<Option<SubmittedValues>>;
 
 fn drain_collect_effects<F, E>(
     state: &mut LibraryState,

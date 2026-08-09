@@ -16,6 +16,7 @@ use skit_application::{
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
+use skit_form::field::{FieldValue, TypedValue};
 
 use crate::FormPurpose;
 
@@ -94,6 +95,22 @@ impl FormControl {
             Self::Text(control) => control.value.clone(),
             Self::Checkbox { checked } => checked.to_string(),
             Self::Choice(control) => control.selected.clone(),
+        }
+    }
+
+    /// Return the value with the type its control produced.
+    ///
+    /// A toggle is a Boolean and a picker is a choice. Rendering them as text here would ask every
+    /// consumer to parse `"true"` back, and a consumer that parsed it differently would deliver a
+    /// different launch from the same screen.
+    #[must_use]
+    pub fn typed_value(&self) -> FieldValue {
+        match self {
+            Self::Text(control) => FieldValue::text(&control.value),
+            Self::Checkbox { checked } => FieldValue::boolean(*checked),
+            Self::Choice(control) => {
+                FieldValue::Explicit(TypedValue::Choice(control.selected.clone()))
+            }
         }
     }
 
@@ -811,12 +828,20 @@ impl RunFormView {
         }
     }
 
-    pub(crate) fn values(&self) -> BTreeMap<String, String> {
-        let mut values = self.hidden_values.clone();
+    /// Return every value the launch delivers, typed.
+    ///
+    /// A launch delivers all of them, so nothing is omitted for being unchanged: this is not a diff
+    /// against a stored record, it is the argument set one run receives.
+    pub(crate) fn values(&self) -> crate::SubmittedValues {
+        let mut values = self
+            .hidden_values
+            .iter()
+            .map(|(key, value)| (key.clone(), FieldValue::text(value)))
+            .collect::<crate::SubmittedValues>();
         values.extend(
             self.fields
                 .iter()
-                .map(|field| (field.key.clone(), field.control.value())),
+                .map(|field| (field.key.clone(), field.control.typed_value())),
         );
         values
     }

@@ -11,6 +11,7 @@ use skit_ui::{
     RunPathInsertMode, RunTokenOption, RunValidationError, RunnerEditorOwner, Screen, UiCommand,
     UiKey, command_specs,
 };
+use skit_ui::{FieldValue, TypedValue};
 
 fn entry(slug: &str, name: &str, description: &str) -> EntrySummary {
     EntrySummary {
@@ -139,12 +140,15 @@ fn reducer_edits_and_submits_typed_run_controls() {
             purpose: FormPurpose::Run,
             selector: Some("demo".to_owned()),
             values: BTreeMap::from([
-                ("value:enabled".to_owned(), "true".to_owned()),
-                ("value:format".to_owned(), "yaml".to_owned()),
-                ("value:output".to_owned(), "report.json".to_owned()),
-                ("_skit_args".to_owned(), "--force".to_owned()),
-                ("_skit_save_preset".to_owned(), String::new()),
-                ("_skit_dry_run".to_owned(), "false".to_owned()),
+                ("value:enabled".to_owned(), FieldValue::boolean(true)),
+                (
+                    "value:format".to_owned(),
+                    FieldValue::Explicit(TypedValue::Choice("yaml".to_owned())),
+                ),
+                ("value:output".to_owned(), FieldValue::text("report.json")),
+                ("_skit_args".to_owned(), FieldValue::text("--force")),
+                ("_skit_save_preset".to_owned(), FieldValue::text("")),
+                ("_skit_dry_run".to_owned(), FieldValue::text("false")),
             ]),
         }
     );
@@ -399,15 +403,21 @@ fn inline_run_options_are_submission_metadata_not_visible_string_fields() {
         panic!("run form did not submit");
     };
     assert_eq!(
-        values.get("_skit_save_preset").map(String::as_str),
+        values
+            .get("_skit_save_preset")
+            .map(FieldValue::as_text)
+            .as_deref(),
         Some("snapshot")
     );
     assert_eq!(
-        values.get("_skit_dry_run").map(String::as_str),
+        values
+            .get("_skit_dry_run")
+            .map(FieldValue::as_text)
+            .as_deref(),
         Some("true")
     );
     assert_eq!(
-        values.get("_skit_args").map(String::as_str),
+        values.get("_skit_args").map(FieldValue::as_text).as_deref(),
         Some("--remembered")
     );
 }
@@ -448,11 +458,14 @@ fn inline_fixed_values_win_over_presets_and_are_not_editable() {
         panic!("run form did not submit");
     };
     assert_eq!(
-        values.get("value:name").map(String::as_str),
+        values.get("value:name").map(FieldValue::as_text).as_deref(),
         Some("explicit")
     );
     assert_eq!(
-        values.get("value:output").map(String::as_str),
+        values
+            .get("value:output")
+            .map(FieldValue::as_text)
+            .as_deref(),
         Some("daily.txt")
     );
 }

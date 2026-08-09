@@ -8,13 +8,13 @@
 //! rather than rendering an empty box (`src/skit/tui_settings.py:423-426`, `:440-446`, `:541-542`,
 //! `:820-821`).
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 use skit_form::field::{
     ChoiceOption, Field, FieldCapabilities, FieldKind, FieldOwner, FieldValue, TypedValue,
     any_dirty,
 };
+
+use crate::SubmittedValues;
 
 /// Stable key of the entry name field.
 pub const NAME_KEY: &str = "name";
@@ -555,7 +555,13 @@ impl SettingsView {
         }
     }
 
-    /// Return every field the host reads back, keyed as the host expects.
+    /// Return the axes a save must change, typed, keyed as the host expects.
+    ///
+    /// Only what moved travels. Every field owns the value it opened with, so this screen already
+    /// knows which axes are edits; sending an unchanged axis would ask the host to work that out
+    /// again, and the only basis it has is a fresh read — which turns an untouched axis into an
+    /// edit the moment a concurrent write moves it underneath. Version 0.4 captures its baseline
+    /// when the screen opens for exactly that reason (`src/skit/tui_settings.py:822-834`).
     ///
     /// A read-only control contributes nothing: it never held an edit, so submitting it would ask
     /// the host to write a value the screen only displayed.
@@ -566,21 +572,22 @@ impl SettingsView {
     /// halves would ask every host to derive that rule again, and a host that derived it
     /// differently would write a working directory the screen never showed.
     #[must_use]
-    pub fn submitted_values(&self) -> BTreeMap<String, String> {
+    pub fn submitted_values(&self) -> SubmittedValues {
         let mut values = self
             .sections
             .iter()
             .flat_map(|section| section.fields.iter())
-            .filter(|field| field.kind.editable())
-            .map(|field| (field.key.clone(), field.value().as_text()))
-            .collect::<BTreeMap<_, _>>();
+            .filter(|field| field.kind.editable() && field.is_dirty())
+            .map(|field| (field.key.clone(), field.value().clone()))
+            .collect::<SubmittedValues>();
+        // The two halves are one axis: either one moving means the policy moved.
         if values.remove(WORKDIR_PATH_KEY).is_some() || values.contains_key(WORKDIR_KEY) {
             // A refused path cannot reach here: `Save` validates first. Keeping the stored value is
             // the same answer a blank custom box gets, so nothing is invented on the way out.
             let resolved = self
                 .resolved_workdir(&self.stored_workdir)
                 .unwrap_or_else(|_| self.stored_workdir.clone());
-            values.insert(WORKDIR_KEY.to_owned(), resolved);
+            values.insert(WORKDIR_KEY.to_owned(), FieldValue::text(resolved));
         }
         values
     }
@@ -1002,31 +1009,83 @@ mod tests {
     /// that rule again.
     #[test]
     fn the_working_directory_travels_resolved_as_one_value() {
+        // Nothing moved, so nothing travels: the host has no axis to change.
         let view = SettingsView::from_inputs(&python_inputs());
-        let values = view.submitted_values();
-        assert_eq!(values.get(WORKDIR_KEY).map(String::as_str), Some("invoke"));
-        assert!(
-            !values.contains_key(WORKDIR_PATH_KEY),
-            "the typed box is half a policy, not a value a host writes"
-        );
+        assert!(view.submitted_values().is_empty());
 
-        // A typed folder replaces it, still under the one key.
+        // A typed folder travels under the one key, resolved.
         let mut view = SettingsView::from_inputs(&python_inputs());
         view.set_value(
             WORKDIR_KEY,
             FieldValue::Explicit(TypedValue::Choice(WORKDIR_CUSTOM.to_owned())),
         );
         view.set_value(WORKDIR_PATH_KEY, FieldValue::text("/srv/jobs"));
+        let values = view.submitted_values();
         assert_eq!(
-            view.submitted_values().get(WORKDIR_KEY).map(String::as_str),
-            Some("/srv/jobs")
+            values.get(WORKDIR_KEY),
+            Some(&FieldValue::text("/srv/jobs"))
+        );
+        assert!(
+            !values.contains_key(WORKDIR_PATH_KEY),
+            "the typed box is half a policy, not a value a host writes"
         );
 
         // A blank custom box keeps what is stored, which the view owns rather than re-reads.
         view.set_value(WORKDIR_PATH_KEY, FieldValue::text("   "));
         assert_eq!(
-            view.submitted_values().get(WORKDIR_KEY).map(String::as_str),
-            Some("invoke")
+            view.submitted_values().get(WORKDIR_KEY),
+            Some(&FieldValue::text("invoke"))
+        );
+    }
+
+    /// Only an axis a person moved travels, and it keeps the type its control produced.
+    ///
+    /// The screen owns the answer to "did this move", because every field owns what it opened with.
+    /// A host that worked it out again could only compare against a fresh read, which turns an
+    /// untouched axis into an edit the moment a concurrent write moves it
+    /// (`src/skit/tui_settings.py:822-834`).
+    #[test]
+    fn only_a_moved_axis_travels_and_it_keeps_its_type() {
+        let mut view = SettingsView::from_inputs(&SettingsInputs {
+            kind: "prompt".to_owned(),
+            configured_runners: vec!["claude".to_owned()],
+            ..python_inputs()
+        });
+        assert!(view.submitted_values().is_empty(), "nothing moved");
+
+        view.set_value(NEEDS_KEY, FieldValue::text("ffmpeg, jq"));
+        let values = view.submitted_values();
+        assert_eq!(values.len(), 1, "only the edited axis: {values:?}");
+        assert_eq!(values.get(NEEDS_KEY), Some(&FieldValue::text("ffmpeg, jq")));
+
+        // A picker travels as a choice, not as text a host would have to interpret.
+        view.set_value(
+            RUNNER_KEY,
+            FieldValue::Explicit(TypedValue::Choice("claude".to_owned())),
+        );
+        assert_eq!(
+            view.submitted_values().get(RUNNER_KEY),
+            Some(&FieldValue::Explicit(TypedValue::Choice(
+                "claude".to_owned()
+            )))
+        );
+
+        // Clearing an axis is an edit, and it is not the same as never offering it.
+        view.set_value(DESCRIPTION_KEY, FieldValue::text(""));
+        assert!(!view.submitted_values().contains_key(DESCRIPTION_KEY));
+        view.set_value(DESCRIPTION_KEY, FieldValue::text("A tool"));
+        view.set_value(DESCRIPTION_KEY, FieldValue::text(""));
+        assert!(!view.submitted_values().contains_key(DESCRIPTION_KEY));
+
+        let mut described = SettingsView::from_inputs(&SettingsInputs {
+            description: "A tool".to_owned(),
+            ..python_inputs()
+        });
+        described.set_value(DESCRIPTION_KEY, FieldValue::text(""));
+        assert_eq!(
+            described.submitted_values().get(DESCRIPTION_KEY),
+            Some(&FieldValue::text("")),
+            "a cleared axis travels as an explicit empty value"
         );
     }
 

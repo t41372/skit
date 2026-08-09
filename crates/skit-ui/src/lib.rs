@@ -23,6 +23,11 @@ pub use run::{
     RunFieldFeedback, RunFieldRole, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
     RunTokenError, RunTokenOption, RunValidationError, TextControl,
 };
+pub use skit_form::field::{
+    ArgumentDialect, ChoiceOption, Field, FieldCapabilities, FieldKind, FieldOwner, FieldValue,
+    ReadOnlyReason, TypedValue,
+};
+
 pub use settings::{
     DEPENDENCIES_KEY, DESCRIPTION_KEY, DependencyFlavor, INTERPRETER_KEY, NAME_KEY, NEEDS_KEY,
     PYTHON_KEY, RUNNER_KEY, SettingsAction, SettingsEffect, SettingsError, SettingsInputs,
@@ -961,6 +966,19 @@ pub enum HostRequest {
     Rename,
 }
 
+/// Everything one screen submits, keyed by stable field key.
+///
+/// The values are typed, not text. Version 0.4's own settings save reads one widget per axis and
+/// never infers an intent from a string (`src/skit/tui_settings.py:928-1001`), and the field model
+/// already refuses to let an empty string stand for two different intents: `Inherit` means nothing
+/// explicit is set here, `Explicit(Text(""))` means the user cleared it on purpose. Flattening this
+/// to text at the boundary would put that inference back, once per frontend, and two frontends that
+/// inferred differently would write different records from the same screen.
+///
+/// A key that is absent was never offered, or never moved. Either way the host leaves that axis
+/// exactly as it found it; there is no value it could write that would mean "do not touch".
+pub type SubmittedValues = BTreeMap<String, FieldValue>;
+
 /// Identify the operation that owns a generic form.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1586,8 +1604,8 @@ pub enum Effect {
         purpose: FormPurpose,
         /// Entry selector, when present.
         selector: Option<String>,
-        /// Field values indexed by stable key.
-        values: BTreeMap<String, String>,
+        /// Typed field values indexed by stable key.
+        values: SubmittedValues,
     },
     /// Count glob matches without putting filesystem rules in a frontend reducer.
     CountRunGlob {
@@ -2737,13 +2755,16 @@ impl LibraryState {
                     Effect::None
                 }
             }
+            // A generic form is one request, so every control it drew travels. There is no
+            // "unchanged" concept to express: the host is being asked to do the thing, not to
+            // diff a record.
             Screen::Form(form) => Effect::Submit {
                 purpose: form.purpose,
                 selector: form.selector.clone(),
                 values: form
                     .fields
                     .iter()
-                    .map(|field| (field.key.clone(), field.value.clone()))
+                    .map(|field| (field.key.clone(), FieldValue::text(&field.value)))
                     .collect(),
             },
             Screen::Library
