@@ -542,13 +542,7 @@ fn recover_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
     let mut stored_names = Vec::new();
     for item in fs::read_dir(&backup).map_err(|error| io_error("scan backup", &backup, error))? {
         let item = item.map_err(|error| io_error("scan backup", &backup, error))?;
-        let Some(name) = item.file_name().to_str().map(str::to_owned) else {
-            return Err(DependencyError::Io {
-                operation: "recover backup",
-                path: item.path().display().to_string(),
-                reason: "the backup item name is not valid UTF-8".to_owned(),
-            });
-        };
+        let name = backup_item_name(&item.file_name(), &item.path())?;
         if name.starts_with(&format!("{BACKUP_INDEX}.tmp-")) {
             remove_path(&item.path())?;
             continue;
@@ -616,6 +610,16 @@ fn recover_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
     fs::remove_dir(&backup).map_err(|error| io_error("remove backup", &backup, error))?;
     let _ = sync_directory(entry_dir);
     Ok(())
+}
+
+fn backup_item_name(name: &std::ffi::OsStr, path: &Path) -> Result<String, DependencyError> {
+    name.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| DependencyError::Io {
+            operation: "recover backup",
+            path: path.display().to_string(),
+            reason: "the backup item name is not valid UTF-8".to_owned(),
+        })
 }
 
 fn remove_dependency_items(entry_dir: &Path, names: &[&str]) -> Result<(), DependencyError> {
@@ -799,6 +803,17 @@ mod transaction_tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_item_names_refuse_non_utf8_without_needing_filesystem_support() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let name = std::ffi::OsStr::from_bytes(&[0xff, 0xfe]);
+        let error = backup_item_name(name, Path::new("backup/item")).unwrap_err();
+
+        assert!(error.to_string().contains("not valid UTF-8"));
+    }
 
     #[test]
     fn recovery_runs_even_when_removing_the_new_items_fails() {

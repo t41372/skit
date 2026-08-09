@@ -676,7 +676,8 @@ fn a_backup_without_an_index_restores_the_items_it_holds() {
     assert!(!root.path().join(".skit-deps.backup").exists());
 }
 
-#[cfg(unix)]
+// APFS rejects non-UTF-8 path components before the adapter can inspect them.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_backup_item_name_that_is_not_utf8_is_refused() {
     use std::os::unix::ffi::OsStrExt as _;

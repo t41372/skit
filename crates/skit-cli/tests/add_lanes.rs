@@ -178,12 +178,11 @@ fn copied_module_extensions_resolve_as_present_in_list_and_show() {
 #[cfg(unix)]
 #[test]
 fn executable_sources_are_references_and_permission_inference_is_supported() {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let sandbox = Sandbox::new();
-    let source = sandbox.data.path().join("hello");
-    fs::copy("/bin/dash", &source).unwrap();
-    fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+    // Running a copied system binary is racy with macOS provenance enforcement: the first launch
+    // can be killed after the xattr is attached asynchronously. The original executable still
+    // exercises permission-based inference and reference-mode execution without that OS race.
+    let source = std::path::Path::new("/bin/dash");
 
     sandbox
         .command()
