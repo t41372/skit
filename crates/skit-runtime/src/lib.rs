@@ -4,8 +4,10 @@
 
 mod javascript_deps;
 mod launch;
+mod network;
 mod uv;
 
 pub use javascript_deps::*;
 pub use launch::*;
+pub use network::*;
 pub use uv::*;

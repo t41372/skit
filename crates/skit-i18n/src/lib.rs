@@ -222,6 +222,21 @@ const CATALOG: &[Translation] = &[
     ),
     row!("No matching entries", "没有匹配的条目", "沒有相符的項目"),
     row!("valid", "有效", "有效"),
+    row!(
+        "Network to PyPI / GitHub looks slow or blocked.",
+        "检测到访问 PyPI / GitHub 缓慢或受阻。",
+        "偵測到存取 PyPI / GitHub 緩慢或受阻。",
+    ),
+    row!(
+        "Configure mirrors for faster installs (mainland China)?",
+        "是否配置镜像以加速下载(中国大陆)?",
+        "是否設定鏡像以加速下載(中國大陸)?",
+    ),
+    row!(
+        "Choose one of: {}",
+        "请选择其中之一:{}",
+        "請選擇其中之一:{}"
+    ),
     row!("row {}", "第 {} 行", "第 {} 列"),
     row!(
         "runner row needs a name and a string argv array",

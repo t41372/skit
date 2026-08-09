@@ -418,6 +418,41 @@ impl FileConfigStore {
         Ok(mirror_from_document(&self.load()))
     }
 
+    /// Report whether a mirror section has ever been written.
+    ///
+    /// This is the first-run marker, and it is deliberately not "the configuration file exists":
+    /// setting a language also writes the file, and that must not suppress the mirror offer
+    /// (`src/skit/config.py:178-183`).
+    pub fn mirror_configured(&self) -> Result<bool, ConfigError> {
+        Ok(self.load().contains_key("mirror"))
+    }
+
+    /// Write the current mirror settings back so the first-run offer never repeats.
+    ///
+    /// Version 0.4 persists `save_mirror(load_mirror())` after the offer, whatever the user chose,
+    /// so the probe happens once (`src/skit/cli.py:5617-5618`).
+    pub fn mark_mirror_configured(&self) -> Result<(), ConfigError> {
+        self.update_with_recovery(|document| {
+            let stored = mirror_from_document(document);
+            let table = repairable_table_mut(document, "mirror");
+            table.insert("enabled".to_owned(), Value::Boolean(stored.enabled));
+            for (key, url) in [
+                ("pypi", &stored.pypi),
+                ("python_install", &stored.python_install),
+                ("uv_binary", &stored.uv_binary),
+                ("npm", &stored.npm),
+            ] {
+                if url.is_empty() {
+                    table.remove(key);
+                } else {
+                    table.insert(key.to_owned(), Value::String(url.clone()));
+                }
+            }
+            Ok(())
+        })
+        .map(drop)
+    }
+
     /// Build environment values for a child without changing the parent environment.
     pub fn mirror_environment(
         &self,

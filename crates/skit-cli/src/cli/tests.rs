@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, io, path::Path};
+use std::{cell::RefCell, collections::BTreeMap, fs, io, path::Path};
 
 use clap::{CommandFactory as _, Parser as _};
 use skit_application::{ExitClass, LibraryService, RepositoryError};
@@ -4177,4 +4177,223 @@ fn the_library_surface_resolves_the_last_run_age_once_per_refresh() {
         library_last_run(now, &at("not a timestamp")).unwrap().age,
         LibraryRunAge::Raw("not a timestamp".to_owned())
     );
+}
+
+#[derive(Debug)]
+struct FixedNetwork(bool);
+
+impl NetworkProbe for FixedNetwork {
+    fn can_connect(&self, _host: &str, _port: u16, _timeout: std::time::Duration) -> bool {
+        self.0
+    }
+}
+
+/// A scripted answer set for the first-run questions.
+#[derive(Debug, Default)]
+struct ScriptedFirstRun {
+    accept: bool,
+    answers: Vec<&'static str>,
+    asked: RefCell<Vec<&'static str>>,
+}
+
+impl FirstRunPrompt for ScriptedFirstRun {
+    fn confirm_mirrors(&self) -> bool {
+        self.asked.borrow_mut().push("confirm");
+        self.accept
+    }
+
+    fn axis_answer(
+        &self,
+        question: &'static str,
+        _presets: &[String],
+        _url_question: &'static str,
+        _https_only: bool,
+    ) -> String {
+        let mut asked = self.asked.borrow_mut();
+        let index = asked.iter().filter(|entry| **entry != "confirm").count();
+        asked.push(question);
+        self.answers[index].to_owned()
+    }
+}
+
+/// The first-run offer probes once and records that it happened.
+///
+/// Version 0.4 gates on a written `[mirror]` section, not on the file existing: setting a language
+/// also writes `config.toml` and must not suppress the offer (`src/skit/config.py:178-183`).
+/// Blocked, declined, and not-blocked all write the marker (`src/skit/cli.py:5617-5618`).
+#[test]
+fn the_first_run_mirror_offer_writes_its_marker_once_and_never_probes_again() {
+    let config_dir = TempDir::new().unwrap();
+    let store = FileConfigStore::new(config_dir.path().to_path_buf());
+
+    // A language-only configuration is not a mirror decision.
+    store.set("lang", "zh-CN").unwrap();
+    assert!(!store.mirror_configured().unwrap());
+
+    // An open network asks nothing and still records the offer as done.
+    let prompt = ScriptedFirstRun::default();
+    first_run_mirror_offer(&store, &FixedNetwork(true), &prompt, true).unwrap();
+    assert!(prompt.asked.borrow().is_empty());
+    assert!(store.mirror_configured().unwrap());
+    let mirror = store.mirror().unwrap();
+    assert!(!mirror.enabled);
+    assert!(mirror.pypi.is_empty());
+    // The language survives the marker write.
+    assert_eq!(store.get("lang").unwrap(), "zh-CN");
+
+    // A second run never probes, whatever the network looks like.
+    #[derive(Debug)]
+    struct Forbidden;
+    impl NetworkProbe for Forbidden {
+        fn can_connect(&self, _host: &str, _port: u16, _timeout: std::time::Duration) -> bool {
+            panic!("the offer probed twice");
+        }
+    }
+    first_run_mirror_offer(&store, &Forbidden, &ScriptedFirstRun::default(), true).unwrap();
+}
+
+/// A run with nobody to ask probes nothing and writes nothing.
+///
+/// Version 0.4 returns before the probe and before the marker (`src/skit/cli.py:5607-5608`), so a
+/// piped or scripted first run still gets the offer later on a real terminal.
+#[test]
+fn a_noninteractive_first_run_neither_probes_nor_marks() {
+    let config_dir = TempDir::new().unwrap();
+    let store = FileConfigStore::new(config_dir.path().to_path_buf());
+    #[derive(Debug)]
+    struct Forbidden;
+    impl NetworkProbe for Forbidden {
+        fn can_connect(&self, _host: &str, _port: u16, _timeout: std::time::Duration) -> bool {
+            panic!("a non-interactive run probed the network");
+        }
+    }
+    first_run_mirror_offer(&store, &Forbidden, &ScriptedFirstRun::default(), false).unwrap();
+    assert!(!store.mirror_configured().unwrap());
+}
+
+/// A blocked network offers the wizard, and a decline still ends the offer for good.
+#[test]
+fn a_blocked_network_offers_the_wizard_and_a_decline_only_writes_the_marker() {
+    let config_dir = TempDir::new().unwrap();
+    let store = FileConfigStore::new(config_dir.path().to_path_buf());
+    let prompt = ScriptedFirstRun {
+        accept: false,
+        ..ScriptedFirstRun::default()
+    };
+    first_run_mirror_offer(&store, &FixedNetwork(false), &prompt, true).unwrap();
+    assert_eq!(prompt.asked.borrow().as_slice(), ["confirm"]);
+    assert!(store.mirror_configured().unwrap());
+    assert!(!store.mirror().unwrap().enabled);
+}
+
+/// Accepting asks all three axes independently and stores every answer.
+#[test]
+fn a_blocked_network_configures_each_axis_from_its_own_answer() {
+    let config_dir = TempDir::new().unwrap();
+    let store = FileConfigStore::new(config_dir.path().to_path_buf());
+    let prompt = ScriptedFirstRun {
+        accept: true,
+        answers: vec!["aliyun", "off", "https://registry.example.test"],
+        asked: RefCell::new(Vec::new()),
+    };
+    first_run_mirror_offer(&store, &FixedNetwork(false), &prompt, true).unwrap();
+
+    assert_eq!(
+        prompt.asked.borrow().as_slice(),
+        [
+            "confirm",
+            "PyPI index (Python packages)",
+            "GitHub releases (Python builds, the uv binary)",
+            "npm registry (JS/TS packages)",
+        ]
+    );
+    let mirror = store.mirror().unwrap();
+    assert!(mirror.enabled);
+    assert_eq!(mirror.pypi, "https://mirrors.aliyun.com/pypi/simple");
+    // One axis answered off must not disable another.
+    assert!(mirror.python_install.is_empty());
+    assert!(mirror.uv_binary.is_empty());
+    assert_eq!(mirror.npm, "https://registry.example.test");
+    assert!(store.mirror_configured().unwrap());
+}
+
+/// A marker write must preserve an existing mirror choice exactly.
+#[test]
+fn the_first_run_marker_keeps_a_configured_mirror_unchanged() {
+    let config_dir = TempDir::new().unwrap();
+    let store = FileConfigStore::new(config_dir.path().to_path_buf());
+    store.set("mirror.pypi", "tsinghua").unwrap();
+    let before = store.mirror().unwrap();
+    store.mark_mirror_configured().unwrap();
+    assert_eq!(store.mirror().unwrap(), before);
+    assert!(before.enabled);
+    assert_eq!(before.pypi, "https://pypi.tuna.tsinghua.edu.cn/simple");
+}
+
+/// Every axis answer the wizard can produce must survive the configuration gate.
+///
+/// Version 0.4 stores the three axes in one save and derives both github-release URLs from one
+/// base (`src/skit/cli.py:5582-5601` and `src/skit/config.py:56-59`).
+#[test]
+fn the_mirror_wizard_answers_reach_the_store_on_every_axis() {
+    let config_dir = TempDir::new().unwrap();
+    let store = FileConfigStore::new(config_dir.path().to_path_buf());
+    store
+        .set_many(&BTreeMap::from([
+            ("mirror.pypi".to_owned(), "tsinghua".to_owned()),
+            ("mirror.github".to_owned(), "nju".to_owned()),
+            ("mirror.npm".to_owned(), "npmmirror".to_owned()),
+        ]))
+        .unwrap();
+    let mirror = store.mirror().unwrap();
+    assert!(mirror.enabled);
+    assert_eq!(mirror.pypi, "https://pypi.tuna.tsinghua.edu.cn/simple");
+    assert_eq!(
+        mirror.python_install,
+        "https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/"
+    );
+    assert_eq!(
+        mirror.uv_binary,
+        "https://mirror.nju.edu.cn/github-release/astral-sh/uv"
+    );
+    assert_eq!(mirror.npm, "https://registry.npmmirror.com");
+
+    // Turning every axis off is a real answer, and it still leaves the marker behind.
+    store
+        .set_many(&BTreeMap::from([
+            ("mirror.pypi".to_owned(), "off".to_owned()),
+            ("mirror.github".to_owned(), "off".to_owned()),
+            ("mirror.npm".to_owned(), "off".to_owned()),
+        ]))
+        .unwrap();
+    let mirror = store.mirror().unwrap();
+    assert!(!mirror.enabled);
+    assert!(mirror.pypi.is_empty() && mirror.uv_binary.is_empty() && mirror.npm.is_empty());
+    assert!(store.mirror_configured().unwrap());
+}
+
+/// The custom-URL gate is the same one every entrance uses (`src/skit/config.py:62-71`).
+#[test]
+fn a_custom_mirror_url_is_one_token_and_github_demands_https() {
+    for value in ["https://example.test/simple", "http://example.test/simple"] {
+        assert!(mirror_url_is_acceptable(value, false), "{value}");
+    }
+    for value in [
+        "tsinghua",
+        "",
+        "example.test",
+        "https://a b",
+        "https://a\u{b7}b",
+    ] {
+        assert!(!mirror_url_is_acceptable(value, false), "{value}");
+    }
+    // The uv binary is downloaded and executed, so its base must be https.
+    assert!(mirror_url_is_acceptable(
+        "https://mirror.test/github-release",
+        true
+    ));
+    assert!(!mirror_url_is_acceptable(
+        "http://mirror.test/github-release",
+        true
+    ));
 }

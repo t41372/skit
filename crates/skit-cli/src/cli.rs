@@ -28,7 +28,8 @@ use skit_application::{
     payload_stored_name, plan_agent_install,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot,
+        PreferencesDraft, PreferencesSnapshot, github_preset_names, npm_preset_names,
+        pypi_preset_names,
     },
     prompt_selection::PromptSelectionService,
     supports_storage_modes,
@@ -59,8 +60,9 @@ use skit_language::{
     write_managed_params_bytes, write_uv_metadata,
 };
 use skit_runtime::{
-    DependencyError, LaunchPaths, ProgramProbe, SystemProbe, clear_javascript_dependencies,
-    managed_uv_path, resolve_javascript_runtime, resolve_launch_workdir,
+    DependencyError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe, SystemProbe,
+    clear_javascript_dependencies, managed_uv_path, network_looks_blocked,
+    resolve_javascript_runtime, resolve_launch_workdir,
 };
 use skit_store::{
     ConfigError, FileAgentSkillStore, FileConfigStore, FileFormStateStore, FileGlobExpander,
@@ -836,11 +838,190 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             agent(command)?;
             Ok(0)
         }
-        Some(Command::Tui) | None => {
+        Some(Command::Tui) => {
+            tui(&service)?;
+            Ok(0)
+        }
+        None => {
+            // Version 0.4 offers mirror setup only on the bare invocation, before the workbench
+            // opens (`src/skit/cli.py:159-160`).
+            first_run_mirror_offer(
+                &FileConfigStore::new(resolve_config_dir()?),
+                &SystemNetworkProbe,
+                &TerminalFirstRun,
+                io::stdin().is_terminal() && io::stdout().is_terminal(),
+            )?;
             tui(&service)?;
             Ok(0)
         }
     }
+}
+
+// --------------------------------------------------------------------------
+// first run (the mirror offer for a blocked network; interactive terminal only)
+// --------------------------------------------------------------------------
+
+/// Ask the first-run questions.
+///
+/// This is a port so the decision rules are testable without a terminal.
+trait FirstRunPrompt {
+    /// Ask whether to configure mirrors at all. Version 0.4 defaults to yes.
+    fn confirm_mirrors(&self) -> bool;
+    /// Ask one axis question and return a value the configuration store accepts.
+    fn axis_answer(
+        &self,
+        question: &'static str,
+        presets: &[String],
+        url_question: &'static str,
+        https_only: bool,
+    ) -> String;
+}
+
+/// Offer mirror setup once, on the first bare run, when the network looks blocked.
+///
+/// Version 0.4 probes only on an interactive terminal that has never written a mirror section, and
+/// it writes the section afterwards whatever the answer was, so the probe happens once
+/// (`src/skit/cli.py:5604-5618`). A non-interactive run returns before it probes and before it
+/// writes anything at all. The probe never decides anything on its own: it only decides whether to
+/// ask.
+fn first_run_mirror_offer(
+    store: &FileConfigStore,
+    probe: &dyn NetworkProbe,
+    prompt: &dyn FirstRunPrompt,
+    interactive: bool,
+) -> Result<(), CliError> {
+    if store.mirror_configured()? || !interactive {
+        return Ok(());
+    }
+    if network_looks_blocked(probe) {
+        humanln!("Network to PyPI / GitHub looks slow or blocked.");
+        if prompt.confirm_mirrors() {
+            mirror_wizard(store, prompt)?;
+        }
+    }
+    // The marker must land even when the offer was declined or never made.
+    if !store.mirror_configured()? {
+        store.mark_mirror_configured()?;
+    }
+    Ok(())
+}
+
+/// Ask one question per ecosystem axis and store all three answers together.
+///
+/// Version 0.4 asks three independent questions on purpose: the PyPI providers are not npm or
+/// github-release vendors, so one answer must never silently configure another axis
+/// (`src/skit/cli.py:5573-5601`).
+fn mirror_wizard(store: &FileConfigStore, prompt: &dyn FirstRunPrompt) -> Result<(), CliError> {
+    let pypi = prompt.axis_answer(
+        "PyPI index (Python packages)",
+        &pypi_preset_names(),
+        "PyPI index URL",
+        false,
+    );
+    let github = prompt.axis_answer(
+        "GitHub releases (Python builds, the uv binary)",
+        &github_preset_names(),
+        "github-release mirror base URL",
+        true,
+    );
+    let npm = prompt.axis_answer(
+        "npm registry (JS/TS packages)",
+        &npm_preset_names(),
+        "npm registry URL",
+        false,
+    );
+    store.set_many(&BTreeMap::from([
+        ("mirror.pypi".to_owned(), pypi),
+        ("mirror.github".to_owned(), github),
+        ("mirror.npm".to_owned(), npm),
+    ]))?;
+    Ok(())
+}
+
+/// Ask the first-run questions on the real terminal.
+#[derive(Clone, Copy, Debug)]
+struct TerminalFirstRun;
+
+impl FirstRunPrompt for TerminalFirstRun {
+    fn confirm_mirrors(&self) -> bool {
+        Confirm::new()
+            .with_prompt(text(
+                active_locale(),
+                "Configure mirrors for faster installs (mainland China)?",
+            ))
+            .default(true)
+            .interact()
+            .unwrap_or(false)
+    }
+
+    /// The recommended preset is the default because the wizard only runs on a store that has
+    /// never been configured (`src/skit/cli.py:5565-5570`).
+    fn axis_answer(
+        &self,
+        question: &'static str,
+        presets: &[String],
+        url_question: &'static str,
+        https_only: bool,
+    ) -> String {
+        let locale = active_locale();
+        let mut choices = presets.to_vec();
+        choices.push("custom".to_owned());
+        choices.push("off".to_owned());
+        let default = presets.first().cloned().unwrap_or_else(|| "off".to_owned());
+        let answer = loop {
+            let typed = Input::<String>::new()
+                .with_prompt(format!(
+                    "{} [{}]",
+                    text(locale, question),
+                    choices.join("/")
+                ))
+                .default(default.clone())
+                .interact_text()
+                .unwrap_or_else(|_| default.clone());
+            let typed = typed.trim().to_owned();
+            if choices.contains(&typed) {
+                break typed;
+            }
+            humanerrln!("Choose one of: {}", choices.join(", "));
+        };
+        if answer != "custom" {
+            return answer;
+        }
+        // A custom answer must be a real one-token URL, or a vendor-name typo would persist and
+        // fail mysteriously later (`src/skit/cli.py:5536-5545` and `:5548-5562`).
+        loop {
+            let typed = Input::<String>::new()
+                .with_prompt(text(locale, url_question))
+                .allow_empty(true)
+                .interact_text()
+                .unwrap_or_default();
+            let typed = typed.trim().to_owned();
+            if mirror_url_is_acceptable(&typed, https_only) {
+                return typed;
+            }
+            if https_only {
+                humanerrln!(
+                    "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: {}).",
+                    typed
+                );
+            } else {
+                humanerrln!("A custom choice needs a URL.");
+            }
+        }
+    }
+}
+
+/// Report whether one typed axis URL passes the shared gate every custom entrance uses.
+///
+/// The display separator is refused along with whitespace, so a value one door rejects can never
+/// walk in through another (`src/skit/config.py:62-71`).
+fn mirror_url_is_acceptable(value: &str, https_only: bool) -> bool {
+    let scheme = if https_only {
+        value.starts_with("https://")
+    } else {
+        value.starts_with("https://") || value.starts_with("http://")
+    };
+    scheme && !value.chars().any(char::is_whitespace) && !value.contains('\u{00b7}')
 }
 
 fn add_command(
