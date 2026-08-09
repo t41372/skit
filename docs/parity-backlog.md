@@ -41,3 +41,27 @@ Every screen draws its key rows inside a rounded box, which costs two rows of bo
 terminal. Version 0.4 docks a bare `KeysBar` with no border (`src/skit/tui_footer.py:97-108`, and
 visible in every shipped frame under `docs/assets/`). Recovering those two rows would let the run
 form show its argument tail without scrolling, exactly as the oracle's own demo frame does.
+
+## Settings offers editable axes it silently discards
+
+`crates/skit-cli/src/cli.rs` renders fifteen `FormField::text` axes for every parameter, whatever
+its provenance, and `tui_submit_settings` then drops any declaration whose name the source also
+produces. A user edits `type`, `default`, `choices` or `help` on a parser-owned row, gets a success
+result and no diagnostic, and nothing is written.
+
+Version 0.4 never offers those axes. `self._specs` is the block-managed set alone
+(`src/skit/tui_settings.py:610-611`), and each becomes a `ParamRow` whose name, type and default
+are read-only text beside a keep checkbox — only the form label, the secret flag and the
+environment source are editable (`:73-138`). A hand-declared row is a `DeclParamRow`, where type,
+default, choices, help, flag and required are fields and delivery is read-only header text
+(`:151-230`).
+
+A parameter the script's own reader declares is not a row at all. A CLI-driven entry gets one
+sentence instead, because managing a hardcoded constant would write a block that shadows the
+script's own form (`:612-623`). A reference-mode entry renders read-only `· name (type)` lines and
+nothing editable (`:597-606`).
+
+Two aggravating details need their own assertions once the rows carry provenance: the discard set
+is rebuilt from a fresh source read at submit time, so a concurrent edit changes which rows vanish;
+and an unreadable source yields an empty set, so the same edit persists or disappears depending on
+whether the file happened to be readable. The fix is the row model, not a wider filter.

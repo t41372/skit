@@ -1,5 +1,6 @@
 use std::fs;
 
+use predicates::str as predicate_str;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -109,11 +110,24 @@ fn managed_parameter_tweaks_stay_in_source_and_declared_schema_flags_refuse() {
 
     let before_source = fs::read(&stored).unwrap();
     let before_meta = fs::read(sandbox.data.path().join("scripts/managed/meta.toml")).unwrap();
-    sandbox
-        .command()
-        .args(["params", "managed", "--add", "other"])
-        .assert()
-        .code(2);
+    // A kind that owns its schema in the file refuses every declared-schema flag with exit 1 and
+    // names the two flags that do apply (`src/skit/cli.py:4286-4294`). It is an operation that
+    // cannot succeed, not a malformed command line, so it is not the usage class.
+    for flag in [
+        vec!["--add", "other"],
+        vec!["--add", ""],
+        vec!["--type", "TOKEN=int"],
+        vec!["--rm", "TOKEN"],
+    ] {
+        let mut command = sandbox.command();
+        command.args(["params", "managed"]).args(&flag);
+        command
+            .assert()
+            .code(1)
+            .stderr(predicate_str::contains(
+                "Managed manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block.",
+            ));
+    }
     assert_eq!(fs::read(stored).unwrap(), before_source);
     assert_eq!(
         fs::read(sandbox.data.path().join("scripts/managed/meta.toml")).unwrap(),

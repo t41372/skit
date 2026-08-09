@@ -2858,9 +2858,9 @@ const CATALOG: &[Translation] = &[
         "{} 預設已開啟，因此它的選項只能再次開啟它。請改為宣告關閉它的選項（例如 --no-{}），並將預設值設為 false。",
     ),
     row!(
-        "{} manages its parameter schema in the stored source",
-        "{} 在存储的源文件中管理其参数结构",
-        "{} 在儲存的來源中管理其參數結構",
+        "{} manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block.",
+        "{} 从脚本自身管理参数——请使用 --manage / --unmanage，或直接编辑 [tool.skit] 区块。",
+        "{} 由腳本自身管理參數——請使用 --manage / --unmanage，或直接編輯 [tool.skit] 區塊。",
     ),
     row!("Select", "选择", "選擇"),
     row!("Interface language", "界面语言", "介面語言"),

@@ -3579,9 +3579,14 @@ fn params(
         "python" | "shell" | "js" | "ts" | "fish" | "powershell"
     );
     if source_parameter_kind && has_declared_schema_operation {
-        return Err(CliError::Usage(
-            Message::new("{} manages its parameter schema in the stored source")
-                .with(held.meta.name),
+        // A kind whose schema lives in its own file cannot take a declared-schema flag. Version 0.4
+        // names the two flags that do apply and treats it as a failed operation, not a malformed
+        // command line, so it exits 1 (`src/skit/cli.py:4286-4294`).
+        return Err(CliError::Failure(
+            Message::new(
+                "{} manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block.",
+            )
+            .with(held.meta.name),
         ));
     }
     let has_source_schema_operation =
