@@ -964,7 +964,7 @@ printf "print('written')\n" >> "$1"
 }
 
 #[test]
-fn tui_settings_exposes_source_management_and_every_parameter_axis() {
+fn tui_settings_offers_a_declared_row_exactly_the_axes_version_04_makes_editable() {
     let root = TempDir::new().unwrap();
     let directory = root.path().join("scripts").join("alpha");
     fs::create_dir_all(&directory).unwrap();
@@ -1016,86 +1016,146 @@ fn tui_settings_exposes_source_management_and_every_parameter_axis() {
         "source:normalize",
         "parameter:add",
         "parameter:remove",
-        "parameter:0:name",
-        "parameter:0:binding",
-        "parameter:0:delivery",
-        "parameter:0:type",
-        "parameter:0:default",
-        "parameter:0:choices",
-        "parameter:0:required",
-        "parameter:0:multiple",
-        "parameter:0:repeat",
-        "parameter:0:prompt",
-        "parameter:0:help",
-        "parameter:0:secret",
-        "parameter:0:env_source",
-        "parameter:0:env_target",
-        "parameter:0:flag",
-        "parameter:0:action",
     ] {
         assert!(values.contains_key(key), "missing settings field {key}");
     }
+
+    // Version 0.4's DeclParamRow makes exactly these editable
+    // (`src/skit/tui_settings.py:170-227`).
+    for axis in [
+        "keep",
+        "type",
+        "default",
+        "choices",
+        "help",
+        "required",
+        "prompt",
+        "secret",
+        "env_source",
+    ] {
+        assert!(
+            values.contains_key(format!("parameter:0:{axis}").as_str()),
+            "a declared row lost its editable {axis}"
+        );
+    }
+    // Delivery is read-only header text because a different command changes it (`:152-154`), and
+    // version 0.4 has no control at all for the rest. A control that does not exist cannot make a
+    // promise the save has to take back.
+    for axis in [
+        "name",
+        "binding",
+        "delivery",
+        "multiple",
+        "repeat",
+        "env_target",
+        "action",
+    ] {
+        assert!(
+            !values.contains_key(format!("parameter:0:{axis}").as_str()),
+            "a declared row offered {axis}, which version 0.4 never edits here"
+        );
+    }
+    // A command template takes no argument vector, so it never offers a flag.
+    assert!(!values.contains_key("parameter:0:flag"));
     assert_eq!(values["parameter:0:default"], "4");
     assert_eq!(values["parameter:0:choices"], "4, 8");
+    // The row the screen opened with travels with the form.
+    let baseline: ParamDecl = serde_json::from_str(values["parameter:0:baseline"]).unwrap();
+    assert_eq!(baseline.name, "count");
+    assert_eq!(baseline.env_target, "COUNT");
+    assert_eq!(baseline.action, "append");
 }
 
+/// A row's edits merge onto the declaration it opened with, and nothing else moves.
+///
+/// Version 0.4 merges onto the widget's own `spec` rather than re-deriving it
+/// (`src/skit/tui_settings.py:115-133`). An axis the row never offered has no control to move it,
+/// so it must come out of a save exactly as it went in — which is also what makes a submit-time
+/// filter unnecessary.
 #[test]
-fn tui_parameter_rows_round_trip_and_validate_every_editable_axis() {
+fn tui_parameter_rows_merge_edits_onto_the_baseline_they_opened_with() {
+    let mut baseline = ParamDecl::new("token");
+    baseline.binding = ParameterBinding::EnvDefault;
+    baseline.delivery = ParameterDelivery::Env;
+    baseline.parameter_type = ParameterType::Str;
+    baseline.multiple = true;
+    baseline.repeat = true;
+    baseline.env_target = "TOKEN_TARGET".to_owned();
+    baseline.action = "append".to_owned();
+    baseline.flag = "--token".to_owned();
+
     let values = BTreeMap::from([
-        ("parameter:0:name".to_owned(), "token".to_owned()),
-        ("parameter:0:binding".to_owned(), "none".to_owned()),
-        ("parameter:0:delivery".to_owned(), "env".to_owned()),
+        (
+            "parameter:0:baseline".to_owned(),
+            serde_json::to_string(&baseline).unwrap(),
+        ),
+        ("parameter:0:keep".to_owned(), "true".to_owned()),
         ("parameter:0:type".to_owned(), "choice".to_owned()),
         ("parameter:0:default".to_owned(), "green".to_owned()),
         ("parameter:0:choices".to_owned(), "red, green".to_owned()),
         ("parameter:0:required".to_owned(), "true".to_owned()),
-        ("parameter:0:multiple".to_owned(), "true".to_owned()),
-        ("parameter:0:repeat".to_owned(), "true".to_owned()),
         ("parameter:0:prompt".to_owned(), "Token".to_owned()),
         ("parameter:0:help".to_owned(), "Select a token.".to_owned()),
-        ("parameter:0:secret".to_owned(), "true".to_owned()),
-        (
-            "parameter:0:env_source".to_owned(),
-            "TOKEN_SOURCE".to_owned(),
-        ),
-        (
-            "parameter:0:env_target".to_owned(),
-            "TOKEN_TARGET".to_owned(),
-        ),
-        ("parameter:0:flag".to_owned(), "--token".to_owned()),
-        ("parameter:0:action".to_owned(), "append".to_owned()),
+        ("parameter:0:secret".to_owned(), "false".to_owned()),
+        ("parameter:0:env_source".to_owned(), String::new()),
     ]);
 
     let declarations = tui_declarations_from_values(&values).unwrap();
     assert_eq!(declarations.len(), 1);
-    assert_eq!(
-        declarations[0],
-        ParamDecl {
-            name: "token".to_owned(),
-            binding: ParameterBinding::None,
-            delivery: ParameterDelivery::Env,
-            parameter_type: ParameterType::Choice,
-            default: Some(ParameterValue::String("green".to_owned())),
-            required: true,
-            multiple: true,
-            repeat: true,
-            choices: vec!["red".to_owned(), "green".to_owned()],
-            prompt: "Token".to_owned(),
-            help: "Select a token.".to_owned(),
-            secret: true,
-            env_source: "TOKEN_SOURCE".to_owned(),
-            flag: "--token".to_owned(),
-            action: "append".to_owned(),
-            order: -1,
-            env_target: "TOKEN_TARGET".to_owned(),
-            degraded: false,
-        }
-    );
+    let declaration = &declarations[0];
 
-    let duplicate = BTreeMap::from([
-        ("parameter:0:name".to_owned(), "same".to_owned()),
-        ("parameter:1:name".to_owned(), "same".to_owned()),
+    // The axes the row offered moved.
+    assert_eq!(declaration.parameter_type, ParameterType::Choice);
+    assert_eq!(
+        declaration.default,
+        Some(ParameterValue::String("green".to_owned()))
+    );
+    assert_eq!(declaration.choices, ["red".to_owned(), "green".to_owned()]);
+    assert!(declaration.required);
+    assert_eq!(declaration.prompt, "Token");
+    assert_eq!(declaration.help, "Select a token.");
+
+    // The axes the row never offered hold at their baseline, including the name.
+    assert_eq!(declaration.name, "token");
+    assert_eq!(declaration.binding, ParameterBinding::EnvDefault);
+    assert_eq!(declaration.delivery, ParameterDelivery::Env);
+    assert!(declaration.multiple);
+    assert!(declaration.repeat);
+    assert_eq!(declaration.env_target, "TOKEN_TARGET");
+    assert_eq!(declaration.action, "append");
+    assert_eq!(declaration.flag, "--token");
+
+    // Unticking keep removes the row, exactly as version 0.4's checkbox returns None (`:115-117`).
+    let mut removed = values.clone();
+    removed.insert("parameter:0:keep".to_owned(), "false".to_owned());
+    assert!(tui_declarations_from_values(&removed).unwrap().is_empty());
+
+    // Marking a public row secret drops the cached literal (`:125-131`).
+    let mut plain = ParamDecl::new("token");
+    plain.default = Some(ParameterValue::String("visible".to_owned()));
+    let secret = BTreeMap::from([
+        (
+            "parameter:0:baseline".to_owned(),
+            serde_json::to_string(&plain).unwrap(),
+        ),
+        ("parameter:0:keep".to_owned(), "true".to_owned()),
+        ("parameter:0:secret".to_owned(), "true".to_owned()),
+        ("parameter:0:env_source".to_owned(), "TOKEN_ENV".to_owned()),
     ]);
+    let secret = tui_declarations_from_values(&secret).unwrap();
+    assert!(secret[0].secret);
+    assert!(
+        secret[0].default.is_none(),
+        "a source literal survived into the block"
+    );
+    assert_eq!(secret[0].env_source, "TOKEN_ENV");
+
+    // Two rows that resolve to one name are refused before anything is written.
+    let mut duplicate = values.clone();
+    duplicate.insert(
+        "parameter:1:baseline".to_owned(),
+        serde_json::to_string(&baseline).unwrap(),
+    );
     assert!(
         tui_declarations_from_values(&duplicate)
             .unwrap_err()
@@ -1455,30 +1515,27 @@ fn tui_scalar_helpers_reject_incomplete_and_incompatible_rows() {
             .unwrap()
             .is_empty()
     );
-    for (field, value) in [
-        ("name", " "),
-        ("binding", "future"),
-        ("delivery", "future"),
-        ("type", "future"),
-    ] {
-        let mut values = BTreeMap::from([("parameter:0:name".to_owned(), "item".to_owned())]);
-        values.insert(format!("parameter:0:{field}"), value.to_owned());
-        assert!(
-            tui_declarations_from_values(&values).is_err(),
-            "field={field}"
-        );
-    }
-    let invalid_default = BTreeMap::from([
-        ("parameter:0:name".to_owned(), "item".to_owned()),
-        ("parameter:0:type".to_owned(), "int".to_owned()),
-        ("parameter:0:default".to_owned(), "not-an-int".to_owned()),
-    ]);
+    // A row is keyed by the baseline it opened with. Name, binding and delivery have no control,
+    // so the only rejections left are the values a control can actually produce.
+    let row = |axis: &str, value: &str| {
+        BTreeMap::from([
+            (
+                "parameter:0:baseline".to_owned(),
+                serde_json::to_string(&ParamDecl::new("item")).unwrap(),
+            ),
+            (format!("parameter:0:{axis}"), value.to_owned()),
+        ])
+    };
+    assert!(tui_declarations_from_values(&row("type", "future")).is_err());
+    assert!(tui_declarations_from_values(&row("keep", "maybe")).is_err());
+    let mut invalid_default = row("type", "int");
+    invalid_default.insert("parameter:0:default".to_owned(), "not-an-int".to_owned());
     assert!(tui_declarations_from_values(&invalid_default).is_err());
-    let incompatible = BTreeMap::from([
-        ("parameter:0:name".to_owned(), "item".to_owned()),
-        ("parameter:0:type".to_owned(), "choice".to_owned()),
-    ]);
-    assert!(tui_declarations_from_values(&incompatible).is_err());
+    // A choice type with no choices is refused before anything is written.
+    assert!(tui_declarations_from_values(&row("type", "choice")).is_err());
+    // A baseline the host cannot read is a refusal, never a silently empty row.
+    let corrupt = BTreeMap::from([("parameter:0:baseline".to_owned(), "{".to_owned())]);
+    assert!(tui_declarations_from_values(&corrupt).is_err());
 
     assert!(tui_selector(&None).is_err());
     assert_eq!(tui_selector(&Some(String::new())).unwrap(), "");
@@ -3490,7 +3547,7 @@ fn tui_settings_accept_a_pinnable_interpreter_and_a_managed_binding() {
 }
 
 #[test]
-fn tui_settings_refuse_to_manage_a_parameter_the_form_unbound() {
+fn tui_settings_offers_no_binding_control_so_unmanaging_goes_through_its_own_key() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
     let state_dir = root.path().join("state");
@@ -3525,26 +3582,30 @@ fn tui_settings_refuse_to_manage_a_parameter_the_form_unbound() {
     values.insert("source:manage".to_owned(), "NAME".to_owned());
     tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap();
 
-    // The stored source now manages NAME. Clearing its binding needs source:unmanage.
+    // The stored source now manages NAME. Version 0.4 offers no binding control at all — a
+    // source-managed row exposes the form label, the secret flag and the environment source and
+    // nothing else (`src/skit/tui_settings.py:98-118`) — so the form cannot express "unbind this"
+    // and the refusal it used to need is unreachable through the screen.
     let managed = service.show("shell-tool").unwrap();
-    let mut values = form_values(tui_settings_form(&store, &managed));
-    values.insert("source:resync".to_owned(), "true".to_owned());
-    let binding_key = values
-        .keys()
-        .find(|key| key.ends_with(":binding"))
-        .expect("the managed parameter has a binding field")
-        .clone();
-    values.insert(binding_key, "none".to_owned());
-
-    let error =
-        tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap_err();
-
+    let values = form_values(tui_settings_form(&store, &managed));
     assert!(
-        error
-            .to_string()
-            .contains("use source:unmanage to remove the source binding for NAME"),
-        "{error}"
+        !values.keys().any(|key| key.ends_with(":binding")),
+        "a source-managed row offered a binding control: {:?}",
+        values.keys().collect::<Vec<_>>()
     );
+    for axis in ["prompt", "secret", "env_source", "keep"] {
+        assert!(
+            values.keys().any(|key| key.ends_with(&format!(":{axis}"))),
+            "a source-managed row lost its editable {axis}"
+        );
+    }
+
+    // Unmanaging goes through the source control that owns it, and it still works.
+    let mut values = values;
+    values.insert("source:unmanage".to_owned(), "NAME".to_owned());
+    tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap();
+    let stored = fs::read_to_string(data_dir.join("scripts/shell-tool/script.sh")).unwrap();
+    assert!(!stored.contains("[[tool.skit.params]]"), "{stored}");
 }
 
 #[test]
@@ -4331,4 +4392,105 @@ fn a_custom_mirror_url_is_one_token_and_github_demands_https() {
         "http://mirror.test/github-release",
         true
     ));
+}
+
+/// What a save keeps cannot depend on the source moving between open and save.
+///
+/// The old submit path rebuilt the discard set from a fresh read at save time, so a concurrent
+/// edit changed which rows survived, and a source that momentarily could not be read widened the
+/// set that did. Both are gone: the row carries the declaration it opened with, and the save reads
+/// no source to decide provenance. Version 0.4 captures the same baseline when the screen opens
+/// (`src/skit/tui_settings.py:115-133`).
+#[test]
+fn a_source_that_moves_between_open_and_save_cannot_change_which_rows_persist() {
+    let persisted = |interference: Option<&[u8]>| -> Vec<String> {
+        let root = TempDir::new().unwrap();
+        let data_dir = root.path().join("data");
+        let state_dir = root.path().join("state");
+        let config_dir = root.path().join("config");
+        let source = root.path().join("tool.ps1");
+        fs::write(&source, "param([string]$Name = 'World')\n").unwrap();
+        let store = FileStore::new(&data_dir);
+        let service = LibraryService::new(store.clone());
+        add_with_config(
+            &service,
+            &config_dir,
+            AddOptions {
+                source: Some(source),
+                kind: None,
+                name: Some("Ps".to_owned()),
+                description: Some(String::new()),
+                reference: false,
+                command_template: None,
+                prompt: false,
+                executable: false,
+                runner: None,
+                no_interpolate: false,
+                dependencies: Vec::new(),
+                dependencies_explicit: false,
+                requires_python: None,
+                no_input: true,
+            },
+        )
+        .unwrap();
+        // A declared rider is legitimate on PowerShell, which writes no schema into its own file.
+        let entry = service.show("ps").unwrap();
+        let mut settings = EntrySettings::from_meta(&entry.meta);
+        let mut rider = ParamDecl::new("API_TOKEN");
+        rider.delivery = ParameterDelivery::Env;
+        settings.parameters = vec![rider];
+        let claimed = service.claim_identity(&entry).unwrap();
+        service
+            .update_entry(
+                &claimed,
+                UpdateEntry {
+                    name: entry.meta.name.clone(),
+                    description: entry.meta.description.clone(),
+                    settings,
+                    workdir: entry.meta.workdir.clone(),
+                    source: None,
+                    expected_source_hash: entry.meta.source_hash.clone(),
+                },
+            )
+            .unwrap();
+
+        let entry = service.show("ps").unwrap();
+        let mut values = form_values(tui_settings_form(&store, &entry));
+        let prompt_key = values
+            .keys()
+            .find(|key| key.ends_with(":prompt"))
+            .expect("the rider row has a form label")
+            .clone();
+        values.insert(prompt_key, "Access token".to_owned());
+
+        // The interference happens after the form is built and before it is submitted.
+        let stored = data_dir.join("scripts/ps/script.ps1");
+        if let Some(bytes) = interference {
+            fs::write(&stored, bytes).unwrap();
+        }
+
+        tui_submit_settings(&service, &store, &state_dir, "ps", &values).unwrap();
+        EntrySettings::from_meta(&service.show("ps").unwrap().meta)
+            .parameters
+            .into_iter()
+            .map(|parameter| format!("{}={}", parameter.name, parameter.prompt))
+            .collect()
+    };
+
+    let undisturbed = persisted(None);
+    assert_eq!(undisturbed, ["API_TOKEN=Access token"]);
+    // A concurrent edit that adds a whole CLI surface must not change the outcome.
+    assert_eq!(
+        persisted(Some(
+            b"param([string]$Name = 'World', [string]$API_TOKEN = 'x')\n"
+        )),
+        undisturbed,
+        "a concurrent source edit changed which rows persist"
+    );
+    // Bytes the host cannot decode must not change it either.
+    assert_eq!(
+        persisted(Some(b"param(\xff\xfe)\n")),
+        undisturbed,
+        "an unreadable source changed which rows persist"
+    );
 }

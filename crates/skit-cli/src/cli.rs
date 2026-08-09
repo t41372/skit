@@ -44,8 +44,12 @@ use skit_domain::{
 };
 use skit_form::{
     FormDrift, FormPlan as PreparedFormPlan, OnboardingCandidate, OnboardingParseState,
-    OnboardingPlan, PreparedField, form_params, form_params_from_managed, form_plan,
-    onboarding_plan,
+    OnboardingPlan, PreparedField,
+    field::FieldKind,
+    form_params, form_params_from_managed, form_plan, onboarding_plan,
+    parameter_section::{
+        ParameterSection, ParameterSectionContext, apply_secrecy_rule, parameter_section,
+    },
 };
 use skit_i18n::{
     Locale, Localize, Message, available_locale_tags, detect_locale, format_text, kind_label,
@@ -5161,18 +5165,118 @@ const fn source_owned_schema(kind: &str) -> bool {
     )
 }
 
-fn settings_parameters(store: &FileStore, entry: &Entry) -> Vec<ParamDecl> {
-    let settings = EntrySettings::from_meta(&entry.meta);
-    let mut parameters = entry_parameters(store, entry);
-    for parameter in settings.parameters {
-        if !parameters
+/// Build the parameter section for one entry.
+///
+/// The host asks the plan what the section is, then renders only what it returns. Version 0.4 makes
+/// the same decision before it draws a row (`src/skit/tui_settings.py:588-631`), which is what
+/// keeps an edit the save cannot keep off the screen entirely.
+fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParameterInputs {
+    let kind = entry.meta.kind.as_str();
+    let source_owned = source_owned_schema(kind);
+    let declared_schema = known_entry_kind(kind) && !source_owned;
+    let source = source_path(store, entry)
+        .and_then(|path| fs::read(path).ok())
+        .map(|bytes| {
+            LosslessSource::from_bytes(&bytes)
+                .normalized_text()
+                .to_owned()
+        });
+    let text = source.clone().unwrap_or_default();
+    let managed = if declared_schema {
+        EntrySettings::from_meta(&entry.meta).parameters
+    } else if source_owned {
+        managed_params(kind, &text)
+    } else {
+        Vec::new()
+    };
+    let reader_fields = if source_owned {
+        cli_params(kind, &text).len()
+    } else {
+        0
+    };
+    let candidates = if source_owned {
+        detect_candidates(kind, &text)
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .filter(|name| !managed.iter().any(|current| current.name == *name))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    SettingsParameterInputs {
+        reference_mode: entry.meta.mode == StorageMode::Reference,
+        declared_schema,
+        has_analyzer: source_owned,
+        reader_fields,
+        managed,
+        candidates,
+    }
+}
+
+/// Everything the parameter section decision needs, read once.
+struct SettingsParameterInputs {
+    reference_mode: bool,
+    declared_schema: bool,
+    has_analyzer: bool,
+    reader_fields: usize,
+    managed: Vec<ParamDecl>,
+    candidates: Vec<String>,
+}
+
+/// Render the parameter section as host form fields.
+///
+/// Each editable row carries the declaration it opened with, so the save merges onto that baseline
+/// instead of re-reading the source. A read-only axis is never emitted as a field: a control that
+/// cannot be kept must not exist.
+fn settings_parameter_fields(store: &FileStore, entry: &Entry) -> Vec<FormField> {
+    let inputs = settings_parameter_context(store, entry);
+    let section = parameter_section(
+        ParameterSectionContext {
+            kind: entry.meta.kind.as_str(),
+            reference_mode: inputs.reference_mode,
+            declared_schema: inputs.declared_schema,
+            has_analyzer: inputs.has_analyzer,
+            reader_fields: inputs.reader_fields,
+        },
+        &inputs.managed,
+        &inputs.candidates,
+    );
+    let rows = match &section {
+        // Neither shape offers an editable control, so neither contributes a field.
+        ParameterSection::Unsupported | ParameterSection::Reference { .. } => return Vec::new(),
+        ParameterSection::Declared { rows } | ParameterSection::SourceManaged { rows, .. } => rows,
+    };
+    let mut fields = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let baseline = inputs
+            .managed
             .iter()
-            .any(|current| current.name == parameter.name)
-        {
-            parameters.push(parameter);
+            .find(|declaration| declaration.name == row.name);
+        let Some(baseline) = baseline else {
+            continue;
+        };
+        // The row the screen opened with travels with it, so nothing is re-read at save time.
+        fields.push(FormField::text(
+            format!("parameter:{index}:baseline"),
+            "parameter baseline",
+            serde_json::to_string(baseline).unwrap_or_default(),
+        ));
+        for field in &row.fields {
+            if !field.kind.editable() {
+                continue;
+            }
+            let multiline = field.kind == FieldKind::Multiline;
+            let value = field.value().as_text();
+            let mut form_field = if multiline {
+                FormField::multiline(field.key.clone(), field.label.clone(), value)
+            } else {
+                FormField::text(field.key.clone(), field.label.clone(), value)
+            };
+            form_field.label_arguments = vec![row.name.clone()];
+            fields.push(form_field);
         }
     }
-    parameters
+    fields
 }
 
 fn source_path(store: &FileStore, entry: &Entry) -> Option<PathBuf> {
@@ -6048,111 +6152,9 @@ fn tui_settings_form(store: &FileStore, entry: &Entry) -> Screen {
         FormField::text("parameter:add", "Add parameters", ""),
         FormField::text("parameter:remove", "Remove parameters", ""),
     ];
-    for (index, parameter) in settings_parameters(store, entry).iter().enumerate() {
-        let prefix = format!("parameter:{index}");
-        let subject = &parameter.name;
-        fields.extend([
-            FormField::text_with_arguments(
-                format!("{prefix}:name"),
-                "Parameter {} name",
-                vec![index.to_string()],
-                subject,
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:binding"),
-                "{} source binding",
-                vec![subject.clone()],
-                parameter.binding.as_str(),
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:delivery"),
-                "{} delivery",
-                vec![subject.clone()],
-                parameter.delivery.as_str(),
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:type"),
-                "{} type",
-                vec![subject.clone()],
-                parameter.parameter_type.as_str(),
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:default"),
-                "{} default",
-                vec![subject.clone()],
-                parameter
-                    .default
-                    .as_ref()
-                    .map_or_else(String::new, tui_parameter_value),
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:choices"),
-                "{} choices",
-                vec![subject.clone()],
-                parameter.choices.join(", "),
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:required"),
-                "{} is required",
-                vec![subject.clone()],
-                parameter.required.to_string(),
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:multiple"),
-                "{} takes multiple values",
-                vec![subject.clone()],
-                parameter.multiple.to_string(),
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:repeat"),
-                "{} repeats its flag",
-                vec![subject.clone()],
-                parameter.repeat.to_string(),
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:prompt"),
-                "{} prompt",
-                vec![subject.clone()],
-                &parameter.prompt,
-            ),
-            FormField::multiline_with_arguments(
-                format!("{prefix}:help"),
-                "{} help",
-                vec![subject.clone()],
-                &parameter.help,
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:secret"),
-                "{} is secret",
-                vec![subject.clone()],
-                parameter.secret.to_string(),
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:env_source"),
-                "{} secret environment source",
-                vec![subject.clone()],
-                &parameter.env_source,
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:env_target"),
-                "{} environment target",
-                vec![subject.clone()],
-                &parameter.env_target,
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:flag"),
-                "{} flag",
-                vec![subject.clone()],
-                &parameter.flag,
-            ),
-            FormField::text_with_arguments(
-                format!("{prefix}:action"),
-                "{} flag action",
-                vec![subject.clone()],
-                &parameter.action,
-            ),
-        ]);
-    }
+    // Rows come from the plan, so a control only exists where saving can keep the edit.
+    // Version 0.4 decides the section before it draws any row (`src/skit/tui_settings.py:588-631`).
+    fields.extend(settings_parameter_fields(store, entry));
     Screen::Form(FormView {
         purpose: FormPurpose::Settings,
         title: "Settings for {}".to_owned(),
@@ -6766,83 +6768,93 @@ fn tui_parameter_value(value: &ParameterValue) -> String {
     }
 }
 
+/// Read the parameter rows back, merging each row's edits onto the baseline it opened with.
+///
+/// The baseline travels in the form, so a save never re-reads the source to decide what a row was.
+/// Version 0.4 merges onto the widget's own `spec` for the same reason
+/// (`src/skit/tui_settings.py:115-133`): a fresh read at save time lets a concurrent write change
+/// what the user's edit means.
 fn tui_declarations_from_values(
     values: &BTreeMap<String, String>,
 ) -> Result<Vec<ParamDecl>, CliError> {
     let mut declarations = Vec::new();
     for index in 0.. {
         let prefix = format!("parameter:{index}");
-        let name_key = format!("{prefix}:name");
-        let Some(name) = values.get(&name_key) else {
+        let Some(baseline) = values.get(&format!("{prefix}:baseline")) else {
             break;
         };
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(CliError::Usage(
-                Message::new("parameter {} needs a name").with(index),
-            ));
-        }
-        if declarations
-            .iter()
-            .any(|item: &ParamDecl| item.name == name)
-        {
-            return Err(CliError::Usage(
-                Message::new("duplicate parameter: {}").with(name),
-            ));
-        }
+        let mut declaration: ParamDecl = serde_json::from_str(baseline).map_err(|error| {
+            CliError::Usage(Message::new("could not read a parameter row: {}").with(error))
+        })?;
         let get = |field: &str| {
             values
                 .get(&format!("{prefix}:{field}"))
-                .map_or("", String::as_str)
-                .trim()
+                .map(|value| value.trim())
         };
-        let mut declaration = ParamDecl::new(name);
-        declaration.binding = match get("binding") {
-            "" | "none" => ParameterBinding::None,
-            "const" => ParameterBinding::Const,
-            "input" => ParameterBinding::Input,
-            "envdefault" => ParameterBinding::EnvDefault,
-            value => {
-                return Err(CliError::Usage(
-                    Message::new("unknown parameter binding: {}").with(value),
-                ));
-            }
-        };
-        declaration.delivery = parse_delivery(if get("delivery").is_empty() {
-            "flag"
-        } else {
-            get("delivery")
-        })?;
-        declaration.parameter_type = parse_parameter_type(if get("type").is_empty() {
-            "str"
-        } else {
-            get("type")
-        })?;
-        if !get("default").is_empty() {
-            declaration.default = Some(
-                coerce_default(get("default"), declaration.parameter_type)
-                    .map_err(|error| CliError::Usage(error.message()))?,
-            );
+        // A row that was unticked is removed, exactly as version 0.4's keep checkbox returns None
+        // (`src/skit/tui_settings.py:115-117`).
+        if let Some(keep) = get("keep")
+            && !tui_bool(keep)?
+        {
+            continue;
         }
-        declaration.choices = get("choices")
-            .split(',')
-            .map(str::trim)
-            .filter(|choice| !choice.is_empty())
-            .map(str::to_owned)
-            .collect();
-        declaration.required = tui_bool(get("required"))?;
-        declaration.multiple = tui_bool(get("multiple"))?;
-        declaration.repeat = tui_bool(get("repeat"))?;
-        declaration.prompt = get("prompt").to_owned();
-        declaration.help = get("help").to_owned();
-        declaration.secret = tui_bool(get("secret"))?;
-        declaration.env_source = get("env_source").to_owned();
-        declaration.env_target = get("env_target").to_owned();
-        declaration.flag = get("flag").to_owned();
-        declaration.action = get("action").to_owned();
+        if declarations
+            .iter()
+            .any(|item: &ParamDecl| item.name == declaration.name)
+        {
+            return Err(CliError::Usage(
+                Message::new("duplicate parameter: {}").with(&declaration.name),
+            ));
+        }
+        // Only an axis the row actually offered can move. Everything else keeps the baseline, so a
+        // control the screen never drew can never change a stored value.
+        if let Some(value) = get("type") {
+            declaration.parameter_type =
+                parse_parameter_type(if value.is_empty() { "str" } else { value })?;
+        }
+        if let Some(value) = get("default") {
+            declaration.default = if value.is_empty() {
+                None
+            } else {
+                Some(
+                    coerce_default(value, declaration.parameter_type)
+                        .map_err(|error| CliError::Usage(error.message()))?,
+                )
+            };
+        }
+        if let Some(value) = get("choices") {
+            declaration.choices = value
+                .split(',')
+                .map(str::trim)
+                .filter(|choice| !choice.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+        if let Some(value) = get("help") {
+            declaration.help = value.to_owned();
+        }
+        if let Some(value) = get("flag") {
+            declaration.flag = value.to_owned();
+        }
+        if let Some(value) = get("required") {
+            declaration.required = tui_bool(value)?;
+        }
+        if let Some(value) = get("prompt") {
+            declaration.prompt = value.to_owned();
+        }
+        let was_secret = declaration.secret;
+        if let Some(value) = get("secret") {
+            declaration.secret = tui_bool(value)?;
+        }
+        if let Some(value) = get("env_source") {
+            declaration.env_source = value.to_owned();
+        }
+        // Marking a public row secret drops the cached literal, and an environment source survives
+        // only while the row is secret (`src/skit/tui_settings.py:125-132`).
+        apply_secrecy_rule(&mut declaration, was_secret);
         if declaration.validate().is_some() {
             return Err(CliError::Usage(
-                Message::new("parameter {} has incompatible settings").with(name),
+                Message::new("parameter {} has incompatible settings").with(&declaration.name),
             ));
         }
         declarations.push(declaration);
@@ -7088,25 +7100,15 @@ fn tui_submit_settings(
         declarations = reconcile_template_parameters(&settings.template, &declarations);
     }
     let original_source = source_path(store, &entry).and_then(|path| fs::read(path).ok());
-    let source_view = original_source.as_deref().map(LosslessSource::from_bytes);
-    let source_interface_names = original_source
-        .as_ref()
-        .zip(source_view.as_ref())
-        .map_or_else(BTreeSet::new, |source| {
-            managed_params(entry.meta.kind.as_str(), source.1.normalized_text())
-                .into_iter()
-                .chain(cli_params(
-                    entry.meta.kind.as_str(),
-                    source.1.normalized_text(),
-                ))
-                .map(|parameter| parameter.name)
-                .collect()
-        });
-    settings.parameters = declarations
-        .iter()
-        .filter(|parameter| !source_interface_names.contains(&parameter.name))
-        .cloned()
-        .collect();
+    // No submit-time filter. A source-owned row is never offered as an editable declaration, so
+    // there is nothing here to take back out — and with it go both races the filter carried: a
+    // concurrent source edit changing which rows survive, and an unreadable source silently
+    // widening the set that does.
+    settings.parameters = if source_owned_schema(entry.meta.kind.as_str()) {
+        Vec::new()
+    } else {
+        declarations.clone()
+    };
     if matches!(entry.meta.kind.as_str(), "command" | "prompt") {
         settings.params = settings
             .parameters
