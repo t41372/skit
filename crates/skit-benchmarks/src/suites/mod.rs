@@ -304,11 +304,8 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         let mut fixture = Fixture::new();
 
         fixture.context.uv = None;
-        let footprint = super::footprint::run(
-            &fixture.context,
-            &plan(SuiteKind::Footprint, &[0]),
-        )
-        .unwrap();
+        let footprint =
+            super::footprint::run(&fixture.context, &plan(SuiteKind::Footprint, &[0])).unwrap();
         assert_eq!(footprint.skipped[0].reason, "uv not found");
 
         fixture.context.hyperfine = None;
@@ -379,14 +376,10 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
     fn malformed_suite_plans_fail_before_starting_a_subject() {
         let fixture = Fixture::new();
         assert!(super::imports::run(&fixture.context, &plan(SuiteKind::Imports, &[])).is_err());
-        assert!(
-            super::footprint::run(&fixture.context, &plan(SuiteKind::Footprint, &[])).is_err()
-        );
+        assert!(super::footprint::run(&fixture.context, &plan(SuiteKind::Footprint, &[])).is_err());
         assert!(super::startup::run(&fixture.context, &plan(SuiteKind::Startup, &[])).is_err());
-        assert!(super::syscalls::run(
-            &fixture.context,
-            &plan(SuiteKind::Syscalls, &[0, 100])
-        )
-        .is_err());
+        assert!(
+            super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[0, 100])).is_err()
+        );
     }
 }

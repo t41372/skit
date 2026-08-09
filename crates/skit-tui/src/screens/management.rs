@@ -1110,11 +1110,7 @@ fn runner_editor_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerEdit
             text(locale, "Previous field"),
             RunnerEditorAction::FocusPrevious,
         ),
-        ActionFooterItem::new_group(
-            "Enter",
-            text(locale, "Save"),
-            RunnerEditorAction::Submit,
-        ),
+        ActionFooterItem::new_group("Enter", text(locale, "Save"), RunnerEditorAction::Submit),
         ActionFooterItem::new("Esc", text(locale, "Cancel"), RunnerEditorAction::Cancel),
     ]
 }

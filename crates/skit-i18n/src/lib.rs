@@ -757,6 +757,11 @@ const CATALOG: &[Translation] = &[
         "執行器 {} 已存在，請傳入 --force 取代其命令。",
     ),
     row!(
+        "The runner {} already exists — pick another name.",
+        "执行器 {} 已存在——请换一个名称。",
+        "執行器 {} 已存在——請換一個名稱。",
+    ),
+    row!(
         "No agents are configured. Add one with: skit runner add mycli -- mycli run {{prompt}}",
         "尚未配置 Agent。请运行以下命令添加：skit runner add mycli -- mycli run {{prompt}}",
         "尚未設定 Agent。請執行以下命令新增：skit runner add mycli -- mycli run {{prompt}}",
@@ -1231,6 +1236,19 @@ const CATALOG: &[Translation] = &[
     row!("Work directory: {}", "工作目录：{}", "工作目錄：{}"),
     row!("Working directory: {}", "工作目录:{}", "工作目錄:{}"),
     row!("Missing: {}", "缺失：{}", "遺失：{}"),
+    row!(
+        "Missing parameter values: {}",
+        "缺少参数值:{}",
+        "缺少參數值:{}"
+    ),
+    // A backtick substitution strips one layer of backslashes before the inner command
+    // parses, so the escape this branch writes arrives bare. Version 0.4 refuses instead of
+    // assembling a command that quietly means something else (`src/skit/langs/launch.py:296`).
+    row!(
+        "Can't safely fill in a value inside double quotes nested in a `…` command substitution — the shell strips one layer of escaping there. Rewrite that part of the template with $(…) instead of backticks.",
+        "没办法安全地把值填进嵌套在 `…` 命令替换里的双引号——shell 在那里会多剥掉一层转义。请把模板的那一段改用 $(…)，不要用反引号。",
+        "沒辦法安全地把值填進巢狀在 `…` 命令替換裡的雙引號——shell 在那裡會多剝掉一層跳脫。請把模板的那一段改用 $(…)，不要用反引號。",
+    ),
     row!("Drift: {}", "漂移：{}", "偏移：{}"),
     row!("Interpreter: {}", "解释器：{}", "直譯器：{}"),
     row!("Template: {}", "模板：{}", "範本：{}"),
@@ -1945,6 +1963,18 @@ const CATALOG: &[Translation] = &[
         "--runner 仅适用于提示词条目",
         "--runner 僅適用於提示詞項目",
     ),
+    // The run path's own refusal. Version 0.4 ships this exact sentence and these exact
+    // translations (`src/skit/cli.py:2891`), so they stay byte-identical.
+    row!(
+        "--runner only applies to prompt entries.",
+        "--runner 只适用于提示词条目。",
+        "--runner 只適用於提示詞項目。",
+    ),
+    row!(
+        "--row must be a non-negative index or 'container'.",
+        "--row 必须是非负索引或“container”。",
+        "--row 必須是非負索引或「container」。",
+    ),
     row!(
         "--set needs NAME=VALUE; got {}",
         "--set 需要 NAME=VALUE；收到 {}",
@@ -1999,6 +2029,60 @@ const CATALOG: &[Translation] = &[
         "a prompt runner command needs {{prompt}} exactly once after the program",
         "提示词运行器命令必须在程序之后正好包含一次 {{prompt}}",
         "提示詞執行器命令必須在程式之後正好包含一次 {{prompt}}",
+    ),
+    // The human face of each runner-row problem. `PromptRunnerRow::reason` keeps the stable
+    // symbolic token for machine readers; only these sentences are translated.
+    row!(
+        "a prompt runner needs a name",
+        "提示词执行器需要名称",
+        "提示詞執行器需要名稱",
+    ),
+    row!(
+        "a prompt runner argv must be a list of strings",
+        "提示词执行器的 argv 必须是字符串列表",
+        "提示詞執行器的 argv 必須是字串清單",
+    ),
+    row!(
+        "a prompt runner command needs nonempty arguments",
+        "提示词执行器命令需要非空参数",
+        "提示詞執行器命令需要非空引數",
+    ),
+    row!(
+        "a prompt runner command supports only the {{prompt}} slot",
+        "提示词执行器命令只支持 {{prompt}} 槽位",
+        "提示詞執行器命令只支援 {{prompt}} 插槽",
+    ),
+    row!(
+        "{{prompt}} cannot be the prompt runner program",
+        "{{prompt}} 不能作为提示词执行器的程序",
+        "{{prompt}} 不能作為提示詞執行器的程式",
+    ),
+    row!(
+        "the prompt runner row is not a table",
+        "提示词执行器行不是表格",
+        "提示詞執行器列不是表格",
+    ),
+    row!(
+        "another row already uses this prompt runner name",
+        "另一行已使用此提示词执行器名称",
+        "另一列已使用此提示詞執行器名稱",
+    ),
+    // Version 0.4 ships these three rebuild lines with this exact punctuation
+    // (`src/skit/locales/*/LC_MESSAGES/skit.po`), so they stay byte-identical.
+    row!(
+        "{}: meta.toml is missing; skipped",
+        "{}:缺 meta.toml,已跳过",
+        "{}:缺 meta.toml,已略過",
+    ),
+    row!(
+        "{}: meta.toml is corrupt ({}); skipped",
+        "{}:meta.toml 损坏({}),已跳过",
+        "{}:meta.toml 損毀({}),已略過",
+    ),
+    row!(
+        "{}: the referenced source file is gone: {}",
+        "{}:reference 原文件已消失:{}",
+        "{}:reference 原檔已消失:{}",
     ),
     row!(
         "a prompt runner needs a name and command",
@@ -3058,7 +3142,11 @@ const CATALOG: &[Translation] = &[
     row!("Parameters  {}", "参数  {}", "參數  {}"),
     row!("Presets  {}", "参数组合  {}", "參數組合  {}"),
     row!("Depends on  {}", "依赖  {}", "依賴  {}"),
-    row!("Last run  {} · {}", "上次运行  {} · {}", "上次執行  {} · {}"),
+    row!(
+        "Last run  {} · {}",
+        "上次运行  {} · {}",
+        "上次執行  {} · {}"
+    ),
     row!("just now", "刚刚", "剛剛"),
     row!("{} min ago", "{} 分钟前", "{} 分鐘前"),
     row!("{} h ago", "{} 小时前", "{} 小時前"),

@@ -69,104 +69,104 @@ impl LibraryScreenSession {
         state: &LibraryState,
         locale: Locale,
     ) -> ViewGeometry {
-    let narrow = area.width < 80;
-    let short = frame.area().height < 16;
-    let show_detail = match state.detail_pane_mode() {
-        DetailPaneMode::PinnedOpen => true,
-        DetailPaneMode::PinnedClosed => false,
-        DetailPaneMode::Automatic => !narrow || !short,
-    };
-    let panes = if !show_detail {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(100), Constraint::Length(0)])
-            .split(area)
-    } else if !narrow || short {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)])
-            .split(area)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)])
-            .split(area)
-    };
+        let narrow = area.width < 80;
+        let short = frame.area().height < 16;
+        let show_detail = match state.detail_pane_mode() {
+            DetailPaneMode::PinnedOpen => true,
+            DetailPaneMode::PinnedClosed => false,
+            DetailPaneMode::Automatic => !narrow || !short,
+        };
+        let panes = if !show_detail {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(100), Constraint::Length(0)])
+                .split(area)
+        } else if !narrow || short {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)])
+                .split(area)
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)])
+                .split(area)
+        };
 
-    let list_block = panel_block(text(locale, "Library").into_owned(), BOX_GREEN);
-    let table_inner = list_block.inner(panes[0]);
-    let rows = Rect::new(
-        table_inner.x,
-        table_inner.y.saturating_add(1),
-        table_inner.width,
-        table_inner.height.saturating_sub(1),
-    );
-    let table_rows = state
-        .visible_entries()
-        .map(|entry| {
-            let mut label = format!(
-                "{} {}",
-                kind_glyph(entry.kind.as_str()),
-                kind_label(locale, entry.kind.as_str())
-            );
-            if supports_modes(entry.kind.as_str()) && entry.mode == StorageMode::Reference {
-                label.push_str(" ↗");
-            }
-            let health = if state
-                .entry_detail(&entry.slug)
-                .is_some_and(|detail| detail.missing_target.is_some())
-            {
-                "⚠"
-            } else {
-                ""
-            };
-            Row::new(vec![
-                Cell::from(entry.name.as_str()),
-                Cell::from(label),
-                Cell::from(health),
-            ])
-        })
-        .collect::<Vec<_>>();
-    let header = Row::new(vec![
-        Cell::from(text(locale, "Name")),
-        Cell::from(text(locale, "Kind")),
-        Cell::from(" "),
-    ])
-    .style(
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
-    let mut table_state = TableState::default();
-    table_state.select(state.selected_visible_index());
-    let table = Table::new(
-        table_rows,
-        [
-            Constraint::Percentage(57),
-            Constraint::Percentage(38),
-            Constraint::Length(2),
-        ],
-    )
-    .block(list_block)
-    .header(header)
-    .column_spacing(1)
-    .row_highlight_style(
-        Style::default()
-            .fg(SELECT_FG)
-            .bg(SELECT_BG)
-            .add_modifier(Modifier::BOLD),
-    );
-    frame.render_stateful_widget(table, panes[0], &mut table_state);
+        let list_block = panel_block(text(locale, "Library").into_owned(), BOX_GREEN);
+        let table_inner = list_block.inner(panes[0]);
+        let rows = Rect::new(
+            table_inner.x,
+            table_inner.y.saturating_add(1),
+            table_inner.width,
+            table_inner.height.saturating_sub(1),
+        );
+        let table_rows = state
+            .visible_entries()
+            .map(|entry| {
+                let mut label = format!(
+                    "{} {}",
+                    kind_glyph(entry.kind.as_str()),
+                    kind_label(locale, entry.kind.as_str())
+                );
+                if supports_modes(entry.kind.as_str()) && entry.mode == StorageMode::Reference {
+                    label.push_str(" ↗");
+                }
+                let health = if state
+                    .entry_detail(&entry.slug)
+                    .is_some_and(|detail| detail.missing_target.is_some())
+                {
+                    "⚠"
+                } else {
+                    ""
+                };
+                Row::new(vec![
+                    Cell::from(entry.name.as_str()),
+                    Cell::from(label),
+                    Cell::from(health),
+                ])
+            })
+            .collect::<Vec<_>>();
+        let header = Row::new(vec![
+            Cell::from(text(locale, "Name")),
+            Cell::from(text(locale, "Kind")),
+            Cell::from(" "),
+        ])
+        .style(
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
+        let mut table_state = TableState::default();
+        table_state.select(state.selected_visible_index());
+        let table = Table::new(
+            table_rows,
+            [
+                Constraint::Percentage(57),
+                Constraint::Percentage(38),
+                Constraint::Length(2),
+            ],
+        )
+        .block(list_block)
+        .header(header)
+        .column_spacing(1)
+        .row_highlight_style(
+            Style::default()
+                .fg(SELECT_FG)
+                .bg(SELECT_BG)
+                .add_modifier(Modifier::BOLD),
+        );
+        frame.render_stateful_widget(table, panes[0], &mut table_state);
 
-    let detail = detail_lines(state, locale);
-    self.render_detail(frame, panes[1], detail, state, locale);
+        let detail = detail_lines(state, locale);
+        self.render_detail(frame, panes[1], detail, state, locale);
 
-    ViewGeometry {
-        rows,
-        first_visible: table_state.offset(),
-        hits: Vec::new(),
+        ViewGeometry {
+            rows,
+            first_visible: table_state.offset(),
+            hits: Vec::new(),
+        }
     }
-}
 
     fn render_detail(
         &mut self,
@@ -246,7 +246,9 @@ impl LibraryScreenSession {
                 self.focus.set(LibraryPane::Detail);
                 true
             }
-            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) => {
+            Event::Mouse(mouse)
+                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
+            {
                 self.focus.set(LibraryPane::List);
                 false
             }
@@ -264,12 +266,8 @@ impl LibraryScreenSession {
                             | KeyCode::End
                     ) =>
             {
-                handle_scrollable_content_key(
-                    &mut self.detail_scroll,
-                    key,
-                    self.detail_height,
-                )
-                .is_some()
+                handle_scrollable_content_key(&mut self.detail_scroll, key, self.detail_height)
+                    .is_some()
             }
             Event::FocusGained
             | Event::FocusLost
@@ -291,10 +289,7 @@ pub(crate) fn detail_lines(state: &LibraryState, locale: Locale) -> Vec<Line<'st
                 )),
                 Line::default(),
                 Line::from(text(locale, "Press a to add the first one,")),
-                Line::from(text(
-                    locale,
-                    "or run: skit add <path> in a terminal.",
-                )),
+                Line::from(text(locale, "or run: skit add <path> in a terminal.")),
             ]
         } else {
             Vec::new()
@@ -324,9 +319,7 @@ pub(crate) fn detail_lines(state: &LibraryState, locale: Locale) -> Vec<Line<'st
             LibraryPromptRunner::PickOnRunForm => {
                 text(locale, "Runner picked on the run form").into_owned()
             }
-            LibraryPromptRunner::Configured(name) => {
-                format_text(locale, "Runs with {}", &[name])
-            }
+            LibraryPromptRunner::Configured(name) => format_text(locale, "Runs with {}", &[name]),
             LibraryPromptRunner::Missing(name) => {
                 format_text(locale, "{} (no longer configured)", &[name])
             }
@@ -379,11 +372,7 @@ fn append_storage_mode(lines: &mut Vec<Line<'static>>, entry: &EntrySummary, loc
     )));
 }
 
-fn append_state_lines(
-    lines: &mut Vec<Line<'static>>,
-    facts: &LibraryEntryDetail,
-    locale: Locale,
-) {
+fn append_state_lines(lines: &mut Vec<Line<'static>>, facts: &LibraryEntryDetail, locale: Locale) {
     if !facts.parameters.is_empty() {
         let mut shown = facts
             .parameters

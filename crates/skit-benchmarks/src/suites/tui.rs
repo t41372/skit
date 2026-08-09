@@ -203,7 +203,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn child_failures_corrupt_payloads_and_missing_procfs_are_explicit() {
-        use crate::{SuiteKind, suites::tests::{Fixture, executable, plan}};
+        use crate::{
+            SuiteKind,
+            suites::tests::{Fixture, executable, plan},
+        };
 
         let mut fixture = Fixture::new();
         let mut compare = plan(SuiteKind::Tui, &[0]);
@@ -239,10 +242,20 @@ mod tests {
         );
         let no_procfs = super::run_with_status(&fixture.context, &strict, false).unwrap();
         assert_eq!(no_procfs.skipped[0].case, "peak_rss");
-        assert!(no_procfs.metrics.contains_key("tui.first_idle.n0.median_ms"));
+        assert!(
+            no_procfs
+                .metrics
+                .contains_key("tui.first_idle.n0.median_ms")
+        );
         assert!(super::run_with_status(&fixture.context, &strict, true).is_err());
 
-        fixture.context.datasets.get_mut(&0).unwrap().probe_char.clear();
+        fixture
+            .context
+            .datasets
+            .get_mut(&0)
+            .unwrap()
+            .probe_char
+            .clear();
         assert!(super::run_with_status(&fixture.context, &strict, false).is_err());
     }
 }

@@ -45,11 +45,7 @@ impl<A> ActionFooterItem<A> {
     }
 
     /// Add an action on a new row so related actions stay together.
-    pub(crate) fn new_group(
-        key: impl Into<String>,
-        label: impl Into<String>,
-        action: A,
-    ) -> Self {
+    pub(crate) fn new_group(key: impl Into<String>, label: impl Into<String>, action: A) -> Self {
         Self {
             starts_group: true,
             ..Self::new(key, label, action)
@@ -203,10 +199,7 @@ impl<A: Clone> ActionFooterSession<A> {
 }
 
 /// Return the rows needed to show every local footer action at this width.
-pub(crate) fn action_footer_required_height<A>(
-    width: u16,
-    items: &[ActionFooterItem<A>],
-) -> u16 {
+pub(crate) fn action_footer_required_height<A>(width: u16, items: &[ActionFooterItem<A>]) -> u16 {
     let (_, rows) = action_footer_chips(items, action_footer_content_width(width));
     u16::try_from(rows).unwrap_or(u16::MAX)
 }
@@ -311,7 +304,10 @@ pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
     matches!(
         state.screen(),
         Screen::Add(_) | Screen::Health(_) | Screen::Runners(_)
-    ) || matches!(state.modal(), Some(skit_ui::ModalState::RunnerEditor { .. }))
+    ) || matches!(
+        state.modal(),
+        Some(skit_ui::ModalState::RunnerEditor { .. })
+    )
 }
 
 impl FooterSession {
@@ -535,7 +531,7 @@ fn default_library_status(state: &LibraryState, locale: Locale) -> String {
 mod tests {
     use ratatui_core::{backend::TestBackend, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::{
-        MouseButton, MouseEvent, MouseEventKind, KeyModifiers,
+        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
 
     use super::*;
@@ -579,22 +575,13 @@ mod tests {
         let mut session = ActionFooterSession::default();
         terminal
             .draw(|frame| {
-                session.render(
-                    frame,
-                    frame.area(),
-                    &items,
-                    ActionFooterStyle::default(),
-                );
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
             })
             .unwrap();
 
-        for (row, action) in [
-            TestAction::First,
-            TestAction::Second,
-            TestAction::Third,
-        ]
-        .into_iter()
-        .enumerate()
+        for (row, action) in [TestAction::First, TestAction::Second, TestAction::Third]
+            .into_iter()
+            .enumerate()
         {
             assert_eq!(
                 session.handle_mouse(&click(1, u16::try_from(row).unwrap())),
@@ -615,12 +602,7 @@ mod tests {
         let mut session = ActionFooterSession::default();
         terminal
             .draw(|frame| {
-                session.render(
-                    frame,
-                    frame.area(),
-                    &items,
-                    ActionFooterStyle::default(),
-                );
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
             })
             .unwrap();
         assert_eq!(
@@ -633,12 +615,7 @@ mod tests {
         );
         terminal
             .draw(|frame| {
-                session.render(
-                    frame,
-                    frame.area(),
-                    &items,
-                    ActionFooterStyle::default(),
-                );
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
             })
             .unwrap();
         assert_eq!(

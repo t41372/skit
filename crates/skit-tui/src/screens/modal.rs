@@ -129,67 +129,69 @@ pub(crate) struct HelpScreenSession {
 }
 
 impl HelpScreenSession {
-pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect, locale: Locale) -> ViewGeometry {
-    let lines = command_specs(CommandContext::LibraryBrowse)
-        .filter(|spec| spec.help)
-        .filter_map(|spec| {
-            spec.bindings.first().map(|binding| {
-                let hint = if spec.command == UiCommand::Quit {
-                    "Ctrl+C Ctrl+C / Esc"
-                } else {
-                    binding.hint
-                };
-                Line::from(vec![
-                    Span::styled(
-                        format!("{hint:>20}"),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw("  "),
-                    Span::raw(text(locale, spec.label)),
-                ])
+    pub(crate) fn render(&mut self, frame: &mut Frame, area: Rect, locale: Locale) -> ViewGeometry {
+        let lines = command_specs(CommandContext::LibraryBrowse)
+            .filter(|spec| spec.help)
+            .filter_map(|spec| {
+                spec.bindings.first().map(|binding| {
+                    let hint = if spec.command == UiCommand::Quit {
+                        "Ctrl+C Ctrl+C / Esc"
+                    } else {
+                        binding.hint
+                    };
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{hint:>20}"),
+                            Style::default().add_modifier(Modifier::BOLD),
+                        ),
+                        Span::raw("  "),
+                        Span::raw(text(locale, spec.label)),
+                    ])
+                })
             })
-        })
-        .collect::<Vec<_>>();
-    let base_block = Block::default()
-        .borders(Borders::ALL)
-        .title(text(locale, "Help"));
-    self.viewport = base_block.inner(area);
-    self.visible_height = usize::from(self.viewport.height);
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let line_count = paragraph.line_count(self.viewport.width);
-    self.scroll.set_lines(vec![String::new(); line_count]);
-    let maximum = line_count.saturating_sub(self.visible_height);
-    if self.scroll.scroll_offset() > maximum {
-        self.scroll.set_scroll_offset(maximum);
-    }
-    let indicator = match (
-        self.scroll.is_at_top(),
-        self.scroll.is_at_bottom(self.visible_height),
-    ) {
-        (true, true) => "",
-        (true, false) => " ↓",
-        (false, true) => " ↑",
-        (false, false) => " ↑↓",
-    };
-    frame.render_widget(
-        Block::default()
+            .collect::<Vec<_>>();
+        let base_block = Block::default()
             .borders(Borders::ALL)
-            .title(format!("{}{}", text(locale, "Help"), indicator)),
-        area,
-    );
-    frame.render_widget(
-        paragraph.scroll((
-            u16::try_from(self.scroll.scroll_offset()).unwrap_or(u16::MAX),
-            0,
-        )),
-        self.viewport,
-    );
-    ViewGeometry {
-        rows: self.viewport,
-        first_visible: self.scroll.scroll_offset(),
-        hits: Vec::new(),
+            .title(text(locale, "Help"));
+        self.viewport = base_block.inner(area);
+        self.visible_height = usize::from(self.viewport.height);
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let line_count = paragraph.line_count(self.viewport.width);
+        self.scroll.set_lines(vec![String::new(); line_count]);
+        let maximum = line_count.saturating_sub(self.visible_height);
+        if self.scroll.scroll_offset() > maximum {
+            self.scroll.set_scroll_offset(maximum);
+        }
+        let indicator = match (
+            self.scroll.is_at_top(),
+            self.scroll.is_at_bottom(self.visible_height),
+        ) {
+            (true, true) => "",
+            (true, false) => " ↓",
+            (false, true) => " ↑",
+            (false, false) => " ↑↓",
+        };
+        frame.render_widget(
+            Block::default().borders(Borders::ALL).title(format!(
+                "{}{}",
+                text(locale, "Help"),
+                indicator
+            )),
+            area,
+        );
+        frame.render_widget(
+            paragraph.scroll((
+                u16::try_from(self.scroll.scroll_offset()).unwrap_or(u16::MAX),
+                0,
+            )),
+            self.viewport,
+        );
+        ViewGeometry {
+            rows: self.viewport,
+            first_visible: self.scroll.scroll_offset(),
+            hits: Vec::new(),
+        }
     }
-}
 
     pub(crate) fn handle_event(&mut self, event: &Event) -> bool {
         match event {

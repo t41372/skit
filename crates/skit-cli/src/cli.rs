@@ -4161,7 +4161,10 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
             yes,
             no_input,
         } => {
-            let selection = match (name.as_deref(), row.as_deref()) {
+            // Version 0.4 strips the row value before it compares (`src/skit/cli.py:3457`),
+            // so a padded `--row " 5 "` selects row 5 there and must do the same here.
+            let row = row.as_deref().map(str::trim);
+            let selection = match (name.as_deref(), row) {
                 (Some(name), None) if !name.trim().is_empty() => {
                     RunnerSelection::Name(name.trim().to_owned())
                 }
@@ -4174,7 +4177,7 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                 (None, Some(row)) => {
                     let index = row.parse::<usize>().map_err(|_| {
                         CliError::Usage(Message::new(
-                            "--row must be a non-negative index or container",
+                            "--row must be a non-negative index or 'container'.",
                         ))
                     })?;
                     RunnerSelection::Row(index)

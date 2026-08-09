@@ -253,10 +253,7 @@ fn run_commands_match_the_latest_main_contract_and_target_typed_fields() {
 
     state.update(Action::Back);
     state.update(Action::FocusPrevious);
-    assert_eq!(
-        state.update(Action::OpenRunRunnerEditor),
-        Effect::None
-    );
+    assert_eq!(state.update(Action::OpenRunRunnerEditor), Effect::None);
     assert!(matches!(
         state.modal(),
         Some(ModalState::RunnerEditor {

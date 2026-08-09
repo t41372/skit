@@ -323,10 +323,7 @@ mod tests {
     fn filesystem_helpers_keep_each_failure_typed() {
         let root = TempDir::new().unwrap();
         let missing = root.path().join("missing");
-        assert!(matches!(
-            super::normal_file_exists(&missing),
-            Ok(false)
-        ));
+        assert!(matches!(super::normal_file_exists(&missing), Ok(false)));
         assert!(matches!(
             super::read(&missing),
             Err(super::SummaryError::Io {

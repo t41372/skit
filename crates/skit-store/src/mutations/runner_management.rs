@@ -107,15 +107,9 @@ impl FileRunnerManagementStore {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::mpsc,
-        thread,
-        time::Duration,
-    };
+    use std::{sync::mpsc, thread, time::Duration};
 
-    use skit_application::{
-        CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions,
-    };
+    use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
     use skit_domain::{EntryKind, StorageMode};
     use tempfile::TempDir;
 
@@ -186,7 +180,9 @@ mod tests {
         });
         started_receiver.recv().unwrap();
         assert!(
-            done_receiver.recv_timeout(Duration::from_millis(50)).is_err(),
+            done_receiver
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
             "the metadata mutation must wait for the namespace transaction"
         );
 

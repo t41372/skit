@@ -68,7 +68,14 @@ fn run_with_time(
     for (case, n, target) in cases {
         let mut peaks = Vec::with_capacity(plan.samples);
         for sample in 0..plan.samples {
-            peaks.push(sample_peak(context, time_binary, n, &case, sample, &target)?);
+            peaks.push(sample_peak(
+                context,
+                time_binary,
+                n,
+                &case,
+                sample,
+                &target,
+            )?);
         }
         let (peak, maximum) = summarize_peaks(&peaks)?;
         output.metrics.insert(format!("{case}.peak_kib"), peak);
@@ -125,28 +132,28 @@ fn sample_peak(
     }
     #[cfg(not(target_os = "macos"))]
     {
-    let file = context
-        .workdir
-        .join(format!("{}_{}.rss", case.replace('.', "_"), sample));
-    let mut argv = vec![
-        path_arg(time_binary),
-        "-f".to_owned(),
-        "%M".to_owned(),
-        "-o".to_owned(),
-        file.display().to_string(),
-        "--".to_owned(),
-    ];
-    argv.extend(target.iter().cloned());
-    run_process(&ProcessSpec {
-        argv,
-        cwd: context.workdir.clone(),
-        env: context.environment(n)?,
-        timeout: PROBE_TIMEOUT,
-        check: true,
-    })?;
-    let text = fs::read_to_string(&file).map_err(|error| {
-        SuiteError::Contract(format!("could not read {}: {error}", file.display()))
-    })?;
+        let file = context
+            .workdir
+            .join(format!("{}_{}.rss", case.replace('.', "_"), sample));
+        let mut argv = vec![
+            path_arg(time_binary),
+            "-f".to_owned(),
+            "%M".to_owned(),
+            "-o".to_owned(),
+            file.display().to_string(),
+            "--".to_owned(),
+        ];
+        argv.extend(target.iter().cloned());
+        run_process(&ProcessSpec {
+            argv,
+            cwd: context.workdir.clone(),
+            env: context.environment(n)?,
+            timeout: PROBE_TIMEOUT,
+            check: true,
+        })?;
+        let text = fs::read_to_string(&file).map_err(|error| {
+            SuiteError::Contract(format!("could not read {}: {error}", file.display()))
+        })?;
         Ok(gnu_time_max_kib(&text)?)
     }
 }
@@ -167,16 +174,15 @@ mod tests {
     #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn absent_time_and_missing_probe_output_are_typed() {
-        use crate::{SuiteKind, suites::tests::{Fixture, executable, plan}};
+        use crate::{
+            SuiteKind,
+            suites::tests::{Fixture, executable, plan},
+        };
 
         let fixture = Fixture::new();
         let missing = fixture.context.workdir.join("missing-time");
-        let skipped = super::run_with_time(
-            &fixture.context,
-            &plan(SuiteKind::Rss, &[0]),
-            &missing,
-        )
-        .unwrap();
+        let skipped =
+            super::run_with_time(&fixture.context, &plan(SuiteKind::Rss, &[0]), &missing).unwrap();
         assert_eq!(skipped.skipped[0].reason, "/usr/bin/time not found");
 
         let silent = executable(

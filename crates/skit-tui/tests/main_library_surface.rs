@@ -409,14 +409,20 @@ fn library_activity_health_and_complete_detail_match_latest_main() {
         rendered.contains("🤖 old-agent (no longer configured)"),
         "{rendered}"
     );
-    assert!(rendered.contains("Parameters  topic=Rust  token=•••🔒"), "{rendered}");
+    assert!(
+        rendered.contains("Parameters  topic=Rust  token=•••🔒"),
+        "{rendered}"
+    );
     assert!(rendered.contains("Presets  daily · weekly"), "{rendered}");
     assert!(rendered.contains("Depends on  httpx>=0.28"), "{rendered}");
     assert!(
         rendered.contains("Last run  12 min ago · ✗ failed (code 7)"),
         "{rendered}"
     );
-    assert!(rendered.contains("⚠ missing: /work/prompt.md"), "{rendered}");
+    assert!(
+        rendered.contains("⚠ missing: /work/prompt.md"),
+        "{rendered}"
+    );
     assert!(!rendered.contains("must-not-render"), "{rendered}");
     assert!(
         !rendered.contains("The script changed —"),
@@ -452,20 +458,28 @@ fn library_detail_keeps_template_runner_states_drift_and_empty_onboarding_visibl
     );
     let terminal = draw(&view, 240, 34, Locale::En);
     let rendered = lines(terminal.backend().buffer()).join("\n");
-    assert!(rendered.contains("deploy --env {{environment}}"), "{rendered}");
+    assert!(
+        rendered.contains("deploy --env {{environment}}"),
+        "{rendered}"
+    );
     assert!(rendered.contains("Not run yet"), "{rendered}");
     assert!(
-        rendered.contains(
-            "⚠ The script changed — skit checks the form against it before every run."
-        ),
+        rendered
+            .contains("⚠ The script changed — skit checks the form against it before every run."),
         "{rendered}"
     );
 
     let empty = state(Vec::new());
     let terminal = draw(&empty, 160, 24, Locale::En);
     let rendered = lines(terminal.backend().buffer()).join("\n");
-    assert!(rendered.contains("Your entries will appear here."), "{rendered}");
-    assert!(rendered.contains("Press a to add the first one,"), "{rendered}");
+    assert!(
+        rendered.contains("Your entries will appear here."),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("Press a to add the first one,"),
+        "{rendered}"
+    );
     assert!(
         rendered.contains("or run: skit add <path> in a terminal."),
         "{rendered}"

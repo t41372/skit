@@ -473,8 +473,18 @@ fn comparison_keeps_missing_unit_zero_floor_and_skip_evidence() {
             .iter()
             .any(|row| row == "runner image: 20260808.1 vs None")
     );
-    assert!(comparison.notable().iter().any(|row| row.metric == "zero.base"));
-    assert!(comparison.notable().iter().any(|row| row.metric == "micro.delta"));
+    assert!(
+        comparison
+            .notable()
+            .iter()
+            .any(|row| row.metric == "zero.base")
+    );
+    assert!(
+        comparison
+            .notable()
+            .iter()
+            .any(|row| row.metric == "micro.delta")
+    );
 
     let markdown = render_comparison(&base, &head, &comparison);
     for evidence in [
@@ -488,20 +498,24 @@ fn comparison_keeps_missing_unit_zero_floor_and_skip_evidence() {
         assert!(markdown.contains(evidence), "missing {evidence:?}");
     }
 
-    assert!(Delta {
-        metric: "unknown".to_owned(),
-        unit: "widgets".to_owned(),
-        base: 10.0,
-        head: 11.0,
-    }
-    .is_notable());
-    assert!(!Delta {
-        metric: "zero".to_owned(),
-        unit: "ms".to_owned(),
-        base: 0.0,
-        head: 0.0,
-    }
-    .is_notable());
+    assert!(
+        Delta {
+            metric: "unknown".to_owned(),
+            unit: "widgets".to_owned(),
+            base: 10.0,
+            head: 11.0,
+        }
+        .is_notable()
+    );
+    assert!(
+        !Delta {
+            metric: "zero".to_owned(),
+            unit: "ms".to_owned(),
+            base: 0.0,
+            head: 0.0,
+        }
+        .is_notable()
+    );
 }
 
 #[test]

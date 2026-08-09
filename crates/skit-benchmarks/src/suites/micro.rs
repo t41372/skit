@@ -607,10 +607,9 @@ mod tests {
         );
 
         let mut duplicate_raw = output();
-        duplicate_raw.raw.insert(
-            "group".to_owned(),
-            serde_json::json!({"case": [0.1]}),
-        );
+        duplicate_raw
+            .raw
+            .insert("group".to_owned(), serde_json::json!({"case": [0.1]}));
         assert!(
             super::record(
                 &mut duplicate_raw,

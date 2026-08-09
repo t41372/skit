@@ -9,11 +9,11 @@ use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
 use skit_ui::{
     Action, AddAction, AddEffect, AddWorkflowState, CommandContext, DetailPaneMode, DraftSummary,
     Effect, FormControl, FormField, FormPurpose, FormView, HealthAction, HealthIssue,
-    HealthIssueKind,
-    HealthSnapshot, HealthView, HostRequest, InputMode, KnownEntryKind, LibraryState, MirrorHealth,
-    ModalState, PreferencesAction, PreferencesView, ReportItem, ReportView, ReviewDefaults,
-    ReviewState, RunFormView, RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction,
-    RunnerManagerView, RunnerSaveOwner, Screen, SourceSnapshot, UiCommand, UvHealth, command_specs,
+    HealthIssueKind, HealthSnapshot, HealthView, HostRequest, InputMode, KnownEntryKind,
+    LibraryState, MirrorHealth, ModalState, PreferencesAction, PreferencesView, ReportItem,
+    ReportView, ReviewDefaults, ReviewState, RunFormView, RunnerEditorAction, RunnerEditorOwner,
+    RunnerManagerAction, RunnerManagerView, RunnerSaveOwner, Screen, SourceSnapshot, UiCommand,
+    UvHealth, command_specs,
 };
 
 fn entry_with_kind(slug: &str, name: &str, kind: &str, description: &str) -> EntrySummary {

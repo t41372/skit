@@ -133,8 +133,8 @@ pub(crate) enum RunError {
     StateDirectoryUnavailable,
     #[error("prompt runner {name:?} is not configured")]
     RunnerNotFound { name: String },
-    #[error("--runner applies only to prompt entries, not {kind} entries")]
-    RunnerUnsupported { kind: String },
+    #[error("--runner only applies to prompt entries.")]
+    RunnerUnsupported,
     #[error("--raw does not apply to {kind} entries because placeholders are part of the artifact")]
     RawUnsupported { kind: String },
     #[error("--raw cannot be combined with --set, --preset, or --save-preset")]
@@ -177,9 +177,7 @@ impl Localize for RunError {
             Self::RunnerNotFound { name } => {
                 Message::new("prompt runner {} is not configured").quoted(name)
             }
-            Self::RunnerUnsupported { kind } => {
-                Message::new("--runner applies only to prompt entries, not {} entries").with(kind)
-            }
+            Self::RunnerUnsupported => Message::new("--runner only applies to prompt entries."),
             Self::RawUnsupported { kind } => Message::new(
                 "--raw does not apply to {} entries because placeholders are part of the artifact",
             )
@@ -202,7 +200,7 @@ impl RunError {
             | Self::UnknownSet { .. }
             | Self::PresetNotFound { .. }
             | Self::PresetWithoutFields
-            | Self::RunnerUnsupported { .. }
+            | Self::RunnerUnsupported
             | Self::RawUnsupported { .. }
             | Self::RawConflict => 2,
             Self::Launch(error) => error.exit_code(),
@@ -247,9 +245,7 @@ pub(crate) fn run_with_roots(
     let _no_input = args.no_input;
     let held = service.show(&args.selector)?;
     if args.runner.is_some() && held.meta.kind.as_str() != "prompt" {
-        return Err(RunError::RunnerUnsupported {
-            kind: held.meta.kind.as_str().to_owned(),
-        });
+        return Err(RunError::RunnerUnsupported);
     }
     if args.raw && (!args.values.is_empty() || args.preset.is_some() || args.save_preset.is_some())
     {

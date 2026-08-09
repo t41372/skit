@@ -509,8 +509,10 @@ mod tests {
         fs::write(root.path().join("one.whl"), "one").unwrap();
         fs::write(root.path().join("two.whl"), "two").unwrap();
         assert!(
-            super::one_artifact(root.path(), |path| path.extension().is_some_and(|x| x == "whl"))
-                .is_err()
+            super::one_artifact(root.path(), |path| path
+                .extension()
+                .is_some_and(|x| x == "whl"))
+            .is_err()
         );
 
         let windows = root.path().join("windows/Lib/site-packages");

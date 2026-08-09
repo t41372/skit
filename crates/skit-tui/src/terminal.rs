@@ -331,9 +331,7 @@ mod tests {
         };
         let mut locale = Locale::En;
 
-        assert!(
-            !drain_host_effects(&mut state, &mut host, Effect::Reload, &mut locale).unwrap()
-        );
+        assert!(!drain_host_effects(&mut state, &mut host, Effect::Reload, &mut locale).unwrap());
         assert_eq!(calls, 2);
     }
 

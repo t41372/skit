@@ -18,8 +18,8 @@ pub use config::{
     ConfigError, ConfigRecovery, FileConfigStore, MirrorSettings, PromptRunner, PromptRunnerRow,
 };
 pub use mutations::{
-    FileAgentSkillStore, FileRunnerManagementStore, PreparedLaunch, RunnerManagementStoreError,
-    RegistryRebuildProblem, RegistryRebuildReport, RunnerRemovalCas, content_hash,
+    FileAgentSkillStore, FileRunnerManagementStore, PreparedLaunch, RegistryRebuildProblem,
+    RegistryRebuildReport, RunnerManagementStoreError, RunnerRemovalCas, content_hash,
 };
 pub use path_glob::FileGlobExpander;
 pub use paths::{expand_user_path, stored_filename, stored_filenames};

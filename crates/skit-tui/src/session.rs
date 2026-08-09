@@ -15,9 +15,8 @@ use ratatui_interact::{
     components::{
         Button, ButtonState, ButtonStyle, ButtonVariant, CheckBox, CheckBoxState, CheckBoxStyle,
         ScrollableContentState, Select, SelectAction, SelectState, SelectStyle, Toast, ToastState,
-        ToastStyle,
-        handle_scrollable_content_key, handle_scrollable_content_mouse, handle_select_key,
-        handle_select_mouse,
+        ToastStyle, handle_scrollable_content_key, handle_scrollable_content_mouse,
+        handle_select_key, handle_select_mouse,
     },
     state::FocusManager,
     traits::{ClickRegion, ClickRegionRegistry},
@@ -43,11 +42,11 @@ use crate::{
     footer::FooterSession,
     map_event, run_field_command_action,
     screens::add::{AddScreenEvent, AddScreenGeometry, AddScreenSession, render_add},
+    screens::library::LibraryScreenSession,
     screens::management::{
         HealthEventHandling, HealthScreenSession, RunnerEditorEventHandling, RunnerEditorSession,
         RunnerManagerEventHandling, RunnerManagerSession,
     },
-    screens::library::LibraryScreenSession,
     screens::modal::{ConfirmRemoveEvent, ConfirmRemoveSession, HelpScreenSession},
     screens::picker::{
         ChoicePickerGeometry, FilePickerEvent, FilePickerGeometry, FilePickerSession,

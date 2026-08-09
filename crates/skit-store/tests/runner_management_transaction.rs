@@ -18,9 +18,7 @@ fn write_entry(data_dir: &TempDir, slug: &str, kind: &str, pinned_runner: &str) 
     fs::create_dir_all(&directory).unwrap();
     fs::write(
         directory.join("meta.toml"),
-        format!(
-            "name = {slug:?}\nkind = {kind:?}\nmode = \"copy\"\nrunner = {pinned_runner:?}\n"
-        ),
+        format!("name = {slug:?}\nkind = {kind:?}\nmode = \"copy\"\nrunner = {pinned_runner:?}\n"),
     )
     .unwrap();
 }
@@ -121,7 +119,11 @@ fn unrelated_config_and_entry_edits_do_not_block_targeted_removal() {
             .unwrap(),
         RunnerRemovalCas::Removed
     );
-    assert!(fs::read_to_string(path).unwrap().contains("language = \"zh-TW\""));
+    assert!(
+        fs::read_to_string(path)
+            .unwrap()
+            .contains("language = \"zh-TW\"")
+    );
 }
 
 #[test]

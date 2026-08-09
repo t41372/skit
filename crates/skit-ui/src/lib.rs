@@ -813,9 +813,7 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
     spec(
         UiCommand::Submit,
         CommandContext::ConfirmRemove,
-        &[
-            UiBinding::plain(UiKey::Character('y'), "y", "y"),
-        ],
+        &[UiBinding::plain(UiKey::Character('y'), "y", "y")],
         "Remove",
         true,
         false,
@@ -1249,7 +1247,8 @@ impl WorkflowState {
     }
 
     fn present(&mut self, screen: Screen) {
-        self.history.push(std::mem::replace(&mut self.active, screen));
+        self.history
+            .push(std::mem::replace(&mut self.active, screen));
     }
 
     fn back(&mut self) {
@@ -2716,9 +2715,7 @@ impl LibraryState {
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
-            | Screen::Report(_) => {
-                Effect::None
-            }
+            | Screen::Report(_) => Effect::None,
         }
     }
 

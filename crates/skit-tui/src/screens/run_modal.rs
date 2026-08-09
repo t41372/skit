@@ -194,9 +194,7 @@ impl RunModalSession {
             ModalState::Help
             | ModalState::ConfirmRemove { .. }
             | ModalState::ConfirmDiscardChanges
-            | ModalState::RunnerEditor { .. } => {
-                RunModalEvent::Handling(EventHandling::Ignored)
-            }
+            | ModalState::RunnerEditor { .. } => RunModalEvent::Handling(EventHandling::Ignored),
         }
     }
 

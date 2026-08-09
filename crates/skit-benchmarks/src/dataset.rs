@@ -627,10 +627,7 @@ fn write_manifest(
         .map_err(|source| io("write", path, source))
 }
 
-fn persist_manifest(
-    staged: tempfile::NamedTempFile,
-    target: &Path,
-) -> Result<(), DatasetError> {
+fn persist_manifest(staged: tempfile::NamedTempFile, target: &Path) -> Result<(), DatasetError> {
     staged
         .persist(target)
         .map(|_| ())
@@ -733,7 +730,11 @@ mod tests {
         assert!(super::read_file(&missing).is_err());
         assert!(super::require_empty(&ordinary).is_err());
         assert!(super::source_permissions(&missing).is_err());
-        assert!(super::absolute(Path::new("relative")).unwrap().is_absolute());
+        assert!(
+            super::absolute(Path::new("relative"))
+                .unwrap()
+                .is_absolute()
+        );
         assert!(super::validate_generated_count(2, 2).is_ok());
         assert!(super::validate_generated_count(1, 2).is_err());
         assert!(super::create_staged_manifest(&ordinary).is_err());

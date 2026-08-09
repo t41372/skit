@@ -917,11 +917,7 @@ fn help_uses_mature_keyboard_and_mouse_scrolling_for_short_terminals() {
     let before = terminal.backend().buffer().clone();
 
     assert_eq!(
-        session.handle_event(
-            key(KeyCode::End, KeyModifiers::NONE),
-            &view,
-            &geometry
-        ),
+        session.handle_event(key(KeyCode::End, KeyModifiers::NONE), &view, &geometry),
         EventHandling::Consumed
     );
     terminal
@@ -940,11 +936,7 @@ fn help_uses_mature_keyboard_and_mouse_scrolling_for_short_terminals() {
     assert_ne!(before, at_bottom);
 
     assert_eq!(
-        session.handle_event(
-            mouse(MouseEventKind::ScrollUp, 20, 5),
-            &view,
-            &geometry
-        ),
+        session.handle_event(mouse(MouseEventKind::ScrollUp, 20, 5), &view, &geometry),
         EventHandling::Consumed,
         "the help wheel must route through ScrollableContentState"
     );
