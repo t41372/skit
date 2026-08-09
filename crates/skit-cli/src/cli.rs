@@ -5230,9 +5230,9 @@ struct SettingsParameterInputs {
 
 /// Render the parameter section as host form fields.
 ///
-/// Each editable row carries the declaration it opened with, so the save merges onto that baseline
-/// instead of re-reading the source. A read-only axis is never emitted as a field: a control that
-/// cannot be kept must not exist.
+/// Every field is keyed by the parameter's own name, so a save merges each edit onto the
+/// declaration of that name and nothing else. A read-only axis is never emitted as a field: a
+/// control that cannot be kept must not exist.
 fn settings_parameter_fields(store: &FileStore, entry: &Entry) -> Vec<FormField> {
     let inputs = settings_parameter_context(store, entry);
     let section = parameter_section(
@@ -5252,24 +5252,10 @@ fn settings_parameter_fields(store: &FileStore, entry: &Entry) -> Vec<FormField>
         ParameterSection::Declared { rows } | ParameterSection::SourceManaged { rows, .. } => rows,
     };
     let mut fields = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        let baseline = inputs
-            .managed
-            .iter()
-            .find(|declaration| declaration.name == row.name);
-        let Some(baseline) = baseline else {
-            continue;
-        };
-        // The row the screen opened with travels with it, so nothing is re-read at save time.
-        fields.push(FormField::text(
-            format!("parameter:{index}:baseline"),
-            "parameter baseline",
-            serde_json::to_string(baseline).unwrap_or_default(),
-        ));
+    for row in rows {
+        // Every field of a row is a control: the plan keeps read-only metadata in the keep toggle's
+        // own label rather than as a field, so there is nothing here to filter out.
         for field in &row.fields {
-            if !field.kind.editable() {
-                continue;
-            }
             let multiline = field.kind == FieldKind::Multiline;
             let value = field.value().as_text();
             let mut form_field = if multiline {
@@ -6773,47 +6759,57 @@ fn tui_parameter_value(value: &ParameterValue) -> String {
     }
 }
 
-/// Read the parameter rows back, merging each row's edits onto the baseline it opened with.
+/// Merge every submitted row edit onto the declaration set that owns those rows.
 ///
-/// The baseline travels in the form, so a save never re-reads the source to decide what a row was.
-/// Version 0.4 merges onto the widget's own `spec` for the same reason
-/// (`src/skit/tui_settings.py:115-133`): a fresh read at save time lets a concurrent write change
-/// what the user's edit means.
-fn tui_declarations_from_values(values: &SubmittedValues) -> Result<Vec<ParamDecl>, CliError> {
-    let mut declarations = Vec::new();
-    for index in 0.. {
-        let prefix = format!("parameter:{index}");
-        let Some(baseline) = values
-            .get(&format!("{prefix}:baseline"))
-            .map(FieldValue::as_text)
-        else {
-            break;
-        };
-        let mut declaration: ParamDecl = serde_json::from_str(&baseline).map_err(|error| {
-            CliError::Usage(Message::new("could not read a parameter row: {}").with(error))
-        })?;
+/// The set is the caller's: the hand-declared schema for a kind that keeps one in entry metadata,
+/// and the block the source itself declares for a kind that does not. Each row is addressed by the
+/// parameter's own name, so an edit can only ever reach the declaration it was made on — an index
+/// would carry it onto a neighbour the moment a concurrent `skit params --add` shifted the set.
+///
+/// Only an axis the row actually offered appears in the payload, and only such an axis moves.
+/// Everything else is whatever the set already holds, so a control the screen never drew can never
+/// change a stored value, and an axis nobody edited keeps a concurrent change rather than reverting
+/// it to a stale snapshot. Version 0.4 merges onto the row's own declaration for the same reason
+/// (`src/skit/tui_settings.py:115-133`).
+fn tui_apply_parameter_edits(
+    values: &SubmittedValues,
+    declarations: &mut Vec<ParamDecl>,
+) -> Result<(), CliError> {
+    let mut merged: Vec<ParamDecl> = Vec::with_capacity(declarations.len());
+    for declaration in declarations.drain(..) {
+        if merged.iter().any(|item| item.name == declaration.name) {
+            return Err(CliError::Usage(
+                Message::new("duplicate parameter: {}").with(&declaration.name),
+            ));
+        }
+        if let Some(declaration) = tui_parameter_row(values, declaration)? {
+            merged.push(declaration);
+        }
+    }
+    *declarations = merged;
+    Ok(())
+}
+
+/// Apply one row's edits, or report that the row was unticked.
+fn tui_parameter_row(
+    values: &SubmittedValues,
+    mut declaration: ParamDecl,
+) -> Result<Option<ParamDecl>, CliError> {
+    {
+        let prefix = format!("parameter:{}", declaration.name);
         let get = |field: &str| {
             values
                 .get(&format!("{prefix}:{field}"))
                 .map(|value| value.as_text().trim().to_owned())
         };
-        // A row that was unticked is removed, exactly as version 0.4's keep checkbox returns None
-        // (`src/skit/tui_settings.py:115-117`).
+        // A row that was unticked leaves the set, exactly as version 0.4's keep checkbox returns
+        // None (`src/skit/tui_settings.py:115-117`). On a source-managed row that is the unmanage:
+        // the block is rewritten from the surviving rows (`:1061`).
         if let Some(keep) = get("keep")
             && !tui_bool(&keep)?
         {
-            continue;
+            return Ok(None);
         }
-        if declarations
-            .iter()
-            .any(|item: &ParamDecl| item.name == declaration.name)
-        {
-            return Err(CliError::Usage(
-                Message::new("duplicate parameter: {}").with(&declaration.name),
-            ));
-        }
-        // Only an axis the row actually offered can move. Everything else keeps the baseline, so a
-        // control the screen never drew can never change a stored value.
         if let Some(value) = get("type") {
             declaration.parameter_type =
                 parse_parameter_type(if value.is_empty() { "str" } else { &value })?;
@@ -6858,14 +6854,13 @@ fn tui_declarations_from_values(values: &SubmittedValues) -> Result<Vec<ParamDec
         // Marking a public row secret drops the cached literal, and an environment source survives
         // only while the row is secret (`src/skit/tui_settings.py:125-132`).
         apply_secrecy_rule(&mut declaration, was_secret);
-        if declaration.validate().is_some() {
-            return Err(CliError::Usage(
-                Message::new("parameter {} has incompatible settings").with(&declaration.name),
-            ));
-        }
-        declarations.push(declaration);
     }
-    Ok(declarations)
+    if declaration.validate().is_some() {
+        return Err(CliError::Usage(
+            Message::new("parameter {} has incompatible settings").with(&declaration.name),
+        ));
+    }
+    Ok(Some(declaration))
 }
 
 fn tui_submit(
@@ -7122,14 +7117,11 @@ fn tui_submit_settings(
     if values.contains_key("interpolate") {
         settings.interpolate = tui_flag(values, "interpolate")?;
     }
-    // A screen with no parameter section submits no parameter row, so the stored declarations are
-    // what a save keeps. Reading the absent rows as an empty set would delete every one of them.
-    let parameters_carried = values.keys().any(|key| key.starts_with("parameter:"));
-    let mut declarations = if parameters_carried {
-        tui_declarations_from_values(values)?
-    } else {
-        stored_settings.parameters.clone()
-    };
+    // The stored declarations are the set a save keeps, and the form carries only the axes a person
+    // moved. A screen with no parameter section carries none, so nothing here changes — reading the
+    // absent rows as an empty set would delete every one of them.
+    let mut declarations = stored_settings.parameters.clone();
+    tui_apply_parameter_edits(values, &mut declarations)?;
     let removed = tui_list(values, "parameter:remove");
     declarations.retain(|parameter| !removed.contains(&parameter.name));
     for name in tui_list(values, "parameter:add") {
@@ -7209,6 +7201,10 @@ fn tui_submit_settings(
             &tui_list(values, "source:unmanage"),
             &tui_list(values, "source:normalize"),
         )?;
+        // The block's own rows are edited on the block's own set. Unticking one here is the
+        // unmanage: version 0.4 rewrites the block from the rows that survived
+        // (`src/skit/tui_settings.py:1061`, `:1074`).
+        tui_apply_parameter_edits(values, &mut managed)?;
         for parameter in &mut managed {
             if let Some(submitted) = declarations
                 .iter()

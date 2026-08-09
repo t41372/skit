@@ -29,10 +29,11 @@ pub use skit_form::field::{
 };
 
 pub use settings::{
-    DEPENDENCIES_KEY, DESCRIPTION_KEY, DependencyFlavor, INTERPRETER_KEY, NAME_KEY, NEEDS_KEY,
-    PYTHON_KEY, RUNNER_KEY, SettingsAction, SettingsEffect, SettingsError, SettingsInputs,
-    SettingsNote, SettingsSection, SettingsSectionId, SettingsView, WORKDIR_CUSTOM, WORKDIR_KEY,
-    WORKDIR_PATH_KEY,
+    ADD_PARAMETER_KEY, DEPENDENCIES_KEY, DESCRIPTION_KEY, DependencyFlavor, INTERPOLATE_KEY,
+    INTERPRETER_KEY, MANAGE_KEY, NAME_KEY, NEEDS_KEY, NORMALIZE_KEY, PYTHON_KEY, RESYNC_KEY,
+    RUNNER_KEY, SettingsAction, SettingsEffect, SettingsError, SettingsInputs, SettingsItem,
+    SettingsNote, SettingsSection, SettingsSectionId, SettingsView, TEMPLATE_KEY, WORKDIR_CUSTOM,
+    WORKDIR_KEY, WORKDIR_PATH_KEY,
 };
 pub use skit_application::path_insertion::RunPathInsertMode;
 
@@ -291,6 +292,8 @@ pub enum UiCommand {
     InstallAgentSkill,
     /// Persist the complete validated entry-settings transaction.
     SaveSettings,
+    /// Read the script's own parameter definitions again on the next entry-settings save.
+    ResyncSettings,
     /// Close entry settings, through the discard guard when anything moved.
     CloseSettings,
     /// Return to the library workflow.
@@ -346,6 +349,7 @@ impl UiCommand {
             Self::ManageAgents => Action::Preferences(PreferencesAction::ManageAgents),
             Self::InstallAgentSkill => Action::Preferences(PreferencesAction::InstallAgentSkill),
             Self::SaveSettings => Action::Settings(SettingsAction::Save),
+            Self::ResyncSettings => Action::Settings(SettingsAction::Resync),
             Self::CloseSettings => Action::Settings(SettingsAction::Close),
             Self::Back | Self::CloseModal => Action::Back,
             Self::DiscardChanges => Action::DiscardChanges,
@@ -794,6 +798,16 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         CommandContext::Settings,
         &[UiBinding::control(UiKey::Character('n'), "Ctrl+N", "^N")],
         "New agent",
+        true,
+        false,
+    ),
+    // Version 0.4 advertises this only where a resync does something, because "advertising a key
+    // that silently no-ops … teaches a dead chord" (`src/skit/tui_settings.py:408-415`).
+    spec(
+        UiCommand::ResyncSettings,
+        CommandContext::Settings,
+        &[UiBinding::control(UiKey::Character('r'), "Ctrl+R", "^R")],
+        "Resync",
         true,
         false,
     ),
@@ -2446,6 +2460,10 @@ impl LibraryState {
                         .is_some_and(|view| view.has_section(SettingsSectionId::Runner))
             }
             UiCommand::SaveSettings | UiCommand::CloseSettings => self.settings_view().is_some(),
+            // The chip follows the control, not a second copy of the rule that built it.
+            UiCommand::ResyncSettings => self
+                .settings_view()
+                .is_some_and(|view| view.field(RESYNC_KEY).is_some()),
             UiCommand::SavePreferences
             | UiCommand::ClosePreferences
             | UiCommand::ManageAgents

@@ -1521,6 +1521,66 @@ const CATALOG: &[Translation] = &[
         "所需命令（外部命令）",
         "所需命令（外部命令）",
     ),
+    // The parameter section, in the order version 0.4 composes it
+    // (`src/skit/tui_settings.py:588-719`).
+    row!(
+        "Parameters (the run form's fields)",
+        "参数（运行表单的字段）",
+        "參數（執行表單的欄位）",
+    ),
+    row!(
+        "(programs have no managed parameters)",
+        "（程序没有管理的参数）",
+        "（程式沒有管理的參數）",
+    ),
+    row!(
+        "Detected but not yet managed — tick to manage:",
+        "检测到但尚未管理——勾选即可管理：",
+        "偵測到但尚未管理——勾選即可管理：",
+    ),
+    row!(
+        "This script's run form comes from its own command-line arguments. Managing a hardcoded constant here would replace that form — leave it as is.",
+        "这个脚本的运行表单来自它自己的命令行参数。在这里管理一个写死的常量会取代那张表单——保持原样即可。",
+        "這支腳本的執行表單來自它自己的命令列參數。在這裡管理一個寫死的常數會取代那張表單——維持原樣即可。",
+    ),
+    row!(
+        "Every input() is managed — this script can now run with --no-input.",
+        "所有 input() 都已管理——这个脚本现在可以用 --no-input 自动化。",
+        "所有 input() 都已管理——這支腳本現在可以用 --no-input 自動化。",
+    ),
+    row!(
+        "Saving re-reads the {placeholders} from the template.",
+        "保存时会从模板重新读取 {placeholders}。",
+        "儲存時會從模板重新讀取 {placeholders}。",
+    ),
+    row!(
+        "Variable insertion ({{name}} placeholders become form fields)",
+        "变量插入({{name}} 占位符会成为表单字段)",
+        "變量插入({{name}} 佔位符會成為表單欄位)",
+    ),
+    row!(
+        "Off — the body travels to the agent exactly as written.",
+        "已关闭——正文会原封不动送达 agent。",
+        "已關閉——內文會原封不動送達 agent。",
+    ),
+    row!(
+        "Add a parameter — type a name, then Save:",
+        "新增参数——输入名称后保存：",
+        "新增參數——輸入名稱後儲存：",
+    ),
+    row!("new parameter name", "新参数名称", "新參數名稱"),
+    // New in 0.5: the settings screen offers the rewrite version 0.4 advised from the command line
+    // (`src/skit/cli.py:4014`), and the resync version 0.4 gave only a chord.
+    row!(
+        "Change a constant to an environment default — tick to normalize:",
+        "把常量改为环境默认值——勾选即可规范化：",
+        "把常數改為環境預設值——勾選即可正規化：",
+    ),
+    row!(
+        "Read the parameter definitions from the script again on save",
+        "保存时重新从脚本读取参数定义",
+        "儲存時重新從腳本讀取參數定義",
+    ),
     row!("New agent", "新增 agent", "新增 agent"),
     row!("Resync", "重新同步", "重新同步"),
     row!(

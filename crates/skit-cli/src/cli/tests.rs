@@ -1046,13 +1046,13 @@ fn tui_settings_offers_a_declared_row_exactly_the_axes_version_04_makes_editable
         "env_source",
     ] {
         assert!(
-            values.contains_key(format!("parameter:0:{axis}").as_str()),
+            values.contains_key(format!("parameter:count:{axis}").as_str()),
             "a declared row lost its editable {axis}"
         );
     }
-    // Delivery is read-only header text because a different command changes it (`:152-154`), and
-    // version 0.4 has no control at all for the rest. A control that does not exist cannot make a
-    // promise the save has to take back.
+    // Delivery is dim header text inside the keep toggle's own label because a different command
+    // changes it (`:152-154`, `:180`), and version 0.4 has no control at all for the rest. A
+    // control that does not exist cannot make a promise the save has to take back.
     for axis in [
         "name",
         "binding",
@@ -1061,64 +1061,87 @@ fn tui_settings_offers_a_declared_row_exactly_the_axes_version_04_makes_editable
         "repeat",
         "env_target",
         "action",
+        "baseline",
     ] {
         assert!(
-            !values.contains_key(format!("parameter:0:{axis}").as_str()),
+            !values.contains_key(format!("parameter:count:{axis}").as_str()),
             "a declared row offered {axis}, which version 0.4 never edits here"
         );
     }
     // A command template takes no argument vector, so it never offers a flag.
-    assert!(!values.contains_key("parameter:0:flag"));
-    assert_eq!(values["parameter:0:default"], "4");
-    assert_eq!(values["parameter:0:choices"], "4, 8");
-    // The row the screen opened with travels with the form.
-    let baseline: ParamDecl = serde_json::from_str(values["parameter:0:baseline"]).unwrap();
-    assert_eq!(baseline.name, "count");
-    assert_eq!(baseline.env_target, "COUNT");
-    assert_eq!(baseline.action, "append");
+    assert!(!values.contains_key("parameter:count:flag"));
+    assert_eq!(values["parameter:count:default"], "4");
+    assert_eq!(values["parameter:count:choices"], "4, 8");
+    // Every field of one row is addressed by the parameter's own name, so a save merges each edit
+    // onto the declaration it was made on. No serialized snapshot rides along to say which one.
+    assert!(
+        values
+            .keys()
+            .filter(|key| key.starts_with("parameter:"))
+            .all(|key| key.starts_with("parameter:count:")
+                || *key == "parameter:add"
+                || *key == "parameter:remove"),
+        "{:?}",
+        values.keys().collect::<Vec<_>>()
+    );
 }
 
-/// A row's edits merge onto the declaration it opened with, and nothing else moves.
+/// A row's edits merge onto the declaration that owns it, and nothing else moves.
 ///
-/// Version 0.4 merges onto the widget's own `spec` rather than re-deriving it
+/// Version 0.4 merges onto the row's own declaration rather than re-deriving it
 /// (`src/skit/tui_settings.py:115-133`). An axis the row never offered has no control to move it,
 /// so it must come out of a save exactly as it went in — which is also what makes a submit-time
 /// filter unnecessary.
 #[test]
-fn tui_parameter_rows_merge_edits_onto_the_baseline_they_opened_with() {
-    let mut baseline = ParamDecl::new("token");
-    baseline.binding = ParameterBinding::EnvDefault;
-    baseline.delivery = ParameterDelivery::Env;
-    baseline.parameter_type = ParameterType::Str;
-    baseline.multiple = true;
-    baseline.repeat = true;
-    baseline.env_target = "TOKEN_TARGET".to_owned();
-    baseline.action = "append".to_owned();
-    baseline.flag = "--token".to_owned();
+fn tui_parameter_rows_merge_edits_onto_the_declaration_that_owns_them() {
+    let mut stored = ParamDecl::new("token");
+    stored.binding = ParameterBinding::EnvDefault;
+    stored.delivery = ParameterDelivery::Env;
+    stored.parameter_type = ParameterType::Str;
+    stored.multiple = true;
+    stored.repeat = true;
+    stored.env_target = "TOKEN_TARGET".to_owned();
+    stored.action = "append".to_owned();
+    stored.flag = "--token".to_owned();
 
     let values = BTreeMap::from([
+        ("parameter:token:keep".to_owned(), FieldValue::text("true")),
         (
-            "parameter:0:baseline".to_owned(),
-            FieldValue::text(serde_json::to_string(&baseline).unwrap()),
+            "parameter:token:type".to_owned(),
+            FieldValue::text("choice"),
         ),
-        ("parameter:0:keep".to_owned(), FieldValue::text("true")),
-        ("parameter:0:type".to_owned(), FieldValue::text("choice")),
-        ("parameter:0:default".to_owned(), FieldValue::text("green")),
         (
-            "parameter:0:choices".to_owned(),
+            "parameter:token:default".to_owned(),
+            FieldValue::text("green"),
+        ),
+        (
+            "parameter:token:choices".to_owned(),
             FieldValue::text("red, green"),
         ),
-        ("parameter:0:required".to_owned(), FieldValue::text("true")),
-        ("parameter:0:prompt".to_owned(), FieldValue::text("Token")),
         (
-            "parameter:0:help".to_owned(),
+            "parameter:token:required".to_owned(),
+            FieldValue::text("true"),
+        ),
+        (
+            "parameter:token:prompt".to_owned(),
+            FieldValue::text("Token"),
+        ),
+        (
+            "parameter:token:help".to_owned(),
             FieldValue::text("Select a token."),
         ),
-        ("parameter:0:secret".to_owned(), FieldValue::text("false")),
-        ("parameter:0:env_source".to_owned(), FieldValue::text("")),
+        (
+            "parameter:token:secret".to_owned(),
+            FieldValue::text("false"),
+        ),
+        (
+            "parameter:token:env_source".to_owned(),
+            FieldValue::text(""),
+        ),
     ]);
 
-    let declarations = tui_declarations_from_values(&values).unwrap();
+    let mut declarations = vec![stored.clone()];
+    tui_apply_parameter_edits(&values, &mut declarations).unwrap();
     assert_eq!(declarations.len(), 1);
     let declaration = &declarations[0];
 
@@ -1133,7 +1156,7 @@ fn tui_parameter_rows_merge_edits_onto_the_baseline_they_opened_with() {
     assert_eq!(declaration.prompt, "Token");
     assert_eq!(declaration.help, "Select a token.");
 
-    // The axes the row never offered hold at their baseline, including the name.
+    // The axes the row never offered hold at what the set already stored, including the name.
     assert_eq!(declaration.name, "token");
     assert_eq!(declaration.binding, ParameterBinding::EnvDefault);
     assert_eq!(declaration.delivery, ParameterDelivery::Env);
@@ -1143,42 +1166,50 @@ fn tui_parameter_rows_merge_edits_onto_the_baseline_they_opened_with() {
     assert_eq!(declaration.action, "append");
     assert_eq!(declaration.flag, "--token");
 
+    // A row's edit reaches that row and no other, even when a neighbour shares every axis name.
+    let mut neighbours = vec![ParamDecl::new("first"), ParamDecl::new("second")];
+    let one_row = BTreeMap::from([(
+        "parameter:second:prompt".to_owned(),
+        FieldValue::text("Second"),
+    )]);
+    tui_apply_parameter_edits(&one_row, &mut neighbours).unwrap();
+    assert_eq!(neighbours[0].prompt, "");
+    assert_eq!(neighbours[1].prompt, "Second");
+
     // Unticking keep removes the row, exactly as version 0.4's checkbox returns None (`:115-117`).
     let mut removed = values.clone();
-    set(&mut removed, "parameter:0:keep", "false");
-    assert!(tui_declarations_from_values(&removed).unwrap().is_empty());
+    set(&mut removed, "parameter:token:keep", "false");
+    let mut declarations = vec![stored.clone()];
+    tui_apply_parameter_edits(&removed, &mut declarations).unwrap();
+    assert!(declarations.is_empty());
 
     // Marking a public row secret drops the cached literal (`:125-131`).
     let mut plain = ParamDecl::new("token");
     plain.default = Some(ParameterValue::String("visible".to_owned()));
     let secret = BTreeMap::from([
+        ("parameter:token:keep".to_owned(), FieldValue::text("true")),
         (
-            "parameter:0:baseline".to_owned(),
-            FieldValue::text(serde_json::to_string(&plain).unwrap()),
+            "parameter:token:secret".to_owned(),
+            FieldValue::text("true"),
         ),
-        ("parameter:0:keep".to_owned(), FieldValue::text("true")),
-        ("parameter:0:secret".to_owned(), FieldValue::text("true")),
         (
-            "parameter:0:env_source".to_owned(),
+            "parameter:token:env_source".to_owned(),
             FieldValue::text("TOKEN_ENV"),
         ),
     ]);
-    let secret = tui_declarations_from_values(&secret).unwrap();
-    assert!(secret[0].secret);
+    let mut declarations = vec![plain];
+    tui_apply_parameter_edits(&secret, &mut declarations).unwrap();
+    assert!(declarations[0].secret);
     assert!(
-        secret[0].default.is_none(),
+        declarations[0].default.is_none(),
         "a source literal survived into the block"
     );
-    assert_eq!(secret[0].env_source, "TOKEN_ENV");
+    assert_eq!(declarations[0].env_source, "TOKEN_ENV");
 
-    // Two rows that resolve to one name are refused before anything is written.
-    let mut duplicate = values.clone();
-    duplicate.insert(
-        "parameter:1:baseline".to_owned(),
-        FieldValue::text(serde_json::to_string(&baseline).unwrap()),
-    );
+    // Two declarations that resolve to one name are refused before anything is written.
+    let mut duplicate = vec![stored.clone(), stored];
     assert!(
-        tui_declarations_from_values(&duplicate)
+        tui_apply_parameter_edits(&values, &mut duplicate)
             .unwrap_err()
             .to_string()
             .contains("duplicate parameter")
@@ -1531,32 +1562,25 @@ fn tui_scalar_helpers_reject_incomplete_and_incompatible_rows() {
         ["one, two"]
     );
 
-    assert!(
-        tui_declarations_from_values(&BTreeMap::new())
-            .unwrap()
-            .is_empty()
-    );
-    // A row is keyed by the baseline it opened with. Name, binding and delivery have no control,
-    // so the only rejections left are the values a control can actually produce.
-    let row = |axis: &str, value: &str| {
-        BTreeMap::from([
-            (
-                "parameter:0:baseline".to_owned(),
-                FieldValue::text(serde_json::to_string(&ParamDecl::new("item")).unwrap()),
-            ),
-            (format!("parameter:0:{axis}"), FieldValue::text(value)),
-        ])
+    let mut untouched = vec![ParamDecl::new("item")];
+    tui_apply_parameter_edits(&BTreeMap::new(), &mut untouched).unwrap();
+    assert_eq!(untouched, [ParamDecl::new("item")]);
+    // A row is addressed by its own name. Name, binding and delivery have no control, so the only
+    // rejections left are the values a control can actually produce.
+    let refuses = |axis: &str, value: &str| {
+        let values = BTreeMap::from([(format!("parameter:item:{axis}"), FieldValue::text(value))]);
+        let mut declarations = vec![ParamDecl::new("item")];
+        tui_apply_parameter_edits(&values, &mut declarations).is_err()
     };
-    assert!(tui_declarations_from_values(&row("type", "future")).is_err());
-    assert!(tui_declarations_from_values(&row("keep", "maybe")).is_err());
-    let mut invalid_default = row("type", "int");
-    set(&mut invalid_default, "parameter:0:default", "not-an-int");
-    assert!(tui_declarations_from_values(&invalid_default).is_err());
+    assert!(refuses("type", "future"));
+    assert!(refuses("keep", "maybe"));
+    let mut invalid_default =
+        BTreeMap::from([("parameter:item:type".to_owned(), FieldValue::text("int"))]);
+    set(&mut invalid_default, "parameter:item:default", "not-an-int");
+    let mut declarations = vec![ParamDecl::new("item")];
+    assert!(tui_apply_parameter_edits(&invalid_default, &mut declarations).is_err());
     // A choice type with no choices is refused before anything is written.
-    assert!(tui_declarations_from_values(&row("type", "choice")).is_err());
-    // A baseline the host cannot read is a refusal, never a silently empty row.
-    let corrupt = BTreeMap::from([("parameter:0:baseline".to_owned(), FieldValue::text("{"))]);
-    assert!(tui_declarations_from_values(&corrupt).is_err());
+    assert!(refuses("type", "choice"));
 
     assert!(tui_selector(&None).is_err());
     assert_eq!(tui_selector(&Some(String::new())).unwrap(), "");
@@ -3621,8 +3645,26 @@ fn tui_settings_offers_no_binding_control_so_unmanaging_goes_through_its_own_key
         );
     }
 
-    // Unmanaging goes through the source control that owns it, and it still works.
-    let mut values = values;
+    // Unticking the row's own keep toggle is the unmanage. Version 0.4 rewrites the block from the
+    // rows that survived, and an unticked `ParamRow` collects as None
+    // (`src/skit/tui_settings.py:115-117`, `:1061`, `:1074`). The toggle is the only unmanage
+    // control the screen has, so a save that ignored it would take the edit back in silence.
+    let mut unticked = values.clone();
+    set(&mut unticked, "parameter:NAME:keep", "false");
+    tui_submit_settings(&service, &store, &state_dir, "shell-tool", &unticked).unwrap();
+    let stored = fs::read_to_string(data_dir.join("scripts/shell-tool/script.sh")).unwrap();
+    assert!(
+        !stored.contains("[[tool.skit.params]]"),
+        "unticking the keep toggle left the parameter managed: {stored}"
+    );
+
+    // The named list does the same thing, so automation keeps its own path.
+    let managed = service.show("shell-tool").unwrap();
+    let mut values = form_values(tui_settings_form(&store, &managed));
+    set(&mut values, "source:manage", "NAME");
+    tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap();
+    let managed = service.show("shell-tool").unwrap();
+    let mut values = form_values(tui_settings_form(&store, &managed));
     set(&mut values, "source:unmanage", "NAME");
     tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap();
     let stored = fs::read_to_string(data_dir.join("scripts/shell-tool/script.sh")).unwrap();

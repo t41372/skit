@@ -8,9 +8,7 @@
 
 use skit_domain::parameters::{ParamDecl, ParameterType};
 
-use crate::field::{
-    Field, FieldCapabilities, FieldKind, FieldOwner, FieldValue, ReadOnlyReason, TypedValue,
-};
+use crate::field::{Field, FieldCapabilities, FieldKind, FieldOwner, FieldValue, TypedValue};
 
 /// The stable key suffix of the keep or remove toggle on one parameter row.
 pub const KEEP_KEY: &str = "keep";
@@ -87,13 +85,23 @@ pub struct ParameterRow {
 }
 
 impl ParameterRow {
+    /// Return the stable key prefix every field of this row shares.
+    ///
+    /// The row is keyed by the parameter's own name, never by its position. A position is a key
+    /// into a set that can change: a concurrent `skit params --add` shifts every index after it, so
+    /// an index would carry one row's edit onto another row's declaration. The name is the identity
+    /// the store merges on, which is why version 0.4 keys its own name-addressed lists the same way
+    /// (`src/skit/tui_settings.py:812-815`).
+    #[must_use]
+    pub fn prefix(&self) -> String {
+        row_prefix(&self.name)
+    }
+
     /// Return the field for one axis of this row.
     #[must_use]
     pub fn field(&self, axis: &str) -> Option<&Field> {
-        let suffix = format!(":{axis}");
-        self.fields
-            .iter()
-            .find(|field| field.key.ends_with(suffix.as_str()))
+        let key = format!("{}:{axis}", self.prefix());
+        self.fields.iter().find(|field| field.key == key)
     }
 
     /// Report whether this row offers one axis as an editable control.
@@ -133,8 +141,7 @@ pub fn parameter_section(
         return ParameterSection::Declared {
             rows: managed
                 .iter()
-                .enumerate()
-                .map(|(index, declaration)| declared_row(index, declaration, context.kind))
+                .map(|declaration| declared_row(declaration, context.kind))
                 .collect(),
         };
     }
@@ -152,11 +159,7 @@ pub fn parameter_section(
                 .collect(),
         };
     }
-    let rows = managed
-        .iter()
-        .enumerate()
-        .map(|(index, declaration)| source_managed_row(index, declaration))
-        .collect();
+    let rows = managed.iter().map(source_managed_row).collect();
     // The reader trap only exists while nothing is managed: once a block exists it already serves
     // the form, so managing another constant is additive (`src/skit/tui_settings.py:787-798`).
     let followup = if managed.is_empty() && context.reader_fields > 0 {
@@ -173,12 +176,13 @@ pub fn parameter_section(
 
 /// Build one row for a parameter the source's skit block declares.
 ///
-/// Version 0.4's `ParamRow` prints the name, type and default as read-only text beside the keep
-/// toggle and offers exactly three editable axes: the form label, the secret flag and the
-/// environment source (`src/skit/tui_settings.py:98-118`). Type and default are the script's own
-/// text, so offering them here would promise an edit that saving could not keep.
-fn source_managed_row(index: usize, declaration: &ParamDecl) -> ParameterRow {
-    let prefix = format!("parameter:{index}");
+/// Version 0.4's `ParamRow` prints the name, type and default as dim text *inside* the keep
+/// toggle's own label and offers exactly three editable axes: the form label, the secret flag and
+/// the environment source (`src/skit/tui_settings.py:98-107`). Type and default are the script's own
+/// text, so offering them here would promise an edit that saving could not keep — and repeating them
+/// as their own read-only rows would say the same thing twice on every row.
+fn source_managed_row(declaration: &ParamDecl) -> ParameterRow {
+    let prefix = row_prefix(&declaration.name);
     let default = declaration
         .default
         .as_ref()
@@ -197,23 +201,7 @@ fn source_managed_row(index: usize, declaration: &ParamDecl) -> ParameterRow {
             default
         )
     };
-    let mut fields = vec![
-        keep_field(&prefix, "unmanage this parameter"),
-        Field::read_only(
-            format!("{prefix}:type"),
-            "Type",
-            FieldOwner::SourceBlock,
-            FieldValue::text(declaration.parameter_type.as_str()),
-            ReadOnlyReason::SourceDeclares,
-        ),
-        Field::read_only(
-            format!("{prefix}:default"),
-            "Default",
-            FieldOwner::SourceBlock,
-            FieldValue::text(default),
-            ReadOnlyReason::SourceDeclares,
-        ),
-    ];
+    let mut fields = vec![keep_field(&prefix, &summary, "unmanage this parameter")];
     fields.extend(shared_editable_axes(
         &prefix,
         declaration,
@@ -228,20 +216,15 @@ fn source_managed_row(index: usize, declaration: &ParamDecl) -> ParameterRow {
 
 /// Build one row for a parameter the user declared by hand.
 ///
-/// Version 0.4's `DeclParamRow` makes type, default, choices, help, required and — on a binary
-/// kind — the flag editable, and keeps delivery as read-only header text because a different
-/// command changes it (`src/skit/tui_settings.py:151-230`).
-fn declared_row(index: usize, declaration: &ParamDecl, kind: &str) -> ParameterRow {
-    let prefix = format!("parameter:{index}");
+/// Version 0.4's `DeclParamRow` makes type, default, choices, help, required and — where argv is
+/// the interface — the flag editable, and keeps delivery as dim header text inside the keep
+/// toggle's own label, because a different command changes it
+/// (`src/skit/tui_settings.py:151-230`, the label at `:180`).
+fn declared_row(declaration: &ParamDecl, kind: &str) -> ParameterRow {
+    let prefix = row_prefix(&declaration.name);
+    let summary = format!("{}  {}", declaration.name, declaration.delivery.as_str());
     let mut fields = vec![
-        keep_field(&prefix, "remove this parameter"),
-        Field::read_only(
-            format!("{prefix}:delivery"),
-            "Delivery",
-            FieldOwner::Declared,
-            FieldValue::text(declaration.delivery.as_str()),
-            ReadOnlyReason::FixedAtAddTime,
-        ),
+        keep_field(&prefix, &summary, "remove this parameter"),
         Field::new(
             format!("{prefix}:type"),
             "Type",
@@ -312,7 +295,7 @@ fn declared_row(index: usize, declaration: &ParamDecl, kind: &str) -> ParameterR
     ));
     ParameterRow {
         name: declaration.name.clone(),
-        summary: format!("{}  {}", declaration.name, declaration.delivery.as_str()),
+        summary,
         fields,
     }
 }
@@ -351,20 +334,38 @@ fn shared_editable_axes(prefix: &str, declaration: &ParamDecl, owner: FieldOwner
     ]
 }
 
-fn keep_field(prefix: &str, help: &str) -> Field {
+/// Return the key prefix every field of one row shares.
+fn row_prefix(name: &str) -> String {
+    format!("parameter:{name}")
+}
+
+/// Build the keep toggle, whose label is the row's own header text.
+///
+/// Version 0.4 puts the name and its dim metadata inside the checkbox label rather than beside it
+/// (`src/skit/tui_settings.py:101` and `:180`). The label is therefore user data — a parameter named
+/// after a catalog phrase must not come back translated — so it travels verbatim.
+fn keep_field(prefix: &str, summary: &str, help: &str) -> Field {
     Field::new(
         format!("{prefix}:{KEEP_KEY}"),
-        "keep",
+        summary,
         FieldKind::Boolean,
         FieldOwner::Declared,
         FieldValue::boolean(true),
     )
+    .with_verbatim_label()
     .with_help(help)
 }
 
 /// Report whether a kind's launch takes an argument vector, so a flag means anything.
+///
+/// Version 0.4 gates this on the `placeholder_params` trait, not on the family: "a flag only means
+/// something where argv is the interface: every kind whose form is NOT placeholders (binaries AND
+/// the interpreted meta-schema kinds)" (`src/skit/tui_settings.py:653-657`, and the trait itself at
+/// `src/skit/langs/registry.py:271` and `:292`). A command template and a prompt name their fields
+/// with placeholders, so every other declared kind — the binary and the interpreted kinds that keep
+/// a hand-written schema — offers the flag.
 const fn shows_flag(kind: &str) -> bool {
-    matches!(kind.as_bytes(), b"exe")
+    !matches!(kind.as_bytes(), b"command" | b"prompt")
 }
 
 fn parameter_type_options() -> Vec<crate::field::ChoiceOption> {
@@ -481,10 +482,11 @@ mod tests {
         );
     }
 
-    /// A block-managed row offers three axes and no more.
+    /// A block-managed row offers three axes and no more, and reads out the rest in its own label.
     ///
-    /// Name, type and default are the script's own text, shown read-only beside the keep toggle
-    /// (`src/skit/tui_settings.py:98-105`).
+    /// Name, type and default are the script's own text and sit inside the keep toggle's label
+    /// (`src/skit/tui_settings.py:99-101`). A person reads them there; no control promises an edit
+    /// that saving could not keep.
     #[test]
     fn a_source_managed_row_offers_only_the_axes_a_save_can_keep() {
         let section = parameter_section(context("python"), &[declaration("GREETING")], &[]);
@@ -511,19 +513,21 @@ mod tests {
             "env_target",
         ] {
             assert!(
-                !row.offers(axis),
-                "a source-managed row offered {axis}, which saving cannot keep"
+                row.field(axis).is_none(),
+                "a source-managed row drew a {axis} control, which saving cannot keep"
             );
         }
-        // The read-only axes are still present so a person can read them.
-        let parameter_type = row.field("type").expect("no type text");
-        assert_eq!(parameter_type.kind, FieldKind::ReadOnly);
-        assert_eq!(
-            parameter_type.read_only_reason,
-            Some(ReadOnlyReason::SourceDeclares)
+        // The type and the default reach the person through the toggle's own label, which is user
+        // data and must never be translated.
+        let keep = row.field(KEEP_KEY).expect("no keep toggle");
+        assert_eq!(keep.label, row.summary);
+        assert!(
+            !keep.translate_label,
+            "a parameter name is not catalog copy"
         );
-        assert!(row.summary.contains("GREETING"), "{}", row.summary);
-        assert!(row.summary.contains("World"), "{}", row.summary);
+        assert!(keep.label.contains("GREETING"), "{}", keep.label);
+        assert!(keep.label.contains("str"), "{}", keep.label);
+        assert!(keep.label.contains("World"), "{}", keep.label);
     }
 
     /// A hand-declared row is the user's to change, except for its delivery.
@@ -555,30 +559,86 @@ mod tests {
         ] {
             assert!(row.offers(axis), "a declared row lost its editable {axis}");
         }
-        let delivery = row.field("delivery").expect("no delivery text");
-        assert_eq!(delivery.kind, FieldKind::ReadOnly);
+        // Delivery is fixed at add time, so it is header text and not a control.
+        assert!(row.field("delivery").is_none());
+        let keep = row.field(KEEP_KEY).expect("no keep toggle");
+        assert_eq!(keep.label, "output  flag");
+        assert!(!keep.translate_label);
+    }
+
+    /// Every field of one row is keyed by the parameter's own name, never by its position.
+    ///
+    /// A position is a key into a set a concurrent `skit params --add` can shift, which would carry
+    /// one row's edit onto another row's declaration.
+    #[test]
+    fn a_row_is_keyed_by_its_name_so_a_shifted_set_cannot_move_an_edit() {
+        let section = parameter_section(
+            ParameterSectionContext {
+                declared_schema: true,
+                ..context("exe")
+            },
+            &[declaration("first"), declaration("second")],
+            &[],
+        );
+        let ParameterSection::Declared { rows } = section else {
+            panic!("expected the declared section");
+        };
+        assert_eq!(rows[1].prefix(), "parameter:second");
         assert_eq!(
-            delivery.read_only_reason,
-            Some(ReadOnlyReason::FixedAtAddTime)
+            rows[1].field("prompt").unwrap().key,
+            "parameter:second:prompt"
+        );
+        // Inserting a row ahead of it leaves every key of the surviving row untouched.
+        let shifted = parameter_section(
+            ParameterSectionContext {
+                declared_schema: true,
+                ..context("exe")
+            },
+            &[
+                declaration("zeroth"),
+                declaration("first"),
+                declaration("second"),
+            ],
+            &[],
+        );
+        let ParameterSection::Declared { rows: shifted } = shifted else {
+            panic!("expected the declared section");
+        };
+        assert_eq!(
+            shifted[2].field("prompt").unwrap().key,
+            "parameter:second:prompt"
         );
     }
 
-    /// A command template takes no flag, so the row never offers one.
+    /// A flag only means something where the argument vector is the interface.
+    ///
+    /// Version 0.4 gates it on the `placeholder_params` trait (`src/skit/tui_settings.py:653-657`),
+    /// so a command template and a prompt have none while every other declared kind does.
     #[test]
-    fn only_a_binary_kind_offers_a_flag() {
-        let command = parameter_section(
-            ParameterSectionContext {
-                declared_schema: true,
-                ..context("command")
-            },
-            &[declaration("name")],
-            &[],
-        );
-        let ParameterSection::Declared { rows } = command else {
-            panic!("expected the declared section");
+    fn only_a_kind_whose_form_is_not_placeholders_offers_a_flag() {
+        let row_for = |kind: &'static str| {
+            let section = parameter_section(
+                ParameterSectionContext {
+                    declared_schema: true,
+                    ..context(kind)
+                },
+                &[declaration("name")],
+                &[],
+            );
+            let ParameterSection::Declared { rows } = section else {
+                panic!("expected the declared section");
+            };
+            rows.into_iter().next().expect("no row")
         };
-        assert!(!rows[0].offers("flag"));
-        assert!(rows[0].field("flag").is_none());
+        for kind in ["command", "prompt"] {
+            let row = row_for(kind);
+            assert!(!row.offers("flag"), "{kind} drew a meaningless flag");
+            assert!(row.field("flag").is_none());
+        }
+        // A binary and the interpreted kinds that keep a hand-written schema all take argv.
+        for kind in ["exe", "powershell", "ruby", "perl", "lua", "r"] {
+            assert!(row_for(kind).offers("flag"), "{kind} lost its flag");
+        }
     }
 
     /// A linked source is maintained in the file, so nothing here is editable.

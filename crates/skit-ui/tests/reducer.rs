@@ -5,6 +5,7 @@ use skit_application::preferences::{
     PreferencesSnapshot,
 };
 use skit_application::{Diagnostic, DiagnosticCode, LibraryScan, SourcePermissions};
+use skit_domain::parameters::ParamDecl;
 use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
 use skit_form::field::{FieldKind, FieldValue};
 use skit_ui::{
@@ -12,10 +13,10 @@ use skit_ui::{
     DetailPaneMode, DraftSummary, Effect, FormControl, FormField, FormPurpose, FormView,
     HealthAction, HealthIssue, HealthIssueKind, HealthSnapshot, HealthView, HostRequest, InputMode,
     KnownEntryKind, LibraryState, MirrorHealth, ModalState, NAME_KEY, PreferencesAction,
-    PreferencesView, RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState, RunFormView,
-    RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction, RunnerManagerView, RunnerSaveOwner,
-    Screen, SettingsAction, SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UvHealth,
-    command_specs,
+    PreferencesView, RESYNC_KEY, RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState,
+    RunFormView, RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction, RunnerManagerView,
+    RunnerSaveOwner, Screen, SettingsAction, SettingsInputs, SettingsView, SourceSnapshot,
+    UiCommand, UvHealth, command_specs,
 };
 
 fn entry_with_kind(slug: &str, name: &str, kind: &str, description: &str) -> EntrySummary {
@@ -1009,6 +1010,7 @@ fn every_advertised_settings_key_reaches_the_reducer() {
         [
             UiCommand::SaveSettings,
             UiCommand::NewRunner,
+            UiCommand::ResyncSettings,
             UiCommand::CloseSettings,
             UiCommand::FocusNext,
             UiCommand::FocusPrevious,
@@ -1033,6 +1035,10 @@ fn every_advertised_settings_key_reaches_the_reducer() {
     ] {
         assert!(state.command_enabled(command), "{command:?} is advertised");
     }
+    // A prompt has no script to read definitions back from, so the chord is not offered at all.
+    // Version 0.4 refuses to advertise a key that would silently do nothing
+    // (`src/skit/tui_settings.py:408-415`).
+    assert!(!state.command_enabled(UiCommand::ResyncSettings));
 
     // The nav pair walks the same stops the model defines.
     let first = state.settings_view().unwrap().focused().to_owned();
@@ -1064,6 +1070,55 @@ fn every_advertised_settings_key_reaches_the_reducer() {
             && values.get(DESCRIPTION_KEY).map(FieldValue::as_text).as_deref()
                 == Some("Summarize a document")
     ));
+}
+
+/// The resync chord reaches a control a person can also click, and it travels with the save.
+///
+/// Version 0.4 gives `Ctrl+R` to a kind with an analyzer stored as a copy, and to nothing else,
+/// because "advertising a key that silently no-ops … teaches a dead chord"
+/// (`src/skit/tui_settings.py:408-415`).
+#[test]
+fn the_resync_chord_reaches_a_control_and_the_save_carries_it() {
+    let mut state = state();
+    let view = SettingsView::from_inputs(&SettingsInputs {
+        selector: "tool".to_owned(),
+        kind: "python".to_owned(),
+        name: "Tool".to_owned(),
+        workdir: "invoke".to_owned(),
+        has_original_file: true,
+        has_stored_name: true,
+        has_analyzer: true,
+        managed: vec![ParamDecl::new("GREETING")],
+        ..SettingsInputs::default()
+    });
+    state.update(Action::Present(Screen::Settings(Box::new(view))));
+    assert!(state.command_enabled(UiCommand::ResyncSettings));
+
+    assert_eq!(
+        state.update(UiCommand::ResyncSettings.action()),
+        Effect::None
+    );
+    let view = state.settings_view().unwrap();
+    assert_eq!(
+        view.field(RESYNC_KEY).unwrap().value(),
+        &FieldValue::boolean(true),
+        "the chord must move the control a click moves"
+    );
+    // The keyboard follows the chord, so the next arrow key acts where the user is looking.
+    assert_eq!(view.focused(), RESYNC_KEY);
+
+    let Effect::Submit { values, .. } = state.update(UiCommand::SaveSettings.action()) else {
+        panic!("the save must reach the host");
+    };
+    assert_eq!(values.get(RESYNC_KEY), Some(&FieldValue::boolean(true)));
+
+    // It is a control, so it is reversible: pressing the chord again takes the request back.
+    state.update(UiCommand::ResyncSettings.action());
+    assert!(!state.settings_view().unwrap().is_dirty());
+    let Effect::Submit { values, .. } = state.update(UiCommand::SaveSettings.action()) else {
+        panic!("the save must reach the host");
+    };
+    assert!(!values.contains_key(RESYNC_KEY));
 }
 
 /// A refused save writes nothing and puts the reason where a person reads it.

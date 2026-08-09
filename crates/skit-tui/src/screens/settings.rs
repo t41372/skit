@@ -34,7 +34,7 @@ use ratatui_textarea::TextArea as RichTextArea;
 use ratatui_widgets::paragraph::{Paragraph, Wrap};
 use skit_form::field::{ChoiceOption, Field, FieldKind, FieldValue, ReadOnlyReason, TypedValue};
 use skit_i18n::{Locale, format_text, text};
-use skit_ui::{SettingsAction, SettingsNote, SettingsSectionId, SettingsView};
+use skit_ui::{SettingsAction, SettingsItem, SettingsNote, SettingsSectionId, SettingsView};
 use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
@@ -740,12 +740,16 @@ fn layout_items(view: &SettingsView, locale: Locale, width: u16) -> Vec<Position
             Item::Heading(text(locale, section.id.title()).into_owned()),
             1,
         );
-        for note in &section.notes {
-            let shown = note_text(locale, note);
-            let height = wrapped_height(&shown, width);
-            push(&mut items, &mut start, Item::Copy(shown), height);
-        }
-        for field in &section.fields {
+        for element in &section.items {
+            let field = match element {
+                SettingsItem::Note(note) => {
+                    let shown = note_text(locale, note);
+                    let height = wrapped_height(&shown, width);
+                    push(&mut items, &mut start, Item::Copy(shown), height);
+                    continue;
+                }
+                SettingsItem::Field(field) => field.as_ref(),
+            };
             if field.kind.editable() && !stops.contains(&field.key.as_str()) {
                 continue;
             }
@@ -1012,27 +1016,26 @@ fn shape(field: &Field) -> ControlShape {
 }
 
 fn fields(view: &SettingsView) -> impl Iterator<Item = &Field> {
-    view.sections
-        .iter()
-        .flat_map(|section| section.fields.iter())
+    view.fields()
 }
 
 #[cfg(test)]
 mod tests {
     use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::MouseButton;
+    use skit_domain::parameters::{ParamDecl, ParameterValue};
     use skit_form::field::{
         ArgumentDialect, FieldCapabilities, FieldOwner, FieldValue, ReadOnlyReason,
     };
     use skit_ui::{
-        DESCRIPTION_KEY, DependencyFlavor, NAME_KEY, NEEDS_KEY, SettingsAction, SettingsInputs,
-        SettingsSection, SettingsSectionId, WORKDIR_CUSTOM, WORKDIR_KEY,
+        DESCRIPTION_KEY, DependencyFlavor, MANAGE_KEY, NAME_KEY, NEEDS_KEY, SettingsAction,
+        SettingsInputs, SettingsSection, SettingsSectionId, WORKDIR_CUSTOM, WORKDIR_KEY,
     };
 
     use super::{
         ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyModifiers, Locale, MouseEvent,
-        MouseEventKind, Rect, SettingsControlId, SettingsScreenEvent, SettingsScreenGeometry,
-        SettingsScreenSession, SettingsView, TypedValue, render_settings,
+        MouseEventKind, Rect, SettingsControlId, SettingsItem, SettingsScreenEvent,
+        SettingsScreenGeometry, SettingsScreenSession, SettingsView, TypedValue, render_settings,
     };
 
     /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
@@ -1102,7 +1105,7 @@ mod tests {
             .iter()
             .map(|section| section.id.title())
             .collect::<Vec<_>>();
-        assert_eq!(headings.len(), 6, "{headings:?}");
+        assert_eq!(headings.len(), 7, "{headings:?}");
 
         let mut seen = Vec::new();
         let stops = view.focusable_keys().len();
@@ -1213,6 +1216,100 @@ mod tests {
         );
     }
 
+    /// The parameter section draws every control a person needs and answers both inputs.
+    ///
+    /// Version 0.4 puts the name and the script's own metadata inside the keep toggle's label
+    /// (`src/skit/tui_settings.py:99-101`), lists unmanaged constants as checkboxes under one
+    /// sentence (`:624-631`), and gives the resync a chord (`:408-415`). This asserts what a person
+    /// sees and what a click does, not that a widget was constructed.
+    #[test]
+    fn the_parameter_section_draws_its_rows_and_answers_the_keyboard_and_the_mouse() {
+        let mut greeting = ParamDecl::new("GREETING");
+        greeting.default = Some(ParameterValue::String("world".to_owned()));
+        let mut view = SettingsView::from_inputs(&SettingsInputs {
+            selector: "tool".to_owned(),
+            kind: "python".to_owned(),
+            name: "Tool".to_owned(),
+            workdir: "invoke".to_owned(),
+            has_original_file: true,
+            has_stored_name: true,
+            has_analyzer: true,
+            managed: vec![greeting],
+            candidates: vec!["WIDTH".to_owned()],
+            ..SettingsInputs::default()
+        });
+        let mut session = SettingsScreenSession::default();
+        let (terminal, geometry) = draw(&mut session, &view, DEMO_WIDTH, 120);
+        let frame = rendered(terminal.backend().buffer());
+
+        let row_of = |needle: &str| {
+            frame
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} is not on screen:\n{frame}"))
+        };
+        let heading = row_of("Parameters (the run form's fields)");
+        // The row reads out its name, its type and its default in one line, exactly as v0.4 does.
+        let managed_row = row_of("GREETING  str world");
+        let offer = row_of("Detected but not yet managed — tick to manage:");
+        let candidate = row_of("WIDTH");
+        let resync = row_of("Read the parameter definitions from the script again on save");
+        // Explanation and control are one stream: the offer's sentence follows the rows it comes
+        // after and introduces the checkboxes it labels (`src/skit/tui_settings.py:607-637`).
+        assert!(
+            heading < managed_row && managed_row < offer && offer < candidate,
+            "the section is out of order:\n{frame}"
+        );
+        assert!(candidate < resync, "{frame}");
+
+        // Clicking the candidate ticks it, and the ticked set is what a save carries.
+        let hit = geometry
+            .hits
+            .iter()
+            .find(|hit| {
+                hit.target
+                    == SettingsControlId::Option {
+                        field: MANAGE_KEY.to_owned(),
+                        value: "WIDTH".to_owned(),
+                    }
+            })
+            .expect("the candidate is not a click target");
+        let area = hit.area;
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: area.x,
+                row: area.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+        );
+        assert_eq!(
+            view.submitted_values()
+                .get(MANAGE_KEY)
+                .map(FieldValue::as_text)
+                .as_deref(),
+            Some("WIDTH")
+        );
+
+        // The keep toggle answers Space, which is the unmanage a person reaches by keyboard.
+        view.update(SettingsAction::Focus {
+            key: "parameter:GREETING:keep".to_owned(),
+        });
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            key(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            view.submitted_values().get("parameter:GREETING:keep"),
+            Some(&FieldValue::boolean(false))
+        );
+    }
+
     /// A screen with nothing to edit still draws what it has.
     ///
     /// The keyboard has no stop at all here, so the alignment pass has no row to work from. It must
@@ -1221,17 +1318,16 @@ mod tests {
     fn a_screen_with_nothing_to_edit_still_draws() {
         let mut view = prompt_view();
         view.sections.clear();
-        view.sections.push(SettingsSection {
-            id: SettingsSectionId::Storage,
-            notes: Vec::new(),
-            fields: vec![Field::read_only(
+        view.sections.push(SettingsSection::new(
+            SettingsSectionId::Storage,
+            vec![SettingsItem::field(Field::read_only(
                 "linked",
                 "Source",
                 FieldOwner::Declared,
                 FieldValue::text("/home/ada/brief.md"),
                 ReadOnlyReason::ReferenceMode,
-            )],
-        });
+            ))],
+        ));
         assert!(view.focusable_keys().is_empty());
         assert_eq!(view.focused(), "");
 
@@ -1545,26 +1641,25 @@ mod tests {
     #[test]
     fn a_toggle_answers_the_keyboard_and_the_mouse_and_read_only_text_answers_neither() {
         let mut view = prompt_view();
-        view.sections.push(SettingsSection {
-            id: SettingsSectionId::Basics,
-            notes: Vec::new(),
-            fields: vec![
-                Field::new(
+        view.sections.push(SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![
+                SettingsItem::field(Field::new(
                     "kind:boolean",
                     "Dry run",
                     FieldKind::Boolean,
                     FieldOwner::Declared,
                     FieldValue::boolean(false),
-                ),
-                Field::read_only(
+                )),
+                SettingsItem::field(Field::read_only(
                     "kind:read-only",
                     "Delivery",
                     FieldOwner::Declared,
                     FieldValue::text("flag"),
                     ReadOnlyReason::FixedAtAddTime,
-                ),
+                )),
             ],
-        });
+        ));
         let mut session = SettingsScreenSession::default();
         let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
 
@@ -1683,32 +1778,31 @@ mod tests {
     #[test]
     fn every_field_kind_draws_a_control() {
         let mut view = prompt_view();
-        view.sections.push(SettingsSection {
-            id: SettingsSectionId::Basics,
-            notes: Vec::new(),
-            fields: vec![
-                Field::new(
+        view.sections.push(SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![
+                SettingsItem::field(Field::new(
                     "kind:secret",
                     "Secret",
                     FieldKind::Secret,
                     FieldOwner::Declared,
                     FieldValue::text("hunter2"),
-                ),
-                Field::new(
+                )),
+                SettingsItem::field(Field::new(
                     "kind:boolean",
                     "Dry run",
                     FieldKind::Boolean,
                     FieldOwner::Declared,
                     FieldValue::boolean(true),
-                ),
-                Field::new(
+                )),
+                SettingsItem::field(Field::new(
                     "kind:number",
                     "Retries",
                     FieldKind::Number { integer: true },
                     FieldOwner::Declared,
                     FieldValue::Explicit(TypedValue::Integer(3)),
-                ),
-                Field::new(
+                )),
+                SettingsItem::field(Field::new(
                     "kind:arguments",
                     "Extra arguments",
                     FieldKind::ArgumentList {
@@ -1716,26 +1810,42 @@ mod tests {
                     },
                     FieldOwner::Declared,
                     FieldValue::Explicit(TypedValue::Arguments(vec!["--force".to_owned()])),
+                )),
+                SettingsItem::field(
+                    Field::new(
+                        "kind:multi",
+                        "Lanes",
+                        FieldKind::MultiChoice {
+                            options: vec![ChoiceOption::plain("fast"), ChoiceOption::plain("slow")],
+                        },
+                        FieldOwner::Declared,
+                        FieldValue::Explicit(TypedValue::Choices(vec!["slow".to_owned()])),
+                    )
+                    .with_capabilities(FieldCapabilities::default()),
                 ),
-                Field::new(
-                    "kind:multi",
-                    "Lanes",
-                    FieldKind::MultiChoice {
-                        options: vec![ChoiceOption::plain("fast"), ChoiceOption::plain("slow")],
-                    },
-                    FieldOwner::Declared,
-                    FieldValue::Explicit(TypedValue::Choices(vec!["slow".to_owned()])),
-                )
-                .with_capabilities(FieldCapabilities::default()),
-                Field::read_only(
+                SettingsItem::field(Field::read_only(
                     "kind:read-only",
                     "Delivery",
                     FieldOwner::Declared,
                     FieldValue::text("flag"),
                     ReadOnlyReason::FixedAtAddTime,
-                ),
+                )),
+                SettingsItem::field(Field::read_only(
+                    "kind:source-declares",
+                    "Type",
+                    FieldOwner::SourceBlock,
+                    FieldValue::text("int"),
+                    ReadOnlyReason::SourceDeclares,
+                )),
+                SettingsItem::field(Field::read_only(
+                    "kind:derived",
+                    "Env target",
+                    FieldOwner::Declared,
+                    FieldValue::text("COUNT"),
+                    ReadOnlyReason::Derived,
+                )),
             ],
-        });
+        ));
 
         let mut session = SettingsScreenSession::default();
         let (terminal, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);

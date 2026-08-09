@@ -9,9 +9,14 @@
 //! `:820-821`).
 
 use serde::{Deserialize, Serialize};
-use skit_form::field::{
-    ChoiceOption, Field, FieldCapabilities, FieldKind, FieldOwner, FieldValue, TypedValue,
-    any_dirty,
+use skit_domain::parameters::{ParamDecl, ParameterBinding};
+use skit_form::{
+    field::{
+        ChoiceOption, Field, FieldCapabilities, FieldKind, FieldOwner, FieldValue, TypedValue,
+    },
+    parameter_section::{
+        ParameterRow, ParameterSection, ParameterSectionContext, SourceFollowup, parameter_section,
+    },
 };
 
 use crate::SubmittedValues;
@@ -34,6 +39,18 @@ pub const DEPENDENCIES_KEY: &str = "dependencies";
 pub const PYTHON_KEY: &str = "python";
 /// Stable key of the required external commands.
 pub const NEEDS_KEY: &str = "needs";
+/// Stable key of a command entry's own command line.
+pub const TEMPLATE_KEY: &str = "template";
+/// Stable key of a prompt's variable-insertion switch.
+pub const INTERPOLATE_KEY: &str = "interpolate";
+/// Stable key of the resync request.
+pub const RESYNC_KEY: &str = "source:resync";
+/// Stable key of the "manage these constants" offer.
+pub const MANAGE_KEY: &str = "source:manage";
+/// Stable key of the shell normalize offer.
+pub const NORMALIZE_KEY: &str = "source:normalize";
+/// Stable key of the add-a-parameter box.
+pub const ADD_PARAMETER_KEY: &str = "parameter:add";
 
 /// The working-directory value that means "a folder the user typed".
 pub const WORKDIR_CUSTOM: &str = "custom";
@@ -60,6 +77,8 @@ pub enum SettingsSectionId {
     Launch,
     /// Which agent a prompt runs with.
     Runner,
+    /// The fields the run form asks for.
+    Parameters,
     /// Package dependencies and any language version constraint.
     Dependencies,
     /// External commands the launch requires.
@@ -75,22 +94,79 @@ impl SettingsSectionId {
             Self::Storage => "Storage",
             Self::Launch => "Run in (working directory)",
             Self::Runner => "Runner (the agent this prompt runs with)",
+            Self::Parameters => "Parameters (the run form's fields)",
             Self::Dependencies => "Dependencies",
             Self::Needs => "Needs (external commands)",
         }
     }
 }
 
-/// One rendered section: a heading, any explanatory lines, and its fields.
+/// One element of a section, in display order.
+///
+/// Version 0.4 composes explanatory text and controls as one stream: a hint can introduce a
+/// control, sit between two of them, or close the section
+/// (`src/skit/tui_settings.py:588-637`, `:639-681`). Two separate lists could only put every
+/// sentence at one end, which would move a sentence away from the control it explains.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "item")]
+pub enum SettingsItem {
+    /// One explanatory line.
+    Note(SettingsNote),
+    /// One control.
+    Field(Box<Field>),
+}
+
+/// One rendered section: a heading and its interleaved text and controls.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SettingsSection {
     /// Which section this is.
     pub id: SettingsSectionId,
-    /// Explanatory lines shown under the heading, as catalog keys.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<SettingsNote>,
-    /// Editable fields in display order.
-    pub fields: Vec<Field>,
+    /// Explanatory lines and controls in display order.
+    pub items: Vec<SettingsItem>,
+}
+
+impl SettingsSection {
+    /// Build one section from its items.
+    #[must_use]
+    pub const fn new(id: SettingsSectionId, items: Vec<SettingsItem>) -> Self {
+        Self { id, items }
+    }
+
+    /// Return every control in display order.
+    pub fn fields(&self) -> impl Iterator<Item = &Field> {
+        self.items.iter().filter_map(|item| match item {
+            SettingsItem::Field(field) => Some(field.as_ref()),
+            SettingsItem::Note(_) => None,
+        })
+    }
+
+    /// Return every control in display order, for editing.
+    pub fn fields_mut(&mut self) -> impl Iterator<Item = &mut Field> {
+        self.items.iter_mut().filter_map(|item| match item {
+            SettingsItem::Field(field) => Some(field.as_mut()),
+            SettingsItem::Note(_) => None,
+        })
+    }
+}
+
+impl SettingsItem {
+    /// Build one explanatory line with no inserted value.
+    #[must_use]
+    pub fn note(text: &str) -> Self {
+        Self::Note(SettingsNote::plain(text))
+    }
+
+    /// Build one explanatory line that names user data.
+    #[must_use]
+    pub fn note_with(text: &str, argument: impl Into<String>) -> Self {
+        Self::Note(SettingsNote::with(text, argument))
+    }
+
+    /// Build one control.
+    #[must_use]
+    pub fn field(field: Field) -> Self {
+        Self::Field(Box::new(field))
+    }
 }
 
 /// One explanatory line and the user data it names.
@@ -120,7 +196,7 @@ impl SettingsNote {
 }
 
 /// Everything the settings screen needs, read once when it opens.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SettingsInputs {
     /// Stable entry selector.
     pub selector: String,
@@ -150,6 +226,18 @@ pub struct SettingsInputs {
     pub pinnable_interpreter: bool,
     /// Whether the kind has a source analyzer.
     pub has_analyzer: bool,
+    /// Whether the kind keeps its parameter schema in entry metadata rather than in the source.
+    pub declared_schema: bool,
+    /// How many fields the script's own command-line reader models.
+    pub reader_fields: usize,
+    /// Parameters the entry declares, from the source block or from entry metadata.
+    pub managed: Vec<ParamDecl>,
+    /// Constants the analyzer found that nobody manages yet, in detection order.
+    pub candidates: Vec<String>,
+    /// A command entry's own command line.
+    pub template: String,
+    /// Whether a prompt turns its `{{name}}` placeholders into form fields.
+    pub interpolate: bool,
     /// Which installer serves this kind, when any does.
     pub dependency_flavor: Option<DependencyFlavor>,
     /// Effective dependencies a run would install.
@@ -178,12 +266,8 @@ pub struct SettingsView {
     ///
     /// Version 0.4 advertises `Ctrl+R` only for a kind with an analyzer stored as a copy, because
     /// "advertising a key that silently no-ops … teaches a dead chord"
-    /// (`src/skit/tui_settings.py:408-415`).
-    ///
-    /// No chord reads this yet. Resync refreshes the stored source's own parameter declarations
-    /// (`src/skit/tui_settings.py:908-926`), and this screen has no parameters section to refresh,
-    /// so advertising the key now would teach exactly the dead chord the guard exists to prevent.
-    /// The flag is the guard that section will need.
+    /// (`src/skit/tui_settings.py:408-415`). The chord reaches [`RESYNC_KEY`], which exists only
+    /// under the same condition, so the guard and the control cannot drift apart.
     pub resync_available: bool,
     /// Key of the control that owns the keyboard.
     ///
@@ -219,6 +303,8 @@ pub enum SettingsAction {
     FocusNext,
     /// Move the keyboard one stop back.
     FocusPrevious,
+    /// Ask the script for its parameter definitions again when the save runs.
+    Resync,
     /// Save every axis, after validation.
     Save,
     /// Leave the screen, through the discard guard when anything moved.
@@ -277,38 +363,48 @@ impl SettingsView {
     /// Build the screen for one entry.
     #[must_use]
     pub fn from_inputs(inputs: &SettingsInputs) -> Self {
+        // The same guard version 0.4's `action_resync` applies.
+        let resync_available = inputs.has_analyzer && !inputs.reference_mode;
         let mut sections = vec![basics_section(inputs)];
         sections.extend(storage_section(inputs));
         sections.extend(launch_section(inputs));
         sections.extend(runner_section(inputs));
+        sections.extend(parameters_section(inputs, resync_available));
         sections.extend(dependencies_section(inputs));
         sections.push(needs_section(inputs));
-        Self {
+        let mut view = Self {
             selector: inputs.selector.clone(),
             title: inputs.name.clone(),
-            focused: first_focusable(&sections).unwrap_or_default(),
+            focused: String::new(),
             stored_workdir: inputs.workdir.clone(),
             sections,
             dependency_flavor: inputs.dependency_flavor,
-            // The same guard version 0.4's `action_resync` applies.
-            resync_available: inputs.has_analyzer && !inputs.reference_mode,
-        }
+            resync_available,
+        };
+        view.focused = view
+            .focusable_keys()
+            .first()
+            .map(|key| (*key).to_owned())
+            .unwrap_or_default();
+        view
+    }
+
+    /// Return every control on the screen in display order.
+    pub fn fields(&self) -> impl Iterator<Item = &Field> {
+        self.sections.iter().flat_map(SettingsSection::fields)
     }
 
     /// Return one field by key.
     #[must_use]
     pub fn field(&self, key: &str) -> Option<&Field> {
-        self.sections
-            .iter()
-            .flat_map(|section| section.fields.iter())
-            .find(|field| field.key == key)
+        self.fields().find(|field| field.key == key)
     }
 
     /// Return one field by key for editing.
     pub fn field_mut(&mut self, key: &str) -> Option<&mut Field> {
         self.sections
             .iter_mut()
-            .flat_map(|section| section.fields.iter_mut())
+            .flat_map(SettingsSection::fields_mut)
             .find(|field| field.key == key)
     }
 
@@ -324,9 +420,20 @@ impl SettingsView {
     /// get wrong.
     #[must_use]
     pub fn is_dirty(&self) -> bool {
-        self.sections
-            .iter()
-            .any(|section| any_dirty(&section.fields))
+        // Every control counts, including one the screen currently hides. Version 0.4 snapshots the
+        // widget tree, and a widget with `display = False` is still mounted with its edited value
+        // (`src/skit/tui_settings.py:832-844`, `:900-904`). Leaving on a hidden edit must still ask.
+        self.fields().any(Field::is_dirty)
+    }
+
+    /// Report whether a prompt currently turns its placeholders into form fields.
+    ///
+    /// Version 0.4 hides the whole declared-parameter body while insertion is off and skips
+    /// collecting it on save, because those rows describe a form that does not exist
+    /// (`src/skit/tui_settings.py:678-681`, `:900-904`, `:953`).
+    fn insertion_on(&self) -> bool {
+        self.field(INTERPOLATE_KEY)
+            .is_none_or(|field| field.value().as_text() == "true")
     }
 
     /// Report whether the typed custom path applies to the current choice.
@@ -428,15 +535,16 @@ impl SettingsView {
     ///
     /// A read-only row is not a stop: it has nothing to edit, and stopping there would make the
     /// user tab past text. The custom path box is a stop only while the custom option is chosen,
-    /// which is exactly when version 0.4 shows it (`src/skit/tui_settings.py:483-491`).
+    /// which is exactly when version 0.4 shows it (`src/skit/tui_settings.py:483-491`), and a
+    /// prompt's parameter rows are stops only while variable insertion is on (`:900-904`).
     #[must_use]
     pub fn focusable_keys(&self) -> Vec<&str> {
         let custom = self.custom_workdir_selected();
-        self.sections
-            .iter()
-            .flat_map(|section| section.fields.iter())
+        let insertion = self.insertion_on();
+        self.fields()
             .filter(|field| field.kind.editable())
             .filter(|field| custom || field.key != WORKDIR_PATH_KEY)
+            .filter(|field| insertion || !hidden_while_insertion_is_off(&field.key))
             .map(|field| field.key.as_str())
             .collect()
     }
@@ -539,6 +647,18 @@ impl SettingsView {
                 self.move_focus(false);
                 SettingsEffect::None
             }
+            // The chord reaches the same control a click does, and it exists only where a resync
+            // does something (`src/skit/tui_settings.py:408-415`). A screen without the control
+            // never advertises the chord, so this can never be the dead chord that guard forbids.
+            SettingsAction::Resync => {
+                let Some(field) = self.field(RESYNC_KEY) else {
+                    return SettingsEffect::None;
+                };
+                let next = field.value().as_text() != "true";
+                self.set_value(RESYNC_KEY, FieldValue::boolean(next));
+                self.focus(RESYNC_KEY);
+                SettingsEffect::None
+            }
             // Version 0.4 completes its validation pass before any write and returns having
             // written nothing on the first refusal (`src/skit/tui_settings.py:939-941`,
             // `:517-523`).
@@ -573,11 +693,14 @@ impl SettingsView {
     /// differently would write a working directory the screen never showed.
     #[must_use]
     pub fn submitted_values(&self) -> SubmittedValues {
+        // Only a control a person could reach travels. A hidden control describes something the
+        // screen is not currently offering — a prompt with insertion off has no run form for its
+        // rows to describe — and version 0.4 skips exactly that set on save
+        // (`src/skit/tui_settings.py:953`).
+        let reachable = self.focusable_keys();
         let mut values = self
-            .sections
-            .iter()
-            .flat_map(|section| section.fields.iter())
-            .filter(|field| field.kind.editable() && field.is_dirty())
+            .fields()
+            .filter(|field| field.is_dirty() && reachable.contains(&field.key.as_str()))
             .map(|field| (field.key.clone(), field.value().clone()))
             .collect::<SubmittedValues>();
         // The two halves are one axis: either one moving means the policy moved.
@@ -613,38 +736,37 @@ impl SettingsView {
     }
 }
 
-/// Return the first control a person can move the keyboard to.
-fn first_focusable(sections: &[SettingsSection]) -> Option<String> {
-    sections
-        .iter()
-        .flat_map(|section| section.fields.iter())
-        .find(|field| field.kind.editable())
-        .map(|field| field.key.clone())
+/// Report whether one control describes a run form a prompt is not currently building.
+///
+/// Version 0.4 hides the declared-parameter body, and everything in it, while variable insertion is
+/// off (`src/skit/tui_settings.py:678-681`, `:900-904`).
+fn hidden_while_insertion_is_off(key: &str) -> bool {
+    key.starts_with("parameter:")
 }
 
 fn basics_section(inputs: &SettingsInputs) -> SettingsSection {
-    SettingsSection {
-        id: SettingsSectionId::Basics,
-        notes: vec![SettingsNote::plain(
-            "Renaming keeps everything — remembered values, presets, the stored copy.",
-        )],
-        fields: vec![
-            Field::new(
+    SettingsSection::new(
+        SettingsSectionId::Basics,
+        vec![
+            SettingsItem::note(
+                "Renaming keeps everything — remembered values, presets, the stored copy.",
+            ),
+            SettingsItem::field(Field::new(
                 NAME_KEY,
                 "Name",
                 FieldKind::Text,
                 FieldOwner::EntryPolicy,
                 FieldValue::text(&inputs.name),
-            ),
-            Field::new(
+            )),
+            SettingsItem::field(Field::new(
                 DESCRIPTION_KEY,
                 "Description (shown in the Library)",
                 FieldKind::Multiline,
                 FieldOwner::EntryPolicy,
                 FieldValue::text(&inputs.description),
-            ),
+            )),
         ],
-    }
+    )
 }
 
 /// Storage explains the mode and names the original. A kind with one mode has nothing to say.
@@ -653,18 +775,14 @@ fn storage_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
         return None;
     }
     let note = if inputs.reference_mode {
-        SettingsNote::with("Linked to the original: {}", &inputs.source)
+        SettingsItem::note_with("Linked to the original: {}", &inputs.source)
     } else {
-        SettingsNote::with(
+        SettingsItem::note_with(
             "Keep a copy — your original file is never modified. Source: {}",
             &inputs.source,
         )
     };
-    Some(SettingsSection {
-        id: SettingsSectionId::Storage,
-        notes: vec![note],
-        fields: Vec::new(),
-    })
+    Some(SettingsSection::new(SettingsSectionId::Storage, vec![note]))
 }
 
 /// Launch offers a kind-aware working directory and, for some kinds, an interpreter.
@@ -701,28 +819,30 @@ fn launch_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
     } else {
         WORKDIR_CUSTOM.to_owned()
     };
-    let mut fields = vec![
-        Field::new(
+    let mut items = vec![
+        SettingsItem::field(Field::new(
             WORKDIR_KEY,
             "Run in (working directory)",
             FieldKind::SingleChoice { options },
             FieldOwner::EntryPolicy,
             FieldValue::Explicit(TypedValue::Choice(selected)),
+        )),
+        SettingsItem::field(
+            Field::new(
+                WORKDIR_PATH_KEY,
+                "/absolute/path",
+                FieldKind::Path { directory: true },
+                FieldOwner::EntryPolicy,
+                FieldValue::text(if known { "" } else { inputs.workdir.as_str() }),
+            )
+            .with_capabilities(FieldCapabilities {
+                browse: true,
+                ..FieldCapabilities::default()
+            }),
         ),
-        Field::new(
-            WORKDIR_PATH_KEY,
-            "/absolute/path",
-            FieldKind::Path { directory: true },
-            FieldOwner::EntryPolicy,
-            FieldValue::text(if known { "" } else { inputs.workdir.as_str() }),
-        )
-        .with_capabilities(FieldCapabilities {
-            browse: true,
-            ..FieldCapabilities::default()
-        }),
     ];
     if inputs.pinnable_interpreter {
-        fields.push(
+        items.push(SettingsItem::field(
             Field::new(
                 INTERPRETER_KEY,
                 "Interpreter / runtime",
@@ -731,13 +851,9 @@ fn launch_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
                 FieldValue::text(&inputs.interpreter),
             )
             .with_help("empty = automatic (shebang, then detection order)"),
-        );
+        ));
     }
-    Some(SettingsSection {
-        id: SettingsSectionId::Launch,
-        notes: Vec::new(),
-        fields,
-    })
+    Some(SettingsSection::new(SettingsSectionId::Launch, items))
 }
 
 /// Only a prompt pins an agent.
@@ -757,10 +873,9 @@ fn runner_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
         );
     }
     options.extend(inputs.configured_runners.iter().map(ChoiceOption::plain));
-    Some(SettingsSection {
-        id: SettingsSectionId::Runner,
-        notes: Vec::new(),
-        fields: vec![
+    Some(SettingsSection::new(
+        SettingsSectionId::Runner,
+        vec![SettingsItem::field(
             // Value-keyed, so a runner list that changed while the screen was open can never shift
             // an index mapping (`src/skit/tui_settings.py:554-556`).
             Field::new(
@@ -776,8 +891,8 @@ fn runner_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
                 new_runner: true,
                 ..FieldCapabilities::default()
             }),
-        ],
-    })
+        )],
+    ))
 }
 
 /// Dependencies apply only where an installer serves the kind.
@@ -793,7 +908,7 @@ fn dependencies_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
     // meta deliberately blank, and prefilling from meta made "untouched blank" indistinguishable
     // from "user cleared" (`src/skit/tui_settings.py:822-834`). The same read is the baseline,
     // because `Field` keeps whatever it opened with.
-    let mut fields = vec![
+    let mut items = vec![SettingsItem::field(
         Field::new(
             DEPENDENCIES_KEY,
             "Dependencies",
@@ -805,9 +920,9 @@ fn dependencies_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
             DependencyFlavor::Uv => "comma separated, e.g. requests>=2,<3, rich",
             DependencyFlavor::Npm => "comma separated, e.g. chalk@^5, zod",
         }),
-    ];
+    )];
     if flavor == DependencyFlavor::Uv {
-        fields.push(
+        items.push(SettingsItem::field(
             Field::new(
                 PYTHON_KEY,
                 "Python constraint",
@@ -816,21 +931,16 @@ fn dependencies_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
                 FieldValue::text(&inputs.effective_requires_python),
             )
             .with_help("Python constraint, e.g. \">=3.11\" (empty = automatic)"),
-        );
+        ));
     }
-    Some(SettingsSection {
-        id: SettingsSectionId::Dependencies,
-        notes: Vec::new(),
-        fields,
-    })
+    Some(SettingsSection::new(SettingsSectionId::Dependencies, items))
 }
 
 /// Every kind can require external commands, so this section always applies.
 fn needs_section(inputs: &SettingsInputs) -> SettingsSection {
-    SettingsSection {
-        id: SettingsSectionId::Needs,
-        notes: Vec::new(),
-        fields: vec![
+    SettingsSection::new(
+        SettingsSectionId::Needs,
+        vec![SettingsItem::field(
             Field::new(
                 NEEDS_KEY,
                 "Needs (external commands)",
@@ -839,8 +949,189 @@ fn needs_section(inputs: &SettingsInputs) -> SettingsSection {
                 FieldValue::text(inputs.needs.join(", ")),
             )
             .with_help("comma separated, e.g. ffmpeg, jq"),
-        ],
+        )],
+    )
+}
+
+/// The parameter section: what the run form asks for, and what the user may change about it.
+///
+/// Version 0.4 decides what this section *is* before it draws any row
+/// (`src/skit/tui_settings.py:588-631`), which is what keeps a control the save could not keep off
+/// the screen. Everything here follows that decision.
+fn parameters_section(inputs: &SettingsInputs, resync_available: bool) -> Option<SettingsSection> {
+    // An unknown kind gets no editor a newer skit might define.
+    if inputs.kind.is_empty() {
+        return None;
     }
+    let section = parameter_section(
+        ParameterSectionContext {
+            kind: &inputs.kind,
+            reference_mode: inputs.reference_mode,
+            declared_schema: inputs.declared_schema,
+            has_analyzer: inputs.has_analyzer,
+            reader_fields: inputs.reader_fields,
+        },
+        &inputs.managed,
+        &inputs.candidates,
+    );
+    let items = match section {
+        // One line rather than an empty box (`src/skit/tui_settings.py:594-596`).
+        ParameterSection::Unsupported => {
+            vec![SettingsItem::note("(programs have no managed parameters)")]
+        }
+        ParameterSection::Reference { rows } => {
+            let mut items = vec![SettingsItem::note(
+                "skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly.",
+            )];
+            // `· name (type)`, exactly as version 0.4 prints it (`:605-606`). The text is the
+            // script's own, so it is a value and never a catalog key.
+            items.extend(rows.into_iter().map(|row| {
+                SettingsItem::field(
+                    Field::new(
+                        format!("parameter:{}:summary", row.name),
+                        String::new(),
+                        FieldKind::ReadOnly,
+                        FieldOwner::SourceBlock,
+                        FieldValue::text(format!("· {} ({})", row.name, row.parameter_type)),
+                    )
+                    .with_verbatim_label(),
+                )
+            }));
+            items
+        }
+        ParameterSection::Declared { rows } => declared_items(inputs, rows),
+        ParameterSection::SourceManaged { rows, followup } => {
+            source_managed_items(inputs, rows, followup, resync_available)
+        }
+    };
+    Some(SettingsSection::new(SettingsSectionId::Parameters, items))
+}
+
+/// The hand-declared editor: the template or the insertion switch, the rows, then the add box.
+///
+/// Version 0.4 composes it in this order (`src/skit/tui_settings.py:639-719`).
+fn declared_items(inputs: &SettingsInputs, rows: Vec<ParameterRow>) -> Vec<SettingsItem> {
+    let mut items = Vec::new();
+    // The template is the program, and it stays editable: freezing it forever would force remove
+    // and re-add over a typo (`src/skit/tui_settings.py:645-653`).
+    if inputs.kind == "command" {
+        items.push(SettingsItem::field(Field::new(
+            TEMPLATE_KEY,
+            "Command template",
+            FieldKind::Text,
+            FieldOwner::Template,
+            FieldValue::text(&inputs.template),
+        )));
+        items.push(SettingsItem::note(
+            "Saving re-reads the {placeholders} from the template.",
+        ));
+    }
+    // The per-prompt master switch, and the sentence that says what "off" means (`:658-677`).
+    if inputs.kind == "prompt" {
+        items.push(SettingsItem::field(Field::new(
+            INTERPOLATE_KEY,
+            "Variable insertion ({{name}} placeholders become form fields)",
+            FieldKind::Boolean,
+            FieldOwner::EntryPolicy,
+            FieldValue::boolean(inputs.interpolate),
+        )));
+        items.push(SettingsItem::note(
+            "Off — the body travels to the agent exactly as written.",
+        ));
+    }
+    items.extend(row_items(rows));
+    items.push(SettingsItem::field(
+        Field::new(
+            ADD_PARAMETER_KEY,
+            "Add a parameter — type a name, then Save:",
+            FieldKind::Text,
+            FieldOwner::Declared,
+            FieldValue::text(""),
+        )
+        .with_help("new parameter name"),
+    ));
+    items
+}
+
+/// The block-managed editor: the rows, then whatever else the source allows.
+fn source_managed_items(
+    inputs: &SettingsInputs,
+    rows: Vec<ParameterRow>,
+    followup: SourceFollowup,
+    resync_available: bool,
+) -> Vec<SettingsItem> {
+    let all_input_bound = !inputs.managed.is_empty()
+        && inputs
+            .managed
+            .iter()
+            .all(|declaration| declaration.binding == ParameterBinding::Input);
+    let mut items = row_items(rows);
+    match followup {
+        SourceFollowup::None => {}
+        // Managing a constant would write a block that shadows the script's own reader, so version
+        // 0.4 explains instead of offering the checkboxes (`src/skit/tui_settings.py:612-623`).
+        SourceFollowup::ReaderDriven => items.push(SettingsItem::note(
+            "This script's run form comes from its own command-line arguments. Managing a hardcoded constant here would replace that form — leave it as is.",
+        )),
+        // The offer's own label is version 0.4's sentence above the checkboxes (`:624-631`).
+        SourceFollowup::Offer { candidates } => items.push(SettingsItem::field(Field::new(
+            MANAGE_KEY,
+            "Detected but not yet managed — tick to manage:",
+            FieldKind::MultiChoice {
+                options: candidates.iter().map(ChoiceOption::plain).collect(),
+            },
+            FieldOwner::SourceBlock,
+            FieldValue::Explicit(TypedValue::Choices(Vec::new())),
+        ))),
+    }
+    if all_input_bound {
+        items.push(SettingsItem::note(
+            "Every input() is managed — this script can now run with --no-input.",
+        ));
+    }
+    // The one opt-in semantic edit to a stored script, and the only kind it applies to. Version 0.4
+    // advises the same rewrite from the command line (`src/skit/cli.py:4014`, `:4113-4116`).
+    if inputs.kind == "shell" && !inputs.reference_mode {
+        // A constant that already reads `${NAME:-value}` is the result of this rewrite, so offering
+        // it again would be a control whose only outcome is a refusal — the normalizer refuses a
+        // value that names itself (`crates/skit-language/src/semantic/shell.rs:747-751`).
+        let names = inputs
+            .managed
+            .iter()
+            .filter(|declaration| declaration.binding != ParameterBinding::EnvDefault)
+            .map(|declaration| declaration.name.clone())
+            .chain(inputs.candidates.iter().cloned())
+            .collect::<Vec<_>>();
+        if !names.is_empty() {
+            items.push(SettingsItem::field(Field::new(
+                NORMALIZE_KEY,
+                "Change a constant to an environment default — tick to normalize:",
+                FieldKind::MultiChoice {
+                    options: names.iter().map(ChoiceOption::plain).collect(),
+                },
+                FieldOwner::SourceBlock,
+                FieldValue::Explicit(TypedValue::Choices(Vec::new())),
+            )));
+        }
+    }
+    // The chord and the control appear together, so `Ctrl+R` can never be advertised for a screen
+    // that has nothing to resync (`src/skit/tui_settings.py:408-415`).
+    if resync_available {
+        items.push(SettingsItem::field(Field::new(
+            RESYNC_KEY,
+            "Read the parameter definitions from the script again on save",
+            FieldKind::Boolean,
+            FieldOwner::SourceBlock,
+            FieldValue::boolean(false),
+        )));
+    }
+    items
+}
+
+fn row_items(rows: Vec<ParameterRow>) -> Vec<SettingsItem> {
+    rows.into_iter()
+        .flat_map(|row| row.fields.into_iter().map(SettingsItem::field))
+        .collect()
 }
 
 fn split_list(value: &str) -> Vec<String> {
@@ -895,7 +1186,7 @@ mod tests {
         // Every present section carries either a field or something to say.
         for section in &view.sections {
             assert!(
-                !section.fields.is_empty() || !section.notes.is_empty(),
+                !section.items.is_empty(),
                 "{:?} rendered an empty box",
                 section.id
             );
@@ -908,6 +1199,7 @@ mod tests {
             has_original_file: false,
             has_stored_name: false,
             has_analyzer: false,
+            declared_schema: true,
             dependency_flavor: None,
             ..python_inputs()
         };
@@ -1403,6 +1695,443 @@ mod tests {
         assert!(!view.set_value("missing", FieldValue::text("x")));
         assert!(view.set_value(NAME_KEY, FieldValue::text("Renamed")));
         assert_eq!(view.field(NAME_KEY).unwrap().value().as_text(), "Renamed");
+    }
+
+    fn declaration(name: &str) -> ParamDecl {
+        ParamDecl::new(name)
+    }
+
+    fn notes(view: &SettingsView, id: SettingsSectionId) -> Vec<String> {
+        view.sections
+            .iter()
+            .filter(|section| section.id == id)
+            .flat_map(|section| section.items.iter())
+            .filter_map(|item| match item {
+                SettingsItem::Note(note) => Some(note.text.clone()),
+                SettingsItem::Field(_) => None,
+            })
+            .collect()
+    }
+
+    fn parameter_keys(view: &SettingsView) -> Vec<String> {
+        view.sections
+            .iter()
+            .filter(|section| section.id == SettingsSectionId::Parameters)
+            .flat_map(SettingsSection::fields)
+            .map(|field| field.key.clone())
+            .collect()
+    }
+
+    /// Each shape of the parameter section says what it is, and none of them is an empty box.
+    ///
+    /// Version 0.4 asks what the section is before it draws any row
+    /// (`src/skit/tui_settings.py:588-631`).
+    #[test]
+    fn the_parameter_section_is_whichever_shape_the_kind_earns() {
+        // No analyzer and no declared schema: one line, no controls at all.
+        let program = SettingsView::from_inputs(&SettingsInputs {
+            kind: "unknown-kind".to_owned(),
+            has_analyzer: false,
+            ..python_inputs()
+        });
+        assert_eq!(
+            notes(&program, SettingsSectionId::Parameters),
+            ["(programs have no managed parameters)"]
+        );
+        assert!(parameter_keys(&program).is_empty());
+
+        // A linked file is readable and nothing else, and each row reads out as version 0.4 prints
+        // it (`:598-606`).
+        let linked = SettingsView::from_inputs(&SettingsInputs {
+            reference_mode: true,
+            managed: vec![declaration("NAME")],
+            ..python_inputs()
+        });
+        assert_eq!(
+            notes(&linked, SettingsSectionId::Parameters),
+            [
+                "skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly."
+            ]
+        );
+        let row = linked.field("parameter:NAME:summary").expect("no row");
+        assert_eq!(row.kind, FieldKind::ReadOnly);
+        assert_eq!(row.value().as_text(), "· NAME (str)");
+        assert!(!row.translate_label, "a parameter name is not catalog copy");
+
+        // A block-managed row offers the three axes a save can keep, and its keep toggle carries
+        // the name and the script's own metadata (`:99-107`).
+        let managed = SettingsView::from_inputs(&SettingsInputs {
+            managed: vec![declaration("GREETING")],
+            ..python_inputs()
+        });
+        assert_eq!(
+            parameter_keys(&managed),
+            [
+                "parameter:GREETING:keep",
+                "parameter:GREETING:prompt",
+                "parameter:GREETING:secret",
+                "parameter:GREETING:env_source",
+                RESYNC_KEY,
+            ]
+        );
+
+        // A hand-declared row is the user's to change, and the add box closes the editor (`:718`).
+        let declared = SettingsView::from_inputs(&SettingsInputs {
+            kind: "exe".to_owned(),
+            declared_schema: true,
+            has_analyzer: false,
+            managed: vec![declaration("output")],
+            ..python_inputs()
+        });
+        assert_eq!(
+            parameter_keys(&declared),
+            [
+                "parameter:output:keep",
+                "parameter:output:type",
+                "parameter:output:default",
+                "parameter:output:choices",
+                "parameter:output:help",
+                "parameter:output:flag",
+                "parameter:output:required",
+                "parameter:output:prompt",
+                "parameter:output:secret",
+                "parameter:output:env_source",
+                ADD_PARAMETER_KEY,
+            ]
+        );
+    }
+
+    /// The offer to manage a constant is a closed option set, and it never appears where managing
+    /// one would replace the script's own form.
+    ///
+    /// Version 0.4 draws a checkbox for each candidate under one sentence (`:624-631`), and it
+    /// prints an explanation instead when the script's own reader owns the form (`:610-623`).
+    #[test]
+    fn the_manage_offer_is_a_closed_set_and_a_reader_driven_script_gets_a_sentence() {
+        let offered = SettingsView::from_inputs(&SettingsInputs {
+            managed: vec![declaration("GREETING")],
+            candidates: vec!["WIDTH".to_owned(), "HEIGHT".to_owned()],
+            ..python_inputs()
+        });
+        let field = offered.field(MANAGE_KEY).expect("no manage offer");
+        assert_eq!(
+            field.label,
+            "Detected but not yet managed — tick to manage:"
+        );
+        let FieldKind::MultiChoice { options } = &field.kind else {
+            panic!("the offer needs an open option set");
+        };
+        assert_eq!(
+            options
+                .iter()
+                .map(|option| option.value.as_str())
+                .collect::<Vec<_>>(),
+            ["WIDTH", "HEIGHT"]
+        );
+
+        // The host splits one comma-separated list, so the ticked set travels in that shape and no
+        // translation layer sits between the model and the save.
+        let mut offered = offered;
+        offered.set_value(
+            MANAGE_KEY,
+            FieldValue::Explicit(TypedValue::Choices(vec![
+                "WIDTH".to_owned(),
+                "HEIGHT".to_owned(),
+            ])),
+        );
+        assert_eq!(
+            offered
+                .submitted_values()
+                .get(MANAGE_KEY)
+                .map(FieldValue::as_text)
+                .as_deref(),
+            Some("WIDTH, HEIGHT")
+        );
+
+        // Nothing is managed yet and the script reads its own arguments: explain, offer nothing.
+        let reader_driven = SettingsView::from_inputs(&SettingsInputs {
+            reader_fields: 2,
+            candidates: vec!["WIDTH".to_owned()],
+            ..python_inputs()
+        });
+        assert!(reader_driven.field(MANAGE_KEY).is_none());
+        assert!(
+            notes(&reader_driven, SettingsSectionId::Parameters)
+                .iter()
+                .any(|note| note.starts_with("This script's run form comes from its own")),
+            "the trap must be explained"
+        );
+    }
+
+    /// Managing every `input()` earns the sentence that says the script is now automatable.
+    ///
+    /// Version 0.4 prints it under the rows (`src/skit/tui_settings.py:632-636`).
+    #[test]
+    fn a_fully_managed_input_script_is_told_it_can_now_run_unattended() {
+        let mut declared = declaration("NAME");
+        declared.binding = ParameterBinding::Input;
+        let view = SettingsView::from_inputs(&SettingsInputs {
+            managed: vec![declared],
+            ..python_inputs()
+        });
+        assert!(notes(&view, SettingsSectionId::Parameters).contains(
+            &"Every input() is managed — this script can now run with --no-input.".to_owned()
+        ));
+
+        // A constant-bound row is not an `input()`, so the sentence would be false.
+        let view = SettingsView::from_inputs(&SettingsInputs {
+            managed: vec![declaration("NAME")],
+            ..python_inputs()
+        });
+        assert!(
+            !notes(&view, SettingsSectionId::Parameters)
+                .iter()
+                .any(|note| note.starts_with("Every input()"))
+        );
+    }
+
+    /// A command entry edits its own command line here, and a prompt edits its insertion switch.
+    ///
+    /// Version 0.4 puts both inside the declared editor (`src/skit/tui_settings.py:645-666`).
+    #[test]
+    fn the_template_and_the_insertion_switch_live_with_the_rows_they_govern() {
+        let command = SettingsView::from_inputs(&SettingsInputs {
+            kind: "command".to_owned(),
+            declared_schema: true,
+            has_analyzer: false,
+            template: "rg {pattern}".to_owned(),
+            ..python_inputs()
+        });
+        assert_eq!(
+            command.field(TEMPLATE_KEY).unwrap().value().as_text(),
+            "rg {pattern}"
+        );
+        assert!(command.field(INTERPOLATE_KEY).is_none());
+        assert!(
+            notes(&command, SettingsSectionId::Parameters)
+                .contains(&"Saving re-reads the {placeholders} from the template.".to_owned())
+        );
+
+        let prompt = SettingsView::from_inputs(&SettingsInputs {
+            kind: "prompt".to_owned(),
+            declared_schema: true,
+            has_analyzer: false,
+            interpolate: true,
+            ..python_inputs()
+        });
+        assert_eq!(
+            prompt.field(INTERPOLATE_KEY).unwrap().value(),
+            &FieldValue::boolean(true)
+        );
+        assert!(prompt.field(TEMPLATE_KEY).is_none());
+        // A prompt names its fields with placeholders, so a flag would mean nothing (`:653-657`).
+        let prompt_rows = SettingsView::from_inputs(&SettingsInputs {
+            kind: "prompt".to_owned(),
+            declared_schema: true,
+            has_analyzer: false,
+            interpolate: true,
+            managed: vec![declaration("topic")],
+            ..python_inputs()
+        });
+        assert!(prompt_rows.field("parameter:topic:flag").is_none());
+    }
+
+    /// Turning variable insertion off takes the run form away, so its rows go with it.
+    ///
+    /// Version 0.4 hides the whole declared body while the switch is off and skips collecting it on
+    /// save (`src/skit/tui_settings.py:678-681`, `:900-904`, `:953`). A row that described a form
+    /// the entry is not building would otherwise be written from a control nobody could see.
+    #[test]
+    fn a_prompt_with_insertion_off_neither_shows_nor_submits_its_run_form_rows() {
+        let mut view = SettingsView::from_inputs(&SettingsInputs {
+            kind: "prompt".to_owned(),
+            declared_schema: true,
+            has_analyzer: false,
+            interpolate: true,
+            managed: vec![declaration("topic")],
+            ..python_inputs()
+        });
+        assert!(view.focusable_keys().contains(&"parameter:topic:prompt"));
+        view.set_value("parameter:topic:prompt", FieldValue::text("Topic"));
+        assert_eq!(
+            view.submitted_values()
+                .get("parameter:topic:prompt")
+                .map(FieldValue::as_text)
+                .as_deref(),
+            Some("Topic")
+        );
+
+        view.set_value(INTERPOLATE_KEY, FieldValue::boolean(false));
+        assert!(!view.focusable_keys().contains(&"parameter:topic:prompt"));
+        assert!(!view.focusable_keys().contains(&ADD_PARAMETER_KEY));
+        let values = view.submitted_values();
+        assert!(
+            !values.contains_key("parameter:topic:prompt"),
+            "a hidden row must not write a form the entry is not building: {values:?}"
+        );
+        assert_eq!(
+            values.get(INTERPOLATE_KEY),
+            Some(&FieldValue::boolean(false))
+        );
+        // The work is still unsaved, so leaving still asks before dropping it.
+        assert!(view.is_dirty());
+    }
+
+    /// The normalize offer belongs to the one kind and the one storage mode it can rewrite.
+    ///
+    /// `--normalize` is skit's only opt-in semantic edit to a stored script, and version 0.4 tells
+    /// the user to run it from the command line (`src/skit/cli.py:4014`, `:4113-4116`).
+    #[test]
+    fn only_a_stored_shell_copy_is_offered_the_environment_default_rewrite() {
+        let shell = SettingsView::from_inputs(&SettingsInputs {
+            kind: "shell".to_owned(),
+            managed: vec![declaration("NAME")],
+            candidates: vec!["WIDTH".to_owned()],
+            ..python_inputs()
+        });
+        let field = shell.field(NORMALIZE_KEY).expect("no normalize offer");
+        let FieldKind::MultiChoice { options } = &field.kind else {
+            panic!("the offer needs an open option set");
+        };
+        // Both a managed constant and an unmanaged one can be rewritten.
+        assert_eq!(
+            options
+                .iter()
+                .map(|option| option.value.as_str())
+                .collect::<Vec<_>>(),
+            ["NAME", "WIDTH"]
+        );
+
+        // One already rewritten is not offered again: the rewrite is what produced it, so the only
+        // outcome would be a refusal.
+        let mut rewritten = declaration("NAME");
+        rewritten.binding = ParameterBinding::EnvDefault;
+        let shell = SettingsView::from_inputs(&SettingsInputs {
+            kind: "shell".to_owned(),
+            managed: vec![rewritten],
+            candidates: vec!["WIDTH".to_owned()],
+            ..python_inputs()
+        });
+        let FieldKind::MultiChoice { options } = &shell.field(NORMALIZE_KEY).unwrap().kind else {
+            panic!("the offer needs an open option set");
+        };
+        assert_eq!(
+            options
+                .iter()
+                .map(|option| option.value.as_str())
+                .collect::<Vec<_>>(),
+            ["WIDTH"]
+        );
+
+        // With nothing left to rewrite there is no control at all, not an empty one.
+        let mut rewritten = declaration("NAME");
+        rewritten.binding = ParameterBinding::EnvDefault;
+        assert!(
+            SettingsView::from_inputs(&SettingsInputs {
+                kind: "shell".to_owned(),
+                managed: vec![rewritten],
+                ..python_inputs()
+            })
+            .field(NORMALIZE_KEY)
+            .is_none()
+        );
+
+        // A python entry has no shell constant to rewrite.
+        assert!(
+            SettingsView::from_inputs(&SettingsInputs {
+                managed: vec![declaration("NAME")],
+                ..python_inputs()
+            })
+            .field(NORMALIZE_KEY)
+            .is_none()
+        );
+        // A linked shell file is one skit never writes.
+        assert!(
+            SettingsView::from_inputs(&SettingsInputs {
+                kind: "shell".to_owned(),
+                reference_mode: true,
+                managed: vec![declaration("NAME")],
+                ..python_inputs()
+            })
+            .field(NORMALIZE_KEY)
+            .is_none()
+        );
+    }
+
+    /// The resync control exists exactly where a resync does something, and the chord follows it.
+    #[test]
+    fn the_resync_control_exists_only_where_the_chord_would_do_something() {
+        let mut view = SettingsView::from_inputs(&python_inputs());
+        assert!(view.resync_available);
+        assert!(view.field(RESYNC_KEY).is_some());
+
+        assert_eq!(view.update(SettingsAction::Resync), SettingsEffect::None);
+        assert_eq!(
+            view.field(RESYNC_KEY).unwrap().value(),
+            &FieldValue::boolean(true)
+        );
+        assert_eq!(view.focused(), RESYNC_KEY);
+        assert_eq!(
+            view.submitted_values().get(RESYNC_KEY),
+            Some(&FieldValue::boolean(true))
+        );
+
+        // A hand-declared kind has no script block to read back, so neither the control nor the
+        // chord exists (`src/skit/tui_settings.py:408-415`).
+        let mut declared = SettingsView::from_inputs(&SettingsInputs {
+            kind: "exe".to_owned(),
+            declared_schema: true,
+            has_analyzer: false,
+            ..python_inputs()
+        });
+        assert!(!declared.resync_available);
+        assert!(declared.field(RESYNC_KEY).is_none());
+        assert_eq!(
+            declared.update(SettingsAction::Resync),
+            SettingsEffect::None
+        );
+        assert!(declared.submitted_values().is_empty());
+    }
+
+    /// An entry of a kind this skit does not know gets no policy controls and no editor.
+    ///
+    /// Version 0.4 returns early rather than guessing what a newer skit's kind allows
+    /// (`src/skit/tui_settings.py:444-445`, `:591-596`). A control built on a guess would offer an
+    /// edit no launch could use.
+    #[test]
+    fn an_unknown_kind_is_offered_neither_a_launch_policy_nor_a_parameter_editor() {
+        let view = SettingsView::from_inputs(&SettingsInputs {
+            kind: String::new(),
+            ..python_inputs()
+        });
+        assert!(!view.has_section(SettingsSectionId::Launch));
+        assert!(!view.has_section(SettingsSectionId::Parameters));
+        // The axes that do not depend on the kind are still there.
+        assert!(view.has_section(SettingsSectionId::Basics));
+        assert!(view.has_section(SettingsSectionId::Needs));
+    }
+
+    /// A row's edit travels under that row's own name and moves no other row.
+    #[test]
+    fn only_a_moved_parameter_axis_travels_and_it_carries_its_own_name() {
+        let mut view = SettingsView::from_inputs(&SettingsInputs {
+            managed: vec![declaration("FIRST"), declaration("SECOND")],
+            ..python_inputs()
+        });
+        assert!(view.submitted_values().is_empty(), "nothing moved");
+
+        view.set_value("parameter:SECOND:prompt", FieldValue::text("Second"));
+        view.set_value("parameter:FIRST:keep", FieldValue::boolean(false));
+        let values = view.submitted_values();
+        assert_eq!(values.len(), 2, "{values:?}");
+        assert_eq!(
+            values.get("parameter:SECOND:prompt"),
+            Some(&FieldValue::text("Second"))
+        );
+        assert_eq!(
+            values.get("parameter:FIRST:keep"),
+            Some(&FieldValue::boolean(false))
+        );
     }
 
     /// The whole screen round-trips as data for a future non-terminal frontend.
