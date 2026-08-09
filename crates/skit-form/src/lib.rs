@@ -2,6 +2,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod field;
+pub mod parameter_section;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};

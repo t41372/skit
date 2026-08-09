@@ -2717,6 +2717,7 @@ name = "skit-form"
 version = "0.5.0"
 dependencies = [
  "serde",
+ "serde_json",
  "skit-domain",
  "skit-language",
 ]
