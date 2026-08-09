@@ -882,6 +882,9 @@ impl PreferencesWidgetSession {
         } else {
             self.focus.prev();
         }
+        // The session moves its own cursor here, so the next sync sees no change and would never
+        // scroll. Without this the keyboard can focus a control that is never drawn at all.
+        self.pending_ensure_focus = true;
         self.focus
             .current()
             .copied()
@@ -1447,6 +1450,46 @@ mod tests {
         );
         assert_eq!(handling, PreferencesEventHandling::Consumed);
         assert!(session.scroll_offset() > 0);
+    }
+
+    /// Tabbing to a control below the fold must bring it into view.
+    ///
+    /// A scroll affordance is what the code drew; the control being on screen is what the user
+    /// gets. Asserting the affordance passed on the run form while focus sat off screen, so this
+    /// asserts the outcome: the focused control's rectangle lies inside the viewport.
+    #[test]
+    fn tabbing_to_a_control_below_the_fold_brings_it_into_view() {
+        let mut session = PreferencesWidgetSession::default();
+        let mut view = view();
+        let _ = draw(&mut session, &view, 52, 10, Locale::En);
+        assert!(
+            session.maximum_scroll_offset() > 0,
+            "this fixture must overflow for the test to mean anything"
+        );
+
+        for _ in 0..12 {
+            let handling = session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+                &view,
+            );
+            if let PreferencesEventHandling::Action(action) = handling {
+                view.update(action);
+            }
+            let _ = draw(&mut session, &view, 52, 10, Locale::En);
+            let focused = view.focused();
+            let area = session
+                .control_areas
+                .iter()
+                .find_map(|(id, area)| (*id == focused).then_some(*area))
+                .unwrap_or_else(|| panic!("the focused control {focused:?} was not rendered"));
+            let viewport = session.viewport;
+            assert!(
+                area.y >= viewport.y
+                    && area.y.saturating_add(area.height)
+                        <= viewport.y.saturating_add(viewport.height),
+                "focus moved to {focused:?} at {area:?}, outside the viewport {viewport:?}"
+            );
+        }
     }
 
     #[test]
