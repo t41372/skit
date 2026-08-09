@@ -1495,6 +1495,15 @@ const CATALOG: &[Translation] = &[
     // one the shipped catalog gives (`src/skit/locales/*/LC_MESSAGES/skit.po`).
     row!("Entry settings · {}", "条目设置 · {}", "條目設定 · {}",),
     row!("Basics", "基本资料", "基本資料"),
+    // Both refusals reach the footer through `render`, which replaces a composable row inside
+    // composed text, so each is declared that way. Each is a whole sentence, so it can never
+    // replace part of another.
+    composable!("A name is required.", "必须提供名称。", "必須提供名稱。",),
+    composable!(
+        "The working directory must be origin, store, invoke, or an absolute path.",
+        "工作目录必须是 origin、store、invoke,或一个绝对路径。",
+        "工作目錄必須是 origin、store、invoke,或一個絕對路徑。",
+    ),
     row!("Storage", "存法", "存法"),
     row!(
         "Run in (working directory)",

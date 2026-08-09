@@ -11,8 +11,8 @@ use skit_ui::{
     Action, AddAction, AddEffect, AddWorkflowState, CommandContext, DESCRIPTION_KEY,
     DetailPaneMode, DraftSummary, Effect, FormControl, FormField, FormPurpose, FormView,
     HealthAction, HealthIssue, HealthIssueKind, HealthSnapshot, HealthView, HostRequest, InputMode,
-    KnownEntryKind, LibraryState, MirrorHealth, ModalState, PreferencesAction, PreferencesView,
-    RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState, RunFormView,
+    KnownEntryKind, LibraryState, MirrorHealth, ModalState, NAME_KEY, PreferencesAction,
+    PreferencesView, RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState, RunFormView,
     RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction, RunnerManagerView, RunnerSaveOwner,
     Screen, SettingsAction, SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UvHealth,
     command_specs,
@@ -1062,6 +1062,46 @@ fn every_advertised_settings_key_reaches_the_reducer() {
             ref values,
         } if selector == "brief" && values.get(DESCRIPTION_KEY).map(String::as_str)
             == Some("Summarize a document")
+    ));
+}
+
+/// A refused save writes nothing and puts the reason where a person reads it.
+#[test]
+fn a_refused_settings_save_explains_itself_and_travels_no_further() {
+    let mut state = state();
+    let view = SettingsView::from_inputs(&SettingsInputs {
+        selector: "tool".to_owned(),
+        kind: "python".to_owned(),
+        name: "Tool".to_owned(),
+        workdir: "invoke".to_owned(),
+        has_original_file: true,
+        has_stored_name: true,
+        ..SettingsInputs::default()
+    });
+    state.update(Action::Present(Screen::Settings(Box::new(view))));
+    state.update(Action::Settings(SettingsAction::SetField {
+        key: NAME_KEY.to_owned(),
+        value: FieldValue::text("   "),
+    }));
+
+    assert_eq!(
+        state.update(UiCommand::SaveSettings.action()),
+        Effect::None,
+        "a refused save must not reach the host"
+    );
+    assert_eq!(state.status(), Some("A name is required."));
+
+    // Fixing it lets the same key through.
+    state.update(Action::Settings(SettingsAction::SetField {
+        key: NAME_KEY.to_owned(),
+        value: FieldValue::text("Tool"),
+    }));
+    assert!(matches!(
+        state.update(UiCommand::SaveSettings.action()),
+        Effect::Submit {
+            purpose: FormPurpose::Settings,
+            ..
+        }
     ));
 }
 

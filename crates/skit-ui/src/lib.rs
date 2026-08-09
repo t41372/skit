@@ -2147,6 +2147,11 @@ impl LibraryState {
                     SettingsEffect::ConfirmDiscard => {
                         self.modal = Some(ModalState::ConfirmDiscardChanges);
                     }
+                    // Version 0.4 explains the refusal and writes nothing
+                    // (`src/skit/tui_settings.py:517-523`, `:939-941`).
+                    SettingsEffect::Refused(error) => {
+                        self.status = Some(error.message().to_owned());
+                    }
                     SettingsEffect::Save => {
                         return Effect::Submit {
                             purpose: FormPurpose::Settings,

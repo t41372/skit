@@ -191,6 +191,12 @@ pub struct SettingsView {
     /// set changes while the screen is open — the custom path box appears and disappears with the
     /// working-directory choice — and an index would silently point at a different control.
     focused: String,
+    /// The working directory the entry had when the screen opened.
+    ///
+    /// Version 0.4 keeps this value when the custom box is chosen and left blank, because "an
+    /// empty path is not a policy" (`src/skit/tui_settings.py:508-512`). Keeping it here means the
+    /// host never re-reads it, so a concurrent write cannot become the fallback.
+    stored_workdir: String,
 }
 
 /// One typed edit to the settings screen.
@@ -228,6 +234,8 @@ pub enum SettingsEffect {
     None,
     /// Persist every axis.
     Save,
+    /// Refuse the save and say why. Nothing was written.
+    Refused(SettingsError),
     /// Leave the screen; nothing moved.
     Close,
     /// Ask before dropping unsaved work.
@@ -249,6 +257,22 @@ pub enum SettingsError {
     },
 }
 
+impl SettingsError {
+    /// Return the catalog key of the sentence a person reads.
+    ///
+    /// Both are version 0.4's own wording (`src/skit/tui_settings.py:517-522` and its `A name is
+    /// required.` notice), so the shipped translations apply unchanged.
+    #[must_use]
+    pub const fn message(&self) -> &'static str {
+        match self {
+            Self::NameRequired => "A name is required.",
+            Self::WorkdirNotAbsolute { .. } => {
+                "The working directory must be origin, store, invoke, or an absolute path."
+            }
+        }
+    }
+}
+
 impl SettingsView {
     /// Build the screen for one entry.
     #[must_use]
@@ -263,6 +287,7 @@ impl SettingsView {
             selector: inputs.selector.clone(),
             title: inputs.name.clone(),
             focused: first_focusable(&sections).unwrap_or_default(),
+            stored_workdir: inputs.workdir.clone(),
             sections,
             dependency_flavor: inputs.dependency_flavor,
             // The same guard version 0.4's `action_resync` applies.
@@ -324,6 +349,11 @@ impl SettingsView {
     ///
     /// Returns [`SettingsError::WorkdirNotAbsolute`] for a typed path that is not absolute.
     pub fn resolved_workdir(&self, stored: &str) -> Result<String, SettingsError> {
+        let stored = if stored.is_empty() {
+            self.stored_workdir.as_str()
+        } else {
+            stored
+        };
         let Some(choice) = self.field(WORKDIR_KEY) else {
             return Ok(String::new());
         };
@@ -509,7 +539,13 @@ impl SettingsView {
                 self.move_focus(false);
                 SettingsEffect::None
             }
-            SettingsAction::Save => SettingsEffect::Save,
+            // Version 0.4 completes its validation pass before any write and returns having
+            // written nothing on the first refusal (`src/skit/tui_settings.py:939-941`,
+            // `:517-523`).
+            SettingsAction::Save => match self.validate(&self.stored_workdir) {
+                Ok(()) => SettingsEffect::Save,
+                Err(error) => SettingsEffect::Refused(error),
+            },
             SettingsAction::Close if self.is_dirty() => SettingsEffect::ConfirmDiscard,
             SettingsAction::Close => SettingsEffect::Close,
             SettingsAction::NewRunner if self.has_section(SettingsSectionId::Runner) => {
@@ -523,14 +559,30 @@ impl SettingsView {
     ///
     /// A read-only control contributes nothing: it never held an edit, so submitting it would ask
     /// the host to write a value the screen only displayed.
+    ///
+    /// The working directory travels resolved, as one value. The choice and the typed path are two
+    /// controls but one policy, and the rule that turns them into it — a known option wins, a blank
+    /// custom box keeps what is stored — belongs to [`Self::resolved_workdir`]. Submitting both
+    /// halves would ask every host to derive that rule again, and a host that derived it
+    /// differently would write a working directory the screen never showed.
     #[must_use]
     pub fn submitted_values(&self) -> BTreeMap<String, String> {
-        self.sections
+        let mut values = self
+            .sections
             .iter()
             .flat_map(|section| section.fields.iter())
             .filter(|field| field.kind.editable())
             .map(|field| (field.key.clone(), field.value().as_text()))
-            .collect()
+            .collect::<BTreeMap<_, _>>();
+        if values.remove(WORKDIR_PATH_KEY).is_some() || values.contains_key(WORKDIR_KEY) {
+            // A refused path cannot reach here: `Save` validates first. Keeping the stored value is
+            // the same answer a blank custom box gets, so nothing is invented on the way out.
+            let resolved = self
+                .resolved_workdir(&self.stored_workdir)
+                .unwrap_or_else(|_| self.stored_workdir.clone());
+            values.insert(WORKDIR_KEY.to_owned(), resolved);
+        }
+        values
     }
 
     /// Validate every axis before a save writes anything.
@@ -941,6 +993,79 @@ mod tests {
             .set_value(FieldValue::text("/srv/jobs"));
         assert_eq!(view.resolved_workdir("invoke").unwrap(), "/srv/jobs");
         assert!(view.validate("invoke").is_ok());
+    }
+
+    /// The two working-directory controls submit one resolved policy, not two halves.
+    ///
+    /// Version 0.4's save reads the radio, then the box, then writes one value
+    /// (`src/skit/tui_settings.py:493-528`). Submitting both halves would ask the host to derive
+    /// that rule again.
+    #[test]
+    fn the_working_directory_travels_resolved_as_one_value() {
+        let view = SettingsView::from_inputs(&python_inputs());
+        let values = view.submitted_values();
+        assert_eq!(values.get(WORKDIR_KEY).map(String::as_str), Some("invoke"));
+        assert!(
+            !values.contains_key(WORKDIR_PATH_KEY),
+            "the typed box is half a policy, not a value a host writes"
+        );
+
+        // A typed folder replaces it, still under the one key.
+        let mut view = SettingsView::from_inputs(&python_inputs());
+        view.set_value(
+            WORKDIR_KEY,
+            FieldValue::Explicit(TypedValue::Choice(WORKDIR_CUSTOM.to_owned())),
+        );
+        view.set_value(WORKDIR_PATH_KEY, FieldValue::text("/srv/jobs"));
+        assert_eq!(
+            view.submitted_values().get(WORKDIR_KEY).map(String::as_str),
+            Some("/srv/jobs")
+        );
+
+        // A blank custom box keeps what is stored, which the view owns rather than re-reads.
+        view.set_value(WORKDIR_PATH_KEY, FieldValue::text("   "));
+        assert_eq!(
+            view.submitted_values().get(WORKDIR_KEY).map(String::as_str),
+            Some("invoke")
+        );
+    }
+
+    /// A save refuses before it travels, and says why.
+    ///
+    /// Version 0.4 completes its validation pass first and returns having written nothing on the
+    /// first refusal (`src/skit/tui_settings.py:939-941`).
+    #[test]
+    fn a_save_that_cannot_be_kept_never_reaches_the_host() {
+        let mut view = SettingsView::from_inputs(&python_inputs());
+        assert_eq!(view.update(SettingsAction::Save), SettingsEffect::Save);
+
+        view.set_value(
+            WORKDIR_KEY,
+            FieldValue::Explicit(TypedValue::Choice(WORKDIR_CUSTOM.to_owned())),
+        );
+        view.set_value(WORKDIR_PATH_KEY, FieldValue::text("relative/path"));
+        assert_eq!(
+            view.update(SettingsAction::Save),
+            SettingsEffect::Refused(SettingsError::WorkdirNotAbsolute {
+                value: "relative/path".to_owned()
+            })
+        );
+
+        view.set_value(WORKDIR_PATH_KEY, FieldValue::text("/srv/jobs"));
+        view.set_value(NAME_KEY, FieldValue::text("  "));
+        assert_eq!(
+            view.update(SettingsAction::Save),
+            SettingsEffect::Refused(SettingsError::NameRequired)
+        );
+        // Every refusal carries wording a person reads.
+        assert_eq!(SettingsError::NameRequired.message(), "A name is required.");
+        assert!(
+            SettingsError::WorkdirNotAbsolute {
+                value: String::new()
+            }
+            .message()
+            .contains("absolute path")
+        );
     }
 
     /// A cleared name is refused before a save writes anything.
