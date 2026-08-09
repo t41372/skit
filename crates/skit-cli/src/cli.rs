@@ -19,7 +19,7 @@ use skit_application::{
     EntryPayload, ExitClass, LibraryScan, LibraryService, RepositoryError, RepositoryOperation,
     SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
     form_feedback::GlobCountPort,
-    form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill},
+    form_state::{FormStateService, LastRunState, PresetSnapshotSource, StateWriteError, prefill},
     health::{
         HealthInspection, HealthIssue, HealthIssueKind, HealthRebuild, HealthRebuildOutcome,
         HealthService, HealthSnapshot, MirrorHealth, UvHealth,
@@ -71,12 +71,15 @@ use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
     Action as UiAction, AddAction, AddEffect, AddWorkflowState, DraftKind, DraftSummary,
     Effect as UiEffect, FormField, FormPurpose, FormView, HealthAction, HealthView, HostRequest,
-    LibraryState, PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults,
-    RunFormContext, RunFormOptions, RunFormView, RunPathContext, RunnerManagerAction,
-    RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner,
-    RunnerSaveRequest, RunnerSaveTarget, Screen, SourceSnapshot as AddSourceSnapshot,
+    LibraryEntryDetail, LibraryLastRun, LibraryParameterDetail, LibraryPromptRunner, LibraryRunAge,
+    LibraryState, LibrarySurface, PreferencesAction, PreferencesEffect, PreferencesView,
+    ReviewDefaults, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
+    RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity,
+    RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
+    SourceSnapshot as AddSourceSnapshot,
 };
 use thiserror::Error;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::run::{RunArgs, RunError};
@@ -5058,9 +5061,9 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
     let store = service.repository();
     let state_dir = resolve_state_dir()?;
     let config_dir = resolve_config_dir()?;
-    let scan = service.list()?;
-    let rerunnable = tui_rerunnable(&scan, &state_dir);
-    let mut state = LibraryState::from_scan(scan);
+    let surface = library_surface(service, store, &state_dir, &config_dir)?;
+    let rerunnable = tui_rerunnable(&surface.scan, &state_dir);
+    let mut state = LibraryState::from_library_surface(surface);
     let _ = state.update(UiAction::ReplaceRerunnable(rerunnable));
     skit_tui::run(
         state,
@@ -5068,6 +5071,145 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
         active_locale(),
     )
     .map_err(CliError::from)
+}
+
+/// Project one complete Library refresh, list rows and detail facts together.
+///
+/// Version 0.4 reads the same facts for the same screen: the list sorts on recency and marks a
+/// missing target (`src/skit/tui.py:394` and `:414`), and the detail pane reports parameters,
+/// presets, dependencies, the last run, and drift (`src/skit/tui.py:531-604`). One projection keeps
+/// both faces on one read, so they cannot disagree.
+fn library_surface(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+) -> Result<LibrarySurface, CliError> {
+    let scan = service.list()?;
+    let form_state = FormStateService::new(FileFormStateStore::new(state_dir));
+    // A configuration this read cannot parse must not hide the library, so an unreadable runner
+    // list only means "no runner is configured" for the pin check below.
+    let runners = FileConfigStore::new(config_dir.to_path_buf())
+        .runners()
+        .unwrap_or_default();
+    let now = OffsetDateTime::now_utc();
+    // One directory pass, exactly like version 0.4's `store.list_entries()` (`src/skit/store.py:857`).
+    // Resolving each slug instead would re-read the registry once per entry.
+    let details = store
+        .scan_entries()?
+        .into_iter()
+        .map(|entry| {
+            let detail = library_entry_detail(store, &form_state, &runners, now, &entry);
+            (entry.slug, detail)
+        })
+        .collect();
+    Ok(LibrarySurface { scan, details })
+}
+
+/// Project every Library detail fact for one entry.
+fn library_entry_detail(
+    store: &FileStore,
+    form_state: &FormStateService<FileFormStateStore>,
+    runners: &[PromptRunner],
+    now: OffsetDateTime,
+    entry: &Entry,
+) -> LibraryEntryDetail {
+    let kind = entry.meta.kind.as_str();
+    let settings = effective_settings(store, entry);
+    let persisted = form_state.load(&entry.slug);
+    // Version 0.4 builds one plan per entry and reads both the parameter summary and the drift
+    // notice from it (`src/skit/tui.py:561` and `:500`), so the two faces cannot disagree and the
+    // source is parsed once.
+    let plan = library_form_plan(store, entry);
+    let declarations = plan.declarations();
+    // The pane shows the value a run would start from: the definition default under the last used
+    // value, secrets excluded (`src/skit/tui.py:566-569`).
+    let values = prefill(&declarations, &persisted.values, None);
+    let parameters = declarations
+        .iter()
+        .map(|declaration| LibraryParameterDetail {
+            key: declaration.name.clone(),
+            value: values.get(&declaration.name).cloned().unwrap_or_default(),
+            secret: declaration.secret,
+        })
+        .collect();
+    let target = entry_target(store, entry);
+    LibraryEntryDetail {
+        added_at: entry.meta.added_at.clone(),
+        // Only the command-template family shows its launch material here
+        // (`src/skit/tui.py:544-545`).
+        template: (kind == "command" && !settings.template.is_empty())
+            .then(|| settings.template.clone()),
+        prompt_runner: (kind == "prompt").then(|| library_prompt_runner(&settings.runner, runners)),
+        parameters,
+        presets: persisted.presets.keys().cloned().collect(),
+        dependencies: settings.dependencies.clone(),
+        last_run: library_last_run(now, &persisted.last_run),
+        missing_target: target
+            .filter(|path| !path.exists())
+            .map(|path| path.display().to_string()),
+        drifted: !plan.drift.is_empty(),
+        original_file_preserved: library_original_file_preserved(entry),
+    }
+}
+
+/// Build one form plan for the Library detail pane.
+///
+/// The stored source is read once and normalized the same way the health check normalizes it, so a
+/// line-ending difference is never reported as drift.
+fn library_form_plan(store: &FileStore, entry: &Entry) -> PreparedFormPlan {
+    let kind = entry.meta.kind.as_str();
+    let bytes = source_path(store, entry).and_then(|path| fs::read(path).ok());
+    // A kind with no stored payload still has a form: a command template and a declared schema
+    // both live in the metadata, so an absent source means an empty source, never an empty plan.
+    let source = match bytes {
+        Some(bytes) if kind == "prompt" => String::from_utf8(bytes).unwrap_or_default(),
+        Some(bytes) => LosslessSource::from_bytes(&bytes)
+            .normalized_text()
+            .to_owned(),
+        None => String::new(),
+    };
+    form_plan(kind, &source, &EntrySettings::from_meta(&entry.meta))
+}
+
+/// Classify one prompt entry's runner pin.
+///
+/// Version 0.4 is honest about a pin whose configuration row is gone (`src/skit/tui.py:74-84`).
+fn library_prompt_runner(pin: &str, runners: &[PromptRunner]) -> LibraryPromptRunner {
+    if pin.is_empty() {
+        return LibraryPromptRunner::PickOnRunForm;
+    }
+    if runners.iter().any(|runner| runner.name == pin) {
+        LibraryPromptRunner::Configured(pin.to_owned())
+    } else {
+        LibraryPromptRunner::Missing(pin.to_owned())
+    }
+}
+
+/// Report whether removal can truthfully promise that an original file survives.
+///
+/// Version 0.4 says so only for a kind that has an original file and only while that file still
+/// exists: a drafted entry's "original" was a temporary file, and reassuring the user about a file
+/// that is already gone would be a lie (`src/skit/tui.py:149-155`).
+fn library_original_file_preserved(entry: &Entry) -> bool {
+    let kind = entry.meta.kind.as_str();
+    let has_original_file = !known_entry_kind(kind) || kind != "command";
+    has_original_file && !entry.meta.source.is_empty() && Path::new(&entry.meta.source).exists()
+}
+
+/// Project the last recorded run with the relative age already resolved.
+fn library_last_run(now: OffsetDateTime, last_run: &LastRunState) -> Option<LibraryLastRun> {
+    let at = last_run.at.clone()?;
+    // Version 0.4 keeps an unparseable legacy stamp exactly as written
+    // (`src/skit/tui.py:105-108`).
+    let elapsed = OffsetDateTime::parse(&at, &Rfc3339)
+        .ok()
+        .map(|then| (now - then).whole_seconds());
+    Some(LibraryLastRun {
+        age: LibraryRunAge::from_elapsed(at.clone(), elapsed),
+        at,
+        exit: last_run.exit,
+    })
 }
 
 fn tui_effect(
@@ -5080,9 +5222,14 @@ fn tui_effect(
     match effect {
         UiEffect::None | UiEffect::Quit => Ok(UiAction::ClearStatus),
         UiEffect::Reload => {
-            let scan = service.list()?;
-            let rerunnable = tui_rerunnable(&scan, state_dir);
-            Ok(UiAction::Replace { scan, rerunnable })
+            // The reload must carry the same complete projection the first load carried. A
+            // scan-only reload would drop every detail fact and put the list back in slug order.
+            let surface = library_surface(service, store, state_dir, config_dir)?;
+            let rerunnable = tui_rerunnable(&surface.scan, state_dir);
+            Ok(UiAction::ReplaceSurface {
+                surface,
+                rerunnable,
+            })
         }
         UiEffect::Rerun { selector } => tui_rerun(service, store, state_dir, config_dir, &selector),
         UiEffect::Open { request, selector } => Ok(UiAction::Present(tui_open(

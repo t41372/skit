@@ -58,7 +58,12 @@ impl FileStore {
         Ok(Entry { slug, meta })
     }
 
-    pub(crate) fn scan_entries(&self) -> Result<Vec<Entry>, RepositoryError> {
+    /// Read every readable entry with its complete metadata in one directory pass.
+    ///
+    /// A composition root that needs whole entries for the whole library must use this instead of
+    /// resolving each slug: [`EntryRepository::resolve`] re-reads the registry every call, so a
+    /// per-entry loop is quadratic. A corrupt entry is skipped, never fatal.
+    pub fn scan_entries(&self) -> Result<Vec<Entry>, RepositoryError> {
         let scripts_dir = self.scripts_dir();
         let reader = match fs::read_dir(&scripts_dir) {
             Ok(reader) => reader,

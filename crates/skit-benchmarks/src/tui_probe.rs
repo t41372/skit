@@ -147,6 +147,10 @@ pub fn run_for_dirs(
                 .then(|| entry.slug.clone())
         })
         .collect();
+    // This measures the reducer and the render, not the host projection the product builds.
+    // `LibraryState::from_library_surface` needs `crates/skit-cli`'s `library_surface`, and this
+    // crate cannot depend on `skit-cli-rs` because `skit-cli-rs` already depends on this crate for
+    // its sdist feature. Sharing the projection means moving it below both crates first.
     let mut state = LibraryState::from_scan(scan);
     state.update(Action::ReplaceRerunnable(rerunnable));
     if state.entry_count() != entries {

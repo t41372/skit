@@ -481,6 +481,48 @@ fn a_first_python_run_asks_before_it_downloads_a_private_uv() {
     assert_eq!(code, 125, "{output}");
 }
 
+/// The running binary must feed the Library detail pane, not only the reducer tests.
+///
+/// Version 0.4 shows parameters, presets, dependencies, and the last run in that pane
+/// (`src/skit/tui.py:558-604`) and marks a missing target in the list (`src/skit/tui.py:414`).
+/// Every one of those facts comes from the host projection, so a scan-only composition root
+/// renders a pane with nothing but the name and kind.
+#[test]
+fn the_terminal_library_shows_host_projected_detail_facts() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    write_command_entry(data.path(), true);
+    fs::create_dir_all(state.path().join("values")).unwrap();
+    fs::write(
+        state.path().join("values/demo.toml"),
+        concat!(
+            "[values]\n",
+            "name = \"Ada\"\n",
+            "[presets.nightly]\n",
+            "name = \"Ada\"\n",
+            "[last_run]\n",
+            "at = \"2026-08-08T00:00:00Z\"\n",
+            "exit = 0\n",
+        ),
+    )
+    .unwrap();
+
+    let (code, output) = run_in_pty(&["tui"], data.path(), state.path(), config.path(), &[b"q"]);
+    assert_eq!(code, 0, "{output}");
+    // Cursor moves sit between rendered words, so assert on tokens rather than whole phrases.
+    for fact in [
+        "Parameters",
+        "name=Ada",
+        "Presets",
+        "nightly",
+        "ago",
+        "finished",
+    ] {
+        assert!(output.contains(fact), "missing {fact}: {output}");
+    }
+}
+
 #[test]
 fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
     let data = TempDir::new().unwrap();

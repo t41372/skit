@@ -2047,9 +2047,11 @@ fn tui_host_opens_every_frontend_neutral_screen_and_handles_simple_effects() {
             UiAction::ClearStatus
         );
     }
+    // A reload carries the complete projection, not a bare scan: `Action::Replace` clears every
+    // detail fact, so a scan-only reload would empty the detail pane and lose activity order.
     assert!(matches!(
         tui_effect(&service, &store, &state_dir, &config_dir, UiEffect::Reload,).unwrap(),
-        UiAction::Replace { .. }
+        UiAction::ReplaceSurface { .. }
     ));
     assert!(matches!(
         tui_effect(
@@ -3984,5 +3986,195 @@ fn clap_error_localization_keeps_every_context_value_shape_verbatim() {
     assert_eq!(
         localized_clap_error(&error, Locale::ZhCn),
         "错误：Print help | Entry added | Entry removed | Entry renamed"
+    );
+}
+
+/// The composition root must hand the frontend every Library fact version 0.4 shows.
+///
+/// The detail pane reports parameters, presets, dependencies, the last run, and drift
+/// (`src/skit/tui.py:558-604`), the list marks a missing target (`src/skit/tui.py:414`), and the
+/// order is recency (`src/skit/tui.py:99-103` and `:394`). Every one of those reads the projection
+/// this test builds, so a scan-only wiring makes it fail.
+#[test]
+fn the_library_surface_carries_every_detail_fact_the_frontend_renders() {
+    let data = TempDir::new().unwrap();
+    let state_dir = TempDir::new().unwrap();
+    let config_dir = TempDir::new().unwrap();
+    let service = LibraryService::new(FileStore::new(data.path()));
+    let store = FileStore::new(data.path());
+
+    let original = data.path().join("tool.sh");
+    fs::write(&original, "NAME=\"world\"\necho \"$NAME\"\n").unwrap();
+    add(
+        &service,
+        AddOptions {
+            source: Some(original.clone()),
+            kind: None,
+            name: Some("Tool".to_owned()),
+            description: Some("A shell tool".to_owned()),
+            reference: false,
+            command_template: None,
+            prompt: false,
+            executable: false,
+            runner: None,
+            no_interpolate: false,
+            dependencies: Vec::new(),
+            dependencies_explicit: false,
+            requires_python: None,
+            no_input: true,
+        },
+    )
+    .unwrap();
+    add_command(&service, "Deploy", "deploy --env {environment}");
+
+    // An old add with a recent run must outrank a newer add that never ran, so pin both add
+    // stamps instead of depending on the wall clock.
+    for (slug, added_at) in [
+        ("tool", "2020-01-01T00:00:00Z"),
+        ("deploy", "2021-01-01T00:00:00Z"),
+    ] {
+        let path = data.path().join("scripts").join(slug).join("meta.toml");
+        let meta = fs::read_to_string(&path).unwrap();
+        let rewritten = meta
+            .lines()
+            .map(|line| {
+                if line.starts_with("added_at = ") {
+                    format!("added_at = {added_at:?}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{rewritten}\n")).unwrap();
+    }
+    FileStore::new(data.path()).rebuild_registry().unwrap();
+
+    let tool = service.show("tool").unwrap();
+    let declarations = entry_parameters(&store, &tool);
+    let form_state = FormStateService::new(FileFormStateStore::new(state_dir.path()));
+    form_state
+        .record_run(
+            &tool.slug,
+            7,
+            "2026-08-09T12:00:00Z",
+            &declarations,
+            Some(&BTreeMap::new()),
+        )
+        .unwrap();
+    form_state
+        .save_preset(
+            &tool.slug,
+            "nightly",
+            &declarations,
+            &BTreeMap::from([("NAME".to_owned(), "ada".to_owned())]),
+        )
+        .unwrap();
+    // The stored copy is gone, so the launch target is missing.
+    fs::remove_file(store.payload_path(&tool).unwrap()).unwrap();
+
+    let surface = library_surface(&service, &store, state_dir.path(), config_dir.path()).unwrap();
+
+    let detail = surface.details.get(&tool.slug).expect("no detail row");
+    assert!(!detail.added_at.is_empty());
+    assert_eq!(detail.presets, ["nightly"]);
+    let last_run = detail.last_run.as_ref().expect("no last run");
+    assert_eq!(last_run.at, "2026-08-09T12:00:00Z");
+    assert_eq!(last_run.exit, Some(7));
+    let missing = detail.missing_target.as_ref().expect("no missing target");
+    assert!(missing.ends_with("script.sh"), "{missing}");
+    // The original file is still on disk, so removal may promise it survives.
+    assert!(detail.original_file_preserved);
+    assert!(detail.template.is_none());
+    assert!(detail.prompt_runner.is_none());
+
+    // A command template carries its launch material and never claims an original file.
+    let deploy = service.show("deploy").unwrap();
+    let template_detail = surface.details.get(&deploy.slug).expect("no template row");
+    assert_eq!(
+        template_detail.template.as_deref(),
+        Some("deploy --env {environment}")
+    );
+    assert!(!template_detail.original_file_preserved);
+    assert!(
+        template_detail
+            .parameters
+            .iter()
+            .any(|parameter| parameter.key == "environment")
+    );
+
+    // The entry with the newer activity comes first, whatever the slug order is.
+    let state = LibraryState::from_library_surface(surface);
+    assert_eq!(
+        state
+            .visible_entries()
+            .next()
+            .map(|entry| entry.slug.clone()),
+        Some(tool.slug.clone())
+    );
+}
+
+/// A pinned prompt runner that no configuration row defines must say so.
+///
+/// Version 0.4 keeps the detail pane honest about a pin whose row is gone
+/// (`src/skit/tui.py:74-84`).
+#[test]
+fn the_library_surface_classifies_a_prompt_runner_pin_against_the_configuration() {
+    let configured = [PromptRunner {
+        name: "claude".to_owned(),
+        argv: vec!["claude".to_owned(), "{{prompt}}".to_owned()],
+    }];
+    assert_eq!(
+        library_prompt_runner("", &configured),
+        LibraryPromptRunner::PickOnRunForm
+    );
+    assert_eq!(
+        library_prompt_runner("claude", &configured),
+        LibraryPromptRunner::Configured("claude".to_owned())
+    );
+    assert_eq!(
+        library_prompt_runner("removed", &configured),
+        LibraryPromptRunner::Missing("removed".to_owned())
+    );
+}
+
+/// Version 0.4 keeps an unparseable legacy stamp exactly as written and otherwise reports a
+/// relative age (`src/skit/tui.py:105-116`).
+#[test]
+fn the_library_surface_resolves_the_last_run_age_once_per_refresh() {
+    let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+    let at = |value: &str| LastRunState {
+        at: Some(value.to_owned()),
+        exit: Some(0),
+        values: None,
+    };
+    assert!(library_last_run(now, &LastRunState::default()).is_none());
+    assert_eq!(
+        library_last_run(now, &at("2026-08-09T11:59:30Z"))
+            .unwrap()
+            .age,
+        LibraryRunAge::JustNow
+    );
+    assert_eq!(
+        library_last_run(now, &at("2026-08-09T11:00:00Z"))
+            .unwrap()
+            .age,
+        LibraryRunAge::Minutes(60)
+    );
+    assert_eq!(
+        library_last_run(now, &at("2026-08-08T12:00:00Z"))
+            .unwrap()
+            .age,
+        LibraryRunAge::Hours(24)
+    );
+    assert_eq!(
+        library_last_run(now, &at("2026-07-09T12:00:00Z"))
+            .unwrap()
+            .age,
+        LibraryRunAge::Days(31)
+    );
+    assert_eq!(
+        library_last_run(now, &at("not a timestamp")).unwrap().age,
+        LibraryRunAge::Raw("not a timestamp".to_owned())
     );
 }
