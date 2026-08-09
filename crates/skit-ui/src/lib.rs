@@ -843,10 +843,10 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
     spec(
         UiCommand::DiscardChanges,
         CommandContext::ConfirmDiscard,
-        &[
-            UiBinding::plain(UiKey::Character('y'), "y", "y"),
-            PLAIN_ENTER,
-        ],
+        // Version 0.4 binds `y` alone here (`src/skit/tui_settings.py:43-46`). Enter is left
+        // deliberately unbound: a guard exists to catch a reflex, so the answer a reflex reaches
+        // must be the one that keeps the work, not the one that throws it away.
+        &[UiBinding::plain(UiKey::Character('y'), "y", "y")],
         "Discard",
         true,
         false,

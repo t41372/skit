@@ -75,6 +75,26 @@ fn dirty_preferences_discard_guard_has_exact_keys_and_clickable_actions() {
         ),
         EventHandling::Action(Action::DiscardChanges)
     );
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(Action::KeepEditing)
+    );
+    // Version 0.4 binds `y` and `escape,n` and nothing else
+    // (`src/skit/tui_settings.py:43-46`). Enter must not throw the user's work away: the answer
+    // reached by reflex has to be the safe one.
+    assert_ne!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(Action::DiscardChanges),
+        "Enter discarded unsaved work"
+    );
 
     for (command, expected) in [
         (UiCommand::DiscardChanges, Action::DiscardChanges),
