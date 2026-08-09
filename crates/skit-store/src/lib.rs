@@ -6,6 +6,7 @@
 
 mod config;
 mod fs_ops;
+mod library_surface;
 mod mutations;
 mod path_glob;
 mod paths;
@@ -17,6 +18,7 @@ mod toml_document;
 pub use config::{
     ConfigError, ConfigRecovery, FileConfigStore, MirrorSettings, PromptRunner, PromptRunnerRow,
 };
+pub use library_surface::{library_surface, library_surface_at};
 pub use mutations::{
     FileAgentSkillStore, FileRunnerManagementStore, PreparedLaunch, RegistryRebuildProblem,
     RegistryRebuildReport, RunnerManagementStoreError, RunnerRemovalCas, content_hash,

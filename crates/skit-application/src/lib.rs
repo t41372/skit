@@ -8,6 +8,7 @@ pub mod form_feedback;
 pub mod form_state;
 pub mod glob_expansion;
 pub mod health;
+pub mod library_detail;
 mod mutations;
 pub mod parameter_edit;
 pub mod path_insertion;

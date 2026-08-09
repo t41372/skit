@@ -140,7 +140,11 @@ note = "The JSON-list slope stays below 250 microseconds per entry."
 metric = "tui.first_idle.n1000.median_ms"
 max = 800
 tier = "target"
-note = "The TUI reaches its first idle state within 800 ms at 1,000 entries."
+note = "The TUI reaches its first idle state within 800 ms at 1,000 entries. The span now covers the host projection the product builds before its first frame, not a scan-only reducer load, so the measured value moved from roughly 29 ms to roughly 456 ms on the reference machine. The ceiling is the product promise and did not move; the measurement became truthful."
+
+[budget.context]
+commit = "library-surface-projection"
+date = "2026-08-09"
 
 [[budget]]
 metric = "rss.version.peak_kib"

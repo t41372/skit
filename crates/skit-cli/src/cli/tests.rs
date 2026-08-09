@@ -4073,7 +4073,7 @@ fn the_library_surface_carries_every_detail_fact_the_frontend_renders() {
     // The stored copy is gone, so the launch target is missing.
     fs::remove_file(store.payload_path(&tool).unwrap()).unwrap();
 
-    let surface = library_surface(&service, &store, state_dir.path(), config_dir.path()).unwrap();
+    let surface = skit_store::library_surface(&store, state_dir.path(), config_dir.path()).unwrap();
 
     let detail = surface.details.get(&tool.slug).expect("no detail row");
     assert!(!detail.added_at.is_empty());
@@ -4111,71 +4111,6 @@ fn the_library_surface_carries_every_detail_fact_the_frontend_renders() {
             .next()
             .map(|entry| entry.slug.clone()),
         Some(tool.slug.clone())
-    );
-}
-
-/// A pinned prompt runner that no configuration row defines must say so.
-///
-/// Version 0.4 keeps the detail pane honest about a pin whose row is gone
-/// (`src/skit/tui.py:74-84`).
-#[test]
-fn the_library_surface_classifies_a_prompt_runner_pin_against_the_configuration() {
-    let configured = [PromptRunner {
-        name: "claude".to_owned(),
-        argv: vec!["claude".to_owned(), "{{prompt}}".to_owned()],
-    }];
-    assert_eq!(
-        library_prompt_runner("", &configured),
-        LibraryPromptRunner::PickOnRunForm
-    );
-    assert_eq!(
-        library_prompt_runner("claude", &configured),
-        LibraryPromptRunner::Configured("claude".to_owned())
-    );
-    assert_eq!(
-        library_prompt_runner("removed", &configured),
-        LibraryPromptRunner::Missing("removed".to_owned())
-    );
-}
-
-/// Version 0.4 keeps an unparseable legacy stamp exactly as written and otherwise reports a
-/// relative age (`src/skit/tui.py:105-116`).
-#[test]
-fn the_library_surface_resolves_the_last_run_age_once_per_refresh() {
-    let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
-    let at = |value: &str| LastRunState {
-        at: Some(value.to_owned()),
-        exit: Some(0),
-        values: None,
-    };
-    assert!(library_last_run(now, &LastRunState::default()).is_none());
-    assert_eq!(
-        library_last_run(now, &at("2026-08-09T11:59:30Z"))
-            .unwrap()
-            .age,
-        LibraryRunAge::JustNow
-    );
-    assert_eq!(
-        library_last_run(now, &at("2026-08-09T11:00:00Z"))
-            .unwrap()
-            .age,
-        LibraryRunAge::Minutes(60)
-    );
-    assert_eq!(
-        library_last_run(now, &at("2026-08-08T12:00:00Z"))
-            .unwrap()
-            .age,
-        LibraryRunAge::Hours(24)
-    );
-    assert_eq!(
-        library_last_run(now, &at("2026-07-09T12:00:00Z"))
-            .unwrap()
-            .age,
-        LibraryRunAge::Days(31)
-    );
-    assert_eq!(
-        library_last_run(now, &at("not a timestamp")).unwrap().age,
-        LibraryRunAge::Raw("not a timestamp".to_owned())
     );
 }
 

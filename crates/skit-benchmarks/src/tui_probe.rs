@@ -5,7 +5,7 @@ use std::{fs, path::Path, time::Instant};
 use ratatui_core::{backend::TestBackend, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
-use skit_application::{LibraryService, form_state::FormStateService};
+use skit_application::form_state::FormStateService;
 use skit_store::{FileFormStateStore, FileStore};
 use skit_tui::{EventHandling, TuiSession, ViewGeometry};
 use skit_ui::{Action, LibraryState};
@@ -120,25 +120,34 @@ fn run_from_environment(
 ) -> Result<ProbeResult, TuiProbeError> {
     let data = data.ok_or(TuiProbeError::MissingDataset)?;
     let state = state.ok_or(TuiProbeError::MissingState)?;
-    run_for_dirs(&data, &state, entries, probe_char)
+    // The dataset environment always sets a configuration directory
+    // (`crates/skit-benchmarks/src/environment.rs:131-133`); an absent one only means no runner is
+    // configured, which is what a fresh install looks like.
+    let config = std::env::var_os("SKIT_CONFIG_DIR")
+        .map_or_else(|| data.join("config"), std::path::PathBuf::from);
+    run_for_dirs(&data, &state, &config, entries, probe_char)
 }
 
 /// Run the probe against explicit product data and state directories.
 pub fn run_for_dirs(
     data: &Path,
     state_dir: &Path,
+    config_dir: &Path,
     entries: usize,
     probe_char: char,
 ) -> Result<ProbeResult, TuiProbeError> {
     let started = Instant::now();
-    let scan = LibraryService::new(FileStore::new(data))
-        .list()
+    let store = FileStore::new(data);
+    // The product builds this exact projection before it draws its first frame, so the probe must
+    // build it too. A scan-only measurement under-reports the work a real start does.
+    let surface = skit_store::library_surface(&store, state_dir, config_dir)
         .map_err(|error| TuiProbeError::Store(error.to_string()))?;
-    if !scan.diagnostics.is_empty() {
-        return Err(TuiProbeError::Diagnostics(scan.diagnostics.len()));
+    if !surface.scan.diagnostics.is_empty() {
+        return Err(TuiProbeError::Diagnostics(surface.scan.diagnostics.len()));
     }
     let form_state = FormStateService::new(FileFormStateStore::new(state_dir));
-    let rerunnable = scan
+    let rerunnable = surface
+        .scan
         .entries
         .iter()
         .filter_map(|entry| {
@@ -147,11 +156,7 @@ pub fn run_for_dirs(
                 .then(|| entry.slug.clone())
         })
         .collect();
-    // This measures the reducer and the render, not the host projection the product builds.
-    // `LibraryState::from_library_surface` needs `crates/skit-cli`'s `library_surface`, and this
-    // crate cannot depend on `skit-cli-rs` because `skit-cli-rs` already depends on this crate for
-    // its sdist feature. Sharing the projection means moving it below both crates first.
-    let mut state = LibraryState::from_scan(scan);
+    let mut state = LibraryState::from_library_surface(surface);
     state.update(Action::ReplaceRerunnable(rerunnable));
     if state.entry_count() != entries {
         return Err(TuiProbeError::EntryCount {
@@ -334,7 +339,7 @@ mod tests {
         )
         .unwrap();
         let dirs = dataset_dirs(&manifest.root).unwrap();
-        let probe = super::run_for_dirs(&dirs.data, &dirs.state, 3, 'o').unwrap();
+        let probe = super::run_for_dirs(&dirs.data, &dirs.state, &dirs.config, 3, 'o').unwrap();
         probe.validate().unwrap();
         assert!(probe.select_ms.is_some());
 
@@ -346,11 +351,18 @@ mod tests {
         )
         .unwrap();
         let empty_dirs = dataset_dirs(&empty.root).unwrap();
-        let empty_probe = super::run_for_dirs(&empty_dirs.data, &empty_dirs.state, 0, 'o').unwrap();
+        let empty_probe = super::run_for_dirs(
+            &empty_dirs.data,
+            &empty_dirs.state,
+            &empty_dirs.config,
+            0,
+            'o',
+        )
+        .unwrap();
         assert_eq!(empty_probe.select_ms, None);
 
         assert!(matches!(
-            super::run_for_dirs(&dirs.data, &dirs.state, 2, 'o'),
+            super::run_for_dirs(&dirs.data, &dirs.state, &dirs.config, 2, 'o'),
             Err(super::TuiProbeError::EntryCount {
                 expected: 2,
                 actual: 3
@@ -366,7 +378,7 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            super::run_for_dirs(&dirs.data, &dirs.state, 3, 'o'),
+            super::run_for_dirs(&dirs.data, &dirs.state, &dirs.config, 3, 'o'),
             Err(super::TuiProbeError::Diagnostics(1))
         ));
     }
