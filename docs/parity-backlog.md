@@ -34,3 +34,10 @@ version 0.4 set, but `set_runner` still refuses with that same wording instead o
 
 Example: an empty command refuses with `Type the agent's command, e.g. mycli run {{prompt}}` where
 version 0.4 says `A runner needs a command — e.g. skit runner add mycli mycli run {{prompt}}`.
+
+## The footer wears a border version 0.4 does not
+
+Every screen draws its key rows inside a rounded box, which costs two rows of body on every
+terminal. Version 0.4 docks a bare `KeysBar` with no border (`src/skit/tui_footer.py:97-108`, and
+visible in every shipped frame under `docs/assets/`). Recovering those two rows would let the run
+form show its argument tail without scrolling, exactly as the oracle's own demo frame does.
