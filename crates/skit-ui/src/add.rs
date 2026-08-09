@@ -1161,7 +1161,7 @@ fn normalize_python_automatic(value: String) -> String {
 
 /// Split a comma-composed field by asking the mature PEP 508 parser which partitions are valid.
 /// This keeps commas inside specifiers, extras, markers, and URLs intact.
-fn split_pep508_requirements(value: &str) -> Vec<String> {
+pub(crate) fn split_pep508_requirements(value: &str) -> Vec<String> {
     let value = value.trim();
     if value.is_empty() {
         return Vec::new();
