@@ -399,6 +399,88 @@ fn one_nonterminal_standard_stream_disables_interactive_forms() {
     assert_eq!(code, 0, "{output}");
 }
 
+fn write_python_entry(data: &Path) {
+    let directory = data.join("scripts/bootstrap");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(directory.join("script.py"), "print('ok')\n").unwrap();
+    fs::write(
+        directory.join("meta.toml"),
+        concat!(
+            "schema = 1\n",
+            "name = \"Bootstrap\"\n",
+            "kind = \"python\"\n",
+            "mode = \"copy\"\n",
+            "source = \"\"\n",
+            "source_hash = \"\"\n",
+            "added_at = \"2026-08-08T00:00:00Z\"\n",
+            "id = \"3123456789abcdef0123456789abcdef\"\n",
+            "workdir = \"invoke\"\n",
+            "description = \"\"\n",
+            "params = []\n",
+        ),
+    )
+    .unwrap();
+    FileStore::new(data).rebuild_registry().unwrap();
+}
+
+/// The first Python run without a system uv asks before it downloads anything.
+///
+/// Version 0.4 asks on stderr with a default-yes question (`src/skit/uvman.py:74-82`), treats only
+/// `n`/`no` as a refusal (`src/skit/uvman.py:88`), answers itself at end of input
+/// (`src/skit/uvman.py:85-86`), and reports the self-install guidance when refused
+/// (`src/skit/uvman.py:252-256`).
+#[test]
+fn a_first_python_run_asks_before_it_downloads_a_private_uv() {
+    let empty_path = TempDir::new().unwrap();
+    let ask = "Download uv";
+    let declined = "Download declined.";
+
+    // Every case points the uv mirror at a refused local port, so no case can reach the network
+    // even if the question stops working.
+    let attempt = |answer: &'static [u8]| {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        write_python_entry(data.path());
+        fs::write(
+            config.path().join("config.toml"),
+            "[mirror]\nenabled = true\nuv_binary = \"https://127.0.0.1:9/astral-sh/uv\"\n",
+        )
+        .unwrap();
+        // Ctrl+R submits the launch form, and the consent question follows it.
+        let (code, output) = run_pty_configured(
+            &["run", "bootstrap"],
+            data.path(),
+            state.path(),
+            config.path(),
+            &[b"\x12", answer],
+            true,
+            |command| {
+                command.env("PATH", empty_path.path());
+            },
+        );
+        assert!(!data.path().join("bin/uv").exists(), "{output}");
+        (code, output)
+    };
+
+    for answer in [&b"n\n"[..], &b"no\n"[..], &b"  NO  \n"[..]] {
+        let (code, output) = attempt(answer);
+        assert!(output.contains(ask), "{output}");
+        assert!(output.contains("This won't touch your PATH"), "{output}");
+        assert!(output.contains(declined), "{output}");
+        // A launch failure exits 125 (`src/skit/flows.py:868`).
+        assert_eq!(code, 125, "{output}");
+        assert!(!output.contains("First run — downloading uv"), "{output}");
+    }
+
+    // Anything else is consent, so the download starts and fails against the refused port.
+    let (code, output) = attempt(b"\n");
+    assert!(output.contains(ask), "{output}");
+    assert!(!output.contains(declined), "{output}");
+    assert!(output.contains("First run — downloading uv"), "{output}");
+    assert_eq!(code, 125, "{output}");
+}
+
 #[test]
 fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
     let data = TempDir::new().unwrap();

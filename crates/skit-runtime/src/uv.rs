@@ -121,9 +121,38 @@ pub struct UvAsset {
     pub executable_name: String,
 }
 
+/// Ask before skit downloads its private uv.
+///
+/// Version 0.4 asks once, on the first Python run that finds no uv (`src/skit/uvman.py:63-88`).
+/// Pulling an executable from the network is not something skit does silently.
+pub trait UvDownloadConsent: std::fmt::Debug {
+    /// Return true when the download can start.
+    ///
+    /// `destination` is the private directory that receives the executable.
+    fn allow_download(&self, version: &str, destination: &Path) -> bool;
+}
+
+/// Consent that never asks.
+///
+/// Version 0.4 keeps its zero-action first run whenever there is nobody to ask
+/// (`src/skit/uvman.py:72-73`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct AllowUvDownload;
+
+impl UvDownloadConsent for AllowUvDownload {
+    fn allow_download(&self, _version: &str, _destination: &Path) -> bool {
+        true
+    }
+}
+
 /// Report a private uv bootstrap failure.
 #[derive(Debug, Error)]
 pub enum UvBootstrapError {
+    /// The user answered no to the download question.
+    #[error(
+        "Download declined. Install uv yourself (https://docs.astral.sh/uv/getting-started/installation/) and skit will pick it up automatically."
+    )]
+    Declined,
     /// This build target does not have a pinned release archive.
     #[error("unsupported platform: {platform}")]
     UnsupportedPlatform { platform: String },
@@ -152,6 +181,9 @@ pub enum UvBootstrapError {
 impl Localize for UvBootstrapError {
     fn message(&self) -> Message {
         match self {
+            Self::Declined => Message::new(
+                "Download declined. Install uv yourself (https://docs.astral.sh/uv/getting-started/installation/) and skit will pick it up automatically.",
+            ),
             Self::UnsupportedPlatform { platform } => {
                 Message::new("unsupported platform: {}").with(platform)
             }

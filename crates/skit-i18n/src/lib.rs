@@ -1048,9 +1048,20 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Required commands: {}", "所需命令：{}", "必要命令：{}"),
     row!(
-        "First Python run: download private uv {}",
-        "首次运行 Python：下载专用 uv {}",
-        "首次執行 Python：下載專用 uv {}",
+        "First run — downloading uv {}…",
+        "首次运行:正在下载 uv {}…",
+        "首次執行:正在下載 uv {}…",
+    ),
+    row!("uv installed at: {}", "uv 已安装:{}", "uv 已安裝:{}"),
+    row!(
+        "skit needs Astral's uv to run Python scripts, but it wasn't found on this system. Download uv {} into skit's private directory ({})? This won't touch your PATH or global environment. [Y/n]",
+        "skit 需要 Astral uv 才能运行 Python 脚本,但系统上找不到。要下载 uv {} 到 skit 的私有目录({})吗?不会动到你的 PATH 或全局环境。[Y/n]",
+        "skit 需要 Astral uv 才能執行 Python 腳本,但系統上找不到。要下載 uv {} 到 skit 的私有目錄({})嗎?不會動到你的 PATH 或全局環境。[Y/n]",
+    ),
+    row!(
+        "Download declined. Install uv yourself (https://docs.astral.sh/uv/getting-started/installation/) and skit will pick it up automatically.",
+        "已取消下载。你可以自行安装 uv(https://docs.astral.sh/uv/getting-started/installation/),skit 会自动检测并使用。",
+        "已取消下載。你可以自行安裝 uv(https://docs.astral.sh/uv/getting-started/installation/),skit 會自動偵測並使用。",
     ),
     row!(
         "Added a newline to keep the Pi prompt in message mode",

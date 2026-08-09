@@ -3,7 +3,7 @@ use std::{
     env, fs,
     fs::OpenOptions,
     io,
-    io::Write as _,
+    io::{IsTerminal as _, Write as _},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
@@ -26,9 +26,10 @@ use skit_i18n::{Localize, Message};
 use skit_language::{LanguageError, inject_values_for_interpreter, render_prompt_body};
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
-    SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, build_launch_plan,
-    build_launch_preview, ensure_javascript_dependencies_for_module, ensure_managed_uv,
-    execute_launch, javascript_module_type, managed_uv_path, resolve_javascript_runtime,
+    SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, UvDownloadConsent,
+    build_launch_plan, build_launch_preview, ensure_javascript_dependencies_for_module,
+    ensure_managed_uv, execute_launch, javascript_module_type, managed_uv_path,
+    resolve_javascript_runtime,
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FileStore, content_hash,
@@ -207,8 +208,11 @@ impl RunError {
             Self::Dependencies(DependencyError::InstallerNotFound { .. })
             | Self::Dependencies(DependencyError::InstallFailed { .. })
             | Self::Dependencies(DependencyError::Io { .. })
-            | Self::Dependencies(DependencyError::Rollback { .. })
-            | Self::Uv(_) => 126,
+            | Self::Dependencies(DependencyError::Rollback { .. }) => 126,
+            // Version 0.4 wraps every uv bootstrap failure, refusal included, into a launch error
+            // (`src/skit/langs/launch.py:57-63`), and a launch failure exits 125
+            // (`src/skit/flows.py:868`).
+            Self::Uv(_) => 125,
             Self::RunnerNotFound { .. } => 126,
             Self::State(_)
             | Self::Inputs(_)
@@ -413,6 +417,7 @@ pub(crate) fn run_with_roots(
             &mut entry,
             data_store.data_dir(),
             mirror_base,
+            &TerminalUvConsent,
             ensure_managed_uv,
         )?;
     }
@@ -704,29 +709,83 @@ fn stage_injected_source(
     Ok(Some(StagedSource { path }))
 }
 
-/// Announce the first private uv download, then pin the installed path.
+/// Ask for consent, announce the first private uv download, then pin the installed path.
 ///
-/// `install` is the installer port. The composition root passes the real bootstrap.
+/// `install` is the installer port and `consent` is the question port. The composition root passes
+/// the real bootstrap and the real terminal. Version 0.4 asks before it downloads
+/// (`src/skit/uvman.py:251-256`), announces the download only after consent
+/// (`src/skit/uvman.py:259-265`), and reports the installed path when it finishes
+/// (`src/skit/uvman.py:284-287`).
 fn bootstrap_private_uv<F>(
     settings: &mut EntrySettings,
     entry: &mut Entry,
     data_dir: &Path,
     mirror_base: Option<&str>,
+    consent: &dyn UvDownloadConsent,
     install: F,
 ) -> Result<(), RunError>
 where
     F: FnOnce(&Path, Option<&str>) -> Result<PathBuf, UvBootstrapError>,
 {
+    let locale = crate::cli::active_locale();
+    let destination = skit_runtime::managed_uv_path(data_dir);
+    let private_dir = destination.parent().unwrap_or(data_dir);
+    if !consent.allow_download(skit_runtime::UV_VERSION, private_dir) {
+        return Err(UvBootstrapError::Declined.into());
+    }
     eprintln!(
         "{}",
         skit_i18n::format_text(
-            crate::cli::active_locale(),
-            "First Python run: download private uv {}",
+            locale,
+            "First run — downloading uv {}…",
             &[&skit_runtime::UV_VERSION],
         )
     );
-    pin_interpreter(settings, entry, &install(data_dir, mirror_base)?);
+    let installed = install(data_dir, mirror_base)?;
+    eprintln!(
+        "{}",
+        skit_i18n::format_text(locale, "uv installed at: {}", &[&installed.display()])
+    );
+    pin_interpreter(settings, entry, &installed);
     Ok(())
+}
+
+/// Ask the real terminal before skit downloads its private uv.
+#[derive(Clone, Copy, Debug)]
+struct TerminalUvConsent;
+
+impl UvDownloadConsent for TerminalUvConsent {
+    fn allow_download(&self, version: &str, destination: &Path) -> bool {
+        // Version 0.4 gates purely on the two streams (`src/skit/uvman.py:72-73`). `--no-input` is
+        // deliberately not part of the gate: the interactive launch form sets that flag itself
+        // before it hands the run on, so keying on it would silence the question on the one path
+        // that has a user in front of it.
+        if !io::stdin().is_terminal() || !io::stderr().is_terminal() {
+            return true;
+        }
+        // The question goes to stderr because stdout belongs to the script, and it ends with one
+        // space rather than a newline (`src/skit/uvman.py:74-82`).
+        eprint!(
+            "{} ",
+            skit_i18n::format_text(
+                crate::cli::active_locale(),
+                "skit needs Astral's uv to run Python scripts, but it wasn't found on this system. Download uv {} into skit's private directory ({})? This won't touch your PATH or global environment. [Y/n]",
+                &[&version, &destination.display()],
+            )
+        );
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        let read = io::stdin().read_line(&mut answer).unwrap_or(0);
+        consent_from_answer((read > 0).then_some(answer.as_str()))
+    }
+}
+
+/// Read one consent answer.
+///
+/// `None` is end of input, which counts as consent (`src/skit/uvman.py:85-86`). Only an explicit
+/// no declines, whatever its spacing or case (`src/skit/uvman.py:88`).
+fn consent_from_answer(answer: Option<&str>) -> bool {
+    answer.is_none_or(|answer| !matches!(answer.trim().to_lowercase().as_str(), "n" | "no"))
 }
 
 /// Pin one resolved interpreter path in the in-memory settings and metadata.
@@ -1274,18 +1333,39 @@ mod tests {
 
 #[cfg(test)]
 mod bootstrap_tests {
-    use std::path::{Path, PathBuf};
+    use std::{
+        cell::RefCell,
+        path::{Path, PathBuf},
+    };
 
     use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug};
+    use skit_runtime::{AllowUvDownload, UvBootstrapError, UvDownloadConsent};
 
-    use super::bootstrap_private_uv;
+    use super::{RunError, bootstrap_private_uv, consent_from_answer};
+
+    #[derive(Debug)]
+    struct RecordedConsent {
+        allow: bool,
+        asked: RefCell<Option<(String, PathBuf)>>,
+    }
+
+    impl UvDownloadConsent for RecordedConsent {
+        fn allow_download(&self, version: &str, destination: &Path) -> bool {
+            *self.asked.borrow_mut() = Some((version.to_owned(), destination.to_path_buf()));
+            self.allow
+        }
+    }
+
+    fn python_entry() -> Entry {
+        Entry {
+            slug: Slug::parse("demo").unwrap(),
+            meta: EntryMeta::minimal("Demo", EntryKind::parse("python").unwrap()),
+        }
+    }
 
     #[test]
     fn a_completed_bootstrap_pins_the_installed_uv_in_settings_and_metadata() {
-        let mut entry = Entry {
-            slug: Slug::parse("demo").unwrap(),
-            meta: EntryMeta::minimal("Demo", EntryKind::parse("python").unwrap()),
-        };
+        let mut entry = python_entry();
         let mut settings = EntrySettings::default();
         let installed = PathBuf::from("/data/bin/uv");
 
@@ -1294,6 +1374,7 @@ mod bootstrap_tests {
             &mut entry,
             Path::new("/data"),
             Some("https://mirror.example/uv"),
+            &AllowUvDownload,
             |data_dir, mirror_base| {
                 assert_eq!(data_dir, Path::new("/data"));
                 assert_eq!(mirror_base, Some("https://mirror.example/uv"));
@@ -1307,6 +1388,79 @@ mod bootstrap_tests {
             EntrySettings::from_meta(&entry.meta).interpreter,
             installed.display().to_string()
         );
+    }
+
+    /// Version 0.4 asks before it downloads, and names the version and the private directory
+    /// (`src/skit/uvman.py:251` and `src/skit/uvman.py:74-81`).
+    #[test]
+    fn consent_is_asked_with_the_version_and_the_private_directory() {
+        let consent = RecordedConsent {
+            allow: true,
+            asked: RefCell::new(None),
+        };
+        bootstrap_private_uv(
+            &mut EntrySettings::default(),
+            &mut python_entry(),
+            Path::new("/data"),
+            None,
+            &consent,
+            |_, _| Ok(PathBuf::from("/data/bin/uv")),
+        )
+        .unwrap();
+
+        let (version, destination) = consent
+            .asked
+            .borrow_mut()
+            .take()
+            .expect("consent was not asked");
+        assert_eq!(version, skit_runtime::UV_VERSION);
+        assert_eq!(destination, Path::new("/data").join("bin"));
+    }
+
+    /// Version 0.4 treats end of input as consent and refuses only on an explicit no
+    /// (`src/skit/uvman.py:85-88`).
+    #[test]
+    fn only_an_explicit_no_declines_and_end_of_input_consents() {
+        assert!(consent_from_answer(None));
+        for consenting in ["", "\n", " ", "y", "Y", "yes", "sure", "nope"] {
+            assert!(consent_from_answer(Some(consenting)), "{consenting:?}");
+        }
+        for refusing in ["n", "N", "no", "NO", "  no  ", "No\n"] {
+            assert!(!consent_from_answer(Some(refusing)), "{refusing:?}");
+        }
+    }
+
+    /// A refusal downloads nothing, keeps the entry untouched, and carries the version 0.4
+    /// self-install guidance (`src/skit/uvman.py:252-256`).
+    #[test]
+    fn a_refused_download_never_reaches_the_installer_and_leaves_no_pin() {
+        let consent = RecordedConsent {
+            allow: false,
+            asked: RefCell::new(None),
+        };
+        let mut entry = python_entry();
+        let mut settings = EntrySettings::default();
+
+        let error = bootstrap_private_uv(
+            &mut settings,
+            &mut entry,
+            Path::new("/data"),
+            None,
+            &consent,
+            |_, _| panic!("a refused download must not reach the installer"),
+        )
+        .expect_err("a refusal must fail the run");
+
+        assert!(matches!(error, RunError::Uv(UvBootstrapError::Declined),));
+        assert!(settings.interpreter.is_empty());
+        assert!(EntrySettings::from_meta(&entry.meta).interpreter.is_empty());
+        assert_eq!(
+            error.to_string(),
+            "Download declined. Install uv yourself (https://docs.astral.sh/uv/getting-started/installation/) and skit will pick it up automatically."
+        );
+        // Version 0.4 turns every uv bootstrap failure into a launch failure
+        // (`src/skit/langs/launch.py:57-63`), which exits 125 (`src/skit/flows.py:868`).
+        assert_eq!(error.exit_code(), 125);
     }
 }
 

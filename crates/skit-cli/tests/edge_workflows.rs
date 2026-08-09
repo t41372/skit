@@ -912,6 +912,12 @@ fn first_python_run_announces_private_uv_before_a_local_refused_download() {
         .env("PATH", empty_path.path())
         .args(["run", "bootstrap", "--no-input"])
         .assert()
-        .code(126)
-        .stderr(predicates::str::contains("First Python run"));
+        // A non-interactive stream keeps the version 0.4 zero-action first run
+        // (`src/skit/uvman.py:72-73`), and a failed bootstrap exits 125 like every launch failure
+        // (`src/skit/langs/launch.py:57-63` into `src/skit/flows.py:868`).
+        .code(125)
+        .stderr(predicates::str::contains("First run — downloading uv"))
+        .stderr(predicates::prelude::PredicateBooleanExt::not(
+            predicates::str::contains("Download uv"),
+        ));
 }
