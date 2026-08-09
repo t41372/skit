@@ -5,12 +5,14 @@ pub(crate) mod registry;
 use std::{
     collections::BTreeMap,
     fs,
+    fs::{File, OpenOptions},
+    io::{self, Write as _},
     path::{Path, PathBuf},
 };
 
 use atomic::{
-    FileLock, StagedDirectory, acquire_lock, atomic_write_bytes, create_dir_all, invalid, io_error,
-    sync_directory, write_new_file, write_new_metadata,
+    FileLock, StagedDirectory, acquire_lock, acquire_shared_lock, atomic_write_bytes,
+    create_dir_all, invalid, io_error, sync_directory, write_new_file, write_new_metadata,
 };
 pub use hash::content_hash;
 use registry::Registry;
@@ -25,6 +27,41 @@ use super::{
     FileStore,
     paths::{is_support_file, stored_filenames},
 };
+
+/// One identity-checked launch whose copy-mode payload cannot change underneath the child.
+///
+/// The launch lease remains held until this value is dropped. Source edits may continue while a
+/// child runs, but removing and reusing the entry directory waits until the child and its
+/// post-run state transaction are complete.
+#[derive(Debug)]
+pub struct PreparedLaunch {
+    entry: Entry,
+    payload: Option<PathBuf>,
+    temporary_payload: Option<PathBuf>,
+    _lease: FileLock,
+}
+
+impl PreparedLaunch {
+    /// Return the freshly claimed entry incarnation.
+    #[must_use]
+    pub const fn entry(&self) -> &Entry {
+        &self.entry
+    }
+
+    /// Return the path whose bytes were checked while the entry lock was held.
+    #[must_use]
+    pub fn payload_path(&self) -> Option<&Path> {
+        self.payload.as_deref()
+    }
+}
+
+impl Drop for PreparedLaunch {
+    fn drop(&mut self) {
+        if let Some(path) = self.temporary_payload.as_ref() {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
 
 impl EntryMutationRepository for FileStore {
     fn create(&self, request: CreateEntry) -> Result<Entry, RepositoryError> {
@@ -138,6 +175,7 @@ impl EntryMutationRepository for FileStore {
     }
 
     fn remove(&self, entry: &Entry) -> Result<String, RepositoryError> {
+        let _launch = self.launch_lock(&entry.slug)?;
         let _entry = self.entry_lock(&entry.slug)?;
         let _namespace = self.namespace_lock()?;
         let _dependencies = self.dependency_lock(&entry.slug)?;
@@ -212,6 +250,80 @@ impl EntryMutationRepository for FileStore {
 }
 
 impl FileStore {
+    /// Recheck identity and source bytes, then pin a copy-mode payload for one launch.
+    ///
+    /// `expected_source_hash` is the hash observed while the launch form was assembled. Passing it
+    /// closes the legacy-entry gap where a remove/re-add can preserve idless metadata while
+    /// replacing the payload. Reference entries are rechecked but continue to launch their owned
+    /// source path; copy entries launch a private byte-for-byte snapshot.
+    pub fn prepare_launch(
+        &self,
+        held: &Entry,
+        expected_source_hash: Option<&str>,
+    ) -> Result<PreparedLaunch, RepositoryError> {
+        let lease = self.launch_lease(&held.slug)?;
+        let _entry = self.entry_lock(&held.slug)?;
+        let fresh = self.verify_claim_locked(held)?;
+        if held.meta.id.is_some() && fresh.meta != held.meta {
+            return Err(stale(&held.slug));
+        }
+        let fresh = if fresh.meta.id.is_some() {
+            fresh
+        } else {
+            let _namespace = self.namespace_lock()?;
+            let mut registry = Registry::load(self.data_dir())?;
+            self.stamp_identity_locked(fresh, &mut registry)?
+        };
+
+        if fresh.meta.kind.as_str() == "command" {
+            return Ok(PreparedLaunch {
+                entry: fresh,
+                payload: None,
+                temporary_payload: None,
+                _lease: lease,
+            });
+        }
+
+        let source = self.payload_path(&fresh)?;
+        if fresh.meta.kind.as_str() == "exe" && fresh.meta.mode == StorageMode::Reference {
+            return Ok(PreparedLaunch {
+                entry: fresh,
+                payload: Some(source),
+                temporary_payload: None,
+                _lease: lease,
+            });
+        }
+        let bytes = fs::read(&source).map_err(|error| io_error("read", &source, error))?;
+        if let Some(expected) = expected_source_hash {
+            let actual = content_hash(&bytes);
+            if actual != expected {
+                return Err(RepositoryError::SourceChanged {
+                    slug: fresh.slug.as_str().to_owned(),
+                    expected: expected.to_owned(),
+                    actual,
+                });
+            }
+        }
+
+        if fresh.meta.mode == StorageMode::Reference {
+            return Ok(PreparedLaunch {
+                entry: fresh,
+                payload: Some(source),
+                temporary_payload: None,
+                _lease: lease,
+            });
+        }
+
+        let snapshot = launch_snapshot_path(&source, &self.entry_dir(&fresh.slug));
+        write_launch_snapshot(&source, &snapshot, &bytes)?;
+        Ok(PreparedLaunch {
+            entry: fresh,
+            payload: Some(snapshot.clone()),
+            temporary_payload: Some(snapshot),
+            _lease: lease,
+        })
+    }
+
     /// Rebuild `registry.toml` from every valid authoritative metadata file.
     pub fn rebuild_registry(&self) -> Result<usize, RepositoryError> {
         let _namespace = self.namespace_lock()?;
@@ -508,6 +620,24 @@ impl FileStore {
         )
     }
 
+    fn launch_lock(&self, slug: &Slug) -> Result<FileLock, RepositoryError> {
+        acquire_lock(
+            &self
+                .data_dir()
+                .join(".locks")
+                .join(format!("{}.launch.lock", slug.as_str())),
+        )
+    }
+
+    fn launch_lease(&self, slug: &Slug) -> Result<FileLock, RepositoryError> {
+        acquire_shared_lock(
+            &self
+                .data_dir()
+                .join(".locks")
+                .join(format!("{}.launch.lock", slug.as_str())),
+        )
+    }
+
     fn dependency_lock(&self, slug: &Slug) -> Result<FileLock, RepositoryError> {
         acquire_lock(
             &self
@@ -516,6 +646,55 @@ impl FileStore {
                 .join(format!("{}.skit-deps.lock", slug.as_str())),
         )
     }
+}
+
+fn launch_snapshot_path(source: &Path, entry_dir: &Path) -> PathBuf {
+    let extension = source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map_or_else(String::new, |extension| format!(".{extension}"));
+    entry_dir.join(format!(
+        ".run-{}{}",
+        EntryId::generate().as_str(),
+        extension
+    ))
+}
+
+fn write_launch_snapshot(
+    source: &Path,
+    snapshot: &Path,
+    bytes: &[u8],
+) -> Result<(), RepositoryError> {
+    write_launch_snapshot_with(source, snapshot, bytes, File::sync_all)
+}
+
+fn write_launch_snapshot_with(
+    source: &Path,
+    snapshot: &Path,
+    bytes: &[u8],
+    finalize: impl FnOnce(&File) -> io::Result<()>,
+) -> Result<(), RepositoryError> {
+    let permissions = fs::metadata(source)
+        .map_err(|error| io_error("inspect", source, error))?
+        .permissions();
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    let mut file = options
+        .open(snapshot)
+        .map_err(|error| io_error("create", snapshot, error))?;
+    let result = file
+        .write_all(bytes)
+        .map_err(|error| io_error("write", snapshot, error))
+        .and_then(|()| {
+            file.set_permissions(permissions)
+                .map_err(|error| io_error("chmod", snapshot, error))
+        })
+        .and_then(|()| finalize(&file).map_err(|error| io_error("sync", snapshot, error)));
+    if result.is_err() {
+        drop(file);
+        let _ = fs::remove_file(snapshot);
+    }
+    result
 }
 
 const CORE_METADATA_KEYS: &[&str] = &[
@@ -816,5 +995,27 @@ mod tests {
 
         assert!(matches!(error, RepositoryError::InvalidMutation { .. }));
         assert_eq!(fs::read(&source).unwrap(), b"before");
+    }
+
+    #[test]
+    fn a_failed_launch_snapshot_finalize_removes_the_private_file() {
+        let root = TempDir::new().unwrap();
+        let source = root.path().join("source.sh");
+        let snapshot = root.path().join(".run-test.sh");
+        fs::write(&source, b"printf checked").unwrap();
+
+        let error = write_launch_snapshot_with(&source, &snapshot, b"printf checked", |_| {
+            Err(io::Error::other("injected sync failure"))
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RepositoryError::Io {
+                operation: "sync",
+                ..
+            }
+        ));
+        assert!(!snapshot.exists());
     }
 }

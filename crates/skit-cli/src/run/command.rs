@@ -26,7 +26,9 @@ use skit_runtime::{
     build_launch_preview, ensure_javascript_dependencies_for_module, ensure_managed_uv,
     execute_launch, javascript_module_type, managed_uv_path, resolve_javascript_runtime,
 };
-use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FileStore};
+use skit_store::{
+    ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FileStore, content_hash,
+};
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
@@ -251,7 +253,7 @@ pub(crate) fn run_with_roots(
     let base_environment = env::vars().collect::<BTreeMap<_, _>>();
     let mirror_environment = config.mirror_environment(&base_environment)?;
 
-    let source = source_text(data_store, &entry, &settings)?;
+    let (source, expected_source_hash) = source_snapshot(data_store, &entry, &settings)?;
     let declarations = if args.raw {
         Vec::new()
     } else {
@@ -381,7 +383,12 @@ pub(crate) fn run_with_roots(
         )?;
     }
 
-    let _claimed = service.claim_identity(&held)?;
+    let prepared = if args.dry_run {
+        let _ = service.claim_identity(&held)?;
+        None
+    } else {
+        Some(data_store.prepare_launch(&held, expected_source_hash.as_deref())?)
+    };
 
     if entry.meta.kind.as_str() == "python"
         && settings.interpreter.is_empty()
@@ -426,6 +433,8 @@ pub(crate) fn run_with_roots(
         staged.path.clone()
     } else if entry.meta.kind.as_str() == "command" {
         PathBuf::new()
+    } else if let Some(path) = prepared.as_ref().and_then(|launch| launch.payload_path()) {
+        path.to_path_buf()
     } else {
         data_store.payload_path(&entry)?
     };
@@ -565,35 +574,45 @@ fn apply_runtime_defaults(mut entry: Entry, config: &BTreeMap<String, String>) -
     entry
 }
 
+#[cfg(test)]
 fn source_text(
     store: &FileStore,
     entry: &Entry,
     settings: &EntrySettings,
 ) -> Result<String, RunError> {
+    source_snapshot(store, entry, settings).map(|(text, _hash)| text)
+}
+
+fn source_snapshot(
+    store: &FileStore,
+    entry: &Entry,
+    settings: &EntrySettings,
+) -> Result<(String, Option<String>), RunError> {
     match entry.meta.kind.as_str() {
-        "command" => Ok(settings.template.clone()),
-        "exe" => Ok(String::new()),
-        "prompt" => read_utf8(&store.payload_path(entry)?),
+        "command" => Ok((settings.template.clone(), None)),
+        "exe" => Ok((String::new(), None)),
+        "prompt" => {
+            let path = store.payload_path(entry)?;
+            let bytes = read_bytes(&path)?;
+            let hash = content_hash(&bytes);
+            let text = String::from_utf8(bytes).map_err(|_| RunError::Encoding {
+                path: path.display().to_string(),
+            })?;
+            Ok((text, Some(hash)))
+        }
         _ => {
             let path = store.payload_path(entry)?;
-            match fs::read(&path) {
-                Ok(bytes) => Ok(String::from_utf8(bytes).unwrap_or_default()),
-                Err(source) => Err(RunError::Read {
-                    path: path.display().to_string(),
-                    source,
-                }),
-            }
+            let bytes = read_bytes(&path)?;
+            let hash = content_hash(&bytes);
+            Ok((String::from_utf8(bytes).unwrap_or_default(), Some(hash)))
         }
     }
 }
 
-fn read_utf8(path: &Path) -> Result<String, RunError> {
-    let bytes = fs::read(path).map_err(|source| RunError::Read {
+fn read_bytes(path: &Path) -> Result<Vec<u8>, RunError> {
+    fs::read(path).map_err(|source| RunError::Read {
         path: path.display().to_string(),
         source,
-    })?;
-    String::from_utf8(bytes).map_err(|_| RunError::Encoding {
-        path: path.display().to_string(),
     })
 }
 
@@ -1032,8 +1051,13 @@ mod tests {
             .unwrap(),
             "echo ok"
         );
+        let executable_path = directory.join("tool");
+        fs::write(&executable_path, b"executable bytes").unwrap();
+        let mut executable = entry("exe", "");
+        executable.meta.mode = skit_domain::StorageMode::Reference;
+        executable.meta.source = executable_path.display().to_string();
         assert_eq!(
-            source_text(&store, &entry("exe", ""), &EntrySettings::default()).unwrap(),
+            source_text(&store, &executable, &EntrySettings::default()).unwrap(),
             ""
         );
 
@@ -1044,7 +1068,7 @@ mod tests {
             Err(RunError::Encoding { .. })
         ));
         assert!(matches!(
-            read_utf8(&directory.join("missing")),
+            read_bytes(&directory.join("missing")),
             Err(RunError::Read { .. })
         ));
     }
@@ -1064,8 +1088,13 @@ mod tests {
             source_text(&store, &command, &EntrySettings::from_meta(&command.meta)).unwrap(),
             "echo ok"
         );
+        let executable_path = root.path().join("tool");
+        fs::write(&executable_path, b"executable bytes").unwrap();
+        let mut executable = entry("exe", "");
+        executable.meta.mode = skit_domain::StorageMode::Reference;
+        executable.meta.source = executable_path.display().to_string();
         assert_eq!(
-            source_text(&store, &entry("exe", ""), &EntrySettings::default()).unwrap(),
+            source_text(&store, &executable, &EntrySettings::default()).unwrap(),
             ""
         );
 

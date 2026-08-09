@@ -22,6 +22,13 @@ pub(super) fn acquire_lock(path: &Path) -> Result<FileLock, RepositoryError> {
     Ok(FileLock { _file: file })
 }
 
+pub(super) fn acquire_shared_lock(path: &Path) -> Result<FileLock, RepositoryError> {
+    let file = open_lock_file(path)?;
+    file.lock_shared()
+        .map_err(|error| io_error("lock", path, error))?;
+    Ok(FileLock { _file: file })
+}
+
 pub(super) fn try_acquire_lock(path: &Path) -> Result<Option<FileLock>, RepositoryError> {
     let file = open_lock_file(path)?;
     if lock_available(file.try_lock(), path)? {
