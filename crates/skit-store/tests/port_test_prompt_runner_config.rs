@@ -5,7 +5,6 @@
 //! findings; production config code is not changed in this branch.
 
 use std::{
-    collections::BTreeMap,
     fs,
     sync::{Arc, Barrier},
     thread,
@@ -74,7 +73,13 @@ fn test_load_prompt_runners_is_read_only_before_seeding() {
             .collect::<Vec<_>>(),
         expected
     );
-    assert!(store.runner_rows().unwrap().iter().all(|row| row.reason.is_none()));
+    assert!(
+        store
+            .runner_rows()
+            .unwrap()
+            .iter()
+            .all(|row| row.reason.is_none())
+    );
     assert_eq!(
         store
             .runners()
@@ -147,9 +152,15 @@ fn test_hand_authored_rows_without_marker_count_as_seeded() {
         )]),
     );
 
-    assert_eq!(store.runners().unwrap(), [runner("mine", &["m", "{{prompt}}"])]);
+    assert_eq!(
+        store.runners().unwrap(),
+        [runner("mine", &["m", "{{prompt}}"])],
+    );
     store.ensure_runners_seeded().unwrap();
-    assert_eq!(store.runners().unwrap(), [runner("mine", &["m", "{{prompt}}"])]);
+    assert_eq!(
+        store.runners().unwrap(),
+        [runner("mine", &["m", "{{prompt}}"])],
+    );
 }
 
 #[test]
@@ -178,11 +189,17 @@ fn test_malformed_runner_rows_are_skipped_and_reported() {
         )]),
     );
 
-    assert_eq!(store.runners().unwrap(), [runner("good", &["g", "{{prompt}}"])]);
+    assert_eq!(
+        store.runners().unwrap(),
+        [runner("good", &["g", "{{prompt}}"])],
+    );
     let rows = store.runner_rows().unwrap();
     assert_eq!(rows[1].reason.as_deref(), Some("prompt-slot-count"));
     assert_eq!(rows[2].reason.as_deref(), Some("name"));
-    assert_eq!(rows[2].argv.as_deref(), Some(&["g".to_owned(), "{{prompt}}".to_owned()][..]));
+    assert_eq!(
+        rows[2].argv.as_deref(),
+        Some(&["g".to_owned(), "{{prompt}}".to_owned()][..])
+    );
     assert!(rows[2].descriptor.starts_with('{'));
     assert_eq!(store.invalid_runner_rows().unwrap().len(), 5);
 }
@@ -210,7 +227,7 @@ fn test_duplicate_normalized_runner_names_keep_first_and_are_reported() {
 
     assert_eq!(
         store.runners().unwrap(),
-        [runner("same", &["first", "{{prompt}}"])]
+        [runner("same", &["first", "{{prompt}}"])],
     );
     assert_eq!(store.invalid_runner_rows().unwrap(), ["same"]);
 }
@@ -225,7 +242,10 @@ fn test_runners_section_of_wrong_type_degrades_without_being_repaired_by_seed_re
             "prompt".to_owned(),
             Value::Table(Table::from_iter([
                 ("runners_seeded".to_owned(), Value::Boolean(true)),
-                ("runners".to_owned(), Value::String("garbage".to_owned())),
+                (
+                    "runners".to_owned(),
+                    Value::String("garbage".to_owned()),
+                ),
             ])),
         )]),
     );
@@ -270,9 +290,11 @@ fn test_targeted_runner_mutations_preserve_unrelated_malformed_rows() {
         )]),
     );
 
-    assert!(!store
-        .set_runner(runner("good", &["good", "{{prompt}}"]), false)
-        .unwrap());
+    assert!(
+        !store
+            .set_runner(runner("good", &["good", "{{prompt}}"]), false)
+            .unwrap()
+    );
     let after_add = read_document(&root);
     let rows = after_add
         .get("prompt")
@@ -415,7 +437,10 @@ fn test_runner_transaction_and_non_runner_config_update_preserve_each_other() {
 
     add.join().unwrap();
     set.join().unwrap();
-    assert_eq!(store.runners().unwrap(), [runner("agent", &["agent", "{{prompt}}"])]);
+    assert_eq!(
+        store.runners().unwrap(),
+        [runner("agent", &["agent", "{{prompt}}"])],
+    );
     assert_eq!(store.get("editor").unwrap(), "code --wait");
 }
 
@@ -444,12 +469,14 @@ fn test_set_runner_accepts_single_braces_as_literal_text() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
 
-    assert!(!store
-        .set_runner(
-            runner("literal", &["agent", "{lit} {{prompt}}"]),
-            false,
-        )
-        .unwrap());
+    assert!(
+        !store
+            .set_runner(
+                runner("literal", &["agent", "{lit} {{prompt}}"]),
+                false,
+            )
+            .unwrap()
+    );
     assert_eq!(
         store
             .runners()
