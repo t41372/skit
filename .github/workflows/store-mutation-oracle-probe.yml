@@ -1,0 +1,27 @@
+name: Store mutation oracle probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/store-mutation-oracle-probe.yml
+      - crates/skit-store/tests/port_test_store_mutation.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run store mutation oracle
+        shell: bash
+        run: |
+          set +e
+          cargo test --locked -p skit-store --test port_test_store_mutation -- --nocapture
+          rc=$?
+          echo "STORE_MUTATION_ORACLE_RC=$rc"
+          exit 0
