@@ -45,7 +45,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_argspec_click_typer.py | 67 | skit-language | todo |
 | test_callmatch.py | 9 | crates/skit-language/tests/port_test_callmatch.rs | done |
 | test_reconcile.py | 27 | crates/skit-language/tests/port_test_reconcile.rs | done (14) · 13 → Tier 4/5 |
-| test_shell_analyzer.py | 92 | skit-language | todo |
+| test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (83) · 3 white-box, 6 → Tier 4 |
 | test_shell_inject.py | 87 | skit-language | todo |
 | test_shell_getopts.py | 11 | skit-language | todo |
 | test_fish.py | 64 | skit-language | todo |
@@ -213,3 +213,23 @@ that owns the code:
   duplicate-named specs dedup without crashing; `--no-secret` clears `env_source`; `not-managed`
   warnings for secret/no_secret/prompts targets; `drift_lines`/`render_warning` localized output.
   These behaviors must be shown to survive at their new layer or the gap is real.
+
+### test_shell_analyzer.py → port_test_shell_analyzer.rs (83 done · 9 deferred) — FIRST REAL GAP
+
+92 ported. Bucket 1 (pure analyzer): 83, and 2 of them failed on a genuine implementation gap that
+the fresh Rust tests missed — **the first real bug the port campaign found**:
+
+- **Fixed in `e4c00e3` (`fix(language): reconcile an envdefault by name, not by type`).**
+  `reconcile_analysis` ran the const type-drift check on an `EnvDefault` binding too, so a str-typed
+  stored envdefault against `${PORT:-8080}` (whose `8080` infers as `int`) landed in `changed` and
+  raised a spurious drift warning. The Python oracle (`skit/analysis.py` reconcile) matches an
+  envdefault by name alone and keeps it `ok` through a type change, because its value arrives from
+  the environment. Verified against the oracle source before fixing; the whole workspace stays green
+  (120 test binaries, clippy -D warnings clean). Tests: `test_reconcile_envdefault_ok`,
+  `test_reconcile_envdefault_default_change_is_still_ok`.
+
+Bucket 2 (white-box Python parser internals): 1 ported via its public candidate contract; 3
+`#[ignore]`-UNMAPPED (`_read_flags`/`_walk` ReadShape `.raw` internals, the analyzer↔injector shared
+read-enumeration cross-check, and registry dynamic-import degradation — no Rust equivalent, analyzers
+are statically linked). Bucket 3 (CLI integration, 6): `params manage`/`params show`/`params resync`,
+`flows.plan_for_entry` degradation, and `drift_lines` rendering — deferred to Tier 4 (skit-cli).
