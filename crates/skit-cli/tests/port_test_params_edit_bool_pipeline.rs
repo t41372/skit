@@ -89,6 +89,29 @@ fn text<'a>(row: &'a Value, key: &str) -> &'a str {
     row[key].as_str().unwrap_or("")
 }
 
+fn strip_ansi(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = String::with_capacity(input.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') {
+            index += 2;
+            while index < bytes.len() {
+                let byte = bytes[index];
+                index += 1;
+                if (0x40..=0x7e).contains(&byte) {
+                    break;
+                }
+            }
+            continue;
+        }
+        let ch = input[index..].chars().next().unwrap();
+        output.push(ch);
+        index += ch.len_utf8();
+    }
+    output
+}
+
 #[test]
 fn test_type_tweak_to_bool_on_a_flag_sets_store_true() {
     let sandbox = Sandbox::new();
@@ -199,14 +222,15 @@ fn test_bool_flag_that_is_on_by_default_is_refused_not_stamped() {
     let output = sandbox.ok(&[
         "params", "binary", "--type", "v=bool", "--default", "v=true",
     ]);
-    let message = format!(
+    let message = strip_ansi(&format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
-    );
+    ));
+    let expected = "v is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-v and the like), with default false.";
     assert!(
-        message.contains("v is on by default") && message.contains("turn it OFF"),
-        "the refusal warning must explain the unusable positive flag:\n{message}"
+        message.lines().any(|line| line == expected),
+        "the refusal warning must match Python exactly:\n{message}"
     );
     let document = sandbox.params();
     assert_eq!(
