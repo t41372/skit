@@ -136,10 +136,18 @@ pub fn render_with_session(
 
 /// Return the rows the shared header takes on one screen.
 ///
-/// A form titles its own panel, so it gets the whole body (`src/skit/tui_form.py:606-611`). A
-/// modal keeps the header because that is where its own title lives.
+/// A screen that titles its own panel gets the whole body (`src/skit/tui_form.py:606-611`,
+/// `src/skit/tui_settings.py:869-871`). Drawing the header above it prints the same title twice and
+/// spends three rows saying so — on entry settings that was three of the rows the parameter section
+/// needed to be on screen at all. A modal keeps the header because that is where its own title
+/// lives.
 fn header_height(state: &LibraryState) -> u16 {
-    if state.modal().is_none() && matches!(state.screen(), Screen::Run(_) | Screen::Form(_)) {
+    if state.modal().is_none()
+        && matches!(
+            state.screen(),
+            Screen::Run(_) | Screen::Form(_) | Screen::Settings(_)
+        )
+    {
         0
     } else {
         3

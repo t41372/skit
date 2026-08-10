@@ -43,6 +43,10 @@ terminal. Version 0.4 docks a bare `KeysBar` with no border (`src/skit/tui_foote
 visible in every shipped frame under `docs/assets/`). Recovering those two rows would let the run
 form show its argument tail without scrolling, exactly as the oracle's own demo frame does.
 
+These are the last two rows between the entry-settings frame and the oracle's. With the shared
+header gone and the description box back to three rows, that screen now reaches its parameter
+section and one row past it; the oracle reaches the same row with two rows to spare.
+
 ## The parameter row prints its default differently
 
 Version 0.4 renders the default inside a `ParamRow` label with Python `repr`

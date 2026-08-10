@@ -31,7 +31,10 @@ use ratatui_interact::components::{
     handle_scrollable_content_mouse,
 };
 use ratatui_textarea::TextArea as RichTextArea;
-use ratatui_widgets::paragraph::{Paragraph, Wrap};
+use ratatui_widgets::{
+    paragraph::{Paragraph, Wrap},
+    scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState},
+};
 use skit_form::field::{ChoiceOption, Field, FieldKind, FieldValue, ReadOnlyReason, TypedValue};
 use skit_i18n::{Locale, format_text, text};
 use skit_ui::{SettingsAction, SettingsItem, SettingsNote, SettingsSectionId, SettingsView};
@@ -743,11 +746,30 @@ pub fn render_settings(
             }
         }
     }
+    // Version 0.4 hosts the body in a `VerticalScroll`, whose scrollbar is the only thing that says
+    // the screen continues (`src/skit/tui_settings.py:388`, and visible in its shipped frame). With
+    // the sections below the fold and no mark beside them, a reader has nothing to act on.
+    if total > usize::from(body.height) {
+        let mut scrollbar = ScrollbarState::new(total.saturating_sub(usize::from(body.height)))
+            .position(session.scroll.scroll_offset())
+            .viewport_content_length(usize::from(body.height));
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight).style(settings_scrollbar_style()),
+            area,
+            &mut scrollbar,
+        );
+    }
+
     SettingsScreenGeometry {
         body,
         first_visible: session.scroll.scroll_offset(),
         hits,
     }
+}
+
+/// The settings scroll affordance's colour, shared with the run form's.
+fn settings_scrollbar_style() -> Style {
+    Style::default().fg(BOX_INDIGO)
 }
 
 /// Lay every section out into virtual rows.
@@ -845,7 +867,11 @@ fn shown_label(field: &Field, section: SettingsSectionId, locale: Locale) -> Str
 
 fn control_height(field: &Field, label: &str, locale: Locale, width: u16) -> usize {
     match &field.kind {
-        FieldKind::Multiline => 6,
+        // The same three rows a single-line box takes, because version 0.4 spends exactly that on
+        // the one field this kind serves here — its description is an `Input`
+        // (`src/skit/tui_settings.py:394-399`). Keeping the kind keeps the line breaks a person can
+        // type; spending six rows on it pushed three sections off a recorded terminal.
+        FieldKind::Multiline => 3,
         FieldKind::Boolean => 1,
         FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
             usize::from(!label.is_empty()).saturating_add(options.len().max(1))

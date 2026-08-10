@@ -822,10 +822,10 @@ fn hidden_while_insertion_is_off(key: &str) -> bool {
 fn basics_section(inputs: &SettingsInputs) -> SettingsSection {
     SettingsSection::new(
         SettingsSectionId::Basics,
+        // Version 0.4 yields the heading, the name, the sentence, then the description
+        // (`src/skit/tui_settings.py:388-400`). The sentence explains what renaming keeps, so it
+        // belongs under the box it is about rather than above it.
         vec![
-            SettingsItem::note(
-                "Renaming keeps everything — remembered values, presets, the stored copy.",
-            ),
             SettingsItem::field(Field::new(
                 NAME_KEY,
                 "Name",
@@ -833,6 +833,9 @@ fn basics_section(inputs: &SettingsInputs) -> SettingsSection {
                 FieldOwner::EntryPolicy,
                 FieldValue::text(&inputs.name),
             )),
+            SettingsItem::note(
+                "Renaming keeps everything — remembered values, presets, the stored copy.",
+            ),
             SettingsItem::field(Field::new(
                 DESCRIPTION_KEY,
                 "Description (shown in the Library)",
