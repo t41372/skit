@@ -127,10 +127,10 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_prompt_tui.py | 83 | skit-ui / skit-tui | todo |
-| test_path_tui.py | 61 | skit-ui / skit-tui | todo |
-| test_phase1.py | 27 | skit-ui / skit-tui | todo |
-| test_tui_responsive.py | 19 | skit-tui | todo |
+| test_prompt_tui.py | 83 | crates/skit-tui/tests/port_test_prompt_tui.rs | in fix (48/36) · Chinese Library title 程序库/程式庫 vs 工具库/工具庫 (catalog drift #9) · 26 cross-crate run routing · Ctrl+O hidden divergence + Ctrl+E stub being fixed |
+| test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs | in fix (28/33) · 1 empty-needle weakening being fixed · 2 private-render drops |
+| test_phase1.py | 27 | crates/skit-cli/tests/port_test_phase1.rs | done (27) · no gap |
+| test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs | in fix (10/9) · 4 render-model narrowings being tightened/noted |
 | test_settings_and_draft_review_atomicity.py | 16 | skit-ui / skit-store | todo |
 | test_draft_and_reader_tui.py | 16 | skit-ui / skit-tui | todo |
 | test_reset_default_ui.py | 14 | skit-ui / skit-tui | todo |
