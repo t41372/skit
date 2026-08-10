@@ -2406,7 +2406,8 @@ fn reconcile_analysis(analysis: &SemanticAnalysis, stored: &[ParamDecl]) -> Reco
         }
         if ambiguous {
             report.rebound.push(pair);
-        } else if declaration.parameter_type != candidate.declaration.parameter_type
+        } else if declaration.binding != ParameterBinding::EnvDefault
+            && declaration.parameter_type != candidate.declaration.parameter_type
             && !(matches!(
                 declaration.parameter_type,
                 ParameterType::Str | ParameterType::Path
@@ -2415,6 +2416,9 @@ fn reconcile_analysis(analysis: &SemanticAnalysis, stored: &[ParamDecl]) -> Reco
                 ParameterType::Str | ParameterType::Path
             ))
         {
+            // A const runs the type-drift check. An envdefault is matched by name only: its value
+            // arrives from the environment, so a changed inline default type is not drift (the
+            // envdefault stays ok through a type change, matching skit/analysis.py reconcile).
             report.changed.push(pair);
         } else {
             if !declaration.secret
