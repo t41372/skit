@@ -1,0 +1,276 @@
+{
+  "schema": 1,
+  "oracle_commit": "206f9ef946fc45835cb2479593794431f2620c32",
+  "modules": [
+    {
+      "source": "tests/test_analyzer.py",
+      "status": "done",
+      "targets": [
+        "crates/skit-language/tests/port_test_analyzer.rs"
+      ],
+      "ported": [
+        "test_module_level_consts",
+        "test_ann_assign_and_bool_not_int",
+        "test_main_guard_scanned_c4",
+        "test_main_guard_reversed_form",
+        "test_input_calls_ordered_b1",
+        "test_secret_heuristics",
+        "test_framework_detection",
+        "test_syntax_error_returns_empty",
+        "test_duplicate_top_level_const_is_deduped_to_one_candidate",
+        "test_duplicate_top_level_const_keeps_last_occurrence_value",
+        "test_duplicate_top_level_const_keeps_first_occurrence_position",
+        "test_duplicate_top_level_const_mixed_ann_assign",
+        "test_duplicate_const_injection_no_longer_corrupts_source",
+        "test_shadowed_input_via_def_yields_no_input_candidates",
+        "test_shadowed_input_via_assignment_yields_no_input_candidates",
+        "test_shadowed_input_via_from_import_yields_no_input_candidates",
+        "test_shadowed_input_via_plain_import_yields_no_input_candidates",
+        "test_function_parameter_named_input_does_not_shadow_the_module_level_call",
+        "test_call_inside_the_shadowing_function_is_not_a_candidate",
+        "test_local_assignment_shadows_only_its_own_function",
+        "test_module_level_binding_still_shadows_calls_nested_in_functions",
+        "test_comprehension_and_lambda_bindings_stay_local",
+        "test_shadowing_input_does_not_suppress_const_detection",
+        "test_unshadowed_input_is_still_detected",
+        "test_match_inputs_prompt_survives_position_shift",
+        "test_match_inputs_falls_back_to_position_when_no_prompt_recorded",
+        "test_match_inputs_flags_ambiguous_when_prompt_renamed_but_position_still_exists",
+        "test_match_inputs_flags_ambiguous_when_two_call_sites_share_a_prompt",
+        "test_match_inputs_missing_when_neither_prompt_nor_position_resolves",
+        "test_match_inputs_duplicate_stored_prompts_never_double_bind_on_delete",
+        "test_match_inputs_duplicate_stored_prompts_edit_one_flags_rebind_for_loser",
+        "test_match_inputs_triple_duplicate_stored_prompts_only_one_winner",
+        "test_match_capture_named_input_shadows_only_its_own_scope",
+        "test_except_handler_named_input_shadows_only_its_own_scope",
+        "test_dotted_import_binds_only_its_top_level_name",
+        "test_star_import_is_treated_as_possibly_binding_input",
+        "test_one_shadowing_scope_does_not_stop_the_scan_of_the_others"
+      ],
+      "deferred": []
+    },
+    {
+      "source": "tests/test_analyzer_signals.py",
+      "status": "done",
+      "targets": [
+        "crates/skit-language/tests/port_test_analyzer_signals.rs"
+      ],
+      "ported": [
+        "test_accumulator_is_demoted",
+        "test_clean_constant_is_not_demoted",
+        "test_reassignment_inside_while_loop_demotes",
+        "test_augassign_outside_loop_still_demotes",
+        "test_uses_argv_detected",
+        "test_filename_literal_hint_found",
+        "test_no_hint_for_named_constant_usage",
+        "test_hint_excludes_non_filenames",
+        "test_hint_dedupes_and_caps_at_three"
+      ],
+      "deferred": []
+    },
+    {
+      "source": "tests/test_callmatch.py",
+      "status": "done",
+      "targets": [
+        "crates/skit-language/tests/port_test_callmatch.rs"
+      ],
+      "ported": [
+        "test_equal_count_duplicate_prompts_bind_in_positional_order",
+        "test_duplicate_prompt_gone_from_source_falls_back_to_position_ambiguous",
+        "test_promptless_entry_cannot_recover_a_site_the_multiset_pass_claimed",
+        "test_unique_prompt_after_a_multiset_match_still_resolves",
+        "test_single_shared_prompt_resolves_by_uniqueness_not_multiset",
+        "test_no_recorded_prompt_falls_back_to_position_silently",
+        "test_renamed_prompt_with_a_call_still_at_position_is_flagged_ambiguous",
+        "test_missing_when_neither_prompt_nor_position_resolves",
+        "test_current_site_with_dynamic_prompt_is_ignored_for_prompt_matching"
+      ],
+      "deferred": []
+    },
+    {
+      "source": "tests/test_reconcile.py",
+      "status": "partial",
+      "targets": [
+        "crates/skit-language/tests/port_test_reconcile.rs"
+      ],
+      "ported": [
+        "test_all_ok_no_drift",
+        "test_const_missing_by_name",
+        "test_const_renamed_is_missing_plus_new",
+        "test_const_type_changed_still_usable",
+        "test_input_matched_by_order_not_position_in_file",
+        "test_input_removed_is_missing",
+        "test_new_input_call_reported_as_new_only",
+        "test_input_prompt_match_survives_an_earlier_insertion_no_drift",
+        "test_input_deleted_earlier_call_flags_rebind_instead_of_silent_ok",
+        "test_input_rebind_flagged_when_prompt_can_no_longer_disambiguate",
+        "test_unselected_candidates_are_new_but_not_drift",
+        "test_input_duplicate_prompt_surplus_is_missing_not_ok_on_delete",
+        "test_input_duplicate_prompt_surplus_is_rebind_not_ok_when_position_edited",
+        "test_syntax_error_marks_all_missing"
+      ],
+      "deferred": [
+        {
+          "name": "test_drift_lines_mention_rebind",
+          "reason": "Human drift-line rendering is owned above skit-language; port to CLI/UI warning tests.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_resync_reanchors_rebound_input_order_and_prompt",
+          "reason": "Resync mutation is owned by the parameter-edit use case; port to skit-application/CLI.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_drift_lines_mention_old_and_new_type",
+          "reason": "Human drift-line rendering is owned above skit-language; port to CLI/UI warning tests.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_edit_specs_not_managed_in_secret_warning",
+          "reason": "Parameter-edit warning behavior needs the application/CLI edit surface.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_edit_specs_not_managed_in_no_secret_warning",
+          "reason": "Parameter-edit warning behavior needs the application/CLI edit surface.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_edit_specs_not_managed_in_prompts_warning",
+          "reason": "Parameter-edit warning behavior needs the application/CLI edit surface.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_resync_on_unparseable_script_leaves_definitions_untouched",
+          "reason": "Data-safe resync on syntax error needs the application/CLI edit transaction.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_resync_syntax_error_does_not_also_apply_other_edits_incorrectly",
+          "reason": "Combined resync and edit behavior needs the application/CLI edit transaction.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_render_warning_resync_skipped",
+          "reason": "Localized resync warning rendering is owned by CLI/UI.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_edit_specs_remove_with_duplicate_names_does_not_crash",
+          "reason": "Duplicate-name edit behavior needs the application/CLI edit transaction.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_edit_specs_resync_drop_with_duplicate_names_does_not_crash",
+          "reason": "Duplicate-name resync behavior needs the application/CLI edit transaction.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_edit_specs_dedups_duplicate_names_even_when_untouched",
+          "reason": "Duplicate-name normalization needs the application/CLI edit transaction.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        },
+        {
+          "name": "test_no_secret_also_clears_the_env_source",
+          "reason": "Secret and env-source edits need the application/CLI edit transaction.",
+          "planned_targets": [
+            "crates/skit-application",
+            "crates/skit-cli",
+            "crates/skit-ui"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/test_tokens.py",
+      "status": "done",
+      "targets": [
+        "crates/skit-application/tests/port_test_tokens.rs",
+        "crates/skit-cli/tests/port_test_tokens_ambient.rs"
+      ],
+      "ported": [
+        "test_cwd_token",
+        "test_today_token",
+        "test_now_token",
+        "test_env_token_present",
+        "test_env_token_missing_raises_with_names",
+        "test_multiple_tokens_in_one_value",
+        "test_unknown_braces_pass_through",
+        "test_double_brace_escapes",
+        "test_brace_escapes_false_keeps_double_braces_byte_identical",
+        "test_brace_escapes_true_halves_the_pair",
+        "test_named_tokens_expand_in_both_brace_modes",
+        "test_preview_threads_brace_escapes",
+        "test_tilde_expansion_only_at_start",
+        "test_tilde_then_tokens_compose",
+        "test_plain_text_unchanged",
+        "test_preview_success_and_failure",
+        "test_has_tokens",
+        "test_default_env_and_now_paths",
+        "test_escape_sequences_mid_string_exact",
+        "test_preview_forwards_every_argument",
+        "test_escape_deep_in_string_exact"
+      ],
+      "deferred": []
+    },
+    {
+      "source": "tests/test_hermeticity.py",
+      "status": "done",
+      "targets": [
+        "crates/skit-cli/tests/port_test_hermeticity.rs"
+      ],
+      "ported": [
+        "test_platformdirs_fallback_stays_isolated_when_skit_env_missing"
+      ],
+      "deferred": []
+    }
+  ]
+}
