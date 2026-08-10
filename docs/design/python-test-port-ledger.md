@@ -40,11 +40,11 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_analyzer.py | 37 | crates/skit-language/tests/port_test_analyzer.rs | done |
-| test_analyzer_signals.py | 9 | skit-language | todo |
+| test_analyzer_signals.py | 9 | crates/skit-language/tests/port_test_analyzer_signals.rs | done |
 | test_argspec.py | 34 | skit-language | todo |
 | test_argspec_click_typer.py | 67 | skit-language | todo |
-| test_callmatch.py | 9 | skit-language (match_calls/reconcile) | todo |
-| test_reconcile.py | 27 | skit-language | todo |
+| test_callmatch.py | 9 | crates/skit-language/tests/port_test_callmatch.rs | done |
+| test_reconcile.py | 27 | crates/skit-language/tests/port_test_reconcile.rs | done (14) · 13 → Tier 4/5 |
 | test_shell_analyzer.py | 92 | skit-language | todo |
 | test_shell_inject.py | 87 | skit-language | todo |
 | test_shell_getopts.py | 11 | skit-language | todo |
@@ -172,3 +172,44 @@ Three architecture mappings, each consistent with an existing oracle test:
   no candidates), consistent with `python_semantic_contract.rs`.
 - `uses_cli_framework is False` → `analysis.frameworks.is_empty()` (that list holds only CLI
   frameworks).
+
+### test_callmatch.py → port_test_callmatch.rs (done)
+
+9 ported / 9 passed / 0 failed / 0 unmapped. The whole module maps `match_calls` onto the public
+`ParsedDocument::reconcile` (its input matching *is* `match_calls`), through the same `match_bindings`
+helper. One test (`..._unique_prompt_after_a_multiset_match_still_resolves`) can only pass a sparse
+current list to Python's `match_calls`; reconcile derives current order from contiguous source
+positions, so a real `input("Inserted: ")` filler stands in for the "inserted call" the test
+describes — it becomes an unmanaged `new` candidate and does not enter the dict. Faithful to the
+scenario; flagged inline.
+
+### test_analyzer_signals.py → port_test_analyzer_signals.rs (done)
+
+9 ported / 9 passed / 0 failed / 0 unmapped. `candidate.demoted`/`demotion` → the candidate's
+`demotion: Option<DegradationReason>` (a candidate field, not on `.declaration`);
+`uses_argv`/`filename_literals` → the same-named `SemanticAnalysis` fields.
+
+### test_reconcile.py → port_test_reconcile.rs (14 done · 13 deferred)
+
+27 ported / 14 passed / 0 failed / 13 `#[ignore]`-UNMAPPED. The 14 that exercise the reconcile
+report all pass: the Rust `ReconcileReport` is fully as rich as the Python one
+(`ok`/`missing`/`changed`/`rebound`/`new`/`current_defaults`/`empty_uses_default`/`syntax_error` +
+`has_drift()`/`usable()`), and `reconcile.reconcile(text, specs)` maps to `parse_document` +
+`ParsedDocument::reconcile`, falling back to `ReconcileReport::from_syntax_error` when the source
+does not parse.
+
+The 13 deferred tests are NOT a behavior mismatch and NOT a wholesale feature loss: `reconcile`'s
+higher layer — `edit_specs` (`--resync`/`--remove`/`--secret`/`--no-secret`/`--prompt`),
+`drift_lines`, `render_warning` — is a use case that in the Rust architecture lives above
+`skit-language` (the resync capability is confirmed present in `skit-ui` settings: `SettingsAction::
+Resync`, `resync_available`, `RESYNC_KEY`, with the same "advertise the chord only where it does
+something" guard). A `skit-language` integration test cannot reach it without a forbidden dependency
+edit, so those tests carry a compiling `#[ignore]` stub with their WHY comment and move to the tier
+that owns the code:
+
+- **must-verify when porting test_params_edit.py (Tier 4, skit-cli) and the settings/reset UI
+  modules (Tier 5):** resync re-anchors a rebound input's order+prompt; **resync must NOT wipe
+  managed params on a transient syntax error (`resync-skipped`) — a data-safety invariant**;
+  duplicate-named specs dedup without crashing; `--no-secret` clears `env_source`; `not-managed`
+  warnings for secret/no_secret/prompts targets; `drift_lines`/`render_warning` localized output.
+  These behaviors must be shown to survive at their new layer or the gap is real.
