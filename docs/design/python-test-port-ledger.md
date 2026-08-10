@@ -95,7 +95,7 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_cli.py | 140 | skit-cli | todo |
+| test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (82/58) · 2 weakenings being fixed (whitespace-constraint stored-value, reused-arg markup isolation) |
 | test_prompt_cli.py | 150 | skit-cli | todo |
 | test_prompt_kind.py | 115 | skit-cli / skit-language | todo |
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | in fix (51/24) · config command lost the human-display layer (sentinels, padded list, choice-naming errors) · 14 cross-crate wizard/first-run · 1 weakening being fixed |
@@ -114,13 +114,13 @@ adjudicated · counts are Python `def test_` counts.
 | test_dependency_command_contracts.py | 20 | crates/skit-cli/tests/port_test_dependency_command_contracts.rs | done (5) · 15 divergence/cross-crate |
 | test_params_model.py | 19 | crates/skit-domain/tests/port_test_params_model.rs | done (18) · 1 deferred · no gap |
 | test_show.py | 17 | crates/skit-cli/tests/port_test_show.rs | done (16) · 1 deferred |
-| test_add_feedback_contracts.py | 16 | skit-cli | todo |
+| test_add_feedback_contracts.py | 16 | crates/skit-cli/tests/port_test_add_feedback_contracts.rs | in fix (5/11) · add-lane cluster (#15, deduped vs siblings) · 1 tautology weakening being fixed |
 | test_edit.py | 14 | crates/skit-cli/tests/port_test_edit.rs | done (3) · 8 ABSENT: reconcile.edit_specs inlined private in cli.rs (MUST-FIX expose) · 3 exit-code divergences |
 | test_presets.py | 12 | crates/skit-store/tests/port_test_presets.rs | done (12) · no gap |
-| test_add_review_contracts.py | 12 | skit-cli | todo |
+| test_add_review_contracts.py | 12 | crates/skit-tui/tests/port_test_add_review_contracts.rs | in fix (12/0) · async Textual add-review (skit-tui reducer) · 2 weakenings being fixed (wrap-display proxy, scroll containment) |
 | test_rename.py | 10 | crates/skit-cli/tests/port_test_rename.rs | done (6) · 4 cross-crate |
-| test_add_review_validation.py | 10 | skit-cli | todo |
-| test_agent_skill.py | 8 | skit-cli / skit-application | todo |
+| test_add_review_validation.py | 10 | crates/skit-ui/tests/port_test_add_review_validation.rs | done (10) · async Textual add-review-validation (skit-ui reducer) · no gap |
+| test_agent_skill.py | 8 | crates/skit-cli/tests/port_test_agent_skill.rs | done (6) · 2 deferred |
 | test_healthcheck.py | 6 | crates/skit-cli/tests/port_test_healthcheck.rs | done (5) · 1 deferred · confirms doctor uv exit-code divergence |
 
 ### Tier 5 — frontend (`skit-ui` reducer, `skit-tui` TestBackend)
