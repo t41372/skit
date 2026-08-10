@@ -77,9 +77,53 @@ fn workspace_root() -> PathBuf {
         .expect("the workspace root exists")
 }
 
+fn read_json_path<T: for<'de> Deserialize<'de>>(path: &Path) -> T {
+    let bytes = fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()))
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(root: &Path, path: &str) -> T {
-    let bytes = fs::read(root.join(path)).unwrap_or_else(|error| panic!("read {path}: {error}"));
-    serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("parse {path}: {error}"))
+    read_json_path(&root.join(path))
+}
+
+fn read_port_map(root: &Path) -> PortMap {
+    let mut port_map: PortMap = read_json(root, "docs/design/python-test-port-map.json");
+    let fragment_dir = root.join("docs/design/python-test-port-map.d");
+    if !fragment_dir.exists() {
+        return port_map;
+    }
+
+    let mut fragments = fs::read_dir(&fragment_dir)
+        .unwrap_or_else(|error| panic!("scan {}: {error}", fragment_dir.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| {
+                    panic!("read an entry in {}: {error}", fragment_dir.display())
+                })
+                .path()
+        })
+        .filter(|path| path.extension().is_some_and(|extension| extension == "json"))
+        .collect::<Vec<_>>();
+    fragments.sort();
+
+    for path in fragments {
+        let fragment: PortMap = read_json_path(&path);
+        assert_eq!(
+            fragment.schema,
+            port_map.schema,
+            "fragment schema differs from the base map: {}",
+            path.display()
+        );
+        assert_eq!(
+            fragment.oracle_commit,
+            port_map.oracle_commit,
+            "fragment oracle differs from the base map: {}",
+            path.display()
+        );
+        port_map.modules.extend(fragment.modules);
+    }
+    port_map
 }
 
 fn test_names_fnv1a128<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
@@ -164,7 +208,7 @@ fn collect_port_files(root: &Path, directory: &Path, output: &mut BTreeSet<Strin
 fn python_oracle_inventory_and_port_status_are_machine_checked() {
     let root = workspace_root();
     let oracle: OracleInventory = read_json(&root, "docs/design/python-test-oracle.json");
-    let port_map: PortMap = read_json(&root, "docs/design/python-test-port-map.json");
+    let port_map = read_port_map(&root);
 
     assert_eq!(oracle.schema, 1);
     assert_eq!(port_map.schema, 1);
