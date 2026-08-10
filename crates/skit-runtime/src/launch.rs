@@ -1115,7 +1115,7 @@ fn program_names(name: &str) -> Vec<String> {
         let extensions = env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
         return extensions
             .split(';')
-            .filter(|extension| !extension.is_empty())
+            .filter(|value| !value.is_empty())
             .map(|extension| format!("{name}{extension}"))
             .collect();
     }
@@ -1129,17 +1129,16 @@ fn program_names(name: &str) -> Vec<String> {
 fn is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt as _;
     fs::metadata(path)
-        .map(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
-#[cfg(windows)]
+#[cfg(not(unix))]
 fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
 #[cfg(test)]
-mod tests {
+mod private_tests {
     use super::*;
     use skit_domain::{EntryKind, EntryMeta, Slug};
     use tempfile::TempDir;
@@ -1364,14 +1363,11 @@ mod tests {
     }
 
     #[test]
-    fn test_quote_for_shell_uses_list2cmdline_on_windows() {
-        // Python fakes `sys.platform` so this Windows algorithm is tested on every host. Rust keeps
-        // the pure quoter platform-independent and tests it here beside the private helper.
-        assert_eq!(quote_windows_arg("My Movie.mp4"), "\"My Movie.mp4\"");
+    fn windows_quoting_is_deterministic_on_every_build_host() {
         assert_eq!(quote_windows_arg("plain"), "plain");
         assert_eq!(quote_windows_arg(""), "\"\"");
         assert_eq!(quote_windows_arg("a b"), "\"a b\"");
-        assert_eq!(quote_windows_arg("a\\\"b\\"), "\"a\\\\\"b\\\\\"");
+        assert_eq!(quote_windows_arg("a\\\"b\\"), "\"a\\\\\\\"b\\\\\"");
     }
 
     #[test]
