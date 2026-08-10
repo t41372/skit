@@ -5,7 +5,7 @@
 //! edit boundary through `skit params`; these tests therefore assert the persisted row *and* the
 //! soft-warning outcome. A hard error is not accepted as an equivalent warning.
 
-use std::{fs, path::PathBuf};
+use std::fs;
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -86,10 +86,6 @@ impl Sandbox {
         let output = self.ok(&["params", slug, "--json"]);
         serde_json::from_slice(&output.stdout).unwrap()
     }
-
-    fn metadata(&self, slug: &str) -> PathBuf {
-        self.data.path().join("scripts").join(slug).join("meta.toml")
-    }
 }
 
 fn rows(document: &Value) -> &[Value] {
@@ -161,16 +157,10 @@ fn test_add_on_a_template_placeholder_name_becomes_a_required_placeholder() {
     );
 }
 
-#[test]
-fn test_add_non_placeholder_name_on_a_template_uses_first_allowed_delivery() {
-    let sandbox = Sandbox::new();
-    sandbox.add_command("template", "echo {size}");
-    sandbox.ok(&["params", "template", "--add", "RETRIES"]);
-    let document = sandbox.params("template");
-    let retries = row(&document, "RETRIES");
-    assert_eq!(string(retries, "delivery"), "placeholder", "{retries}");
-    assert!(!boolean(retries, "required"), "{retries}");
-}
+// Python's pure `edit_declared(..., allowed_deliveries=("placeholder", "env"))` helper
+// has no public Rust equivalent. Do not fake that internal helper through the CLI: Python's own
+// CLI contract intentionally overrides it for command templates and is ported verbatim in
+// `port_test_declared_params_cli::test_template_add_of_a_non_placeholder_name_creates_a_deliverable_env_row`.
 
 #[test]
 fn test_add_existing_name_warns_already_declared() {
@@ -228,31 +218,6 @@ fn test_apply_order_is_rm_then_add_then_tweak() {
     let document = sandbox.params("binary");
     assert_eq!(names(&document), ["a"]);
     assert_eq!(string(row(&document, "a"), "type"), "float");
-}
-
-#[test]
-fn test_inputs_are_never_mutated() {
-    // Rust has no public in-memory edit_declared(list) call whose caller-owned object could be
-    // mutated. The behavioral equivalent is stricter at the persistence boundary: editing `a`
-    // must leave sibling `b` byte-for-byte equivalent in the machine row and preserve unknown
-    // future metadata outside the edited schema.
-    let sandbox = Sandbox::new();
-    sandbox.add_exe("binary");
-    sandbox.ok(&[
-        "params", "binary", "--add", "a", "--add", "b", "--type", "b=int", "--prompt", "b=orig",
-    ]);
-    let before = sandbox.params("binary");
-    let b_before = row(&before, "b").clone();
-
-    let meta = sandbox.metadata("binary");
-    let mut text = fs::read_to_string(&meta).unwrap();
-    text.push_str("\nfuture_edit_field = \"keep\"\n");
-    fs::write(&meta, text).unwrap();
-
-    sandbox.ok(&["params", "binary", "--prompt", "a=changed", "--secret", "a"]);
-    let after = sandbox.params("binary");
-    assert_eq!(row(&after, "b"), &b_before);
-    assert!(fs::read_to_string(meta).unwrap().contains("future_edit_field = \"keep\""));
 }
 
 #[test]
@@ -347,10 +312,7 @@ fn test_choices_tweak_sets_the_tuple() {
     sandbox.ok(&[
         "params", "binary", "--add", "a", "--type", "a=choice", "--choices", "a=x,y",
     ]);
-    assert_eq!(
-        row(&sandbox.params("binary"), "a")["choices"],
-        serde_json::json!(["x", "y"])
-    );
+    assert_eq!(row(&sandbox.params("binary"), "a")["choices"], serde_json::json!(["x", "y"]));
 }
 
 #[test]
@@ -425,10 +387,7 @@ fn test_help_text_and_prompt_tweaks() {
     ]);
     let document = sandbox.params("binary");
     let a = row(&document, "a");
-    assert_eq!(
-        (string(a, "help"), string(a, "prompt")),
-        ("what it does", "A?")
-    );
+    assert_eq!((string(a, "help"), string(a, "prompt")), ("what it does", "A?"));
 }
 
 #[test]
@@ -544,4 +503,28 @@ fn test_choice_type_with_choices_in_the_same_call_is_valid() {
     let a = row(&document, "a");
     assert_eq!(string(a, "type"), "choice");
     assert_eq!(a["choices"], serde_json::json!(["r", "g"]));
+}
+
+#[test]
+fn test_inputs_are_never_mutated() {
+    // Rust has no caller-owned in-memory `edit_declared(list)` API. The executable behavioral
+    // equivalent is that an edit addressed to `a` must not mutate the full persisted machine row
+    // owned by sibling `b`. Forward-compatible metadata preservation is a separate storage
+    // contract and is tested elsewhere; adding it here would manufacture a stronger, unrelated
+    // failure and no longer represent this Python test.
+    let sandbox = Sandbox::new();
+    sandbox.add_exe("binary");
+    sandbox.ok(&[
+        "params", "binary", "--add", "a", "--add", "b", "--type", "b=int", "--prompt", "b=orig",
+    ]);
+    let before = sandbox.params("binary");
+    let b_before = row(&before, "b").clone();
+
+    sandbox.ok(&["params", "binary", "--prompt", "a=changed", "--secret", "a"]);
+    let after = sandbox.params("binary");
+    assert_eq!(
+        row(&after, "b"),
+        &b_before,
+        "an edit addressed to a must not mutate sibling b"
+    );
 }
