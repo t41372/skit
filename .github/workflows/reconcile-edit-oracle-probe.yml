@@ -16,6 +16,7 @@ on:
       - crates/skit-form/tests/port_test_declared_form.rs
       - crates/skit-form/tests/port_test_declared_form_edges.rs
       - crates/skit-application/tests/port_test_declared_delivery.rs
+      - crates/skit-runtime/tests/port_test_declared_runtime_wiring.rs
 
 permissions:
   contents: read
@@ -42,6 +43,8 @@ jobs:
           echo "DECLARED_FORM_EDGES_RC=$?"
           cargo test --locked -p skit-application --test port_test_declared_delivery -- --nocapture
           echo "DECLARED_DELIVERY_RC=$?"
+          cargo test --locked -p skit-runtime --test port_test_declared_runtime_wiring -- --nocapture
+          echo "DECLARED_RUNTIME_WIRING_RC=$?"
           cargo test --locked -p skit-language --test port_test_reconcile -- --nocapture
           echo "RECONCILE_LANGUAGE_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture
