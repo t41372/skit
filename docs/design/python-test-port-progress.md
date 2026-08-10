@@ -35,5 +35,6 @@ binaries before the publishing step:
 - `python_port_manifest`: 1 passed, 0 failed, 0 ignored.
 
 The original publishing step rejected two additional files changed by workspace-wide `rustfmt`.
-Those files are existing analyzer ports, not behavior changes. They are included explicitly in the
-final formatting commit rather than silently broadening the generated-file allowlist.
+Those files were existing analyzer ports, not behavior changes. Their exact `rustfmt` output is now
+committed separately, so the finalization job can publish only its declared oracle, ledger, manifest,
+and executable-test changes without broadening the generated-file allowlist.
