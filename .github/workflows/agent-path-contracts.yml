@@ -1,4 +1,4 @@
-name: Python path contracts
+name: Python contract ports
 
 on:
   push:
@@ -8,11 +8,11 @@ on:
 permissions: {}
 
 concurrency:
-  group: python-path-contracts
+  group: python-contract-ports
   cancel-in-progress: true
 
 jobs:
-  path-contracts:
+  contract-ports:
     if: github.ref == 'refs/heads/agent/port-python-test-contracts'
     runs-on: ubuntu-latest
     permissions:
@@ -25,8 +25,11 @@ jobs:
           persist-credentials: false
       - name: Check formatting
         run: cargo fmt --all --check
-      - name: Run the path contracts
+      - name: Run the argparse contracts
+        run: cargo test --locked -p skit-language --test port_test_argspec -- --nocapture
+      - name: Run the Click and Typer contracts
+        run: cargo test --locked -p skit-language --test port_test_argspec_click_typer -- --nocapture
+      - name: Run the existing path contracts
         run: |
           cargo test --locked -p skit-cli-rs --test port_test_path_type -- --nocapture
           cargo test --locked -p skit-tui --test port_test_path_type_tui -- --nocapture
-          cargo test --locked -p skit-cli-rs --test python_port_manifest -- --nocapture
