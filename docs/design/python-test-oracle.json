@@ -1,0 +1,1248 @@
+{
+  "schema": 1,
+  "oracle": {
+    "repository": "t41372/skit",
+    "commit": "206f9ef946fc45835cb2479593794431f2620c32"
+  },
+  "summary": {
+    "behavior": {
+      "modules": 84,
+      "tests": 3018
+    },
+    "mutation": {
+      "modules": 72,
+      "tests": 1010
+    },
+    "coverage": {
+      "modules": 19,
+      "tests": 578
+    }
+  },
+  "modules": [
+    {
+      "path": "tests/test_add_feedback_contracts.py",
+      "class": "behavior",
+      "source_sha256": "ccb1363eb49541cc2a8122097ca09d916491f731d880fe641c04604d501a9742",
+      "test_count": 16,
+      "test_names_fnv1a128": "cde6f74892eab3022200cfbc5a44cf7f"
+    },
+    {
+      "path": "tests/test_add_lane_contracts.py",
+      "class": "behavior",
+      "source_sha256": "6671e92d9a766f7ae0b616067074cf44448b26c77032bcb3993bbcb472bed5d3",
+      "test_count": 21,
+      "test_names_fnv1a128": "9eb59078242953233e222b43d2b57452"
+    },
+    {
+      "path": "tests/test_add_no_source.py",
+      "class": "behavior",
+      "source_sha256": "b4a2f9da4ddfd530b0ea298b8eb78a5f8b1fb53dbb09e44144bbb0c2341a94d9",
+      "test_count": 68,
+      "test_names_fnv1a128": "967105c0ca560788ee277b6747161bb4"
+    },
+    {
+      "path": "tests/test_add_review_contracts.py",
+      "class": "behavior",
+      "source_sha256": "0e18681fe2d606256d561a0fbb5984c48407f42c70e49fcd5a8cb634688cc0af",
+      "test_count": 12,
+      "test_names_fnv1a128": "4fbfa0b37edb68106a925fa1c6068537"
+    },
+    {
+      "path": "tests/test_add_review_validation.py",
+      "class": "behavior",
+      "source_sha256": "c614211c15628455c4c4108216aa1868dec37d3672f37d1874e3393fdb680dcf",
+      "test_count": 10,
+      "test_names_fnv1a128": "62fa9fb471a5fb0d64da87060cfc9833"
+    },
+    {
+      "path": "tests/test_add_validation_contracts.py",
+      "class": "behavior",
+      "source_sha256": "6b7e13a2117503df1fd34c8c243928f0a0b7bb3963b0b220047d1b2de52ec357",
+      "test_count": 31,
+      "test_names_fnv1a128": "7cc860be0aeb8bf84c853558bdf1f89b"
+    },
+    {
+      "path": "tests/test_agent_install.py",
+      "class": "behavior",
+      "source_sha256": "317f91fe7914b5b5cd6255eb80814ce073f7a8da50db2a9b25c9ec6811f75b80",
+      "test_count": 22,
+      "test_names_fnv1a128": "f6ae729ad56e32f80ef43f5e8e9ffc38"
+    },
+    {
+      "path": "tests/test_agent_skill.py",
+      "class": "behavior",
+      "source_sha256": "4f3b18eeeafa242bb1c4feb567f1644baac2335e389c6136b7616d12d019223e",
+      "test_count": 8,
+      "test_names_fnv1a128": "e167b384fc473c13a797d60437075e81"
+    },
+    {
+      "path": "tests/test_agentskill_mut.py",
+      "class": "mutation",
+      "source_sha256": "876dd4f459f8cce6d1bfc87aeb0b8bfda931393908b0cac6e24295c5c826a451",
+      "test_count": 2,
+      "test_names_fnv1a128": "b284778d2683df941d38f14dfce3bcbd"
+    },
+    {
+      "path": "tests/test_analysis_mut.py",
+      "class": "mutation",
+      "source_sha256": "fcbf7000cbe5f25a56b5bebe3b78be91d2aa4f00d59ef98b733630871c63f119",
+      "test_count": 8,
+      "test_names_fnv1a128": "2e323e3f6e0d8d0d474b92f86ba22d94"
+    },
+    {
+      "path": "tests/test_analyzer.py",
+      "class": "behavior",
+      "source_sha256": "1172750abb401f766d9e3eaa8fdfcdb58b9e8835f95b2205773f787a0673e6a3",
+      "test_count": 37,
+      "test_names_fnv1a128": "4d439668471de76999feb591093a9aa5"
+    },
+    {
+      "path": "tests/test_analyzer_signals.py",
+      "class": "behavior",
+      "source_sha256": "c709b84d50f9af902db46c7f251f01b6d59287d3877acfb19fdc2ffefa8c2106",
+      "test_count": 9,
+      "test_names_fnv1a128": "bb710900f064b3df6fff71def276fafb"
+    },
+    {
+      "path": "tests/test_argspec.py",
+      "class": "behavior",
+      "source_sha256": "d490a2f00e4f99377b1d683877090538195a2017bdad4118ae541b583c0bc903",
+      "test_count": 34,
+      "test_names_fnv1a128": "3b230b37fd48740a1617bdfe29b5a2c0"
+    },
+    {
+      "path": "tests/test_argspec_click_typer.py",
+      "class": "behavior",
+      "source_sha256": "23bb8fb5e1e1242320d72514ceec29f72322f3ac3837e2835da17a0760427fc5",
+      "test_count": 67,
+      "test_names_fnv1a128": "9e76aef7ca749d1bfaf314ba3fac1f8b"
+    },
+    {
+      "path": "tests/test_argspec_mut.py",
+      "class": "mutation",
+      "source_sha256": "b052e2dadeb6d76382676f3e35a4c07ae14d3bb19657d61335015870289e5721",
+      "test_count": 3,
+      "test_names_fnv1a128": "caf19a5128707518001d1af066fae647"
+    },
+    {
+      "path": "tests/test_argstate_mut.py",
+      "class": "mutation",
+      "source_sha256": "0198237cff301eaae0d3b1a21db39bfcade68e099d2582ba4824ff7c3ab4af4b",
+      "test_count": 12,
+      "test_names_fnv1a128": "754f73f82a6c3d394785aa70914964a8"
+    },
+    {
+      "path": "tests/test_argv_text.py",
+      "class": "behavior",
+      "source_sha256": "9ce0658595e8ab2670f40a47360bc257108f19e10286497f33ff5cde988c78f8",
+      "test_count": 1,
+      "test_names_fnv1a128": "fe4d385eaab4ef52f96626e83c569d96"
+    },
+    {
+      "path": "tests/test_atomic.py",
+      "class": "behavior",
+      "source_sha256": "69ef8365ea62d8434a232d412fe8dbd94be35462ae19d0ee16ac8c828a52177b",
+      "test_count": 32,
+      "test_names_fnv1a128": "b058da8b4c6480d11e232927e36fdf3f"
+    },
+    {
+      "path": "tests/test_atomic_mut.py",
+      "class": "mutation",
+      "source_sha256": "c75e795f836ba67947028af93f2de001d766e2a4d04c511d8be3cd1606f3b9bf",
+      "test_count": 1,
+      "test_names_fnv1a128": "a0a2adc0ad84ac1b4aecd2adcb54eb51"
+    },
+    {
+      "path": "tests/test_base_mut.py",
+      "class": "mutation",
+      "source_sha256": "1d93e484da7f5d0255e6bbbb7bf85cdfb5ec02e940dc43523cebc17042e96441",
+      "test_count": 2,
+      "test_names_fnv1a128": "5f9ed0dac2eb4598d9b224c8932be04d"
+    },
+    {
+      "path": "tests/test_benchmarks_tooling.py",
+      "class": "behavior",
+      "source_sha256": "07e7a461b3920ccd476d25de9eda2532e2263cd4d91bd000e8fcb80fb33f802f",
+      "test_count": 156,
+      "test_names_fnv1a128": "fd9dc20d02bf859350669c6698b5ecd6"
+    },
+    {
+      "path": "tests/test_brace_delivery_cov.py",
+      "class": "coverage",
+      "source_sha256": "8e4f4a742ebf6c34a79101b34c3f7c4f6e258faf798b8146eb980cd438fa04b6",
+      "test_count": 4,
+      "test_names_fnv1a128": "988c539ce20fb327bbb8fa920dff9d4c"
+    },
+    {
+      "path": "tests/test_callmatch.py",
+      "class": "behavior",
+      "source_sha256": "4828100b494bd1662d5517a260ac697d4fecf790256693af3390268d92afd863",
+      "test_count": 9,
+      "test_names_fnv1a128": "8841c9ff2744caa2adef10f127f8cb5a"
+    },
+    {
+      "path": "tests/test_cli.py",
+      "class": "behavior",
+      "source_sha256": "82778f4da74a62c2230b8e85fb8de28cc5955ef7f1aa061147bde25eafbde8fc",
+      "test_count": 140,
+      "test_names_fnv1a128": "f0331da70fb789555135979f282cbcf3"
+    },
+    {
+      "path": "tests/test_cli_cov.py",
+      "class": "coverage",
+      "source_sha256": "17d86aec54ff64acfe52bc4b6b4cf270fa7621ae3b40c0c2d1fac4b3f5c0eb52",
+      "test_count": 24,
+      "test_names_fnv1a128": "d51be9f8f7ad9c4d3aba7072b18c8ff8"
+    },
+    {
+      "path": "tests/test_cli_design_cov.py",
+      "class": "coverage",
+      "source_sha256": "1e3f682c6cce1778a789ff9f1e6c2354a227ad694b0e0e1a18fd9d591066a330",
+      "test_count": 95,
+      "test_names_fnv1a128": "1eca518d2e4d20ef6d1c8e5842c66848"
+    },
+    {
+      "path": "tests/test_cli_gaps_cov.py",
+      "class": "coverage",
+      "source_sha256": "a79e185b50deec6a74a57bef4fc25692c6a7bf58814cd0c87a829f3f021be6d4",
+      "test_count": 40,
+      "test_names_fnv1a128": "382a65561be249db66f4128f6dd3caa8"
+    },
+    {
+      "path": "tests/test_cli_mut.py",
+      "class": "mutation",
+      "source_sha256": "ee4156de58deee9fcf93997c904d0989c7e515da72134cc5417ce00883d2f9ce",
+      "test_count": 95,
+      "test_names_fnv1a128": "c9323fe65eb3d6b49476384bc768cdf2"
+    },
+    {
+      "path": "tests/test_cli_mut_part01.py",
+      "class": "mutation",
+      "source_sha256": "88a1f8def37246aeb7bc3f162e266fc6da00e865a0cf5a123f933502491ab293",
+      "test_count": 24,
+      "test_names_fnv1a128": "ad43a171a393a5b1d21032a1e560bbf0"
+    },
+    {
+      "path": "tests/test_cli_mut_part02.py",
+      "class": "mutation",
+      "source_sha256": "4e36595094460b4b5056087566858a519b4c0db4c4928db606d5718765c88668",
+      "test_count": 14,
+      "test_names_fnv1a128": "783453c652b8a0ca77cb841c9e551287"
+    },
+    {
+      "path": "tests/test_cli_mut_part03.py",
+      "class": "mutation",
+      "source_sha256": "1dad90d7102c635ef2a260fdebc8f8bfbae62cf498a4d470f34e4013716d6248",
+      "test_count": 27,
+      "test_names_fnv1a128": "6c0b59ce6a65d16875424cc22b9b2718"
+    },
+    {
+      "path": "tests/test_cli_mut_part04.py",
+      "class": "mutation",
+      "source_sha256": "8a33f554eeab1dd916981c2d023033e783c0d02eda1feba07d16373d2cd9790e",
+      "test_count": 10,
+      "test_names_fnv1a128": "a78a928d5fd2aae335545899e9de2c2b"
+    },
+    {
+      "path": "tests/test_cli_mut_part05.py",
+      "class": "mutation",
+      "source_sha256": "e3858b36af75ef4a258356260029ee99726bd741c3809dee020ec6fc29cd7522",
+      "test_count": 20,
+      "test_names_fnv1a128": "c10e920ce50b958af6d55a5f1a4bd531"
+    },
+    {
+      "path": "tests/test_cli_mut_part06.py",
+      "class": "mutation",
+      "source_sha256": "b87918214b69925494985ca5834609e2f8d0c599b89dfeb88fac7562282dac4f",
+      "test_count": 10,
+      "test_names_fnv1a128": "ed7bae8a7b684f567622a01fb20aa37f"
+    },
+    {
+      "path": "tests/test_config.py",
+      "class": "behavior",
+      "source_sha256": "225b1b7415fe3bbf733dfc9463eb80e525dc3dd21e076a1bf93fce0d3f0c12f5",
+      "test_count": 60,
+      "test_names_fnv1a128": "8f51ab5a6de1b1eeae3407cee3730646"
+    },
+    {
+      "path": "tests/test_config_cmd.py",
+      "class": "behavior",
+      "source_sha256": "da6b1a52fc11b421ce8227c0e24d856322ed1026300c1a7b27baa28d6459d1e0",
+      "test_count": 75,
+      "test_names_fnv1a128": "a13da026450a1461774cef992e45a8d3"
+    },
+    {
+      "path": "tests/test_config_mut.py",
+      "class": "mutation",
+      "source_sha256": "680bcd6e91e5532159b8fc01a7b74e9b67e9dbe9b8cc7fd862cdf579a3649cbe",
+      "test_count": 7,
+      "test_names_fnv1a128": "c2419c6ed22159be6f33ac52e00c9f81"
+    },
+    {
+      "path": "tests/test_corpus.py",
+      "class": "behavior",
+      "source_sha256": "f92c702cd66bd6938e6a7f385a982dc578ddff87ff00802e28cf9993902fa87b",
+      "test_count": 11,
+      "test_names_fnv1a128": "d22a18bd8209ad0cecfca3b85864c83e"
+    },
+    {
+      "path": "tests/test_declared_params.py",
+      "class": "behavior",
+      "source_sha256": "184f2a20a8f626265e7a461298725da6ad92d54866ba9a2dccee2ad2fee817cf",
+      "test_count": 52,
+      "test_names_fnv1a128": "afc657f528b5cdea64d28d4a729c8038"
+    },
+    {
+      "path": "tests/test_default_name_resolution.py",
+      "class": "behavior",
+      "source_sha256": "c7ed5984b5680b8e8fe879f2f2c5995af41799e3b40fff6e0d7ed74918d7f700",
+      "test_count": 42,
+      "test_names_fnv1a128": "c14f3244ed1ae5f4ba6060cdef5a32e3"
+    },
+    {
+      "path": "tests/test_default_semantics_review_fixes.py",
+      "class": "behavior",
+      "source_sha256": "8ea95af5a35c899ea1172374c4d58a96174006d5dce352b788a3851bbf1b0f47",
+      "test_count": 18,
+      "test_names_fnv1a128": "c32574b8ef6aa7e478d0e8cb90301be4"
+    },
+    {
+      "path": "tests/test_dependency_command_contracts.py",
+      "class": "behavior",
+      "source_sha256": "6eb3f412162e6a772b55c21e417143e9a2bdad956131dc79de70221f582ddf22",
+      "test_count": 20,
+      "test_names_fnv1a128": "41b429e21376cfc7ac9d26d15c0efbdd"
+    },
+    {
+      "path": "tests/test_dependency_write_validation.py",
+      "class": "behavior",
+      "source_sha256": "89df2dbbea8eff5f56130e27ed14f900dcfd04754267e2f50030ed06c5491968",
+      "test_count": 21,
+      "test_names_fnv1a128": "b23a7103b076b37ce05f14723c640d46"
+    },
+    {
+      "path": "tests/test_draft_and_reader_tui.py",
+      "class": "behavior",
+      "source_sha256": "99ef039d544e853688e0631a77b49b4b9eafe14bd745e63504245d27a0d4447f",
+      "test_count": 16,
+      "test_names_fnv1a128": "abf197bce3b42f2549c050fde6cac576"
+    },
+    {
+      "path": "tests/test_draft_inference_and_reader_cli.py",
+      "class": "behavior",
+      "source_sha256": "f97873c3258144396a91146ac686d5c6e137342810ae881a8efcc82791df050a",
+      "test_count": 27,
+      "test_names_fnv1a128": "e90fd9409f57c6f965dbcacb76330e54"
+    },
+    {
+      "path": "tests/test_edit.py",
+      "class": "behavior",
+      "source_sha256": "9c4499c4756f89755afd9a70ea65f231e24103f9ec0d9c3cab6eac85d5eb86d8",
+      "test_count": 14,
+      "test_names_fnv1a128": "3a52024b28c6da19710350ab3bc298cf"
+    },
+    {
+      "path": "tests/test_editor.py",
+      "class": "behavior",
+      "source_sha256": "3afc4169d58f5ec09b52bc3efe5539c6fcb009599bded585dfd8ba79fede6b50",
+      "test_count": 50,
+      "test_names_fnv1a128": "e77855e8d2ca32b49f0f687d941bf427"
+    },
+    {
+      "path": "tests/test_effective_uv_metadata.py",
+      "class": "behavior",
+      "source_sha256": "467aba1047f7bbdc0f7d2fa0bd5ccdb64d1159e3a983ade5e41a126555de9cb5",
+      "test_count": 26,
+      "test_names_fnv1a128": "c4a15bb2dec63c7f403f9a1d858f68f3"
+    },
+    {
+      "path": "tests/test_entrypoint.py",
+      "class": "behavior",
+      "source_sha256": "b31f287fbd1d89051a7236d7c00f3cf5f7d4d49b7666165289e94d8df8e86b6e",
+      "test_count": 10,
+      "test_names_fnv1a128": "a8c83b7843f58b4781b3a0c055e46fd7"
+    },
+    {
+      "path": "tests/test_exec_cov.py",
+      "class": "coverage",
+      "source_sha256": "bab7f4cab6f97b8eb285dd9b7f72080f7e0ba79f801090f2e720b8313aadcd2e",
+      "test_count": 6,
+      "test_names_fnv1a128": "58383d16a985584e309e31ebb79e9bb1"
+    },
+    {
+      "path": "tests/test_exec_mut.py",
+      "class": "mutation",
+      "source_sha256": "4a985bb79884446a9bd74ec9d09978d45bc5ac88a282944c38c1828536688cee",
+      "test_count": 49,
+      "test_names_fnv1a128": "e896810fc8c268267b56b0905ee0c5eb"
+    },
+    {
+      "path": "tests/test_fish.py",
+      "class": "behavior",
+      "source_sha256": "d1052f693d962181b4257637e28b92f3acdcac6694440daf57145299ee50ae19",
+      "test_count": 64,
+      "test_names_fnv1a128": "8118f69ab237b930f7d141caca13813e"
+    },
+    {
+      "path": "tests/test_fish_analyzer_mut.py",
+      "class": "mutation",
+      "source_sha256": "724f877d987d29443bd1aceb024330d82f331bbf69325f7cb49c41041f199145",
+      "test_count": 39,
+      "test_names_fnv1a128": "4cd39557a8eb99645f18e1340442e215"
+    },
+    {
+      "path": "tests/test_fish_cli_reader_mut.py",
+      "class": "mutation",
+      "source_sha256": "d9624ed1becfbdc98da2c9584e8906f2292d5d7f31fdfe65dc0bf20b9257c4a7",
+      "test_count": 8,
+      "test_names_fnv1a128": "bda14b7a9ce66af35f4f6ab2f6ccdfb8"
+    },
+    {
+      "path": "tests/test_flows.py",
+      "class": "behavior",
+      "source_sha256": "c292b1578ff8c1043b4e7b48ab5f31e397a9bfb6b71dae985000f6aa9f958ecc",
+      "test_count": 102,
+      "test_names_fnv1a128": "c9c7caa48eb9f822f6ad3c4b26178945"
+    },
+    {
+      "path": "tests/test_flows_mut.py",
+      "class": "mutation",
+      "source_sha256": "42a5c061838b873f4d1ab52b515da7dce1a6c6c9e29af4de61fb8ffb433063a0",
+      "test_count": 11,
+      "test_names_fnv1a128": "249c7d825f74d3057c3e3f580d93c735"
+    },
+    {
+      "path": "tests/test_forms_cov.py",
+      "class": "coverage",
+      "source_sha256": "ddfeadfffd798ebdf1e7ad76395209276f7157000249db442e2ef93ceb318126",
+      "test_count": 15,
+      "test_names_fnv1a128": "d80d17f749c64d920f960361c8ab2558"
+    },
+    {
+      "path": "tests/test_healthcheck.py",
+      "class": "behavior",
+      "source_sha256": "a7b28db21620396fe706d3815dfefdfd700423d8fd540c42d3b7ecc8d9978c69",
+      "test_count": 6,
+      "test_names_fnv1a128": "e99f189fa692ecdc01e37753d41e7886"
+    },
+    {
+      "path": "tests/test_hermeticity.py",
+      "class": "behavior",
+      "source_sha256": "8a6816a3b0549c986e0a3a2bb713709e9beaa0a47f10f45ab4ffdcf215d9ca08",
+      "test_count": 1,
+      "test_names_fnv1a128": "d97867b4d359eaaf69aee2566dd978e5"
+    },
+    {
+      "path": "tests/test_i18n.py",
+      "class": "behavior",
+      "source_sha256": "9d654a366c0ed41cf9064d12481e871912fb562e85dab90aa95c48b5d8231cb7",
+      "test_count": 38,
+      "test_names_fnv1a128": "cbdfab7802cfbc3d1d48fb61d5f80f7d"
+    },
+    {
+      "path": "tests/test_i18n_mut.py",
+      "class": "mutation",
+      "source_sha256": "16431a17124c224cfc794f7ae10514b6a5d53e5673c11db77dbca5df746ad631",
+      "test_count": 4,
+      "test_names_fnv1a128": "4d3566bf6b19454c892bee01d299e769"
+    },
+    {
+      "path": "tests/test_ime_input.py",
+      "class": "behavior",
+      "source_sha256": "feb2c02ed8ab3dbaf622f319efb13120f97ee8c418bb5b81719856f1a0e66169",
+      "test_count": 3,
+      "test_names_fnv1a128": "26be69988518f4013cb42794f6464fdd"
+    },
+    {
+      "path": "tests/test_inlineform_mut.py",
+      "class": "mutation",
+      "source_sha256": "b222bdbd11c55b0f11e322562bb3e1a356e315f39b1465b82c9ef2aa2dea5bed",
+      "test_count": 5,
+      "test_names_fnv1a128": "75dbcaf5e70e4d5fa133016fcf4806ae"
+    },
+    {
+      "path": "tests/test_interpreters.py",
+      "class": "behavior",
+      "source_sha256": "6612d38664f89707fa7f59604917f34b30830e98f768c02de6ae92ee774f120d",
+      "test_count": 74,
+      "test_names_fnv1a128": "530f99bd4b5cb963b0944c540d44d711"
+    },
+    {
+      "path": "tests/test_js_analyzer.py",
+      "class": "behavior",
+      "source_sha256": "5005ab764ff0c36c386f09598334f512ccdae38f529735dedf8be7ecb84fb79b",
+      "test_count": 67,
+      "test_names_fnv1a128": "721e7d109153212f41c06f3cdc4ebc49"
+    },
+    {
+      "path": "tests/test_js_analyzer_mut.py",
+      "class": "mutation",
+      "source_sha256": "57957b9013cd7925a156145d6b38dc237681d452a0cf86e7da2ad7c96830f6f7",
+      "test_count": 5,
+      "test_names_fnv1a128": "3651e474834f0e87f5955582c72213eb"
+    },
+    {
+      "path": "tests/test_js_cli_reader_mut.py",
+      "class": "mutation",
+      "source_sha256": "c8a138bf99e51c5a24edf9042ca59aab4223b9a20f84af45006f32ad071aea8f",
+      "test_count": 10,
+      "test_names_fnv1a128": "5056b106294a81076f475d147e2e3cd5"
+    },
+    {
+      "path": "tests/test_js_deps.py",
+      "class": "behavior",
+      "source_sha256": "743849704dddbcd514c556f60260dfeed9f265ee595c3b0c837496d694da1683",
+      "test_count": 151,
+      "test_names_fnv1a128": "4ef778f338dceafa5acc282bbed21800"
+    },
+    {
+      "path": "tests/test_js_deps_mut.py",
+      "class": "mutation",
+      "source_sha256": "4835d2a0d511e07d1ccda1b40d188d5512c13e5cf1244c84c591d5befb9fd0a0",
+      "test_count": 4,
+      "test_names_fnv1a128": "5a52053bf352fbe29d103ddef69b56d8"
+    },
+    {
+      "path": "tests/test_js_inject.py",
+      "class": "behavior",
+      "source_sha256": "797ce0e595b2524a5addb5d6abb019e08f9752dd04659c88029a14c93bcf7de8",
+      "test_count": 37,
+      "test_names_fnv1a128": "fe33fa49eca076a3eaf1156547ac6195"
+    },
+    {
+      "path": "tests/test_js_inject_mut.py",
+      "class": "mutation",
+      "source_sha256": "707c1366e79fef91f07e49cfebcb2f213288ed7e2f5138e1a81fe31a4eedc260",
+      "test_count": 14,
+      "test_names_fnv1a128": "b43529d8bab7f6a6a5ca9eeb09b482a3"
+    },
+    {
+      "path": "tests/test_kindnames.py",
+      "class": "behavior",
+      "source_sha256": "136d8d982fb1a3ff1d4019e94387af668c99e4072e10d537e56b9b2886ad56cb",
+      "test_count": 5,
+      "test_names_fnv1a128": "4bc6c5fed0f1fc79c702aa2af02e4866"
+    },
+    {
+      "path": "tests/test_langs.py",
+      "class": "behavior",
+      "source_sha256": "a4c36b0e18fb704c0a30d23f735920fed93a3fb7def2fcd619e8ea62f2dd8741",
+      "test_count": 21,
+      "test_names_fnv1a128": "02dde40ac7f84978f54e4aae5feeffa4"
+    },
+    {
+      "path": "tests/test_launch_mut.py",
+      "class": "mutation",
+      "source_sha256": "1e52aedf7c2f151ac75d00a600318840269aa23989f17e8a5a42425d0fc2f46a",
+      "test_count": 18,
+      "test_names_fnv1a128": "b4a0282a7a49fee73485fea6749c44ea"
+    },
+    {
+      "path": "tests/test_launcher.py",
+      "class": "behavior",
+      "source_sha256": "1ea62dd6148adca131cceaf05dc73aab5f7a6f60dbf59567cfbb0ac0b9faf99d",
+      "test_count": 38,
+      "test_names_fnv1a128": "da6edf2381420ced1319636bf6776792"
+    },
+    {
+      "path": "tests/test_launcher_fix.py",
+      "class": "behavior",
+      "source_sha256": "d494ba6be718e8fbc4a48d706c72d974772f9064b7adc881e57cac088c8bbb06",
+      "test_count": 12,
+      "test_names_fnv1a128": "bc14e672a02a14158bac56a01187f3ee"
+    },
+    {
+      "path": "tests/test_launcher_mut.py",
+      "class": "mutation",
+      "source_sha256": "21d4e42be24eea197097ef2d9cb62aa6de30dbfc0999eda556a3690b272d8a57",
+      "test_count": 2,
+      "test_names_fnv1a128": "bd39d7bcbd282c64da6bd7cef63ecad9"
+    },
+    {
+      "path": "tests/test_metawriter.py",
+      "class": "behavior",
+      "source_sha256": "764b0fea4a1c99b39ceea7493ca549e004e888fc04759407422bd5afcf0209f8",
+      "test_count": 24,
+      "test_names_fnv1a128": "33005aa5c1634355df7cf63173566994"
+    },
+    {
+      "path": "tests/test_metawriter_mut.py",
+      "class": "mutation",
+      "source_sha256": "5a5905a34f98722d748c1341b553c23d7d197b243e099f169a7c18299b42edd8",
+      "test_count": 2,
+      "test_names_fnv1a128": "b3ee6c91ae4cd6be584aef65cefd4df4"
+    },
+    {
+      "path": "tests/test_mutation_gate.py",
+      "class": "behavior",
+      "source_sha256": "5f7a7660f676fe36c3e5753984a075759678405181072eb91993e8e5177a7e13",
+      "test_count": 4,
+      "test_names_fnv1a128": "1187cf58a06cf588db30c4bc38ad4f5f"
+    },
+    {
+      "path": "tests/test_packaging.py",
+      "class": "behavior",
+      "source_sha256": "36fff4aded674b5c94e2e3395d8e35b509e5b973635f7674362db69692f39ce5",
+      "test_count": 7,
+      "test_names_fnv1a128": "d3493312dceff03f44a6fcee3ff3bbb7"
+    },
+    {
+      "path": "tests/test_params_edit.py",
+      "class": "behavior",
+      "source_sha256": "a6f9f58cd0eff6bc022458ad7ab4ff74c21af3ea999e08eb107d1f2022f24d50",
+      "test_count": 41,
+      "test_names_fnv1a128": "f666dd2304edcd0dfb0cf0e24d26fbec"
+    },
+    {
+      "path": "tests/test_params_model.py",
+      "class": "behavior",
+      "source_sha256": "032274567f7222482e433d81f79099d06ca724cba3cc4ea5c6d3b6bf2c66069e",
+      "test_count": 19,
+      "test_names_fnv1a128": "24b4d55bb5f7ccf3e059bf6cf0b088fe"
+    },
+    {
+      "path": "tests/test_params_mut.py",
+      "class": "mutation",
+      "source_sha256": "aa41b077b96ed7b8e9799f58b30a6ee96399e992dbe7cac4a3cc28afa2855b9d",
+      "test_count": 9,
+      "test_names_fnv1a128": "91ad0060a3d599ee0589f935bd18871b"
+    },
+    {
+      "path": "tests/test_path_tui.py",
+      "class": "behavior",
+      "source_sha256": "eb9204cd58b327f9e9c708c61374be0e080ec6102863e6925f9ce9916ca9f22d",
+      "test_count": 61,
+      "test_names_fnv1a128": "386bf4abe0478d1d30f93979d0b37556"
+    },
+    {
+      "path": "tests/test_path_type.py",
+      "class": "behavior",
+      "source_sha256": "e3cc0af3a8a4b1f8dc79473624810cb07ff912789a0bcd9e798f046117f517af",
+      "test_count": 14,
+      "test_names_fnv1a128": "e21dab6b1261bf4aeee8897d7c74cbf4"
+    },
+    {
+      "path": "tests/test_pep723_mut.py",
+      "class": "mutation",
+      "source_sha256": "da09fbf7b5b609acec90310810725e4570fe55cfe68426f0d4512d90fd7a799f",
+      "test_count": 22,
+      "test_names_fnv1a128": "0d93a13d41b2f117a4dfa5712e868d8e"
+    },
+    {
+      "path": "tests/test_pep723_split.py",
+      "class": "behavior",
+      "source_sha256": "45bfb22d8c5a240bf15cb33b987cb144a02177fac1e85c7c31a73a863ab4fc19",
+      "test_count": 24,
+      "test_names_fnv1a128": "74a11ba7a77790367f47cf5451df364c"
+    },
+    {
+      "path": "tests/test_phase1.py",
+      "class": "behavior",
+      "source_sha256": "97d3483be14fde7dcccb073b44fb547ee8d821a5c7fbc267e46f6c0efb70728b",
+      "test_count": 27,
+      "test_names_fnv1a128": "d6b3e141f27bcca4776f3fe25e41b4e4"
+    },
+    {
+      "path": "tests/test_powershell.py",
+      "class": "behavior",
+      "source_sha256": "00a4d0abe12b1021cd63f25ca6b77c50fef2dc9d8fcf6c0044702d65bc2eb475",
+      "test_count": 35,
+      "test_names_fnv1a128": "ea0b48aca798fb6cde3391bed36001c3"
+    },
+    {
+      "path": "tests/test_presets.py",
+      "class": "behavior",
+      "source_sha256": "c5fc8359763ab48c97e38873241a09b78112fe1cc2aafa028f9bb98f9db56e9f",
+      "test_count": 12,
+      "test_names_fnv1a128": "4c5a85875849e23617b86552470a5fec"
+    },
+    {
+      "path": "tests/test_prompt_cli.py",
+      "class": "behavior",
+      "source_sha256": "a4afa74e4b5179a195e050725dfe538aa60332524a424e747900fa51723d4703",
+      "test_count": 150,
+      "test_names_fnv1a128": "bec29c94f61780eafa915bef42894360"
+    },
+    {
+      "path": "tests/test_prompt_kind.py",
+      "class": "behavior",
+      "source_sha256": "30ab336b80d6addd64b85f7158484fe06b1a355e17e82a7974673f16736012fa",
+      "test_count": 115,
+      "test_names_fnv1a128": "8000b852b78578c4df92ad36f787f00f"
+    },
+    {
+      "path": "tests/test_prompt_tui.py",
+      "class": "behavior",
+      "source_sha256": "8222bf394b648d9dd1a0c26ff70eb64ef8e07490cb0e3ced2953ce263dac9dfb",
+      "test_count": 83,
+      "test_names_fnv1a128": "561e8f02d45ae0c3d5863d533872e210"
+    },
+    {
+      "path": "tests/test_prompt_utf8.py",
+      "class": "behavior",
+      "source_sha256": "8d193649105f808e19e38e9cc2013a85ca06dd2b748b212f61c1d1036829c357",
+      "test_count": 16,
+      "test_names_fnv1a128": "f7498bc4b045a6f545252ba23c96a003"
+    },
+    {
+      "path": "tests/test_promptform_mut.py",
+      "class": "mutation",
+      "source_sha256": "c63e22134f65c8ad5c588cea9e1e0298c0778e0f82c23be6fa16685d2b7442dd",
+      "test_count": 8,
+      "test_names_fnv1a128": "319343a279f644ca6c74b93070c2e811"
+    },
+    {
+      "path": "tests/test_ps_cli_reader_mut.py",
+      "class": "mutation",
+      "source_sha256": "533ca49d004374708f6f25633bb74d97a84b63d7eac62eeb805b11389615c30e",
+      "test_count": 5,
+      "test_names_fnv1a128": "8989b638f0a9e5ec174a2d1f5df843b9"
+    },
+    {
+      "path": "tests/test_py_analyzer_mut.py",
+      "class": "mutation",
+      "source_sha256": "5fdde1aa05d2c43e478cc11ed0a71c27bad77c191296f6643364cfeec27bea40",
+      "test_count": 3,
+      "test_names_fnv1a128": "9f9ac55287cb469130664b769b3d9a84"
+    },
+    {
+      "path": "tests/test_raw.py",
+      "class": "behavior",
+      "source_sha256": "06d0495effeb2a98cfbef288a6bebf60c0e7ba91fa297ade78e495c3a1c6b399",
+      "test_count": 5,
+      "test_names_fnv1a128": "22d9327d73900db821017140e2b0d7be"
+    },
+    {
+      "path": "tests/test_reconcile.py",
+      "class": "behavior",
+      "source_sha256": "f3f5f13cab1a9f3934b35af9f30f7d791f6d32ab220ec83721b64010602b6f35",
+      "test_count": 27,
+      "test_names_fnv1a128": "ec80d9eeb05d36a00804b97504890d83"
+    },
+    {
+      "path": "tests/test_registry_mut_part01.py",
+      "class": "mutation",
+      "source_sha256": "972c743846fa9ed6bf2e09c37a520edd9e405778f6e24008ef69186e3b137175",
+      "test_count": 3,
+      "test_names_fnv1a128": "f73a694d3ffd5b6325fc95f3faaf655d"
+    },
+    {
+      "path": "tests/test_registry_mut_part02.py",
+      "class": "mutation",
+      "source_sha256": "64f0b9be7d1796b511c00e52991930c119cc7c125767c585f2831370345bf414",
+      "test_count": 8,
+      "test_names_fnv1a128": "d5feeca08cd292ce831ef481d8dba693"
+    },
+    {
+      "path": "tests/test_registry_mut_part03.py",
+      "class": "mutation",
+      "source_sha256": "b8d5df62b25efc3c2d5402c526e7ad3065b4be440aacf3eeb08264cc2511d054",
+      "test_count": 12,
+      "test_names_fnv1a128": "72d1b4a0c1aff8c392697ba94d432dad"
+    },
+    {
+      "path": "tests/test_registry_mut_part04.py",
+      "class": "mutation",
+      "source_sha256": "86485cdcdcc0f0e24f7754d0690460830f4f7bd9bbb7d338f4f877347923bb83",
+      "test_count": 6,
+      "test_names_fnv1a128": "bf159a56013e426388854c0c44ac9cec"
+    },
+    {
+      "path": "tests/test_registry_mut_part05.py",
+      "class": "mutation",
+      "source_sha256": "bb39221a52e2e24e889f35e64252eb6429b0d7f6525160a0adfd9887f6edc2ed",
+      "test_count": 5,
+      "test_names_fnv1a128": "8ccb3c97253da9e05fd0fdbb04721f90"
+    },
+    {
+      "path": "tests/test_registry_mut_part06.py",
+      "class": "mutation",
+      "source_sha256": "c1f5fc5cb4b45b2e0c4e73930d7810b390210985f13761d24f3969928d62ad69",
+      "test_count": 9,
+      "test_names_fnv1a128": "05d649cd845ed0452755d976c715e891"
+    },
+    {
+      "path": "tests/test_registry_mut_part07.py",
+      "class": "mutation",
+      "source_sha256": "d4c5fdde845ab9c2890034f06b1d5290a8d917a0f2738b2a40737cfdda733e30",
+      "test_count": 8,
+      "test_names_fnv1a128": "d05d5d624a004edc8d28f0ffc9ad7595"
+    },
+    {
+      "path": "tests/test_registry_mut_part08.py",
+      "class": "mutation",
+      "source_sha256": "d4e9d7c002c3ea0b1134ca54e5bb5a8adbfbe30fdf7596fa51f3cc88a4874471",
+      "test_count": 10,
+      "test_names_fnv1a128": "4dc078ce7246331c04e73446a9f34b2b"
+    },
+    {
+      "path": "tests/test_registry_mut_part09.py",
+      "class": "mutation",
+      "source_sha256": "4dda9928f9bf053664486176ca1def009b076dbf99874a591986ebe175354f05",
+      "test_count": 5,
+      "test_names_fnv1a128": "b1df7247ac0b08e2d7c4afc0b973ded5"
+    },
+    {
+      "path": "tests/test_rename.py",
+      "class": "behavior",
+      "source_sha256": "2f4823f9acbd823ca52555f07845d436a69d2e0664e921bf544058f942e30bbc",
+      "test_count": 10,
+      "test_names_fnv1a128": "2d97fd5702fad76b594d301f2f294932"
+    },
+    {
+      "path": "tests/test_reset_default_ui.py",
+      "class": "behavior",
+      "source_sha256": "eb6cae5fc62e0296e40100de84202512fb586b060ffd5ccdea1db1a5638ee92d",
+      "test_count": 14,
+      "test_names_fnv1a128": "e74a47541ecfcd28e4176af733741bb9"
+    },
+    {
+      "path": "tests/test_residual_cov.py",
+      "class": "coverage",
+      "source_sha256": "32dafc8e9388caedb75d6e68f667c888d288064a0ef3021c1608fd881c377091",
+      "test_count": 36,
+      "test_names_fnv1a128": "f2e973a7f3c4629926c3b85a7e83b3fc"
+    },
+    {
+      "path": "tests/test_residual_gaps_cov.py",
+      "class": "coverage",
+      "source_sha256": "256ae2f00809ca2465371745820b94b6ae61a7b6e3e66f0245244c49089e3f8f",
+      "test_count": 15,
+      "test_names_fnv1a128": "70de47c50e7dae932e86605ca4dc68b5"
+    },
+    {
+      "path": "tests/test_residual_mut.py",
+      "class": "mutation",
+      "source_sha256": "4b029b47eec7693e06846124e563314c418d23a05efdd8377287a3eb3d3c0cdb",
+      "test_count": 53,
+      "test_names_fnv1a128": "04d027d0d711ffb6ecd85162972def66"
+    },
+    {
+      "path": "tests/test_review_fixes.py",
+      "class": "behavior",
+      "source_sha256": "730006317b90d10f6791c81bcaedbebe1570768863cc86a61370fc5982676da5",
+      "test_count": 30,
+      "test_names_fnv1a128": "eb8d0997df0bdf72fba2be43e141c55f"
+    },
+    {
+      "path": "tests/test_rewrite.py",
+      "class": "behavior",
+      "source_sha256": "f2002c1d8afd09c1188b0226b8f3f02eb015cf451a6d23527837cbf22076b68d",
+      "test_count": 2,
+      "test_names_fnv1a128": "1ba6368005a001ed795c3982a2cee0e7"
+    },
+    {
+      "path": "tests/test_rewrite_mut.py",
+      "class": "mutation",
+      "source_sha256": "24517aa4623c202f91e445e6c72b97bebd43add83f23b8b97198d47659b253de",
+      "test_count": 2,
+      "test_names_fnv1a128": "b4dde9f255b00e064f8f70b1e1b99f45"
+    },
+    {
+      "path": "tests/test_run_set.py",
+      "class": "behavior",
+      "source_sha256": "3efe5461e4fbd3182f7808cb52ac263eebadd06aa211bae36096c69bacb27e9f",
+      "test_count": 27,
+      "test_names_fnv1a128": "f7e349216df99b200e34af57f1d20afe"
+    },
+    {
+      "path": "tests/test_settings_and_draft_review_atomicity.py",
+      "class": "behavior",
+      "source_sha256": "6f11ea05c2f9705b22c1dca813afe7860ca52970508fd7f1fe9372e43bfcd7ed",
+      "test_count": 16,
+      "test_names_fnv1a128": "efbaa24e8f7cb27ae52ac2ca9e1fca72"
+    },
+    {
+      "path": "tests/test_shell_analyzer.py",
+      "class": "behavior",
+      "source_sha256": "f58f1c362c0b7ebd72fefb9d9340f2ffc89740debe898b0efd600de035e2d6ab",
+      "test_count": 92,
+      "test_names_fnv1a128": "16eb49a007b51a03adff6018f92c9bcd"
+    },
+    {
+      "path": "tests/test_shell_analyzer_mut.py",
+      "class": "mutation",
+      "source_sha256": "39521e643b8bc167fede0867c73837acc166a383751ae72ef360947f7998b17f",
+      "test_count": 34,
+      "test_names_fnv1a128": "27d0edff7edc6b8c1e43f2a7c31f2992"
+    },
+    {
+      "path": "tests/test_shell_cli_reader_mut.py",
+      "class": "mutation",
+      "source_sha256": "e106358fe74e171c8e8e2b8bb2961614b52b16db48e39987314144770bc6921f",
+      "test_count": 7,
+      "test_names_fnv1a128": "b9b11be8dd6e5fc6edd8668e034afaef"
+    },
+    {
+      "path": "tests/test_shell_getopts.py",
+      "class": "behavior",
+      "source_sha256": "b30af13673a4deb2cec85559f2b4a54602582883c59269ba11b3d67bbd88ba3a",
+      "test_count": 11,
+      "test_names_fnv1a128": "0bb789557529c841201d40305b3af34f"
+    },
+    {
+      "path": "tests/test_shell_inject.py",
+      "class": "behavior",
+      "source_sha256": "01d05e4fd8cfc8ecc1ac14455582f8745ab474e10187f2a28c3902ecfe0f1681",
+      "test_count": 87,
+      "test_names_fnv1a128": "e91a027e674f883553d7b5d10e5e3e0d"
+    },
+    {
+      "path": "tests/test_shell_inject_mut.py",
+      "class": "mutation",
+      "source_sha256": "687b3f8ecadd2082a0cbbc09d33da427558c544fcfdc2a7f425d87a73d2d7314",
+      "test_count": 23,
+      "test_names_fnv1a128": "d57c0ef1250f6ab6cb310ba852138d57"
+    },
+    {
+      "path": "tests/test_shell_normalize_mut.py",
+      "class": "mutation",
+      "source_sha256": "b05dc074ac74cc87f23aede07778c40c8d20384222db556abbe9d36e2e1e0f07",
+      "test_count": 2,
+      "test_names_fnv1a128": "cf90b19c275a1ec554603d77140e37fc"
+    },
+    {
+      "path": "tests/test_shim.py",
+      "class": "behavior",
+      "source_sha256": "3ceadf96c0301c7b4aeab34fc3dfc80a6b7e6f9c71142b07407246d0c3ea3244",
+      "test_count": 38,
+      "test_names_fnv1a128": "65ab2be9e2e4fa24acdf85099076f98a"
+    },
+    {
+      "path": "tests/test_shim_mut.py",
+      "class": "mutation",
+      "source_sha256": "5d04c099ec1631f9965ebf471744b82c56ad050629759cd96873e012b72fcb16",
+      "test_count": 4,
+      "test_names_fnv1a128": "aecc2ba92de91c87bf292a00db0e7de5"
+    },
+    {
+      "path": "tests/test_show.py",
+      "class": "behavior",
+      "source_sha256": "eb7d93ff5e6d7257fa44d0063364f7aced3605c712f033c11870f8a67b162397",
+      "test_count": 17,
+      "test_names_fnv1a128": "0a0fda86c9203447cffc62839bcf8e3c"
+    },
+    {
+      "path": "tests/test_show_mut.py",
+      "class": "mutation",
+      "source_sha256": "a95217292b100fca7e6047a85ddcdefeca74eb7492bf8aa4a5a5db00c5d96d79",
+      "test_count": 5,
+      "test_names_fnv1a128": "ed4b8c5c77191f59d38cdab5a47b3614"
+    },
+    {
+      "path": "tests/test_source_default_semantics.py",
+      "class": "behavior",
+      "source_sha256": "328784d3a7defff733898c385848cbf2eea5ac56d29db62a44d61beee3ae3675",
+      "test_count": 19,
+      "test_names_fnv1a128": "90b7730d5a73c510dc2a27d1309dc8d7"
+    },
+    {
+      "path": "tests/test_store.py",
+      "class": "behavior",
+      "source_sha256": "0a095e879b2f9253adb1e6bcc6c75f52b2b1b163fdd9164563e786cde59675cd",
+      "test_count": 78,
+      "test_names_fnv1a128": "4e7630d24d1d93d864a295856e01bfdf"
+    },
+    {
+      "path": "tests/test_store_cov.py",
+      "class": "coverage",
+      "source_sha256": "74ea5c2467a5b96c265bc2cf6a15618f0200b78617dba14aa7c30666f3bf74ea",
+      "test_count": 13,
+      "test_names_fnv1a128": "15594f0b821ac4c6d4608165e4d01fdf"
+    },
+    {
+      "path": "tests/test_store_fix.py",
+      "class": "behavior",
+      "source_sha256": "c4554b33cb1cb0860fa06a02005d576cc182aa9335e225b8700b294887a43262",
+      "test_count": 38,
+      "test_names_fnv1a128": "620f194c1ebd271e11c92c1b7e3201d5"
+    },
+    {
+      "path": "tests/test_store_launch_cov.py",
+      "class": "coverage",
+      "source_sha256": "e32359a6f23b3c5d58295d8b68dbd15fe9042d0c6ae30e8fa078b77413af6324",
+      "test_count": 18,
+      "test_names_fnv1a128": "665506c07a93d09edd397b54f165fde3"
+    },
+    {
+      "path": "tests/test_store_mut.py",
+      "class": "mutation",
+      "source_sha256": "efeab9ad1271c58348897d2375fe0b2167af6086b59d3c557cdff8e5fbefd28f",
+      "test_count": 80,
+      "test_names_fnv1a128": "8b38eab523cd49e6f157e0cb319511c1"
+    },
+    {
+      "path": "tests/test_template_context_quoting.py",
+      "class": "behavior",
+      "source_sha256": "142b55ecb6e8c3673de85a40e9c52342b3b85201603b86bac1b24c9f35983778",
+      "test_count": 44,
+      "test_names_fnv1a128": "a7c39185e536a5069abd48825202e120"
+    },
+    {
+      "path": "tests/test_tokens.py",
+      "class": "behavior",
+      "source_sha256": "f14ab6a36090a1f0ff3336fbb80bdc1fbffc4c5d466bbf5e5847ca1d979634df",
+      "test_count": 21,
+      "test_names_fnv1a128": "0db334741407cdc99070c15ccfd0544e"
+    },
+    {
+      "path": "tests/test_tui_add_cov.py",
+      "class": "coverage",
+      "source_sha256": "34b70d2a8a20cdc2fde15eeca9109374afb55dc6556a314c5b655c0165c8b62e",
+      "test_count": 68,
+      "test_names_fnv1a128": "2c02b1eb687cc5a242368197c57e4cac"
+    },
+    {
+      "path": "tests/test_tui_add_draft_cov.py",
+      "class": "coverage",
+      "source_sha256": "f20ff70ee87c14e788bf8366ad00ee7af0f96b4148c15f61cfb3ea4b7811b7a6",
+      "test_count": 25,
+      "test_names_fnv1a128": "0c0cfc4b49a8cadb5fb7b6c73a50f747"
+    },
+    {
+      "path": "tests/test_tui_add_mut_part01.py",
+      "class": "mutation",
+      "source_sha256": "b178e764ac296d159ff5db83ce8d44a86de4a89380ca206ceafb07c58da917b0",
+      "test_count": 9,
+      "test_names_fnv1a128": "278415ee92db739a4859e4a91104fd88"
+    },
+    {
+      "path": "tests/test_tui_add_mut_part02.py",
+      "class": "mutation",
+      "source_sha256": "35e1c436e114f5d1d995f3281af1629a18da1915daf2643fafde0262087d8a1d",
+      "test_count": 8,
+      "test_names_fnv1a128": "8513c01a60e623b7989228f4e8cbc5fe"
+    },
+    {
+      "path": "tests/test_tui_add_mut_part03.py",
+      "class": "mutation",
+      "source_sha256": "5bba6523dd2a24ebb620349db8f7a436ee5bb20f16f59554f72dc16ce0dee582",
+      "test_count": 9,
+      "test_names_fnv1a128": "04d8e4c8bddf60f2d2de255dcfdfc01c"
+    },
+    {
+      "path": "tests/test_tui_add_mut_part04.py",
+      "class": "mutation",
+      "source_sha256": "c3c3ac9bfbfbe8412c3654f9527ee86b379e720fc49fd7478c01e8037af58521",
+      "test_count": 20,
+      "test_names_fnv1a128": "72f39b76f49e18a015182dc8c2b3f808"
+    },
+    {
+      "path": "tests/test_tui_add_mut_part05.py",
+      "class": "mutation",
+      "source_sha256": "ac8fadb86e512c088674eab3d334f2b350479243b0e7c33af660469131ab08f4",
+      "test_count": 21,
+      "test_names_fnv1a128": "f7f207b15eeed4063d67ac323d72d441"
+    },
+    {
+      "path": "tests/test_tui_core_cov.py",
+      "class": "coverage",
+      "source_sha256": "03cc8e1681a40c3c03976ea1b3f6dd1203f79731358021791cf35ec110ad09e2",
+      "test_count": 51,
+      "test_names_fnv1a128": "ec5115807776eecc252c98d825bd9940"
+    },
+    {
+      "path": "tests/test_tui_cov.py",
+      "class": "coverage",
+      "source_sha256": "185ecdbb2ae6bd04298f4f5d294d30b2df95db54999b2c2727dc7a8f411715eb",
+      "test_count": 24,
+      "test_names_fnv1a128": "c512f4cea7aa8a8a3f0ff13a3fd4e0c8"
+    },
+    {
+      "path": "tests/test_tui_edit.py",
+      "class": "behavior",
+      "source_sha256": "eae209922cf83d276b105a552b41879788d295c75ddb6237ed513a76cab13b5a",
+      "test_count": 6,
+      "test_names_fnv1a128": "4719b164498a20407e8eafb29ecfcd35"
+    },
+    {
+      "path": "tests/test_tui_form_mut.py",
+      "class": "mutation",
+      "source_sha256": "2a58911383de53c28dba0a3d1106f883cffc04c7b40b2e9f955de18492ffac84",
+      "test_count": 22,
+      "test_names_fnv1a128": "23b1165ae39ed88059d77154fc07724b"
+    },
+    {
+      "path": "tests/test_tui_health_mut.py",
+      "class": "mutation",
+      "source_sha256": "bb382d24e5a08800aa08a698dc2efc171cc63c159648f6e751ba9264b3a7f1e0",
+      "test_count": 3,
+      "test_names_fnv1a128": "6120f50e20a635a19f391b28bcf6616a"
+    },
+    {
+      "path": "tests/test_tui_mut.py",
+      "class": "mutation",
+      "source_sha256": "d4b4582caaad7a54808578a59a092ff2c8e58b0ce11fcac7e6ff922e62a800c1",
+      "test_count": 60,
+      "test_names_fnv1a128": "f8063110505edf456ae1fa1f0ae37e1c"
+    },
+    {
+      "path": "tests/test_tui_mut_part01.py",
+      "class": "mutation",
+      "source_sha256": "f88fdcfbc91e80ef6696cd16eec03c988240788d652dcfe747fca81679257d60",
+      "test_count": 7,
+      "test_names_fnv1a128": "f4a58baa4fecd9194ce7753958b3b31f"
+    },
+    {
+      "path": "tests/test_tui_mut_part02.py",
+      "class": "mutation",
+      "source_sha256": "ef1245c79ff5e5740b9b42705a96544747b064e45d0632c74f831e9476fa03f4",
+      "test_count": 4,
+      "test_names_fnv1a128": "f5b9b94fdb6f74d8380db144f9d48b80"
+    },
+    {
+      "path": "tests/test_tui_mut_part03.py",
+      "class": "mutation",
+      "source_sha256": "ea67e8d3edcac6831449b2649252805f2a16416d423d260bafe12bc71fd3da9a",
+      "test_count": 16,
+      "test_names_fnv1a128": "b167b68b7dad4070a248e26471c0b755"
+    },
+    {
+      "path": "tests/test_tui_mut_part04.py",
+      "class": "mutation",
+      "source_sha256": "c0e9a579dd3b01fa16e1a283d000a2de9c000e8dff1b64be3a25c2d7af54352e",
+      "test_count": 10,
+      "test_names_fnv1a128": "06203c2f24080c5440074f346c19394c"
+    },
+    {
+      "path": "tests/test_tui_mut_part05.py",
+      "class": "mutation",
+      "source_sha256": "5e6a26ec1318bd0579d6336a366c39bdd4c6815366067ca510c99c87847f9502",
+      "test_count": 7,
+      "test_names_fnv1a128": "e086182f7c8c2d408e9a11c18b928aa0"
+    },
+    {
+      "path": "tests/test_tui_mut_part06.py",
+      "class": "mutation",
+      "source_sha256": "4d006f2c1248bacc8d6463a1145c1c1ce22500a5703c0cebe96a0db9961eb5c7",
+      "test_count": 2,
+      "test_names_fnv1a128": "aad6600a9322900e4cce4a17fa50e80c"
+    },
+    {
+      "path": "tests/test_tui_mut_part07.py",
+      "class": "mutation",
+      "source_sha256": "26fcc5011a302ce521870d08106ead5ce43837b4942fef220493ae978a8a10ac",
+      "test_count": 4,
+      "test_names_fnv1a128": "444f270ed415c3ad3236086912e8c4f2"
+    },
+    {
+      "path": "tests/test_tui_mut_part08.py",
+      "class": "mutation",
+      "source_sha256": "0a394a2f98fe4a451b7be343eb231f38df8f8b711561f0bdbd511b06aa3506a9",
+      "test_count": 13,
+      "test_names_fnv1a128": "612672534943dbc167c9c28278eebff3"
+    },
+    {
+      "path": "tests/test_tui_mut_part09.py",
+      "class": "mutation",
+      "source_sha256": "e0e1168e73884c39771b7fb2c5500a2e55a972f7c8b0a371157b41c54346c86c",
+      "test_count": 24,
+      "test_names_fnv1a128": "e819a51e5d3d53194e28c7a67eb8a182"
+    },
+    {
+      "path": "tests/test_tui_mut_part10.py",
+      "class": "mutation",
+      "source_sha256": "9ff351f4c5dd805bda70e9faf1ecc798b14106e62a218609a19cfaf58414ac19",
+      "test_count": 7,
+      "test_names_fnv1a128": "1e26190ddd6c9b6959de969708e4cb4d"
+    },
+    {
+      "path": "tests/test_tui_nav.py",
+      "class": "behavior",
+      "source_sha256": "0976a28d30d0c7e1dc444a818ace23c31f448438a0deb495f380c8dfa04c2179",
+      "test_count": 5,
+      "test_names_fnv1a128": "919c129f2bd7da84f2a9b960341aac26"
+    },
+    {
+      "path": "tests/test_tui_prefs_agents_cov.py",
+      "class": "coverage",
+      "source_sha256": "b9f1f68866891501d74b1c76d679ce175a1ae1e59bbdd11f3d4d3095b7946798",
+      "test_count": 21,
+      "test_names_fnv1a128": "5bda6512f6e6cbbd4f0719e642899b27"
+    },
+    {
+      "path": "tests/test_tui_prefs_health_cov.py",
+      "class": "coverage",
+      "source_sha256": "e54a9209a1f2cf2c4a9b0534b7467f1337a3c32d7c2df3f4bb84f445378673c0",
+      "test_count": 33,
+      "test_names_fnv1a128": "39fbcb2d5d296cd3f9ef6c682431eb5d"
+    },
+    {
+      "path": "tests/test_tui_prefs_mut.py",
+      "class": "mutation",
+      "source_sha256": "1a337bd456f40757a309bb131e33c6aad6743e7ca01bbb54ff6a2dadc6f81956",
+      "test_count": 21,
+      "test_names_fnv1a128": "2a68016c0a173a91be9254cb8e764679"
+    },
+    {
+      "path": "tests/test_tui_responsive.py",
+      "class": "behavior",
+      "source_sha256": "e9a56037e223d3857b9974d2c3e8a3e2ee03cfa7b306c601ac70fb0faca484b3",
+      "test_count": 19,
+      "test_names_fnv1a128": "fc125eeb5a705fc35a411534d99925cb"
+    },
+    {
+      "path": "tests/test_tui_runner_cov.py",
+      "class": "coverage",
+      "source_sha256": "c025873190aa4cf3a1ff664318995eea326ae46b3b2db707fa8744bc093a989b",
+      "test_count": 31,
+      "test_names_fnv1a128": "adadd49e03e92ab465cd974ebe0395a6"
+    },
+    {
+      "path": "tests/test_tui_settings_cov.py",
+      "class": "coverage",
+      "source_sha256": "4da29b43b570577d87a02afb5470a561290eb68d2792a733e93610c167b17053",
+      "test_count": 39,
+      "test_names_fnv1a128": "fd82ab5309bc6e3726b05858c8829306"
+    },
+    {
+      "path": "tests/test_tui_settings_launch_cov.py",
+      "class": "coverage",
+      "source_sha256": "1b9ebaf3696dcfb2cde637e6b416ec6fbab851312b814c0a9938058db366ebe9",
+      "test_count": 20,
+      "test_names_fnv1a128": "08b8e62eb0971f04a4f4e6050df3f2e6"
+    },
+    {
+      "path": "tests/test_tui_settings_mut_part02.py",
+      "class": "mutation",
+      "source_sha256": "9a6045ff19489e1ad92a0315c126f8b602902f65f16798360b1553007d519c7e",
+      "test_count": 7,
+      "test_names_fnv1a128": "1e63b62621c57ca940311252a2aea94f"
+    },
+    {
+      "path": "tests/test_tui_settings_mut_part04.py",
+      "class": "mutation",
+      "source_sha256": "a715e0e11c08664fad090a817036d24b6870d7243128a903fbe60b1c1f0a03c7",
+      "test_count": 4,
+      "test_names_fnv1a128": "2cd49d54de3a6048d0ee01db7bb40ba4"
+    },
+    {
+      "path": "tests/test_uv_metadata_unpinning.py",
+      "class": "behavior",
+      "source_sha256": "e7d2b188cd6482266bf63c28ebc45e33bf1b11cddb83e2498f9dfb2199c16ef2",
+      "test_count": 4,
+      "test_names_fnv1a128": "e41527af314a95d261f739f9cf4ba029"
+    },
+    {
+      "path": "tests/test_uv_metadata_views.py",
+      "class": "behavior",
+      "source_sha256": "517164014dd13140e679fc8794945491312ac889d781ee3d8d7e220113e48ea1",
+      "test_count": 6,
+      "test_names_fnv1a128": "61225436be752cef3382c933bd3e9918"
+    },
+    {
+      "path": "tests/test_uvman.py",
+      "class": "behavior",
+      "source_sha256": "afb9b21bd114881e870dff3487fdc3f93b25b3d3139d34d09e44df5fbcd49715",
+      "test_count": 36,
+      "test_names_fnv1a128": "5194d7c34e020f57c4b293a61688890f"
+    },
+    {
+      "path": "tests/test_uvman_mut.py",
+      "class": "mutation",
+      "source_sha256": "1ec384ec21228592c8a30a3bbe1a56bf881e4443a3b7249b9b34892d9096d54a",
+      "test_count": 3,
+      "test_names_fnv1a128": "e7a08e94f84138ce366d03534602a08c"
+    }
+  ]
+}

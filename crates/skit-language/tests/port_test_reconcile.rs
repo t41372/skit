@@ -12,11 +12,9 @@
 //!   `.missing` is `Vec<ParamDecl>`, `.new` is `Vec<SemanticCandidate>`, `.usable()` is a method,
 //!   `.has_drift()` is a method, `.syntax_error` is a field.
 //!
-//! UNMAPPED: `reconcile.drift_lines`, `reconcile.render_warning`, and `reconcile.edit_specs`
-//! (resync/remove/secret/prompts and their warnings) are higher-level use cases that do NOT exist in
-//! `skit-language`; they live in `skit-cli`/`skit-ui`/`skit-form`, which this integration test cannot
-//! depend on (adding a crate dependency needs a Cargo.toml edit, which is out of scope). Those tests
-//! keep their WHY comment, are marked `#[ignore = "UNMAPPED: ..."]`, and carry a compiling stub.
+//! This file contains only the 14 executable report-level ports. The 13 higher-layer
+//! `drift_lines`, `render_warning`, and `edit_specs` contracts are recorded as deferred in
+//! `docs/design/python-test-port-map.json`; ignored or compile-only stubs do not count as parity.
 
 use std::collections::BTreeSet;
 
@@ -100,8 +98,20 @@ fn new_names(report: &ReconcileReport) -> BTreeSet<String> {
 fn test_all_ok_no_drift() {
     let specs = vec![
         const_spec("CITY"),
-        spec("RETRIES", ParameterBinding::Const, ParameterType::Int, -1, ""),
-        spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, ""),
+        spec(
+            "RETRIES",
+            ParameterBinding::Const,
+            ParameterType::Int,
+            -1,
+            "",
+        ),
+        spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "",
+        ),
     ];
     let report = reconcile(SCRIPT, &specs);
     assert!(!report.has_drift());
@@ -135,14 +145,23 @@ fn test_const_type_changed_still_usable() {
     let text = SCRIPT.replace("RETRIES = 3", "RETRIES = \"3\"");
     let report = reconcile(
         &text,
-        &[spec("RETRIES", ParameterBinding::Const, ParameterType::Int, -1, "")],
+        &[spec(
+            "RETRIES",
+            ParameterBinding::Const,
+            ParameterType::Int,
+            -1,
+            "",
+        )],
     );
     assert!(report.has_drift());
     assert_eq!(
         report
             .changed
             .iter()
-            .map(|pair| (pair.stored.name.clone(), pair.current.declaration.parameter_type))
+            .map(|pair| (
+                pair.stored.name.clone(),
+                pair.current.declaration.parameter_type
+            ))
             .collect::<Vec<_>>(),
         [("RETRIES".to_owned(), ParameterType::Str)]
     );
@@ -156,7 +175,13 @@ fn test_input_matched_by_order_not_position_in_file() {
     let text = format!("import os\nprint(os.name)\n{SCRIPT}");
     let report = reconcile(
         &text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "",
+        )],
     );
     assert!(!report.has_drift());
 }
@@ -166,7 +191,13 @@ fn test_input_removed_is_missing() {
     let text = SCRIPT.replace("who = input(\"Your name: \")", "who = \"nobody\"");
     let report = reconcile(
         &text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "",
+        )],
     );
     assert_eq!(missing_names(&report), ["input-1"]);
 }
@@ -176,7 +207,13 @@ fn test_new_input_call_reported_as_new_only() {
     let text = format!("{SCRIPT}more = input(\"More: \")\nprint(more)\n");
     let report = reconcile(
         &text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "",
+        )],
     );
     assert!(!report.has_drift()); // existing definitions are still present; new is not drift
     assert_eq!(
@@ -201,7 +238,13 @@ fn test_input_prompt_match_survives_an_earlier_insertion_no_drift() {
     let text = format!("extra = input(\"Extra: \")\n{SCRIPT}");
     let report = reconcile(
         &text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "Your name: ")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "Your name: ",
+        )],
     );
     assert!(!report.has_drift());
     assert_eq!(ok_names(&report), ["input-1"]);
@@ -222,9 +265,27 @@ fn test_input_deleted_earlier_call_flags_rebind_instead_of_silent_ok() {
         "print(first, second, third)\n",
     );
     let specs = [
-        spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "First: "),
-        spec("input-2", ParameterBinding::Input, ParameterType::Str, 1, "Second: "),
-        spec("input-3", ParameterBinding::Input, ParameterType::Str, 2, "Third: "),
+        spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "First: ",
+        ),
+        spec(
+            "input-2",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            1,
+            "Second: ",
+        ),
+        spec(
+            "input-3",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            2,
+            "Third: ",
+        ),
     ];
     let edited = text.replace("first = input(\"First: \")\n", ""); // delete the first input() call
     let report = reconcile(&edited, &specs);
@@ -256,27 +317,17 @@ fn test_input_rebind_flagged_when_prompt_can_no_longer_disambiguate() {
     let text = "value = input(\"New label: \")\nprint(value)\n";
     let report = reconcile(
         text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "Old label: ")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "Old label: ",
+        )],
     );
     assert!(report.has_drift());
     assert_eq!(rebound_names(&report), ["input-1"]);
     assert_eq!(usable_names(&report), ["input-1"]); // still injectable, just warned
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.drift_lines has no skit-language equivalent (human-string rendering lives in skit-cli/skit-ui)"]
-fn test_drift_lines_mention_rebind() {
-    // A syntax-error resync combined with drift-line rendering. drift_lines is a CLI/UI concern.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs(resync=...) has no skit-language equivalent (spec editing/resync lives in skit-application/skit-cli)"]
-fn test_resync_reanchors_rebound_input_order_and_prompt() {
-    // --resync must not just prune/retype: an input whose prompt no longer uniquely resolves should
-    // be re-anchored to wherever the fallback landed, so the *next* plain run sees an exact prompt
-    // match again instead of re-deriving the same fallback (and the same warning) every time.
-    let _ = reconcile;
 }
 
 #[test]
@@ -302,8 +353,20 @@ fn test_input_duplicate_prompt_surplus_is_missing_not_ok_on_delete() {
     // must instead come back "missing" (drift), never silently "ok".
     let text = "first = input(\"Go? \")\nsecond = input(\"Go? \")\nprint(first, second)\n";
     let specs = [
-        spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "Go? "),
-        spec("input-2", ParameterBinding::Input, ParameterType::Str, 1, "Go? "),
+        spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "Go? ",
+        ),
+        spec(
+            "input-2",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            1,
+            "Go? ",
+        ),
     ];
     let edited = text.replace("first = input(\"Go? \")\n", ""); // delete the first call
     let report = reconcile(&edited, &specs);
@@ -323,10 +386,25 @@ fn test_input_duplicate_prompt_surplus_is_rebind_not_ok_when_position_edited() {
     // silent "ok" and never the winner's call site.
     let text = "first = input(\"Go? \")\nsecond = input(\"Go? \")\nprint(first, second)\n";
     let specs = [
-        spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "Go? "),
-        spec("input-2", ParameterBinding::Input, ParameterType::Str, 1, "Go? "),
+        spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "Go? ",
+        ),
+        spec(
+            "input-2",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            1,
+            "Go? ",
+        ),
     ];
-    let edited = text.replace("second = input(\"Go? \")", "second = input(\"Different: \")");
+    let edited = text.replace(
+        "second = input(\"Go? \")",
+        "second = input(\"Different: \")",
+    );
     let report = reconcile(&edited, &specs);
     assert!(report.has_drift());
     assert_eq!(ok_names(&report), ["input-1"]);
@@ -346,87 +424,8 @@ fn test_syntax_error_marks_all_missing() {
     assert!(usable_names(&report).is_empty());
 }
 
-#[test]
-#[ignore = "UNMAPPED: reconcile.drift_lines has no skit-language equivalent (human-string rendering lives in skit-cli/skit-ui)"]
-fn test_drift_lines_mention_old_and_new_type() {
-    // drift_lines renders old-vs-new type text for a warning; that string rendering is a CLI/UI
-    // concern, not part of skit-language's ReconcileReport surface.
-    let _ = reconcile;
-}
-
 // ---------- edit_specs: not-managed warning branches ----------
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_not_managed_in_secret_warning() {
-    // Passing a name that isn't managed into secret= must record a warning, not crash.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_not_managed_in_no_secret_warning() {
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_not_managed_in_prompts_warning() {
-    let _ = reconcile;
-}
 
 // ---------- Resync must not wipe definitions on a transient syntax error ----------
 
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs(resync=...) has no skit-language equivalent (spec editing/resync lives in skit-application/skit-cli)"]
-fn test_resync_on_unparseable_script_leaves_definitions_untouched() {
-    // A copy-mode script left mid-edit with a syntax error must not have its entire
-    // managed-parameter set dropped by --resync. reconcile() can't distinguish "really
-    // gone" from "can't parse right now", so _apply_resync must consult report.syntax_error itself.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs(resync=...) has no skit-language equivalent (spec editing/resync lives in skit-application/skit-cli)"]
-fn test_resync_syntax_error_does_not_also_apply_other_edits_incorrectly() {
-    // A syntax-error resync combined with --remove: the resync guard must only skip the resync
-    // step; the rest of edit_specs (remove/add/tweaks) still runs normally on the untouched specs.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.render_warning has no skit-language equivalent (warning rendering lives in skit-cli/skit-ui)"]
-fn test_render_warning_resync_skipped() {
-    let _ = reconcile;
-}
-
 // ---------- edit_specs must not crash on duplicate-named specs ----------
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_remove_with_duplicate_names_does_not_crash() {
-    // A duplicate-named const used to make `order.remove(name)` leave a dangling name in `order`
-    // after `del by_name[name]`, raising KeyError on the final list-comp.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs(resync=...) has no skit-language equivalent (spec editing/resync lives in skit-application/skit-cli)"]
-fn test_edit_specs_resync_drop_with_duplicate_names_does_not_crash() {
-    // Same dangling-name crash, reached via --resync instead of --remove.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_dedups_duplicate_names_even_when_untouched() {
-    // Duplicate names must never survive edit_specs, even when no operation targets them directly.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_no_secret_also_clears_the_env_source() {
-    // Clearing secret must also clear env_source (an env source only means anything on a secret).
-    let _ = reconcile;
-}

@@ -2,9 +2,9 @@
 //! (`main@206f9ef`). Each test keeps the Python function name and its rationale comment.
 //!
 //! Python reads ambient state when `cwd`, `env`, or `now` is omitted. The Rust application layer
-//! intentionally requires a `TokenContext`; the one ambient-state test is therefore ported next to
-//! the CLI `token_context()` adapter in `skit-cli/src/run/command.rs`. The other 20 tests exercise
-//! the same scanner through its public deterministic surface here.
+//! intentionally requires a `TokenContext`; the one ambient-state test is therefore ported as a
+//! black-box CLI test in `port_test_tokens_ambient.rs`. The other 20 tests exercise the same
+//! scanner through its public deterministic surface here.
 
 use std::{collections::BTreeMap, path::MAIN_SEPARATOR};
 
@@ -103,10 +103,7 @@ fn test_brace_escapes_false_keeps_double_braces_byte_identical() {
     // Placeholder-delivery mode: `{{`/`}}` pass through untouched. Prompt text is brace-heavy, so
     // unmanaged text must travel byte-identical.
     let context = context();
-    assert_eq!(
-        expand("{{cwd}}", &context, false).unwrap(),
-        "{{cwd}}"
-    );
+    assert_eq!(expand("{{cwd}}", &context, false).unwrap(), "{{cwd}}");
     assert_eq!(expand("a{{b}}c", &context, false).unwrap(), "a{{b}}c");
 }
 
@@ -200,10 +197,7 @@ fn test_preview_forwards_every_argument() {
         preview("{cwd}", &context, true),
         (context.cwd.clone(), None)
     );
-    assert_eq!(
-        preview("{env:K}", &context, true),
-        ("v".to_owned(), None)
-    );
+    assert_eq!(preview("{env:K}", &context, true), ("v".to_owned(), None));
     assert_eq!(
         preview("{now}", &context, true),
         ("14-30-05".to_owned(), None)
