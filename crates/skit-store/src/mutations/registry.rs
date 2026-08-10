@@ -47,21 +47,8 @@ impl Registry {
     /// Read the current projection without changing a corrupt or unreadable file.
     pub(crate) fn read(data_dir: &Path) -> Option<Self> {
         let path = data_dir.join("registry.toml");
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(_) => {
-                let _ = backup_corrupt(&path);
-                return None;
-            }
-        };
-        let mut document = match toml::from_str::<Table>(&text) {
-            Ok(document) => document,
-            Err(_) => {
-                let _ = backup_corrupt(&path);
-                return None;
-            }
-        };
+        let text = fs::read_to_string(&path).ok()?;
+        let mut document = toml::from_str::<Table>(&text).ok()?;
         normalize_entries(&mut document);
         Some(Self { path, document })
     }
@@ -180,30 +167,13 @@ impl Registry {
         Ok(true)
     }
 
-    /// Re-project one existing row and report whether its stored representation changed.
-    ///
-    /// Read-side self-healing uses this only after it acquired the namespace lock without
-    /// waiting. The caller re-reads metadata while that lock is held, so it never commits a
-    /// listing snapshot that a concurrent writer has already made stale.
-    pub(crate) fn repair_existing(
-        &mut self,
-        entry: &Entry,
-        entry_dir: &Path,
-    ) -> Result<bool, RepositoryError> {
-        let Some(before) = self.entries().get(entry.slug.as_str()).cloned() else {
-            return Ok(false);
-        };
-        self.project(entry, entry_dir)?;
-        Ok(self.entries().get(entry.slug.as_str()) != Some(&before))
-    }
-
     /// Delete one row.
     pub(super) fn remove(&mut self, slug: &Slug) {
         self.entries_mut().remove(slug.as_str());
     }
 
     /// Persist the whole projection through the same atomic replacement discipline as metadata.
-    pub(crate) fn save(&self) -> Result<(), RepositoryError> {
+    pub(super) fn save(&self) -> Result<(), RepositoryError> {
         let text = toml::to_string_pretty(&self.document)
             .expect("a normalized TOML value tree must serialize");
         atomic_write_bytes(&self.path, text.as_bytes())
