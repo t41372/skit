@@ -1,0 +1,27 @@
+name: Javascript onboarding oracle probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/javascript-onboarding-oracle-probe.yml
+      - crates/skit-form/tests/port_test_onboarding_javascript.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run javascript onboarding oracle
+        shell: bash
+        run: |
+          set +e
+          cargo test --locked -p skit-form --test port_test_onboarding_javascript -- --nocapture
+          rc=$?
+          echo "JAVASCRIPT_ONBOARDING_ORACLE_RC=$rc"
+          exit 0
