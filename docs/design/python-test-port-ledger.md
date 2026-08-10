@@ -53,7 +53,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
 | test_js_deps.py | 151 | skit-language / skit-runtime | todo |
-| test_interpreters.py | 74 | skit-language / skit-runtime | todo |
+| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (16) launch/invoke half · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language · 2 divergences |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (11) · 4 divergences (describe-total, params-msg, doctor-uv ×2) · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (3) · 2 divergences (exe/prompt picker labels) |
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
@@ -66,11 +66,11 @@ adjudicated · counts are Python `def test_` counts.
 | test_effective_uv_metadata.py | 22 | crates/skit-language/tests/port_test_effective_uv_metadata.rs | done (11) · 15 cross-crate/deferred |
 | test_uv_metadata_views.py | 3 | crates/skit-cli/tests/port_test_uv_metadata_views.rs | done (5) · 1 deferred |
 | test_uv_metadata_unpinning.py | 3 | crates/skit-cli/tests/port_test_uv_metadata_unpinning.rs | done (3) · 1 deferred |
-| test_path_type.py | 14 | skit-domain / skit-language | todo |
-| test_corpus.py | 11 | skit-language (tests/corpus/) | todo |
-| test_raw.py | 5 | skit-language | todo |
+| test_path_type.py | 14 | crates/skit-language/tests/port_test_path_type.rs | done (7) · 7 cross-crate · no gap · one-way-superset note |
+| test_corpus.py | 11 | crates/skit-language/tests/port_test_corpus.rs | done (11) · no gap |
+| test_raw.py | 5 | crates/skit-cli/tests/port_test_raw.rs | done (5) · no gap |
 | test_rewrite.py | 2 | crates/skit-language/tests/port_test_rewrite.rs | done (2) · no gap |
-| test_argv_text.py | 1 | skit-language / skit-runtime | todo |
+| test_argv_text.py | 1 | crates/skit-application/tests/port_test_argv_text.rs | done (1) · no gap |
 
 ### Tier 2 — stateful data boundaries (`skit-store`)
 
@@ -85,9 +85,9 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_flows.py | 102 | skit-runtime / skit-application | todo |
-| test_uvman.py | 36 | skit-runtime | todo |
-| test_launcher.py | 38 | skit-runtime / skit-application | todo |
-| test_launcher_fix.py | 12 | skit-runtime | todo |
+| test_uvman.py | 36 | crates/skit-runtime/tests/port_test_uvman.rs | done (18) · 18 white-box/cross-crate · orphan-pin completeness OWED as skit-runtime unit test · 3 divergences |
+| test_launcher.py | 38 | crates/skit-runtime/tests/port_test_launcher.rs | done (17) · 21 cross-crate |
+| test_launcher_fix.py | 12 | crates/skit-runtime/tests/port_test_launcher_fix.rs | in progress (relaunch after an API stall) |
 | test_shim.py | 38 | skit-language / skit-runtime | todo |
 | test_entrypoint.py | 10 | skit-cli / skit-runtime | todo |
 
@@ -313,6 +313,30 @@ The high ignore ratios on the two source-default modules are legitimate cross-cu
 assemble/flows/preset/edit_specs halves live in skit-application and skit-cli); the in-crate half is
 ported live. Two skit-form "injection-seam" ignores note the guard behavior IS present in
 skit-language — flag for the review pass, not a gap.
+
+### Wave 3 — subagent fan-out (2026-08-10): 7 modules (+ launcher_fix relaunched)
+
+path_type, corpus, raw, argv_text (→skit-application), interpreters, launcher, uvman. 6 verified
+faithful; **path_type re-verified by the supervisor by hand** (its adversarial verifier stalled) —
+clean, with a careful one-way-superset note. No hidden mismatches. Two agents stalled mid-stream
+(API): launcher_fix has no port yet (relaunched); path_type lost only its verifier.
+
+**COVERAGE OBLIGATIONS opened by cross-cutting deferral (port at the owning crate in a later wave):**
+- **interpreters DETECTION half → skit-language.** 58 of 74 tests defer the shebang_program /
+  infer_kind / shebang→kind detection to skit-language (home confirmed: lib.rs). The skit-runtime
+  port covers only the launch/invoke half (16). Needs a skit-language port covering the detection matrix.
+- **uvman "no orphan checksum pin" → skit-runtime UNIT test.** The oracle's three-way
+  set(TRIPLES)==set(_UV_SHA256)==produced can't assert the "_UV_SHA256 has no stale pin" direction
+  from an integration test (private CHECKSUMS). Re-home that one direction to a white-box unit test.
+
+Divergences recorded (FAILING CONTRACT): interpreters refusal-message wording + bun `run` subcommand;
+uvman checksum-error type (full body) + two undrivable-from-public-API cases as documented stubs.
+
+**Safety incident + hardening.** One subagent (raw) ran `rm -rf .locks values` in the repo root on a
+guess. Harmless (both were skit's own regenerable runtime scratch, untracked; no tracked file lost,
+tree clean), but the port_wave contract is now hardened: a subagent may not delete anything it did
+not create, and must sandbox the real skit binary's SKIT_DATA/STATE/CONFIG_DIR to temp on every
+invocation (running skit unsandboxed dropped .locks/values into the cwd).
 
 ### test_analyzer.py → port_test_analyzer.rs (done)
 
