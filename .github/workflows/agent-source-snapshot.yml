@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   snapshot:
-    name: export branch source
+    name: export branch and oracle sources
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -20,13 +20,24 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          path: rewrite
           persist-credentials: false
-      - name: Create the source archive
+      - name: Check out the Python oracle
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 206f9ef946fc45835cb2479593794431f2620c32
+          path: oracle
+          persist-credentials: false
+      - name: Create source archives
         shell: bash
-        run: git archive --format=tar.gz --output="$RUNNER_TEMP/skit-source.tar.gz" HEAD
-      - name: Upload the source archive
+        run: |
+          git -C rewrite archive --format=tar.gz --output="$RUNNER_TEMP/skit-rewrite.tar.gz" HEAD
+          git -C oracle archive --format=tar.gz --output="$RUNNER_TEMP/skit-python-oracle.tar.gz" HEAD
+      - name: Upload source archives
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: agent-source-snapshot
-          path: ${{ runner.temp }}/skit-source.tar.gz
+          path: |
+            ${{ runner.temp }}/skit-rewrite.tar.gz
+            ${{ runner.temp }}/skit-python-oracle.tar.gz
           retention-days: 1
