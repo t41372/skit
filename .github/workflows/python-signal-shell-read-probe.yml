@@ -1,0 +1,29 @@
+name: Python signal shell read probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/python-signal-shell-read-probe.yml
+      - crates/skit-form/tests/port_test_onboarding_signals.rs
+      - crates/skit-language/tests/port_test_shell_read_delivery.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run signal and shell read oracles
+        shell: bash
+        run: |
+          set +e
+          cargo test --locked -p skit-form --test port_test_onboarding_signals -- --nocapture
+          echo "ONBOARDING_SIGNALS_RC=$?"
+          cargo test --locked -p skit-language --test port_test_shell_read_delivery -- --nocapture
+          echo "SHELL_READ_DELIVERY_RC=$?"
+          exit 0
