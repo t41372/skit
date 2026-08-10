@@ -3,7 +3,10 @@
 //! Private Python helpers map to the public Rust launch planner/workdir resolver. This branch does
 //! not patch runtime code when an oracle assertion fails.
 
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
@@ -53,7 +56,10 @@ fn paths(script: impl Into<PathBuf>, invoke_cwd: impl Into<PathBuf>) -> LaunchPa
 }
 
 fn assembly(args: &[&str]) -> Assembly {
-    let args = args.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>();
+    let args = args
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
     Assembly {
         args: args.clone(),
         masked_args: args,
@@ -123,9 +129,23 @@ fn test_python_with_deps_and_python_version() {
     )
     .unwrap();
 
-    assert!(plan.args.windows(2).any(|pair| pair == ["--python", ">=3.11"]));
-    assert_eq!(plan.args.iter().filter(|arg| arg.as_str() == "--with").count(), 2);
-    assert!(plan.args.windows(2).any(|pair| pair == ["--with", "requests"]));
+    assert!(
+        plan.args
+            .windows(2)
+            .any(|pair| pair == ["--python", ">=3.11"])
+    );
+    assert_eq!(
+        plan.args
+            .iter()
+            .filter(|arg| arg.as_str() == "--with")
+            .count(),
+        2
+    );
+    assert!(
+        plan.args
+            .windows(2)
+            .any(|pair| pair == ["--with", "requests"])
+    );
     assert!(plan.args.windows(2).any(|pair| pair == ["--with", "rich"]));
 }
 
@@ -150,7 +170,10 @@ fn test_workdir_origin_is_source_parent() {
 fn test_workdir_store_and_invoke() {
     let mut python = entry("python");
     let probe = FakeProbe {
-        dirs: vec![PathBuf::from("/data/scripts/demo"), PathBuf::from("/invoke")],
+        dirs: vec![
+            PathBuf::from("/data/scripts/demo"),
+            PathBuf::from("/invoke"),
+        ],
         ..FakeProbe::default()
     };
 
@@ -204,12 +227,8 @@ fn test_run_entry_missing_workdir_raises() {
     python.meta.workdir = "/nonexistent/path/that/does/not/exist".to_owned();
 
     assert!(matches!(
-        resolve_launch_workdir(
-            &python,
-            &paths("/unused", "/invoke"),
-            &FakeProbe::default(),
-        )
-        .unwrap_err(),
+        resolve_launch_workdir(&python, &paths("/unused", "/invoke"), &FakeProbe::default(),)
+            .unwrap_err(),
         LaunchError::WorkdirMissing { .. }
     ));
 }

@@ -452,7 +452,10 @@ fn a_stale_registry_repairs_once_then_stays_stable() {
         Some("after hand edit")
     );
     store.scan().unwrap();
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), repaired);
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        repaired
+    );
 }
 
 #[test]

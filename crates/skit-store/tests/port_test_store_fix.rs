@@ -75,7 +75,11 @@ fn test_list_entries_skips_valid_toml_missing_name_key() {
 
     let bad = root.path().join("scripts").join("bad-slug");
     fs::create_dir_all(&bad).unwrap();
-    fs::write(bad.join("meta.toml"), "schema = 1\nkind = \"future-kind\"\n").unwrap();
+    fs::write(
+        bad.join("meta.toml"),
+        "schema = 1\nkind = \"future-kind\"\n",
+    )
+    .unwrap();
     add_registry_row(&root, "bad-slug", "bad");
 
     let names = store
@@ -96,7 +100,11 @@ fn test_doctor_rebuild_reports_missing_key_instead_of_crashing() {
 
     let bad = root.path().join("scripts").join("bad-slug");
     fs::create_dir_all(&bad).unwrap();
-    fs::write(bad.join("meta.toml"), "schema = 1\nkind = \"future-kind\"\n").unwrap();
+    fs::write(
+        bad.join("meta.toml"),
+        "schema = 1\nkind = \"future-kind\"\n",
+    )
+    .unwrap();
 
     assert_eq!(store.rebuild_registry().unwrap(), 1);
 }
@@ -107,7 +115,11 @@ fn test_resolve_corrupt_missing_key_meta_raises_not_found_not_decode_panic() {
     let store = FileStore::new(root.path());
     let bad = root.path().join("scripts").join("bad-slug");
     fs::create_dir_all(&bad).unwrap();
-    fs::write(bad.join("meta.toml"), "schema = 1\nkind = \"future-kind\"\n").unwrap();
+    fs::write(
+        bad.join("meta.toml"),
+        "schema = 1\nkind = \"future-kind\"\n",
+    )
+    .unwrap();
     add_registry_row(&root, "bad-slug", "bad");
 
     assert!(matches!(
@@ -215,7 +227,11 @@ fn test_fs_truth_ignores_stray_non_directory_entries_in_scripts_dir() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     fs::create_dir_all(root.path().join("scripts")).unwrap();
-    fs::write(root.path().join("scripts").join("stray-file.txt"), "not an entry").unwrap();
+    fs::write(
+        root.path().join("scripts").join("stray-file.txt"),
+        "not an entry",
+    )
+    .unwrap();
 
     let entry = store.create(request("ok", b"payload\n")).unwrap();
 

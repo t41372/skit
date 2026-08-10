@@ -97,8 +97,8 @@ fn test_rename_updates_meta_and_registry_while_preserving_slug_directory() {
     assert_eq!(renamed.slug, slug);
     assert_eq!(renamed.meta.name, "after");
     assert!(entry_dir.is_dir());
-    let meta = toml::from_str::<Table>(&fs::read_to_string(entry_dir.join("meta.toml")).unwrap())
-        .unwrap();
+    let meta =
+        toml::from_str::<Table>(&fs::read_to_string(entry_dir.join("meta.toml")).unwrap()).unwrap();
     assert_eq!(meta.get("name").and_then(Value::as_str), Some("after"));
     assert_eq!(
         registry(&root)

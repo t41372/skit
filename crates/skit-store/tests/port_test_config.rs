@@ -121,17 +121,24 @@ fn test_save_editor_still_preserves_other_keys_when_config_is_valid() {
     let store = FileConfigStore::new(root.path());
     write_config(&root, "language = \"zh-CN\"\nunknown = \"keep\"\n");
 
-    assert!(store.set_with_recovery("editor", "code --wait").unwrap().is_none());
+    assert!(
+        store
+            .set_with_recovery("editor", "code --wait")
+            .unwrap()
+            .is_none()
+    );
 
-    let document = toml::from_str::<Table>(
-        &fs::read_to_string(root.path().join("config.toml")).unwrap(),
-    )
-    .unwrap();
+    let document =
+        toml::from_str::<Table>(&fs::read_to_string(root.path().join("config.toml")).unwrap())
+            .unwrap();
     assert_eq!(
         document.get("language").and_then(Value::as_str),
         Some("zh-CN")
     );
-    assert_eq!(document.get("unknown").and_then(Value::as_str), Some("keep"));
+    assert_eq!(
+        document.get("unknown").and_then(Value::as_str),
+        Some("keep")
+    );
     assert_eq!(
         document.get("editor").and_then(Value::as_str),
         Some("code --wait")
@@ -151,7 +158,10 @@ fn test_mirror_env_overlays_all_vectors() {
         env.get("UV_PYTHON_INSTALL_MIRROR").map(String::as_str),
         Some(PYTHON_INSTALL)
     );
-    assert_eq!(env.get("NPM_CONFIG_REGISTRY").map(String::as_str), Some(NPM));
+    assert_eq!(
+        env.get("NPM_CONFIG_REGISTRY").map(String::as_str),
+        Some(NPM)
+    );
 }
 
 #[test]
@@ -159,10 +169,7 @@ fn test_mirror_env_defers_to_nonempty_user_index() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
     write_config(&root, &full_mirror_body());
-    let base = BTreeMap::from([(
-        "UV_INDEX_URL".to_owned(),
-        "https://mine/simple".to_owned(),
-    )]);
+    let base = BTreeMap::from([("UV_INDEX_URL".to_owned(), "https://mine/simple".to_owned())]);
 
     let env = store.mirror_environment(&base).unwrap();
     assert!(!env.contains_key("UV_DEFAULT_INDEX"));

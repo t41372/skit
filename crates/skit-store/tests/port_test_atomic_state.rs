@@ -50,11 +50,12 @@ fn test_failed_atomic_write_releases_the_per_slug_lock_for_the_next_update() {
     fs::create_dir_all(&target).unwrap();
 
     assert!(store.update(&slug, |_| ()).is_err());
-    assert!(root
-        .path()
-        .join(".locks")
-        .join("retry-after-failure.values.lock")
-        .is_file());
+    assert!(
+        root.path()
+            .join(".locks")
+            .join("retry-after-failure.values.lock")
+            .is_file()
+    );
 
     fs::remove_dir(&target).unwrap();
     store
@@ -63,7 +64,10 @@ fn test_failed_atomic_write_releases_the_per_slug_lock_for_the_next_update() {
         })
         .unwrap();
 
-    assert_eq!(store.load(&slug).values.get("A").map(String::as_str), Some("1"));
+    assert_eq!(
+        store.load(&slug).values.get("A").map(String::as_str),
+        Some("1")
+    );
 }
 
 #[cfg(unix)]
@@ -88,5 +92,8 @@ fn test_atomic_write_preserves_existing_state_file_mode() {
         .unwrap();
 
     assert_eq!(fs::metadata(&target).unwrap().mode() & 0o777, before);
-    assert_eq!(store.load(&slug).values.get("B").map(String::as_str), Some("2"));
+    assert_eq!(
+        store.load(&slug).values.get("B").map(String::as_str),
+        Some("2")
+    );
 }

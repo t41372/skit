@@ -3,7 +3,9 @@
 
 use std::{collections::BTreeSet, fs, sync::Arc, thread};
 
-use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions};
+use skit_application::{
+    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
+};
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
 use tempfile::TempDir;

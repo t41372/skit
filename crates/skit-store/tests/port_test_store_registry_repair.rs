@@ -137,7 +137,12 @@ fn test_an_older_registry_is_widened_the_first_time_it_is_listed() {
     let repaired = registry(&root);
     let repaired = row(&repaired, "legacy");
     assert_eq!(repaired.get("mode").and_then(Value::as_str), Some("copy"));
-    assert!(repaired.get("mtime_ns").and_then(Value::as_integer).is_some());
+    assert!(
+        repaired
+            .get("mtime_ns")
+            .and_then(Value::as_integer)
+            .is_some()
+    );
 }
 
 #[test]
@@ -160,7 +165,10 @@ fn test_a_hand_edited_meta_shows_up_on_the_next_listing() {
         Some("edited by hand")
     );
     let after_first = fs::read(root.path().join("registry.toml")).unwrap();
-    assert_eq!(store.scan().unwrap().entries[0].description, "edited by hand");
+    assert_eq!(
+        store.scan().unwrap().entries[0].description,
+        "edited by hand"
+    );
     assert_eq!(
         fs::read(root.path().join("registry.toml")).unwrap(),
         after_first
@@ -199,7 +207,10 @@ fn test_a_listing_never_blocks_on_the_registry_lock() {
 
     let scan = store.scan().unwrap();
     assert_eq!(scan.entries[0].name, "legacy");
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), legacy_bytes);
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        legacy_bytes
+    );
 
     drop(held);
     store.scan().unwrap();
@@ -227,7 +238,10 @@ fn test_a_reference_row_that_lost_its_target_is_repaired_once() {
     write_registry(&root, &document);
 
     let scan = store.scan().unwrap();
-    assert_eq!(scan.entries[0].target.as_deref(), Some("/original/linked.tool"));
+    assert_eq!(
+        scan.entries[0].target.as_deref(),
+        Some("/original/linked.tool")
+    );
     assert_eq!(
         row(&registry(&root), "linked")
             .get("target")
@@ -240,7 +254,10 @@ fn test_a_reference_row_that_lost_its_target_is_repaired_once() {
         store.scan().unwrap().entries[0].target.as_deref(),
         Some("/original/linked.tool")
     );
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), repaired);
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        repaired
+    );
 }
 
 #[test]
@@ -270,9 +287,7 @@ fn test_repair_never_drops_an_entry_added_meanwhile() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries.get("raced"), Some(&raced));
     assert_eq!(
-        row(&repaired, "legacy")
-            .get("mode")
-            .and_then(Value::as_str),
+        row(&repaired, "legacy").get("mode").and_then(Value::as_str),
         Some("copy")
     );
 }
@@ -360,12 +375,7 @@ fn test_an_entry_whose_meta_is_gone_is_not_listed() {
     store
         .create(request("kept", StorageMode::Copy, "kept"))
         .unwrap();
-    fs::remove_dir_all(
-        root.path()
-            .join("scripts")
-            .join(linked.slug.as_str()),
-    )
-    .unwrap();
+    fs::remove_dir_all(root.path().join("scripts").join(linked.slug.as_str())).unwrap();
 
     let names = store
         .scan()
@@ -458,14 +468,8 @@ fn test_a_fresh_stamped_row_with_broken_fields_falls_back() {
     entries_mut(&mut document).insert(
         entry.slug.as_str().to_owned(),
         Value::Table(Table::from_iter([
-            (
-                "name".to_owned(),
-                Value::String("fresh-broken".to_owned()),
-            ),
-            (
-                "kind".to_owned(),
-                Value::String("future-kind".to_owned()),
-            ),
+            ("name".to_owned(), Value::String("fresh-broken".to_owned())),
+            ("kind".to_owned(), Value::String("future-kind".to_owned())),
             ("mode".to_owned(), Value::String("copy".to_owned())),
             ("description".to_owned(), Value::Integer(7)),
             (
@@ -494,10 +498,7 @@ fn test_widening_gives_up_on_a_row_it_would_reject_again() {
         entry.slug.as_str().to_owned(),
         Value::Table(Table::from_iter([
             ("name".to_owned(), Value::String("odd".to_owned())),
-            (
-                "kind".to_owned(),
-                Value::String("future-kind".to_owned()),
-            ),
+            ("kind".to_owned(), Value::String("future-kind".to_owned())),
             ("description".to_owned(), Value::String(String::new())),
         ])),
     );

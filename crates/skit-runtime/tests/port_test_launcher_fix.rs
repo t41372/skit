@@ -163,8 +163,14 @@ fn shell_plan(root: &TempDir, command: &str) -> LaunchPlan {
 #[test]
 fn test_normalize_exit_code_maps_negative_returncode_to_128_plus_n() {
     let root = TempDir::new().unwrap();
-    assert_eq!(execute_launch(&shell_plan(&root, "kill -SEGV $$")).unwrap(), 139);
-    assert_eq!(execute_launch(&shell_plan(&root, "kill -TERM $$")).unwrap(), 143);
+    assert_eq!(
+        execute_launch(&shell_plan(&root, "kill -SEGV $$")).unwrap(),
+        139
+    );
+    assert_eq!(
+        execute_launch(&shell_plan(&root, "kill -TERM $$")).unwrap(),
+        143
+    );
     assert_eq!(execute_launch(&shell_plan(&root, "exit 0")).unwrap(), 0);
     assert_eq!(execute_launch(&shell_plan(&root, "exit 2")).unwrap(), 2);
 }
@@ -266,10 +272,7 @@ fn test_placeholder_value_with_shell_metacharacters_cannot_inject() {
 fn test_run_entry_placeholder_value_with_space_reaches_child_intact() {
     let root = TempDir::new().unwrap();
     let outfile = root.path().join("out.txt");
-    let template = format!(
-        "printf \"%s|%s|\" {{a}} {{b}} > \"{}\"",
-        outfile.display()
-    );
+    let template = format!("printf \"%s|%s|\" {{a}} {{b}} > \"{}\"", outfile.display());
     let entry = command_entry(&template);
     let probe = FakeProbe {
         programs: BTreeMap::from([("sh".to_owned(), PathBuf::from("/bin/sh"))]),

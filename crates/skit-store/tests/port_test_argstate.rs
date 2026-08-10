@@ -87,9 +87,7 @@ fn test_concurrent_save_preset_from_many_threads_loses_no_preset() {
                 barrier.wait();
                 store
                     .update(&slug, |state| {
-                        state
-                            .presets
-                            .insert(name.clone(), values(&[(&name, "v")]));
+                        state.presets.insert(name.clone(), values(&[(&name, "v")]));
                     })
                     .unwrap();
             })

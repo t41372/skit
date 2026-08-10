@@ -3,7 +3,10 @@
 //! These tests stop at `build_launch_plan`: no private helper is exposed for the port. A red
 //! assertion is a behavior mismatch to keep, not a request to patch runtime production code.
 
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, Slug};
@@ -53,7 +56,10 @@ fn paths() -> LaunchPaths {
 }
 
 fn assembly(extra: &[&str]) -> Assembly {
-    let args = extra.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>();
+    let args = extra
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
     Assembly {
         args: args.clone(),
         masked_args: args,
@@ -134,10 +140,7 @@ fn test_seeded_copilot_binds_dash_prefixed_prompt_and_keeps_extra() {
         &paths(),
         &assembly(&["--model", "gpt-5"]),
         Some("--version"),
-        Some(&runner(
-            "copilot",
-            &["copilot", "--interactive={{prompt}}"],
-        )),
+        Some(&runner("copilot", &["copilot", "--interactive={{prompt}}"])),
         &probe(&["copilot"]),
     )
     .unwrap();
@@ -161,10 +164,7 @@ fn test_seeded_cursor_selects_agent_before_passing_prompt() {
         )
         .unwrap();
 
-        assert_eq!(
-            plan.args,
-            ["--model", "gpt-5", "--", "agent", body]
-        );
+        assert_eq!(plan.args, ["--model", "gpt-5", "--", "agent", body]);
     }
 }
 
@@ -191,14 +191,22 @@ fn test_seeded_pi_warns_and_prefixes_newline_for_parser_ambiguous_prompt() {
         )
         .unwrap();
 
-        assert_eq!(plan.args, [format!("\n{body}"), "--model".to_owned(), "fast".to_owned()]);
+        assert_eq!(
+            plan.args,
+            [format!("\n{body}"), "--model".to_owned(), "fast".to_owned()]
+        );
         assert_eq!(plan.warnings, [LaunchWarning::PiPromptProtected]);
     }
 }
 
 #[test]
 fn test_seeded_pi_keeps_unambiguous_prompt_byte_exact() {
-    for body in ["ordinary prompt", "first line\nsecond line", " install", "help"] {
+    for body in [
+        "ordinary prompt",
+        "first line\nsecond line",
+        " install",
+        "help",
+    ] {
         let plan = build_launch_plan(
             &entry(),
             &paths(),

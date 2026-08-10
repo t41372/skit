@@ -117,10 +117,7 @@ fn test_copy_registry_row_is_a_listing_projection_not_full_metadata() {
     let row = row(&document, entry.slug.as_str());
 
     assert_eq!(row.get("name").and_then(Value::as_str), Some("projected"));
-    assert_eq!(
-        row.get("kind").and_then(Value::as_str),
-        Some("future-kind")
-    );
+    assert_eq!(row.get("kind").and_then(Value::as_str), Some("future-kind"));
     assert_eq!(row.get("mode").and_then(Value::as_str), Some("copy"));
     assert_eq!(
         row.get("description").and_then(Value::as_str),
@@ -147,19 +144,12 @@ fn test_reference_registry_row_carries_only_the_launch_target_extra_field() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     let entry = store
-        .create(request(
-            "linked-row",
-            StorageMode::Reference,
-            b"body\n",
-        ))
+        .create(request("linked-row", StorageMode::Reference, b"body\n"))
         .unwrap();
     let document = registry(&root);
     let row = row(&document, entry.slug.as_str());
 
-    assert_eq!(
-        row.get("mode").and_then(Value::as_str),
-        Some("reference")
-    );
+    assert_eq!(row.get("mode").and_then(Value::as_str), Some("reference"));
     assert_eq!(
         row.get("target").and_then(Value::as_str),
         Some("/original/linked-row.tool")

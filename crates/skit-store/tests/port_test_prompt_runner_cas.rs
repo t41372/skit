@@ -95,22 +95,18 @@ fn test_raw_row_remove_snapshot_includes_unknown_fields_and_container_value() {
 
     write_document(
         &root,
-        &Table::from_iter([(
-            "prompt".to_owned(),
-            Value::String("before".to_owned()),
-        )]),
+        &Table::from_iter([("prompt".to_owned(), Value::String("before".to_owned()))]),
     );
     let expected_container = store.runner_rows().unwrap().remove(0);
     write_document(
         &root,
-        &Table::from_iter([(
-            "prompt".to_owned(),
-            Value::String("after".to_owned()),
-        )]),
+        &Table::from_iter([("prompt".to_owned(), Value::String("after".to_owned()))]),
     );
-    assert!(!store
-        .remove_runner_row_if_unchanged(&expected_container)
-        .unwrap());
+    assert!(
+        !store
+            .remove_runner_row_if_unchanged(&expected_container)
+            .unwrap()
+    );
     assert_eq!(
         read_document(&root).get("prompt").and_then(Value::as_str),
         Some("after")
@@ -131,10 +127,7 @@ fn test_runner_raw_snapshots_are_recursively_type_sensitive() {
             "nested".to_owned(),
             Value::Array(vec![
                 Value::Integer(1),
-                Value::Table(Table::from_iter([(
-                    "flag".to_owned(),
-                    Value::Integer(0),
-                )])),
+                Value::Table(Table::from_iter([("flag".to_owned(), Value::Integer(0))])),
             ]),
         )])),
     );
@@ -142,22 +135,19 @@ fn test_runner_raw_snapshots_are_recursively_type_sensitive() {
     let expected = store.runner_rows().unwrap().remove(0);
 
     let mut changed = read_document(&root);
-    rows_mut(&mut changed)[0]
-        .as_table_mut()
-        .unwrap()
-        .insert(
-            "future".to_owned(),
-            Value::Table(Table::from_iter([(
-                "nested".to_owned(),
-                Value::Array(vec![
-                    Value::Boolean(true),
-                    Value::Table(Table::from_iter([(
-                        "flag".to_owned(),
-                        Value::Boolean(false),
-                    )])),
-                ]),
-            )])),
-        );
+    rows_mut(&mut changed)[0].as_table_mut().unwrap().insert(
+        "future".to_owned(),
+        Value::Table(Table::from_iter([(
+            "nested".to_owned(),
+            Value::Array(vec![
+                Value::Boolean(true),
+                Value::Table(Table::from_iter([(
+                    "flag".to_owned(),
+                    Value::Boolean(false),
+                )])),
+            ]),
+        )])),
+    );
     write_document(&root, &changed);
 
     assert!(!store.remove_runner_row_if_unchanged(&expected).unwrap());
@@ -209,9 +199,11 @@ fn test_runner_edit_snapshot_checks_only_the_target_key() {
         .insert("argv".to_owned(), argv(&["unrelated", "{{prompt}}"]));
     write_document(&root, &changed);
 
-    assert!(store
-        .set_runner_if_unchanged(runner("victim", &["mine", "{{prompt}}"]), &expected)
-        .unwrap());
+    assert!(
+        store
+            .set_runner_if_unchanged(runner("victim", &["mine", "{{prompt}}"]), &expected)
+            .unwrap()
+    );
     assert_eq!(
         store
             .runners()
@@ -239,9 +231,11 @@ fn test_runner_edit_snapshot_checks_only_the_target_key() {
         .collect::<Vec<_>>();
     let concurrent = runner("victim", &["external", "{{prompt}}"]);
     assert!(store.set_runner(concurrent.clone(), true).unwrap());
-    assert!(!store
-        .set_runner_if_unchanged(runner("victim", &["old", "{{prompt}}"]), &expected)
-        .unwrap());
+    assert!(
+        !store
+            .set_runner_if_unchanged(runner("victim", &["old", "{{prompt}}"]), &expected)
+            .unwrap()
+    );
     assert_eq!(
         store
             .runners()
@@ -263,10 +257,7 @@ fn test_exact_row_repair_can_name_a_recognizable_anonymous_command() {
     )]));
     write_document(
         &root,
-        &document_with_rows(vec![
-            anonymous,
-            Value::String("untouched".to_owned()),
-        ]),
+        &document_with_rows(vec![anonymous, Value::String("untouched".to_owned())]),
     );
     let expected = store.runner_rows().unwrap().remove(0);
     let replacement = runner(
@@ -274,9 +265,11 @@ fn test_exact_row_repair_can_name_a_recognizable_anonymous_command() {
         &["valuable-agent", "--model", "x", "{{prompt}}"],
     );
 
-    assert!(store
-        .replace_runner_row_if_unchanged(replacement.clone(), &expected)
-        .unwrap());
+    assert!(
+        store
+            .replace_runner_row_if_unchanged(replacement.clone(), &expected)
+            .unwrap()
+    );
     assert_eq!(store.runners().unwrap(), [replacement]);
     let mut document = read_document(&root);
     assert_eq!(
@@ -308,20 +301,24 @@ fn test_exact_row_repair_refuses_a_stale_snapshot_or_colliding_new_name() {
         .insert("future".to_owned(), Value::Boolean(true));
     write_document(&root, &changed);
 
-    assert!(!store
-        .replace_runner_row_if_unchanged(
-            runner("fresh", &["valuable", "{{prompt}}"]),
-            &expected,
-        )
-        .unwrap());
+    assert!(
+        !store
+            .replace_runner_row_if_unchanged(
+                runner("fresh", &["valuable", "{{prompt}}"]),
+                &expected,
+            )
+            .unwrap()
+    );
 
     let expected = store.runner_rows().unwrap().remove(0);
-    assert!(store
-        .replace_runner_row_if_unchanged(
-            runner("taken", &["valuable", "{{prompt}}"]),
-            &expected,
-        )
-        .is_err());
+    assert!(
+        store
+            .replace_runner_row_if_unchanged(
+                runner("taken", &["valuable", "{{prompt}}"]),
+                &expected,
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -348,9 +345,11 @@ fn test_name_remove_snapshot_checks_only_target_key() {
     );
     write_document(&root, &changed);
 
-    assert!(store
-        .remove_runner_if_unchanged("victim", &expected)
-        .unwrap());
+    assert!(
+        store
+            .remove_runner_if_unchanged("victim", &expected)
+            .unwrap()
+    );
     assert_eq!(
         store
             .runners()
@@ -368,10 +367,7 @@ fn test_runner_remove_helpers_report_absent_targets_and_bad_shapes_without_writi
     let store = FileConfigStore::new(root.path());
     write_document(
         &root,
-        &document_with_rows(vec![runner_value(
-            "kept",
-            argv(&["kept", "{{prompt}}"]),
-        )]),
+        &document_with_rows(vec![runner_value("kept", argv(&["kept", "{{prompt}}"]))]),
     );
     let before = fs::read(root.path().join("config.toml")).unwrap();
 
@@ -381,10 +377,7 @@ fn test_runner_remove_helpers_report_absent_targets_and_bad_shapes_without_writi
 
     write_document(
         &root,
-        &Table::from_iter([(
-            "prompt".to_owned(),
-            Value::String("scalar".to_owned()),
-        )]),
+        &Table::from_iter([("prompt".to_owned(), Value::String("scalar".to_owned()))]),
     );
     assert!(!store.remove_runner_row(0).unwrap());
 }

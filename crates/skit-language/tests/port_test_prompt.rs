@@ -96,10 +96,7 @@ fn test_corpus_crlf_shape_is_preserved_by_rendering() {
         ("repo".to_owned(), "Y".to_owned()),
     ]);
 
-    assert_eq!(
-        render_prompt_body(body, &values, true),
-        "A=X\r\nB=Y\r\n"
-    );
+    assert_eq!(render_prompt_body(body, &values, true), "A=X\r\nB=Y\r\n");
 }
 
 #[test]
@@ -120,14 +117,26 @@ fn test_corpus_reserved_prompt_stays_verbatim() {
     let body = "{{prompt}}\tliterally\n{{real}}";
     let values = BTreeMap::from([("real".to_owned(), "R".to_owned())]);
 
-    assert_eq!(render_prompt_body(body, &values, true), "{{prompt}}\tliterally\nR");
+    assert_eq!(
+        render_prompt_body(body, &values, true),
+        "{{prompt}}\tliterally\nR"
+    );
 }
 
 #[test]
 fn test_infer_kind_compound_suffix() {
-    assert_eq!(infer_kind(Path::new("notes/review.prompt.md"), None, false), Some("prompt"));
-    assert_eq!(infer_kind(Path::new("REVIEW.PROMPT.MD"), None, false), Some("prompt"));
-    assert_eq!(infer_kind(Path::new("x.prompt"), None, false), Some("prompt"));
+    assert_eq!(
+        infer_kind(Path::new("notes/review.prompt.md"), None, false),
+        Some("prompt")
+    );
+    assert_eq!(
+        infer_kind(Path::new("REVIEW.PROMPT.MD"), None, false),
+        Some("prompt")
+    );
+    assert_eq!(
+        infer_kind(Path::new("x.prompt"), None, false),
+        Some("prompt")
+    );
     assert_eq!(infer_kind(Path::new("notes.md"), None, false), None);
     assert_eq!(infer_kind(Path::new("a.mts"), None, false), Some("ts"));
     assert_eq!(infer_kind(Path::new("b.sh"), None, false), Some("shell"));

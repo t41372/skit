@@ -242,10 +242,7 @@ fn test_runners_section_of_wrong_type_degrades_without_being_repaired_by_seed_re
             "prompt".to_owned(),
             Value::Table(Table::from_iter([
                 ("runners_seeded".to_owned(), Value::Boolean(true)),
-                (
-                    "runners".to_owned(),
-                    Value::String("garbage".to_owned()),
-                ),
+                ("runners".to_owned(), Value::String("garbage".to_owned())),
             ])),
         )]),
     );
@@ -254,10 +251,7 @@ fn test_runners_section_of_wrong_type_degrades_without_being_repaired_by_seed_re
 
     write_document(
         &root,
-        &Table::from_iter([(
-            "prompt".to_owned(),
-            Value::String("not-a-table".to_owned()),
-        )]),
+        &Table::from_iter([("prompt".to_owned(), Value::String("not-a-table".to_owned()))]),
     );
     assert!(store.runners().unwrap().is_empty());
     assert_eq!(store.invalid_runner_rows().unwrap(), ["prompt"]);
@@ -471,10 +465,7 @@ fn test_set_runner_accepts_single_braces_as_literal_text() {
 
     assert!(
         !store
-            .set_runner(
-                runner("literal", &["agent", "{lit} {{prompt}}"]),
-                false,
-            )
+            .set_runner(runner("literal", &["agent", "{lit} {{prompt}}"]), false,)
             .unwrap()
     );
     assert_eq!(
