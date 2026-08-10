@@ -115,7 +115,18 @@ mod tests {
         acquire_lock, atomic_write_bytes, preserve_permissions_best_effort,
         replace_with_retry_using, sync_directory,
     };
-    use std::{cell::Cell, io, time::Duration};
+    use std::{
+        cell::Cell,
+        io,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        thread,
+        time::Duration,
+    };
+    #[cfg(unix)]
+    use std::{io::Write as _, process::Command};
     use tempfile::TempDir;
 
     #[test]
@@ -128,6 +139,95 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         assert!(atomic_write_bytes(&target, b"value").is_err());
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn test_advisory_file_lock_keeps_a_persistent_one_byte_inode() {
+        let root = TempDir::new().unwrap();
+        let lock_path = root.path().join("config.lock");
+
+        {
+            let _lock = acquire_lock(&lock_path).unwrap();
+            assert!(lock_path.is_file());
+            assert!(std::fs::metadata(&lock_path).unwrap().len() >= 1);
+        }
+
+        assert!(lock_path.is_file());
+        assert!(std::fs::metadata(&lock_path).unwrap().len() >= 1);
+    }
+
+    #[test]
+    fn test_advisory_file_lock_serializes_two_waiting_threads() {
+        let root = TempDir::new().unwrap();
+        let lock_path = Arc::new(root.path().join("config.lock"));
+        let entered = Arc::new(AtomicUsize::new(0));
+        let held = acquire_lock(&lock_path).unwrap();
+
+        let threads = (0..2)
+            .map(|_| {
+                let lock_path = Arc::clone(&lock_path);
+                let entered = Arc::clone(&entered);
+                thread::spawn(move || {
+                    let _lock = acquire_lock(&lock_path).unwrap();
+                    entered.fetch_add(1, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(20));
+                })
+            })
+            .collect::<Vec<_>>();
+
+        thread::sleep(Duration::from_millis(30));
+        assert_eq!(entered.load(Ordering::SeqCst), 0);
+        drop(held);
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(entered.load(Ordering::SeqCst), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_advisory_file_lock_is_released_by_kernel_after_process_crash() {
+        let root = TempDir::new().unwrap();
+        let lock_path = root.path().join("crash.lock");
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "fs_ops::tests::lock_crash_helper",
+                "--nocapture",
+            ])
+            .env("SKIT_TEST_CRASH_LOCK", &lock_path)
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(23));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("locked"));
+        let _lock = acquire_lock(&lock_path).unwrap();
+        assert!(lock_path.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_crash_helper() {
+        let Ok(lock_path) = std::env::var("SKIT_TEST_CRASH_LOCK") else {
+            return;
+        };
+        let _lock = acquire_lock(std::path::Path::new(&lock_path)).unwrap();
+        println!("locked");
+        io::stdout().flush().unwrap();
+        std::process::exit(23);
+    }
+
+    #[test]
+    fn test_advisory_lock_open_failure_releases_its_thread_mutex() {
+        let root = TempDir::new().unwrap();
+        let blocker = root.path().join("locks");
+        let lock_path = blocker.join("entry.lock");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+
+        assert!(acquire_lock(&lock_path).is_err());
+        std::fs::remove_file(&blocker).unwrap();
+        let _lock = acquire_lock(&lock_path).unwrap();
+        assert!(lock_path.is_file());
     }
 
     #[test]
@@ -154,6 +254,42 @@ mod tests {
             },
         );
 
+        assert!(attempted.get());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_write_text_keep_mode_preserves_existing_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("script.sh");
+        std::fs::write(&target, b"old\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let expected = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+
+        atomic_write_bytes(&target, b"new content\n").unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"new content\n");
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            expected
+        );
+    }
+
+    #[test]
+    fn test_atomic_write_text_keep_mode_suppresses_chmod_failure() {
+        let attempted = Cell::new(false);
+        preserve_permissions_best_effort(
+            Ok(std::fs::metadata(".").unwrap().permissions()),
+            |_: std::fs::Permissions| {
+                attempted.set(true);
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "simulated chmod refusal",
+                ))
+            },
+        );
         assert!(attempted.get());
     }
 
