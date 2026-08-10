@@ -257,6 +257,10 @@
         "test_default_env_and_now_paths",
         "test_escape_sequences_mid_string_exact",
         "test_preview_forwards_every_argument",
+        "test_has_tokens",
+        "test_default_env_and_now_paths",
+        "test_escape_sequences_mid_string_exact",
+        "test_preview_forwards_every_argument",
         "test_escape_deep_in_string_exact"
       ],
       "deferred": []
@@ -269,6 +273,31 @@
       ],
       "ported": [
         "test_platformdirs_fallback_stays_isolated_when_skit_env_missing"
+      ],
+      "deferred": []
+    },
+    {
+      "source": "tests/test_path_type.py",
+      "status": "done",
+      "targets": [
+        "crates/skit-cli/tests/port_test_path_type.rs",
+        "crates/skit-tui/tests/port_test_path_type_tui.rs"
+      ],
+      "ported": [
+        "test_path_is_an_allowed_type",
+        "test_unknown_type_still_degrades_to_str",
+        "test_block_round_trip_carries_path",
+        "test_meta_round_trip_carries_path",
+        "test_coerce_default_path_keeps_raw_string",
+        "test_edit_declared_accepts_path_type",
+        "test_reconcile_path_over_str_const_is_refinement",
+        "test_reconcile_path_over_int_const_is_drift",
+        "test_resync_preserves_declared_path",
+        "test_resync_still_corrects_real_type_drift",
+        "test_formfield_carries_path_for_every_delivery",
+        "test_degraded_flag_field_still_renders_free_text",
+        "test_validate_value_path_is_free_text",
+        "test_type_label_path"
       ],
       "deferred": []
     }
