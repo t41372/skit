@@ -13,7 +13,7 @@ use tempfile::TempDir;
 use toml::{Table, Value};
 
 fn hash(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
 fn request(name: &str, mode: StorageMode, bytes: &[u8]) -> CreateEntry {
@@ -42,8 +42,7 @@ fn registry(root: &TempDir) -> Table {
     toml::from_str(&fs::read_to_string(root.path().join("registry.toml")).unwrap()).unwrap()
 }
 
-fn row<'a>(root: &'a TempDir, document: &'a Table, slug: &str) -> &'a Table {
-    let _ = root;
+fn row<'a>(document: &'a Table, slug: &str) -> &'a Table {
     document
         .get("entries")
         .and_then(Value::as_table)
@@ -115,18 +114,31 @@ fn test_copy_registry_row_is_a_listing_projection_not_full_metadata() {
         .create(request("projected", StorageMode::Copy, b"body\n"))
         .unwrap();
     let document = registry(&root);
-    let row = row(&root, &document, entry.slug.as_str());
+    let row = row(&document, entry.slug.as_str());
 
     assert_eq!(row.get("name").and_then(Value::as_str), Some("projected"));
-    assert_eq!(row.get("kind").and_then(Value::as_str), Some("future-kind"));
+    assert_eq!(
+        row.get("kind").and_then(Value::as_str),
+        Some("future-kind")
+    );
     assert_eq!(row.get("mode").and_then(Value::as_str), Some("copy"));
     assert_eq!(
         row.get("description").and_then(Value::as_str),
         Some("description")
     );
     assert!(row.get("mtime_ns").and_then(Value::as_integer).is_some());
-    for forbidden in ["source", "source_hash", "added_at", "id", "workdir", "target"] {
-        assert!(!row.contains_key(forbidden), "unexpected projection field: {forbidden}");
+    for forbidden in [
+        "source",
+        "source_hash",
+        "added_at",
+        "id",
+        "workdir",
+        "target",
+    ] {
+        assert!(
+            !row.contains_key(forbidden),
+            "unexpected projection field: {forbidden}"
+        );
     }
 }
 
@@ -135,18 +147,28 @@ fn test_reference_registry_row_carries_only_the_launch_target_extra_field() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     let entry = store
-        .create(request("linked-row", StorageMode::Reference, b"body\n"))
+        .create(request(
+            "linked-row",
+            StorageMode::Reference,
+            b"body\n",
+        ))
         .unwrap();
     let document = registry(&root);
-    let row = row(&root, &document, entry.slug.as_str());
+    let row = row(&document, entry.slug.as_str());
 
-    assert_eq!(row.get("mode").and_then(Value::as_str), Some("reference"));
+    assert_eq!(
+        row.get("mode").and_then(Value::as_str),
+        Some("reference")
+    );
     assert_eq!(
         row.get("target").and_then(Value::as_str),
         Some("/original/linked-row.tool")
     );
     for forbidden in ["source", "source_hash", "added_at", "id", "workdir"] {
-        assert!(!row.contains_key(forbidden), "unexpected projection field: {forbidden}");
+        assert!(
+            !row.contains_key(forbidden),
+            "unexpected projection field: {forbidden}"
+        );
     }
 }
 
