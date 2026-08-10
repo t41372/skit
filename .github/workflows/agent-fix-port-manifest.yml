@@ -1,0 +1,130 @@
+name: Correct multi-target port ownership
+
+on:
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: correct-port-ownership-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  patch:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/port-python-test-contracts'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the exact pull request head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Make target ownership exact
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("crates/skit-cli/tests/python_port_manifest.rs")
+          source = path.read_text()
+          source = source.replace(
+              "let mut ported_by_target: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();",
+              "let mut ported_by_target: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();",
+              1,
+          )
+          old = '''        let mut target_tests = BTreeMap::new();
+          for target in &module.targets {
+              let path = root.join(target);
+              assert!(path.is_file(), "missing Rust target {target}");
+              mapped_targets.insert(target.as_str());
+              let source = fs::read_to_string(&path)
+                  .unwrap_or_else(|error| panic!("read {target}: {error}"));
+              for (name, ignored) in rust_tests(&source) {
+                  target_tests
+                      .entry(name)
+                      .and_modify(|seen_ignored| *seen_ignored &= ignored)
+                      .or_insert(ignored);
+              }
+              ported_by_target
+                  .entry(target.as_str())
+                  .or_default()
+                  .extend(module.ported.iter().map(String::as_str));
+          }
+          for name in &module.ported {
+              let ignored = target_tests.get(name).unwrap_or_else(|| {
+                  panic!("ported test {name} has no Rust function in targets for {}", module.source)
+              });
+              assert!(!ignored, "ported test {name} is ignored in {}", module.source);
+          }
+          '''
+          new = '''        let mut target_tests = BTreeMap::new();
+          let mut target_count_by_test = BTreeMap::<String, usize>::new();
+          for target in &module.targets {
+              let path = root.join(target);
+              assert!(path.is_file(), "missing Rust target {target}");
+              mapped_targets.insert(target.as_str());
+              let source = fs::read_to_string(&path)
+                  .unwrap_or_else(|error| panic!("read {target}: {error}"));
+              for (name, ignored) in rust_tests(&source) {
+                  if ported.contains(name.as_str()) {
+                      ported_by_target
+                          .entry(target.clone())
+                          .or_default()
+                          .insert(name.clone());
+                      *target_count_by_test.entry(name.clone()).or_default() += 1;
+                  }
+                  target_tests
+                      .entry(name)
+                      .and_modify(|seen_ignored| *seen_ignored &= ignored)
+                      .or_insert(ignored);
+              }
+          }
+          for name in &module.ported {
+              let ignored = target_tests.get(name).unwrap_or_else(|| {
+                  panic!("ported test {name} has no Rust function in targets for {}", module.source)
+              });
+              assert!(!ignored, "ported test {name} is ignored in {}", module.source);
+              assert_eq!(
+                  target_count_by_test.get(name),
+                  Some(&1),
+                  "ported test {name} must exist in exactly one Rust target for {}",
+                  module.source
+              );
+          }
+          '''
+          if old not in source:
+              raise RuntimeError("manifest ownership block changed unexpectedly")
+          source = source.replace(old, new, 1)
+          old = '''        let expected = ported_by_target
+              .get(path.as_str())
+              .unwrap_or_else(|| panic!("port file has no mapped tests: {path}"))
+              .iter()
+              .map(|name| (*name).to_owned())
+              .collect::<BTreeSet<_>>();
+          '''
+          new = '''        let expected = ported_by_target
+              .get(path)
+              .unwrap_or_else(|| panic!("port file has no mapped tests: {path}"))
+              .clone();
+          '''
+          if old not in source:
+              raise RuntimeError("manifest exact-file block changed unexpectedly")
+          path.write_text(source.replace(old, new, 1))
+          PY
+          cargo fmt --all
+      - name: Commit the corrected gate
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/agent-fix-port-manifest.yml
+          git add crates/skit-cli/tests/python_port_manifest.rs
+          git commit -m "test(parity): require one physical target per port"
+          git push origin "HEAD:refs/heads/${HEAD_BRANCH}"
