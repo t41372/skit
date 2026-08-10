@@ -17,9 +17,13 @@
 //!     `sync_all()` fails — a temp-fsync failure leaks a `.tmp` residue, diverging from the Python
 //!     contract (`test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file`). No public
 //!     fsync-injection seam exists to reproduce it, so it is `#[ignore]`d and flagged.
-//!   * FEATURE PARITY: the Rust writer has no Windows sharing-violation rename retry (Python's
-//!     `_replace_with_retry`, issue #4) and no non-blocking `try_advisory_file_lock`. Both are
-//!     absent, not merely off-seam; flagged for the superset rule.
+//!   * FEATURE PARITY: RESOLVED. The Windows sharing-violation rename retry (Python's
+//!     `_replace_with_retry`, issue #4, A1) and the non-blocking `try_advisory_file_lock` (A2) now
+//!     both exist -- `fs_ops::{replace_with_retry, try_acquire_lock}`. The retry rides on Linux
+//!     through the injectable `replace_with_retry_impl` seam (the three `test_replace_*` tests
+//!     below); the try-lock is crate-private (its production caller is the read-path self-heal), so
+//!     its contract is proven by `fs_ops.rs` unit tests and by the self-heal tests in
+//!     `port_test_store.rs` rather than the try-lock stubs below.
 
 use std::{
     fs::{self, OpenOptions},
@@ -433,23 +437,96 @@ fn test_atomic_write_text_keep_mode_falls_back_to_chmod_on_windows() {}
 // contract is absent, not merely off-seam.
 // ===========================================================================
 
-#[ignore = "UNMAPPED + FEATURE-PARITY FINDING: Rust atomic_write_bytes has no Windows \
-            sharing-violation rename retry/backoff (Python's `_replace_with_retry`, issue #4). \
-            fs::rename is called once; a transient PermissionError would propagate immediately. \
-            Feature loss vs the oracle (superset rule) — supervisor should confirm intent."]
 #[test]
-fn test_replace_retries_through_transient_permission_error() {}
+fn test_replace_retries_through_transient_permission_error() {
+    // WHY: two sharing violations then success -- the write lands, with exact backoff. RESOLVED
+    // (A1): the retry now exists (fs_ops::replace_with_retry). It is Windows-only in production
+    // (POSIX renames open files freely), so it is driven here on Linux through the injectable
+    // `replace_with_retry_impl` seam, whose `rename`/`sleep` stand in for `fs::rename` and
+    // `std::thread::sleep` -- the analog of the oracle's monkeypatched `os.replace`/`time.sleep`.
+    use std::cell::{Cell, RefCell};
 
-#[ignore = "UNMAPPED + FEATURE-PARITY FINDING: bounded-attempts-then-loud is part of the missing \
-            `_replace_with_retry` above; Rust surfaces the first rename error with no retry loop."]
-#[test]
-fn test_replace_gives_up_loudly_after_bounded_attempts() {}
+    let attempts = Cell::new(0_u32);
+    let sleeps = RefCell::new(Vec::new());
 
-#[ignore = "UNMAPPED: no rename-injection seam. Rust surfaces every rename error immediately (no \
-            retry logic to distinguish transient from permanent); immediate failure with no temp \
-            residue is covered by the in-module `a_failed_atomic_replace_removes_its_temporary_file`."]
+    let result = skit_store::replace_with_retry_impl(
+        |_src, _dst| {
+            attempts.set(attempts.get() + 1);
+            if attempts.get() <= 2 {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                Ok(())
+            }
+        },
+        |delay| sleeps.borrow_mut().push(delay),
+        Path::new("src"),
+        Path::new("dst"),
+    );
+
+    assert!(result.is_ok());
+    assert_eq!(attempts.get(), 3);
+    assert_eq!(
+        *sleeps.borrow(),
+        vec![Duration::from_millis(10), Duration::from_millis(20)] // exponential, from the base
+    );
+}
+
 #[test]
-fn test_replace_other_oserrors_are_not_retried() {}
+fn test_replace_gives_up_loudly_after_bounded_attempts() {
+    // WHY: a target held open forever (antivirus, a leak) must surface, not spin. RESOLVED (A1):
+    // after the bounded retries the final attempt's error propagates. 8 attempts total (7 retried +
+    // 1 final loud), with the exact exponential backoff sequence.
+    use std::cell::{Cell, RefCell};
+
+    let attempts = Cell::new(0_u32);
+    let sleeps = RefCell::new(Vec::new());
+
+    let result = skit_store::replace_with_retry_impl(
+        |_src, _dst| {
+            attempts.set(attempts.get() + 1);
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        },
+        |delay| sleeps.borrow_mut().push(delay),
+        Path::new("src"),
+        Path::new("dst"),
+    );
+
+    assert_eq!(
+        result.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert_eq!(attempts.get(), 8); // 7 retried + 1 final loud attempt
+    assert_eq!(
+        *sleeps.borrow(),
+        [10, 20, 40, 80, 160, 320, 640]
+            .map(Duration::from_millis)
+            .to_vec()
+    );
+}
+
+#[test]
+fn test_replace_other_oserrors_are_not_retried() {
+    // WHY: only the Windows sharing violation (PermissionDenied) is transient; anything else stays
+    // immediate -- one attempt, no sleep. RESOLVED (A1): the retry guard keys on PermissionDenied.
+    use std::cell::{Cell, RefCell};
+
+    let attempts = Cell::new(0_u32);
+    let sleeps = RefCell::new(Vec::new());
+
+    let result = skit_store::replace_with_retry_impl(
+        |_src, _dst| {
+            attempts.set(attempts.get() + 1);
+            Err(std::io::Error::other("is a directory"))
+        },
+        |delay| sleeps.borrow_mut().push(delay),
+        Path::new("src"),
+        Path::new("dst"),
+    );
+
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Other);
+    assert_eq!(attempts.get(), 1);
+    assert!(sleeps.borrow().is_empty());
+}
 
 #[ignore = "UNMAPPED: Windows-only fallback guard (skip the post-rename chmod when the target \
             vanished, so None is never handed to os.chmod). Rust has no post-rename Windows chmod \
@@ -465,25 +542,33 @@ fn test_keep_mode_windows_fallback_suppresses_a_chmod_failure() {}
 
 // ===========================================================================
 // try_advisory_file_lock — the never-waits variant for read-path writes.
-// Rust exposes only the blocking `File::lock()` / `File::lock_shared()`; there is no non-blocking
-// try-lock variant. Absent, not off-seam — flagged for the superset rule.
+// RESOLVED (A2): `fs_ops::try_acquire_lock` now exists (non-blocking `File::try_lock`). It is
+// crate-private -- its production caller is the read-path self-heal (`FileStore::repair_rows`) -- so
+// its contract is ported as `fs_ops.rs` UNIT tests (`try_lock_acquires_when_free_and_a_second_taker_
+// declines`, `try_lock_declines_while_the_blocking_lock_is_held`, `try_lock_treats_an_unopenable_
+// path_as_not_acquired`) and its read-path use in `port_test_store.rs`
+// (`test_a_listing_never_blocks_on_the_registry_lock`, `test_a_store_that_cannot_be_written_still_
+// lists`), which reach the primitive rather than these external stubs.
 // ===========================================================================
 
-#[ignore = "UNMAPPED + FEATURE-PARITY FINDING: Rust has no non-blocking try_advisory_file_lock; \
-            acquire_lock always blocks (File::lock). The never-waits read-path variant is absent \
-            (superset rule) — supervisor should confirm whether the read path needs it."]
+#[ignore = "RESOLVED (A2) -> fs_ops.rs unit test try_lock_acquires_when_free_and_a_second_taker_\
+            declines. try_acquire_lock is crate-private (read-path self-heal caller), so the \
+            acquire/second-taker-declines contract is proven in-crate, not through this external stub."]
 #[test]
 fn test_try_lock_acquires_when_free_and_excludes_a_second_taker() {}
 
-#[ignore = "UNMAPPED: no non-blocking try-lock variant in Rust (see above)."]
+#[ignore = "RESOLVED (A2) -> fs_ops.rs unit test try_lock_declines_while_the_blocking_lock_is_held \
+            (crate-private try_acquire_lock)."]
 #[test]
 fn test_try_lock_declines_while_the_blocking_lock_is_held() {}
 
-#[ignore = "UNMAPPED: no non-blocking try-lock variant in Rust (see above); the cross-process \
-            decline-when-native-lock-held path has no equivalent."]
+#[ignore = "RESOLVED (A2): the cross-process decline-when-native-lock-held path is proven through \
+            the read-path self-heal in port_test_store.rs::test_a_listing_never_blocks_on_the_\
+            registry_lock (a held flock makes the listing's try_acquire_lock decline)."]
 #[test]
 fn test_try_lock_declines_when_only_the_native_lock_is_held() {}
 
-#[ignore = "UNMAPPED: no non-blocking try-lock variant in Rust (see above)."]
+#[ignore = "RESOLVED (A2) -> fs_ops.rs unit test try_lock_treats_an_unopenable_path_as_not_acquired \
+            (crate-private try_acquire_lock)."]
 #[test]
 fn test_try_lock_treats_an_unopenable_lock_file_as_not_acquired() {}

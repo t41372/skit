@@ -44,13 +44,39 @@ impl Registry {
         }
     }
 
-    /// Read the current projection without changing a corrupt or unreadable file.
+    /// Read the current projection, moving unparseable bytes aside before degrading to empty.
+    ///
+    /// The chokepoint both `scan` and `resolve` load through, mirroring the oracle's single
+    /// `_load_registry`. `registry.toml` is a rebuildable index, so a corrupt or unreadable one
+    /// degrades the same way a missing file does: an empty registry that `doctor --rebuild` can
+    /// reconstruct from the untouched `scripts/<slug>` metas. The bad bytes are preserved, not
+    /// discarded -- renamed to `registry.toml.corrupt` so a corrupt file cannot keep re-triggering
+    /// this branch (and spawning a fresh backup) on every later read before the next write. This is
+    /// the read-path translation of `skit.store._load_registry`'s `TOMLDecodeError`/`OSError` branch
+    /// (store.py ~139-147); the writer's `load` keeps its own stricter backup contract.
     pub(crate) fn read(data_dir: &Path) -> Option<Self> {
         let path = data_dir.join("registry.toml");
-        let text = fs::read_to_string(&path).ok()?;
-        let mut document = toml::from_str::<Table>(&text).ok()?;
-        normalize_entries(&mut document);
-        Some(Self { path, document })
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            // A missing index reads as no registry, exactly as the oracle's `if not path.exists()`
+            // early return: doctor rebuilds it, and there is nothing to move aside.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+            // Any other read failure degrades like a corrupt parse: preserve the bytes, read empty.
+            Err(_) => {
+                back_up_corrupt_index_best_effort(&path);
+                return None;
+            }
+        };
+        match toml::from_str::<Table>(&text) {
+            Ok(mut document) => {
+                normalize_entries(&mut document);
+                Some(Self { path, document })
+            }
+            Err(_) => {
+                back_up_corrupt_index_best_effort(&path);
+                None
+            }
+        }
     }
 
     /// Load the current projection for a writer, backing up corrupt bytes before starting fresh.
@@ -172,8 +198,28 @@ impl Registry {
         self.entries_mut().remove(slug.as_str());
     }
 
+    /// Re-derive one stale row from its meta as it is NOW, replacing it only if it changed.
+    ///
+    /// The per-slug body of the read-path self-heal (`FileStore::repair_rows`), translating the loop
+    /// in `skit.store._repair_rows` (store.py ~1043-1059): re-read the meta under the lock, project a
+    /// fresh row, and report whether it differs from the stored one so the caller saves only on a
+    /// real change ("nothing is saved unless something actually changed"). Re-deriving from the meta
+    /// -- never from the listing's snapshot -- is what makes the newest committed state win no matter
+    /// who wrote it. Returns `Err` only when the meta could not be stat'd for its stamp (it vanished
+    /// between the caller's read and here), and leaves the row untouched in that case; the caller
+    /// skips such a slug.
+    pub(crate) fn reproject_if_changed(
+        &mut self,
+        entry: &Entry,
+        entry_dir: &Path,
+    ) -> Result<bool, RepositoryError> {
+        let before = self.entries().get(entry.slug.as_str()).cloned();
+        self.project(entry, entry_dir)?;
+        Ok(before.as_ref() != self.entries().get(entry.slug.as_str()))
+    }
+
     /// Persist the whole projection through the same atomic replacement discipline as metadata.
-    pub(super) fn save(&self) -> Result<(), RepositoryError> {
+    pub(crate) fn save(&self) -> Result<(), RepositoryError> {
         let text = toml::to_string_pretty(&self.document)
             .expect("a normalized TOML value tree must serialize");
         atomic_write_bytes(&self.path, text.as_bytes())
@@ -639,6 +685,23 @@ fn timestamp_ns(modified: SystemTime) -> Result<i64, RepositoryError> {
     i64::try_from(nanos.as_nanos()).map_err(|error| RepositoryError::InvalidMutation {
         reason: Message::new("metadata timestamp does not fit registry.toml: {}").with(error),
     })
+}
+
+/// Move an unparseable index aside to `registry.toml.corrupt`, preserving the bad bytes.
+///
+/// Best-effort by contract: a READ must never fail because the backup could not be made, so every
+/// error is swallowed (the oracle wraps the same rename in `contextlib.suppress(OSError)`). Rename,
+/// not copy, so the corrupt file cannot re-trigger a fresh backup on every later read. On Linux
+/// `fs::rename` overwrites an existing `.corrupt` file just as the oracle's `os.replace` does; when
+/// `.corrupt` is a directory the rename fails and the corrupt original simply stays in place.
+fn back_up_corrupt_index_best_effort(path: &Path) {
+    let backup = path.with_file_name(format!(
+        "{}.corrupt",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("registry.toml")
+    ));
+    let _ = fs::rename(path, &backup);
 }
 
 fn backup_corrupt(path: &Path) -> Result<(), RepositoryError> {

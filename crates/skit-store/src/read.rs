@@ -11,7 +11,7 @@ use skit_application::{Diagnostic, DiagnosticCode, EntryRepository, LibraryScan,
 use skit_domain::{Entry, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
 use skit_i18n::Localize;
 
-use crate::mutations::registry::Registry;
+use crate::{fs_ops::try_acquire_lock, mutations::registry::Registry};
 
 /// Filesystem adapter for an existing skit data directory.
 #[derive(Clone, Debug)]
@@ -94,16 +94,82 @@ impl FileStore {
         }
         Ok(entries)
     }
+
+    /// Project every index row into a listing, reporting the rows that fell back to their meta.
+    ///
+    /// The pure half of `list`, shared with `resolve` so a name sweep never triggers the read-path
+    /// self-heal (the oracle's `resolve` loads the index but never calls `_repair_rows`). A returned
+    /// slug is "stale": its row could not answer (legacy, hand-broken, or a meta that changed under
+    /// it) yet its meta read cleanly, so a fresh projection would repair it. A row served from the
+    /// cache/legacy fast path is fresh, and a meta that would not read is doctor's, not the
+    /// self-heal's -- neither is returned.
+    fn scan_inner(&self) -> Result<(LibraryScan, Vec<Slug>), RepositoryError> {
+        let Some(registry) = Registry::read(self.data_dir()) else {
+            return Ok((LibraryScan::default(), Vec::new()));
+        };
+        let mut scan = LibraryScan::default();
+        let mut stale = Vec::new();
+        for candidate in registry.row_keys() {
+            scan_registry_row(self, &registry, candidate, &mut scan, &mut stale);
+        }
+        Ok((scan, stale))
+    }
+
+    /// Opportunistically re-project stale index rows from their metas, under a NON-BLOCKING lock.
+    ///
+    /// Faithful translation of `skit.store._repair_rows` (store.py ~1006-1061). Without it a library
+    /// an older skit wrote -- or one whose metas were hand edited -- would fall back to reading those
+    /// metas on every listing forever; the index otherwise refreshes only on add/rename/describe or
+    /// an explicit `rebuild`. Repairing on first listing makes it self-healing. Two load-bearing
+    /// properties, both from the oracle:
+    ///
+    /// - The lock is TRY-ONLY. This runs on read paths (`list`, shell TAB completion); the blocking
+    ///   lock polls forever, so a listing that used it would freeze the shell behind any process on
+    ///   the lock. If the lock is busy the repair simply does not happen this time and the next
+    ///   listing tries again. A read stays a read.
+    /// - Rows are re-derived from their metas UNDER the lock, never written from the listing's
+    ///   snapshot. Anything can commit while the listing read metas -- a rename, a describe, a
+    ///   remove-then-add reusing the slug, even by an older skit whose fresh legacy row is
+    ///   indistinguishable from the stale one the listing saw. Re-deriving from the meta as it is NOW
+    ///   makes the newest state win no matter who wrote it.
+    ///
+    /// Best effort throughout: the lock, a re-read of the index, and the save can each fail without
+    /// failing the read; a slug removed, or whose meta vanished or broke, since the listing is
+    /// skipped; and nothing is saved unless a row actually changed. It contends on the same
+    /// `registry.native.lock` writers take, so a repair never races a committing writer.
+    fn repair_rows(&self, stale: &[Slug]) {
+        let Some(_lock) = try_acquire_lock(&self.data_dir().join("registry.native.lock")) else {
+            return; // busy: a read stays a read, the next listing tries again
+        };
+        let Some(mut registry) = Registry::read(self.data_dir()) else {
+            return; // the index vanished or went corrupt since the listing read it; doctor owns that
+        };
+        let mut changed = false;
+        for slug in stale {
+            if !registry.contains(slug) {
+                continue; // removed since the listing read the index
+            }
+            let entry_dir = self.scripts_dir().join(slug.as_str());
+            let Ok(entry) = self.read_entry(slug.clone()) else {
+                continue; // meta corrupted or vanished meanwhile: leave it for doctor
+            };
+            match registry.reproject_if_changed(&entry, &entry_dir) {
+                Ok(true) => changed = true,
+                Ok(false) => {}
+                Err(_) => continue, // meta vanished between the read and its stat
+            }
+        }
+        if changed {
+            let _ = registry.save(); // a read must not fail because its optional write could not land
+        }
+    }
 }
 
 impl EntryRepository for FileStore {
     fn scan(&self) -> Result<LibraryScan, RepositoryError> {
-        let Some(registry) = Registry::read(self.data_dir()) else {
-            return Ok(LibraryScan::default());
-        };
-        let mut scan = LibraryScan::default();
-        for candidate in registry.row_keys() {
-            scan_registry_row(self, &registry, candidate, &mut scan);
+        let (scan, stale) = self.scan_inner()?;
+        if !stale.is_empty() {
+            self.repair_rows(&stale);
         }
         Ok(scan)
     }
@@ -121,9 +187,11 @@ impl EntryRepository for FileStore {
             // _META_CORRUPTION = (OSError, TOMLDecodeError, ScriptMetaError), re-raising NotFoundError
             // (store.py resolve). A hand-edited scalar registry row is a member with no readable meta,
             // which used to crash `skit run <name>` before the chokepoint normalized it.
-            return self.read_entry(slug).map_err(|_| RepositoryError::NotFound {
-                query: query.to_owned(),
-            });
+            return self
+                .read_entry(slug)
+                .map_err(|_| RepositoryError::NotFound {
+                    query: query.to_owned(),
+                });
         }
 
         let claimants = registry.name_claimants(query);
@@ -135,7 +203,8 @@ impl EntryRepository for FileStore {
         }
 
         let mut candidates = self
-            .scan()?
+            .scan_inner()?
+            .0
             .entries
             .into_iter()
             .filter(|entry| entry.name == query)
@@ -192,6 +261,7 @@ fn scan_registry_row(
     registry: &Registry,
     candidate: String,
     scan: &mut LibraryScan,
+    stale: &mut Vec<Slug>,
 ) {
     let slug = match Slug::parse(candidate.clone()) {
         Ok(slug) => slug,
@@ -208,9 +278,24 @@ fn scan_registry_row(
     match cached_or_authoritative_summary(Some(registry), &slug, &meta_path, || {
         store.read_entry(slug.clone())
     }) {
-        Ok(summary) => scan.entries.push(summary),
+        Ok((summary, SummarySource::Cache)) => scan.entries.push(summary),
+        // The row could not answer but its meta read cleanly: serve the meta and stage the slug so
+        // the read-path self-heal can re-project the row from the truth (oracle `list_summaries`
+        // stages a slug whose meta-projected row would validate).
+        Ok((summary, SummarySource::Authoritative)) => {
+            scan.entries.push(summary);
+            stale.push(slug);
+        }
         Err(error) => scan.diagnostics.push(diagnostic_from(error, &slug)),
     }
+}
+
+/// Where a listing row's summary came from, so the caller can stage only the fallbacks for repair.
+enum SummarySource {
+    /// The index row answered on the verified cache or legacy fast path: the row is fresh.
+    Cache,
+    /// The row could not answer and the meta was read authoritatively: the row is stale.
+    Authoritative,
 }
 
 fn cached_or_authoritative_summary(
@@ -218,11 +303,11 @@ fn cached_or_authoritative_summary(
     slug: &Slug,
     meta_path: &Path,
     authoritative: impl FnOnce() -> Result<Entry, RepositoryError>,
-) -> Result<EntrySummary, RepositoryError> {
+) -> Result<(EntrySummary, SummarySource), RepositoryError> {
     if let Some(summary) = registry.and_then(|registry| registry.summary(slug, meta_path)) {
-        return Ok(summary);
+        return Ok((summary, SummarySource::Cache));
     }
-    authoritative().map(|entry| summary_from(&entry))
+    authoritative().map(|entry| (summary_from(&entry), SummarySource::Authoritative))
 }
 
 fn entry_with_name(entry: Entry, query: &str) -> Result<Entry, RepositoryError> {
@@ -363,7 +448,7 @@ mod tests {
         let slug = Slug::parse("fast").unwrap();
         let reads = Cell::new(0_u32);
 
-        let summary = cached_or_authoritative_summary(
+        let (summary, source) = cached_or_authoritative_summary(
             Some(&registry),
             &slug,
             &root.path().join("scripts/fast/meta.toml"),
@@ -375,6 +460,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(summary.description, "from the cache");
+        assert!(matches!(source, SummarySource::Cache));
         assert_eq!(reads.get(), 0, "the fast path parsed meta.toml");
     }
 

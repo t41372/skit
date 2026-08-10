@@ -153,12 +153,27 @@ fn a_registry_summary_never_overrides_authoritative_metadata() {
         Value::String("stale projection".to_owned()),
     );
     write_registry(&root, &document);
-    let before = fs::read(root.path().join("registry.toml")).unwrap();
 
     let scan = store.scan().unwrap();
 
+    // The content-hash proof catches the hand-edited row (stronger than v0.4's mtime alone), so the
+    // listing serves the meta's truth, never the stale projection.
     assert_eq!(description(&scan, "truth"), "authoritative");
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), before);
+    // ...and the read-path self-heal re-projects the row from that truth (oracle `_repair_rows`).
+    assert_eq!(
+        row(&registry(&root), "truth")["description"].as_str(),
+        Some("authoritative")
+    );
+    // Repaired once, then converged: a second listing is index-served and rewrites nothing.
+    let converged = fs::read(root.path().join("registry.toml")).unwrap();
+    assert_eq!(
+        description(&store.scan().unwrap(), "truth"),
+        "authoritative"
+    );
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        converged
+    );
 }
 
 #[test]
@@ -177,12 +192,23 @@ fn restoring_mtime_cannot_hide_a_metadata_edit() {
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(original_mtime))
         .unwrap();
-    let before = fs::read(root.path().join("registry.toml")).unwrap();
 
     let scan = store.scan().unwrap();
 
+    // Restoring the mtime cannot hide the edit: the content-hash proof still invalidates the row and
+    // the listing falls back to the meta's truth.
     assert_eq!(description(&scan, "clock"), "after");
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), before);
+    // The read-path self-heal then repairs the stale row from that meta, converging on the next read.
+    assert_eq!(
+        row(&registry(&root), "clock")["description"].as_str(),
+        Some("after")
+    );
+    let converged = fs::read(root.path().join("registry.toml")).unwrap();
+    assert_eq!(description(&store.scan().unwrap(), "clock"), "after");
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        converged
+    );
 }
 
 #[test]
@@ -204,12 +230,22 @@ fn a_same_size_edit_with_restored_mtime_invalidates_the_row() {
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(original_mtime))
         .unwrap();
-    let before = fs::read(root.path().join("registry.toml")).unwrap();
 
     let scan = store.scan().unwrap();
 
+    // A same-size edit with the mtime restored still fails the content-hash proof, so the truth wins.
     assert_eq!(description(&scan, "clock"), "after!");
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), before);
+    // The read-path self-heal repairs the stale row, and a second listing is index-served and stable.
+    assert_eq!(
+        row(&registry(&root), "clock")["description"].as_str(),
+        Some("after!")
+    );
+    let converged = fs::read(root.path().join("registry.toml")).unwrap();
+    assert_eq!(description(&store.scan().unwrap(), "clock"), "after!");
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        converged
+    );
 }
 
 #[test]
@@ -237,12 +273,22 @@ fn a_same_size_replacement_with_restored_mtime_invalidates_the_row() {
         .set_times(fs::FileTimes::new().set_modified(original_mtime))
         .unwrap();
     fs::rename(staged, &meta).unwrap();
-    let before = fs::read(root.path().join("registry.toml")).unwrap();
 
     let scan = store.scan().unwrap();
 
+    // A whole-file same-size replacement with the mtime restored still fails the content-hash proof.
     assert_eq!(description(&scan, "swap"), "after!");
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), before);
+    // The read-path self-heal repairs the stale row, and a second listing is index-served and stable.
+    assert_eq!(
+        row(&registry(&root), "swap")["description"].as_str(),
+        Some("after!")
+    );
+    let converged = fs::read(root.path().join("registry.toml")).unwrap();
+    assert_eq!(description(&store.scan().unwrap(), "swap"), "after!");
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        converged
+    );
 }
 
 #[test]
@@ -353,7 +399,7 @@ fn concurrent_atomic_updates_never_mix_cache_and_metadata_generations() {
 }
 
 #[test]
-fn stale_and_malformed_rows_fall_back_without_rewriting_the_registry() {
+fn stale_and_malformed_rows_fall_back_then_heal_on_the_read() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     store
@@ -373,15 +419,31 @@ fn stale_and_malformed_rows_fall_back_without_rewriting_the_registry() {
     stale.insert("mtime_ns".to_owned(), Value::Integer(0));
     row_mut(&mut document, "malformed").insert("name".to_owned(), Value::Integer(7));
     write_registry(&root, &document);
-    let before = fs::read(root.path().join("registry.toml")).unwrap();
 
     let scan = store.scan().unwrap();
 
+    // Both a stale legacy-stamped row and a hand-broken (non-string `name`) row fall back to their
+    // metas, so the listing serves the truth and never a diagnostic.
     assert_eq!(description(&scan, "stale"), "after hand edit");
     assert_eq!(description(&scan, "malformed"), "authoritative");
     assert!(scan.diagnostics.is_empty());
-
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), before);
+    // ...and the read-path self-heal re-projects both rows from their metas (oracle `_repair_rows`).
+    let repaired = registry(&root);
+    assert_eq!(
+        row(&repaired, "stale")["description"].as_str(),
+        Some("after hand edit")
+    );
+    assert_eq!(
+        row(&repaired, "malformed")["name"].as_str(),
+        Some("Malformed")
+    );
+    // Repaired once, then converged: a second listing is index-served and rewrites nothing.
+    let converged = fs::read(root.path().join("registry.toml")).unwrap();
+    store.scan().unwrap();
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        converged
+    );
 }
 
 #[test]
@@ -404,7 +466,7 @@ fn a_missing_registry_is_not_created_by_a_read() {
 }
 
 #[test]
-fn repeated_reads_do_not_repair_a_stale_registry() {
+fn a_stale_row_is_repaired_once_then_index_served() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     store
@@ -419,16 +481,27 @@ fn repeated_reads_do_not_repair_a_stale_registry() {
     );
     busy.insert("mtime_ns".to_owned(), Value::Integer(0));
     write_registry(&root, &document);
-    let before = fs::read(root.path().join("registry.toml")).unwrap();
 
+    // The first listing falls back to the meta AND repairs the stale row from it (oracle
+    // `_repair_rows`), so the row now carries the truth.
     let scan = store.scan().unwrap();
     assert_eq!(description(&scan, "busy"), "after hand edit");
+    assert_eq!(
+        row(&registry(&root), "busy")["description"].as_str(),
+        Some("after hand edit")
+    );
+    // The second listing is index-served: it re-derives nothing and rewrites nothing (convergence,
+    // the anti-thrash property the oracle's `_repair_rows` guarantees with "save only if changed").
+    let converged = fs::read(root.path().join("registry.toml")).unwrap();
     store.scan().unwrap();
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), before);
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        converged
+    );
 }
 
 #[test]
-fn invalid_mode_and_missing_reference_target_fall_back_without_self_heal() {
+fn invalid_mode_and_missing_reference_target_fall_back_then_heal() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     store
@@ -443,11 +516,23 @@ fn invalid_mode_and_missing_reference_target_fall_back_without_self_heal() {
         .insert("mode".to_owned(), Value::String("future-mode".to_owned()));
     row_mut(&mut document, "linked").remove("target");
     write_registry(&root, &document);
-    let before = fs::read(root.path().join("registry.toml")).unwrap();
 
     let scan = store.scan().unwrap();
 
+    // An unrepresentable `mode` and a reference row that lost its `target` cannot answer, so both
+    // fall back to their metas and the listing serves the truth.
     assert_eq!(description(&scan, "copy"), "copy");
     assert_eq!(description(&scan, "linked"), "linked");
-    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), before);
+    // ...and the read-path self-heal re-projects both rows: the copy row regains a strict `copy`
+    // mode and the reference row regains its `target` (oracle `_repair_rows`).
+    let repaired = registry(&root);
+    assert_eq!(row(&repaired, "copy")["mode"].as_str(), Some("copy"));
+    assert!(row(&repaired, "linked").get("target").is_some());
+    // Repaired once, then converged: a second listing is index-served and rewrites nothing.
+    let converged = fs::read(root.path().join("registry.toml")).unwrap();
+    store.scan().unwrap();
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        converged
+    );
 }

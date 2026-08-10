@@ -9,7 +9,7 @@ progress` is a release blocker; it is not a permitted behavior change.
 | Contract | Status | Rust evidence and pinned Python-main oracle |
 | --- | --- | --- |
 | Metadata, open kinds, unknown TOML, bytes, permissions, identity, and CAS | In progress | `skit-domain/tests/contract.rs`, `skit-store/tests/mutations*.rs`; pinned-main store tests |
-| Reads never migrate metadata, state, config, or registry projections | In progress | `skit-store/tests/registry_fast_read.rs`, `form_state_store.rs`, `config_store.rs` |
+| Reads never migrate user data (metadata, state, config). The registry projection is the oracle-defined exception: `list` opportunistically self-heals a stale row under a non-blocking lock (`_repair_rows`), and a corrupt index degrades to empty after a `.corrupt` backup (`_load_registry`) -- `resolve` never self-heals | In progress | `skit-store/tests/registry_fast_read.rs`, `port_test_store.rs`, `registry_resolve.rs`, `form_state_store.rs`, `config_store.rs` |
 | Stable management exit 1/2 and run exit 2/125/126/127 contracts | In progress | `skit-cli/tests/v040_compatibility.rs`, `run_cli.rs`; pinned-main `test_cli.py` and command tests |
 | Stable JSON records for list/show/params/deps/config/runner/preset/doctor | In progress | `skit-cli/tests/v040_compatibility.rs`; two-version golden command outputs |
 | Presets, exact optional last-run snapshots, remembered values, and secrets | In progress | `skit-application/tests/form_state*.rs`, `skit-store/tests/form_state_*.rs` |

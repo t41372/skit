@@ -18,6 +18,8 @@ mod toml_document;
 pub use config::{
     ConfigError, ConfigRecovery, FileConfigStore, MirrorSettings, PromptRunner, PromptRunnerRow,
 };
+#[doc(hidden)]
+pub use fs_ops::replace_with_retry_impl;
 pub use library_surface::{library_surface, library_surface_at};
 pub use mutations::{
     FileAgentSkillStore, FileRunnerManagementStore, PreparedLaunch, RegistryRebuildProblem,
