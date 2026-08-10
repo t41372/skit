@@ -524,7 +524,11 @@ fn stringify(value: &Value) -> String {
 
 fn integer_value(value: Option<&Value>) -> Option<i64> {
     match value? {
-        Value::Number(number) => number.as_i64(),
+        // A stored `order` that is a non-integer float truncates toward zero, matching the oracle's
+        // `int(d.get("order", -1))` (Python `int(1.9) == 1`), not degrading to the -1 default.
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|value| value as i64)),
         Value::String(value) => value.parse().ok(),
         Value::Bool(_) | Value::Null | Value::Array(_) | Value::Object(_) => None,
     }
