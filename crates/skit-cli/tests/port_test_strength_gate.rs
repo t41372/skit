@@ -16,11 +16,18 @@ fn visit(directory: &Path, offenders: &mut Vec<String>) {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if !name.starts_with("port_test_") || path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+        if !name.starts_with("port_test_")
+            || path.extension().and_then(|ext| ext.to_str()) != Some("rs")
+        {
             continue;
         }
         let text = fs::read_to_string(&path).unwrap();
-        for forbidden in ["#[ignore", "todo!()", "unimplemented!()"] {
+        let forbidden = [
+            ["#[", "ignore"].concat(),
+            ["todo", "!()"].concat(),
+            ["unimplemented", "!()"].concat(),
+        ];
+        for forbidden in &forbidden {
             if text.contains(forbidden) {
                 offenders.push(format!("{} contains {forbidden}", path.display()));
             }
