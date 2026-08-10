@@ -88,12 +88,11 @@ fn test_pypi_and_npm_accept_pastable_http_custom_urls_and_trim_one_trailing_slas
     store
         .set("mirror.pypi", "http://corp.internal/simple/")
         .unwrap();
-    store.set("mirror.npm", "http://corp.internal/npm/").unwrap();
+    store
+        .set("mirror.npm", "http://corp.internal/npm/")
+        .unwrap();
 
-    assert_eq!(
-        store.mirror().unwrap().pypi,
-        "http://corp.internal/simple"
-    );
+    assert_eq!(store.mirror().unwrap().pypi, "http://corp.internal/simple");
     assert_eq!(store.mirror().unwrap().npm, "http://corp.internal/npm");
 }
 
@@ -220,10 +219,7 @@ fn test_each_axis_can_supply_environment_independently() {
     store.set("mirror.npm", "npmmirror").unwrap();
     assert_eq!(
         store.mirror_environment(&BTreeMap::new()).unwrap(),
-        BTreeMap::from([(
-            "NPM_CONFIG_REGISTRY".to_owned(),
-            NPMMIRROR.to_owned(),
-        )])
+        BTreeMap::from([("NPM_CONFIG_REGISTRY".to_owned(), NPMMIRROR.to_owned(),)])
     );
 }
 

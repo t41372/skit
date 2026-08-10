@@ -38,7 +38,11 @@ fn test_every_documented_false_boolean_token_is_accepted_case_and_space_insensit
 
 #[test]
 fn test_str_choice_and_path_defaults_remain_strings() {
-    for parameter_type in [ParameterType::Str, ParameterType::Choice, ParameterType::Path] {
+    for parameter_type in [
+        ParameterType::Str,
+        ParameterType::Choice,
+        ParameterType::Path,
+    ] {
         assert_eq!(
             coerce_default("anything", parameter_type).unwrap(),
             ParameterValue::String("anything".to_owned()),
@@ -63,7 +67,13 @@ fn test_bad_integer_float_and_boolean_values_are_rejected() {
 fn test_nonfinite_float_literals_are_rejected() {
     for value in ["inf", "+inf", "-inf", "nan", "NaN"] {
         let error = coerce_default(value, ParameterType::Float).unwrap_err();
-        assert!(error.to_string().to_lowercase().contains(&value.to_lowercase()), "{error}");
+        assert!(
+            error
+                .to_string()
+                .to_lowercase()
+                .contains(&value.to_lowercase()),
+            "{error}"
+        );
     }
 }
 

@@ -32,11 +32,7 @@ fn test_double_quoted_placeholder_neutralizes_command_substitution() {
 #[test]
 fn test_single_quoted_placeholder_keeps_apostrophe_and_command_substitution_literal() {
     assert_eq!(
-        render_command_template(
-            "echo '{v}'",
-            &values(&[("v", "a'b $(id)")]),
-        )
-        .unwrap(),
+        render_command_template("echo '{v}'", &values(&[("v", "a'b $(id)")]),).unwrap(),
         "echo 'a'\\''b $(id)'"
     );
 }
@@ -44,11 +40,7 @@ fn test_single_quoted_placeholder_keeps_apostrophe_and_command_substitution_lite
 #[test]
 fn test_unquoted_placeholder_embedded_in_word_preserves_surrounding_literal_text() {
     assert_eq!(
-        render_command_template(
-            "echo scale={width}:-1",
-            &values(&[("width", "640")]),
-        )
-        .unwrap(),
+        render_command_template("echo scale={width}:-1", &values(&[("width", "640")]),).unwrap(),
         "echo scale=640:-1"
     );
 }
@@ -56,11 +48,8 @@ fn test_unquoted_placeholder_embedded_in_word_preserves_surrounding_literal_text
 #[test]
 fn test_unquoted_hostile_value_is_quoted_as_one_word() {
     assert_eq!(
-        render_command_template(
-            "echo scale={width}:-1",
-            &values(&[("width", "640 $(id)")]),
-        )
-        .unwrap(),
+        render_command_template("echo scale={width}:-1", &values(&[("width", "640 $(id)")]),)
+            .unwrap(),
         "echo scale='640 $(id)':-1"
     );
 }
@@ -76,11 +65,7 @@ fn test_unknown_unfilled_placeholder_travels_through_unchanged() {
 #[test]
 fn test_brace_escapes_collapse_inside_quotes_without_resetting_quote_state() {
     assert_eq!(
-        render_command_template(
-            "echo \"{{x}} {v}\"",
-            &values(&[("v", "$X")]),
-        )
-        .unwrap(),
+        render_command_template("echo \"{{x}} {v}\"", &values(&[("v", "$X")]),).unwrap(),
         "echo \"{x} \\$X\""
     );
 }
@@ -88,11 +73,7 @@ fn test_brace_escapes_collapse_inside_quotes_without_resetting_quote_state() {
 #[test]
 fn test_substituted_value_containing_double_braces_is_not_rescanned() {
     assert_eq!(
-        render_command_template(
-            "echo \"{v}\"",
-            &values(&[("v", "{{x}}")]),
-        )
-        .unwrap(),
+        render_command_template("echo \"{v}\"", &values(&[("v", "{{x}}")]),).unwrap(),
         "echo \"{{x}}\""
     );
 }
@@ -100,11 +81,7 @@ fn test_substituted_value_containing_double_braces_is_not_rescanned() {
 #[test]
 fn test_quote_state_affects_only_the_placeholder_currently_inside_it() {
     assert_eq!(
-        render_command_template(
-            "echo \"{a}\" {b}",
-            &values(&[("a", "$A"), ("b", "$B")]),
-        )
-        .unwrap(),
+        render_command_template("echo \"{a}\" {b}", &values(&[("a", "$A"), ("b", "$B")]),).unwrap(),
         "echo \"\\$A\" '$B'"
     );
 }
@@ -120,11 +97,7 @@ fn test_uppercase_placeholder_is_substituted() {
 #[test]
 fn test_replacement_text_is_not_reparsed_as_another_placeholder() {
     assert_eq!(
-        render_command_template(
-            "echo {a} {b}",
-            &values(&[("a", "{b}"), ("b", "real")]),
-        )
-        .unwrap(),
+        render_command_template("echo {a} {b}", &values(&[("a", "{b}"), ("b", "real")]),).unwrap(),
         "echo '{b}' real"
     );
 }
@@ -132,11 +105,7 @@ fn test_replacement_text_is_not_reparsed_as_another_placeholder() {
 #[test]
 fn test_double_quoted_value_escapes_backslash_quote_dollar_and_backtick() {
     assert_eq!(
-        render_command_template(
-            "printf \"%s\" \"{v}\"",
-            &values(&[("v", "\\\"$x`y`")]),
-        )
-        .unwrap(),
+        render_command_template("printf \"%s\" \"{v}\"", &values(&[("v", "\\\"$x`y`")]),).unwrap(),
         "printf \"%s\" \"\\\\\\\"\\$x\\`y\\`\""
     );
 }
