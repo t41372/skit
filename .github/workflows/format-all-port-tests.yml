@@ -1,0 +1,70 @@
+name: Format all port tests
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/format-all-port-tests.yml
+      - crates/skit-language/tests/port_test_prompt.rs
+      - crates/skit-runtime/tests/port_test_launcher.rs
+      - crates/skit-runtime/tests/port_test_launcher_fix.rs
+      - crates/skit-runtime/tests/port_test_prompt_launch.rs
+      - crates/skit-store/tests/port_test_argstate.rs
+      - crates/skit-store/tests/port_test_atomic_state.rs
+      - crates/skit-store/tests/port_test_config.rs
+      - crates/skit-store/tests/port_test_prompt_runner_cas.rs
+      - crates/skit-store/tests/port_test_prompt_runner_config.rs
+      - crates/skit-store/tests/port_test_store_concurrency.rs
+      - crates/skit-store/tests/port_test_store_create.rs
+      - crates/skit-store/tests/port_test_store_fix.rs
+      - crates/skit-store/tests/port_test_store_metadata_shapes.rs
+      - crates/skit-store/tests/port_test_store_mutation.rs
+      - crates/skit-store/tests/port_test_store_orphan_truth.rs
+      - crates/skit-store/tests/port_test_store_registry_name_defense.rs
+      - crates/skit-store/tests/port_test_store_registry_repair.rs
+      - crates/skit-store/tests/registry_fast_read.rs
+      - crates/skit-store/tests/registry_resolve.rs
+
+permissions:
+  contents: write
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: agent/port-python-test-contracts-v3
+          persist-credentials: true
+      - name: Format only port tests
+        shell: bash
+        run: |
+          rustfmt --edition 2024 \
+            crates/skit-language/tests/port_test_prompt.rs \
+            crates/skit-runtime/tests/port_test_launcher.rs \
+            crates/skit-runtime/tests/port_test_launcher_fix.rs \
+            crates/skit-runtime/tests/port_test_prompt_launch.rs \
+            crates/skit-store/tests/port_test_argstate.rs \
+            crates/skit-store/tests/port_test_atomic_state.rs \
+            crates/skit-store/tests/port_test_config.rs \
+            crates/skit-store/tests/port_test_prompt_runner_cas.rs \
+            crates/skit-store/tests/port_test_prompt_runner_config.rs \
+            crates/skit-store/tests/port_test_store_concurrency.rs \
+            crates/skit-store/tests/port_test_store_create.rs \
+            crates/skit-store/tests/port_test_store_fix.rs \
+            crates/skit-store/tests/port_test_store_metadata_shapes.rs \
+            crates/skit-store/tests/port_test_store_mutation.rs \
+            crates/skit-store/tests/port_test_store_orphan_truth.rs \
+            crates/skit-store/tests/port_test_store_registry_name_defense.rs \
+            crates/skit-store/tests/port_test_store_registry_repair.rs \
+            crates/skit-store/tests/registry_fast_read.rs \
+            crates/skit-store/tests/registry_resolve.rs
+          git diff --check
+          if git diff --quiet -- crates/*/tests; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- crates/*/tests
+          git commit -m 'test(port): rustfmt Python parity oracles'
+          git push origin HEAD:agent/port-python-test-contracts-v3
