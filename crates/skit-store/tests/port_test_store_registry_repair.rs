@@ -76,6 +76,18 @@ fn edit_meta(root: &TempDir, slug: &str, key: &str, value: &str) {
     fs::write(path, toml::to_string_pretty(&document).unwrap()).unwrap();
 }
 
+fn meta_mtime_ns(root: &TempDir, slug: &str) -> i64 {
+    let path = root.path().join("scripts").join(slug).join("meta.toml");
+    let modified = fs::metadata(path).unwrap().modified().unwrap();
+    i64::try_from(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    )
+    .unwrap()
+}
+
 #[test]
 fn test_a_corrupt_index_lists_nothing_and_preserves_the_bad_bytes() {
     let root = TempDir::new().unwrap();
@@ -263,4 +275,244 @@ fn test_repair_never_drops_an_entry_added_meanwhile() {
             .and_then(Value::as_str),
         Some("copy")
     );
+}
+
+#[test]
+fn test_a_hand_broken_row_falls_back_instead_of_inventing_a_summary() {
+    let broken_rows = [
+        Value::Table(Table::from_iter([
+            ("name".to_owned(), Value::String("x".to_owned())),
+            ("kind".to_owned(), Value::String("future-kind".to_owned())),
+            ("description".to_owned(), Value::Integer(7)),
+        ])),
+        Value::Table(Table::from_iter([
+            ("name".to_owned(), Value::String("x".to_owned())),
+            ("kind".to_owned(), Value::String("future-kind".to_owned())),
+            ("mode".to_owned(), Value::String("sideways".to_owned())),
+            ("description".to_owned(), Value::String(String::new())),
+        ])),
+        Value::Table(Table::from_iter([
+            ("kind".to_owned(), Value::String("future-kind".to_owned())),
+            ("description".to_owned(), Value::String(String::new())),
+        ])),
+        Value::Table(Table::from_iter([
+            ("name".to_owned(), Value::String("x".to_owned())),
+            ("kind".to_owned(), Value::String("future-kind".to_owned())),
+            ("mode".to_owned(), Value::String("reference".to_owned())),
+            ("description".to_owned(), Value::String(String::new())),
+            ("target".to_owned(), Value::Integer(7)),
+        ])),
+    ];
+
+    for (index, broken_row) in broken_rows.into_iter().enumerate() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let name = format!("real-{index}");
+        let entry = store
+            .create(request(&name, StorageMode::Copy, "the truth"))
+            .unwrap();
+        let mut document = registry(&root);
+        entries_mut(&mut document).insert(entry.slug.as_str().to_owned(), broken_row);
+        write_registry(&root, &document);
+
+        let scan = store.scan().unwrap();
+        assert_eq!(scan.entries.len(), 1);
+        assert_eq!(scan.entries[0].name, name);
+        assert_eq!(scan.entries[0].description, "the truth");
+    }
+}
+
+#[test]
+fn test_a_broken_row_over_a_corrupt_meta_is_skipped_like_list_entries() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store
+        .create(request("doomed-meta", StorageMode::Copy, "truth"))
+        .unwrap();
+    let mut document = registry(&root);
+    entries_mut(&mut document).insert(
+        entry.slug.as_str().to_owned(),
+        Value::Table(Table::from_iter([(
+            "name".to_owned(),
+            Value::String("doomed-meta".to_owned()),
+        )])),
+    );
+    write_registry(&root, &document);
+    fs::write(
+        root.path()
+            .join("scripts")
+            .join(entry.slug.as_str())
+            .join("meta.toml"),
+        "not [ toml",
+    )
+    .unwrap();
+
+    assert!(store.scan().unwrap().entries.is_empty());
+}
+
+#[test]
+fn test_an_entry_whose_meta_is_gone_is_not_listed() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let linked = store
+        .create(request("linked-gone", StorageMode::Reference, "linked"))
+        .unwrap();
+    store
+        .create(request("kept", StorageMode::Copy, "kept"))
+        .unwrap();
+    fs::remove_dir_all(
+        root.path()
+            .join("scripts")
+            .join(linked.slug.as_str()),
+    )
+    .unwrap();
+
+    let names = store
+        .scan()
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|summary| summary.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["kept"]);
+}
+
+#[test]
+fn test_a_corrupted_meta_drops_out_of_the_listing_like_every_other_face() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let broken = store
+        .create(request("broken-meta", StorageMode::Copy, "broken"))
+        .unwrap();
+    store
+        .create(request("fine", StorageMode::Copy, "fine"))
+        .unwrap();
+    fs::write(
+        root.path()
+            .join("scripts")
+            .join(broken.slug.as_str())
+            .join("meta.toml"),
+        "not [ toml",
+    )
+    .unwrap();
+
+    let names = store
+        .scan()
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|summary| summary.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["fine"]);
+}
+
+#[test]
+fn test_a_non_mapping_row_falls_back_instead_of_crashing() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store
+        .create(request("real-scalar", StorageMode::Copy, "the truth"))
+        .unwrap();
+    let mut document = registry(&root);
+    entries_mut(&mut document).insert(
+        entry.slug.as_str().to_owned(),
+        Value::String("oops".to_owned()),
+    );
+    write_registry(&root, &document);
+
+    let scan = store.scan().unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    assert_eq!(scan.entries[0].name, "real-scalar");
+    assert_eq!(scan.entries[0].description, "the truth");
+}
+
+#[test]
+fn test_an_index_whose_entries_key_is_not_a_table_reads_empty() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    store
+        .create(request("real-index", StorageMode::Copy, "truth"))
+        .unwrap();
+    fs::write(root.path().join("registry.toml"), "entries = 5\n").unwrap();
+
+    assert!(store.scan().unwrap().entries.is_empty());
+    assert_eq!(store.rebuild_registry().unwrap(), 1);
+    let names = store
+        .scan()
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|summary| summary.name)
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["real-index"]);
+}
+
+#[test]
+fn test_a_fresh_stamped_row_with_broken_fields_falls_back() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store
+        .create(request("fresh-broken", StorageMode::Copy, "the truth"))
+        .unwrap();
+    let mut document = registry(&root);
+    entries_mut(&mut document).insert(
+        entry.slug.as_str().to_owned(),
+        Value::Table(Table::from_iter([
+            (
+                "name".to_owned(),
+                Value::String("fresh-broken".to_owned()),
+            ),
+            (
+                "kind".to_owned(),
+                Value::String("future-kind".to_owned()),
+            ),
+            ("mode".to_owned(), Value::String("copy".to_owned())),
+            ("description".to_owned(), Value::Integer(7)),
+            (
+                "mtime_ns".to_owned(),
+                Value::Integer(meta_mtime_ns(&root, entry.slug.as_str())),
+            ),
+        ])),
+    );
+    write_registry(&root, &document);
+
+    let scan = store.scan().unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    assert_eq!(scan.entries[0].description, "the truth");
+}
+
+#[test]
+fn test_widening_gives_up_on_a_row_it_would_reject_again() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store
+        .create(request("odd", StorageMode::Copy, "odd"))
+        .unwrap();
+    edit_meta(&root, entry.slug.as_str(), "mode", "sideways");
+    let mut document = registry(&root);
+    entries_mut(&mut document).insert(
+        entry.slug.as_str().to_owned(),
+        Value::Table(Table::from_iter([
+            ("name".to_owned(), Value::String("odd".to_owned())),
+            (
+                "kind".to_owned(),
+                Value::String("future-kind".to_owned()),
+            ),
+            ("description".to_owned(), Value::String(String::new())),
+        ])),
+    );
+    write_registry(&root, &document);
+    let before = fs::read(root.path().join("registry.toml")).unwrap();
+
+    for _ in 0..3 {
+        let names = store
+            .scan()
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|summary| summary.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["odd"]);
+    }
+    assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), before);
 }
