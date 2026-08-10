@@ -15,6 +15,7 @@ on:
       - crates/skit-language/tests/port_test_reconcile.rs
       - crates/skit-domain/tests/port_test_declared_params.rs
       - crates/skit-domain/tests/port_test_declared_meta.rs
+      - crates/skit-domain/tests/port_test_params_edit_helpers.rs
       - crates/skit-form/tests/port_test_declared_form.rs
       - crates/skit-form/tests/port_test_declared_form_edges.rs
       - crates/skit-application/tests/port_test_declared_delivery.rs
@@ -39,6 +40,8 @@ jobs:
           echo "DECLARED_PARAMS_DOMAIN_RC=$?"
           cargo test --locked -p skit-domain --test port_test_declared_meta -- --nocapture
           echo "DECLARED_META_RC=$?"
+          cargo test --locked -p skit-domain --test port_test_params_edit_helpers -- --nocapture
+          echo "PARAMS_EDIT_HELPERS_RC=$?"
           cargo test --locked -p skit-form --test port_test_declared_form -- --nocapture
           echo "DECLARED_FORM_RC=$?"
           cargo test --locked -p skit-form --test port_test_declared_form_edges -- --nocapture
