@@ -170,16 +170,36 @@ fn python_oracle_inventory_and_port_status_are_machine_checked() {
     assert_eq!(port_map.schema, 1);
     assert_eq!(oracle.oracle.commit, ORACLE_COMMIT);
     assert_eq!(port_map.oracle_commit, ORACLE_COMMIT);
-    assert_eq!((oracle.summary.behavior.modules, oracle.summary.behavior.tests), (84, 3_018));
-    assert_eq!((oracle.summary.mutation.modules, oracle.summary.mutation.tests), (72, 1_010));
-    assert_eq!((oracle.summary.coverage.modules, oracle.summary.coverage.tests), (19, 578));
+    assert_eq!(
+        (
+            oracle.summary.behavior.modules,
+            oracle.summary.behavior.tests
+        ),
+        (84, 3_018)
+    );
+    assert_eq!(
+        (
+            oracle.summary.mutation.modules,
+            oracle.summary.mutation.tests
+        ),
+        (72, 1_010)
+    );
+    assert_eq!(
+        (
+            oracle.summary.coverage.modules,
+            oracle.summary.coverage.tests
+        ),
+        (19, 578)
+    );
     assert_eq!(oracle.modules.len(), 175);
 
     let mut oracle_by_path = BTreeMap::new();
     let mut observed_summary: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for module in &oracle.modules {
         assert!(
-            oracle_by_path.insert(module.path.as_str(), module).is_none(),
+            oracle_by_path
+                .insert(module.path.as_str(), module)
+                .is_none(),
             "duplicate oracle module {}",
             module.path
         );
@@ -207,7 +227,7 @@ fn python_oracle_inventory_and_port_status_are_machine_checked() {
 
     let mut mapped_sources = BTreeSet::new();
     let mut mapped_targets = BTreeSet::new();
-    let mut ported_by_target: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut ported_by_target: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for module in &port_map.modules {
         assert!(
@@ -223,15 +243,28 @@ fn python_oracle_inventory_and_port_status_are_machine_checked() {
             "only behavior modules may claim direct parity: {}",
             module.source
         );
-        assert!(!module.targets.is_empty(), "no Rust target for {}", module.source);
+        assert!(
+            !module.targets.is_empty(),
+            "no Rust target for {}",
+            module.source
+        );
 
-        let ported = module.ported.iter().map(String::as_str).collect::<BTreeSet<_>>();
+        let ported = module
+            .ported
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
         let deferred = module
             .deferred
             .iter()
             .map(|test| test.name.as_str())
             .collect::<BTreeSet<_>>();
-        assert_eq!(ported.len(), module.ported.len(), "duplicate ported name in {}", module.source);
+        assert_eq!(
+            ported.len(),
+            module.ported.len(),
+            "duplicate ported name in {}",
+            module.source
+        );
         assert_eq!(
             deferred.len(),
             module.deferred.len(),
@@ -244,18 +277,33 @@ fn python_oracle_inventory_and_port_status_are_machine_checked() {
             module.source
         );
         assert!(
-            module.deferred.iter().all(|test| !test.reason.trim().is_empty()),
+            module
+                .deferred
+                .iter()
+                .all(|test| !test.reason.trim().is_empty()),
             "blank deferral reason in {}",
             module.source
         );
 
         match module.status.as_str() {
             "done" => {
-                assert!(deferred.is_empty(), "done row defers tests in {}", module.source);
+                assert!(
+                    deferred.is_empty(),
+                    "done row defers tests in {}",
+                    module.source
+                );
             }
             "partial" => {
-                assert!(!ported.is_empty(), "partial row ports nothing in {}", module.source);
-                assert!(!deferred.is_empty(), "partial row defers nothing in {}", module.source);
+                assert!(
+                    !ported.is_empty(),
+                    "partial row ports nothing in {}",
+                    module.source
+                );
+                assert!(
+                    !deferred.is_empty(),
+                    "partial row defers nothing in {}",
+                    module.source
+                );
             }
             status => panic!("unknown port status {status:?} for {}", module.source),
         }
@@ -274,28 +322,45 @@ fn python_oracle_inventory_and_port_status_are_machine_checked() {
         );
 
         let mut target_tests = BTreeMap::new();
+        let mut target_count_by_test = BTreeMap::<String, usize>::new();
         for target in &module.targets {
             let path = root.join(target);
             assert!(path.is_file(), "missing Rust target {target}");
             mapped_targets.insert(target.as_str());
-            let source = fs::read_to_string(&path)
-                .unwrap_or_else(|error| panic!("read {target}: {error}"));
+            let source =
+                fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {target}: {error}"));
             for (name, ignored) in rust_tests(&source) {
+                if ported.contains(name.as_str()) {
+                    ported_by_target
+                        .entry(target.clone())
+                        .or_default()
+                        .insert(name.clone());
+                    *target_count_by_test.entry(name.clone()).or_default() += 1;
+                }
                 target_tests
                     .entry(name)
                     .and_modify(|seen_ignored| *seen_ignored &= ignored)
                     .or_insert(ignored);
             }
-            ported_by_target
-                .entry(target.as_str())
-                .or_default()
-                .extend(module.ported.iter().map(String::as_str));
         }
         for name in &module.ported {
             let ignored = target_tests.get(name).unwrap_or_else(|| {
-                panic!("ported test {name} has no Rust function in targets for {}", module.source)
+                panic!(
+                    "ported test {name} has no Rust function in targets for {}",
+                    module.source
+                )
             });
-            assert!(!ignored, "ported test {name} is ignored in {}", module.source);
+            assert!(
+                !ignored,
+                "ported test {name} is ignored in {}",
+                module.source
+            );
+            assert_eq!(
+                target_count_by_test.get(name),
+                Some(&1),
+                "ported test {name} must exist in exactly one Rust target for {}",
+                module.source
+            );
         }
     }
 
@@ -305,7 +370,10 @@ fn python_oracle_inventory_and_port_status_are_machine_checked() {
         port_files,
         mapped_targets
             .iter()
-            .filter(|path| path.rsplit('/').next().is_some_and(|name| name.starts_with("port_test_")))
+            .filter(|path| path
+                .rsplit('/')
+                .next()
+                .is_some_and(|name| name.starts_with("port_test_")))
             .copied()
             .map(str::to_owned)
             .collect(),
@@ -318,15 +386,11 @@ fn python_oracle_inventory_and_port_status_are_machine_checked() {
             !source.contains("#[ignore"),
             "ignored tests cannot count as a port: {path}"
         );
-        let actual = rust_tests(&source)
-            .into_keys()
-            .collect::<BTreeSet<_>>();
+        let actual = rust_tests(&source).into_keys().collect::<BTreeSet<_>>();
         let expected = ported_by_target
-            .get(path.as_str())
+            .get(path)
             .unwrap_or_else(|| panic!("port file has no mapped tests: {path}"))
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect::<BTreeSet<_>>();
+            .clone();
         assert_eq!(actual, expected, "unmapped or missing tests in {path}");
     }
 }
