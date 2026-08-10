@@ -48,7 +48,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (83) · 3 white-box, 6 → Tier 4 |
 | test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs | done (53) · 34 → Tier 3/4 |
 | test_shell_getopts.py | 11 | skit-language | todo |
-| test_fish.py | 64 | skit-language | todo |
+| test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs | done (44) · 18 white-box scanner, 2 CLI |
 | test_powershell.py | 35 | skit-language | todo |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
@@ -317,3 +317,21 @@ Bucket 2 (1 remaining): `test_injected_const_reaches_the_child` (int lands, ASCI
 Bucket 3 (21 deferred to Tier 3/4): `_resolve_runner`/`_gate_node` (`node --check`), temp-copy file
 facts incl. **`test_injected_copy_is_0600` (MUST-VERIFY secret handling)**, the offline-gate
 escaper seam, and `flows.execute`/`skit run` end-to-end.
+
+### test_fish.py → port_test_fish.rs (44 done · 20 deferred · no gap)
+
+64 ported / 44 passed / 20 `#[ignore]`. No reader gap. The passing set covers the env-default idiom
+`set -q NAME; or set NAME default` (incl. the newline-continued `or` form), stray-`end` depth
+clamping, block nesting, CJK/emoji variable names via byte-exact `tests/corpus/fish/*.fish`
+(`include_str!`), and the full fish `argparse` spec grammar (`h/help`, `n/name=`, `=?`/`=+`/`=*`,
+dummy-short, `#`-degrade, `!validator` strip, own-option skipping, conditional-prefix `or argparse`,
+`$specs`/`(make_specs)` → Dynamic). Confirmed: fish has **no injector** — `plan_injection` for fish
+returns `UnsupportedKind`, matching the oracle's registry (a fish plan degrades, never fabricates a
+rewrite).
+
+The 20 deferred are a clean **architecture difference, not a gap**: the oracle's fish reader is a
+hand-written scanner (its own tokenizer, dequote, line-continuation joiner, `classify_set`), and 18
+white-box unit tests probe that scanner directly. The Rust fish reader is tree-sitter-fish-backed and
+shares none of it, so each scanner behavior is instead exercised through the public bucket-1 tests
+(e.g. the tokenizer's quote/comment/escape handling shows up in the detection and corpus tests). 2
+more are CliRunner/real-fish integration → Tier 3/4 (no security-sensitive claim among them).
