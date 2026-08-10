@@ -3056,6 +3056,11 @@ const CATALOG: &[Translation] = &[
         "{} 預設已開啟，因此它的選項只能再次開啟它。請改為宣告關閉它的選項（例如 --no-{}），並將預設值設為 false。",
     ),
     row!(
+        "{} has no managed parameters.",
+        "{} 没有受管理的参数。",
+        "{} 沒有受管理的參數。",
+    ),
+    row!(
         "{} manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block.",
         "{} 从脚本自身管理参数——请使用 --manage / --unmanage，或直接编辑 [tool.skit] 区块。",
         "{} 由腳本自身管理參數——請使用 --manage / --unmanage，或直接編輯 [tool.skit] 區塊。",

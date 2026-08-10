@@ -1,0 +1,964 @@
+
+## registry-fast-read
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded const-oid v0.10.2
+  Downloaded boxcar v0.2.14
+  Downloaded deranged v0.5.8
+  Downloaded hex v0.4.3
+  Downloaded either v1.17.0
+  Downloaded icu_properties v2.2.0
+  Downloaded utf8_iter v1.0.4
+  Downloaded quote v1.0.47
+  Downloaded block-buffer v0.12.1
+  Downloaded cfg-if v1.0.4
+  Downloaded num_threads v0.1.7
+  Downloaded cpufeatures v0.3.0
+  Downloaded writeable v0.6.3
+  Downloaded time-macros v0.2.32
+  Downloaded yoke-derive v0.8.2
+  Downloaded serde_derive v1.0.229
+  Downloaded wtf8 v0.0.3
+  Downloaded yoke v0.8.3
+  Downloaded equivalent v1.0.2
+  Downloaded errno v0.3.14
+  Downloaded form_urlencoded v1.2.2
+  Downloaded unscanny v0.1.0
+  Downloaded idna_adapter v1.2.2
+  Downloaded glob v0.3.4
+  Downloaded thiserror v1.0.69
+  Downloaded zerotrie v0.2.4
+  Downloaded windows-args v0.2.0
+  Downloaded zerofrom-derive v0.1.7
+  Downloaded potential_utf v0.1.5
+  Downloaded sys-locale v0.3.2
+  Downloaded thiserror v2.0.20
+  Downloaded time-core v0.1.9
+  Downloaded tree-sitter-fish v3.6.0
+  Downloaded urlencoding v2.1.3
+  Downloaded zerofrom v0.1.8
+  Downloaded zerovec-derive v0.11.3
+  Downloaded dirs v6.0.0
+  Downloaded hybrid-array v0.4.14
+  Downloaded itoa v1.0.18
+  Downloaded tree-sitter-language v0.1.7
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded icu_provider v2.2.0
+  Downloaded zmij v1.0.23
+  Downloaded dirs-sys v0.5.0
+  Downloaded crypto-common v0.2.2
+  Downloaded smallvec v1.15.2
+  Downloaded find-msvc-tools v0.1.10
+  Downloaded serde_spanned v1.1.1
+  Downloaded thiserror-impl v1.0.69
+  Downloaded synstructure v0.13.2
+  Downloaded displaydoc v0.2.7
+  Downloaded fastrand v2.5.0
+  Downloaded once_cell v1.21.4
+  Downloaded option-ext v0.2.0
+  Downloaded streaming-iterator v0.1.9
+  Downloaded toml_datetime v1.1.1+spec-1.1.0
+  Downloaded zerovec v0.11.6
+  Downloaded rustc-hash v2.1.3
+  Downloaded sha2 v0.11.0
+  Downloaded unicode-width v0.2.2
+  Downloaded digest v0.11.3
+  Downloaded litemap v0.8.2
+  Downloaded percent-encoding v2.3.2
+  Downloaded powerfmt v0.2.0
+  Downloaded version-ranges v0.1.3
+  Downloaded num-conv v0.2.2
+  Downloaded tempfile v3.27.0
+  Downloaded toml_parser v1.1.3+spec-1.1.0
+  Downloaded shellexpand v3.1.2
+  Downloaded shlex v2.0.1
+  Downloaded thiserror-impl v2.0.20
+  Downloaded toml_writer v1.1.2+spec-1.1.0
+  Downloaded winnow v1.0.4
+  Downloaded uuid v1.24.0
+  Downloaded proc-macro2 v1.0.107
+  Downloaded bitflags v2.13.1
+  Downloaded getrandom v0.4.3
+  Downloaded tinystr v0.8.3
+  Downloaded icu_locale_core v2.2.0
+  Downloaded pep440_rs v0.7.3
+  Downloaded serde v1.0.229
+  Downloaded serde_core v1.0.229
+  Downloaded toml_edit v0.25.13+spec-1.1.0
+  Downloaded pep508_rs v0.9.2
+  Downloaded toml v1.1.4+spec-1.1.0
+  Downloaded unicode-ident v1.0.24
+  Downloaded icu_normalizer v2.2.0
+  Downloaded icu_normalizer_data v2.2.0
+  Downloaded itertools v0.13.0
+  Downloaded cc v1.4.2
+  Downloaded memchr v2.8.3
+  Downloaded url v2.5.8
+  Downloaded indexmap v2.14.0
+  Downloaded typenum v1.20.1
+  Downloaded icu_collections v2.2.0
+  Downloaded regex v1.13.1
+  Downloaded idna v1.1.0
+  Downloaded serde_json v1.0.151
+  Downloaded tree-sitter-javascript v0.25.0
+  Downloaded icu_properties_data v2.2.0
+  Downloaded tree-sitter v0.26.12
+  Downloaded tree-sitter-python v0.25.0
+  Downloaded aho-corasick v1.1.5
+  Downloaded hashbrown v0.17.1
+  Downloaded tree-sitter-powershell v0.26.4
+  Downloaded time v0.3.55
+  Downloaded syn v2.0.119
+  Downloaded regex-syntax v0.8.11
+  Downloaded syn v3.0.3
+  Downloaded rustix v1.1.4
+  Downloaded tree-sitter-bash v0.25.1
+  Downloaded regex-automata v0.4.18
+  Downloaded libc v0.2.189
+  Downloaded tree-sitter-typescript v0.23.2
+  Downloaded linux-raw-sys v0.12.1
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling shlex v2.0.1
+   Compiling find-msvc-tools v0.1.10
+   Compiling tree-sitter-language v0.1.7
+   Compiling cc v1.4.2
+   Compiling stable_deref_trait v1.2.1
+   Compiling serde_core v1.0.229
+   Compiling memchr v2.8.3
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling zmij v1.0.23
+   Compiling libc v0.2.189
+   Compiling hashbrown v0.17.1
+   Compiling synstructure v0.13.2
+   Compiling equivalent v1.0.2
+   Compiling itoa v1.0.18
+   Compiling displaydoc v0.2.7
+   Compiling indexmap v2.14.0
+   Compiling litemap v0.8.2
+   Compiling writeable v0.6.3
+   Compiling smallvec v1.15.2
+   Compiling serde v1.0.229
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling zerovec-derive v0.11.3
+   Compiling icu_properties_data v2.2.0
+   Compiling utf8_iter v1.0.4
+   Compiling serde_json v1.0.151
+   Compiling icu_normalizer_data v2.2.0
+   Compiling zerofrom v0.1.8
+   Compiling serde_derive v1.0.229
+   Compiling yoke v0.8.3
+   Compiling zerotrie v0.2.4
+   Compiling zerovec v0.11.6
+   Compiling aho-corasick v1.1.5
+   Compiling tinystr v0.8.3
+   Compiling icu_locale_core v2.2.0
+   Compiling potential_utf v0.1.5
+   Compiling icu_collections v2.2.0
+   Compiling icu_provider v2.2.0
+   Compiling regex-syntax v0.8.11
+   Compiling cfg-if v1.0.4
+   Compiling getrandom v0.4.3
+   Compiling icu_normalizer v2.2.0
+   Compiling icu_properties v2.2.0
+   Compiling thiserror v2.0.20
+   Compiling tree-sitter v0.26.12
+   Compiling thiserror-impl v2.0.20
+   Compiling regex-automata v0.4.18
+   Compiling idna_adapter v1.2.2
+   Compiling thiserror v1.0.69
+   Compiling winnow v1.0.4
+   Compiling once_cell v1.21.4
+   Compiling typenum v1.20.1
+   Compiling regex v1.13.1
+   Compiling sys-locale v0.3.2
+   Compiling percent-encoding v2.3.2
+   Compiling form_urlencoded v1.2.2
+   Compiling skit-i18n v0.5.0 (/home/runner/work/skit/skit/crates/skit-i18n)
+   Compiling hybrid-array v0.4.14
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling idna v1.1.0
+   Compiling uuid v1.24.0
+   Compiling version-ranges v0.1.3
+   Compiling thiserror-impl v1.0.69
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling tree-sitter-bash v0.25.1
+   Compiling tree-sitter-javascript v0.25.0
+   Compiling tree-sitter-fish v3.6.0
+   Compiling tree-sitter-python v0.25.0
+   Compiling tree-sitter-typescript v0.23.2
+   Compiling tree-sitter-powershell v0.26.4
+   Compiling unscanny v0.1.0
+   Compiling streaming-iterator v0.1.9
+   Compiling either v1.17.0
+   Compiling unicode-width v0.2.2
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling itertools v0.13.0
+   Compiling pep440_rs v0.7.3
+   Compiling skit-domain v0.5.0 (/home/runner/work/skit/skit/crates/skit-domain)
+   Compiling url v2.5.8
+   Compiling serde_spanned v1.1.1
+   Compiling urlencoding v2.1.3
+   Compiling option-ext v0.2.0
+   Compiling rustc-hash v2.1.3
+   Compiling boxcar v0.2.14
+   Compiling dirs-sys v0.5.0
+   Compiling pep508_rs v0.9.2
+   Compiling toml v1.1.4+spec-1.1.0
+   Compiling block-buffer v0.12.1
+   Compiling crypto-common v0.2.2
+   Compiling const-oid v0.10.2
+   Compiling rustix v1.1.4
+   Compiling wtf8 v0.0.3
+   Compiling windows-args v0.2.0
+   Compiling digest v0.11.3
+   Compiling dirs v6.0.0
+   Compiling powerfmt v0.2.0
+   Compiling cpufeatures v0.3.0
+   Compiling bitflags v2.13.1
+   Compiling linux-raw-sys v0.12.1
+   Compiling glob v0.3.4
+   Compiling deranged v0.5.8
+   Compiling time-core v0.1.9
+   Compiling skit-language v0.5.0 (/home/runner/work/skit/skit/crates/skit-language)
+   Compiling num-conv v0.2.2
+   Compiling num_threads v0.1.7
+   Compiling skit-application v0.5.0 (/home/runner/work/skit/skit/crates/skit-application)
+   Compiling time v0.3.55
+   Compiling skit-form v0.5.0 (/home/runner/work/skit/skit/crates/skit-form)
+   Compiling sha2 v0.11.0
+   Compiling shellexpand v3.1.2
+   Compiling toml_edit v0.25.13+spec-1.1.0
+   Compiling fastrand v2.5.0
+   Compiling hex v0.4.3
+   Compiling tempfile v3.27.0
+   Compiling skit-store v0.5.0 (/home/runner/work/skit/skit/crates/skit-store)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.28s
+     Running tests/registry_fast_read.rs (target/debug/deps/registry_fast_read-2d11c01f621d4047)
+
+running 13 tests
+test a_registry_row_never_hides_unreadable_authoritative_metadata ... ok
+test a_corrupt_same_size_edit_with_restored_mtime_is_never_cache_hidden ... ok
+test a_fresh_python_legacy_row_keeps_the_v040_index_fast_path ... ok
+test a_missing_registry_is_not_created_by_a_read ... ok
+test a_same_size_replacement_with_restored_mtime_invalidates_the_row ... ok
+test a_same_size_edit_with_restored_mtime_invalidates_the_row ... ok
+test a_registry_summary_never_overrides_authoritative_metadata ... ok
+test restoring_mtime_cannot_hide_a_metadata_edit ... ok
+test repeated_reads_do_not_repair_a_stale_registry ... ok
+test invalid_mode_and_missing_reference_target_fall_back_without_self_heal ... ok
+test rust_rows_carry_a_complete_incarnation_and_projection_proof ... ok
+test stale_and_malformed_rows_fall_back_without_rewriting_the_registry ... ok
+test concurrent_atomic_updates_never_mix_cache_and_metadata_generations ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
+
+exit_code=0
+
+## language-cli-ports
+ Downloading crates ...
+  Downloaded allocator-api2 v0.2.21
+  Downloaded adler2 v2.0.1
+  Downloaded anstream v1.0.0
+  Downloaded anstyle-parse v1.0.0
+  Downloaded generic-array v0.14.7
+  Downloaded anstyle v1.0.14
+  Downloaded downcast-rs v1.2.1
+  Downloaded memoffset v0.9.1
+  Downloaded phf_generator v0.11.3
+  Downloaded heck v0.5.0
+  Downloaded nix v0.29.0
+  Downloaded getrandom v0.2.17
+  Downloaded signal-hook-mio v0.2.5
+  Downloaded castaway v0.2.4
+  Downloaded phf v0.11.3
+  Downloaded pest_derive v2.8.8
+  Downloaded pest_generator v2.8.8
+  Downloaded kasuari v0.4.12
+  Downloaded convert_case v0.10.0
+  Downloaded is_executable v1.0.6
+  Downloaded num-derive v0.4.2
+  Downloaded assert_cmd v2.2.2
+  Downloaded lock_api v0.4.14
+  Downloaded memmem v0.1.1
+  Downloaded csscolorparser v0.6.2
+  Downloaded pest_meta v2.8.8
+  Downloaded ratatui-macros v0.7.2
+  Downloaded siphasher v1.0.3
+  Downloaded cpufeatures v0.2.17
+  Downloaded difflib v0.4.0
+  Downloaded fixedbitset v0.4.2
+  Downloaded float-cmp v0.10.0
+  Downloaded strum_macros v0.28.0
+  Downloaded block-buffer v0.10.4
+  Downloaded fnv v1.0.7
+  Downloaded ident_case v1.0.1
+  Downloaded lazy_static v1.5.0
+  Downloaded normalize-line-endings v0.3.0
+  Downloaded rtoolbox v0.0.5
+  Downloaded strsim v0.11.1
+  Downloaded approx v0.5.1
+  Downloaded cfg_aliases v0.1.1
+  Downloaded rustc_version v0.4.1
+  Downloaded crypto-common v0.1.7
+  Downloaded document-features v0.2.12
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded predicates-core v1.0.10
+  Downloaded predicates-tree v1.0.13
+  Downloaded bit-set v0.5.3
+  Downloaded colorchoice v1.0.5
+  Downloaded darling_macro v0.24.0
+  Downloaded palette_math v0.7.7
+  Downloaded phf_shared v0.11.3
+  Downloaded atomic v0.6.1
+  Downloaded clap_lex v1.1.0
+  Downloaded lab v0.11.0
+  Downloaded cfg_aliases v0.2.2
+  Downloaded termtree v0.5.1
+  Downloaded pest v2.8.8
+  Downloaded by_address v1.2.1
+  Downloaded phf_codegen v0.11.3
+  Downloaded filedescriptor v0.8.3
+  Downloaded anstyle-query v1.1.5
+  Downloaded xattr v1.6.1
+  Downloaded digest v0.10.7
+  Downloaded ratatui-termina v0.1.0
+  Downloaded shell-words v1.1.1
+  Downloaded strum v0.28.0
+  Downloaded critical-section v1.2.0
+  Downloaded dialoguer v0.12.0
+  Downloaded untrusted v0.9.0
+  Downloaded wezterm-color-types v0.3.0
+  Downloaded filetime v0.2.29
+  Downloaded palette_derive v0.7.7
+  Downloaded bitflags v1.3.2
+  Downloaded instability v0.3.13
+  Downloaded autocfg v1.5.1
+  Downloaded mac_address v1.1.8
+  Downloaded foldhash v0.2.0
+  Downloaded indoc v2.0.7
+  Downloaded line-clipping v0.3.8
+  Downloaded vtparse v0.6.2
+  Downloaded utf8parse v0.2.2
+  Downloaded wezterm-blob-leases v0.1.1
+  Downloaded wezterm-dynamic v0.2.1
+  Downloaded subtle v2.6.1
+  Downloaded version_check v0.9.5
+  Downloaded utf8-zero v0.8.1
+  Downloaded wezterm-dynamic-derive v0.1.1
+  Downloaded lru v0.18.2
+  Downloaded scopeguard v1.2.0
+  Downloaded bit-vec v0.6.3
+  Downloaded clap_derive v4.6.4
+  Downloaded parking_lot_core v0.9.12
+  Downloaded crc32fast v1.5.0
+  Downloaded ratatui-crossterm v0.1.2
+  Downloaded ratatui-termwiz v0.1.2
+  Downloaded clap_complete v4.6.9
+  Downloaded console v0.16.4
+  Downloaded litrs v1.0.0
+  Downloaded ordered-float v4.6.0
+  Downloaded parking_lot v0.12.5
+  Downloaded httparse v1.10.1
+  Downloaded anyhow v1.0.104
+  Downloaded getrandom v0.3.4
+  Downloaded static_assertions v1.1.0
+  Downloaded predicates v3.1.4
+  Downloaded sha2 v0.10.9
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded termios v0.3.3
+  Downloaded tui-input v0.15.3
+  Downloaded wait-timeout v0.2.1
+  Downloaded simd-adler32 v0.3.10
+  Downloaded rustversion v1.0.23
+  Downloaded unicode-truncate v2.0.1
+  Downloaded wezterm-input-types v0.1.0
+  Downloaded rpassword v7.5.4
+  Downloaded serial2 v0.2.38
+  Downloaded flate2 v1.1.9
+  Downloaded log v0.4.33
+  Downloaded nucleo-matcher v0.3.1
+  Downloaded phf_macros v0.11.3
+  Downloaded portable-pty v0.9.0
+  Downloaded rand_core v0.6.4
+  Downloaded base64 v0.22.1
+  Downloaded bytemuck v1.25.2
+  Downloaded bytes v1.12.1
+  Downloaded darling v0.24.0
+  Downloaded derive_more v2.1.1
+  Downloaded fancy-regex v0.11.0
+  Downloaded finl_unicode v1.4.0
+  Downloaded num-traits v0.2.19
+  Downloaded clap v4.6.6
+  Downloaded compact_str v0.9.1
+  Downloaded darling_core v0.24.0
+  Downloaded derive_more-impl v2.1.1
+  Downloaded euclid v0.22.14
+  Downloaded minimal-lexical v0.2.1
+  Downloaded miniz_oxide v0.8.9
+  Downloaded rustls-pki-types v1.15.1
+  Downloaded zeroize v1.9.0
+  Downloaded http v1.5.0
+  Downloaded mio v1.2.2
+  Downloaded nom v7.1.3
+  Downloaded hashbrown v0.16.1
+  Downloaded ucd-trie v0.1.7
+  Downloaded signal-hook v0.3.18
+  Downloaded ureq-proto v0.6.0
+  Downloaded semver v1.0.28
+  Downloaded crossterm v0.29.0
+  Downloaded itertools v0.14.0
+  Downloaded libm v0.2.16
+  Downloaded clap_builder v4.6.6
+  Downloaded ryu v1.0.23
+  Downloaded ratatui-textarea v0.9.2
+  Downloaded rustls-webpki v0.103.13
+  Downloaded terminfo v0.9.0
+  Downloaded wezterm-bidi v0.2.3
+  Downloaded palette v0.7.7
+  Downloaded rand v0.8.7
+  Downloaded ratatui v0.30.2
+  Downloaded tar v0.4.46
+  Downloaded termina v0.3.3
+  Downloaded bstr v1.13.0
+  Downloaded typed-path v0.12.3
+  Downloaded nix v0.28.0
+  Downloaded unicode-segmentation v1.13.3
+  Downloaded ureq v3.3.0
+  Downloaded zip v8.6.0
+  Downloaded portable-atomic v1.14.0
+  Downloaded ratatui-core v0.1.2
+  Downloaded webpki-roots v1.0.9
+  Downloaded deltae v0.3.2
+  Downloaded ratatui-interact v0.5.3
+  Downloaded ratatui-widgets v0.3.2
+  Downloaded syn v1.0.109
+  Downloaded zlib-rs v0.6.7
+  Downloaded rustls v0.23.43
+  Downloaded termwiz v0.23.3
+  Downloaded ring v0.17.14
+   Compiling unicode-ident v1.0.24
+   Compiling libc v0.2.189
+   Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
+   Compiling proc-macro2 v1.0.107
+   Compiling memchr v2.8.3
+   Compiling hashbrown v0.17.1
+   Compiling quote v1.0.47
+   Compiling syn v3.0.3
+   Compiling syn v2.0.119
+   Compiling aho-corasick v1.1.5
+   Compiling unicode-segmentation v1.13.3
+   Compiling regex-automata v0.4.18
+   Compiling synstructure v0.13.2
+   Compiling zerovec-derive v0.11.3
+   Compiling zerofrom-derive v0.1.7
+   Compiling zerofrom v0.1.8
+   Compiling yoke-derive v0.8.2
+   Compiling strsim v0.11.1
+   Compiling heck v0.5.0
+   Compiling log v0.4.33
+   Compiling yoke v0.8.3
+   Compiling thiserror-impl v2.0.20
+   Compiling displaydoc v0.2.7
+   Compiling zerovec v0.11.6
+   Compiling tinystr v0.8.3
+   Compiling regex v1.13.1
+   Compiling rustix v1.1.4
+   Compiling rustversion v1.0.23
+   Compiling icu_locale_core v2.2.0
+   Compiling thiserror v2.0.20
+   Compiling zerotrie v0.2.4
+   Compiling potential_utf v0.1.5
+   Compiling serde_derive v1.0.229
+   Compiling ident_case v1.0.1
+   Compiling indexmap v2.14.0
+   Compiling icu_provider v2.2.0
+   Compiling icu_collections v2.2.0
+   Compiling darling_core v0.24.0
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling castaway v0.2.4
+   Compiling getrandom v0.4.3
+   Compiling strum_macros v0.28.0
+   Compiling errno v0.3.14
+   Compiling itertools v0.14.0
+   Compiling hashbrown v0.16.1
+   Compiling darling_macro v0.24.0
+   Compiling percent-encoding v2.3.2
+   Compiling signal-hook v0.3.18
+   Compiling instability v0.3.13
+   Compiling ryu v1.0.23
+   Compiling parking_lot_core v0.9.12
+   Compiling static_assertions v1.1.0
+   Compiling compact_str v0.9.1
+   Compiling darling v0.24.0
+   Compiling kasuari v0.4.12
+   Compiling unicode-truncate v2.0.1
+   Compiling strum v0.28.0
+   Compiling tree-sitter v0.26.12
+   Compiling signal-hook-registry v1.4.8
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling thiserror-impl v1.0.69
+   Compiling convert_case v0.10.0
+   Compiling lru v0.18.2
+   Compiling critical-section v1.2.0
+   Compiling scopeguard v1.2.0
+   Compiling indoc v2.0.7
+   Compiling time v0.3.55
+   Compiling thiserror v1.0.69
+   Compiling idna_adapter v1.2.2
+   Compiling lock_api v0.4.14
+   Compiling ratatui-core v0.1.2
+   Compiling derive_more-impl v2.1.1
+   Compiling uuid v1.24.0
+   Compiling mio v1.2.2
+   Compiling litrs v1.0.0
+   Compiling parking_lot v0.12.5
+   Compiling signal-hook-mio v0.2.5
+   Compiling skit-domain v0.5.0 (/home/runner/work/skit/skit/crates/skit-domain)
+   Compiling derive_more v2.1.1
+   Compiling document-features v0.2.12
+   Compiling idna v1.1.0
+   Compiling form_urlencoded v1.2.2
+   Compiling line-clipping v0.3.8
+   Compiling ring v0.17.14
+   Compiling zeroize v1.9.0
+   Compiling pep440_rs v0.7.3
+   Compiling crossterm v0.29.0
+   Compiling tree-sitter-fish v3.6.0
+   Compiling url v2.5.8
+   Compiling ratatui-widgets v0.3.2
+   Compiling anstyle v1.0.14
+   Compiling ratatui-crossterm v0.1.2
+   Compiling pep508_rs v0.9.2
+   Compiling rustls-pki-types v1.15.1
+   Compiling getrandom v0.2.17
+   Compiling utf8parse v0.2.2
+   Compiling crc32fast v1.5.0
+   Compiling httparse v1.10.1
+   Compiling untrusted v0.9.0
+   Compiling ratatui-macros v0.7.2
+   Compiling skit-application v0.5.0 (/home/runner/work/skit/skit/crates/skit-application)
+   Compiling anstyle-parse v1.0.0
+   Compiling anstyle-query v1.1.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling colorchoice v1.0.5
+   Compiling adler2 v2.0.1
+   Compiling bytes v1.12.1
+   Compiling skit-language v0.5.0 (/home/runner/work/skit/skit/crates/skit-language)
+   Compiling autocfg v1.5.1
+   Compiling simd-adler32 v0.3.10
+   Compiling rustls v0.23.43
+   Compiling dirs-sys v0.5.0
+   Compiling miniz_oxide v0.8.9
+   Compiling num-traits v0.2.19
+   Compiling http v1.5.0
+   Compiling rustls-webpki v0.103.13
+   Compiling skit-form v0.5.0 (/home/runner/work/skit/skit/crates/skit-form)
+   Compiling anstream v1.0.0
+   Compiling ratatui v0.30.2
+   Compiling base64 v0.22.1
+   Compiling subtle v2.6.1
+   Compiling zlib-rs v0.6.7
+   Compiling clap_lex v1.1.0
+   Compiling clap_builder v4.6.6
+   Compiling ureq-proto v0.6.0
+   Compiling dirs v6.0.0
+   Compiling webpki-roots v1.0.9
+   Compiling xattr v1.6.1
+   Compiling flate2 v1.1.9
+   Compiling clap_derive v4.6.4
+   Compiling nucleo-matcher v0.3.1
+   Compiling filetime v0.2.29
+   Compiling typed-path v0.12.3
+   Compiling cfg_aliases v0.1.1
+   Compiling shell-words v1.1.1
+   Compiling utf8-zero v0.8.1
+   Compiling zip v8.6.0
+   Compiling clap v4.6.6
+   Compiling ureq v3.3.0
+   Compiling nix v0.28.0
+   Compiling tar v0.4.46
+   Compiling skit-ui v0.5.0 (/home/runner/work/skit/skit/crates/skit-ui)
+   Compiling shellexpand v3.1.2
+   Compiling ratatui-interact v0.5.3
+   Compiling tui-input v0.15.3
+   Compiling ratatui-textarea v0.9.2
+   Compiling toml_edit v0.25.13+spec-1.1.0
+   Compiling console v0.16.4
+   Compiling rtoolbox v0.0.5
+   Compiling predicates-core v1.0.10
+   Compiling is_executable v1.0.6
+   Compiling anyhow v1.0.104
+   Compiling skit-store v0.5.0 (/home/runner/work/skit/skit/crates/skit-store)
+   Compiling clap_complete v4.6.9
+   Compiling tempfile v3.27.0
+   Compiling rpassword v7.5.4
+   Compiling dialoguer v0.12.0
+   Compiling float-cmp v0.10.0
+   Compiling skit-runtime v0.5.0 (/home/runner/work/skit/skit/crates/skit-runtime)
+   Compiling skit-tui v0.5.0 (/home/runner/work/skit/skit/crates/skit-tui)
+   Compiling normalize-line-endings v0.3.0
+   Compiling termtree v0.5.1
+   Compiling assert_cmd v2.2.2
+   Compiling difflib v0.4.0
+   Compiling skit-cli-rs v0.5.0 (/home/runner/work/skit/skit/crates/skit-cli)
+   Compiling predicates v3.1.4
+   Compiling predicates-tree v1.0.13
+   Compiling filedescriptor v0.8.3
+   Compiling bstr v1.13.0
+   Compiling serial2 v0.2.38
+   Compiling wait-timeout v0.2.1
+   Compiling downcast-rs v1.2.1
+   Compiling portable-pty v0.9.0
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 44.48s
+     Running tests/port_test_langs.rs (target/debug/deps/port_test_langs-d52f39da1114d274)
+
+running 4 tests
+test test_doctor_json_missing_uv_pure_exe_library_exits_zero ... ok
+test test_doctor_missing_uv_pure_exe_library_exits_zero ... ok
+test test_params_exe_prints_plain_message_without_manage_dead_end ... ok
+test test_doctor_missing_uv_with_python_entry_exits_one ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+exit_code=0
+
+## contextual-product-contract
+   Compiling skit-cli-rs v0.5.0 (/home/runner/work/skit/skit/crates/skit-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.65s
+     Running tests/product_contract.rs (target/debug/deps/product_contract-b24f9d1a4e3cd77a)
+
+running 1 test
+test doctor_keeps_the_v040_contextual_uv_check ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.04s
+
+exit_code=0
+
+## shared-health-unit
+   Compiling skit-cli-rs v0.5.0 (/home/runner/work/skit/skit/crates/skit-cli)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.68s
+     Running unittests src/lib.rs (target/debug/deps/skit_cli-8769558ce6eebe78)
+
+running 1 test
+test cli::tests::shared_health_inspector_reports_typed_entry_runner_and_rebuild_facts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 86 filtered out; finished in 1.29s
+
+     Running unittests src/main.rs (target/debug/deps/skit-c4ad846741a39bd3)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/add_lanes.rs (target/debug/deps/add_lanes-36433c84afe245ed)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 0.00s
+
+     Running tests/catalog_contract.rs (target/debug/deps/catalog_contract-bd7abf41947349fe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (target/debug/deps/cli-725ff85f75be40df)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/edge_workflows.rs (target/debug/deps/edge_workflows-8e13367448d6d131)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+
+     Running tests/i18n_cli.rs (target/debug/deps/i18n_cli-2ca0ce9b9a158c77)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/mutations_cli.rs (target/debug/deps/mutations_cli-b8d0a345da2d942c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/params_bool_hygiene.rs (target/debug/deps/params_bool_hygiene-0a494f1aeda75721)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/port_test_hermeticity.rs (target/debug/deps/port_test_hermeticity-f6d998a874827d4b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/port_test_langs.rs (target/debug/deps/port_test_langs-d52f39da1114d274)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/port_test_path_type.rs (target/debug/deps/port_test_path_type-a57ae3dd024fc8c8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/port_test_tokens_ambient.rs (target/debug/deps/port_test_tokens_ambient-46ac9df19c515670)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/product_contract.rs (target/debug/deps/product_contract-b24f9d1a4e3cd77a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/python_port_manifest.rs (target/debug/deps/python_port_manifest-b0e37fb0334f9a32)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/run_cli.rs (target/debug/deps/run_cli-498eca1f98d0ddd0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s
+
+     Running tests/run_identity_races.rs (target/debug/deps/run_identity_races-7e815865eee8eca9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/source_management.rs (target/debug/deps/source_management-ecccbc72775d1985)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/surface_edges.rs (target/debug/deps/surface_edges-a1ce098dc8f9a989)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 24 filtered out; finished in 0.00s
+
+     Running tests/terminal_pty.rs (target/debug/deps/terminal_pty-f3fa9abbc2cfccb0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+     Running tests/typed_error_locales.rs (target/debug/deps/typed_error_locales-7356684968d88fa6)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+     Running tests/v040_compatibility.rs (target/debug/deps/v040_compatibility-2042e4156d84adc8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 44 filtered out; finished in 0.00s
+
+     Running tests/v040_run_parity_regressions.rs (target/debug/deps/v040_run_parity_regressions-2a0d099043844005)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+exit_code=0
+
+## argparse-ports
+   Compiling shlex v2.0.1
+   Compiling libc v0.2.189
+   Compiling winnow v1.0.4
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling cc v1.4.2
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling toml v1.1.4+spec-1.1.0
+   Compiling getrandom v0.4.3
+   Compiling tree-sitter v0.26.12
+   Compiling tree-sitter-powershell v0.26.4
+   Compiling tree-sitter-bash v0.25.1
+   Compiling tree-sitter-typescript v0.23.2
+   Compiling tree-sitter-javascript v0.25.0
+   Compiling tree-sitter-python v0.25.0
+   Compiling tree-sitter-fish v3.6.0
+   Compiling uuid v1.24.0
+   Compiling skit-domain v0.5.0 (/home/runner/work/skit/skit/crates/skit-domain)
+   Compiling tempfile v3.27.0
+   Compiling skit-language v0.5.0 (/home/runner/work/skit/skit/crates/skit-language)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.90s
+     Running tests/port_test_argspec.rs (target/debug/deps/port_test_argspec-56af86b53661762a)
+
+running 34 tests
+test test_append_action_degrades_field_only ... ok
+test test_argparse_fixed_nargs_is_a_multi_value_field ... ok
+test test_choices_win_over_type_for_kind ... ok
+test test_argparse_choices_beat_path_type ... ok
+test test_click_fixed_nargs_is_a_multi_value_field ... ok
+test test_argparse_path_type_spellings ... ok
+test test_computed_default_degrades_field ... ok
+test test_click_multiple_with_nargs_one_is_still_modelled ... ok
+test test_click_multiple_with_fixed_nargs_is_not_modelled_at_all ... ok
+test test_default_none_literal_does_not_degrade ... ok
+test test_dest_override_wins ... ok
+test test_field_order_matches_source_order ... ok
+test test_flag_dest_only_strips_dashes_not_letters ... ok
+test test_loop_generated_arguments_degrade_whole_spec ... ok
+test test_no_argparse_returns_none ... ok
+test test_help_and_version_actions_are_not_fields ... ok
+test test_non_literal_choices_degrade_field ... ok
+test test_optional_positional_star_not_required ... ok
+test test_non_literal_argument_name_skips_that_field_only ... ok
+test test_partly_non_literal_name_list_skips_that_field_only ... ok
+test test_short_flag_only_keeps_short_name ... ok
+test test_required_false_literal_is_not_required ... ok
+test test_secret_name_precheck ... ok
+test test_stitch_choices_with_default ... ok
+test test_stitch_reads_eight_fields_in_source_order ... ok
+test test_stitch_custom_type_degrades_field ... ok
+test test_stitch_int_field ... ok
+test test_stitch_positional_multiple_required ... ok
+test test_store_false_defaults_on ... ok
+test test_syntax_error_returns_none ... ok
+test test_subparsers_degrade_whole_spec ... ok
+test test_type_float_and_str_map_to_kinds ... ok
+test test_stitch_required_flag_and_long_name_preferred ... ok
+test test_stitch_store_true_checkbox ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+exit_code=0
+
+## click-typer-ports
+   Compiling skit-language v0.5.0 (/home/runner/work/skit/skit/crates/skit-language)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.54s
+     Running tests/port_test_argspec_click_typer.rs (target/debug/deps/port_test_argspec_click_typer-9db1c81780e65746)
+
+running 67 tests
+test test_annotated_argument_with_default_is_optional_positional ... ok
+test test_annotated_bool_default_true_degrades ... ok
+test test_annotated_only_recognizes_the_real_annotated_name ... ok
+test test_annotated_choice_via_typing_qualified_name ... ok
+test test_annotated_help_kwarg_survives_on_degraded_field ... ok
+test test_annotated_option_without_default_is_required ... ok
+test test_annotated_option_positional_decl_is_a_flag_not_a_default ... ok
+test test_annotated_unmodelable_inner_type_degrades ... ok
+test test_annotated_picks_the_typer_call_among_several ... ok
+test test_argparse_still_wins_when_present ... ok
+test test_annotated_without_typer_metadata_reads_as_plain_type ... ok
+test test_annotated_reads_type_and_metadata ... ok
+test test_click_count_option_degrades_field ... ok
+test test_click_default_none_is_clean ... ok
+test test_click_argument_variadic_is_multiple_not_required ... ok
+test test_click_bare_float_and_str_types ... ok
+test test_click_dest_strips_dashes_not_letters ... ok
+test test_click_dotted_import_is_recognized ... ok
+test test_click_dotted_only_import_counts ... ok
+test test_click_foreign_decorators_between_options_are_skipped_not_fatal ... ok
+test test_click_from_dotted_module_counts ... ok
+test test_click_field_orders_increment_by_one ... ok
+test test_click_fields_bottom_up_order_matches_runtime ... ok
+test test_click_from_import_form_is_recognized ... ok
+test test_click_group_degrades_as_subcommands ... ok
+test test_click_is_flag_defaulting_on_degrades_not_guesses ... ok
+test test_click_non_choice_call_type_degrades_even_with_list_arg ... ok
+test test_click_multiple_option_flag ... ok
+test test_click_is_flag_choice_int_and_required ... ok
+test test_click_non_literal_choice_list_degrades ... ok
+test test_click_non_literal_default_degrades ... ok
+test test_click_non_literal_name_skips_that_call_only ... ok
+test test_click_plain_argument_is_required ... ok
+test test_click_partly_non_literal_names_skip_that_call_only ... ok
+test test_click_secret_name_precheck_and_flag_default ... ok
+test test_click_path_and_file_types ... ok
+test test_click_short_first_declaration_still_prefers_long_flag ... ok
+test test_click_two_commands_without_group_degrade ... ok
+test test_click_unknown_name_type_degrades ... ok
+test test_decorator_name_unnameable_callable_is_empty ... ok
+test test_read_cli_none_for_plain_scripts ... ok
+test test_click_uppercase_type_constants ... ok
+test test_click_short_flag_only_and_help ... ok
+test test_typer_bare_positional_no_default ... ok
+test test_legacy_typer_style_still_works_after_annotated_refactor ... ok
+test test_typer_bool_default_true_degrades_not_guesses ... ok
+test test_typer_bool_false_flag_contract_exact ... ok
+test test_typer_bool_true_degrade_renders_as_text ... ok
+test test_typer_dotted_only_import_counts ... ok
+test test_typer_computed_plain_default_degrades ... ok
+test test_typer_from_dotted_module_counts ... ok
+test test_typer_from_import_form_is_recognized ... ok
+test test_typer_non_constant_decl_is_ignored_not_fatal ... ok
+test test_typer_option_computed_first_arg_degrades ... ok
+test test_typer_option_extra_decl_positions ... ok
+test test_typer_option_none_default_is_clean ... ok
+test test_typer_run_pattern_reads_the_function ... ok
+test test_typer_option_single_extra_decl_is_read ... ok
+test test_typer_path_annotation_is_path ... ok
+test test_typer_secret_param_name_precheck ... ok
+test test_typer_orders_match_signature_positions ... ok
+test test_typer_signature_order_and_kinds ... ok
+test test_typer_underscored_param_gets_kebab_flag ... ok
+test test_typer_unmodelable_annotation_degrades ... ok
+test test_typer_two_commands_degrade_as_subcommands ... ok
+test test_typer_unannotated_param_is_plain_text_not_degraded ... ok
+test test_typer_unmodelable_annotation_degrades_despite_literal_default ... ok
+
+test result: ok. 67 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+exit_code=0
+
+## i18n-catalog
+   Compiling skit-i18n v0.5.0 (/home/runner/work/skit/skit/crates/skit-i18n)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.25s
+     Running tests/catalog.rs (target/debug/deps/catalog-1a87a46ee4cc311a)
+
+running 14 tests
+test add_onboarding_controls_and_source_facts_are_fully_localized ... ok
+test chinese_terms_keep_distinct_product_meanings ... ok
+test a_typed_message_keeps_its_values_out_of_the_translation ... ok
+test every_catalog_row_has_two_complete_translations ... ok
+test exact_text_and_longest_first_rendering_are_deterministic ... ok
+test kind_labels_are_localized_for_people_and_open_for_newer_metadata ... ok
+test formatted_messages_translate_the_template_without_translating_user_values ... ok
+test every_tui_completion_status_has_two_complete_translations ... ok
+test locale_precedence_can_skip_only_an_empty_or_exact_c_candidate ... ok
+test locale_detection_accepts_existing_and_standard_spellings ... ok
+test pi_prompt_mode_warning_is_complete ... ok
+test preferences_can_present_shipped_locales_and_the_effective_tag ... ok
+test pseudo_locale_stretches_source_text_without_touching_inserted_values ... ok
+test framework_rendering_changes_only_whole_words ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit_code=0
+
+## port-manifest
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.16s
+     Running tests/python_port_manifest.rs (target/debug/deps/python_port_manifest-b0e37fb0334f9a32)
+
+running 1 test
+test python_oracle_inventory_and_port_status_are_machine_checked ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+exit_code=0

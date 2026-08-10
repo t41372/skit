@@ -209,6 +209,225 @@
       "deferred": []
     },
     {
+      "source": "tests/test_langs.py",
+      "status": "partial",
+      "targets": [
+        "crates/skit-cli/tests/port_test_langs.rs"
+      ],
+      "ported": [
+        "test_params_exe_prints_plain_message_without_manage_dead_end",
+        "test_doctor_missing_uv_pure_exe_library_exits_zero",
+        "test_doctor_missing_uv_with_python_entry_exits_one",
+        "test_doctor_json_missing_uv_pure_exe_library_exits_zero"
+      ],
+      "deferred": [
+        {
+          "name": "test_every_known_kind_resolves_to_a_complete_spec",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_python_spec_capabilities_and_pinned_store_name",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_exe_and_command_specs_have_no_analysis_capabilities",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_resolving_a_spec_does_not_import_a_language_parser",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_asking_for_a_capability_resolves_it_once",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_without_drops_exactly_the_named_capabilities",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_capabilities_do_not_decide_spec_identity",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_spec_for_unknown_kind_is_none_and_cached",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_stored_name_unknown_kind_falls_back_to_payload",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_unknown_kind_build_command_raises_clean_launch_error",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_unknown_kind_run_entry_raises_before_spawning",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_unknown_kind_describe_returns_template_and_never_raises",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_unknown_kind_never_reports_missing",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_unknown_kind_preflight_still_checks_workdir",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_unknown_kind_script_path_uses_payload_fallback",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_launcher_uv_delegates_follow_patches_on_the_canonical_module",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        },
+        {
+          "name": "test_plan_without_cli_reader_degrades_to_none_plan",
+          "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
+          "planned_targets": [
+            "crates/skit-domain",
+            "crates/skit-application",
+            "crates/skit-language",
+            "crates/skit-runtime",
+            "crates/skit-store",
+            "crates/skit-cli"
+          ]
+        }
+      ]
+    },
+    {
       "source": "tests/test_reconcile.py",
       "status": "partial",
       "targets": [

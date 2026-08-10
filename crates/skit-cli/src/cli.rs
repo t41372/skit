@@ -4145,6 +4145,9 @@ fn write_params(
                 .filter(|name| !declared_names.contains(name.as_str()))
                 .collect::<Vec<_>>()
         };
+        if declarations.is_empty() {
+            humanln!("{} has no managed parameters.", entry.meta.name);
+        }
         for item in declarations {
             humanln!("Parameter: {}", item.name);
             humanln!("Type: {}", item.parameter_type.as_str());
@@ -6365,13 +6368,21 @@ impl<'a> CliHealthInspector<'a> {
             }
         }
         let probe = SystemProbe;
-        let private_uv = managed_uv_path(self.store.data_dir());
-        let uv_path = probe
-            .find_program("uv")
-            .or_else(|| probe.is_executable(&private_uv).then_some(private_uv));
-        let uv = match uv_path {
-            Some(path) => UvHealth::Found(path.display().to_string()),
-            None => UvHealth::Missing,
+        let uv_required = entries.is_empty()
+            || entries
+                .iter()
+                .any(|entry| entry.meta.kind.as_str() == "python");
+        let uv = if uv_required {
+            let private_uv = managed_uv_path(self.store.data_dir());
+            let uv_path = probe
+                .find_program("uv")
+                .or_else(|| probe.is_executable(&private_uv).then_some(private_uv));
+            match uv_path {
+                Some(path) => UvHealth::Found(path.display().to_string()),
+                None => UvHealth::Missing,
+            }
+        } else {
+            UvHealth::NotRequired
         };
         let config = FileConfigStore::new(self.config_dir);
         let mut missing = Vec::new();

@@ -396,7 +396,7 @@ fn doctor_rebuilds_the_registry_and_reports_all_owned_paths() {
 }
 
 #[test]
-fn doctor_keeps_the_v040_fresh_install_uv_check() {
+fn doctor_keeps_the_v040_contextual_uv_check() {
     let empty = Sandbox::new();
     empty
         .command()
@@ -413,7 +413,7 @@ fn doctor_keeps_the_v040_fresh_install_uv_check() {
         .env("PATH", commands.data.path())
         .args(["doctor", "--json"])
         .assert()
-        .code(1)
+        .success()
         .stdout(predicate::str::contains("\"uv\":null"));
 
     let python = Sandbox::new();

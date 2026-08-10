@@ -43,11 +43,10 @@ impl Sandbox {
     }
 
     fn write_executable_entry(&self) {
-        let source = self.data.path().join(if cfg!(windows) {
-            "tool.exe"
-        } else {
-            "tool"
-        });
+        let source = self
+            .data
+            .path()
+            .join(if cfg!(windows) { "tool.exe" } else { "tool" });
         fs::write(&source, "not executed\n").unwrap();
         let entry = self.data.path().join("scripts/prog");
         fs::create_dir_all(&entry).unwrap();
@@ -130,18 +129,18 @@ fn test_doctor_missing_uv_pure_exe_library_exits_zero() {
 fn test_doctor_missing_uv_with_python_entry_exits_one() {
     let sandbox = Sandbox::new();
     sandbox.write_python_entry();
-    sandbox
-        .command()
-        .args(["doctor"])
-        .assert()
-        .code(1);
+    sandbox.command().args(["doctor"]).assert().code(1);
 }
 
 #[test]
 fn test_doctor_json_missing_uv_pure_exe_library_exits_zero() {
     let sandbox = Sandbox::new();
     sandbox.write_executable_entry();
-    let output = sandbox.command().args(["doctor", "--json"]).output().unwrap();
+    let output = sandbox
+        .command()
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
     assert!(
         output.status.success(),
         "doctor failed: {}",

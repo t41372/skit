@@ -254,11 +254,12 @@ fn merge_row(mut existing: Table, replacement: Table) -> Table {
     existing
 }
 
-/// Identify one metadata file incarnation with values available from one file-system query.
+/// Identify one metadata file incarnation with stable file-system values.
 ///
-/// The file ID rejects replacements. The change time rejects in-place edits that restore the
-/// modification time and file size. The registry modification time keeps the Python row stamp
-/// coherent. Unix and Windows provide all three values. Other targets do not use the shortcut.
+/// Unix file identity and change time reject replacements and in-place edits that restore the
+/// modification time and file size. Stable Rust does not expose those values on Windows, so the
+/// Windows verifier also checks the metadata content hash. The registry modification time keeps
+/// the Python row stamp coherent. Other targets do not use the shortcut.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MetadataFingerprint {
     platform: &'static str,
@@ -296,18 +297,16 @@ impl MetadataFingerprint {
         if !metadata.is_file() {
             return None;
         }
+        let canonical_path = path.canonicalize().ok()?;
         Some(Self {
-            platform: "windows",
-            file_id: format!(
-                "{}:{}",
-                metadata.volume_serial_number()?,
-                metadata.file_index()?
-            ),
+            platform: "windows-content-v1",
+            file_id: canonical_path.to_string_lossy().into_owned(),
             file_size: metadata.file_size(),
             registry_mtime_ns: timestamp_ns(metadata.modified().ok()?).ok()?,
-            // Windows file times count 100-nanosecond intervals.
+            // Windows file times count 100-nanosecond intervals. Stable Rust does not expose a
+            // change counter, so `CachedProjection::verify` also compares the content hash.
             modified_ns: i128::from(metadata.last_write_time()) * 100,
-            changed_ns: i128::from(metadata.change_time()) * 100,
+            changed_ns: 0,
         })
     }
 
@@ -374,7 +373,7 @@ const fn current_cache_platform() -> &'static str {
 
 #[cfg(windows)]
 const fn current_cache_platform() -> &'static str {
-    "windows"
+    "windows-content-v1"
 }
 
 fn parse_canonical<T>(value: &str) -> Option<T>
@@ -523,7 +522,20 @@ impl CachedProjection {
         );
         expected == proof.projection_hash
             && MetadataFingerprint::read(meta_path).as_ref() == Some(&proof.fingerprint)
+            && metadata_hash_matches(meta_path, &proof.metadata_hash)
     }
+}
+
+#[cfg(windows)]
+fn metadata_hash_matches(path: &Path, expected: &str) -> bool {
+    fs::read(path)
+        .ok()
+        .is_some_and(|bytes| content_hash(&bytes) == expected)
+}
+
+#[cfg(not(windows))]
+const fn metadata_hash_matches(_path: &Path, _expected: &str) -> bool {
+    true
 }
 
 fn legacy_metadata_mtime_ns(path: &Path) -> Option<i64> {
