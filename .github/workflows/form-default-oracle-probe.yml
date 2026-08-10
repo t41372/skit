@@ -1,0 +1,43 @@
+name: Form default oracle probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/form-default-oracle-probe.yml
+      - crates/skit-form/tests/port_test_source_defaults.rs
+      - crates/skit-form/tests/port_test_prompt_form.rs
+      - crates/skit-store/tests/port_test_default_delivery_bridge.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run form/default oracles
+        shell: bash
+        run: |
+          set +e
+          failures=0
+          run_target() {
+            package="$1"
+            target="$2"
+            echo "::group::$target"
+            cargo test --locked -p "$package" --test "$target" -- --nocapture
+            rc=$?
+            echo "PORT_TARGET_RC $target $rc"
+            if [ "$rc" -ne 0 ]; then
+              failures=$((failures + 1))
+            fi
+            echo "::endgroup::"
+          }
+          run_target skit-form port_test_source_defaults
+          run_target skit-form port_test_prompt_form
+          run_target skit-store port_test_default_delivery_bridge
+          echo "PORT_TARGET_FAILURE_GROUPS=$failures"
+          exit 0
