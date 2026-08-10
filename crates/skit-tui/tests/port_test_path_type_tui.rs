@@ -39,7 +39,7 @@ fn test_type_label_path() {
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
     terminal
         .draw(|frame| {
-            render_with_session(frame, &state, Locale::En, &mut session);
+            let _ = render_with_session(frame, &state, Locale::En, &mut session);
         })
         .unwrap();
     let buffer = terminal.backend().buffer();
