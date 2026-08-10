@@ -43,9 +43,12 @@ fn test_reconcile_records_current_default_for_an_ok_const() {
     );
     assert_eq!(
         report.current_defaults,
-        [("CITY".to_owned(), ParameterValue::String("Taipei".to_owned()))]
-            .into_iter()
-            .collect()
+        [(
+            "CITY".to_owned(),
+            ParameterValue::String("Taipei".to_owned())
+        )]
+        .into_iter()
+        .collect()
     );
 }
 
