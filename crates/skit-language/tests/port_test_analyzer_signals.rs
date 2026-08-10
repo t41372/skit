@@ -80,7 +80,11 @@ fn test_augassign_outside_loop_still_demotes() {
 fn test_uses_argv_detected() {
     assert!(parsed(IMAGE_STITCH).analysis().uses_argv);
     assert!(!parsed("print('no args')\n").analysis().uses_argv);
-    assert!(parsed("import sys\nn = len(sys.argv)\n").analysis().uses_argv);
+    assert!(
+        parsed("import sys\nn = len(sys.argv)\n")
+            .analysis()
+            .uses_argv
+    );
 }
 
 #[test]
@@ -102,10 +106,10 @@ fn test_no_hint_for_named_constant_usage() {
 #[test]
 fn test_hint_excludes_non_filenames() {
     let text = concat!(
-        "new('RGB')\n",                              // no extension
-        "log('finished: output.jpg now ready')\n",   // sentence, has spaces
-        "get('https://example.com/a.zip')\n",         // URL
-        "ver('3.14')\n",                              // numeric "extension" is a version
+        "new('RGB')\n",                            // no extension
+        "log('finished: output.jpg now ready')\n", // sentence, has spaces
+        "get('https://example.com/a.zip')\n",      // URL
+        "ver('3.14')\n",                           // numeric "extension" is a version
     );
     assert!(parsed(text).analysis().filename_literals.is_empty());
 }

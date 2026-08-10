@@ -128,7 +128,10 @@ fn test_module_level_consts() {
     assert_eq!(names["RETRIES"].parameter_type, ParameterType::Int);
     assert_eq!(names["RETRIES"].default, Some(ParameterValue::Integer(3)));
     assert_eq!(names["THRESHOLD"].parameter_type, ParameterType::Float);
-    assert_eq!(names["THRESHOLD"].default, Some(ParameterValue::Float(-0.5)));
+    assert_eq!(
+        names["THRESHOLD"].default,
+        Some(ParameterValue::Float(-0.5))
+    );
     assert_eq!(names["VERBOSE"].parameter_type, ParameterType::Bool);
     assert_eq!(names["VERBOSE"].default, Some(ParameterValue::Bool(true)));
 }
@@ -208,7 +211,10 @@ fn test_secret_heuristics() {
 
 #[test]
 fn test_framework_detection() {
-    assert_eq!(parsed("import argparse\n").analysis().frameworks, ["argparse"]);
+    assert_eq!(
+        parsed("import argparse\n").analysis().frameworks,
+        ["argparse"]
+    );
     assert_eq!(
         parsed("from click import command\n").analysis().frameworks,
         ["click"]
@@ -281,7 +287,12 @@ fn test_duplicate_top_level_const_keeps_first_occurrence_position() {
 fn test_duplicate_top_level_const_mixed_ann_assign() {
     let src = "X: int = 1\nX = 2\n";
     let all = candidates(src);
-    assert_eq!(all.iter().filter(|declaration| declaration.name == "X").count(), 1);
+    assert_eq!(
+        all.iter()
+            .filter(|declaration| declaration.name == "X")
+            .count(),
+        1
+    );
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].default, Some(ParameterValue::Integer(2)));
 }
@@ -405,7 +416,8 @@ fn test_module_level_binding_still_shadows_calls_nested_in_functions() {
 
 #[test]
 fn test_comprehension_and_lambda_bindings_stay_local() {
-    let src = "xs = [input for input in range(3)]\ng = lambda input: input\nname = input('Name: ')\n";
+    let src =
+        "xs = [input for input in range(3)]\ng = lambda input: input\nname = input('Name: ')\n";
     assert_eq!(input_names(src), ["input-1"]);
 }
 
@@ -503,7 +515,10 @@ fn test_match_inputs_duplicate_stored_prompts_never_double_bind_on_delete() {
         .values()
         .map(|(current_order, _)| *current_order)
         .collect::<Vec<_>>();
-    assert_eq!(resolved.len(), resolved.iter().collect::<BTreeSet<_>>().len());
+    assert_eq!(
+        resolved.len(),
+        resolved.iter().collect::<BTreeSet<_>>().len()
+    );
 }
 
 #[test]
@@ -520,7 +535,10 @@ fn test_match_inputs_duplicate_stored_prompts_edit_one_flags_rebind_for_loser() 
         .values()
         .map(|(current_order, _)| *current_order)
         .collect::<Vec<_>>();
-    assert_eq!(resolved.len(), resolved.iter().collect::<BTreeSet<_>>().len());
+    assert_eq!(
+        resolved.len(),
+        resolved.iter().collect::<BTreeSet<_>>().len()
+    );
 }
 
 #[test]
@@ -539,7 +557,10 @@ fn test_match_inputs_triple_duplicate_stored_prompts_only_one_winner() {
         .values()
         .map(|(current_order, _)| *current_order)
         .collect::<Vec<_>>();
-    assert_eq!(resolved.len(), resolved.iter().collect::<BTreeSet<_>>().len());
+    assert_eq!(
+        resolved.len(),
+        resolved.iter().collect::<BTreeSet<_>>().len()
+    );
 }
 
 #[test]

@@ -100,8 +100,20 @@ fn new_names(report: &ReconcileReport) -> BTreeSet<String> {
 fn test_all_ok_no_drift() {
     let specs = vec![
         const_spec("CITY"),
-        spec("RETRIES", ParameterBinding::Const, ParameterType::Int, -1, ""),
-        spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, ""),
+        spec(
+            "RETRIES",
+            ParameterBinding::Const,
+            ParameterType::Int,
+            -1,
+            "",
+        ),
+        spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "",
+        ),
     ];
     let report = reconcile(SCRIPT, &specs);
     assert!(!report.has_drift());
@@ -135,14 +147,23 @@ fn test_const_type_changed_still_usable() {
     let text = SCRIPT.replace("RETRIES = 3", "RETRIES = \"3\"");
     let report = reconcile(
         &text,
-        &[spec("RETRIES", ParameterBinding::Const, ParameterType::Int, -1, "")],
+        &[spec(
+            "RETRIES",
+            ParameterBinding::Const,
+            ParameterType::Int,
+            -1,
+            "",
+        )],
     );
     assert!(report.has_drift());
     assert_eq!(
         report
             .changed
             .iter()
-            .map(|pair| (pair.stored.name.clone(), pair.current.declaration.parameter_type))
+            .map(|pair| (
+                pair.stored.name.clone(),
+                pair.current.declaration.parameter_type
+            ))
             .collect::<Vec<_>>(),
         [("RETRIES".to_owned(), ParameterType::Str)]
     );
@@ -156,7 +177,13 @@ fn test_input_matched_by_order_not_position_in_file() {
     let text = format!("import os\nprint(os.name)\n{SCRIPT}");
     let report = reconcile(
         &text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "",
+        )],
     );
     assert!(!report.has_drift());
 }
@@ -166,7 +193,13 @@ fn test_input_removed_is_missing() {
     let text = SCRIPT.replace("who = input(\"Your name: \")", "who = \"nobody\"");
     let report = reconcile(
         &text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "",
+        )],
     );
     assert_eq!(missing_names(&report), ["input-1"]);
 }
@@ -176,7 +209,13 @@ fn test_new_input_call_reported_as_new_only() {
     let text = format!("{SCRIPT}more = input(\"More: \")\nprint(more)\n");
     let report = reconcile(
         &text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "",
+        )],
     );
     assert!(!report.has_drift()); // existing definitions are still present; new is not drift
     assert_eq!(
@@ -201,7 +240,13 @@ fn test_input_prompt_match_survives_an_earlier_insertion_no_drift() {
     let text = format!("extra = input(\"Extra: \")\n{SCRIPT}");
     let report = reconcile(
         &text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "Your name: ")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "Your name: ",
+        )],
     );
     assert!(!report.has_drift());
     assert_eq!(ok_names(&report), ["input-1"]);
@@ -222,9 +267,27 @@ fn test_input_deleted_earlier_call_flags_rebind_instead_of_silent_ok() {
         "print(first, second, third)\n",
     );
     let specs = [
-        spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "First: "),
-        spec("input-2", ParameterBinding::Input, ParameterType::Str, 1, "Second: "),
-        spec("input-3", ParameterBinding::Input, ParameterType::Str, 2, "Third: "),
+        spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "First: ",
+        ),
+        spec(
+            "input-2",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            1,
+            "Second: ",
+        ),
+        spec(
+            "input-3",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            2,
+            "Third: ",
+        ),
     ];
     let edited = text.replace("first = input(\"First: \")\n", ""); // delete the first input() call
     let report = reconcile(&edited, &specs);
@@ -256,7 +319,13 @@ fn test_input_rebind_flagged_when_prompt_can_no_longer_disambiguate() {
     let text = "value = input(\"New label: \")\nprint(value)\n";
     let report = reconcile(
         text,
-        &[spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "Old label: ")],
+        &[spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "Old label: ",
+        )],
     );
     assert!(report.has_drift());
     assert_eq!(rebound_names(&report), ["input-1"]);
@@ -302,8 +371,20 @@ fn test_input_duplicate_prompt_surplus_is_missing_not_ok_on_delete() {
     // must instead come back "missing" (drift), never silently "ok".
     let text = "first = input(\"Go? \")\nsecond = input(\"Go? \")\nprint(first, second)\n";
     let specs = [
-        spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "Go? "),
-        spec("input-2", ParameterBinding::Input, ParameterType::Str, 1, "Go? "),
+        spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "Go? ",
+        ),
+        spec(
+            "input-2",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            1,
+            "Go? ",
+        ),
     ];
     let edited = text.replace("first = input(\"Go? \")\n", ""); // delete the first call
     let report = reconcile(&edited, &specs);
@@ -323,10 +404,25 @@ fn test_input_duplicate_prompt_surplus_is_rebind_not_ok_when_position_edited() {
     // silent "ok" and never the winner's call site.
     let text = "first = input(\"Go? \")\nsecond = input(\"Go? \")\nprint(first, second)\n";
     let specs = [
-        spec("input-1", ParameterBinding::Input, ParameterType::Str, 0, "Go? "),
-        spec("input-2", ParameterBinding::Input, ParameterType::Str, 1, "Go? "),
+        spec(
+            "input-1",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            0,
+            "Go? ",
+        ),
+        spec(
+            "input-2",
+            ParameterBinding::Input,
+            ParameterType::Str,
+            1,
+            "Go? ",
+        ),
     ];
-    let edited = text.replace("second = input(\"Go? \")", "second = input(\"Different: \")");
+    let edited = text.replace(
+        "second = input(\"Go? \")",
+        "second = input(\"Different: \")",
+    );
     let report = reconcile(&edited, &specs);
     assert!(report.has_drift());
     assert_eq!(ok_names(&report), ["input-1"]);

@@ -31,8 +31,8 @@ use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
 use skit_language::{
-    has_uv_metadata_block, managed_params, read_uv_metadata, source_is_valid,
-    write_managed_params, write_uv_metadata,
+    has_uv_metadata_block, managed_params, read_uv_metadata, source_is_valid, write_managed_params,
+    write_uv_metadata,
 };
 
 // --- The oracle's module-level PARAMS fixture ---

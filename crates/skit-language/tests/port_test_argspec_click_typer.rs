@@ -127,7 +127,10 @@ fn test_click_is_flag_choice_int_and_required() {
     assert_eq!(by["fast"].action, "store_true");
     assert_eq!(by["mode"].parameter_type, ParameterType::Choice);
     assert_eq!(by["mode"].choices, ["a", "b"]);
-    assert_eq!(by["mode"].default, Some(ParameterValue::String("a".to_owned())));
+    assert_eq!(
+        by["mode"].default,
+        Some(ParameterValue::String("a".to_owned()))
+    );
     assert_eq!(by["gap"].parameter_type, ParameterType::Int);
     assert_eq!(by["gap"].default, Some(ParameterValue::Integer(0)));
     assert!(by["output"].required);
@@ -182,13 +185,17 @@ fn test_typer_signature_order_and_kinds() {
     assert_eq!(by["gap"].flag, "--gap"); // derived from the parameter name
     assert_eq!(by["fast"].parameter_type, ParameterType::Bool);
     assert_eq!(by["fast"].action, "store_true");
-    assert_eq!(by["label"].default, Some(ParameterValue::String("x".to_owned()))); // plain literal default becomes an option
+    assert_eq!(
+        by["label"].default,
+        Some(ParameterValue::String("x".to_owned()))
+    ); // plain literal default becomes an option
     assert_eq!(by["label"].flag, "--label");
 }
 
 #[test]
 fn test_typer_run_pattern_reads_the_function() {
-    let fields = static_fields("import typer\n\ndef main(n: int = 3):\n    pass\n\ntyper.run(main)\n");
+    let fields =
+        static_fields("import typer\n\ndef main(n: int = 3):\n    pass\n\ntyper.run(main)\n");
     assert_eq!(fields[0].name, "n");
     assert_eq!(fields[0].parameter_type, ParameterType::Int);
     assert_eq!(fields[0].default, Some(ParameterValue::Integer(3)));
@@ -196,8 +203,9 @@ fn test_typer_run_pattern_reads_the_function() {
 
 #[test]
 fn test_typer_bool_default_true_degrades_not_guesses() {
-    let fields =
-        static_fields("import typer\n\ndef main(color: bool = True):\n    pass\n\ntyper.run(main)\n");
+    let fields = static_fields(
+        "import typer\n\ndef main(color: bool = True):\n    pass\n\ntyper.run(main)\n",
+    );
     let field = &fields[0];
     assert!(field.degraded); // --color/--no-color pairing can't be assembled faithfully
     assert!(field.action.is_empty());
@@ -205,8 +213,9 @@ fn test_typer_bool_default_true_degrades_not_guesses() {
 
 #[test]
 fn test_typer_underscored_param_gets_kebab_flag() {
-    let fields =
-        static_fields("import typer\n\ndef main(max_size: int = 1):\n    pass\n\ntyper.run(main)\n");
+    let fields = static_fields(
+        "import typer\n\ndef main(max_size: int = 1):\n    pass\n\ntyper.run(main)\n",
+    );
     assert_eq!(fields[0].flag, "--max-size");
 }
 
@@ -379,7 +388,8 @@ fn test_typer_unannotated_param_is_plain_text_not_degraded() {
 
 #[test]
 fn test_typer_unmodelable_annotation_degrades() {
-    let fields = static_fields("import typer\n\ndef main(xs: list = None): pass\n\ntyper.run(main)\n");
+    let fields =
+        static_fields("import typer\n\ndef main(xs: list = None): pass\n\ntyper.run(main)\n");
     assert!(fields[0].degraded);
 }
 
@@ -572,7 +582,11 @@ fn test_click_path_and_file_types() {
             .iter()
             .map(|field| field.parameter_type)
             .collect::<Vec<_>>(),
-        [ParameterType::Path, ParameterType::Path, ParameterType::Path]
+        [
+            ParameterType::Path,
+            ParameterType::Path,
+            ParameterType::Path
+        ]
     );
     assert!(fields.iter().all(|field| !field.degraded));
 }
@@ -585,7 +599,10 @@ fn test_typer_option_extra_decl_positions() {
         "    pass\n\ntyper.run(main)\n",
     ));
     assert_eq!(fields[0].flag, "--renamed");
-    assert_eq!(fields[0].default, Some(ParameterValue::String("x".to_owned())));
+    assert_eq!(
+        fields[0].default,
+        Some(ParameterValue::String("x".to_owned()))
+    );
 }
 
 #[test]
@@ -613,7 +630,10 @@ fn test_typer_non_constant_decl_is_ignored_not_fatal() {
         "    pass\n\ntyper.run(main)\n",
     ));
     assert_eq!(fields[0].flag, "--out"); // falls back to the derived flag
-    assert_eq!(fields[0].default, Some(ParameterValue::String("x".to_owned())));
+    assert_eq!(
+        fields[0].default,
+        Some(ParameterValue::String("x".to_owned()))
+    );
 }
 
 #[test]
@@ -634,8 +654,9 @@ fn test_typer_option_computed_first_arg_degrades() {
 
 #[test]
 fn test_typer_bool_true_degrade_renders_as_text() {
-    let fields =
-        static_fields("import typer\n\ndef main(color: bool = True):\n    pass\n\ntyper.run(main)\n");
+    let fields = static_fields(
+        "import typer\n\ndef main(color: bool = True):\n    pass\n\ntyper.run(main)\n",
+    );
     let field = &fields[0];
     assert!(field.degraded);
     assert_eq!(field.parameter_type, ParameterType::Str); // the degrade path pins the free-text kind exactly
@@ -643,8 +664,9 @@ fn test_typer_bool_true_degrade_renders_as_text() {
 
 #[test]
 fn test_typer_bool_false_flag_contract_exact() {
-    let fields =
-        static_fields("import typer\n\ndef main(fast: bool = False):\n    pass\n\ntyper.run(main)\n");
+    let fields = static_fields(
+        "import typer\n\ndef main(fast: bool = False):\n    pass\n\ntyper.run(main)\n",
+    );
     let field = &fields[0];
     assert_eq!(field.parameter_type, ParameterType::Bool);
     assert_eq!(field.action, "store_true");
@@ -718,7 +740,10 @@ fn test_annotated_reads_type_and_metadata() {
     assert!(!by["count"].degraded);
     // Explicit flag declarations inside the Annotated Option
     assert_eq!(by["mode"].flag, "--mode");
-    assert_eq!(by["mode"].default, Some(ParameterValue::String("fast".to_owned())));
+    assert_eq!(
+        by["mode"].default,
+        Some(ParameterValue::String("fast".to_owned()))
+    );
     // bool option defaulting False -> checkbox
     assert_eq!(by["fast"].parameter_type, ParameterType::Bool);
     assert_eq!(by["fast"].action, "store_true");
@@ -745,7 +770,10 @@ fn test_annotated_argument_with_default_is_optional_positional() {
     let field = &fields[0];
     assert!(field.flag.is_empty());
     assert!(!field.required);
-    assert_eq!(field.default, Some(ParameterValue::String("anon".to_owned())));
+    assert_eq!(
+        field.default,
+        Some(ParameterValue::String("anon".to_owned()))
+    );
 }
 
 #[test]

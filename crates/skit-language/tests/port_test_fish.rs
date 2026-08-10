@@ -169,14 +169,20 @@ fn test_oneline_idiom_int() {
 fn test_newline_continued_or() {
     // fish continues an `or` at the start of the next line — the same idiom, two lines.
     let map = cands("set -q PORT\nor set PORT 8080\n");
-    assert_eq!(map["PORT"].declaration.default, Some(ParameterValue::Integer(8080)));
+    assert_eq!(
+        map["PORT"].declaration.default,
+        Some(ParameterValue::Integer(8080))
+    );
 }
 
 #[test]
 fn test_float_and_string_defaults() {
     let map = cands("set -q RATE; or set RATE 2.5\nset -q REGION; or set REGION us-east-1\n");
     assert_eq!(map["RATE"].declaration.parameter_type, ParameterType::Float);
-    assert_eq!(map["RATE"].declaration.default, Some(ParameterValue::Float(2.5)));
+    assert_eq!(
+        map["RATE"].declaration.default,
+        Some(ParameterValue::Float(2.5))
+    );
     assert_eq!(map["REGION"].declaration.parameter_type, ParameterType::Str);
     assert_eq!(
         map["REGION"].declaration.default,
@@ -227,7 +233,10 @@ fn test_underscore_name_skipped() {
 fn test_first_occurrence_wins_on_duplicate_idiom() {
     let map = cands("set -q PORT; or set PORT 8080\nset -q PORT; or set PORT 1\n");
     // first occurrence's default
-    assert_eq!(map["PORT"].declaration.default, Some(ParameterValue::Integer(8080)));
+    assert_eq!(
+        map["PORT"].declaration.default,
+        Some(ParameterValue::Integer(8080))
+    );
 }
 
 #[test]
@@ -274,21 +283,30 @@ fn test_idiom_inside_every_block_kind_is_ignored() {
 #[test]
 fn test_toplevel_after_a_closed_block_is_detected() {
     let map = cands("function f\n  echo hi\nend\nset -q P; or set P 1\n");
-    assert_eq!(map["P"].declaration.default, Some(ParameterValue::Integer(1)));
+    assert_eq!(
+        map["P"].declaration.default,
+        Some(ParameterValue::Integer(1))
+    );
 }
 
 #[test]
 fn test_nested_clobber_does_not_suppress_toplevel_idiom() {
     // A plain `set P 9` inside a function must not suppress a top-level P env-default.
     let map = cands("set -q P; or set P 1\nfunction f\n  set P 9\nend\n");
-    assert_eq!(map["P"].declaration.default, Some(ParameterValue::Integer(1)));
+    assert_eq!(
+        map["P"].declaration.default,
+        Some(ParameterValue::Integer(1))
+    );
 }
 
 #[test]
 fn test_stray_end_clamps_depth_at_zero() {
     // A leading `end` must not drive depth negative and hide a following top-level idiom.
     let map = cands("end\nset -q P; or set P 1\n");
-    assert_eq!(map["P"].declaration.default, Some(ParameterValue::Integer(1)));
+    assert_eq!(
+        map["P"].declaration.default,
+        Some(ParameterValue::Integer(1))
+    );
 }
 
 // ---------------------------------------------------------------- hints
@@ -300,8 +318,16 @@ fn test_argv_hint() {
 
 #[test]
 fn test_self_location_hints() {
-    assert!(parsed("set d (status dirname)\n").analysis().uses_self_location);
-    assert!(parsed("set f (status filename)\n").analysis().uses_self_location);
+    assert!(
+        parsed("set d (status dirname)\n")
+            .analysis()
+            .uses_self_location
+    );
+    assert!(
+        parsed("set f (status filename)\n")
+            .analysis()
+            .uses_self_location
+    );
     assert!(!parsed("echo hi\n").analysis().uses_self_location);
 }
 
@@ -423,7 +449,8 @@ fn test_argparse_short_long_and_valueless_bool() {
 
 #[test]
 fn test_argparse_value_suffixes() {
-    let fields = fields_by_name("argparse 'n/name=' 'r/retries=?' 'f/file=+' 'g/glob=*' -- $argv\n");
+    let fields =
+        fields_by_name("argparse 'n/name=' 'r/retries=?' 'f/file=+' 'g/glob=*' -- $argv\n");
     assert_eq!(fields["name"].parameter_type, ParameterType::Str);
     assert!(!fields["name"].multiple);
     assert_eq!(fields["retries"].parameter_type, ParameterType::Str); // optional attached value
@@ -472,12 +499,18 @@ fn test_argparse_secret_name() {
 #[test]
 fn test_argparse_skips_own_options() {
     // -n consumes `tool`, -x consumes `'h,help'`, -i takes no value; only c/city is a spec.
-    assert_eq!(field_names("argparse -n tool -x 'h,help' -i 'c/city=' -- $argv\n"), ["city"]);
+    assert_eq!(
+        field_names("argparse -n tool -x 'h,help' -i 'c/city=' -- $argv\n"),
+        ["city"]
+    );
 }
 
 #[test]
 fn test_argparse_attached_own_option_does_not_consume() {
-    assert_eq!(field_names("argparse --name=tool 'c/city=' -- $argv\n"), ["city"]);
+    assert_eq!(
+        field_names("argparse --name=tool 'c/city=' -- $argv\n"),
+        ["city"]
+    );
 }
 
 #[test]
@@ -497,7 +530,10 @@ fn test_argparse_empty_specs_is_zero_field_surface() {
 #[test]
 fn test_no_argparse_returns_none() {
     // Python `read_cli(..) is None` -> no detected CLI surface at all.
-    assert!(matches!(parsed("echo hello\n").cli_surface(), CliSurface::Absent));
+    assert!(matches!(
+        parsed("echo hello\n").cli_surface(),
+        CliSurface::Absent
+    ));
 }
 
 #[test]
@@ -524,7 +560,10 @@ fn test_argparse_command_substitution_specs_degrade_to_dynamic() {
 #[test]
 fn test_argparse_garbage_specs_are_skipped() {
     // Empty spec, a value-suffix with no name (`=`), validator-only, bare and leading separators.
-    assert_eq!(field_names("argparse '' '=' '!v' '#' '/x' 'ok' -- $argv\n"), ["ok"]);
+    assert_eq!(
+        field_names("argparse '' '=' '!v' '#' '/x' 'ok' -- $argv\n"),
+        ["ok"]
+    );
 }
 
 #[test]
@@ -616,9 +655,18 @@ fn test_corpus_expected_detections() {
         detected["01_env_idioms.fish"],
         string_set(["PORT", "RATE", "REGION", "LOG_DIR"])
     );
-    assert_eq!(detected["04_block_nesting.fish"], string_set(["TOP", "ALSO_TOP"]));
-    assert_eq!(detected["05_reads_and_consts.fish"], string_set(["RETRIES"]));
-    assert_eq!(detected["06_cjk.fish"], string_set(["問候", "EMOJI", "CITY"]));
+    assert_eq!(
+        detected["04_block_nesting.fish"],
+        string_set(["TOP", "ALSO_TOP"])
+    );
+    assert_eq!(
+        detected["05_reads_and_consts.fish"],
+        string_set(["RETRIES"])
+    );
+    assert_eq!(
+        detected["06_cjk.fish"],
+        string_set(["問候", "EMOJI", "CITY"])
+    );
 }
 
 // ---------------------------------------------------------------- env-default e2e

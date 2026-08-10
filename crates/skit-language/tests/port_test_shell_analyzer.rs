@@ -89,26 +89,48 @@ fn string_set<const N: usize>(values: [&str; N]) -> BTreeSet<String> {
 fn test_const_word_number_raw_double_quoted() {
     let b = by_name("A=plain\nB=42\nC='raw text'\nD=\"double q\"\n");
     assert_eq!(
-        (b["A"].declaration.parameter_type, &b["A"].declaration.default),
-        (ParameterType::Str, &Some(ParameterValue::String("plain".to_owned())))
+        (
+            b["A"].declaration.parameter_type,
+            &b["A"].declaration.default
+        ),
+        (
+            ParameterType::Str,
+            &Some(ParameterValue::String("plain".to_owned()))
+        )
     );
     assert_eq!(
-        (b["B"].declaration.parameter_type, &b["B"].declaration.default),
+        (
+            b["B"].declaration.parameter_type,
+            &b["B"].declaration.default
+        ),
         (ParameterType::Int, &Some(ParameterValue::Integer(42)))
     );
     assert_eq!(
-        (b["C"].declaration.parameter_type, &b["C"].declaration.default),
-        (ParameterType::Str, &Some(ParameterValue::String("raw text".to_owned())))
+        (
+            b["C"].declaration.parameter_type,
+            &b["C"].declaration.default
+        ),
+        (
+            ParameterType::Str,
+            &Some(ParameterValue::String("raw text".to_owned()))
+        )
     );
     assert_eq!(
-        (b["D"].declaration.parameter_type, &b["D"].declaration.default),
-        (ParameterType::Str, &Some(ParameterValue::String("double q".to_owned())))
+        (
+            b["D"].declaration.parameter_type,
+            &b["D"].declaration.default
+        ),
+        (
+            ParameterType::Str,
+            &Some(ParameterValue::String("double q".to_owned()))
+        )
     );
 }
 
 #[test]
 fn test_const_excludes_empty_array_concat_expansion_cmdsub() {
-    let src = "EMPTY=\nQUOTED_EMPTY=''\nARR=(1 2 3)\nCONCAT=a$B\nSUBBED=$(date)\nEXPANDED=${OTHER}\n";
+    let src =
+        "EMPTY=\nQUOTED_EMPTY=''\nARR=(1 2 3)\nCONCAT=a$B\nSUBBED=$(date)\nEXPANDED=${OTHER}\n";
     assert!(cands(src).is_empty()); // none is a plain literal
 }
 
@@ -160,10 +182,14 @@ fn test_readonly_and_declare_r_excluded() {
 #[test]
 fn test_envdefault_all_four_operators() {
     let b = by_name(": \"${A:-x}\"\n: \"${B:=y}\"\n: \"${C-z}\"\n: \"${D=w}\"\n");
-    assert_eq!(b.keys().cloned().collect::<BTreeSet<_>>(), string_set(["A", "B", "C", "D"]));
-    assert!(b
-        .values()
-        .all(|candidate| candidate.declaration.binding == ParameterBinding::EnvDefault));
+    assert_eq!(
+        b.keys().cloned().collect::<BTreeSet<_>>(),
+        string_set(["A", "B", "C", "D"])
+    );
+    assert!(
+        b.values()
+            .all(|candidate| candidate.declaration.binding == ParameterBinding::EnvDefault)
+    );
     assert_eq!(
         b["A"].declaration.default,
         Some(ParameterValue::String("x".to_owned()))
@@ -180,11 +206,17 @@ fn test_envdefault_non_default_operators_ignored() {
 fn test_envdefault_type_inference_on_default() {
     let b = by_name(": \"${PORT:-8080}\"\n: \"${RATIO:-1.5}\"\n: \"${NAME:-guest}\"\n");
     assert_eq!(
-        (b["PORT"].declaration.parameter_type, &b["PORT"].declaration.default),
+        (
+            b["PORT"].declaration.parameter_type,
+            &b["PORT"].declaration.default
+        ),
         (ParameterType::Int, &Some(ParameterValue::Integer(8080)))
     );
     assert_eq!(
-        (b["RATIO"].declaration.parameter_type, &b["RATIO"].declaration.default),
+        (
+            b["RATIO"].declaration.parameter_type,
+            &b["RATIO"].declaration.default
+        ),
         (ParameterType::Float, &Some(ParameterValue::Float(1.5)))
     );
     assert_eq!(b["NAME"].declaration.parameter_type, ParameterType::Str);
@@ -195,8 +227,14 @@ fn test_envdefault_empty_default() {
     let all = cands(": \"${OPT:-}\"\n");
     assert_eq!(all.len(), 1);
     assert_eq!(
-        (all[0].declaration.parameter_type, &all[0].declaration.default),
-        (ParameterType::Str, &Some(ParameterValue::String(String::new())))
+        (
+            all[0].declaration.parameter_type,
+            &all[0].declaration.default
+        ),
+        (
+            ParameterType::Str,
+            &Some(ParameterValue::String(String::new()))
+        )
     );
 }
 
@@ -239,10 +277,12 @@ fn test_suppression_bare_literal_assignment_wins() {
     let src = "PORT=8080\necho \"${PORT:-9090}\"\n";
     let b = by_name(src);
     assert_eq!(b["PORT"].declaration.binding, ParameterBinding::Const);
-    assert!(!cands(src)
-        .iter()
-        .any(|candidate| candidate.declaration.name == "PORT"
-            && candidate.declaration.binding == ParameterBinding::EnvDefault));
+    assert!(
+        !cands(src)
+            .iter()
+            .any(|candidate| candidate.declaration.name == "PORT"
+                && candidate.declaration.binding == ParameterBinding::EnvDefault)
+    );
 }
 
 #[test]
@@ -313,9 +353,10 @@ fn test_read_multiple_varnames_share_prompt() {
             .collect::<Vec<_>>(),
         ["input-1", "input-2"]
     );
-    assert!(rs
-        .iter()
-        .all(|candidate| candidate.declaration.prompt == "Two: "));
+    assert!(
+        rs.iter()
+            .all(|candidate| candidate.declaration.prompt == "Two: ")
+    );
 }
 
 #[test]
@@ -361,7 +402,12 @@ fn test_reframing_reads_are_excluded_from_candidacy() {
     // -n/-N/-d make the read stop early or on another delimiter, so the single line skit feeds it is
     // not the value the script would end up with (`read -n 3 X` on "abcdefgh" yields "abc"). Such a
     // read cannot be delivered faithfully, so it is never offered — as `read -a` already isn't.
-    for src in ["read -n 3 X\n", "read -N 5 X\n", "read -d : X\n", "read -n3 X\n"] {
+    for src in [
+        "read -n 3 X\n",
+        "read -N 5 X\n",
+        "read -d : X\n",
+        "read -n3 X\n",
+    ] {
         assert!(reads(src).is_empty(), "{src}");
     }
 }
@@ -490,7 +536,10 @@ fn test_demote_plus_equals() {
 
 #[test]
 fn test_demote_arithmetic_self_reference() {
-    assert_eq!(demoted("TOTAL=100\nTOTAL=$((TOTAL - 1))\n"), string_set(["TOTAL"]));
+    assert_eq!(
+        demoted("TOTAL=100\nTOTAL=$((TOTAL - 1))\n"),
+        string_set(["TOTAL"])
+    );
 }
 
 #[test]
@@ -616,7 +665,10 @@ fn test_type_leading_zeros_read_as_int() {
     let all = cands("Z=007\n");
     assert_eq!(all.len(), 1);
     assert_eq!(
-        (all[0].declaration.parameter_type, &all[0].declaration.default),
+        (
+            all[0].declaration.parameter_type,
+            &all[0].declaration.default
+        ),
         (ParameterType::Int, &Some(ParameterValue::Integer(7))) // leading zeros not preserved (documented)
     );
 }
@@ -626,7 +678,10 @@ fn test_type_negative_int() {
     let all = cands("N=-3\n");
     assert_eq!(all.len(), 1);
     assert_eq!(
-        (all[0].declaration.parameter_type, &all[0].declaration.default),
+        (
+            all[0].declaration.parameter_type,
+            &all[0].declaration.default
+        ),
         (ParameterType::Int, &Some(ParameterValue::Integer(-3)))
     );
 }
@@ -636,7 +691,10 @@ fn test_type_negative_float() {
     let all = cands("F=-2.5\n");
     assert_eq!(all.len(), 1);
     assert_eq!(
-        (all[0].declaration.parameter_type, &all[0].declaration.default),
+        (
+            all[0].declaration.parameter_type,
+            &all[0].declaration.default
+        ),
         (ParameterType::Float, &Some(ParameterValue::Float(-2.5)))
     );
 }
@@ -646,8 +704,14 @@ fn test_type_dotted_version_is_str() {
     let all = cands("V=1.5.2\n");
     assert_eq!(all.len(), 1);
     assert_eq!(
-        (all[0].declaration.parameter_type, &all[0].declaration.default),
-        (ParameterType::Str, &Some(ParameterValue::String("1.5.2".to_owned())))
+        (
+            all[0].declaration.parameter_type,
+            &all[0].declaration.default
+        ),
+        (
+            ParameterType::Str,
+            &Some(ParameterValue::String("1.5.2".to_owned()))
+        )
     );
 }
 
@@ -655,8 +719,14 @@ fn test_type_dotted_version_is_str() {
 fn test_type_never_bool() {
     let b = by_name("FLAG=true\nOTHER=false\n");
     assert_eq!(
-        (b["FLAG"].declaration.parameter_type, &b["FLAG"].declaration.default),
-        (ParameterType::Str, &Some(ParameterValue::String("true".to_owned())))
+        (
+            b["FLAG"].declaration.parameter_type,
+            &b["FLAG"].declaration.default
+        ),
+        (
+            ParameterType::Str,
+            &Some(ParameterValue::String("true".to_owned()))
+        )
     );
     assert_eq!(b["OTHER"].declaration.parameter_type, ParameterType::Str);
 }
@@ -678,7 +748,10 @@ fn test_has_error_returns_empty_syntax_error() {
 fn test_empty_script() {
     // Python: `result.candidates == []` and `result.syntax_error is False`.
     assert!(cands("").is_empty());
-    assert!(matches!(parse_document("shell", ""), ParseOutcome::Parsed(_)));
+    assert!(matches!(
+        parse_document("shell", ""),
+        ParseOutcome::Parsed(_)
+    ));
 }
 
 // ---------------------------------------------------------------- reconcile parity + envdefault matrix
@@ -731,7 +804,10 @@ fn test_reconcile_const_and_input_parity() {
     input.prompt = "Name: ".to_owned();
     let report = reconcile(text, &[city, input]);
     assert!(!report.has_drift());
-    assert_eq!(ok_names(&report).into_iter().collect::<BTreeSet<_>>(), string_set(["CITY", "input-1"]));
+    assert_eq!(
+        ok_names(&report).into_iter().collect::<BTreeSet<_>>(),
+        string_set(["CITY", "input-1"])
+    );
 }
 
 #[test]

@@ -259,7 +259,8 @@ fn test_const_targets_skip_array_and_valueless_assignments() {
     // `ARR[0]=…` (a subscript target) and `EMPTY=` (no value) are not const candidates, so they are
     // not rewrite targets either — the two sides must agree, or a run would rewrite what the form
     // never offered. PORTED AS BYTE ASSERTION for the untouched-neighbours claim (Python run: `12001[]`).
-    let src = "#!/usr/bin/env bash\nARR[0]=1\nEMPTY=\nWIDTH=800\necho \"$WIDTH${ARR[0]}[$EMPTY]\"\n";
+    let src =
+        "#!/usr/bin/env bash\nARR[0]=1\nEMPTY=\nWIDTH=800\necho \"$WIDTH${ARR[0]}[$EMPTY]\"\n";
     let out = inject(src, &[("WIDTH", "1200")]).unwrap();
     assert!(out.contains("ARR[0]=1"));
     assert!(out.contains("EMPTY=\n"));
@@ -283,7 +284,12 @@ fn test_env_delivery_writes_no_temp_file() {
     // THE point of env delivery: zero rewrite, no temp copy. Env-delivered params are excluded from
     // the injector's selection, so the plan has no edits. (`result.env`/`warnings` are Tier 3/4.)
     let src = "#!/usr/bin/env bash\necho \"${GREETING:-hello}\"\n";
-    assert!(plan(src, &[("GREETING", "hi there")]).unwrap().edits().is_empty());
+    assert!(
+        plan(src, &[("GREETING", "hi there")])
+            .unwrap()
+            .edits()
+            .is_empty()
+    );
     assert_eq!(inject(src, &[("GREETING", "hi there")]).unwrap(), src);
 }
 
@@ -412,18 +418,24 @@ fn test_value_follows_its_prompt_not_its_position() {
 fn test_multi_variable_read_joins_its_values_on_one_line() {
     // PORTED AS BYTE ASSERTION: the two values join into one fed line `'Ada Lovelace'`; the shell's
     // default-$IFS split back into `[Ada][Lovelace]` is what the Python run confirms.
-    let src = "#!/usr/bin/env bash\nread -p \"First and last: \" FIRST LAST\necho \"[$FIRST][$LAST]\"\n";
+    let src =
+        "#!/usr/bin/env bash\nread -p \"First and last: \" FIRST LAST\necho \"[$FIRST][$LAST]\"\n";
     let out = inject(src, &[("input-1", "Ada"), ("input-2", "Lovelace")]).unwrap();
-    assert!(out.contains("_skit_read 0 'Ada Lovelace' 0 'First and last: ' -p \"First and last: \" FIRST LAST"));
+    assert!(out.contains(
+        "_skit_read 0 'Ada Lovelace' 0 'First and last: ' -p \"First and last: \" FIRST LAST"
+    ));
 }
 
 #[test]
 fn test_multi_variable_read_accepts_a_short_prefix() {
     // Only the first variable filled: exactly what a short typed line does (the rest read empty).
     // PORTED AS BYTE ASSERTION: the fed line is just `'Ada'`; the runtime `[Ada][]` follows.
-    let src = "#!/usr/bin/env bash\nread -p \"First and last: \" FIRST LAST\necho \"[$FIRST][$LAST]\"\n";
+    let src =
+        "#!/usr/bin/env bash\nread -p \"First and last: \" FIRST LAST\necho \"[$FIRST][$LAST]\"\n";
     let out = inject(src, &[("input-1", "Ada")]).unwrap();
-    assert!(out.contains("_skit_read 0 'Ada' 0 'First and last: ' -p \"First and last: \" FIRST LAST"));
+    assert!(
+        out.contains("_skit_read 0 'Ada' 0 'First and last: ' -p \"First and last: \" FIRST LAST")
+    );
 }
 
 #[test]
@@ -540,9 +552,12 @@ fn test_multi_variable_read_allows_whitespace_in_the_last_field() {
     //
     // PORTED AS BYTE ASSERTION: the fed line is `'Ada de Lovelace'`; the shell splits it as
     // FIRST="Ada", LAST="de Lovelace", which the Python run (`[Ada][de Lovelace]`) confirms.
-    let src = "#!/usr/bin/env bash\nread -p \"First and last: \" FIRST LAST\necho \"[$FIRST][$LAST]\"\n";
+    let src =
+        "#!/usr/bin/env bash\nread -p \"First and last: \" FIRST LAST\necho \"[$FIRST][$LAST]\"\n";
     let out = inject(src, &[("input-1", "Ada"), ("input-2", "de Lovelace")]).unwrap();
-    assert!(out.contains("_skit_read 0 'Ada de Lovelace' 0 'First and last: ' -p \"First and last: \" FIRST LAST"));
+    assert!(out.contains(
+        "_skit_read 0 'Ada de Lovelace' 0 'First and last: ' -p \"First and last: \" FIRST LAST"
+    ));
 }
 
 #[test]
@@ -598,9 +613,15 @@ fn test_const_payload_is_inert() {
     for payload in PAYLOADS {
         let src = "#!/usr/bin/env bash\nTITLE=hello\necho \"[$TITLE]\"\n";
         let out = inject(src, &[("TITLE", payload)]).unwrap();
-        let expected = format!("#!/usr/bin/env bash\nTITLE={}\necho \"[$TITLE]\"\n", sq(payload));
+        let expected = format!(
+            "#!/usr/bin/env bash\nTITLE={}\necho \"[$TITLE]\"\n",
+            sq(payload)
+        );
         assert_eq!(out, expected, "payload {payload:?}");
-        assert!(source_is_valid("shell", &out), "payload {payload:?} must reparse (bash -n analog)");
+        assert!(
+            source_is_valid("shell", &out),
+            "payload {payload:?} must reparse (bash -n analog)"
+        );
     }
 }
 
@@ -613,9 +634,18 @@ fn test_read_payload_is_inert() {
     for payload in PAYLOADS {
         let src = "#!/usr/bin/env bash\nread -p \"Name: \" who\necho \"[$who]\"\n";
         let out = inject(src, &[("input-1", payload)]).unwrap();
-        let call = format!("_skit_read 0 {} 0 'Name: ' -p \"Name: \" who", sq(&fed(payload, false)));
-        assert!(out.contains(&call), "payload {payload:?}: expected inert arg {call:?} in\n{out}");
-        assert!(source_is_valid("shell", &out), "payload {payload:?} must reparse");
+        let call = format!(
+            "_skit_read 0 {} 0 'Name: ' -p \"Name: \" who",
+            sq(&fed(payload, false))
+        );
+        assert!(
+            out.contains(&call),
+            "payload {payload:?}: expected inert arg {call:?} in\n{out}"
+        );
+        assert!(
+            source_is_valid("shell", &out),
+            "payload {payload:?} must reparse"
+        );
     }
 }
 
@@ -627,7 +657,10 @@ fn test_quote_in_a_read_prompt_survives() {
     // (`It's here: x`) confirms it echoes intact.
     let src = "#!/usr/bin/env bash\nread -p \"It's here: \" who\necho \"[$who]\"\n";
     let out = inject(src, &[("input-1", "x")]).unwrap();
-    let call = format!("_skit_read 0 'x' 0 {} -p \"It's here: \" who", sq("It's here: "));
+    let call = format!(
+        "_skit_read 0 'x' 0 {} -p \"It's here: \" who",
+        sq("It's here: ")
+    );
     assert!(out.contains(&call), "expected {call:?} in\n{out}");
     assert!(source_is_valid("shell", &out));
 }
@@ -646,7 +679,8 @@ fn test_cjk_emoji_const_and_prompt_round_trip() {
     // Multibyte const value and CJK/emoji prompt survive the rewrite byte-for-byte and the copy
     // re-parses (Python: `not analyzer.analyze(text).syntax_error`). PORTED AS BYTE ASSERTION for
     // the round trip; the Python run confirms the echoed stdout.
-    let src = "#!/usr/bin/env bash\nCITY=台北\nread -p \"请输入名字 🙂: \" NAME\necho \"$CITY|$NAME\"\n";
+    let src =
+        "#!/usr/bin/env bash\nCITY=台北\nread -p \"请输入名字 🙂: \" NAME\necho \"$CITY|$NAME\"\n";
     let out = inject(src, &[("CITY", "高雄 🚀"), ("input-1", "愛達")]).unwrap();
     assert!(out.contains("CITY='高雄 🚀'"));
     assert!(out.contains("_skit_read 0 '愛達' 0 '请输入名字 🙂: ' -p \"请输入名字 🙂: \" NAME"));
@@ -705,20 +739,29 @@ fn test_backslash_values_arrive_byte_identical_raw_or_not() {
 
     let raw = "#!/usr/bin/env bash\nread -r -p \"P: \" a\necho \"[$a]\"\n";
     let out = inject(raw, &[("input-1", value)]).unwrap();
-    assert!(out.contains(&format!("_skit_read 0 {} 0 'P: ' -r -p \"P: \" a", sq(&fed(value, true)))));
+    assert!(out.contains(&format!(
+        "_skit_read 0 {} 0 'P: ' -r -p \"P: \" a",
+        sq(&fed(value, true))
+    )));
     assert!(source_is_valid("shell", &out));
 
     let cooked = "#!/usr/bin/env bash\nread -p \"P: \" a\necho \"[$a]\"\n";
     let out = inject(cooked, &[("input-1", value)]).unwrap();
     // doubled for the non-raw read, so read's unescaping restores it
-    assert!(out.contains(&format!("_skit_read 0 {} 0 'P: ' -p \"P: \" a", sq(&fed(value, false)))));
+    assert!(out.contains(&format!(
+        "_skit_read 0 {} 0 'P: ' -p \"P: \" a",
+        sq(&fed(value, false))
+    )));
     assert!(source_is_valid("shell", &out));
 
     // the field-merging case: a trailing backslash in a non-last variable
     let two = "#!/usr/bin/env bash\nread -p \"P: \" A B\necho \"[$A][$B]\"\n";
     let out = inject(two, &[("input-1", "C:\\"), ("input-2", "Doe")]).unwrap();
     let line = format!("{} {}", fed("C:\\", false), fed("Doe", false));
-    assert!(out.contains(&format!("_skit_read 0 {} 0 'P: ' -p \"P: \" A B", sq(&line)))); // NOT `C: Doe`
+    assert!(out.contains(&format!(
+        "_skit_read 0 {} 0 'P: ' -p \"P: \" A B",
+        sq(&line)
+    ))); // NOT `C: Doe`
     assert!(source_is_valid("shell", &out));
 
     // A const value is not read()'s business at all, so it is byte-exact in every dialect:
@@ -853,10 +896,16 @@ fn test_normalize_makes_the_param_an_envdefault() {
     let src = "#!/usr/bin/env bash\nWIDTH=800\n";
     let out = normalize_shell_default(src, "WIDTH").unwrap();
     let cands = by_name(&out);
-    assert_eq!(cands["WIDTH"].declaration.binding, ParameterBinding::EnvDefault);
+    assert_eq!(
+        cands["WIDTH"].declaration.binding,
+        ParameterBinding::EnvDefault
+    );
     assert_eq!(cands["WIDTH"].declaration.env_var(), "WIDTH");
     // the literal is still the script's standalone default
-    assert_eq!(cands["WIDTH"].declaration.default, Some(ParameterValue::Integer(800)));
+    assert_eq!(
+        cands["WIDTH"].declaration.default,
+        Some(ParameterValue::Integer(800))
+    );
 }
 
 #[test]

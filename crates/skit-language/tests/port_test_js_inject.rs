@@ -265,7 +265,12 @@ fn test_no_values_writes_nothing() {
 fn test_value_for_unmanaged_name_is_ignored() {
     // A value whose key isn't a managed spec never produces a span.
     let src = "const W = 800;\n";
-    assert!(plan_with_specs(src, &[("OTHER", "x")], &[]).unwrap().edits().is_empty());
+    assert!(
+        plan_with_specs(src, &[("OTHER", "x")], &[])
+            .unwrap()
+            .edits()
+            .is_empty()
+    );
     assert_eq!(inject_with_specs(src, &[("OTHER", "x")], &[]).unwrap(), src);
 }
 

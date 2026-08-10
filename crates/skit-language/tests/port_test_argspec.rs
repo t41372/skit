@@ -288,13 +288,17 @@ fn test_help_and_version_actions_are_not_fields() {
 
 #[test]
 fn test_secret_name_precheck() {
-    let fields = static_fields("import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--api-key')\n");
+    let fields = static_fields(
+        "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--api-key')\n",
+    );
     assert!(fields[0].secret);
 }
 
 #[test]
 fn test_optional_positional_star_not_required() {
-    let fields = static_fields("import argparse\nap = argparse.ArgumentParser()\nap.add_argument('files', nargs='*')\n");
+    let fields = static_fields(
+        "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('files', nargs='*')\n",
+    );
     let field = &fields[0];
     assert!(!field.required);
     assert!(field.multiple);
@@ -328,7 +332,9 @@ fn test_type_float_and_str_map_to_kinds() {
 
 #[test]
 fn test_default_none_literal_does_not_degrade() {
-    let fields = static_fields("import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--x', default=None)\n");
+    let fields = static_fields(
+        "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--x', default=None)\n",
+    );
     assert!(!fields[0].degraded);
     assert!(fields[0].default.is_none());
 }
@@ -344,7 +350,8 @@ fn test_non_literal_argument_name_skips_that_field_only() {
 
 #[test]
 fn test_short_flag_only_keeps_short_name() {
-    let fields = static_fields("import argparse\nap = argparse.ArgumentParser()\nap.add_argument('-v')\n");
+    let fields =
+        static_fields("import argparse\nap = argparse.ArgumentParser()\nap.add_argument('-v')\n");
     assert_eq!(fields[0].flag, "-v");
     assert_eq!(fields[0].name, "v");
 }
@@ -395,7 +402,9 @@ fn test_partly_non_literal_name_list_skips_that_field_only() {
 fn test_flag_dest_only_strips_dashes_not_letters() {
     // dest is derived by stripping *leading dashes* -- not arbitrary characters. A flag whose
     // name begins with a capital letter after the dashes must keep that letter.
-    let fields = static_fields("import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--Xterm')\n");
+    let fields = static_fields(
+        "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--Xterm')\n",
+    );
     assert_eq!(fields[0].name, "Xterm");
 }
 
@@ -404,7 +413,9 @@ fn test_computed_default_degrades_field() {
     // A non-literal default (here a tuple) can't be modeled: the field shows but degrades so it
     // is omitted when left empty and the script's own default applies. `is True` also pins that
     // it degrades rather than silently staying modelled.
-    let fields = static_fields("import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--size', default=(1, 2))\n");
+    let fields = static_fields(
+        "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--size', default=(1, 2))\n",
+    );
     assert_eq!(fields[0].name, "size");
     assert!(fields[0].degraded);
     assert!(fields[0].default.is_none()); // a computed default is never read as a value

@@ -34,8 +34,8 @@ use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
 use skit_language::{
-    CliSurface, DegradationReason, ParseOutcome, ParsedDocument, ReconcileReport, SemanticCandidate,
-    SemanticField, managed_params, parse_document, write_managed_params,
+    CliSurface, DegradationReason, ParseOutcome, ParsedDocument, ReconcileReport,
+    SemanticCandidate, SemanticField, managed_params, parse_document, write_managed_params,
 };
 
 fn parsed(kind: &str, source: &str) -> ParsedDocument {
@@ -93,25 +93,45 @@ fn string_set<const N: usize>(values: [&str; N]) -> BTreeSet<String> {
 
 #[test]
 fn test_const_number_string_bool() {
-    let b = by_name("const W = 800;\nconst N = \"hi\";\nconst T = true;\nconst F = false;\nconst R = 2.5;\n");
+    let b = by_name(
+        "const W = 800;\nconst N = \"hi\";\nconst T = true;\nconst F = false;\nconst R = 2.5;\n",
+    );
     assert_eq!(
-        (b["W"].declaration.parameter_type, &b["W"].declaration.default),
+        (
+            b["W"].declaration.parameter_type,
+            &b["W"].declaration.default
+        ),
         (ParameterType::Int, &Some(ParameterValue::Integer(800)))
     );
     assert_eq!(
-        (b["N"].declaration.parameter_type, &b["N"].declaration.default),
-        (ParameterType::Str, &Some(ParameterValue::String("hi".to_owned())))
+        (
+            b["N"].declaration.parameter_type,
+            &b["N"].declaration.default
+        ),
+        (
+            ParameterType::Str,
+            &Some(ParameterValue::String("hi".to_owned()))
+        )
     );
     assert_eq!(
-        (b["T"].declaration.parameter_type, &b["T"].declaration.default),
+        (
+            b["T"].declaration.parameter_type,
+            &b["T"].declaration.default
+        ),
         (ParameterType::Bool, &Some(ParameterValue::Bool(true)))
     );
     assert_eq!(
-        (b["F"].declaration.parameter_type, &b["F"].declaration.default),
+        (
+            b["F"].declaration.parameter_type,
+            &b["F"].declaration.default
+        ),
         (ParameterType::Bool, &Some(ParameterValue::Bool(false)))
     );
     assert_eq!(
-        (b["R"].declaration.parameter_type, &b["R"].declaration.default),
+        (
+            b["R"].declaration.parameter_type,
+            &b["R"].declaration.default
+        ),
         (ParameterType::Float, &Some(ParameterValue::Float(2.5)))
     );
 }
@@ -173,7 +193,11 @@ fn test_comment_between_keyword_and_declarator_is_skipped() {
 
 #[test]
 fn test_secret_by_name() {
-    assert!(by_name("const API_KEY = \"x\";\n")["API_KEY"].declaration.secret);
+    assert!(
+        by_name("const API_KEY = \"x\";\n")["API_KEY"]
+            .declaration
+            .secret
+    );
 }
 
 #[test]
@@ -219,7 +243,10 @@ fn test_plain_const_not_demoted() {
 #[test]
 fn test_member_reassignment_does_not_demote() {
     // `obj.x = …` reassigns a property, not the top-level binding.
-    assert_eq!(demoted("const CFG = 1;\nglobalThis.CFG = 2;\n"), BTreeSet::new());
+    assert_eq!(
+        demoted("const CFG = 1;\nglobalThis.CFG = 2;\n"),
+        BTreeSet::new()
+    );
 }
 
 // ---------------------------------------------------------------- type inference
@@ -235,16 +262,34 @@ fn test_negative_int_is_a_unary_expression_not_a_number_literal() {
 fn test_exotic_number_literals_are_float_with_source_text_default() {
     let b = by_name("const H = 0xFF;\nconst E = 1e3;\nconst G = 100n;\n");
     assert_eq!(
-        (b["H"].declaration.parameter_type, &b["H"].declaration.default),
-        (ParameterType::Float, &Some(ParameterValue::String("0xFF".to_owned())))
+        (
+            b["H"].declaration.parameter_type,
+            &b["H"].declaration.default
+        ),
+        (
+            ParameterType::Float,
+            &Some(ParameterValue::String("0xFF".to_owned()))
+        )
     );
     assert_eq!(
-        (b["E"].declaration.parameter_type, &b["E"].declaration.default),
-        (ParameterType::Float, &Some(ParameterValue::String("1e3".to_owned())))
+        (
+            b["E"].declaration.parameter_type,
+            &b["E"].declaration.default
+        ),
+        (
+            ParameterType::Float,
+            &Some(ParameterValue::String("1e3".to_owned()))
+        )
     );
     assert_eq!(
-        (b["G"].declaration.parameter_type, &b["G"].declaration.default),
-        (ParameterType::Float, &Some(ParameterValue::String("100n".to_owned())))
+        (
+            b["G"].declaration.parameter_type,
+            &b["G"].declaration.default
+        ),
+        (
+            ParameterType::Float,
+            &Some(ParameterValue::String("100n".to_owned()))
+        )
     );
 }
 
@@ -253,7 +298,10 @@ fn test_simple_decimal_float() {
     let all = cands("const R = 3.25;\n");
     assert_eq!(all.len(), 1);
     assert_eq!(
-        (all[0].declaration.parameter_type, &all[0].declaration.default),
+        (
+            all[0].declaration.parameter_type,
+            &all[0].declaration.default
+        ),
         (ParameterType::Float, &Some(ParameterValue::Float(3.25)))
     );
 }
@@ -261,7 +309,10 @@ fn test_simple_decimal_float() {
 #[test]
 fn test_empty_and_escaped_string_values() {
     let b = by_name("const E = \"\";\nconst X = \"a\\\"b\\n\";\n");
-    assert_eq!(b["E"].declaration.default, Some(ParameterValue::String(String::new())));
+    assert_eq!(
+        b["E"].declaration.default,
+        Some(ParameterValue::String(String::new()))
+    );
     // fragments + escape sequences, raw
     assert_eq!(
         b["X"].declaration.default,
@@ -275,12 +326,21 @@ fn test_empty_and_escaped_string_values() {
 fn test_ts_annotation_value_still_found() {
     let b = by_name_lang("ts", "const N: number = 5;\nconst S: string = \"x\";\n");
     assert_eq!(
-        (b["N"].declaration.parameter_type, &b["N"].declaration.default),
+        (
+            b["N"].declaration.parameter_type,
+            &b["N"].declaration.default
+        ),
         (ParameterType::Int, &Some(ParameterValue::Integer(5)))
     );
     assert_eq!(
-        (b["S"].declaration.parameter_type, &b["S"].declaration.default),
-        (ParameterType::Str, &Some(ParameterValue::String("x".to_owned())))
+        (
+            b["S"].declaration.parameter_type,
+            &b["S"].declaration.default
+        ),
+        (
+            ParameterType::Str,
+            &Some(ParameterValue::String("x".to_owned()))
+        )
     );
 }
 
@@ -381,29 +441,53 @@ fn const_spec(name: &str, parameter_type: ParameterType) -> ParamDecl {
 
 #[test]
 fn test_reconcile_const_ok() {
-    let report = reconcile("js", "const CITY = 800;\n", &[const_spec("CITY", ParameterType::Int)]);
+    let report = reconcile(
+        "js",
+        "const CITY = 800;\n",
+        &[const_spec("CITY", ParameterType::Int)],
+    );
     assert!(!report.has_drift());
     assert_eq!(
-        report.ok.iter().map(|pair| pair.stored.name.clone()).collect::<Vec<_>>(),
+        report
+            .ok
+            .iter()
+            .map(|pair| pair.stored.name.clone())
+            .collect::<Vec<_>>(),
         ["CITY"]
     );
 }
 
 #[test]
 fn test_reconcile_const_gone_is_missing() {
-    let report = reconcile("js", "const OTHER = 1;\n", &[const_spec("CITY", ParameterType::Int)]);
+    let report = reconcile(
+        "js",
+        "const OTHER = 1;\n",
+        &[const_spec("CITY", ParameterType::Int)],
+    );
     assert!(report.has_drift());
     assert_eq!(
-        report.missing.iter().map(|declaration| declaration.name.clone()).collect::<Vec<_>>(),
+        report
+            .missing
+            .iter()
+            .map(|declaration| declaration.name.clone())
+            .collect::<Vec<_>>(),
         ["CITY"]
     );
 }
 
 #[test]
 fn test_reconcile_type_change_is_flagged() {
-    let report = reconcile("js", "const N = \"text\";\n", &[const_spec("N", ParameterType::Int)]);
+    let report = reconcile(
+        "js",
+        "const N = \"text\";\n",
+        &[const_spec("N", ParameterType::Int)],
+    );
     assert_eq!(
-        report.changed.iter().map(|pair| pair.stored.name.clone()).collect::<Vec<_>>(),
+        report
+            .changed
+            .iter()
+            .map(|pair| pair.stored.name.clone())
+            .collect::<Vec<_>>(),
         ["N"]
     );
 }
@@ -458,7 +542,10 @@ fn test_block_at_top_when_no_shebang() {
 
 #[test]
 fn test_write_empty_params_is_identity() {
-    assert_eq!(write_managed_params("js", "const P = 1;\n", &[]).unwrap(), "const P = 1;\n");
+    assert_eq!(
+        write_managed_params("js", "const P = 1;\n", &[]).unwrap(),
+        "const P = 1;\n"
+    );
 }
 
 // ---------------------------------------------------------------- parseArgs reader
@@ -499,7 +586,10 @@ fn field_names(fields: &[SemanticField]) -> Vec<String> {
 
 #[test]
 fn test_parseargs_util_member_inline_options() {
-    let f = only_field("js", "const {values} = util.parseArgs({options:{name:{type:\"string\"}}});\n");
+    let f = only_field(
+        "js",
+        "const {values} = util.parseArgs({options:{name:{type:\"string\"}}});\n",
+    );
     assert_eq!(
         (
             f.declaration.name.as_str(),
@@ -519,14 +609,21 @@ fn test_parseargs_bare_call() {
             f.declaration.action.as_str(),
             &f.declaration.default
         ),
-        (ParameterType::Bool, "store_true", &Some(ParameterValue::Bool(false)))
+        (
+            ParameterType::Bool,
+            "store_true",
+            &Some(ParameterValue::Bool(false))
+        )
     );
 }
 
 #[test]
 fn test_parseargs_nested_member() {
     assert_eq!(
-        field_names(&fields("js", "a.b.parseArgs({options:{x:{type:\"string\"}}});\n")),
+        field_names(&fields(
+            "js",
+            "a.b.parseArgs({options:{x:{type:\"string\"}}});\n"
+        )),
         ["x"]
     );
 }
@@ -543,7 +640,10 @@ fn test_parseargs_all_option_features() {
     );
     let all = fields("js", src);
     // short is display-only; the long flag is assembled
-    assert_eq!(field(&all, "name").declaration.default, Some(ParameterValue::String("world".to_owned())));
+    assert_eq!(
+        field(&all, "name").declaration.default,
+        Some(ParameterValue::String("world".to_owned()))
+    );
     assert_eq!(field(&all, "name").declaration.flag, "--name");
     assert_eq!(
         (
@@ -557,12 +657,18 @@ fn test_parseargs_all_option_features() {
     // flag (`--tag a --tag b`); repeat records that. A non-multiple option keeps repeat False.
     assert!(field(&all, "tag").declaration.repeat);
     assert!(!field(&all, "verbose").declaration.repeat);
-    assert_eq!(field(&all, "dry-run").declaration.default, Some(ParameterValue::Bool(false)));
+    assert_eq!(
+        field(&all, "dry-run").declaration.default,
+        Some(ParameterValue::Bool(false))
+    );
 }
 
 #[test]
 fn test_parseargs_boolean_default_true_applies_literally() {
-    let f = only_field("js", "parseArgs({options:{force:{type:\"boolean\",default:true}}});\n");
+    let f = only_field(
+        "js",
+        "parseArgs({options:{force:{type:\"boolean\",default:true}}});\n",
+    );
     assert_eq!(
         (f.declaration.parameter_type, &f.declaration.default),
         (ParameterType::Bool, &Some(ParameterValue::Bool(true)))
@@ -571,7 +677,10 @@ fn test_parseargs_boolean_default_true_applies_literally() {
 
 #[test]
 fn test_parseargs_string_key_option() {
-    let f = only_field("js", "parseArgs({options:{\"dry-run\":{type:\"boolean\"}}});\n");
+    let f = only_field(
+        "js",
+        "parseArgs({options:{\"dry-run\":{type:\"boolean\"}}});\n",
+    );
     assert_eq!(
         (f.declaration.name.as_str(), f.declaration.flag.as_str()),
         ("dry-run", "--dry-run")
@@ -597,9 +706,10 @@ fn test_parseargs_identifier_options_whole_spec_degrade() {
 
 #[test]
 fn test_parseargs_spread_in_options_whole_spec_degrade() {
-    let CliSurface::Dynamic(dynamic) =
-        surface("js", "parseArgs({options:{...common, name:{type:\"string\"}}});\n")
-    else {
+    let CliSurface::Dynamic(dynamic) = surface(
+        "js",
+        "parseArgs({options:{...common, name:{type:\"string\"}}});\n",
+    ) else {
         panic!("a spread in options must degrade the whole spec");
     };
     assert_eq!(dynamic.reason, DegradationReason::DynamicDeclaration);
@@ -620,7 +730,10 @@ fn test_parseargs_empty_string_key_is_skipped() {
 #[test]
 fn test_parseargs_non_object_option_value_degrades_field() {
     let f = only_field("js", "parseArgs({options:{name: someVar}});\n");
-    assert_eq!((f.declaration.name.as_str(), f.declaration.degraded), ("name", true));
+    assert_eq!(
+        (f.declaration.name.as_str(), f.declaration.degraded),
+        ("name", true)
+    );
 }
 
 #[test]
@@ -637,7 +750,10 @@ fn test_parseargs_non_literal_type_value_degrades_field() {
 
 #[test]
 fn test_parseargs_non_literal_default_degrades_field() {
-    let f = only_field("js", "parseArgs({options:{n:{type:\"string\", default: fallback}}});\n");
+    let f = only_field(
+        "js",
+        "parseArgs({options:{n:{type:\"string\", default: fallback}}});\n",
+    );
     assert!(f.declaration.degraded);
 }
 
@@ -645,7 +761,10 @@ fn test_parseargs_non_literal_default_degrades_field() {
 fn test_parseargs_ignores_spread_computed_and_numeric_keys_in_spec() {
     // A spread, a computed key, and a numeric key inside the option-spec object are read and skipped,
     // not crashed on — only the real `type` pair is applied.
-    let f = only_field("js", "parseArgs({options:{n:{type:\"string\", [dyn]: 1, 0: 2, ...rest}}});\n");
+    let f = only_field(
+        "js",
+        "parseArgs({options:{n:{type:\"string\", [dyn]: 1, 0: 2, ...rest}}});\n",
+    );
     assert_eq!(
         (f.declaration.name.as_str(), f.declaration.parameter_type),
         ("n", ParameterType::Str)
@@ -658,14 +777,20 @@ fn test_parseargs_option_spec_without_type_keeps_str_and_reads_default() {
     let f = only_field("js", "parseArgs({options:{n:{default:\"hi\"}}});\n");
     assert_eq!(
         (f.declaration.parameter_type, &f.declaration.default),
-        (ParameterType::Str, &Some(ParameterValue::String("hi".to_owned())))
+        (
+            ParameterType::Str,
+            &Some(ParameterValue::String("hi".to_owned()))
+        )
     );
 }
 
 #[test]
 fn test_parseargs_shorthand_property_in_options_is_skipped() {
     // A shorthand property (`{name, real:{...}}`) isn't a pair — skipped, not crashed on.
-    let f = only_field("js", "parseArgs({options:{shorthand, real:{type:\"string\"}}});\n");
+    let f = only_field(
+        "js",
+        "parseArgs({options:{shorthand, real:{type:\"string\"}}});\n",
+    );
     assert_eq!(f.declaration.name, "real");
 }
 
@@ -685,7 +810,10 @@ fn test_parseargs_empty_options_object_is_a_readable_zero_field_surface() {
 #[test]
 fn test_no_parseargs_surface_returns_none() {
     // A plain identifier call that isn't parseArgs (not an identifier match, not a member call).
-    assert!(matches!(surface("js", "const x = 5;\nfoo(x);\n"), CliSurface::Absent));
+    assert!(matches!(
+        surface("js", "const x = 5;\nfoo(x);\n"),
+        CliSurface::Absent
+    ));
 }
 
 #[test]
@@ -698,12 +826,18 @@ fn test_parseargs_member_call_that_is_not_parseargs_is_ignored() {
 
 #[test]
 fn test_parseargs_with_no_config_object_returns_none() {
-    assert!(matches!(surface("js", "parseArgs();\n"), CliSurface::Absent));
+    assert!(matches!(
+        surface("js", "parseArgs();\n"),
+        CliSurface::Absent
+    ));
 }
 
 #[test]
 fn test_parseargs_non_object_config_returns_none() {
-    assert!(matches!(surface("js", "parseArgs(config);\n"), CliSurface::Absent));
+    assert!(matches!(
+        surface("js", "parseArgs(config);\n"),
+        CliSurface::Absent
+    ));
 }
 
 #[test]
