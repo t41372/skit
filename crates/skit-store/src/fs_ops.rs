@@ -46,17 +46,16 @@ pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .and_then(|name| name.to_str())
         .unwrap_or("state");
     let temp = parent.join(format!(".{name}.{}.tmp", EntryId::generate().as_str()));
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&temp)?;
-    file.write_all(bytes)?;
-    preserve_permissions_best_effort(
+    finish_temp_write(
+        &temp,
+        file,
+        bytes,
         fs::metadata(path).map(|metadata| metadata.permissions()),
-        |permissions| file.set_permissions(permissions),
-    );
-    file.sync_all()?;
-    drop(file);
+    )?;
 
     if let Err(error) = replace_with_retry(&temp, path) {
         let _ = fs::remove_file(&temp);
@@ -64,6 +63,36 @@ pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     let _ = sync_directory(parent);
     Ok(())
+}
+
+fn finish_temp_write(
+    temp: &Path,
+    file: File,
+    bytes: &[u8],
+    permissions: io::Result<fs::Permissions>,
+) -> io::Result<()> {
+    finish_temp_write_using(temp, file, bytes, permissions, File::sync_all)
+}
+
+fn finish_temp_write_using(
+    temp: &Path,
+    mut file: File,
+    bytes: &[u8],
+    permissions: io::Result<fs::Permissions>,
+    sync: impl FnOnce(&File) -> io::Result<()>,
+) -> io::Result<()> {
+    let result = (|| {
+        file.write_all(bytes)?;
+        preserve_permissions_best_effort(permissions, |permissions| {
+            file.set_permissions(permissions)
+        });
+        sync(&file)
+    })();
+    drop(file);
+    if result.is_err() {
+        let _ = fs::remove_file(temp);
+    }
+    result
 }
 
 pub(crate) fn replace_with_retry(src: &Path, dst: &Path) -> io::Result<()> {
@@ -112,8 +141,8 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_lock, atomic_write_bytes, preserve_permissions_best_effort,
-        replace_with_retry_using, sync_directory,
+        acquire_lock, atomic_write_bytes, finish_temp_write_using,
+        preserve_permissions_best_effort, replace_with_retry_using, sync_directory,
     };
     use std::{
         cell::Cell,
@@ -190,11 +219,7 @@ mod tests {
         let root = TempDir::new().unwrap();
         let lock_path = root.path().join("crash.lock");
         let output = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "fs_ops::tests::lock_crash_helper",
-                "--nocapture",
-            ])
+            .args(["--exact", "fs_ops::tests::lock_crash_helper", "--nocapture"])
             .env("SKIT_TEST_CRASH_LOCK", &lock_path)
             .output()
             .unwrap();
@@ -255,6 +280,31 @@ mod tests {
         );
 
         assert!(attempted.get());
+    }
+
+    #[test]
+    fn test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("out.bin");
+        let temp = root.path().join(".out.bin.test.tmp");
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+            .unwrap();
+
+        let error = finish_temp_write_using(
+            &temp,
+            file,
+            b"payload",
+            Err(io::Error::new(io::ErrorKind::NotFound, "no prior mode")),
+            |_| Err(io::Error::other("simulated: fsync EIO")),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("simulated: fsync EIO"));
+        assert!(!target.exists());
+        assert!(std::fs::read_dir(root.path()).unwrap().next().is_none());
     }
 
     #[cfg(unix)]

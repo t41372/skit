@@ -154,15 +154,21 @@ pub(super) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Reposi
         .create_new(true)
         .open(&temp)
         .map_err(|error| io_error("create", &temp, error))?;
-    file.write_all(bytes)
-        .map_err(|error| io_error("write", &temp, error))?;
-    preserve_permissions_best_effort(
-        fs::metadata(path).map(|metadata| metadata.permissions()),
-        |permissions| file.set_permissions(permissions),
-    );
-    file.sync_all()
-        .map_err(|error| io_error("sync", &temp, error))?;
+    let write_result = (|| {
+        file.write_all(bytes)
+            .map_err(|error| io_error("write", &temp, error))?;
+        preserve_permissions_best_effort(
+            fs::metadata(path).map(|metadata| metadata.permissions()),
+            |permissions| file.set_permissions(permissions),
+        );
+        file.sync_all()
+            .map_err(|error| io_error("sync", &temp, error))
+    })();
     drop(file);
+    if let Err(error) = write_result {
+        let _ = fs::remove_file(&temp);
+        return Err(error);
+    }
 
     let result = replace_with_retry(&temp, path).map_err(|error| io_error("replace", path, error));
     if result.is_err() {
