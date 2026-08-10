@@ -104,13 +104,13 @@ adjudicated · counts are Python `def test_` counts.
 | test_editor.py | 50 | skit-cli | todo |
 | test_default_name_resolution.py | 42 | skit-cli / skit-application | todo |
 | test_params_edit.py | 41 | crates/skit-domain/tests/port_test_params_edit.rs | done (3) · 36 ABSENT: edit_declared (pure warn-and-continue batch editor + 9 warning codes) missing, CLI is fail-fast (#16) · 2 as_param_type |
-| test_add_validation_contracts.py | 31 | skit-cli | todo |
-| test_review_fixes.py | 30 | skit-cli | todo |
-| test_run_set.py | 27 | skit-cli | todo |
+| test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | done (12) · 17 divergences (drafts-boundary guard absent #15, editor-validates-after-open, kind_for_draft missing, --python normalize + error wording) + 2 absent (interactive re-ask) · 1 weakening fixed |
+| test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
+| test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | done (12) · 15 cross-crate/divergence |
 | test_draft_inference_and_reader_cli.py | 27 | skit-cli | todo |
 | test_agent_install.py | 22 | skit-cli / skit-application | todo |
 | test_dependency_write_validation.py | 21 | skit-cli | todo |
-| test_add_lane_contracts.py | 21 | skit-cli | todo |
+| test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | done (10) · 11 cross-crate/divergence |
 | test_dependency_command_contracts.py | 20 | skit-cli | todo |
 | test_params_model.py | 19 | skit-cli / skit-application | todo |
 | test_show.py | 17 | crates/skit-cli/tests/port_test_show.rs | done (16) · 1 deferred |
@@ -121,7 +121,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_rename.py | 10 | crates/skit-cli/tests/port_test_rename.rs | done (6) · 4 cross-crate |
 | test_add_review_validation.py | 10 | skit-cli | todo |
 | test_agent_skill.py | 8 | skit-cli / skit-application | todo |
-| test_healthcheck.py | 6 | skit-cli / skit-application | todo |
+| test_healthcheck.py | 6 | crates/skit-cli/tests/port_test_healthcheck.rs | done (5) · 1 deferred · confirms doctor uv exit-code divergence |
 
 ### Tier 5 — frontend (`skit-ui` reducer, `skit-tui` TestBackend)
 
