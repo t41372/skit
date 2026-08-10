@@ -1,0 +1,27 @@
+name: Shebang python pin probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/shebang-python-pin-probe.yml
+      - crates/skit-language/tests/port_test_shebang_python_pin.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run shebang python pin oracle
+        shell: bash
+        run: |
+          set +e
+          cargo test --locked -p skit-language --test port_test_shebang_python_pin -- --nocapture
+          rc=$?
+          echo "SHEBANG_PYTHON_PIN_RC=$rc"
+          exit 0
