@@ -1,8 +1,9 @@
-//! Public-API ports of the Python v0.4 declared-parameter boolean-flag edit contract.
+//! Public-API ports of Python v0.4 declared-parameter boolean-flag edit contracts.
 //!
-//! An on-by-default boolean cannot truthfully use a positive presence flag: the flag could only
-//! turn an already-on value on again. Python reports the closed `bool-flag-on-by-default` warning;
-//! the Rust application use-case exposes the same refusal as a typed edit error.
+//! These cases map the bool-action hygiene section of `tests/test_params_edit.py`: a flag-delivered
+//! bool gains `store_true` only when a positive flag can truthfully turn an off-by-default value on;
+//! positional/env bools gain no flag action, stale actions are shed after a type leaves bool, and an
+//! existing `store_false` action remains authoritative.
 
 use skit_application::parameter_edit::{ParameterEditError, finish_parameter_edit};
 use skit_domain::parameters::{ParamDecl, ParameterDelivery, ParameterType, ParameterValue};
@@ -40,6 +41,55 @@ fn test_bool_flag_that_is_off_by_default_becomes_store_true() {
     assert_eq!(declaration.action, "store_true");
     assert_eq!(declaration.default, Some(ParameterValue::Bool(false)));
     assert_eq!(declaration.flag, "--w");
+}
+
+#[test]
+fn test_bool_flag_without_an_explicit_default_still_becomes_store_true() {
+    let mut declaration = ParamDecl::new("v");
+    declaration.delivery = ParameterDelivery::Flag;
+    declaration.parameter_type = ParameterType::Bool;
+    declaration.flag = "--v".to_owned();
+
+    finish_parameter_edit(&mut declaration).unwrap();
+
+    assert_eq!(declaration.action, "store_true");
+}
+
+#[test]
+fn test_bool_positional_keeps_empty_action() {
+    let mut declaration = ParamDecl::new("b");
+    declaration.delivery = ParameterDelivery::Flag;
+    declaration.parameter_type = ParameterType::Bool;
+    declaration.flag.clear();
+
+    finish_parameter_edit(&mut declaration).unwrap();
+
+    assert_eq!(declaration.action, "");
+}
+
+#[test]
+fn test_bool_env_delivery_keeps_empty_action_even_when_a_stale_flag_string_exists() {
+    let mut declaration = ParamDecl::new("v");
+    declaration.delivery = ParameterDelivery::Env;
+    declaration.parameter_type = ParameterType::Bool;
+    declaration.flag = "--v".to_owned();
+
+    finish_parameter_edit(&mut declaration).unwrap();
+
+    assert_eq!(declaration.action, "");
+}
+
+#[test]
+fn test_non_bool_row_sheds_a_stale_flag_action() {
+    let mut declaration = ParamDecl::new("a");
+    declaration.delivery = ParameterDelivery::Flag;
+    declaration.parameter_type = ParameterType::Str;
+    declaration.flag = "--a".to_owned();
+    declaration.action = "store_true".to_owned();
+
+    finish_parameter_edit(&mut declaration).unwrap();
+
+    assert_eq!(declaration.action, "");
 }
 
 #[test]
