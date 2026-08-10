@@ -103,7 +103,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_config.py | 60 | skit-cli / skit-application | todo |
 | test_editor.py | 50 | skit-cli | todo |
 | test_default_name_resolution.py | 42 | skit-cli / skit-application | todo |
-| test_params_edit.py | 41 | skit-cli | todo |
+| test_params_edit.py | 41 | crates/skit-domain/tests/port_test_params_edit.rs | done (3) · 36 ABSENT: edit_declared (pure warn-and-continue batch editor + 9 warning codes) missing, CLI is fail-fast (#16) · 2 as_param_type |
 | test_add_validation_contracts.py | 31 | skit-cli | todo |
 | test_review_fixes.py | 30 | skit-cli | todo |
 | test_run_set.py | 27 | skit-cli | todo |
@@ -113,12 +113,12 @@ adjudicated · counts are Python `def test_` counts.
 | test_add_lane_contracts.py | 21 | skit-cli | todo |
 | test_dependency_command_contracts.py | 20 | skit-cli | todo |
 | test_params_model.py | 19 | skit-cli / skit-application | todo |
-| test_show.py | 17 | skit-cli | todo |
+| test_show.py | 17 | crates/skit-cli/tests/port_test_show.rs | done (16) · 1 deferred |
 | test_add_feedback_contracts.py | 16 | skit-cli | todo |
-| test_edit.py | 14 | skit-cli | todo |
-| test_presets.py | 12 | skit-cli / skit-application | todo |
+| test_edit.py | 14 | crates/skit-cli/tests/port_test_edit.rs | done (3) · 8 ABSENT: reconcile.edit_specs inlined private in cli.rs (MUST-FIX expose) · 3 exit-code divergences |
+| test_presets.py | 12 | crates/skit-store/tests/port_test_presets.rs | done (12) · no gap |
 | test_add_review_contracts.py | 12 | skit-cli | todo |
-| test_rename.py | 10 | skit-cli | todo |
+| test_rename.py | 10 | crates/skit-cli/tests/port_test_rename.rs | done (6) · 4 cross-crate |
 | test_add_review_validation.py | 10 | skit-cli | todo |
 | test_agent_skill.py | 8 | skit-cli / skit-application | todo |
 | test_healthcheck.py | 6 | skit-cli / skit-application | todo |
