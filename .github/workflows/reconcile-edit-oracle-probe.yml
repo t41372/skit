@@ -10,6 +10,7 @@ on:
       - crates/skit-cli/tests/port_test_params_edit_bool_pipeline.rs
       - crates/skit-cli/tests/port_test_strength_gate.rs
       - crates/skit-language/tests/port_test_reconcile.rs
+      - crates/skit-domain/tests/port_test_declared_params.rs
 
 permissions:
   contents: read
@@ -26,6 +27,8 @@ jobs:
         shell: bash
         run: |
           set +e
+          cargo test --locked -p skit-domain --test port_test_declared_params -- --nocapture
+          echo "DECLARED_PARAMS_DOMAIN_RC=$?"
           cargo test --locked -p skit-language --test port_test_reconcile -- --nocapture
           echo "RECONCILE_LANGUAGE_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture
