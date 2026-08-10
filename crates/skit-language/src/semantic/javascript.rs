@@ -226,6 +226,30 @@ fn constant_targets<'tree>(
         .collect()
 }
 
+/// Render a string as a JS string literal matching Python `json.dumps(value)` with its default
+/// `ensure_ascii=True`. serde_json produces the quote/backslash/control escapes; then every non-ASCII
+/// scalar is folded to a `\uXXXX` escape (a UTF-16 surrogate pair above the BMP), so the injected
+/// temp copy stays pure ASCII and cannot be corrupted by an encoding mismatch on the write/read path.
+/// The ASCII escaping is left to serde_json, so ASCII values keep byte-identical output.
+fn json_string_ascii(raw: &str) -> Option<String> {
+    let base = serde_json::to_string(raw).ok()?;
+    let mut out = String::with_capacity(base.len());
+    for ch in base.chars() {
+        let code = ch as u32;
+        if code < 0x80 {
+            out.push(ch);
+        } else if code <= 0xFFFF {
+            out.push_str(&format!("\\u{code:04x}"));
+        } else {
+            let value = code - 0x10000;
+            let high = 0xD800 + (value >> 10);
+            let low = 0xDC00 + (value & 0x3FF);
+            out.push_str(&format!("\\u{high:04x}\\u{low:04x}"));
+        }
+    }
+    Some(out)
+}
+
 fn typed_literal(declaration: &ParamDecl, raw: &str) -> Result<String, LanguageError> {
     let invalid = || LanguageError::InvalidValue {
         name: declaration.name.clone(),
@@ -249,7 +273,7 @@ fn typed_literal(declaration: &ParamDecl, raw: &str) -> Result<String, LanguageE
             .map(|value| if value { "true" } else { "false" }.to_owned())
             .ok_or_else(invalid),
         ParameterType::Str | ParameterType::Choice | ParameterType::Path => {
-            serde_json::to_string(raw).map_err(|_| invalid())
+            json_string_ascii(raw).ok_or_else(invalid)
         }
     }
 }
