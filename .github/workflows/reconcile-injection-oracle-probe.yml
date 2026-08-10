@@ -1,0 +1,37 @@
+name: Reconcile injection oracle probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/reconcile-injection-oracle-probe.yml
+      - crates/skit-language/tests/port_test_reconcile_defaults.rs
+      - crates/skit-language/tests/port_test_default_injection.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run reconcile and injection oracles
+        shell: bash
+        run: |
+          set +e
+          failures=0
+          for target in port_test_reconcile_defaults port_test_default_injection; do
+            echo "::group::$target"
+            cargo test --locked -p skit-language --test "$target" -- --nocapture
+            rc=$?
+            echo "PORT_TARGET_RC $target $rc"
+            if [ "$rc" -ne 0 ]; then
+              failures=$((failures + 1))
+            fi
+            echo "::endgroup::"
+          done
+          echo "PORT_TARGET_FAILURE_GROUPS=$failures"
+          exit 0
