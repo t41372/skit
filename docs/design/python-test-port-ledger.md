@@ -50,7 +50,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_shell_getopts.py | 11 | skit-language | todo |
 | test_fish.py | 64 | skit-language | todo |
 | test_powershell.py | 35 | skit-language | todo |
-| test_js_analyzer.py | 67 | skit-language | todo |
+| test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | skit-language | todo |
 | test_js_deps.py | 151 | skit-language / skit-runtime | todo |
 | test_interpreters.py | 74 | skit-language / skit-runtime | todo |
@@ -270,3 +270,26 @@ degradations (subparsers/`@click.group`/multi-command Typer → `CliSurface::Dyn
 independent re-run and by reading the degradation and type-detection bodies for faithfulness. The one
 UNMAPPED test hand-builds an `ast.Call` and calls the private `argspec._decorator_name`; its
 whole-surface consequence (`@(f())()` → `CliSurface::Absent`) is already covered by an oracle test.
+
+### test_js_analyzer.py → port_test_js_analyzer.rs (62 done · SECOND REAL GAP · 5 deferred)
+
+67 ported / 62 passed / 5 ignored. Bucket 1 (63) surfaced the second real gap:
+
+- **Fixed: `parse_document` did not route the tsx dialect.** The oracle's JS analyzer wires three
+  grammars (`_LANGUAGES = {js, ts, tsx}`, `tsx = language_tsx()`); the TypeScript grammar cannot
+  parse JSX, so tsx needs its own. The Rust router had only `js`/`ts` arms, so
+  `parse_document("tsx", ...)` returned `ParserUnavailable` — a lost analyzer capability. Added the
+  `tsx => LANGUAGE_TSX` grammar arm and extended the js-family dispatch (`analysis`, `cli_surface`,
+  `plan_injection`) to `"js" | "ts" | "tsx"`, matching the oracle's one-analyzer-serves-all design.
+  Verified against the oracle; whole workspace green, clippy clean. (`test_tsx_grammar_branch`.)
+- **Adjudicated NOT a gap: `test_unknown_lang_falls_back_to_javascript`.** The oracle's `language_for`
+  defaults an unknown `lang` to the JS grammar — a JS-analyzer-internal totality default the Python
+  pragma itself marks a mutation-gate fixture, unreachable by any entry resolution. Its Rust
+  equivalent is the top-level `parse_document`, which by design rejects an unknown kind (a `pythn`
+  typo must not parse as JS). No faithful Rust home, no user-facing behavior → `#[ignore]`-UNMAPPED.
+
+The other 61 pass: const/type inference (int/float/str/bool, `0xFF`/`1e3`/`100n`, negatives excluded,
+template/object/array/destructuring excluded), demotions (let/var/reassign/`+=`/`++` = Accumulator),
+last-write-wins, TS annotations, `enum`-under-js → SyntaxError, reconcile, the `// /// script` block
+engine round-trip + shebang placement, and the full `parseArgs` surface matrix (degrade-whole-spec
+vs skip-just-field, Absent cases). 4 more `#[ignore]` are CLI/registry integration → Tier 4.
