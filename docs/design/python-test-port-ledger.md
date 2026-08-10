@@ -107,12 +107,12 @@ adjudicated · counts are Python `def test_` counts.
 | test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | done (12) · 17 divergences (drafts-boundary guard absent #15, editor-validates-after-open, kind_for_draft missing, --python normalize + error wording) + 2 absent (interactive re-ask) · 1 weakening fixed |
 | test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
 | test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | done (12) · 15 cross-crate/divergence |
-| test_draft_inference_and_reader_cli.py | 27 | skit-cli | todo |
-| test_agent_install.py | 22 | skit-cli / skit-application | todo |
-| test_dependency_write_validation.py | 21 | skit-cli | todo |
+| test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (14) · 10 divergences (draft not unlinked, kind_for_draft absent, pin-announce missing, read-view --manage) ties #15 · 3 cross-crate/absent |
+| test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | done (17) · 5 deferred |
+| test_dependency_write_validation.py | 21 | crates/skit-cli/tests/port_test_dependency_write_validation.rs | done (12) · 9 divergence/cross-crate |
 | test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | done (10) · 11 cross-crate/divergence |
-| test_dependency_command_contracts.py | 20 | skit-cli | todo |
-| test_params_model.py | 19 | skit-cli / skit-application | todo |
+| test_dependency_command_contracts.py | 20 | crates/skit-cli/tests/port_test_dependency_command_contracts.rs | done (5) · 15 divergence/cross-crate |
+| test_params_model.py | 19 | crates/skit-domain/tests/port_test_params_model.rs | done (18) · 1 deferred · no gap |
 | test_show.py | 17 | crates/skit-cli/tests/port_test_show.rs | done (16) · 1 deferred |
 | test_add_feedback_contracts.py | 16 | skit-cli | todo |
 | test_edit.py | 14 | crates/skit-cli/tests/port_test_edit.rs | done (3) · 8 ABSENT: reconcile.edit_specs inlined private in cli.rs (MUST-FIX expose) · 3 exit-code divergences |
