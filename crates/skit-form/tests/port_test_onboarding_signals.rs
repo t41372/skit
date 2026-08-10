@@ -71,6 +71,21 @@ fn test_python_augassign_outside_loop_still_demotes() {
 }
 
 #[test]
+fn test_python_annotated_reassignment_inside_loop_demotes() {
+    let plan = onboarding_plan(
+        "python",
+        "COUNT = 0\nfor i in range(3):\n    COUNT: int = i\n",
+    );
+    let count = plan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.declaration.name == "COUNT")
+        .unwrap();
+    assert_eq!(count.demotion, Some(DegradationReason::Accumulator));
+    assert!(!count.selected_by_default());
+}
+
+#[test]
 fn test_python_uses_argv_detected_without_false_positive() {
     assert!(onboarding_plan("python", IMAGE_STITCH).uses_argv);
     assert!(!onboarding_plan("python", "print('no args')\n").uses_argv);
@@ -82,6 +97,14 @@ fn test_python_filename_literal_hint_is_found() {
     assert_eq!(
         onboarding_plan("python", IMAGE_STITCH).filename_literals,
         ["output_long_image.jpg"]
+    );
+}
+
+#[test]
+fn test_filename_hint_scans_past_non_string_call_arguments() {
+    assert_eq!(
+        onboarding_plan("python", "f(1, 'notes.txt')\n").filename_literals,
+        ["notes.txt"]
     );
 }
 
@@ -108,5 +131,44 @@ fn test_filename_hints_dedupe_and_cap_at_three() {
     assert_eq!(
         onboarding_plan("python", source).filename_literals,
         ["a.png", "b.png", "c.png"]
+    );
+}
+
+#[test]
+fn test_shadowed_input_disables_input_candidates_without_aborting_const_analysis() {
+    let source = concat!(
+        "def input(p=''):\n",
+        "    return 'x'\n",
+        "CITY = 'Taipei'\n",
+        "name = input('Name: ')\n",
+    );
+    let plan = onboarding_plan("python", source);
+    assert!(plan.candidates.iter().all(|candidate| {
+        candidate.declaration.binding != skit_domain::parameters::ParameterBinding::Input
+    }));
+    assert_eq!(
+        plan.candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.declaration.binding
+                    == skit_domain::parameters::ParameterBinding::Const
+            })
+            .map(|candidate| candidate.declaration.name.as_str())
+            .collect::<Vec<_>>(),
+        ["CITY"]
+    );
+
+    let control = onboarding_plan("python", "name = input('Name: ')\n");
+    assert_eq!(
+        control
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.declaration.binding
+                    == skit_domain::parameters::ParameterBinding::Input
+            })
+            .map(|candidate| candidate.declaration.name.as_str())
+            .collect::<Vec<_>>(),
+        ["input-1"]
     );
 }
