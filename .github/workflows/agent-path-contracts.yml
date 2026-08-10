@@ -1,0 +1,32 @@
+name: Python path contracts
+
+on:
+  push:
+    branches:
+      - agent/port-python-test-contracts
+
+permissions: {}
+
+concurrency:
+  group: python-path-contracts
+  cancel-in-progress: true
+
+jobs:
+  path-contracts:
+    if: github.ref == 'refs/heads/agent/port-python-test-contracts'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the exact branch head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run the path contracts
+        run: |
+          cargo test --locked -p skit-cli-rs --test port_test_path_type -- --nocapture
+          cargo test --locked -p skit-tui --test port_test_path_type_tui -- --nocapture
+          cargo test --locked -p skit-cli-rs --test python_port_manifest -- --nocapture
