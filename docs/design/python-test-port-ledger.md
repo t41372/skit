@@ -54,9 +54,9 @@ adjudicated · counts are Python `def test_` counts.
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
 | test_js_deps.py | 151 | skit-language / skit-runtime | todo |
 | test_interpreters.py | 74 | skit-language / skit-runtime | todo |
-| test_langs.py | 21 | skit-language | todo |
-| test_kindnames.py | 5 | skit-language / skit-domain | todo |
-| test_tokens.py | 21 | skit-language | todo |
+| test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (11) · 4 divergences (describe-total, params-msg, doctor-uv ×2) · 6 unmappable |
+| test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (3) · 2 divergences (exe/prompt picker labels) |
+| test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
 | test_pep723_split.py | 24 | crates/skit-language/tests/port_test_pep723_split.rs (+ skit-ui re-home) | done (3) · 14 → skit-ui · 7 white-box/CLI |
 | test_metawriter.py | 24 | crates/skit-language/tests/port_test_metawriter.rs | done (29) · float-order gap fixed · 2 white-box |
 | test_template_context_quoting.py | 44 | skit-language | todo |
@@ -69,16 +69,16 @@ adjudicated · counts are Python `def test_` counts.
 | test_path_type.py | 14 | skit-domain / skit-language | todo |
 | test_corpus.py | 11 | skit-language (tests/corpus/) | todo |
 | test_raw.py | 5 | skit-language | todo |
-| test_rewrite.py | 2 | skit-language | todo |
+| test_rewrite.py | 2 | crates/skit-language/tests/port_test_rewrite.rs | done (2) · no gap |
 | test_argv_text.py | 1 | skit-language / skit-runtime | todo |
 
 ### Tier 2 — stateful data boundaries (`skit-store`)
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_store.py | 78 | skit-store | todo |
-| test_store_fix.py | 38 | skit-store | todo |
-| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs | done (13) · temp-leak fixed · 2 gaps flagged · 19 deferred |
+| test_store.py | 78 | crates/skit-store/tests/port_test_store.rs | in progress (34) · S2 corrupt-index backup + A2 read-path self-heal translated (c04395c) · full port ongoing |
+| test_store_fix.py | 38 | crates/skit-store/tests/port_test_store.rs | partial · repair/widening ports landed with A2 · remainder todo |
+| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs | done (16) · temp-leak fixed · A1 retry seam + tests landed · S2/A2 gaps resolved (c04395c) · 16 deferred (crash-injection/Windows) |
 
 ### Tier 3 — flows and runtime (`skit-runtime`, `skit-application`)
 
@@ -227,18 +227,19 @@ surfaced three real concerns:
   temp on any error. Workspace green (130 test binaries), clippy + fmt clean. The
   `..._temp_fsync_failure_still_cleans_up_tmp_file` test stays `#[ignore]` (no public fsync-injection
   seam to force the failure), but the contract now holds.
-- **FLAGGED (needs direction) — no Windows `os.replace` sharing-violation retry (oracle issue #4).**
-  The oracle's `_replace_with_retry` retries a rename that fails with a Windows sharing violation (a
-  concurrent reader holding the target open); Rust calls `fs::rename` once and gives up. Real
-  superset gap, but Windows-only — cannot be validated on this Linux host. `replace_retries_*`,
-  `replace_gives_up_loudly_*` are `#[ignore]`.
-- **FLAGGED (needs direction) — no opportunistic read-path registry self-heal.** The oracle's
-  `skit list` self-heals the registry index opportunistically under a NON-BLOCKING lock
-  (`try_advisory_file_lock`, `store.py:1037`) — "a read that used the blocking variant would freeze
-  TAB completion behind any process on the lock." Rust's read path (`read.rs`) takes no lock and does
-  not self-heal on read; the blocking `registry.native.lock` is mutation-only, and an unlisted dir
-  needs an explicit `doctor --rebuild`. This is an architecture decision (opportunistic self-heal vs
-  explicit rebuild), not just a missing lock variant — surface for the user.
+- **RESOLVED (c04395c) — Windows `os.replace` sharing-violation retry.** `_replace_with_retry` is
+  translated (`fs_ops.rs` `replace_with_retry` + injectable `replace_with_retry_impl`). A Linux test
+  seam drives the retry-count and backoff-sequence contracts, so `replace_retries_*` /
+  `replace_gives_up_loudly_*` are now active passing tests; only the `cfg(windows)` errno mapping
+  stays Windows-CI-deferred.
+- **RESOLVED (c04395c) — opportunistic read-path registry self-heal.** `_repair_rows` +
+  `try_advisory_file_lock` are translated: `FileStore::scan` re-projects a stale row from its meta
+  under a NON-BLOCKING lock (new `try_acquire_lock`), saving only on change, and `resolve` uses the
+  pure `scan_inner` so a name sweep never self-heals (matching the oracle, whose `resolve` never
+  calls `_repair_rows`). This reversed the codex "reads are pure" divergence; the 7 committed
+  `registry_fast_read` tests that asserted it were updated to the oracle contract. The
+  `rust-contract-matrix.md` "reads never migrate" line is rescoped to user data (the registry is the
+  oracle-defined self-heal exception).
 
 Also deferred (`#[ignore]`): crash-injection ordering/swallow tests (no public fsync/rename seam;
 each carries a MUST-VERIFY note pinning the source lines — fsync-before-rename, dir-fsync-after,
@@ -250,6 +251,40 @@ in-process mutex layer, RAII fd cleanup).
 
 Each ported module records, on completion: tests ported, passed, failed→adjudicated (impl fix vs
 architecture difference, with the pinned-oracle evidence), and any `#[ignore]`-UNMAPPED with reason.
+
+### Wave 1 — subagent fan-out (2026-08-10): tokens, rewrite, kindnames, langs
+
+First large-scale fan-out port (tests-only subagents + an adversarial verify agent per module; each
+port re-run and adjudicated against the pinned oracle by the supervisor before commit `729e273`).
+All four subagents relocated off a wrong crate hint by reading the code: tokens→skit-application,
+rewrite→skit-language, kindnames→skit-tui, langs→skit-cli-rs. No weakened assertions; unmappable
+clauses inside real tests are named, not softened.
+
+FIVE open divergence findings — each a FAILING CONTRACT `#[ignore]` keeping its full asserting body,
+to route to an impl fix, then delete the `#[ignore]`:
+
+1. **kindnames — unclassifiable-file picker labels.** `kind_rows` (add.rs:915-920) renders EVERY
+   choice through `kind_label`, so exe→"Program", prompt→"Prompt". The oracle's `kind_choices` gives
+   dedicated wording "A program (run it directly)" / "A prompt for an AI agent" (kindnames.py:50-52),
+   absent from the whole workspace incl. the i18n catalog. Discoverability regression (product rule 3).
+2. **langs — `describe_command` must be total.** Oracle `describe_command` is side-effect-free and
+   total: an unknown kind returns `meta.template` (usually "") and never raises (launcher.py:117-133).
+   Rust `build_launch_preview` returns `Err(UnknownKind)`.
+3. **langs — params read view for an analyzer-less kind.** Oracle prints "`<name> has no managed
+   parameters.`" (cli.py:3934-3943, the analyzer-None branch fires before the ref-mode branch); Rust
+   (cli.rs:4130-4203) prints only "Source management is not available for a reference entry." and
+   drops the plain empty-params line.
+4/5. **langs — doctor exit code for a uv-less pure library.** A library with no python entries runs
+   fine without uv, so oracle `doctor` (and `doctor --json`) exit 0 (uv "not required",
+   healthcheck.py). Rust's `CliHealthInspector` reports `UvHealth::Missing` whenever the uv binary is
+   absent (cli.rs:6372-6375, :4930), so both exit 1 — automation chasing a phantom problem.
+
+The six langs `#[ignore]` stubs are legitimate Python-runtime mechanisms with no Rust analog (lazy
+grammar import via `sys.modules`, `LazyCapabilities`, `LangSpec.without()`, dataclass `compare=False`,
+module-namespace monkeypatch, the `without("cli_reader")` injection seam), and the one tokens ignore
+is a cross-crate (the env/now process-global fallback lives in the skit-cli composition root, covered
+there). MUST-VERIFY later: is there a real Rust kind with an analyzer but no cli_reader that exercises
+the plan-fall-through-to-none path (langs #21), when porting flows/plan_for_entry?
 
 ### test_analyzer.py → port_test_analyzer.rs (done)
 
