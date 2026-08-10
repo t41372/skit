@@ -96,8 +96,8 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (82/58) · 2 weakenings being fixed (whitespace-constraint stored-value, reused-arg markup isolation) |
-| test_prompt_cli.py | 150 | skit-cli | todo |
-| test_prompt_kind.py | 115 | skit-cli / skit-language | todo |
+| test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (57/93) · ~10 prompt-CLI divergences (name keeps .prompt, stdin defaults, {{目标}} undetected #14, deleted-body run exit, runner recovery msgs) + add/run --runner trim INCONSISTENCY · 2 weakenings + 1 mislabel being fixed |
+| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | in fix (65/50) · 4 undisclosed partial ports + gutted 127 stub being fixed |
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | in fix (51/24) · config command lost the human-display layer (sentinels, padded list, choice-naming errors) · 14 cross-crate wizard/first-run · 1 weakening being fixed |
 | test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs | done (17) · 51 cross-crate/absent (interactive add lane) |
 | test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs | done (55) · 8 deferred |
