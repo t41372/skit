@@ -9,6 +9,7 @@ on:
       - crates/skit-cli/tests/port_test_declared_params_cli.rs
       - crates/skit-cli/tests/port_test_declared_params_runtime.rs
       - crates/skit-cli/tests/port_test_declared_warning_codes.rs
+      - crates/skit-cli/tests/port_test_declared_params_manifest.rs
       - crates/skit-cli/tests/port_test_params_edit_bool_pipeline.rs
       - crates/skit-cli/tests/port_test_strength_gate.rs
       - crates/skit-language/tests/port_test_reconcile.rs
@@ -50,6 +51,8 @@ jobs:
           echo "RECONCILE_LANGUAGE_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture
           echo "PARITY_STRENGTH_GATE_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_declared_params_manifest -- --nocapture
+          echo "DECLARED_PARAMS_MANIFEST_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_reconcile_edit -- --nocapture
           echo "RECONCILE_EDIT_ORACLE_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_params_edit_declared -- --nocapture
