@@ -16,279 +16,32 @@ jobs:
     if: github.ref == 'refs/heads/agent/port-python-test-contracts'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Check out the exact branch head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-      - name: Apply the oracle-backed implementation fixes
+          persist-credentials: false
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Compile the registry cache on stable Windows Rust
         run: |
-          cat > /tmp/oracle-fixes.patch <<'PATCH'
-          diff --git a/crates/skit-cli/src/cli.rs b/crates/skit-cli/src/cli.rs
-          index 4138ec3..1068de8 100644
-          --- a/crates/skit-cli/src/cli.rs
-          +++ b/crates/skit-cli/src/cli.rs
-          @@ -4145,6 +4145,9 @@ fn write_params(
-                           .filter(|name| !declared_names.contains(name.as_str()))
-                           .collect::<Vec<_>>()
-                   };
-          +        if declarations.is_empty() {
-          +            humanln!("{} has no managed parameters.", entry.meta.name);
-          +        }
-                   for item in declarations {
-                       humanln!("Parameter: {}", item.name);
-                       humanln!("Type: {}", item.parameter_type.as_str());
-          @@ -6365,13 +6368,21 @@ impl<'a> CliHealthInspector<'a> {
-                       }
-                   }
-                   let probe = SystemProbe;
-          -        let private_uv = managed_uv_path(self.store.data_dir());
-          -        let uv_path = probe
-          -            .find_program("uv")
-          -            .or_else(|| probe.is_executable(&private_uv).then_some(private_uv));
-          -        let uv = match uv_path {
-          -            Some(path) => UvHealth::Found(path.display().to_string()),
-          -            None => UvHealth::Missing,
-          +        let uv_required = entries.is_empty()
-          +            || entries
-          +                .iter()
-          +                .any(|entry| entry.meta.kind.as_str() == "python");
-          +        let uv = if uv_required {
-          +            let private_uv = managed_uv_path(self.store.data_dir());
-          +            let uv_path = probe
-          +                .find_program("uv")
-          +                .or_else(|| probe.is_executable(&private_uv).then_some(private_uv));
-          +            match uv_path {
-          +                Some(path) => UvHealth::Found(path.display().to_string()),
-          +                None => UvHealth::Missing,
-          +            }
-          +        } else {
-          +            UvHealth::NotRequired
-                   };
-                   let config = FileConfigStore::new(self.config_dir);
-                   let mut missing = Vec::new();
-          diff --git a/crates/skit-cli/tests/product_contract.rs b/crates/skit-cli/tests/product_contract.rs
-          index 762f5a9..f360667 100644
-          --- a/crates/skit-cli/tests/product_contract.rs
-          +++ b/crates/skit-cli/tests/product_contract.rs
-          @@ -396,7 +396,7 @@ fn doctor_rebuilds_the_registry_and_reports_all_owned_paths() {
-           }
-           
-           #[test]
-          -fn doctor_keeps_the_v040_fresh_install_uv_check() {
-          +fn doctor_keeps_the_v040_contextual_uv_check() {
-               let empty = Sandbox::new();
-               empty
-                   .command()
-          @@ -413,7 +413,7 @@ fn doctor_keeps_the_v040_fresh_install_uv_check() {
-                   .env("PATH", commands.data.path())
-                   .args(["doctor", "--json"])
-                   .assert()
-          -        .code(1)
-          +        .success()
-                   .stdout(predicate::str::contains("\"uv\":null"));
-           
-               let python = Sandbox::new();
-          diff --git a/crates/skit-i18n/src/lib.rs b/crates/skit-i18n/src/lib.rs
-          index f07b79c..bb718f2 100644
-          --- a/crates/skit-i18n/src/lib.rs
-          +++ b/crates/skit-i18n/src/lib.rs
-          @@ -3055,6 +3055,11 @@ const CATALOG: &[Translation] = &[
-                   "{} 默认已开启，因此它的选项只能再次开启它。请改为声明关闭它的选项（例如 --no-{}），并将默认值设为 false。",
-                   "{} 預設已開啟，因此它的選項只能再次開啟它。請改為宣告關閉它的選項（例如 --no-{}），並將預設值設為 false。",
-               ),
-          +    row!(
-          +        "{} has no managed parameters.",
-          +        "{} 没有受管理的参数。",
-          +        "{} 沒有受管理的參數。",
-          +    ),
-               row!(
-                   "{} manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block.",
-                   "{} 从脚本自身管理参数——请使用 --manage / --unmanage，或直接编辑 [tool.skit] 区块。",
-          diff --git a/crates/skit-store/src/mutations/registry.rs b/crates/skit-store/src/mutations/registry.rs
-          index abae081..5b0ff68 100644
-          --- a/crates/skit-store/src/mutations/registry.rs
-          +++ b/crates/skit-store/src/mutations/registry.rs
-          @@ -254,11 +254,12 @@ fn merge_row(mut existing: Table, replacement: Table) -> Table {
-               existing
-           }
-           
-          -/// Identify one metadata file incarnation with values available from one file-system query.
-          +/// Identify one metadata file incarnation with stable file-system values.
-           ///
-          -/// The file ID rejects replacements. The change time rejects in-place edits that restore the
-          -/// modification time and file size. The registry modification time keeps the Python row stamp
-          -/// coherent. Unix and Windows provide all three values. Other targets do not use the shortcut.
-          +/// Unix file identity and change time reject replacements and in-place edits that restore the
-          +/// modification time and file size. Stable Rust does not expose those values on Windows, so the
-          +/// Windows verifier also checks the metadata content hash. The registry modification time keeps
-          +/// the Python row stamp coherent. Other targets do not use the shortcut.
-           #[derive(Clone, Debug, Eq, PartialEq)]
-           struct MetadataFingerprint {
-               platform: &'static str,
-          @@ -296,18 +297,16 @@ impl MetadataFingerprint {
-                   if !metadata.is_file() {
-                       return None;
-                   }
-          +        let canonical_path = path.canonicalize().ok()?;
-                   Some(Self {
-          -            platform: "windows",
-          -            file_id: format!(
-          -                "{}:{}",
-          -                metadata.volume_serial_number()?,
-          -                metadata.file_index()?
-          -            ),
-          +            platform: "windows-content-v1",
-          +            file_id: canonical_path.to_string_lossy().into_owned(),
-                       file_size: metadata.file_size(),
-                       registry_mtime_ns: timestamp_ns(metadata.modified().ok()?).ok()?,
-          -            // Windows file times count 100-nanosecond intervals.
-          +            // Windows file times count 100-nanosecond intervals. Stable Rust does not expose a
-          +            // change counter, so `CachedProjection::verify` also compares the content hash.
-                       modified_ns: i128::from(metadata.last_write_time()) * 100,
-          -            changed_ns: i128::from(metadata.change_time()) * 100,
-          +            changed_ns: 0,
-                   })
-               }
-           
-          @@ -374,7 +373,7 @@ const fn current_cache_platform() -> &'static str {
-           
-           #[cfg(windows)]
-           const fn current_cache_platform() -> &'static str {
-          -    "windows"
-          +    "windows-content-v1"
-           }
-           
-           fn parse_canonical<T>(value: &str) -> Option<T>
-          @@ -523,9 +522,22 @@ impl CachedProjection {
-                   );
-                   expected == proof.projection_hash
-                       && MetadataFingerprint::read(meta_path).as_ref() == Some(&proof.fingerprint)
-          +            && metadata_hash_matches(meta_path, &proof.metadata_hash)
-               }
-           }
-           
-          +#[cfg(windows)]
-          +fn metadata_hash_matches(path: &Path, expected: &str) -> bool {
-          +    fs::read(path)
-          +        .ok()
-          +        .is_some_and(|bytes| content_hash(&bytes) == expected)
-          +}
-          +
-          +#[cfg(not(windows))]
-          +const fn metadata_hash_matches(_path: &Path, _expected: &str) -> bool {
-          +    true
-          +}
-          +
-           fn legacy_metadata_mtime_ns(path: &Path) -> Option<i64> {
-               let modified = fs::metadata(path).ok()?.modified().ok()?;
-               timestamp_ns(modified).ok()
-          PATCH
-          git apply --check /tmp/oracle-fixes.patch
-          git apply /tmp/oracle-fixes.patch
-      - name: Register the partial Python language module
-        shell: python
+          rustup target add x86_64-pc-windows-gnu
+          cargo check --locked -p skit-store --target x86_64-pc-windows-gnu
+      - name: Run registry cache correctness tests
+        run: cargo test --locked -p skit-store --test registry_fast_read -- --nocapture
+      - name: Run contextual uv and executable parameter ports
+        run: cargo test --locked -p skit-cli-rs --test port_test_langs -- --nocapture
+      - name: Run corrected product and health contracts
         run: |
-          import json
-          from pathlib import Path
-
-          path = Path("docs/design/python-test-port-map.json")
-          port_map = json.loads(path.read_text(encoding="utf-8"))
-          if any(row["source"] == "tests/test_langs.py" for row in port_map["modules"]):
-              raise SystemExit("tests/test_langs.py already exists in the port map")
-          ported = [
-              "test_params_exe_prints_plain_message_without_manage_dead_end",
-              "test_doctor_missing_uv_pure_exe_library_exits_zero",
-              "test_doctor_missing_uv_with_python_entry_exits_one",
-              "test_doctor_json_missing_uv_pure_exe_library_exits_zero",
-          ]
-          deferred = [
-              "test_every_known_kind_resolves_to_a_complete_spec",
-              "test_python_spec_capabilities_and_pinned_store_name",
-              "test_exe_and_command_specs_have_no_analysis_capabilities",
-              "test_resolving_a_spec_does_not_import_a_language_parser",
-              "test_asking_for_a_capability_resolves_it_once",
-              "test_without_drops_exactly_the_named_capabilities",
-              "test_capabilities_do_not_decide_spec_identity",
-              "test_spec_for_unknown_kind_is_none_and_cached",
-              "test_stored_name_unknown_kind_falls_back_to_payload",
-              "test_unknown_kind_build_command_raises_clean_launch_error",
-              "test_unknown_kind_run_entry_raises_before_spawning",
-              "test_unknown_kind_describe_returns_template_and_never_raises",
-              "test_unknown_kind_never_reports_missing",
-              "test_unknown_kind_preflight_still_checks_workdir",
-              "test_unknown_kind_script_path_uses_payload_fallback",
-              "test_launcher_uv_delegates_follow_patches_on_the_canonical_module",
-              "test_plan_without_cli_reader_degrades_to_none_plan",
-          ]
-          row = {
-              "source": "tests/test_langs.py",
-              "status": "partial",
-              "targets": ["crates/skit-cli/tests/port_test_langs.rs"],
-              "ported": ported,
-              "deferred": [
-                  {
-                      "name": name,
-                      "reason": "The Rust owner-level equivalent is not mapped yet; this name remains an explicit gap.",
-                      "planned_targets": [
-                          "crates/skit-domain",
-                          "crates/skit-application",
-                          "crates/skit-language",
-                          "crates/skit-runtime",
-                          "crates/skit-store",
-                          "crates/skit-cli",
-                      ],
-                  }
-                  for name in deferred
-              ],
-          }
-          position = next(
-              index
-              for index, current in enumerate(port_map["modules"])
-              if current["source"] == "tests/test_reconcile.py"
-          )
-          port_map["modules"].insert(position, row)
-          path.write_text(
-              json.dumps(port_map, ensure_ascii=False, indent=2) + "\n",
-              encoding="utf-8",
-          )
-      - name: Format the workspace
-        run: cargo fmt --all
-      - name: Run validations and record every exit code
-        shell: bash
+          cargo test --locked -p skit-cli-rs --test product_contract doctor_keeps_the_v040_contextual_uv_check -- --nocapture
+          cargo test --locked -p skit-cli-rs shared_health_inspector_reports_typed_entry_runner_and_rebuild_facts -- --nocapture
+      - name: Run the argparse contracts
+        run: cargo test --locked -p skit-language --test port_test_argspec -- --nocapture
+      - name: Run the Click and Typer contracts
+        run: cargo test --locked -p skit-language --test port_test_argspec_click_typer -- --nocapture
+      - name: Check i18n and the machine-readable port map
         run: |
-          set +e
-          report=docs/design/python-contract-port-validation.txt
-          : > "$report"
-          run_check() {
-            label="$1"
-            shift
-            printf '\n## %s\n' "$label" | tee -a "$report"
-            "$@" 2>&1 | tee -a "$report"
-            code=${PIPESTATUS[0]}
-            printf 'exit_code=%s\n' "$code" | tee -a "$report"
-          }
-          run_check registry-fast-read cargo test --locked -p skit-store --test registry_fast_read -- --nocapture
-          run_check language-cli-ports cargo test --locked -p skit-cli-rs --test port_test_langs -- --nocapture
-          run_check contextual-product-contract cargo test --locked -p skit-cli-rs --test product_contract doctor_keeps_the_v040_contextual_uv_check -- --nocapture
-          run_check shared-health-unit cargo test --locked -p skit-cli-rs shared_health_inspector_reports_typed_entry_runner_and_rebuild_facts -- --nocapture
-          run_check argparse-ports cargo test --locked -p skit-language --test port_test_argspec -- --nocapture
-          run_check click-typer-ports cargo test --locked -p skit-language --test port_test_argspec_click_typer -- --nocapture
-          run_check i18n-catalog cargo test --locked -p skit-i18n --test catalog -- --nocapture
-          run_check port-manifest cargo test --locked -p skit-cli-rs --test python_port_manifest -- --nocapture
-          cat "$report"
-          exit 0
-      - name: Publish the patch and validation record
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add crates/skit-store/src/mutations/registry.rs
-          git add crates/skit-cli/src/cli.rs
-          git add crates/skit-cli/tests/product_contract.rs
-          git add crates/skit-cli/tests/port_test_langs.rs
-          git add crates/skit-i18n/src/lib.rs
-          git add docs/design/python-test-port-map.json
-          git add docs/design/python-contract-port-validation.txt
-          git commit -m "fix: restore Python language and health contracts"
-          git push origin HEAD:agent/port-python-test-contracts
+          cargo test --locked -p skit-i18n --test catalog -- --nocapture
+          cargo test --locked -p skit-cli-rs --test python_port_manifest -- --nocapture
