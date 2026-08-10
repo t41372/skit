@@ -11,7 +11,7 @@ use skit_application::{EntryPayload, RepositoryError, SourcePermissions};
 use skit_domain::{EntryId, EntryMeta};
 use skit_i18n::Message;
 
-use crate::fs_ops::{preserve_permissions_best_effort, replace_with_retry};
+use crate::fs_ops::preserve_permissions_best_effort;
 
 #[derive(Debug)]
 pub(super) struct FileLock {
@@ -154,23 +154,17 @@ pub(super) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Reposi
         .create_new(true)
         .open(&temp)
         .map_err(|error| io_error("create", &temp, error))?;
-    let write_result = (|| {
-        file.write_all(bytes)
-            .map_err(|error| io_error("write", &temp, error))?;
-        preserve_permissions_best_effort(
-            fs::metadata(path).map(|metadata| metadata.permissions()),
-            |permissions| file.set_permissions(permissions),
-        );
-        file.sync_all()
-            .map_err(|error| io_error("sync", &temp, error))
-    })();
+    file.write_all(bytes)
+        .map_err(|error| io_error("write", &temp, error))?;
+    preserve_permissions_best_effort(
+        fs::metadata(path).map(|metadata| metadata.permissions()),
+        |permissions| file.set_permissions(permissions),
+    );
+    file.sync_all()
+        .map_err(|error| io_error("sync", &temp, error))?;
     drop(file);
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&temp);
-        return Err(error);
-    }
 
-    let result = replace_with_retry(&temp, path).map_err(|error| io_error("replace", path, error));
+    let result = fs::rename(&temp, path).map_err(|error| io_error("replace", path, error));
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     } else {
