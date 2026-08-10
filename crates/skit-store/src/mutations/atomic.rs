@@ -11,7 +11,7 @@ use skit_application::{EntryPayload, RepositoryError, SourcePermissions};
 use skit_domain::{EntryId, EntryMeta};
 use skit_i18n::Message;
 
-use crate::fs_ops::preserve_permissions_best_effort;
+use crate::fs_ops::{preserve_permissions_best_effort, replace_with_retry};
 
 #[derive(Debug)]
 pub(super) struct FileLock {
@@ -164,7 +164,7 @@ pub(super) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Reposi
         .map_err(|error| io_error("sync", &temp, error))?;
     drop(file);
 
-    let result = fs::rename(&temp, path).map_err(|error| io_error("replace", path, error));
+    let result = replace_with_retry(&temp, path).map_err(|error| io_error("replace", path, error));
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     } else {
