@@ -1,0 +1,27 @@
+name: Glob oracle probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/glob-oracle-probe.yml
+      - crates/skit-store/tests/port_test_glob_expansion.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run glob oracle
+        shell: bash
+        run: |
+          set +e
+          cargo test --locked -p skit-store --test port_test_glob_expansion -- --nocapture
+          rc=$?
+          echo "GLOB_ORACLE_RC=$rc"
+          exit 0
