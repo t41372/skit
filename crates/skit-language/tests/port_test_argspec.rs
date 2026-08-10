@@ -256,10 +256,7 @@ fn test_loop_generated_arguments_degrade_whole_spec() {
     ))
     .unwrap();
     assert!(!spec.ok);
-    assert_eq!(
-        spec.reason,
-        Some(DegradationReason::DynamicDeclaration)
-    );
+    assert_eq!(spec.reason, Some(DegradationReason::DynamicDeclaration));
 }
 
 #[test]
@@ -382,7 +379,10 @@ fn test_field_order_matches_source_order() {
     let spec = read_argparse(STITCH).unwrap();
     // Declaration order is carried by list position now (no per-field order attribute):
     // the eight add_argument calls come back as eight fields, indexed in source order.
-    assert_eq!((0..spec.fields.len()).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>());
+    assert_eq!(
+        (0..spec.fields.len()).collect::<Vec<_>>(),
+        (0..8).collect::<Vec<_>>()
+    );
 }
 
 #[test]

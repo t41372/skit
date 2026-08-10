@@ -139,10 +139,9 @@ fn test_click_is_flag_choice_int_and_required() {
 
 #[test]
 fn test_click_plain_argument_is_required() {
-    let spec = read_cli(
-        "import click\n@click.command()\n@click.argument('name')\ndef m(name): pass\n",
-    )
-    .unwrap();
+    let spec =
+        read_cli("import click\n@click.command()\n@click.argument('name')\ndef m(name): pass\n")
+            .unwrap();
     assert!(spec.fields[0].required);
 }
 
@@ -198,8 +197,8 @@ fn test_typer_signature_order_and_kinds() {
 
 #[test]
 fn test_typer_run_pattern_reads_the_function() {
-    let spec = read_cli("import typer\n\ndef main(n: int = 3):\n    pass\n\ntyper.run(main)\n")
-        .unwrap();
+    let spec =
+        read_cli("import typer\n\ndef main(n: int = 3):\n    pass\n\ntyper.run(main)\n").unwrap();
     assert_eq!(spec.fields[0].name, "n");
     assert_eq!(spec.fields[0].parameter_type, ParameterType::Int);
     assert_eq!(spec.fields[0].default, Some(ParameterValue::Integer(3)));
@@ -207,10 +206,9 @@ fn test_typer_run_pattern_reads_the_function() {
 
 #[test]
 fn test_typer_bool_default_true_degrades_not_guesses() {
-    let spec = read_cli(
-        "import typer\n\ndef main(color: bool = True):\n    pass\n\ntyper.run(main)\n",
-    )
-    .unwrap();
+    let spec =
+        read_cli("import typer\n\ndef main(color: bool = True):\n    pass\n\ntyper.run(main)\n")
+            .unwrap();
     let field = &spec.fields[0];
     assert!(field.degraded); // --color/--no-color pairing can't be assembled faithfully
     assert!(field.action.is_empty());
@@ -218,10 +216,9 @@ fn test_typer_bool_default_true_degrades_not_guesses() {
 
 #[test]
 fn test_typer_underscored_param_gets_kebab_flag() {
-    let spec = read_cli(
-        "import typer\n\ndef main(max_size: int = 1):\n    pass\n\ntyper.run(main)\n",
-    )
-    .unwrap();
+    let spec =
+        read_cli("import typer\n\ndef main(max_size: int = 1):\n    pass\n\ntyper.run(main)\n")
+            .unwrap();
     assert_eq!(spec.fields[0].flag, "--max-size");
 }
 
@@ -407,8 +404,8 @@ fn test_typer_unannotated_param_is_plain_text_not_degraded() {
 
 #[test]
 fn test_typer_unmodelable_annotation_degrades() {
-    let spec = read_cli("import typer\n\ndef main(xs: list = None): pass\n\ntyper.run(main)\n")
-        .unwrap();
+    let spec =
+        read_cli("import typer\n\ndef main(xs: list = None): pass\n\ntyper.run(main)\n").unwrap();
     assert!(spec.fields[0].degraded);
 }
 
@@ -427,10 +424,8 @@ fn test_typer_option_none_default_is_clean() {
 
 #[test]
 fn test_typer_secret_param_name_precheck() {
-    let spec = read_cli(
-        "import typer\n\ndef main(api_token: str = ''): pass\n\ntyper.run(main)\n",
-    )
-    .unwrap();
+    let spec = read_cli("import typer\n\ndef main(api_token: str = ''): pass\n\ntyper.run(main)\n")
+        .unwrap();
     assert!(spec.fields[0].secret);
 }
 
@@ -438,9 +433,7 @@ fn test_typer_secret_param_name_precheck() {
 fn test_decorator_name_unnameable_callable_is_empty() {
     // Python checks `_decorator_name((f())()) == ""`: the callee is itself a Call.
     // The public Rust consequence is that this decorator does not make a Click command.
-    assert!(
-        read_cli("import click\n@(command())()\ndef main(): pass\n").is_none()
-    );
+    assert!(read_cli("import click\n@(command())()\ndef main(): pass\n").is_none());
 }
 
 #[test]
@@ -463,10 +456,9 @@ fn test_click_is_flag_defaulting_on_degrades_not_guesses() {
 fn test_click_dotted_only_import_counts() {
     // `import click.testing` (no plain `import click`) binds the click name at runtime;
     // the import guard must dot-split module paths on BOTH import forms.
-    let spec = read_cli(
-        "import click.testing\n@click.command()\n@click.option('--x')\ndef m(x): pass\n",
-    )
-    .unwrap();
+    let spec =
+        read_cli("import click.testing\n@click.command()\n@click.option('--x')\ndef m(x): pass\n")
+            .unwrap();
     assert_eq!(names(&spec), ["x"]);
 }
 
@@ -482,10 +474,9 @@ fn test_click_from_dotted_module_counts() {
 
 #[test]
 fn test_typer_dotted_only_import_counts() {
-    let spec = read_cli(
-        "import typer.main\n\ndef main(n: int = 1):\n    pass\n\ntyper.run(main)\n",
-    )
-    .unwrap();
+    let spec =
+        read_cli("import typer.main\n\ndef main(n: int = 1):\n    pass\n\ntyper.run(main)\n")
+            .unwrap();
     assert_eq!(names(&spec), ["n"]);
 }
 
@@ -562,10 +553,9 @@ fn test_click_short_first_declaration_still_prefers_long_flag() {
 
 #[test]
 fn test_click_dest_strips_dashes_not_letters() {
-    let spec = read_cli(
-        "import click\n@click.command()\n@click.option('--Xray')\ndef m(xray): pass\n",
-    )
-    .unwrap();
+    let spec =
+        read_cli("import click\n@click.command()\n@click.option('--Xray')\ndef m(xray): pass\n")
+            .unwrap();
     assert_eq!(spec.fields[0].name, "Xray");
 }
 
@@ -624,7 +614,11 @@ fn test_click_path_and_file_types() {
             .iter()
             .map(|field| field.parameter_type)
             .collect::<Vec<_>>(),
-        [ParameterType::Path, ParameterType::Path, ParameterType::Path]
+        [
+            ParameterType::Path,
+            ParameterType::Path,
+            ParameterType::Path
+        ]
     );
     assert!(spec.fields.iter().all(|field| !field.degraded));
 }
@@ -697,10 +691,9 @@ fn test_typer_option_computed_first_arg_degrades() {
 
 #[test]
 fn test_typer_bool_true_degrade_renders_as_text() {
-    let spec = read_cli(
-        "import typer\n\ndef main(color: bool = True):\n    pass\n\ntyper.run(main)\n",
-    )
-    .unwrap();
+    let spec =
+        read_cli("import typer\n\ndef main(color: bool = True):\n    pass\n\ntyper.run(main)\n")
+            .unwrap();
     let field = &spec.fields[0];
     assert!(field.degraded);
     assert_eq!(field.parameter_type, ParameterType::Str); // the degrade path pins the free-text kind exactly
@@ -708,10 +701,9 @@ fn test_typer_bool_true_degrade_renders_as_text() {
 
 #[test]
 fn test_typer_bool_false_flag_contract_exact() {
-    let spec = read_cli(
-        "import typer\n\ndef main(fast: bool = False):\n    pass\n\ntyper.run(main)\n",
-    )
-    .unwrap();
+    let spec =
+        read_cli("import typer\n\ndef main(fast: bool = False):\n    pass\n\ntyper.run(main)\n")
+            .unwrap();
     let field = &spec.fields[0];
     assert_eq!(field.parameter_type, ParameterType::Bool);
     assert_eq!(field.action, "store_true");
@@ -734,10 +726,9 @@ fn test_click_non_literal_choice_list_degrades() {
 fn test_typer_unmodelable_annotation_degrades_despite_literal_default() {
     // The annotation-driven degrade must hold on its own — a clean literal default
     // (which does NOT degrade) must not mask it.
-    let spec = read_cli(
-        "import typer\n\ndef main(mode: dict = 'x'):\n    pass\n\ntyper.run(main)\n",
-    )
-    .unwrap();
+    let spec =
+        read_cli("import typer\n\ndef main(mode: dict = 'x'):\n    pass\n\ntyper.run(main)\n")
+            .unwrap();
     assert!(spec.fields[0].degraded);
 }
 
