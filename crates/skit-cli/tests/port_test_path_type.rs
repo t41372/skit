@@ -212,13 +212,8 @@ fn test_resync_preserves_declared_path() {
     sandbox.ok(&["add", &source, "--name", "Path resync", "--no-input"]);
     sandbox.ok(&["params", "path-resync", "--resync"]);
 
-    let stored = fs::read_to_string(
-        sandbox
-            .data
-            .path()
-            .join("scripts/path-resync/script.py"),
-    )
-    .unwrap();
+    let stored =
+        fs::read_to_string(sandbox.data.path().join("scripts/path-resync/script.py")).unwrap();
     let declarations = managed_params("python", &stored);
     assert_eq!(declarations.len(), 1);
     assert_eq!(declarations[0].parameter_type, ParameterType::Path);
@@ -247,8 +242,8 @@ fn test_resync_still_corrects_real_type_drift() {
     sandbox.ok(&["add", &source, "--name", "Path drift", "--no-input"]);
     sandbox.ok(&["params", "path-drift", "--resync"]);
 
-    let stored = fs::read_to_string(sandbox.data.path().join("scripts/path-drift/script.py"))
-        .unwrap();
+    let stored =
+        fs::read_to_string(sandbox.data.path().join("scripts/path-drift/script.py")).unwrap();
     let declarations = managed_params("python", &stored);
     assert_eq!(declarations.len(), 1);
     assert_eq!(declarations[0].parameter_type, ParameterType::Int);
@@ -336,7 +331,5 @@ fn test_validate_value_path_is_free_text() {
         parameter_type: ParameterType::Path,
         ..ParamDecl::new("src")
     };
-    assert!(
-        validate_form_value(&declaration, "./definitely/not/created/yet.csv").is_ok()
-    );
+    assert!(validate_form_value(&declaration, "./definitely/not/created/yet.csv").is_ok());
 }
