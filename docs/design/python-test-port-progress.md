@@ -22,3 +22,18 @@ definitions, 72 mutation modules with 1,010 definitions, and 19 coverage modules
 definitions. The machine gate rejects incomplete `done` rows, unnamed partial gaps, ignored ports,
 unmapped `port_test_*.rs` files, duplicate physical targets, and target files that contain tests not
 claimed by the port map.
+
+## Execution evidence
+
+The first independent execution on GitHub Actions completed formatting and all targeted test
+binaries before the publishing step:
+
+- `port_test_tokens`: 20 passed, 0 failed, 0 ignored;
+- `port_test_reconcile`: 14 passed, 0 failed, 0 ignored;
+- `port_test_tokens_ambient`: 1 passed, 0 failed, 0 ignored;
+- `port_test_hermeticity`: 1 passed, 0 failed, 0 ignored;
+- `python_port_manifest`: 1 passed, 0 failed, 0 ignored.
+
+The original publishing step rejected two additional files changed by workspace-wide `rustfmt`.
+Those files are existing analyzer ports, not behavior changes. They are included explicitly in the
+final formatting commit rather than silently broadening the generated-file allowlist.
