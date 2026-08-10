@@ -5677,13 +5677,13 @@ fn tui_add_effect(
                 }
                 let Ok(slug) = Slug::parse(raw_slug) else {
                     return Ok(UiAction::Complete {
-                        scan: None,
+                        surface: None,
                         rerunnable: None,
                         message,
                     });
                 };
-                let scan = match service.list() {
-                    Ok(scan) => scan,
+                let surface = match skit_store::library_surface(store, state_dir, config_dir) {
+                    Ok(surface) => surface,
                     Err(error) => {
                         message.push('\n');
                         message.push_str(&format_text(
@@ -5692,15 +5692,15 @@ fn tui_add_effect(
                             &[&error.message().localize(locale)],
                         ));
                         return Ok(UiAction::Complete {
-                            scan: None,
+                            surface: None,
                             rerunnable: None,
                             message,
                         });
                     }
                 };
-                let rerunnable = tui_rerunnable(&scan, state_dir);
+                let rerunnable = tui_rerunnable(&surface.scan, state_dir);
                 return Ok(UiAction::AddCompleted {
-                    scan,
+                    surface,
                     rerunnable,
                     slug,
                     message,
@@ -7357,10 +7357,14 @@ fn tui_complete(
     state_dir: &Path,
     message: &str,
 ) -> Result<UiAction, CliError> {
-    let scan = service.list()?;
-    let rerunnable = tui_rerunnable(&scan, state_dir);
+    // The same projection the screen opened with. Handing back the entry list alone leaves the
+    // detail pane with no facts for anything a mutation touched — a freshly added entry showed its
+    // name, kind and description and nothing else.
+    let config_dir = resolve_config_dir()?;
+    let surface = skit_store::library_surface(service.repository(), state_dir, &config_dir)?;
+    let rerunnable = tui_rerunnable(&surface.scan, state_dir);
     Ok(UiAction::Complete {
-        scan: Some(scan),
+        surface: Some(surface),
         rerunnable: Some(rerunnable),
         message: message.to_owned(),
     })

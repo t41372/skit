@@ -1559,8 +1559,8 @@ pub enum Action {
     Present(Screen),
     /// Finish an add transaction and select the created entry after its authoritative reload.
     AddCompleted {
-        /// New library state after the atomic create.
-        scan: LibraryScan,
+        /// New library surface after the atomic create, detail facts included.
+        surface: LibrarySurface,
         /// Refreshed entry identities that have a recorded launch to repeat.
         rerunnable: Vec<Slug>,
         /// Created entry identity to select when it survives the active filter.
@@ -1570,10 +1570,13 @@ pub enum Action {
     },
     /// Finish an add workflow without creating an entry.
     AddCancelled,
-    /// Finish a host operation and optionally replace the library scan.
+    /// Finish a host operation and optionally replace the whole library surface.
+    ///
+    /// The surface, never the scan alone: the detail pane's facts are projected beside the entry
+    /// list, and an entry that arrives without them draws a pane with its name and nothing else.
     Complete {
         /// New library state after a mutation.
-        scan: Option<LibraryScan>,
+        surface: Option<LibrarySurface>,
         /// Refreshed entry identities that have a recorded launch to repeat.
         rerunnable: Option<Vec<Slug>>,
         /// User-visible completion message.
@@ -2308,13 +2311,14 @@ impl LibraryState {
                 self.modal = None;
             }
             Action::AddCompleted {
-                scan,
+                surface,
                 rerunnable,
                 slug,
                 message,
             } => {
-                self.entries = scan.entries;
-                self.diagnostics = scan.diagnostics;
+                // The created entry needs its detail facts here or its pane opens empty — and this
+                // is the one entry the user is looking at, because the add selects it.
+                self.replace_surface(surface);
                 self.rerunnable = rerunnable.into_iter().collect();
                 self.recompute_visible(Some(&slug));
                 self.status = Some(message);
@@ -2328,14 +2332,17 @@ impl LibraryState {
                 self.input_mode = InputMode::Browse;
             }
             Action::Complete {
-                scan,
+                surface,
                 rerunnable,
                 message,
             } => {
-                if let Some(scan) = scan {
+                // The whole surface, not the entry list alone. The detail pane's facts live beside
+                // the scan, and an entry that arrives without them shows a pane with its name and
+                // nothing else — which is what a freshly added entry did, because it had no row in
+                // the map and nothing put one there.
+                if let Some(surface) = surface {
                     let selected = self.selected_slug().cloned();
-                    self.entries = scan.entries;
-                    self.diagnostics = scan.diagnostics;
+                    self.replace_surface(surface);
                     self.recompute_visible(selected.as_ref());
                 }
                 if let Some(rerunnable) = rerunnable {

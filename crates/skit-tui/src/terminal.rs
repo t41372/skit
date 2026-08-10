@@ -452,7 +452,7 @@ mod tests {
         let mut state = LibraryState::default();
         let mut host = move |_effect| -> Result<Action, HostError> {
             Ok(Action::AddCompleted {
-                scan: skit_application::LibraryScan::default(),
+                surface: skit_application::library_detail::LibrarySurface::default(),
                 rerunnable: Vec::new(),
                 slug: completed.clone(),
                 message: "Added".to_owned(),

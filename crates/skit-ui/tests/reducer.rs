@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use skit_application::library_detail::LibrarySurface;
 use skit_application::preferences::{
     AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
     PreferencesSnapshot,
@@ -133,12 +134,15 @@ fn an_added_slug_is_selected_after_the_authoritative_reload() {
 
     assert_eq!(
         state.update(Action::AddCompleted {
-            scan: LibraryScan {
-                entries: vec![
-                    entry("alpha", "Alpha", "old"),
-                    entry("new-tool", "New Tool", "new"),
-                ],
-                diagnostics: Vec::new(),
+            surface: LibrarySurface {
+                scan: LibraryScan {
+                    entries: vec![
+                        entry("alpha", "Alpha", "old"),
+                        entry("new-tool", "New Tool", "new"),
+                    ],
+                    diagnostics: Vec::new(),
+                },
+                details: BTreeMap::new(),
             },
             rerunnable: vec![added.clone()],
             slug: added,
@@ -615,9 +619,12 @@ fn host_completion_returns_to_the_library_and_can_replace_the_scan() {
         submit_label: "Save".to_owned(),
     })));
     state.update(Action::Complete {
-        scan: Some(LibraryScan {
-            entries: vec![entry("renamed", "Renamed", "done")],
-            diagnostics: vec![],
+        surface: Some(LibrarySurface {
+            scan: LibraryScan {
+                entries: vec![entry("renamed", "Renamed", "done")],
+                diagnostics: vec![],
+            },
+            details: BTreeMap::new(),
         }),
         rerunnable: Some(vec![Slug::parse("renamed").unwrap()]),
         message: "Saved".to_owned(),
@@ -631,9 +638,12 @@ fn host_completion_returns_to_the_library_and_can_replace_the_scan() {
 #[test]
 fn public_ui_contract_round_trips_through_json_for_a_future_tauri_adapter() {
     let action = Action::Complete {
-        scan: Some(LibraryScan {
-            entries: vec![entry("delta", "Delta", "new")],
-            diagnostics: vec![],
+        surface: Some(LibrarySurface {
+            scan: LibraryScan {
+                entries: vec![entry("delta", "Delta", "new")],
+                diagnostics: vec![],
+            },
+            details: BTreeMap::new(),
         }),
         rerunnable: Some(vec![Slug::parse("delta").unwrap()]),
         message: "Saved".to_owned(),

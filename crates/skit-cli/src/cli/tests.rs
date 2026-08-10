@@ -4683,6 +4683,69 @@ fn a_source_that_moves_between_open_and_save_cannot_change_which_rows_persist() 
     );
 }
 
+/// A completed host operation hands back the whole surface, so the detail pane keeps its facts.
+///
+/// The pane's parameters and run status are projected beside the entry list, and a mutation used to
+/// return the list alone. The entry a person is looking at right after an add is the one that had
+/// no row in the detail map at all, so its pane showed a name, a kind and a description and stopped
+/// — which is what the recorded frame caught. Neither the projection nor the drawing was missing;
+/// the refresh path dropped the facts between them.
+#[test]
+fn a_completed_operation_keeps_the_detail_facts_the_pane_draws() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("banner.py");
+    fs::write(&source, "MESSAGE = \"Hello from skit\"\nprint(MESSAGE)\n").unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    add_with_config(
+        &service,
+        &config_dir,
+        AddOptions {
+            source: Some(source),
+            name: Some("banner".to_owned()),
+            description: Some(String::new()),
+            ..add_options()
+        },
+    )
+    .unwrap();
+    // Manage the constant so the pane has a parameter to report.
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "banner",
+        &[("source:manage", "MESSAGE")],
+    );
+    tui_submit_settings(&service, &store, &state_dir, "banner", &values).unwrap();
+
+    let UiAction::Complete { surface, .. } =
+        tui_complete(&service, &state_dir, "Settings saved").unwrap()
+    else {
+        panic!("a completed operation must replace the library surface");
+    };
+    let surface = surface.expect("the surface must travel");
+    let slug = Slug::parse("banner").unwrap();
+    let detail = surface
+        .details
+        .get(&slug)
+        .expect("the refreshed surface must carry the entry's detail facts");
+    assert!(
+        detail
+            .parameters
+            .iter()
+            .any(|parameter| parameter.key == "MESSAGE"),
+        "the detail pane lost its parameters: {:?}",
+        detail.parameters
+    );
+    assert!(
+        detail.last_run.is_none(),
+        "a never-run entry reports no run, which is what draws `Not run yet`"
+    );
+}
+
 /// `skit add <path>` from a terminal reviews before it writes.
 ///
 /// This is version 0.4's common path — its own tape says so
