@@ -1,7 +1,7 @@
 //! Executable higher-layer ports of the Python v0.4 `tests/test_reconcile.py` contracts that do
 //! not belong in `skit-language` itself.
 //!
-//! These are deliberately end-to-end CLI/storage assertions. The Python suite is the oracle:
+//! These are deliberately end-to-end CLI/storage assertions.  The Python suite is the oracle:
 //! a red test here is a parity finding, never a reason to weaken the assertion or patch product
 //! code in this branch.
 
@@ -9,6 +9,8 @@ use std::{collections::BTreeSet, fs, path::PathBuf};
 
 use assert_cmd::Command;
 use serde_json::Value;
+use skit_application::LibraryService;
+use skit_store::FileStore;
 use tempfile::TempDir;
 
 struct Sandbox {
@@ -72,6 +74,17 @@ impl Sandbox {
 
     fn stored(&self, slug: &str) -> PathBuf {
         self.data.path().join("scripts").join(slug).join("script.py")
+    }
+
+    fn commit_source_edit(&self, slug: &str, edit: impl FnOnce(String) -> String) {
+        let service = LibraryService::new(FileStore::new(self.data.path()));
+        let entry = service.show(slug).unwrap();
+        let held = service.claim_identity(&entry).unwrap();
+        let current = fs::read_to_string(self.stored(slug)).unwrap();
+        let updated = edit(current);
+        service
+            .commit_copy_edit(&held, updated.as_bytes(), &held.meta.source_hash)
+            .unwrap();
     }
 
     fn output(&self, args: &[&str]) -> std::process::Output {
@@ -156,15 +169,18 @@ fn duplicate_managed_source(include_x_body: bool) -> String {
 #[test]
 fn test_drift_lines_mention_rebind() {
     let sandbox = Sandbox::new();
-    let stored = sandbox.add_python(
+    sandbox.add_python(
         "myscript",
         "value = input(\"Old label: \")\nprint(value)\n",
     );
     manage(&sandbox, "myscript", &["input-1"]);
-    let edited = fs::read_to_string(&stored)
-        .unwrap()
-        .replace("Old label: ", "New label: ");
-    fs::write(&stored, edited).unwrap();
+    sandbox.ok(&[
+        "params",
+        "myscript",
+        "--prompt",
+        "input-1=Old label: ",
+    ]);
+    sandbox.commit_source_edit("myscript", |text| text.replace("Old label: ", "New label: "));
 
     let output = sandbox.ok(&["show", "myscript"]);
     let human = String::from_utf8(output.stdout).unwrap();
@@ -175,15 +191,18 @@ fn test_drift_lines_mention_rebind() {
 #[test]
 fn test_resync_reanchors_rebound_input_order_and_prompt() {
     let sandbox = Sandbox::new();
-    let stored = sandbox.add_python(
+    sandbox.add_python(
         "myscript",
         "value = input(\"Old label: \")\nprint(value)\n",
     );
     manage(&sandbox, "myscript", &["input-1"]);
-    let edited = fs::read_to_string(&stored)
-        .unwrap()
-        .replace("Old label: ", "New label: ");
-    fs::write(&stored, edited).unwrap();
+    sandbox.ok(&[
+        "params",
+        "myscript",
+        "--prompt",
+        "input-1=Old label: ",
+    ]);
+    sandbox.commit_source_edit("myscript", |text| text.replace("Old label: ", "New label: "));
 
     let output = sandbox.ok(&["params", "myscript", "--resync"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -229,10 +248,7 @@ fn test_drift_lines_mention_old_and_new_type() {
         "  RETRIES: type changed from int to str in the source (still injected — double-check the value)",
         "To refresh the definitions, run: skit params myscript --resync",
     ] {
-        assert!(
-            human.lines().any(|actual| actual == line),
-            "missing {line:?} in:\n{human}"
-        );
+        assert!(human.lines().any(|actual| actual == line), "missing {line:?} in:\n{human}");
     }
 }
 
@@ -286,7 +302,7 @@ fn test_edit_specs_not_managed_in_prompts_warning() {
 #[test]
 fn test_resync_on_unparseable_script_leaves_definitions_untouched() {
     let sandbox = Sandbox::new();
-    let stored = sandbox.add_python(
+    sandbox.add_python(
         "managed",
         concat!(
             "API_KEY = \"x\"\n",
@@ -305,10 +321,9 @@ fn test_resync_on_unparseable_script_leaves_definitions_untouched() {
     assert_eq!(parameter_names(&before), ["API_KEY", "RETRIES", "input-1"]);
     assert_eq!(parameter(&before, "API_KEY")["secret"], true);
 
-    let broken = fs::read_to_string(&stored)
-        .unwrap()
-        .replace("RETRIES = 3", "RETRIES = (3");
-    fs::write(&stored, broken).unwrap();
+    sandbox.commit_source_edit("managed", |text| {
+        text.replace("RETRIES = 3", "RETRIES = (3")
+    });
 
     let output = sandbox.ok(&["params", "managed", "--resync"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -323,12 +338,11 @@ fn test_resync_on_unparseable_script_leaves_definitions_untouched() {
 #[test]
 fn test_resync_syntax_error_does_not_also_apply_other_edits_incorrectly() {
     let sandbox = Sandbox::new();
-    let stored = sandbox.add_python("managed", "CITY = \"Taipei\"\nY = 5\nprint(CITY, Y)\n");
+    sandbox.add_python("managed", "CITY = \"Taipei\"\nY = 5\nprint(CITY, Y)\n");
     manage(&sandbox, "managed", &["CITY", "Y"]);
-    let broken = fs::read_to_string(&stored)
-        .unwrap()
-        .replace("CITY = \"Taipei\"", "def broken(:");
-    fs::write(&stored, broken).unwrap();
+    sandbox.commit_source_edit("managed", |text| {
+        text.replace("CITY = \"Taipei\"", "def broken(:")
+    });
 
     let output = sandbox.ok(&["params", "managed", "--resync", "--unmanage", "Y"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -341,12 +355,11 @@ fn test_resync_syntax_error_does_not_also_apply_other_edits_incorrectly() {
 #[test]
 fn test_render_warning_resync_skipped() {
     let sandbox = Sandbox::new();
-    let stored = sandbox.add_python("managed", "CITY = \"Taipei\"\nprint(CITY)\n");
+    sandbox.add_python("managed", "CITY = \"Taipei\"\nprint(CITY)\n");
     manage(&sandbox, "managed", &["CITY"]);
-    let broken = fs::read_to_string(&stored)
-        .unwrap()
-        .replace("CITY = \"Taipei\"", "def broken(:");
-    fs::write(&stored, broken).unwrap();
+    sandbox.commit_source_edit("managed", |text| {
+        text.replace("CITY = \"Taipei\"", "def broken(:")
+    });
 
     let output = sandbox.ok(&["params", "managed", "--resync"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -397,9 +410,7 @@ fn test_edit_specs_dedups_duplicate_names_even_when_untouched() {
     let document = sandbox.json(&["params", "duplicate", "--json"]);
     assert_eq!(parameter_names(&document), ["X", "Y"]);
     assert_eq!(parameter(&document, "Y")["secret"], true);
-    let names = parameter_names(&document)
-        .into_iter()
-        .collect::<BTreeSet<_>>();
+    let names = parameter_names(&document).into_iter().collect::<BTreeSet<_>>();
     assert_eq!(names, BTreeSet::from(["X".to_owned(), "Y".to_owned()]));
 }
 
@@ -422,7 +433,11 @@ fn test_no_secret_also_clears_the_env_source() {
 
     sandbox.ok(&["params", "managed", "--no-secret", "API"]);
     let after = sandbox.json(&["params", "managed", "--json"]);
-    assert_eq!(parameter(&after, "API")["secret"], false);
+    assert!(
+        !parameter(&after, "API")["secret"].as_bool().unwrap_or(false),
+        "a public row must not remain secret: {}",
+        parameter(&after, "API")
+    );
     assert_eq!(parameter(&after, "API")["env_source"], "");
     let text = fs::read_to_string(&stored).unwrap();
     assert!(!text.contains("env_source ="), "{text}");
