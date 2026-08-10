@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "oracle_commit": "206f9ef946fc45835cb2479593794431f2620c32",
+  "modules": [
+    {
+      "source": "tests/test_source_default_semantics.py",
+      "status": "partial",
+      "targets": [
+        "crates/skit-form/tests/port_test_source_default_semantics.rs",
+        "crates/skit-language/tests/port_test_source_default_semantics.rs",
+        "crates/skit-application/tests/port_test_source_default_semantics.rs",
+        "crates/skit-cli/tests/port_test_source_default_semantics.rs"
+      ],
+      "ported": [
+        "test_plan_refreshes_a_stale_block_default_from_the_python_body",
+        "test_plan_refreshes_a_stale_shell_envdefault_from_the_body",
+        "test_reconcile_records_current_default_for_an_ok_const",
+        "test_reconcile_records_current_default_for_an_ok_envdefault",
+        "test_reconcile_omits_current_default_for_a_type_changed_const",
+        "test_resync_writes_source_default_into_ok_and_type_changed_specs",
+        "test_assemble_injects_a_value_that_equals_the_source_default",
+        "test_assemble_injects_the_expansion_of_an_untouched_token_default",
+        "test_assemble_inject_delivers_empty_string_when_cleared",
+        "test_assemble_env_delivers_empty_string_when_cleared",
+        "test_assemble_flag_delivers_empty_string_when_cleared",
+        "test_delivers_empty_matrix",
+        "test_last_used_drops_values_equal_to_their_default",
+        "test_last_used_keeps_a_cleared_empty_only_where_it_was_delivered",
+        "test_save_after_run_persists_via_the_remembered_rule",
+        "test_input_binding_flag_reflects_the_decl_binding"
+      ],
+      "deferred": [
+        {
+          "name": "test_resync_current_default_and_rebind_updates_do_not_overlap",
+          "reason": "The Rust resync transaction has no typed result surface for the Python warning contract yet. This remains a named CLI/application gap instead of an ignored test."
+        },
+        {
+          "name": "test_reconcile_ok_const_without_a_default_does_not_raise",
+          "reason": "The Python oracle injects a synthetic candidate with default=None. The Rust integration API only exposes parser-produced candidates; this needs an owner-level semantic unit seam, not a fake public production API."
+        },
+        {
+          "name": "test_reconcile_ok_envdefault_without_a_default_does_not_raise",
+          "reason": "The Python oracle injects a synthetic env-default candidate with default=None. The Rust integration API only exposes parser-produced candidates; this needs an owner-level semantic unit seam."
+        }
+      ]
+    }
+  ]
+}
