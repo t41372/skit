@@ -6,6 +6,8 @@ on:
       - .github/workflows/reconcile-edit-oracle-probe.yml
       - crates/skit-cli/tests/port_test_reconcile_edit.rs
       - crates/skit-cli/tests/port_test_params_edit_declared.rs
+      - crates/skit-cli/tests/port_test_declared_params_cli.rs
+      - crates/skit-cli/tests/port_test_params_edit_bool_pipeline.rs
       - crates/skit-cli/tests/port_test_strength_gate.rs
       - crates/skit-language/tests/port_test_reconcile.rs
 
@@ -32,4 +34,8 @@ jobs:
           echo "RECONCILE_EDIT_ORACLE_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_params_edit_declared -- --nocapture
           echo "PARAMS_EDIT_DECLARED_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_declared_params_cli -- --nocapture
+          echo "DECLARED_PARAMS_CLI_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_params_edit_bool_pipeline -- --nocapture
+          echo "PARAMS_EDIT_BOOL_PIPELINE_RC=$?"
           exit 0
