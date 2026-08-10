@@ -46,7 +46,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_callmatch.py | 9 | crates/skit-language/tests/port_test_callmatch.rs | done |
 | test_reconcile.py | 27 | crates/skit-language/tests/port_test_reconcile.rs | done (14) · 13 → Tier 4/5 |
 | test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (83) · 3 white-box, 6 → Tier 4 |
-| test_shell_inject.py | 87 | skit-language | todo |
+| test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs | done (53) · 34 → Tier 3/4 |
 | test_shell_getopts.py | 11 | skit-language | todo |
 | test_fish.py | 64 | skit-language | todo |
 | test_powershell.py | 35 | skit-language | todo |
@@ -233,3 +233,23 @@ Bucket 2 (white-box Python parser internals): 1 ported via its public candidate 
 read-enumeration cross-check, and registry dynamic-import degradation — no Rust equivalent, analyzers
 are statically linked). Bucket 3 (CLI integration, 6): `params manage`/`params show`/`params resync`,
 `flows.plan_for_entry` degradation, and `drift_lines` rendering — deferred to Tier 4 (skit-cli).
+
+### test_shell_inject.py → port_test_shell_inject.rs (53 done · 34 deferred)
+
+87 ported / 53 passed / 0 failed / 34 `#[ignore]`. No injector gap: the Rust injector matches the
+oracle on every byte-establishable claim. Bucket 1 (39, pure byte-logic + typed refusal): const
+single-quoted vs int/float bare, rewrites every occurrence, quoting normalized, bad int/float →
+`InvalidValue`, readonly/missing/vanished/double-binding → `BindingNotFound`, array/valueless/env
+skipped, all `read` refusals (`Gap`/`FieldSplit`/`LineBreak`/`EdgeSpace`), CRLF+multibyte preserved,
+preamble placement, dialect keyword, `normalize_shell_default`. Bucket 2 (14, execution claims the
+injected bytes fully establish, each with a `PORTED AS BYTE ASSERTION:` note): value lands, prompt
+identity binds the value (risk #2), and — verified genuine, not tautological — `payload is inert`
+(risk #3): each payload emitted as an all-single-quoted literal and the whole copy re-parses via
+`source_is_valid` (the `bash -n` analog).
+
+Bucket 3 (34 deferred to Tier 3/4 — `skit run --set`, skit-runtime/flows). **MUST-VERIFY at the
+runtime tier:** `test_const_payload_is_inert`/`test_read_payload_is_inert` (risk #3 — confirm no
+`pwned` file executes), `test_secret_read_masks_the_echo...`/`test_secret_value_never_reaches_stdout`
+(secret masking + 0600 temp-copy lifecycle is runtime/store), `test_read_in_a_loop_takes_the_value_
+once_then_reads_real_stdin` (risk #2 once-then-stdin). The single-name `normalize_shell_default`
+collapses the oracle's refusal codes to Ok/Err; the code rendering and batch aggregation are Tier 4.
