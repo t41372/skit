@@ -47,7 +47,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_reconcile.py | 27 | crates/skit-language/tests/port_test_reconcile.rs | done (14) · 13 → Tier 4/5 |
 | test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (83) · 3 white-box, 6 → Tier 4 |
 | test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs | done (53) · 34 → Tier 3/4 |
-| test_shell_getopts.py | 11 | skit-language | todo |
+| test_shell_getopts.py | 11 | crates/skit-language/tests/port_test_shell_getopts.rs | done (9) · 2 cross-crate (plan/assemble) · no gap |
 | test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs | done (44) · 18 white-box scanner, 2 CLI |
 | test_powershell.py | 35 | crates/skit-language/tests/port_test_powershell.rs | done (17) · A+B fixed · C bool kept · 18 deferred |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
@@ -59,13 +59,13 @@ adjudicated · counts are Python `def test_` counts.
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
 | test_pep723_split.py | 24 | crates/skit-language/tests/port_test_pep723_split.rs (+ skit-ui re-home) | done (3) · 14 → skit-ui · 7 white-box/CLI |
 | test_metawriter.py | 24 | crates/skit-language/tests/port_test_metawriter.rs | done (29) · float-order gap fixed · 2 white-box |
-| test_template_context_quoting.py | 44 | skit-language | todo |
-| test_declared_params.py | 52 | skit-language | todo |
-| test_source_default_semantics.py | 19 | skit-language | todo |
-| test_default_semantics_review_fixes.py | 18 | skit-language | todo |
-| test_effective_uv_metadata.py | 26 | skit-language | todo |
-| test_uv_metadata_views.py | 6 | skit-language | todo |
-| test_uv_metadata_unpinning.py | 4 | skit-language | todo |
+| test_template_context_quoting.py | 44 | crates/skit-runtime/tests/port_test_template_context_quoting.rs | done (28) · 16 white-box _posix_quote_state / cross-crate |
+| test_declared_params.py | 52 | crates/skit-cli/tests/port_test_declared_params.rs | done (36) · 15 divergences (batch fault tolerance, secret/env, template defaults) · 1 weakening caught+fixed by verify |
+| test_source_default_semantics.py | 19 | crates/skit-form/tests/port_test_source_default_semantics.rs | done (7) · 12 cross-crate (assemble→skit-application, edit_specs→skit-cli) + 2 injection-seam |
+| test_default_semantics_review_fixes.py | 18 | crates/skit-language/tests/port_test_default_semantics_review_fixes.rs | done (6) · 12 cross-crate (flows/preset/argstate) + _record_default divergence + const-lane coercibility MUST-FIX |
+| test_effective_uv_metadata.py | 22 | crates/skit-language/tests/port_test_effective_uv_metadata.rs | done (11) · 15 cross-crate/deferred |
+| test_uv_metadata_views.py | 3 | crates/skit-cli/tests/port_test_uv_metadata_views.rs | done (5) · 1 deferred |
+| test_uv_metadata_unpinning.py | 3 | crates/skit-cli/tests/port_test_uv_metadata_unpinning.rs | done (3) · 1 deferred |
 | test_path_type.py | 14 | skit-domain / skit-language | todo |
 | test_corpus.py | 11 | skit-language (tests/corpus/) | todo |
 | test_raw.py | 5 | skit-language | todo |
@@ -285,6 +285,34 @@ module-namespace monkeypatch, the `without("cli_reader")` injection seam), and t
 is a cross-crate (the env/now process-global fallback lives in the skit-cli composition root, covered
 there). MUST-VERIFY later: is there a real Rust kind with an analyzer but no cli_reader that exercises
 the plan-fall-through-to-none path (langs #21), when porting flows/plan_for_entry?
+
+### Wave 2 — subagent fan-out (2026-08-10): 8 modules
+
+shell_getopts, template_context_quoting (→skit-runtime), declared_params, source_default_semantics
+(→skit-form), default_semantics_review_fixes, effective_uv_metadata, uv_metadata_views,
+uv_metadata_unpinning. 7 verified faithful (accept); **the adversarial verifier caught one weakened
+assertion** in declared_params (`test_meta_parameters_roundtrip_and_non_dict_rows_dropped` — an
+exact-equality softened to a subset check to hide a divergence), fixed by the supervisor in `1586f56`
+and confirmed failing under `--ignored`.
+
+Open divergence findings (FAILING CONTRACT `#[ignore]`s, full bodies, for the consolidated impl-fix
+pass):
+- **declared_params — params batch fault tolerance** (pending tasks #15/#16): a bad `--type
+  w=integer` or a malformed `--type NOEQUALS` must WARN and exit 0 leaving the type unchanged (oracle
+  cli.py batch tolerance); Rust hard-errors exit 2 and applies nothing. Plus secret/env-rider and
+  template-default divergences (14 confirmed real by the verifier running `--ignored`).
+- **declared_params — `[[parameters]]` raw pass-through** (keep-unknown-fields): oracle to_toml_dict
+  preserves a raw `{name, delivery}` row verbatim (models.py:112-113) and from_toml_dict keeps dict
+  rows raw (models.py:163-167); Rust's typed Vec<ParamDecl> re-serializes via to_meta_map, always
+  adding `type` and dropping unmodeled keys (parameters.rs:340-349).
+- **default_semantics_review_fixes** — `analysis._record_default` withholds a source default
+  (divergence, in skit-language); the const lane of the coercibility gate is ABSENT (MUST-FIX).
+- **source_default_semantics** — a resync-rebind divergence (deferred to skit-cli where edit_specs
+  lives).
+The high ignore ratios on the two source-default modules are legitimate cross-cutting deferral (the
+assemble/flows/preset/edit_specs halves live in skit-application and skit-cli); the in-crate half is
+ported live. Two skit-form "injection-seam" ignores note the guard behavior IS present in
+skit-language — flag for the review pass, not a gap.
 
 ### test_analyzer.py → port_test_analyzer.rs (done)
 
