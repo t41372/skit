@@ -98,11 +98,11 @@ adjudicated · counts are Python `def test_` counts.
 | test_cli.py | 140 | skit-cli | todo |
 | test_prompt_cli.py | 150 | skit-cli | todo |
 | test_prompt_kind.py | 115 | skit-cli / skit-language | todo |
-| test_config_cmd.py | 75 | skit-cli | todo |
-| test_add_no_source.py | 68 | skit-cli | todo |
-| test_config.py | 60 | skit-cli / skit-application | todo |
-| test_editor.py | 50 | skit-cli | todo |
-| test_default_name_resolution.py | 42 | skit-cli / skit-application | todo |
+| test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | in fix (51/24) · config command lost the human-display layer (sentinels, padded list, choice-naming errors) · 14 cross-crate wizard/first-run · 1 weakening being fixed |
+| test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs | done (17) · 51 cross-crate/absent (interactive add lane) |
+| test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs | done (55) · 8 deferred |
+| test_editor.py | 50 | crates/skit-cli/tests/port_test_editor.rs | in fix (20/30) · verifier caught 5 weakenings + 4 mislabels (add -e has no interactivity gate; resolve_editor divergences filed as absent) |
+| test_default_name_resolution.py | 42 | crates/skit-language/tests/port_test_default_name_resolution.rs | done (42) · 1 deferred · no gap |
 | test_params_edit.py | 41 | crates/skit-domain/tests/port_test_params_edit.rs | done (3) · 36 ABSENT: edit_declared (pure warn-and-continue batch editor + 9 warning codes) missing, CLI is fail-fast (#16) · 2 as_param_type |
 | test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | done (12) · 17 divergences (drafts-boundary guard absent #15, editor-validates-after-open, kind_for_draft missing, --python normalize + error wording) + 2 absent (interactive re-ask) · 1 weakening fixed |
 | test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
