@@ -116,7 +116,14 @@ impl EntryRepository for FileStore {
         if let Ok(slug) = Slug::parse(query.to_owned())
             && registry.contains(&slug)
         {
-            return self.read_entry(slug);
+            // A slug present in the registry whose meta is missing, unreadable, or corrupt resolves
+            // to NotFound -- not an Io/Corrupt error. The oracle's resolve reads the meta and catches
+            // _META_CORRUPTION = (OSError, TOMLDecodeError, ScriptMetaError), re-raising NotFoundError
+            // (store.py resolve). A hand-edited scalar registry row is a member with no readable meta,
+            // which used to crash `skit run <name>` before the chokepoint normalized it.
+            return self.read_entry(slug).map_err(|_| RepositoryError::NotFound {
+                query: query.to_owned(),
+            });
         }
 
         let claimants = registry.name_claimants(query);

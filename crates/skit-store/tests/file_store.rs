@@ -284,9 +284,12 @@ id = "not-a-uuid"
             .iter()
             .all(|diagnostic| diagnostic.code == DiagnosticCode::CorruptMetadata)
     );
+    // Listing isolates a corrupt entry as a diagnostic (above); resolving one still resolves to
+    // NotFound -> exit 127, not a hard error. The oracle's resolve catches _META_CORRUPTION (which
+    // includes ScriptMetaError from a malformed meta) and re-raises NotFoundError.
     assert!(matches!(
         FileStore::new(root.path()).resolve("bad-id").unwrap_err(),
-        RepositoryError::Corrupt { .. }
+        RepositoryError::NotFound { .. }
     ));
 }
 
@@ -325,7 +328,11 @@ fn a_missing_registry_keeps_a_read_pure_even_when_storage_is_malformed() {
 }
 
 #[test]
-fn an_exact_slug_with_missing_metadata_reports_io_instead_of_falling_back() {
+fn an_exact_slug_with_missing_metadata_resolves_to_not_found() {
+    // The oracle's resolve reads the meta and catches _META_CORRUPTION (OSError, TOMLDecodeError,
+    // ScriptMetaError), re-raising NotFoundError -> exit 127 (store.py resolve). A slug present in
+    // the registry whose meta.toml is gone must resolve to NotFound, not a hard Io/Skit error --
+    // `skit run <name>` on such an entry exits 127, not 125.
     let root = TempDir::new().unwrap();
     write_meta(&root, "empty", "name = \"Empty\"\nkind = \"command\"\n");
     rebuild(&root);
@@ -333,13 +340,7 @@ fn an_exact_slug_with_missing_metadata_reports_io_instead_of_falling_back() {
 
     let error = FileStore::new(root.path()).resolve("empty").unwrap_err();
 
-    assert!(matches!(
-        error,
-        RepositoryError::Io {
-            operation: "read",
-            ..
-        }
-    ));
+    assert!(matches!(error, RepositoryError::NotFound { .. }));
 }
 
 #[test]
