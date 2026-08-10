@@ -58,7 +58,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_kindnames.py | 5 | skit-language / skit-domain | todo |
 | test_tokens.py | 21 | skit-language | todo |
 | test_pep723_split.py | 24 | skit-language | todo |
-| test_metawriter.py | 24 | skit-language / skit-store | todo |
+| test_metawriter.py | 24 | crates/skit-language/tests/port_test_metawriter.rs | done (29) · float-order gap fixed · 2 white-box |
 | test_template_context_quoting.py | 44 | skit-language | todo |
 | test_declared_params.py | 52 | skit-language | todo |
 | test_source_default_semantics.py | 19 | skit-language | todo |
@@ -148,6 +148,26 @@ adjudicated · counts are Python `def test_` counts.
 | test_benchmarks_tooling.py | 156 | skit-benchmarks (adapt; Rust harness differs) | todo |
 | test_mutation_gate.py | 4 | N/A — Rust uses cargo-mutants; adapt or drop | todo |
 | test_hermeticity.py | 1 | skit-store / skit-cli | todo |
+
+### test_metawriter.py → port_test_metawriter.rs (29 done · FOURTH REAL GAP · 2 white-box)
+
+24 Python tests (several parametrized → 29 Rust fns) / 29 passed / 2 `#[ignore]`. Bucket 1 surfaced a
+fourth real gap, in **skit-domain** this time:
+
+- **Fixed: a float `order` degraded to `-1` instead of truncating.** A stored block with `order = 1.9`
+  (a TOML float) must read as order `1`, matching the oracle's `int(d.get("order", -1))` (Python
+  `int(1.9) == 1`). Rust's `integer_value` used `serde_json::Number::as_i64()`, which returns `None`
+  for a non-integer float, so `order` fell back to the `-1` default and the slot was lost. Added an
+  `as_f64() as i64` truncation fallback (`integer_value` is used only for `order`, so the blast radius
+  is one field, matching the oracle exactly). Verified: whole workspace green (127 test binaries),
+  clippy clean. (`test_from_dict_still_coerces_numeric_string_and_float_order`.)
+
+The 28 other bucket-1 pass, including block-creation adjacency/shebang/leading-blank cases,
+`set_dependencies` preserving `[tool.skit]` across all deps-closer shapes (Rust reaches these via a
+whole-block TOML parse, not Python's bracket-depth tracking), and the U+0085/U+2028/U+2029
+prompt-separator escaping round-trip. The 2 `#[ignore]` probe the Python-private
+`pep723._structural_bracket_delta`; the Rust writer parses the block as TOML, so there is no public
+equivalent — the observable round-trip is covered by the passing tests.
 
 ## Adjudication log
 
