@@ -87,7 +87,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_flows.py | 102 | skit-runtime / skit-application | todo |
 | test_uvman.py | 36 | crates/skit-runtime/tests/port_test_uvman.rs | done (18) · 18 white-box/cross-crate · orphan-pin completeness OWED as skit-runtime unit test · 3 divergences |
 | test_launcher.py | 38 | crates/skit-runtime/tests/port_test_launcher.rs | done (17) · 21 cross-crate |
-| test_launcher_fix.py | 12 | crates/skit-runtime/tests/port_test_launcher_fix.rs | in progress (relaunch after an API stall) |
+| test_launcher_fix.py | 12 | crates/skit-runtime/tests/port_test_launcher_fix.rs | done (11) · 1 cfg-gated Windows quoting · no gap (3 promotions stronger than oracle) |
 | test_shim.py | 38 | skit-language / skit-runtime | todo |
 | test_entrypoint.py | 10 | skit-cli / skit-runtime | todo |
 
