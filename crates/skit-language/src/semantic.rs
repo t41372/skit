@@ -335,7 +335,7 @@ impl ParsedDocument {
         match self.kind.as_str() {
             "python" => python_analysis(self),
             "shell" => shell::analysis(self),
-            "js" | "ts" => javascript::analysis(self),
+            "js" | "ts" | "tsx" => javascript::analysis(self),
             "fish" => fish::analysis(self),
             "powershell" => powershell::analysis(self),
             _ => SemanticAnalysis::default(),
@@ -348,7 +348,7 @@ impl ParsedDocument {
         match self.kind.as_str() {
             "python" => python_cli_surface(self),
             "shell" => shell::cli_surface(self),
-            "js" | "ts" => javascript::cli_surface(self),
+            "js" | "ts" | "tsx" => javascript::cli_surface(self),
             "fish" => fish::cli_surface(self),
             "powershell" => powershell::cli_surface(self),
             _ => CliSurface::Absent,
@@ -389,7 +389,7 @@ impl ParsedDocument {
         match self.kind.as_str() {
             "python" => plan_python_injection(self, declarations, values),
             "shell" => shell::plan_injection(self, declarations, values, interpreter),
-            "js" | "ts" => javascript::plan_injection(self, declarations, values),
+            "js" | "ts" | "tsx" => javascript::plan_injection(self, declarations, values),
             kind => Err(LanguageError::UnsupportedKind {
                 kind: kind.to_owned(),
             }),
@@ -416,6 +416,10 @@ pub fn parse_document(kind: &str, source: &str) -> ParseOutcome {
         "shell" => parser.set_language(&tree_sitter_bash::LANGUAGE.into()),
         "js" => parser.set_language(&tree_sitter_javascript::LANGUAGE.into()),
         "ts" => parser.set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+        // The TSX dialect: the TypeScript grammar cannot parse JSX, so tsx needs its own grammar.
+        // The oracle's JS analyzer wires the same tsx grammar (langs/javascript/analyzer.py
+        // `_LANGUAGES["tsx"]`); the js-family analysis, surface, and injection are shared.
+        "tsx" => parser.set_language(&tree_sitter_typescript::LANGUAGE_TSX.into()),
         "fish" => parser.set_language(&tree_sitter_fish::language()),
         "powershell" => parser.set_language(&tree_sitter_powershell::LANGUAGE.into()),
         _ => {
