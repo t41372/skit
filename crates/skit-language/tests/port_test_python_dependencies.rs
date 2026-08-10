@@ -9,7 +9,10 @@ use skit_language::external_dependencies;
 #[test]
 fn test_python_imports_are_reported_as_sorted_dependency_suggestions() {
     let source = "import requests\nimport rich\nprint(1)\n";
-    assert_eq!(external_dependencies("python", source), ["requests", "rich"]);
+    assert_eq!(
+        external_dependencies("python", source),
+        ["requests", "rich"]
+    );
 }
 
 #[test]
@@ -19,7 +22,10 @@ fn test_python_import_aliases_and_from_imports_use_the_top_level_package() {
         "from rich.console import Console\n",
         "from requests.sessions import Session\n",
     );
-    assert_eq!(external_dependencies("python", source), ["requests", "rich"]);
+    assert_eq!(
+        external_dependencies("python", source),
+        ["requests", "rich"]
+    );
 }
 
 #[test]

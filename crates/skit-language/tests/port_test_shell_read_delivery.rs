@@ -6,9 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use skit_language::{
-    LanguageError, ParseOutcome, ShellInputError, inject_values, parse_document,
-};
+use skit_language::{LanguageError, ParseOutcome, ShellInputError, inject_values, parse_document};
 
 fn declarations(source: &str) -> Vec<skit_domain::parameters::ParamDecl> {
     let ParseOutcome::Parsed(document) = parse_document("shell", source) else {
@@ -19,8 +17,7 @@ fn declarations(source: &str) -> Vec<skit_domain::parameters::ParamDecl> {
         .candidates
         .into_iter()
         .filter(|candidate| {
-            candidate.declaration.binding
-                == skit_domain::parameters::ParameterBinding::Input
+            candidate.declaration.binding == skit_domain::parameters::ParameterBinding::Input
         })
         .map(|candidate| candidate.declaration)
         .collect()

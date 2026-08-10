@@ -15,18 +15,12 @@ fn names(source: &str, kind: &str) -> Vec<String> {
 fn test_destructuring_literal_is_not_a_candidate_but_later_identifier_const_survives() {
     assert!(names("const {p} = 5;\n", "js").is_empty());
     assert!(names("const [x] = 5;\n", "js").is_empty());
-    assert_eq!(
-        names("const {p} = 5;\nconst KEEP = 7;\n", "js"),
-        ["KEEP"]
-    );
+    assert_eq!(names("const {p} = 5;\nconst KEEP = 7;\n", "js"), ["KEEP"]);
 }
 
 #[test]
 fn test_nonliteral_const_is_skipped_without_abandoning_later_literals() {
-    assert_eq!(
-        names("const A = foo();\nconst B = 5;\n", "js"),
-        ["B"]
-    );
+    assert_eq!(names("const A = foo();\nconst B = 5;\n", "js"), ["B"]);
     assert_eq!(
         names("const A = foo();\nconst B = 5;\nconst C = 9;\n", "js"),
         ["B", "C"]
@@ -57,10 +51,7 @@ fn test_augmented_reassigned_const_has_same_accumulator_demotion() {
 #[test]
 fn test_sourceless_export_is_not_an_external_dependency_and_does_not_hide_real_import() {
     assert_eq!(
-        external_dependencies(
-            "js",
-            "import chalk from 'chalk';\nexport const X = 5;\n",
-        ),
+        external_dependencies("js", "import chalk from 'chalk';\nexport const X = 5;\n",),
         ["chalk"]
     );
     assert!(external_dependencies("js", "export const X = 5;\n").is_empty());

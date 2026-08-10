@@ -60,7 +60,11 @@ fn test_plain_loop_body_reassignment_demotes_without_self_reference() {
             .iter()
             .find(|candidate| candidate.declaration.binding == ParameterBinding::Const)
             .unwrap();
-        assert_eq!(candidate.demotion, Some(DegradationReason::Accumulator), "{source:?}");
+        assert_eq!(
+            candidate.demotion,
+            Some(DegradationReason::Accumulator),
+            "{source:?}"
+        );
     }
 }
 

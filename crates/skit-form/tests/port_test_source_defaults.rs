@@ -5,9 +5,7 @@
 
 use skit_domain::{
     EntrySettings,
-    parameters::{
-        ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-    },
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
 };
 use skit_form::{FormDrift, FormSource, PreparedField, form_plan};
 
@@ -76,7 +74,12 @@ name = input("Your name? ")
 print(name)
 "#;
 
-fn shell_envdefault(operator: &str, declared_type: &str, block_default: &str, source_default: &str) -> String {
+fn shell_envdefault(
+    operator: &str,
+    declared_type: &str,
+    block_default: &str,
+    source_default: &str,
+) -> String {
     format!(
         r#"#!/usr/bin/env bash
 # /// script
@@ -127,7 +130,10 @@ fn test_plan_refreshes_a_stale_shell_envdefault_from_the_body() {
     };
     assert_eq!(field.declaration.name, "CITY");
     assert_eq!(field.declaration.delivery, ParameterDelivery::Env);
-    assert_eq!(field.declaration.default, Some(ParameterValue::Integer(8080)));
+    assert_eq!(
+        field.declaration.default,
+        Some(ParameterValue::Integer(8080))
+    );
 }
 
 #[test]
@@ -187,7 +193,10 @@ fn test_envdefault_default_that_no_longer_fits_the_type_is_not_published() {
     };
 
     assert_eq!(field.declaration.parameter_type, ParameterType::Int);
-    assert_eq!(field.declaration.default, Some(ParameterValue::Integer(8080)));
+    assert_eq!(
+        field.declaration.default,
+        Some(ParameterValue::Integer(8080))
+    );
 }
 
 #[test]
@@ -270,16 +279,129 @@ fn test_delivers_empty_matrix_matches_the_python_form_contract() {
         }
     }
 
-    assert!(field(ParameterType::Str, ParameterDelivery::Inject, true, false, false, false, false, false).delivers_empty());
-    assert!(field(ParameterType::Path, ParameterDelivery::Env, true, false, false, false, false, false).delivers_empty());
+    assert!(
+        field(
+            ParameterType::Str,
+            ParameterDelivery::Inject,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false
+        )
+        .delivers_empty()
+    );
+    assert!(
+        field(
+            ParameterType::Path,
+            ParameterDelivery::Env,
+            true,
+            false,
+            false,
+            false,
+            false,
+            false
+        )
+        .delivers_empty()
+    );
 
-    for parameter_type in [ParameterType::Int, ParameterType::Float, ParameterType::Bool, ParameterType::Choice] {
-        assert!(!field(parameter_type, ParameterDelivery::Inject, true, false, false, false, false, false).delivers_empty());
+    for parameter_type in [
+        ParameterType::Int,
+        ParameterType::Float,
+        ParameterType::Bool,
+        ParameterType::Choice,
+    ] {
+        assert!(
+            !field(
+                parameter_type,
+                ParameterDelivery::Inject,
+                true,
+                false,
+                false,
+                false,
+                false,
+                false
+            )
+            .delivers_empty()
+        );
     }
-    assert!(!field(ParameterType::Str, ParameterDelivery::Inject, true, true, false, false, false, false).delivers_empty());
-    assert!(!field(ParameterType::Str, ParameterDelivery::Inject, true, false, true, false, false, false).delivers_empty());
-    assert!(!field(ParameterType::Str, ParameterDelivery::Inject, true, false, false, true, false, false).delivers_empty());
-    assert!(!field(ParameterType::Str, ParameterDelivery::Inject, false, false, false, false, false, false).delivers_empty());
-    assert!(!field(ParameterType::Str, ParameterDelivery::Inject, true, false, false, false, true, false).delivers_empty());
-    assert!(!field(ParameterType::Str, ParameterDelivery::Env, true, false, false, false, false, true).delivers_empty());
+    assert!(
+        !field(
+            ParameterType::Str,
+            ParameterDelivery::Inject,
+            true,
+            true,
+            false,
+            false,
+            false,
+            false
+        )
+        .delivers_empty()
+    );
+    assert!(
+        !field(
+            ParameterType::Str,
+            ParameterDelivery::Inject,
+            true,
+            false,
+            true,
+            false,
+            false,
+            false
+        )
+        .delivers_empty()
+    );
+    assert!(
+        !field(
+            ParameterType::Str,
+            ParameterDelivery::Inject,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false
+        )
+        .delivers_empty()
+    );
+    assert!(
+        !field(
+            ParameterType::Str,
+            ParameterDelivery::Inject,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+        )
+        .delivers_empty()
+    );
+    assert!(
+        !field(
+            ParameterType::Str,
+            ParameterDelivery::Inject,
+            true,
+            false,
+            false,
+            false,
+            true,
+            false
+        )
+        .delivers_empty()
+    );
+    assert!(
+        !field(
+            ParameterType::Str,
+            ParameterDelivery::Env,
+            true,
+            false,
+            false,
+            false,
+            false,
+            true
+        )
+        .delivers_empty()
+    );
 }

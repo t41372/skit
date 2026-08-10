@@ -12,7 +12,10 @@ fn plan(source: &str) -> skit_form::OnboardingPlan {
     onboarding_plan("fish", source)
 }
 
-fn candidate<'a>(plan: &'a skit_form::OnboardingPlan, name: &str) -> &'a skit_form::OnboardingCandidate {
+fn candidate<'a>(
+    plan: &'a skit_form::OnboardingPlan,
+    name: &str,
+) -> &'a skit_form::OnboardingCandidate {
     plan.candidates
         .iter()
         .find(|candidate| candidate.declaration.name == name)
@@ -36,7 +39,10 @@ fn test_fish_one_line_envdefault_idiom_infers_int_and_env_target() {
     let port = candidate(&plan, "PORT");
     assert_eq!(port.declaration.binding, ParameterBinding::EnvDefault);
     assert_eq!(port.declaration.parameter_type, ParameterType::Int);
-    assert_eq!(port.declaration.default, Some(ParameterValue::Integer(8080)));
+    assert_eq!(
+        port.declaration.default,
+        Some(ParameterValue::Integer(8080))
+    );
     assert_eq!(port.declaration.env_target, "PORT");
 }
 
@@ -47,8 +53,14 @@ fn test_fish_newline_or_float_and_string_defaults() {
         "set -q RATE; or set RATE 2.5\n",
         "set -q REGION; or set REGION us-east-1\n",
     ));
-    assert_eq!(candidate(&plan, "PORT").declaration.default, Some(ParameterValue::Integer(8080)));
-    assert_eq!(candidate(&plan, "RATE").declaration.default, Some(ParameterValue::Float(2.5)));
+    assert_eq!(
+        candidate(&plan, "PORT").declaration.default,
+        Some(ParameterValue::Integer(8080))
+    );
+    assert_eq!(
+        candidate(&plan, "RATE").declaration.default,
+        Some(ParameterValue::Float(2.5))
+    );
     assert_eq!(
         candidate(&plan, "REGION").declaration.default,
         Some(ParameterValue::String("us-east-1".to_owned()))
@@ -71,7 +83,11 @@ fn test_fish_secret_name_is_marked_and_private_underscore_is_skipped() {
         "set -q _P; or set _P 1\n",
     ));
     assert!(candidate(&plan, "API_TOKEN").declaration.secret);
-    assert!(plan.candidates.iter().all(|candidate| candidate.declaration.name != "_P"));
+    assert!(
+        plan.candidates
+            .iter()
+            .all(|candidate| candidate.declaration.name != "_P")
+    );
 }
 
 #[test]
@@ -124,7 +140,10 @@ fn test_fish_idiom_inside_blocks_is_ignored_but_toplevel_after_block_is_detected
         assert!(plan(source).candidates.is_empty(), "{source:?}");
     }
     let outer = plan("function f\n  echo hi\nend\nset -q P; or set P 1\n");
-    assert_eq!(candidate(&outer, "P").declaration.default, Some(ParameterValue::Integer(1)));
+    assert_eq!(
+        candidate(&outer, "P").declaration.default,
+        Some(ParameterValue::Integer(1))
+    );
 }
 
 #[test]

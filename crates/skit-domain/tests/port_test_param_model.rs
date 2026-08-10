@@ -141,7 +141,10 @@ fn test_meta_map_omits_false_repeat_and_emits_truthy_repeat() {
     repeated.flag = "--tag".to_owned();
     repeated.multiple = true;
     repeated.repeat = true;
-    assert_eq!(repeated.to_meta_map().get("repeat"), Some(&Value::Bool(true)));
+    assert_eq!(
+        repeated.to_meta_map().get("repeat"),
+        Some(&Value::Bool(true))
+    );
     assert_eq!(ParamDecl::from_meta_map(&repeated.to_meta_map()), repeated);
 }
 
@@ -196,16 +199,25 @@ fn test_binding_delivery_invariants_and_choice_invariant() {
 
     let mut bad = ok.clone();
     bad.delivery = ParameterDelivery::Env;
-    assert_eq!(bad.validate(), Some(ParameterInvariant::BindingDeliveryMismatch));
+    assert_eq!(
+        bad.validate(),
+        Some(ParameterInvariant::BindingDeliveryMismatch)
+    );
 
     let mut envd = ParamDecl::new("a");
     envd.binding = ParameterBinding::EnvDefault;
     envd.delivery = ParameterDelivery::Flag;
-    assert_eq!(envd.validate(), Some(ParameterInvariant::BindingDeliveryMismatch));
+    assert_eq!(
+        envd.validate(),
+        Some(ParameterInvariant::BindingDeliveryMismatch)
+    );
 
     let mut choice = ParamDecl::new("c");
     choice.parameter_type = ParameterType::Choice;
-    assert_eq!(choice.validate(), Some(ParameterInvariant::ChoiceWithoutChoices));
+    assert_eq!(
+        choice.validate(),
+        Some(ParameterInvariant::ChoiceWithoutChoices)
+    );
     choice.choices.push("x".to_owned());
     assert_eq!(choice.validate(), None);
 }

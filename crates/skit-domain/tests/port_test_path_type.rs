@@ -64,7 +64,12 @@ fn test_path_default_coercion_keeps_raw_string_without_existence_check() {
 
 #[test]
 fn test_path_is_free_text_for_empty_and_arbitrary_values() {
-    for value in ["", "../relative.csv", "/does/not/exist", "C:\\future\\file.txt"] {
+    for value in [
+        "",
+        "../relative.csv",
+        "/does/not/exist",
+        "C:\\future\\file.txt",
+    ] {
         assert_eq!(
             coerce_default(value, ParameterType::Path).unwrap(),
             ParameterValue::String(value.to_owned())

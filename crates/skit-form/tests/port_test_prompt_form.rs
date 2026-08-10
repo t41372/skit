@@ -22,11 +22,7 @@ fn test_prompt_plan_fields_follow_the_stored_managed_list_only() {
         params: vec!["a".to_owned(), "api_key".to_owned()],
         ..EntrySettings::default()
     };
-    let plan = form_plan(
-        "prompt",
-        "{{a}} {{api_key}} {{new_unmanaged}}\n",
-        &settings,
-    );
+    let plan = form_plan("prompt", "{{a}} {{api_key}} {{new_unmanaged}}\n", &settings);
 
     assert_eq!(plan.source, FormSource::Command);
     assert_eq!(
@@ -37,10 +33,11 @@ fn test_prompt_plan_fields_follow_the_stored_managed_list_only() {
         ["a", "api_key"]
     );
     assert!(plan.drift.is_empty());
-    assert!(plan
-        .fields
-        .iter()
-        .all(|field| field.declaration.delivery == ParameterDelivery::Placeholder));
+    assert!(
+        plan.fields
+            .iter()
+            .all(|field| field.declaration.delivery == ParameterDelivery::Placeholder)
+    );
 }
 
 #[test]
@@ -85,7 +82,10 @@ fn test_prompt_declared_placeholder_enriches_the_managed_field_and_env_rider_sur
     assert_eq!(plan.source, FormSource::Command);
     assert_eq!(plan.fields.len(), 2);
     assert_eq!(plan.fields[0].declaration.name, "n");
-    assert_eq!(plan.fields[0].declaration.parameter_type, ParameterType::Int);
+    assert_eq!(
+        plan.fields[0].declaration.parameter_type,
+        ParameterType::Int
+    );
     assert_eq!(
         plan.fields[0].declaration.default,
         Some(ParameterValue::Integer(3))
@@ -101,11 +101,7 @@ fn test_prompt_new_body_holes_do_not_expand_the_managed_schema_at_run_time() {
         params: vec!["kept".to_owned()],
         ..EntrySettings::default()
     };
-    let plan = form_plan(
-        "prompt",
-        "{{kept}} {{new_one}} {{new_two}}\n",
-        &settings,
-    );
+    let plan = form_plan("prompt", "{{kept}} {{new_one}} {{new_two}}\n", &settings);
 
     assert_eq!(plan.fields.len(), 1);
     assert_eq!(plan.fields[0].declaration.name, "kept");

@@ -5,7 +5,9 @@
 //! brackets. Updating dependency fields must still preserve the managed `[tool.skit]` section.
 
 use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterValue};
-use skit_language::{managed_params, read_uv_metadata, source_is_valid, write_managed_params, write_uv_metadata};
+use skit_language::{
+    managed_params, read_uv_metadata, source_is_valid, write_managed_params, write_uv_metadata,
+};
 
 fn hand_edited(deps_block: &str) -> String {
     format!(

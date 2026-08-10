@@ -6,9 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use skit_application::form_state::{
-    FormStateRepository, FormStateService, PresetSnapshotSource,
-};
+use skit_application::form_state::{FormStateRepository, FormStateService, PresetSnapshotSource};
 use skit_domain::{
     Slug,
     parameters::{ParamDecl, ParameterDelivery, ParameterType, ParameterValue},
@@ -45,7 +43,13 @@ fn test_preset_from_last_saves_effective_values_after_an_all_defaults_run() {
     let accepted = values(&[("GREETING", "bonjour")]);
 
     service
-        .save_last(&slug, &declarations, Some(&accepted), Some(Vec::new()), false)
+        .save_last(
+            &slug,
+            &declarations,
+            Some(&accepted),
+            Some(Vec::new()),
+            false,
+        )
         .unwrap();
     service
         .record_run(
@@ -64,12 +68,7 @@ fn test_preset_from_last_saves_effective_values_after_an_all_defaults_run() {
 
     assert!(
         service
-            .save_preset_from_state(
-                &slug,
-                "p",
-                &declarations,
-                PresetSnapshotSource::LastRun,
-            )
+            .save_preset_from_state(&slug, "p", &declarations, PresetSnapshotSource::LastRun,)
             .unwrap()
     );
     assert_eq!(
@@ -88,12 +87,7 @@ fn test_preset_from_last_refuses_an_entry_that_never_ran_and_has_no_remembered_v
 
     assert!(
         !service
-            .save_preset_from_state(
-                &slug,
-                "p",
-                &declarations,
-                PresetSnapshotSource::LastRun,
-            )
+            .save_preset_from_state(&slug, "p", &declarations, PresetSnapshotSource::LastRun,)
             .unwrap()
     );
     assert!(service.load(&slug).presets.is_empty());
@@ -157,12 +151,7 @@ fn test_preset_from_legacy_run_without_a_snapshot_refuses_to_guess() {
 
     assert!(
         !service
-            .save_preset_from_state(
-                &slug,
-                "p",
-                &declarations,
-                PresetSnapshotSource::LastRun,
-            )
+            .save_preset_from_state(&slug, "p", &declarations, PresetSnapshotSource::LastRun,)
             .unwrap()
     );
     assert!(service.load(&slug).presets.is_empty());
@@ -186,10 +175,7 @@ fn test_named_preset_pins_a_default_value_while_last_used_filters_it_out() {
 
     let state = service.load(&slug);
     assert!(state.values.is_empty());
-    assert_eq!(
-        state.presets,
-        BTreeMap::from([("p".to_owned(), accepted)])
-    );
+    assert_eq!(state.presets, BTreeMap::from([("p".to_owned(), accepted)]));
 }
 
 #[test]

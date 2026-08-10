@@ -35,7 +35,12 @@ fn test_cwd_today_now_and_multiple_named_tokens_expand() {
 #[test]
 fn test_env_token_present_and_missing_exact_error_shape() {
     assert_eq!(
-        expand("key={env:API_KEY}", &context(&[("API_KEY", "abc123")]), true).unwrap(),
+        expand(
+            "key={env:API_KEY}",
+            &context(&[("API_KEY", "abc123")]),
+            true
+        )
+        .unwrap(),
         "key=abc123"
     );
 
@@ -89,7 +94,10 @@ fn test_brace_escape_policy_is_orthogonal_to_named_token_expansion() {
 #[test]
 fn test_preview_threads_context_and_brace_policy_and_never_raises() {
     let ctx = context(&[("K", "v")]);
-    assert_eq!(preview("{{cwd}}", &ctx, false), ("{{cwd}}".to_owned(), None));
+    assert_eq!(
+        preview("{{cwd}}", &ctx, false),
+        ("{{cwd}}".to_owned(), None)
+    );
     assert_eq!(preview("{{cwd}}", &ctx, true), ("{cwd}".to_owned(), None));
     assert_eq!(preview("{cwd}", &ctx, true), ("/work/dir".to_owned(), None));
     assert_eq!(preview("{env:K}", &ctx, true), ("v".to_owned(), None));
@@ -120,7 +128,10 @@ fn test_missing_home_leaves_current_user_tilde_unchanged() {
 
 #[test]
 fn test_plain_text_is_unchanged() {
-    assert_eq!(x("just a value, nothing special"), "just a value, nothing special");
+    assert_eq!(
+        x("just a value, nothing special"),
+        "just a value, nothing special"
+    );
     assert_eq!(x("plain tail"), "plain tail");
 }
 

@@ -110,9 +110,11 @@ fn test_shell_all_four_default_expansion_operators_are_envdefault_candidates() {
             .collect::<std::collections::BTreeSet<_>>(),
         std::collections::BTreeSet::from(["A", "B", "C", "D"])
     );
-    assert!(plan.candidates.iter().all(|candidate| {
-        candidate.declaration.binding == ParameterBinding::EnvDefault
-    }));
+    assert!(
+        plan.candidates
+            .iter()
+            .all(|candidate| { candidate.declaration.binding == ParameterBinding::EnvDefault })
+    );
     let a = plan
         .candidates
         .iter()
@@ -180,7 +182,12 @@ fn test_shell_plain_assignment_suppresses_later_envdefault_for_that_name_only() 
     let by = plan
         .candidates
         .iter()
-        .map(|candidate| (candidate.declaration.name.as_str(), candidate.declaration.binding))
+        .map(|candidate| {
+            (
+                candidate.declaration.name.as_str(),
+                candidate.declaration.binding,
+            )
+        })
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(by["PORT"], ParameterBinding::Const);
     assert_eq!(by["MODE"], ParameterBinding::EnvDefault);
@@ -194,9 +201,11 @@ fn test_shell_dynamic_assignment_suppresses_envdefault_without_becoming_a_const(
 #[test]
 fn test_shell_self_envdefault_idiom_is_not_suppressed() {
     let plan = plan("PORT=\"${PORT:-8080}\"\nNAME=${NAME:-guest}\n");
-    assert!(plan.candidates.iter().all(|candidate| {
-        candidate.declaration.binding == ParameterBinding::EnvDefault
-    }));
+    assert!(
+        plan.candidates
+            .iter()
+            .all(|candidate| { candidate.declaration.binding == ParameterBinding::EnvDefault })
+    );
     assert_eq!(
         plan.candidates
             .iter()
@@ -287,9 +296,12 @@ fn test_shell_data_reads_from_pipe_or_stdin_redirection_are_excluded() {
 #[test]
 fn test_shell_read_as_pipe_head_or_with_stdout_redirect_remains_interactive() {
     for source in ["read X | cat\n", "read -r x > out.log\n"] {
-        assert!(plan(source).candidates.iter().any(|candidate| {
-            candidate.declaration.binding == ParameterBinding::Input
-        }));
+        assert!(
+            plan(source)
+                .candidates
+                .iter()
+                .any(|candidate| { candidate.declaration.binding == ParameterBinding::Input })
+        );
     }
 }
 
@@ -309,7 +321,11 @@ fn test_shell_mutated_constants_are_demoted_as_accumulators() {
             .iter()
             .find(|candidate| candidate.declaration.binding == ParameterBinding::Const)
             .unwrap_or_else(|| panic!("expected a constant candidate for {source:?}: {plan:?}"));
-        assert_eq!(candidate.demotion, Some(DegradationReason::Accumulator), "{source:?}");
+        assert_eq!(
+            candidate.demotion,
+            Some(DegradationReason::Accumulator),
+            "{source:?}"
+        );
         assert!(!candidate.selected_by_default(), "{source:?}");
     }
 }

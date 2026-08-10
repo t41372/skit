@@ -94,10 +94,7 @@ fn test_external_import_statement_without_string_source_is_ignored() {
 fn test_sourceless_export_never_becomes_a_dependency() {
     assert!(external_dependencies("js", "export const X = 5;\n").is_empty());
     assert_eq!(
-        external_dependencies(
-            "js",
-            "import chalk from 'chalk';\nexport const X = 5;\n",
-        ),
+        external_dependencies("js", "import chalk from 'chalk';\nexport const X = 5;\n",),
         ["chalk"]
     );
 }

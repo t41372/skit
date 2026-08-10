@@ -28,7 +28,11 @@ fn test_scalar_defaults_match_the_machine_config_contract() {
         ("shell.bash_path", ""),
         ("js.runner", ""),
     ] {
-        assert_eq!(settings.get(key).map(String::as_str), Some(expected), "{key}");
+        assert_eq!(
+            settings.get(key).map(String::as_str),
+            Some(expected),
+            "{key}"
+        );
     }
 }
 
@@ -162,7 +166,10 @@ fn test_scalar_write_preserves_other_sections_and_unknown_fields() {
             .and_then(Value::as_str),
         Some("https://example/simple")
     );
-    assert_eq!(doc.get("editor").and_then(Value::as_str), Some("code --wait"));
+    assert_eq!(
+        doc.get("editor").and_then(Value::as_str),
+        Some("code --wait")
+    );
 }
 
 #[test]

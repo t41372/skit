@@ -4,12 +4,11 @@
 //! prompt identity wins over bare position; positional fallback stays usable but is surfaced as
 //! rebound drift. Newly discovered unmanaged candidates remain informational rather than drift.
 
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::{ParseOutcome, ReconcileReport, parse_document};
 
-const SCRIPT: &str = "CITY = \"Taipei\"\nRETRIES = 3\nwho = input(\"Your name: \")\nprint(who, CITY, RETRIES)\n";
+const SCRIPT: &str =
+    "CITY = \"Taipei\"\nRETRIES = 3\nwho = input(\"Your name: \")\nprint(who, CITY, RETRIES)\n";
 
 fn reconcile(source: &str, stored: &[ParamDecl]) -> ReconcileReport {
     let ParseOutcome::Parsed(document) = parse_document("python", source) else {
@@ -56,7 +55,11 @@ fn test_const_missing_by_name_is_drift_and_not_usable() {
 
     assert!(report.has_drift());
     assert_eq!(
-        report.missing.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(),
+        report
+            .missing
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
         ["GONE"]
     );
     assert!(report.usable().is_empty());
@@ -68,13 +71,19 @@ fn test_const_rename_is_missing_plus_new_but_new_itself_is_not_extra_drift() {
     let report = reconcile(&text, &[constant("CITY", ParameterType::Str)]);
 
     assert_eq!(
-        report.missing.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(),
+        report
+            .missing
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
         ["CITY"]
     );
-    assert!(report
-        .new
-        .iter()
-        .any(|candidate| candidate.declaration.name == "TOWN"));
+    assert!(
+        report
+            .new
+            .iter()
+            .any(|candidate| candidate.declaration.name == "TOWN")
+    );
 }
 
 #[test]
@@ -108,8 +117,7 @@ fn test_new_input_call_is_new_only_not_drift() {
 
     assert!(!report.has_drift());
     assert!(report.new.iter().any(|candidate| {
-        candidate.declaration.binding == ParameterBinding::Input
-            && candidate.declaration.order == 1
+        candidate.declaration.binding == ParameterBinding::Input && candidate.declaration.order == 1
     }));
 }
 
@@ -141,7 +149,11 @@ fn test_deleting_an_earlier_call_does_not_silently_swap_later_managed_inputs() {
     let report = reconcile(&edited, &stored);
 
     assert_eq!(
-        report.missing.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(),
+        report
+            .missing
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
         ["input-1"]
     );
     assert_eq!(
@@ -189,20 +201,25 @@ fn test_duplicate_prompt_surplus_is_missing_not_silently_ok_after_delete() {
         "second = input(\"Go? \")\n",
         "print(first, second)\n",
     );
-    let stored = [
-        input("input-1", 0, "Go? "),
-        input("input-2", 1, "Go? "),
-    ];
+    let stored = [input("input-1", 0, "Go? "), input("input-2", 1, "Go? ")];
     let edited = text.replace("first = input(\"Go? \")\n", "");
     let report = reconcile(&edited, &stored);
 
     assert!(report.has_drift());
     assert_eq!(
-        report.missing.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(),
+        report
+            .missing
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
         ["input-2"]
     );
     assert_eq!(
-        report.ok.iter().map(|pair| pair.stored.name.as_str()).collect::<Vec<_>>(),
+        report
+            .ok
+            .iter()
+            .map(|pair| pair.stored.name.as_str())
+            .collect::<Vec<_>>(),
         ["input-1"]
     );
     assert!(report.rebound.is_empty());
@@ -215,10 +232,7 @@ fn test_duplicate_prompt_surplus_is_rebound_when_its_position_now_answers_a_diff
         "second = input(\"Go? \")\n",
         "print(first, second)\n",
     );
-    let stored = [
-        input("input-1", 0, "Go? "),
-        input("input-2", 1, "Go? "),
-    ];
+    let stored = [input("input-1", 0, "Go? "), input("input-2", 1, "Go? ")];
     let edited = text.replace(
         "second = input(\"Go? \")",
         "second = input(\"Different: \")",
@@ -227,7 +241,11 @@ fn test_duplicate_prompt_surplus_is_rebound_when_its_position_now_answers_a_diff
 
     assert!(report.has_drift());
     assert_eq!(
-        report.ok.iter().map(|pair| pair.stored.name.as_str()).collect::<Vec<_>>(),
+        report
+            .ok
+            .iter()
+            .map(|pair| pair.stored.name.as_str())
+            .collect::<Vec<_>>(),
         ["input-1"]
     );
     assert_eq!(

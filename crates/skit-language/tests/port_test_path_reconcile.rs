@@ -1,8 +1,6 @@
 //! Public-API ports of Python v0.4 path-type reconciliation contracts.
 
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::{ParseOutcome, parse_document};
 
 const SCRIPT: &str = "SRC = \"./data.csv\"\nRETRIES = 3\nprint(SRC, RETRIES)\n";

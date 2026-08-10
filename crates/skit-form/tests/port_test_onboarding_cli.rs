@@ -67,7 +67,10 @@ fn test_syntax_error_does_not_publish_a_cli_surface() {
 fn test_stitch_reads_eight_fields_in_source_order() {
     let fields = static_fields(STITCH);
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         [
             "inputs",
             "output",
@@ -106,7 +109,10 @@ fn test_argparse_path_type_spellings_are_modeled_without_degradation() {
     );
     let fields = static_fields(source);
     assert_eq!(
-        fields.iter().map(|field| field.parameter_type).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.parameter_type)
+            .collect::<Vec<_>>(),
         [ParameterType::Path; 4]
     );
     assert!(fields.iter().all(|field| !field.degraded));
@@ -124,10 +130,7 @@ fn test_choices_beat_path_type_and_preserve_literal_default() {
     };
     assert_eq!(field.parameter_type, ParameterType::Choice);
     assert_eq!(field.choices, ["a", "b"]);
-    assert_eq!(
-        field.default,
-        Some(ParameterValue::String("a".to_owned()))
-    );
+    assert_eq!(field.default, Some(ParameterValue::String("a".to_owned())));
 }
 
 #[test]
@@ -164,11 +167,12 @@ fn test_custom_type_degrades_only_that_field_and_keeps_help() {
     assert!(fields[4].degraded);
     assert_eq!(fields[4].help, "bg color");
     assert!(plan.cli_fields[4].degradation.is_some());
-    assert!(plan
-        .cli_fields
-        .iter()
-        .enumerate()
-        .all(|(index, field)| index == 4 || field.degradation.is_none()));
+    assert!(
+        plan.cli_fields
+            .iter()
+            .enumerate()
+            .all(|(index, field)| index == 4 || field.degradation.is_none())
+    );
 }
 
 #[test]
@@ -253,7 +257,10 @@ fn test_help_and_version_actions_are_not_form_fields() {
         "ap.add_argument('--real')\n",
     ));
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["real"]
     );
 }
@@ -294,7 +301,10 @@ fn test_non_literal_argument_name_skips_only_that_call() {
         "ap.add_argument('--real')\n",
     ));
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["real"]
     );
 }

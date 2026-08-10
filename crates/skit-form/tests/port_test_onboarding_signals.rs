@@ -47,10 +47,7 @@ fn test_clean_python_constant_is_not_demoted() {
 
 #[test]
 fn test_python_reassignment_inside_while_loop_demotes() {
-    let plan = onboarding_plan(
-        "python",
-        "count = 0\nwhile go():\n    count = count + 1\n",
-    );
+    let plan = onboarding_plan("python", "count = 0\nwhile go():\n    count = count + 1\n");
     let count = plan
         .candidates
         .iter()
@@ -111,7 +108,11 @@ fn test_filename_hint_scans_past_non_string_call_arguments() {
 #[test]
 fn test_filename_hint_disappears_when_call_uses_a_named_constant() {
     let source = "OUTPUT = 'output_long_image.jpg'\nsave(OUTPUT)\n";
-    assert!(onboarding_plan("python", source).filename_literals.is_empty());
+    assert!(
+        onboarding_plan("python", source)
+            .filename_literals
+            .is_empty()
+    );
 }
 
 #[test]
@@ -122,7 +123,11 @@ fn test_filename_hints_exclude_sentences_urls_versions_and_non_extensions() {
         "get('https://example.com/a.zip')\n",
         "ver('3.14')\n",
     );
-    assert!(onboarding_plan("python", source).filename_literals.is_empty());
+    assert!(
+        onboarding_plan("python", source)
+            .filename_literals
+            .is_empty()
+    );
 }
 
 #[test]
@@ -150,8 +155,7 @@ fn test_shadowed_input_disables_input_candidates_without_aborting_const_analysis
         plan.candidates
             .iter()
             .filter(|candidate| {
-                candidate.declaration.binding
-                    == skit_domain::parameters::ParameterBinding::Const
+                candidate.declaration.binding == skit_domain::parameters::ParameterBinding::Const
             })
             .map(|candidate| candidate.declaration.name.as_str())
             .collect::<Vec<_>>(),
@@ -164,8 +168,7 @@ fn test_shadowed_input_disables_input_candidates_without_aborting_const_analysis
             .candidates
             .iter()
             .filter(|candidate| {
-                candidate.declaration.binding
-                    == skit_domain::parameters::ParameterBinding::Input
+                candidate.declaration.binding == skit_domain::parameters::ParameterBinding::Input
             })
             .map(|candidate| candidate.declaration.name.as_str())
             .collect::<Vec<_>>(),

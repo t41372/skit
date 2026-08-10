@@ -6,12 +6,12 @@
 use std::collections::BTreeMap;
 
 use skit_application::{
+    form_state::prefill,
     glob_expansion::GlobExpander,
     run_inputs::{RunInputError, assemble_run_inputs},
     tokens::TokenContext,
     value_preparation::{ValuePreparationError, validate_form_value},
     value_resolution::{ValueResolutionError, resolve_values},
-    form_state::prefill,
 };
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
@@ -169,11 +169,16 @@ fn test_typed_secret_beats_env_source_and_is_never_token_expanded() {
         &NoGlob,
     )
     .unwrap();
-    assert_eq!(assembly.inject_values.get("API_KEY").map(String::as_str), Some(typed));
-    assert!(assembly
-        .display
-        .iter()
-        .all(|(_, rendered)| rendered != typed && rendered == "•••"));
+    assert_eq!(
+        assembly.inject_values.get("API_KEY").map(String::as_str),
+        Some(typed)
+    );
+    assert!(
+        assembly
+            .display
+            .iter()
+            .all(|(_, rendered)| rendered != typed && rendered == "•••")
+    );
 }
 
 #[test]
@@ -182,12 +187,7 @@ fn test_missing_secret_env_source_is_a_named_resolution_error() {
     secret.secret = true;
     secret.env_source = "MY_API_KEY".to_owned();
 
-    let error = resolve_values(
-        &[secret],
-        &values(&[("API_KEY", "")]),
-        &context(&[]),
-    )
-    .unwrap_err();
+    let error = resolve_values(&[secret], &values(&[("API_KEY", "")]), &context(&[])).unwrap_err();
     assert!(matches!(
         error,
         ValueResolutionError::MissingSecretEnvironment { name, environment }
@@ -225,15 +225,14 @@ fn test_positionals_emit_before_flags_and_store_true_only_fires_when_checked() {
         &NoGlob,
     )
     .unwrap();
-    assert_eq!(assembly.args, ["a.png", "b.png", "--output", "o.png", "--fast"]);
+    assert_eq!(
+        assembly.args,
+        ["a.png", "b.png", "--output", "o.png", "--fast"]
+    );
 
     let unchecked = assemble_run_inputs(
         &declarations,
-        &values(&[
-            ("inputs", "a.png"),
-            ("output", "o.png"),
-            ("fast", "false"),
-        ]),
+        &values(&[("inputs", "a.png"), ("output", "o.png"), ("fast", "false")]),
         &[],
         true,
         &context(&[]),
@@ -315,7 +314,11 @@ fn test_extra_arg_tokens_expand_only_when_the_tail_is_marked_raw() {
     let raw = assemble_run_inputs(
         &[],
         &BTreeMap::new(),
-        &["{today}".to_owned(), "{cwd}".to_owned(), "{env:XV}".to_owned()],
+        &[
+            "{today}".to_owned(),
+            "{cwd}".to_owned(),
+            "{env:XV}".to_owned(),
+        ],
         true,
         &context(&[("XV", "envval")]),
         &NoGlob,

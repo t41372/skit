@@ -36,7 +36,10 @@ def main(
     pass
 "#;
 
-fn static_fields(source: &str, expected_framework: &str) -> Vec<skit_domain::parameters::ParamDecl> {
+fn static_fields(
+    source: &str,
+    expected_framework: &str,
+) -> Vec<skit_domain::parameters::ParamDecl> {
     let plan = onboarding_plan("python", source);
     match plan.cli_surface {
         CliFormProjection::Static { framework, fields } => {
@@ -51,7 +54,10 @@ fn static_fields(source: &str, expected_framework: &str) -> Vec<skit_domain::par
 fn test_click_fields_follow_bottom_up_decorator_runtime_order() {
     let fields = static_fields(CLICK_SCRIPT, "click");
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["inputs", "fast", "mode", "gap", "output"]
     );
 }
@@ -231,7 +237,10 @@ fn test_click_flag_defaulting_on_degrades_instead_of_inventing_a_negative_flag()
 fn test_typer_signature_order_and_core_field_shapes() {
     let fields = static_fields(TYPER_SCRIPT, "typer");
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["inputs", "output", "gap", "fast", "label"]
     );
     let by = fields
@@ -321,7 +330,10 @@ fn test_argparse_wins_when_multiple_cli_frameworks_are_imported() {
         "argparse",
     );
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["x"]
     );
 }

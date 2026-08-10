@@ -2,10 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use skit_application::{
-    run_inputs::assemble_run_inputs,
-    tokens::TokenContext,
-};
+use skit_application::{run_inputs::assemble_run_inputs, tokens::TokenContext};
 use skit_domain::parameters::{ParamDecl, ParameterDelivery, ParameterType};
 use skit_store::FileGlobExpander;
 use tempfile::TempDir;

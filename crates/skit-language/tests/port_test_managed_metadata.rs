@@ -4,11 +4,10 @@
 //! code bytes around the block, shebang placement, and unknown metadata must survive independently
 //! of the managed `[tool.skit]` projection.
 
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterType, ParameterValue,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterType, ParameterValue};
 use skit_language::{
-    has_uv_metadata_block, managed_params, read_uv_metadata, write_managed_params, write_uv_metadata,
+    has_uv_metadata_block, managed_params, read_uv_metadata, write_managed_params,
+    write_uv_metadata,
 };
 
 fn params() -> Vec<ParamDecl> {
@@ -53,7 +52,10 @@ fn test_write_managed_params_adds_no_non_comment_separator_outside_a_new_block()
     let source = "CITY = 'Taipei'\nprint(CITY)\n";
     let output = write_managed_params("python", source, &params()[..1]).unwrap();
 
-    assert!(output.ends_with("# ///\nCITY = 'Taipei'\nprint(CITY)\n"), "{output}");
+    assert!(
+        output.ends_with("# ///\nCITY = 'Taipei'\nprint(CITY)\n"),
+        "{output}"
+    );
     assert!(!output.contains("# ///\n\nCITY = 'Taipei'"), "{output}");
 }
 
@@ -61,7 +63,10 @@ fn test_write_managed_params_adds_no_non_comment_separator_outside_a_new_block()
 fn test_write_managed_params_preserves_shebang_first_and_leading_blank_body() {
     let shebang = "#!/usr/bin/env python3\nCITY = 'Taipei'\nprint(CITY)\n";
     let output = write_managed_params("python", shebang, &params()[..1]).unwrap();
-    assert!(output.starts_with("#!/usr/bin/env python3\n# /// script\n"), "{output}");
+    assert!(
+        output.starts_with("#!/usr/bin/env python3\n# /// script\n"),
+        "{output}"
+    );
     assert!(output.ends_with("# ///\nCITY = 'Taipei'\nprint(CITY)\n"));
 
     let leading_blank = "\nprint(1)\n";
@@ -162,7 +167,10 @@ fn test_write_uv_metadata_preserves_managed_parameter_rows() {
     assert_eq!(managed_params("python", &updated).len(), 3);
 
     let cleared = write_uv_metadata(&updated, &[], "").unwrap();
-    assert_eq!(read_uv_metadata(&cleared).unwrap().dependencies, Vec::<String>::new());
+    assert_eq!(
+        read_uv_metadata(&cleared).unwrap().dependencies,
+        Vec::<String>::new()
+    );
     assert_eq!(managed_params("python", &cleared).len(), 3);
 }
 

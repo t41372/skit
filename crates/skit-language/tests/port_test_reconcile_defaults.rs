@@ -44,9 +44,12 @@ fn test_reconcile_records_current_default_for_an_ok_const() {
     assert_eq!(report.ok[0].stored.name, "CITY");
     assert_eq!(
         report.current_defaults,
-        [("CITY".to_owned(), ParameterValue::String("Taipei".to_owned()))]
-            .into_iter()
-            .collect()
+        [(
+            "CITY".to_owned(),
+            ParameterValue::String("Taipei".to_owned())
+        )]
+        .into_iter()
+        .collect()
     );
 }
 
@@ -72,11 +75,7 @@ fn test_reconcile_records_current_default_for_an_ok_envdefault() {
 fn test_reconcile_omits_current_default_for_a_type_changed_const() {
     let mut stored = const_decl("RETRIES", ParameterType::Int);
     stored.default = Some(ParameterValue::Integer(3));
-    let report = reconcile(
-        "python",
-        "RETRIES = \"three\"\nprint(RETRIES)\n",
-        &[stored],
-    );
+    let report = reconcile("python", "RETRIES = \"three\"\nprint(RETRIES)\n", &[stored]);
 
     assert!(report.ok.is_empty());
     assert_eq!(report.changed.len(), 1);
@@ -159,12 +158,11 @@ fn test_input_prompt_movement_is_rebound_by_position_without_losing_the_field() 
 fn test_shell_colon_operator_marks_empty_as_using_the_default_in_reconcile_report() {
     for operator in [":-", ":="] {
         let source = format!("CITY=${{CITY{operator}Taipei}}\necho \"$CITY\"\n");
-        let report = reconcile(
-            "shell",
-            &source,
-            &[envdefault("CITY", ParameterType::Str)],
+        let report = reconcile("shell", &source, &[envdefault("CITY", ParameterType::Str)]);
+        assert!(
+            report.empty_uses_default.contains("CITY"),
+            "operator {operator}"
         );
-        assert!(report.empty_uses_default.contains("CITY"), "operator {operator}");
     }
 }
 
@@ -172,11 +170,10 @@ fn test_shell_colon_operator_marks_empty_as_using_the_default_in_reconcile_repor
 fn test_shell_noncolon_operator_does_not_mark_empty_as_using_the_default() {
     for operator in ["-", "="] {
         let source = format!("CITY=${{CITY{operator}Taipei}}\necho \"$CITY\"\n");
-        let report = reconcile(
-            "shell",
-            &source,
-            &[envdefault("CITY", ParameterType::Str)],
+        let report = reconcile("shell", &source, &[envdefault("CITY", ParameterType::Str)]);
+        assert!(
+            !report.empty_uses_default.contains("CITY"),
+            "operator {operator}"
         );
-        assert!(!report.empty_uses_default.contains("CITY"), "operator {operator}");
     }
 }
