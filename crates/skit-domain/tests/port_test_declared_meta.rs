@@ -2,13 +2,17 @@
 
 use serde_json::json;
 use skit_domain::{
-    EntryMeta, EntrySettings,
+    EntryKind, EntryMeta, EntrySettings,
     parameters::{ParamDecl, ParameterDelivery, ParameterType},
 };
 
+fn command_meta() -> EntryMeta {
+    EntryMeta::minimal("x", EntryKind::parse("command").unwrap())
+}
+
 #[test]
 fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
-    let mut meta = EntryMeta::default();
+    let mut meta = command_meta();
     let mut a = ParamDecl::new("a");
     a.delivery = ParameterDelivery::Placeholder;
     a.parameter_type = ParameterType::Int;
@@ -38,7 +42,7 @@ fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
 
 #[test]
 fn test_meta_parameters_roundtrip_and_non_dict_rows_dropped() {
-    let mut meta = EntryMeta::default();
+    let mut meta = command_meta();
     meta.extra.insert(
         "parameters".to_owned(),
         json!([
@@ -52,7 +56,7 @@ fn test_meta_parameters_roundtrip_and_non_dict_rows_dropped() {
     assert_eq!(settings.parameters[0].name, "a");
     assert_eq!(settings.parameters[0].delivery, ParameterDelivery::Placeholder);
 
-    let mut rewritten = EntryMeta::default();
+    let mut rewritten = command_meta();
     settings.write_to_meta(&mut rewritten);
     assert_eq!(
         rewritten.extra["parameters"],
