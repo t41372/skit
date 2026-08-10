@@ -180,6 +180,8 @@ fn test_drift_lines_mention_rebind() {
         "--prompt",
         "input-1=Old label: ",
     ]);
+    let before = sandbox.json(&["params", "myscript", "--json"]);
+    assert_eq!(parameter(&before, "input-1")["prompt"], "Old label: ");
     sandbox.commit_source_edit("myscript", |text| text.replace("Old label: ", "New label: "));
 
     let output = sandbox.ok(&["show", "myscript"]);
@@ -202,27 +204,35 @@ fn test_resync_reanchors_rebound_input_order_and_prompt() {
         "--prompt",
         "input-1=Old label: ",
     ]);
+    let before = sandbox.json(&["params", "myscript", "--json"]);
+    assert_eq!(parameter(&before, "input-1")["prompt"], "Old label: ");
     sandbox.commit_source_edit("myscript", |text| text.replace("Old label: ", "New label: "));
 
     let output = sandbox.ok(&["params", "myscript", "--resync"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.lines().any(|line| {
-            line == "input-1: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct."
-        }),
-        "{stderr}"
-    );
 
     let document = sandbox.json(&["params", "myscript", "--json"]);
     let row = parameter(&document, "input-1");
-    assert_eq!(row["prompt"], "New label: ");
-    assert_eq!(row["order"], 0);
+    assert_eq!(
+        row["prompt"], "New label: ",
+        "resync did not re-anchor the stored prompt: {row}"
+    );
+    assert_eq!(
+        row["order"], 0,
+        "resync did not re-anchor the stored input order: {row}"
+    );
 
     let show = sandbox.ok(&["show", "myscript"]);
     let human = String::from_utf8(show.stdout).unwrap();
     assert!(
         !human.contains("have drifted from the script"),
         "resync left the same rebound warning active:\n{human}"
+    );
+    assert!(
+        stderr.lines().any(|line| {
+            line == "input-1: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct."
+        }),
+        "resync changed state but omitted the Python warning:\n{stderr}"
     );
 }
 
@@ -248,7 +258,10 @@ fn test_drift_lines_mention_old_and_new_type() {
         "  RETRIES: type changed from int to str in the source (still injected — double-check the value)",
         "To refresh the definitions, run: skit params myscript --resync",
     ] {
-        assert!(human.lines().any(|actual| actual == line), "missing {line:?} in:\n{human}");
+        assert!(
+            human.lines().any(|actual| actual == line),
+            "missing {line:?} in:\n{human}"
+        );
     }
 }
 
@@ -327,12 +340,18 @@ fn test_resync_on_unparseable_script_leaves_definitions_untouched() {
 
     let output = sandbox.ok(&["params", "managed", "--resync"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
-    let warning = "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.";
-    assert!(stderr.lines().any(|line| line == warning), "{stderr}");
-
     let after = sandbox.json(&["params", "managed", "--json"]);
-    assert_eq!(parameter_names(&after), ["API_KEY", "RETRIES", "input-1"]);
+    assert_eq!(
+        parameter_names(&after),
+        ["API_KEY", "RETRIES", "input-1"],
+        "syntax-error resync mutated the managed definitions: {after}"
+    );
     assert_eq!(parameter(&after, "API_KEY")["secret"], true);
+    let warning = "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.";
+    assert!(
+        stderr.lines().any(|line| line == warning),
+        "syntax-error resync kept state but omitted the Python warning:\n{stderr}"
+    );
 }
 
 #[test]
@@ -346,10 +365,17 @@ fn test_resync_syntax_error_does_not_also_apply_other_edits_incorrectly() {
 
     let output = sandbox.ok(&["params", "managed", "--resync", "--unmanage", "Y"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
-    let warning = "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.";
-    assert!(stderr.lines().any(|line| line == warning), "{stderr}");
     let document = sandbox.json(&["params", "managed", "--json"]);
-    assert_eq!(parameter_names(&document), ["CITY"]);
+    assert_eq!(
+        parameter_names(&document),
+        ["CITY"],
+        "syntax-error resync must skip only resync while still applying --unmanage: {document}"
+    );
+    let warning = "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.";
+    assert!(
+        stderr.lines().any(|line| line == warning),
+        "syntax-error resync applied the explicit edit but omitted the Python warning:\n{stderr}"
+    );
 }
 
 #[test]
@@ -391,14 +417,18 @@ fn test_edit_specs_resync_drop_with_duplicate_names_does_not_crash() {
 
     let output = sandbox.ok(&["params", "duplicate", "--resync"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
+    let document = sandbox.json(&["params", "duplicate", "--json"]);
+    assert_eq!(
+        parameter_names(&document),
+        ["Y"],
+        "resync must deduplicate and drop the missing duplicate-named rows: {document}"
+    );
     let warning = "Dropped X: it no longer exists in the script.";
     assert_eq!(
         stderr.lines().filter(|line| *line == warning).count(),
         1,
         "the duplicate source rows must collapse to one resync warning:\n{stderr}"
     );
-    let document = sandbox.json(&["params", "duplicate", "--json"]);
-    assert_eq!(parameter_names(&document), ["Y"]);
 }
 
 #[test]
