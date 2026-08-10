@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/reconcile-edit-oracle-probe.yml
       - crates/skit-cli/tests/port_test_reconcile_edit.rs
+      - crates/skit-cli/tests/port_test_reconcile_manifest.rs
       - crates/skit-cli/tests/port_test_params_edit_declared.rs
       - crates/skit-cli/tests/port_test_declared_params_cli.rs
       - crates/skit-cli/tests/port_test_declared_params_runtime.rs
@@ -55,6 +56,8 @@ jobs:
           echo "RECONCILE_LANGUAGE_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture
           echo "PARITY_STRENGTH_GATE_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_reconcile_manifest -- --nocapture
+          echo "RECONCILE_MANIFEST_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_declared_params_manifest -- --nocapture
           echo "DECLARED_PARAMS_MANIFEST_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_params_edit_manifest -- --nocapture
