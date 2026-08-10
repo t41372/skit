@@ -41,8 +41,8 @@ adjudicated · counts are Python `def test_` counts.
 | --- | --- | --- | --- |
 | test_analyzer.py | 37 | crates/skit-language/tests/port_test_analyzer.rs | done |
 | test_analyzer_signals.py | 9 | crates/skit-language/tests/port_test_analyzer_signals.rs | done |
-| test_argspec.py | 34 | skit-language | todo |
-| test_argspec_click_typer.py | 67 | skit-language | todo |
+| test_argspec.py | 34 | crates/skit-language/tests/port_test_argspec.rs | done |
+| test_argspec_click_typer.py | 67 | crates/skit-language/tests/port_test_argspec_click_typer.rs | done (66) · 1 white-box |
 | test_callmatch.py | 9 | crates/skit-language/tests/port_test_callmatch.rs | done |
 | test_reconcile.py | 27 | crates/skit-language/tests/port_test_reconcile.rs | done (14) · 13 → Tier 4/5 |
 | test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (83) · 3 white-box, 6 → Tier 4 |
@@ -253,3 +253,20 @@ runtime tier:** `test_const_payload_is_inert`/`test_read_payload_is_inert` (risk
 (secret masking + 0600 temp-copy lifecycle is runtime/store), `test_read_in_a_loop_takes_the_value_
 once_then_reads_real_stdin` (risk #2 once-then-stdin). The single-name `normalize_shell_default`
 collapses the oracle's refusal codes to Ok/Err; the code rendering and batch aggregation are Tier 4.
+
+### test_argspec.py + test_argspec_click_typer.py → port_test_argspec*.rs (100 done · 1 white-box)
+
+The highest-fidelity-risk area of the whole rewrite: the Python oracle read Python with CPython's
+own `ast`; the Rust side reparses it with the `tree-sitter-python` grammar. **No CLI-reflection gap
+surfaced** — 34/34 argparse, 66/66 Click+Typer (1 white-box UNMAPPED). Both readers reproduce the
+oracle exactly across every axis: dest override, nargs arity (positional `*`/`?`/`+`, fixed
+`nargs=2`, Click `nargs=-1` variadic → multiple-not-required-not-repeat, Click `multiple`), the type
+spellings (`int`/`float`/`pathlib.Path`/`argparse.FileType`/`click.Choice`/`click.Path`/`click.File`,
+uppercase Click constants, Typer `Annotated[...]` unwrapping and derived kebab flags), `store_true`/
+`store_false` defaults, const-resolved defaults with secret/rebound refusal, long-flag preference,
+and — the core contract — **honest degradation, never a guess**: a custom `type=` callable, Click
+`count=True`, Typer `bool = True` (no faithful `--x/--no-x` pairing), and the three whole-surface
+degradations (subparsers/`@click.group`/multi-command Typer → `CliSurface::Dynamic`). Verified by
+independent re-run and by reading the degradation and type-detection bodies for faithfulness. The one
+UNMAPPED test hand-builds an `ast.Call` and calls the private `argspec._decorator_name`; its
+whole-surface consequence (`@(f())()` → `CliSurface::Absent`) is already covered by an oracle test.
