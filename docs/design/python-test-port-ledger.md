@@ -49,7 +49,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs | done (53) · 34 → Tier 3/4 |
 | test_shell_getopts.py | 11 | skit-language | todo |
 | test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs | done (44) · 18 white-box scanner, 2 CLI |
-| test_powershell.py | 35 | skit-language | todo |
+| test_powershell.py | 35 | crates/skit-language/tests/port_test_powershell.rs | done (17) · A+B fixed · C bool kept · 18 deferred |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
 | test_js_deps.py | 151 | skit-language / skit-runtime | todo |
@@ -188,6 +188,31 @@ Two follow-ups (tracked, not yet a gap fix):
   `write_managed_params`, never a bare `dependencies` block). Confirm against the oracle whether
   JS/TS supports an inline `// /// script\n dependencies = [...]` block; if it does and Rust cannot
   round-trip it, that is a real JS PEP-723 gap.
+
+### test_powershell.py → port_test_powershell.rs (17 done · gaps A+B fixed · C kept · 18 deferred)
+
+35 ported / 17 passed / 18 `#[ignore]`. The oracle's PowerShell reader spawns `pwsh` and reads its
+JSON; the Rust reader is a static tree-sitter rewrite (no subprocess). The 18 deferred are that
+architecture boundary: the subprocess plumbing, JSON-envelope robustness, and executable discovery
+tests have no static analog (the reader spawns nothing), plus 3 flows/store Tier-4 tests. The static
+reader surfaced 3 field-output gaps, all now resolved:
+
+- **A (fixed): the static reader omitted `.PARAMETER` comment-based help.** The oracle reads it via
+  pwsh `GetHelpContent`. Added `comment_help` to `powershell.rs`: it parses each `.PARAMETER <name>`
+  section out of a `<# ... #>` block comment (a section runs until the next `.<SECTION>` line or
+  `#>`, text trimmed), keyed case-insensitively to the param.
+- **B (fixed): the reader over-degraded a readable non-scalar default.** The oracle degrades only a
+  NOT-readable (dynamic) default; a readable constant that is merely non-scalar (`@(1, 2)`, an
+  `@{...}` of literals) stays non-degraded with `default = None`. Added `readable_constant`: literals
+  and `$true/$false/$null` and arrays/hashtables/operator-expressions of readable constants are
+  readable; a command, subexpression, or other variable is dynamic and still degrades. Verified the
+  dynamic cases (`(Get-Date)`, `$x`, `@{a=(Get-Date)}`) still degrade — no over-correction.
+- **C (kept as a deliberate superset improvement, reversible):** the oracle's `_STATIC_TYPES` map
+  omits `System.Boolean`, so it degrades `[bool]` to free text; the Rust reader maps `[bool]` to a
+  native `ParameterType::Bool` checkbox, consistent with bool in every other language. Kept as an
+  addition (the free-text field could only hold a Boolean anyway), recorded in
+  `docs/behavior-changes.md`; `test_bool_default_is_carried` asserts the kept behavior with a
+  BEHAVIOR-CHANGE note. Reversible on request.
 
 ## Adjudication log
 

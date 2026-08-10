@@ -101,3 +101,23 @@ for a key nobody sends any more; it caught only `settings_parameter_fields`.
 Version 0.4 reads one name from its add box and makes one declaration
 (`src/skit/tui_settings.py:719`, `:747-749`). Version 0.5 splits the same box on commas and spaces,
 so one save can add several parameters. The single-name case behaves the same way.
+
+## A PowerShell `[bool]` parameter is a native checkbox
+
+Version 0.4 reads a PowerShell `param()` block through the script's own parser and maps each static
+type onto the form's type axis. Its `_STATIC_TYPES` map
+(`src/skit/langs/powershell/cli_reader.py:63-69`) lists `System.String`, `System.Int32`,
+`System.Int64`, `System.Double`, and `System.Single`. It omits `System.Boolean`, so a `[bool]`
+parameter falls to `_apply_static_type` (`:253-260`), which degrades it to a free-text field.
+
+Version 0.5 maps `[bool]` and `[boolean]` to `ParameterType::Bool`, a native checkbox, and carries a
+readable `$true` / `$false` default onto it. This makes a Boolean typed parameter a correctly typed
+control instead of free text, which is how skit already reflects a Boolean in every other language
+(Python `store_true`, an argparse bool, and so on), so it removes an inconsistency rather than a
+version 0.4 feature. A `[switch]` was already a native `store_true` toggle in both versions; this
+extends the same treatment to the explicit `[bool]` spelling.
+
+The change is an addition, not a removal: the free-text field the oracle produced could hold only a
+Boolean value anyway, and the checkbox delivers the same `-On`/`-On:$false` flag with a discoverable
+control. `test_bool_default_is_carried` in `crates/skit-language/tests/port_test_powershell.rs`
+pins the kept behavior (`default == Some(Bool(true))`, not degraded).
