@@ -6,11 +6,16 @@
 
 use std::collections::BTreeMap;
 
-use skit_form::onboarding_plan;
-use skit_language::{LanguageError, ShellInputError, inject_values};
+use skit_language::{
+    LanguageError, ParseOutcome, ShellInputError, inject_values, parse_document,
+};
 
 fn declarations(source: &str) -> Vec<skit_domain::parameters::ParamDecl> {
-    onboarding_plan("shell", source)
+    let ParseOutcome::Parsed(document) = parse_document("shell", source) else {
+        panic!("expected shell source to parse");
+    };
+    document
+        .analysis()
         .candidates
         .into_iter()
         .filter(|candidate| {
