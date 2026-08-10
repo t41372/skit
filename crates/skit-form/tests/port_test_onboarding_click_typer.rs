@@ -140,9 +140,13 @@ fn test_click_count_and_non_choice_callable_degrade_only_the_field() {
         }
         other => panic!("expected static click: {other:?}"),
     };
-    assert!(fields[0].degraded);
-    assert!(fields[1].degraded);
-    assert!(!fields[2].degraded);
+    let by = fields
+        .iter()
+        .map(|field| (field.name.as_str(), field))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert!(by["verbose"].degraded);
+    assert!(by["c"].degraded);
+    assert!(!by["ok"].degraded);
 }
 
 #[test]
