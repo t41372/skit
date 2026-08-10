@@ -2,9 +2,16 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, Write as _},
     path::Path,
+    thread,
+    time::Duration,
 };
 
 use skit_domain::EntryId;
+
+// v0.4 contract from `src/skit/atomic.py`: Windows cannot replace a file while
+// another handle has it open. A bounded retry rides out transient sharing violations.
+const REPLACE_RETRIES: usize = 7;
+const REPLACE_BACKOFF_START: Duration = Duration::from_millis(10);
 
 #[derive(Debug)]
 pub(crate) struct FileLock {
@@ -51,12 +58,34 @@ pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     file.sync_all()?;
     drop(file);
 
-    if let Err(error) = fs::rename(&temp, path) {
+    if let Err(error) = replace_with_retry(&temp, path) {
         let _ = fs::remove_file(&temp);
         return Err(error);
     }
     let _ = sync_directory(parent);
     Ok(())
+}
+
+pub(crate) fn replace_with_retry(src: &Path, dst: &Path) -> io::Result<()> {
+    replace_with_retry_using(|| fs::rename(src, dst), thread::sleep)
+}
+
+fn replace_with_retry_using(
+    mut replace: impl FnMut() -> io::Result<()>,
+    mut sleep: impl FnMut(Duration),
+) -> io::Result<()> {
+    let mut delay = REPLACE_BACKOFF_START;
+    for _ in 0..REPLACE_RETRIES {
+        match replace() {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                sleep(delay);
+                delay = delay.saturating_mul(2);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    replace()
 }
 
 pub(crate) fn preserve_permissions_best_effort<F>(
@@ -83,9 +112,10 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_lock, atomic_write_bytes, preserve_permissions_best_effort, sync_directory,
+        acquire_lock, atomic_write_bytes, preserve_permissions_best_effort,
+        replace_with_retry_using, sync_directory,
     };
-    use std::{cell::Cell, io};
+    use std::{cell::Cell, io, time::Duration};
     use tempfile::TempDir;
 
     #[test]
@@ -125,5 +155,69 @@ mod tests {
         );
 
         assert!(attempted.get());
+    }
+
+    #[test]
+    fn test_replace_retries_through_transient_permission_error() {
+        // Python `test_atomic.py`: two sharing violations then success, with exact backoff.
+        let mut attempts = 0_u8;
+        let mut sleeps = Vec::new();
+        replace_with_retry_using(
+            || {
+                attempts += 1;
+                if attempts <= 2 {
+                    Err(io::Error::new(io::ErrorKind::PermissionDenied, "busy"))
+                } else {
+                    Ok(())
+                }
+            },
+            |delay| sleeps.push(delay),
+        )
+        .unwrap();
+
+        assert_eq!(attempts, 3);
+        assert_eq!(
+            sleeps,
+            [Duration::from_millis(10), Duration::from_millis(20)]
+        );
+    }
+
+    #[test]
+    fn test_replace_gives_up_loudly_after_bounded_attempts() {
+        // Python `test_atomic.py`: 7 retries plus one final loud attempt.
+        let mut attempts = 0_u8;
+        let mut sleeps = Vec::new();
+        let error = replace_with_retry_using(
+            || {
+                attempts += 1;
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "busy"))
+            },
+            |delay| sleeps.push(delay),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(attempts, 8);
+        assert_eq!(
+            sleeps,
+            [10_u64, 20, 40, 80, 160, 320, 640].map(Duration::from_millis)
+        );
+    }
+
+    #[test]
+    fn test_replace_other_oserrors_are_not_retried() {
+        // Python `test_atomic.py`: only a sharing violation is retryable.
+        let mut attempts = 0_u8;
+        let error = replace_with_retry_using(
+            || {
+                attempts += 1;
+                Err(io::Error::new(io::ErrorKind::IsADirectory, "directory"))
+            },
+            |_| panic!("a non-sharing error must not sleep"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::IsADirectory);
+        assert_eq!(attempts, 1);
     }
 }
