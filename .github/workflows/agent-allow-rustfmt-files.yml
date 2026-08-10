@@ -1,27 +1,27 @@
 name: Allow rustfmt-only analyzer changes
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/port-python-test-contracts
 
 permissions: {}
 
 concurrency:
-  group: allow-rustfmt-analyzer-${{ github.event.pull_request.number }}
+  group: allow-rustfmt-analyzer
   cancel-in-progress: true
 
 jobs:
   patch:
-    if: >-
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.event.pull_request.head.ref == 'agent/port-python-test-contracts'
+    if: github.ref == 'refs/heads/agent/port-python-test-contracts'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Check out the exact pull request head
+      - name: Check out the exact branch head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: true
       - name: Extend the explicit format allowlist
@@ -56,8 +56,6 @@ jobs:
           path.write_text(source.replace(old, new, 1))
           PY
       - name: Commit the workflow repair
-        env:
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -65,4 +63,4 @@ jobs:
           git rm .github/workflows/agent-allow-rustfmt-files.yml
           git add .github/workflows/agent-source-snapshot.yml
           git commit -m "ci(agent): allow verified rustfmt-only files"
-          git push origin "HEAD:refs/heads/${HEAD_BRANCH}"
+          git push origin HEAD:refs/heads/agent/port-python-test-contracts
