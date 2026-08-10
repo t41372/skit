@@ -52,7 +52,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_powershell.py | 35 | crates/skit-language/tests/port_test_powershell.rs | done (17) · A+B fixed · C bool kept · 18 deferred |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
-| test_js_deps.py | 151 | skit-language / skit-runtime | todo |
+| test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | in progress (36/115) · verifier caught 4 weakenings + 1 false-divergence + 1 hidden sweep divergence · 6-fix pass running |
 | test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (16) launch/invoke half · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language · 2 divergences |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (11) · 4 divergences (describe-total, params-msg, doctor-uv ×2) · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (3) · 2 divergences (exe/prompt picker labels) |
@@ -84,12 +84,12 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_flows.py | 102 | skit-runtime / skit-application | todo |
+| test_flows.py | 102 | crates/skit-application/tests/port_test_flows.rs | done (58) · 44 cross-crate (plan_for_entry/execute/transparency → skit-cli, exact messages → skit-tui) · divergences kept |
 | test_uvman.py | 36 | crates/skit-runtime/tests/port_test_uvman.rs | done (18) · 18 white-box/cross-crate · orphan-pin completeness OWED as skit-runtime unit test · 3 divergences |
 | test_launcher.py | 38 | crates/skit-runtime/tests/port_test_launcher.rs | done (17) · 21 cross-crate |
 | test_launcher_fix.py | 12 | crates/skit-runtime/tests/port_test_launcher_fix.rs | done (11) · 1 cfg-gated Windows quoting · no gap (3 promotions stronger than oracle) |
-| test_shim.py | 38 | skit-language / skit-runtime | todo |
-| test_entrypoint.py | 10 | skit-cli / skit-runtime | todo |
+| test_shim.py | 38 | crates/skit-language/tests/port_test_shim.rs | done (33) · 5 cross-crate (write_injected → skit-cli) · SECRET-CRASH-SAFETY divergence flagged |
+| test_entrypoint.py | 10 | crates/skit-cli/tests/port_test_entrypoint.rs | done (9) · eager --install-completion divergence · 1 unmapped (python -m) |
 
 ### Tier 4 — CLI contracts (`skit-cli`)
 
@@ -337,6 +337,27 @@ guess. Harmless (both were skit's own regenerable runtime scratch, untracked; no
 tree clean), but the port_wave contract is now hardened: a subagent may not delete anything it did
 not create, and must sandbox the real skit binary's SKIT_DATA/STATE/CONFIG_DIR to temp on every
 invocation (running skit unsandboxed dropped .locks/values into the cwd).
+
+### Wave 4 — subagent fan-out (2026-08-10): shim, entrypoint, flows, js_deps
+
+shim (33/5), entrypoint (9/2), flows (58/44) verified faithful and committed (127fef7). js_deps
+(36/115) came back faithful:FALSE -- the adversarial verifier ran binary probes + stripped-#[ignore]
+experiments and caught 4 weakened assertions (checking `deps --json` instead of the oracle's stored
+PEP-723 block / byte-equality / exact-ordered-list contracts), 1 FALSE divergence (a test #[ignore]'d
+as failing that actually passes -- Rust does wipe a stray node_modules), and 1 HIDDEN divergence (a
+passing test that dropped the oracle's node_modules sweep assertion, which really fails). A 6-fix
+correction pass is running; js_deps is held uncommitted until it is clean.
+
+Notable new divergence (FAILING CONTRACT, from shim) -- **secret crash-safety**: the oracle writes
+the injected copy (which carries PLAINTEXT SECRET values) to the OS temp dir first, entry_dir only as
+fallback (rewrite.py:176-180), so a crash before cleanup never leaves a secret file in the persistent
+store. Rust's stage_injected_source (skit-cli command.rs:686-693) writes into entry_dir
+unconditionally, mitigated only by a next-run sweep -- a dropped v0.4 crash-safety invariant. Route to
+the impl-fix pass.
+
+flows records the whole plan/assemble/execute pipeline: 43 cross-crate deferrals to skit-cli
+(plan_for_entry/execute/transparency_lines) and skit-tui (exact user messages), which retire many of
+the cross-crate MUST-VERIFY notes the earlier waves parked at this tier.
 
 ### test_analyzer.py → port_test_analyzer.rs (done)
 
