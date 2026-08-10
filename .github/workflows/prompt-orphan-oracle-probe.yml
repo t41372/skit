@@ -1,0 +1,29 @@
+name: Prompt orphan oracle probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/prompt-orphan-oracle-probe.yml
+      - crates/skit-runtime/tests/port_test_prompt_launch.rs
+      - crates/skit-store/tests/port_test_store_orphan_truth.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run prompt and orphan oracles
+        shell: bash
+        run: |
+          set +e
+          cargo test --locked -p skit-runtime --test port_test_prompt_launch -- --nocapture
+          echo "PROMPT_LAUNCH_RC=$?"
+          cargo test --locked -p skit-store --test port_test_store_orphan_truth -- --nocapture
+          echo "ORPHAN_TRUTH_RC=$?"
+          exit 0
