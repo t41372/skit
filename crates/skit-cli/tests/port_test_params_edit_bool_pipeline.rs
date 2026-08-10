@@ -5,7 +5,7 @@
 //! the complete params edit transaction applies that hygiene at the persisted public boundary and
 //! rolls an invalid combined edit back as one row, matching Python `edit_declared`.
 
-use std::fs;
+use std::{fs, path::PathBuf};
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -69,6 +69,10 @@ impl Sandbox {
     fn params(&self) -> Value {
         let output = self.ok(&["params", "binary", "--json"]);
         serde_json::from_slice(&output.stdout).unwrap()
+    }
+
+    fn metadata(&self) -> PathBuf {
+        self.data.path().join("scripts").join("binary").join("meta.toml")
     }
 }
 
@@ -156,18 +160,33 @@ fn test_non_type_tweak_on_a_bool_leaves_its_action_alone() {
 fn test_non_type_tweak_on_a_str_with_stale_action_clears_it() {
     let sandbox = Sandbox::new();
     sandbox.add_exe();
-    sandbox.ok(&[
-        "params", "binary", "--add", "a", "--flag", "a=--a", "--action", "a=store_true",
-    ]);
-    assert_eq!(text(row(&sandbox.params(), "a"), "action"), "");
-    // Re-seed a stale action through a single transaction whose type ends as bool, then move off
-    // bool in a separate operation before exercising an unrelated tweak.
-    sandbox.ok(&["params", "binary", "--type", "a=bool"]);
-    assert_eq!(text(row(&sandbox.params(), "a"), "action"), "store_true");
-    sandbox.ok(&["params", "binary", "--type", "a=str"]);
+    sandbox.ok(&["params", "binary", "--add", "a", "--flag", "a=--a"]);
+
+    // Python's input is a hand-edited row that is already inconsistent: str + store_true.
+    // Seed that exact persisted condition directly; using the CLI to set the stale action would
+    // exercise the cleanup before the actual test and turn this into a false positive.
+    let metadata = sandbox.metadata();
+    let source = fs::read_to_string(&metadata).unwrap();
+    let needle = "name = \"a\"\n";
+    assert!(source.contains(needle), "unexpected metadata shape:\n{source}");
+    fs::write(
+        &metadata,
+        source.replacen(needle, "name = \"a\"\naction = \"store_true\"\n", 1),
+    )
+    .unwrap();
+    let seeded = sandbox.params();
+    assert_eq!(text(row(&seeded, "a"), "type"), "str");
+    assert_eq!(text(row(&seeded, "a"), "action"), "store_true");
+
     sandbox.ok(&["params", "binary", "--help-text", "a=x"]);
     let document = sandbox.params();
-    assert_eq!(text(row(&document, "a"), "action"), "");
+    let a = row(&document, "a");
+    assert_eq!(text(a, "help"), "x");
+    assert_eq!(
+        text(a, "action"),
+        "",
+        "an unrelated edit must scrub a stale flag action from a non-bool row"
+    );
 }
 
 #[test]
