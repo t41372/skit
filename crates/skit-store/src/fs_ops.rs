@@ -39,21 +39,27 @@ pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .and_then(|name| name.to_str())
         .unwrap_or("state");
     let temp = parent.join(format!(".{name}.{}.tmp", EntryId::generate().as_str()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
-    file.write_all(bytes)?;
-    preserve_permissions_best_effort(
-        fs::metadata(path).map(|metadata| metadata.permissions()),
-        |permissions| file.set_permissions(permissions),
-    );
-    file.sync_all()?;
-    drop(file);
-
-    if let Err(error) = fs::rename(&temp, path) {
+    // Any failure after the temp file exists must remove it, not just a rename failure: a
+    // write_all or sync_all (fsync) error otherwise leaks a `.tmp` beside the target. The target
+    // itself always stays intact -- the rename is the only step that touches it -- so this is a
+    // temp-cleanup contract, matching the oracle's atomic writer.
+    let outcome = (|| -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(bytes)?;
+        preserve_permissions_best_effort(
+            fs::metadata(path).map(|metadata| metadata.permissions()),
+            |permissions| file.set_permissions(permissions),
+        );
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, path)
+    })();
+    if outcome.is_err() {
         let _ = fs::remove_file(&temp);
-        return Err(error);
+        return outcome;
     }
     let _ = sync_directory(parent);
     Ok(())
