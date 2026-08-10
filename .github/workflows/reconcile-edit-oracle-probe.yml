@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/reconcile-edit-oracle-probe.yml
       - crates/skit-cli/tests/port_test_reconcile_edit.rs
+      - crates/skit-cli/tests/port_test_params_edit_declared.rs
       - crates/skit-cli/tests/port_test_strength_gate.rs
       - crates/skit-language/tests/port_test_reconcile.rs
 
@@ -19,7 +20,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Run reconcile and parity-strength oracles
+      - name: Run relocated and declared edit oracles
         shell: bash
         run: |
           set +e
@@ -29,4 +30,6 @@ jobs:
           echo "PARITY_STRENGTH_GATE_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_reconcile_edit -- --nocapture
           echo "RECONCILE_EDIT_ORACLE_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_params_edit_declared -- --nocapture
+          echo "PARAMS_EDIT_DECLARED_RC=$?"
           exit 0
