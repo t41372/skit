@@ -3,9 +3,7 @@
 
 use skit_domain::{
     EntrySettings,
-    parameters::{
-        ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-    },
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
 };
 use skit_form::{FormSource, PreparedField, form_plan};
 
