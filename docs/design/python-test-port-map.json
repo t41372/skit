@@ -257,10 +257,6 @@
         "test_default_env_and_now_paths",
         "test_escape_sequences_mid_string_exact",
         "test_preview_forwards_every_argument",
-        "test_has_tokens",
-        "test_default_env_and_now_paths",
-        "test_escape_sequences_mid_string_exact",
-        "test_preview_forwards_every_argument",
         "test_escape_deep_in_string_exact"
       ],
       "deferred": []
