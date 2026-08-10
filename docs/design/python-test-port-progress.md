@@ -8,15 +8,15 @@ test in exactly one declared target, and pass against the Rust implementation.
 
 ## Executable direct ports
 
-The machine-readable map now contains 206 executable direct ports and 13 named deferrals across
-nine started behavior modules. The 13 deferrals belong only to higher-layer `test_reconcile.py`
-operations. They do not count as completed tests.
+The machine-readable map now contains 210 executable direct ports and 30 named deferrals across ten
+started behavior modules. A deferral does not count as a completed test.
 
 - `test_analyzer.py`: 37 executable ports.
 - `test_analyzer_signals.py`: 9 executable ports.
 - `test_argspec.py`: 34 executable ports.
 - `test_argspec_click_typer.py`: 67 executable ports.
 - `test_callmatch.py`: 9 executable ports.
+- `test_langs.py`: 4 executable CLI ports; 17 owner-level contracts remain explicit deferrals.
 - `test_reconcile.py`: 14 executable report-level ports; 13 higher-layer contracts remain explicit
   deferrals.
 - `test_tokens.py`: 21 executable ports across the deterministic application scanner and the
@@ -30,26 +30,51 @@ definitions. The machine gate rejects incomplete `done` rows, unnamed partial ga
 unmapped `port_test_*.rs` files, duplicate physical targets, and target files that contain tests not
 claimed by the port map.
 
-## Argspec tranche execution evidence
+## Argspec tranche
 
-The branch-only GitHub Actions job used Rust 1.97.1 and ran the two new test binaries before its
-format-publish step. The step published commit `1bc27d89871b6336e74d8acd3c6ebd87b21a0895`, so both preceding test commands completed
-successfully:
+`test_argspec.py` and `test_argspec_click_typer.py` are complete direct ports. Their 101 Python test
+names each map to one Rust test. The tests keep the Python rationale comments. The branch workflow
+ran both binaries successfully:
 
-- `port_test_argspec`: 34 Python-named tests passed;
-- `port_test_argspec_click_typer`: 67 Python-named tests passed.
+- `port_test_argspec`: 34 passed; 0 failed; 0 ignored;
+- `port_test_argspec_click_typer`: 67 passed; 0 failed; 0 ignored.
 
-The two published blobs are byte-identical to the locally reviewed `rustfmt` output. No assertion or
-implementation was changed by that formatting commit.
+## Language and health tranche
 
-## Repository-wide gate status
+Four direct ports from `test_langs.py` exposed two invented Rust contracts:
 
-The ordinary PR matrix exposed a pre-existing Windows build blocker in the Rust rewrite before any
-test could run. Rust 1.97.1 rejects the unstable standard-library calls
-`MetadataExt::volume_serial_number`, `MetadataExt::file_index`, and `MetadataExt::change_time` in
-`crates/skit-store/src/mutations/registry.rs`. This failure is unrelated to the argspec ports, but it
-means the full Windows workspace gate is not yet green.
+- `doctor` treated `uv` as required for a library that contained only non-Python entries;
+- the executable parameter view did not print the Python message for an entry with no managed
+  parameters.
 
-The branch-only verification workflow is read-only. It checks formatting, the 101 argspec tests,
-the machine-readable port manifest, and the existing path ports. It cannot modify the branch or
-hide a failing oracle.
+The implementation now follows the Python oracle. An empty library or a library with a Python entry
+requires `uv`. A non-empty library with no Python entry reports `uv` as not required. The executable
+parameter view prints the localized no-managed-parameters message and does not advertise the
+unsupported `--manage` path.
+
+The same tranche removed unstable Windows metadata calls from the registry cache. Unix keeps the
+file-identity and change-time shortcut. Windows uses stable metadata and verifies the metadata file
+content hash before it trusts a cached row. This keeps correctness without `unsafe` code or unstable
+standard-library APIs.
+
+Targeted validation for commit `a6049184893a112faabc656c5f9182befbc0c5e7` passed:
+
+- registry cache: 13 passed;
+- direct `test_langs.py` ports: 4 passed;
+- corrected contextual-uv product contract: 1 passed;
+- shared health inspector unit contract: 1 passed;
+- i18n catalog: 14 passed;
+- parity manifest: 1 passed.
+
+`python-contract-port-validation.txt` contains the exact commands and counts.
+
+## Gate status
+
+The branch-only workflow is read-only. It checks formatting, stable Windows compilation of
+`skit-store`, registry-cache correctness, the 105 direct tests in the current argspec/language
+tranches, the corrected product and health contracts, i18n, and the machine-readable port map. It
+cannot commit or push.
+
+The ordinary pull-request workflow still owns the complete workspace test, Clippy, Rustdoc,
+packaging, coverage, and platform matrix. This document does not mark those gates green until their
+current pull-request runs complete successfully.
