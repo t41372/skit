@@ -61,12 +61,7 @@ fn test_assemble_injects_a_value_that_equals_the_source_default() {
         vec![("GREETING".to_owned(), "bonjour".to_owned())]
     );
 
-    let changed = assemble(
-        &[declaration],
-        &scalar_map(&[("GREETING", "other")]),
-        &[],
-    )
-    .unwrap();
+    let changed = assemble(&[declaration], &scalar_map(&[("GREETING", "other")]), &[]).unwrap();
     assert_eq!(changed.inject_values, text_map(&[("GREETING", "other")]));
     assert_eq!(
         changed.display,
@@ -97,12 +92,7 @@ fn test_assemble_injects_the_expansion_of_an_untouched_token_default() {
 
 #[test]
 fn test_assemble_inject_delivers_empty_string_when_cleared() {
-    let assembly = assemble(
-        &[greeting()],
-        &scalar_map(&[("GREETING", "")]),
-        &[],
-    )
-    .unwrap();
+    let assembly = assemble(&[greeting()], &scalar_map(&[("GREETING", "")]), &[]).unwrap();
     assert_eq!(assembly.inject_values, text_map(&[("GREETING", "")]));
     assert!(
         assembly
@@ -116,12 +106,7 @@ fn test_assemble_env_delivers_empty_string_when_cleared() {
     let mut declaration = ParamDecl::new("CITY");
     declaration.delivery = ParameterDelivery::Env;
     declaration.default = Some(ParameterValue::String("Taipei".to_owned()));
-    let assembly = assemble(
-        &[declaration],
-        &scalar_map(&[("CITY", "")]),
-        &[],
-    )
-    .unwrap();
+    let assembly = assemble(&[declaration], &scalar_map(&[("CITY", "")]), &[]).unwrap();
     assert_eq!(assembly.env_values, text_map(&[("CITY", "")]));
 }
 
