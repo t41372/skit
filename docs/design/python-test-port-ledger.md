@@ -57,7 +57,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_langs.py | 21 | skit-language | todo |
 | test_kindnames.py | 5 | skit-language / skit-domain | todo |
 | test_tokens.py | 21 | skit-language | todo |
-| test_pep723_split.py | 24 | skit-language | todo |
+| test_pep723_split.py | 24 | crates/skit-language/tests/port_test_pep723_split.rs (+ skit-ui re-home) | done (3) · 14 → skit-ui · 7 white-box/CLI |
 | test_metawriter.py | 24 | crates/skit-language/tests/port_test_metawriter.rs | done (29) · float-order gap fixed · 2 white-box |
 | test_template_context_quoting.py | 44 | skit-language | todo |
 | test_declared_params.py | 52 | skit-language | todo |
@@ -168,6 +168,26 @@ whole-block TOML parse, not Python's bracket-depth tracking), and the U+0085/U+2
 prompt-separator escaping round-trip. The 2 `#[ignore]` probe the Python-private
 `pep723._structural_bracket_delta`; the Rust writer parses the block as TOML, so there is no public
 equivalent — the observable round-trip is covered by the passing tests.
+
+### test_pep723_split.py → port_test_pep723_split.rs (3 done · re-home + one flag)
+
+24 ported / 3 passed / 21 `#[ignore]`. This module mostly does NOT belong to skit-language: its
+subject `pep723.split_requirements` (PEP 508 comma-splitting, 14 tests) maps to
+`skit_ui::add::split_pep508_requirements` (`pub(crate)` in skit-ui, `add.rs:1164`) — skit-language
+exposes only the single-item `validate_pep508_requirement`. The 3 mappable tests (TOML marker/backslash
+escaping round-trips via `write_uv_metadata`/`read_uv_metadata`) pass with no byte divergence. 4
+`#[ignore]` probe Python-private regex/helpers; the 14 split tests keep their frozen input/expected
+pairs for re-homing.
+
+Two follow-ups (tracked, not yet a gap fix):
+- **Re-home the 14 `split_requirements` tests to a skit-ui unit-test port** (Tier 5 — a skit-ui unit
+  test already exists at `add.rs:2385`). The behavior is implemented; only the test lives in the
+  wrong crate.
+- **Flag for the test_js_deps.py port:** no public skit-language function injects/reads a `//`-leader
+  `dependencies` block (the `//` path only carries a `[tool.skit]` params table via
+  `write_managed_params`, never a bare `dependencies` block). Confirm against the oracle whether
+  JS/TS supports an inline `// /// script\n dependencies = [...]` block; if it does and Rust cannot
+  round-trip it, that is a real JS PEP-723 gap.
 
 ## Adjudication log
 
