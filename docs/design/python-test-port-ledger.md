@@ -51,7 +51,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_fish.py | 64 | skit-language | todo |
 | test_powershell.py | 35 | skit-language | todo |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
-| test_js_inject.py | 37 | skit-language | todo |
+| test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
 | test_js_deps.py | 151 | skit-language / skit-runtime | todo |
 | test_interpreters.py | 74 | skit-language / skit-runtime | todo |
 | test_langs.py | 21 | skit-language | todo |
@@ -293,3 +293,27 @@ template/object/array/destructuring excluded), demotions (let/var/reassign/`+=`/
 last-write-wins, TS annotations, `enum`-under-js → SyntaxError, reconcile, the `// /// script` block
 engine round-trip + shebang placement, and the full `parseArgs` surface matrix (degrade-whole-spec
 vs skip-just-field, Absent cases). 4 more `#[ignore]` are CLI/registry integration → Tier 4.
+
+### test_js_inject.py → port_test_js_inject.rs (16 done · THIRD REAL GAP · 21 deferred)
+
+37 ported / 16 passed / 21 `#[ignore]`. Bucket 1 surfaced the third real gap:
+
+- **Fixed: the JS injector emitted raw UTF-8 in a string literal instead of the oracle's ensure_ascii
+  form.** The oracle renders a string as `json.dumps(value)` (default `ensure_ascii=True`), escaping
+  non-ASCII to `\uXXXX` (`高雄 🚀` → `高雄 🚀`); its docstring names this the one
+  escaper and asserts `高` in the injected bytes (`test_cjk_and_emoji_escape_to_valid_js`). Rust
+  used `serde_json::to_string`, which emits raw UTF-8 — valid JS and the same runtime value, but a
+  byte divergence from v0.4. Both forms run identically; the oracle's choice keeps the temp copy pure
+  ASCII, immune to an encoding mismatch on the write/read path. Added `json_string_ascii`
+  (serde_json for the quote/backslash/control escapes, then non-ASCII folded to `\uXXXX` with UTF-16
+  surrogate pairs above the BMP), so ASCII values stay byte-identical and non-ASCII matches
+  `json.dumps`. Verified against the oracle; workspace green, clippy clean.
+- **Reclassified `test_injected_string_reaches_the_child`.** The agent mis-bucketed this run_js
+  execution test as a byte assertion on raw UTF-8 (Rust's then-current output, not the oracle's). It
+  is a genuine runtime test (asserts node stdout); its escaped-byte contract is covered by
+  `test_cjk_and_emoji_escape_to_valid_js`, so it moves to a Tier-3/4 `#[ignore]` runtime-defer.
+
+Bucket 2 (1 remaining): `test_injected_const_reaches_the_child` (int lands, ASCII, byte-established).
+Bucket 3 (21 deferred to Tier 3/4): `_resolve_runner`/`_gate_node` (`node --check`), temp-copy file
+facts incl. **`test_injected_copy_is_0600` (MUST-VERIFY secret handling)**, the offline-gate
+escaper seam, and `flows.execute`/`skit run` end-to-end.
