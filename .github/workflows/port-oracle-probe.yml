@@ -1,0 +1,61 @@
+name: Port oracle probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/port-oracle-probe.yml
+      - crates/skit-runtime/tests/port_test_launcher.rs
+      - crates/skit-runtime/tests/port_test_launcher_fix.rs
+      - crates/skit-store/tests/port_test_argstate.rs
+      - crates/skit-store/tests/port_test_atomic_state.rs
+      - crates/skit-store/tests/port_test_store_concurrency.rs
+      - crates/skit-store/tests/port_test_store_fix.rs
+      - crates/skit-store/tests/port_test_store_registry_name_defense.rs
+      - crates/skit-store/tests/port_test_store_registry_repair.rs
+      - crates/skit-store/tests/registry_fast_read.rs
+      - crates/skit-store/tests/registry_resolve.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run test-only Python parity oracles
+        shell: bash
+        run: |
+          set +e
+          failures=0
+          run_oracle() {
+            label="$1"
+            shift
+            echo "::group::$label"
+            "$@"
+            rc=$?
+            if [ "$rc" -eq 0 ]; then
+              echo "PORT_ORACLE_PASS $label"
+            else
+              echo "PORT_ORACLE_FAIL $label rc=$rc"
+              failures=$((failures + 1))
+            fi
+            echo "::endgroup::"
+          }
+
+          run_oracle runtime/launcher cargo test --locked -p skit-runtime --test port_test_launcher -- --nocapture
+          run_oracle runtime/launcher-fix cargo test --locked -p skit-runtime --test port_test_launcher_fix -- --nocapture
+          run_oracle store/argstate cargo test --locked -p skit-store --test port_test_argstate -- --nocapture
+          run_oracle store/atomic-state cargo test --locked -p skit-store --test port_test_atomic_state -- --nocapture
+          run_oracle store/concurrency cargo test --locked -p skit-store --test port_test_store_concurrency -- --nocapture
+          run_oracle store/fix cargo test --locked -p skit-store --test port_test_store_fix -- --nocapture
+          run_oracle store/name-defense cargo test --locked -p skit-store --test port_test_store_registry_name_defense -- --nocapture
+          run_oracle store/registry-repair cargo test --locked -p skit-store --test port_test_store_registry_repair -- --nocapture
+          run_oracle store/registry-fast-read cargo test --locked -p skit-store --test registry_fast_read -- --nocapture
+          run_oracle store/registry-resolve cargo test --locked -p skit-store --test registry_resolve -- --nocapture
+
+          echo "PORT_ORACLE_FAILURE_GROUPS=$failures"
+          exit 0
