@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterType, ParameterValue, is_secret_name,
 };
@@ -59,6 +61,7 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
         }
     });
     parameters.sort_by_key(tree_sitter::Node::start_byte);
+    let parameter_help = comment_help(document);
     let mut fields = Vec::new();
     for parameter in parameters {
         let Some(variable) = named_children(parameter)
@@ -78,6 +81,9 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
         let mut declaration = ParamDecl::new(&name);
         declaration.flag = format!("-{name}");
         declaration.secret = is_secret_name(&name);
+        if let Some(help) = parameter_help.get(&name.to_ascii_uppercase()) {
+            declaration.help = help.clone();
+        }
         let mut degradation = None;
         let attributes = named_children(parameter)
             .into_iter()
@@ -88,12 +94,27 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
             declaration.degraded = true;
             degradation = Some(DegradationReason::DynamicType);
         }
-        let default = named_children(parameter)
+        if let Some(default_node) = named_children(parameter)
             .into_iter()
             .find(|node| node.kind() == "script_parameter_default")
-            .map(|default| text(document, default).to_owned())
-            .or_else(|| recovered_default(document, variable));
-        if let Some(default) = default {
+        {
+            // A parsed default: classify the expression the way PowerShell's SafeGetValue does.
+            // A readable scalar constant carries onto the scalar model; a readable but non-scalar
+            // constant (an `@(...)` array, an `@{...}` hashtable of literals) is left unset without
+            // a degrade; a genuinely dynamic expression (a variable, a command, a subexpression)
+            // degrades the field. Oracle: cli_reader.py `_apply_default` degrades only when
+            // `defaultReadable` is false.
+            if let Some(value) =
+                static_default(text(document, default_node), declaration.parameter_type)
+            {
+                declaration.default = Some(value);
+            } else if !readable_default(document, default_node) {
+                declaration.degraded = true;
+                degradation = Some(DegradationReason::DynamicDefault);
+            }
+        } else if let Some(default) = recovered_default(document, variable) {
+            // An error-recovered bare default has no expression node to classify; keep the
+            // established text-based scalar read and its degrade-on-failure fallback.
             if let Some(value) = static_default(&default, declaration.parameter_type) {
                 declaration.default = Some(value);
             } else {
@@ -233,6 +254,133 @@ fn recovered_default(document: &ParsedDocument, variable: tree_sitter::Node<'_>)
     let end = tail.find([',', ')', '\r', '\n']).unwrap_or(tail.len());
     let value = tail[..end].trim();
     (!value.is_empty()).then(|| value.to_owned())
+}
+
+/// Collect per-parameter comment-based help, keyed by the upper-cased parameter name.
+///
+/// The oracle reads this from `GetHelpContent().Parameters`; the static reader parses it from a
+/// `<# ... #>` block comment. Each `.PARAMETER <name>` section runs until the next `.<SECTION>`
+/// line or the closing `#>`, and its text is stripped of surrounding whitespace.
+fn comment_help(document: &ParsedDocument) -> BTreeMap<String, String> {
+    let mut help = BTreeMap::new();
+    walk(document.tree.root_node(), &mut |node| {
+        if node.kind() != "comment" {
+            return;
+        }
+        if let Some(body) = text(document, node)
+            .strip_prefix("<#")
+            .and_then(|inner| inner.strip_suffix("#>"))
+        {
+            collect_parameter_help(body, &mut help);
+        }
+    });
+    help
+}
+
+/// Parse the `.PARAMETER` sections out of one block-comment body into `help`.
+fn collect_parameter_help(body: &str, help: &mut BTreeMap<String, String>) {
+    let mut current: Option<String> = None;
+    let mut lines: Vec<&str> = Vec::new();
+    for line in body.lines() {
+        if let Some(header) = section_keyword(line) {
+            flush_parameter_help(&mut current, &mut lines, help);
+            let mut parts = header.split_whitespace();
+            let keyword = parts.next().unwrap_or_default();
+            if keyword.eq_ignore_ascii_case("parameter")
+                && let Some(parameter) = parts.next()
+            {
+                current = Some(parameter.to_ascii_uppercase());
+            }
+        } else if current.is_some() {
+            lines.push(line);
+        }
+    }
+    flush_parameter_help(&mut current, &mut lines, help);
+}
+
+/// A comment-based-help section line (`.<KEYWORD> ...`) with the leading dot removed, or `None`.
+fn section_keyword(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start();
+    let rest = trimmed.strip_prefix('.')?;
+    rest.starts_with(|character: char| character.is_ascii_alphabetic())
+        .then_some(rest)
+}
+
+/// Store the accumulated lines under the current parameter, stripped of surrounding whitespace.
+fn flush_parameter_help(
+    current: &mut Option<String>,
+    lines: &mut Vec<&str>,
+    help: &mut BTreeMap<String, String>,
+) {
+    if let Some(key) = current.take() {
+        help.entry(key)
+            .or_insert_with(|| lines.join("\n").trim().to_owned());
+    }
+    lines.clear();
+}
+
+/// Whether a parsed parameter default is a `SafeGetValue`-readable constant.
+///
+/// A readable constant is a literal, or an `@(...)` array / `@{...}` hashtable whose every element
+/// or value is itself a readable constant. `$true`, `$false`, and `$null` are the only variables
+/// `SafeGetValue` reads. Anything else — another variable, a command, a subexpression — needs
+/// evaluation, so it is dynamic and the field degrades.
+fn readable_default(document: &ParsedDocument, default_node: tree_sitter::Node<'_>) -> bool {
+    named_children(default_node)
+        .into_iter()
+        .next()
+        .is_some_and(|expression| readable_constant(document, expression))
+}
+
+fn readable_constant(document: &ParsedDocument, node: tree_sitter::Node<'_>) -> bool {
+    match node.kind() {
+        "integer_literal"
+        | "decimal_integer_literal"
+        | "hexadecimal_integer_literal"
+        | "real_literal"
+        | "string_literal"
+        | "verbatim_string_characters"
+        | "expandable_string_literal" => true,
+        // `$true`, `$false`, and `$null` are the only variables SafeGetValue evaluates.
+        "variable" => matches!(
+            text(document, node).to_ascii_lowercase().as_str(),
+            "$true" | "$false" | "$null"
+        ),
+        // A hashtable is readable when every entry value is; keys are names, never evaluated.
+        "hash_literal_expression" => {
+            let mut readable = true;
+            walk(node, &mut |inner| {
+                if inner.kind() == "hash_entry" {
+                    for child in named_children(inner) {
+                        if child.kind() != "key_expression" && !readable_constant(document, child) {
+                            readable = false;
+                        }
+                    }
+                }
+            });
+            readable
+        }
+        // A parenthesized expression, an `@(...)` array, and the operator/pipeline wrappers are
+        // readable when every named child is. A command, a subexpression, or any other node is
+        // not listed here, so it falls through to the dynamic arm.
+        "array_expression"
+        | "parenthesized_expression"
+        | "statement_list"
+        | "pipeline"
+        | "pipeline_chain"
+        | "logical_expression"
+        | "bitwise_expression"
+        | "comparison_expression"
+        | "additive_expression"
+        | "multiplicative_expression"
+        | "format_expression"
+        | "range_expression"
+        | "array_literal_expression"
+        | "unary_expression" => named_children(node)
+            .into_iter()
+            .all(|child| readable_constant(document, child)),
+        _ => false,
+    }
 }
 
 fn powershell_string(raw: &str) -> Option<String> {
