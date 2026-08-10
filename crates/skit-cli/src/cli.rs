@@ -1062,31 +1062,115 @@ fn add_command(
             )));
         }
         refuse_bare_add_flags(&options)?;
-        let state_dir = resolve_state_dir()?;
         let config_dir = resolve_config_dir()?;
         if wants_tui_form(&config_dir)? {
-            let workflow = tui_add_workflow(service.repository(), &state_dir, &config_dir)?;
-            let slug = skit_tui::run_add_workflow(
-                workflow,
-                |effect| {
-                    tui_effect(
-                        service,
-                        service.repository(),
-                        &state_dir,
-                        &config_dir,
-                        effect,
-                    )
-                },
-                active_locale(),
-            )?
-            .ok_or(CliError::AddCancelled)?;
-            let entry = service.show(slug.as_str())?;
-            print_add_summary(service.repository(), &entry)?;
-            return Ok(());
+            return hosted_add(service, &config_dir, &options, Vec::new());
         }
         return bare_add_plain(service, &config_dir);
     }
+    // `skit add <path>` from the shell reviews before it writes. Version 0.4 hosts the same panel
+    // its own `a` door hosts, for every source kind, whenever both streams are terminals and the
+    // form style can render one (`src/skit/cli.py:2001-2009`, `:2076-2086`, `:2116-2126`). Its own
+    // tape calls this "the common path, since the shell" (`docs/assets/demo/demo.tape:8`). Writing
+    // the entry and printing a summary skips the one place a person names it, chooses copy or
+    // link, and edits the detected dependencies.
+    if let Some(path) = review_before_add(
+        &options,
+        io::stdin().is_terminal() && io::stdout().is_terminal(),
+    ) {
+        let config_dir = resolve_config_dir()?;
+        if wants_tui_form(&config_dir)? {
+            return hosted_add(
+                service,
+                &config_dir,
+                &options,
+                vec![
+                    UiAction::Add(AddAction::SetSourcePath(path)),
+                    UiAction::Add(AddAction::Continue),
+                ],
+            );
+        }
+    }
     add(service, options)
+}
+
+/// Report the source path an interactive add should review before it writes.
+///
+/// Only the path lane reviews. A command template has no file to inspect, standard input is the
+/// non-interactive spelling and has nobody to ask, and `--no-input` is the contract that says do
+/// not ask at all (`src/skit/cli.py:220-223`). `interactive` is both streams being terminals, which
+/// is version 0.4's own `_is_interactive` (`:83-84`) — it is a parameter so the rule can be tested
+/// without a terminal.
+fn review_before_add(options: &AddOptions, interactive: bool) -> Option<String> {
+    if !interactive || options.no_input || options.command_template.is_some() {
+        return None;
+    }
+    let path = options.source.as_ref()?;
+    if path.as_os_str() == "-" {
+        return None;
+    }
+    Some(path.display().to_string())
+}
+
+/// Host the add review panel and report what it created.
+fn hosted_add(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    options: &AddOptions,
+    opening: Vec<UiAction>,
+) -> Result<(), CliError> {
+    let state_dir = resolve_state_dir()?;
+    let workflow = tui_add_workflow(service.repository(), &state_dir, config_dir)?
+        .with_review_defaults(add_review_defaults(config_dir, &state_dir, options)?);
+    let slug = skit_tui::run_add_workflow(
+        workflow,
+        opening,
+        |effect| {
+            tui_effect(
+                service,
+                service.repository(),
+                &state_dir,
+                config_dir,
+                effect,
+            )
+        },
+        active_locale(),
+    )?
+    .ok_or(CliError::AddCancelled)?;
+    let entry = service.show(slug.as_str())?;
+    print_add_summary(service.repository(), &entry)?;
+    Ok(())
+}
+
+/// Carry the flags the command line already answered into the panel it opens.
+///
+/// A flag the user typed is an answer, not a suggestion: version 0.4 passes `name`, `description`,
+/// `reference` and `deps` straight into the review it hosts (`src/skit/cli.py:2118-2125`). Dropping
+/// them would ask again for what was just said.
+fn add_review_defaults(
+    config_dir: &Path,
+    state_dir: &Path,
+    options: &AddOptions,
+) -> Result<ReviewDefaults, CliError> {
+    let runner_names = FileConfigStore::new(config_dir)
+        .runners()?
+        .into_iter()
+        .map(|runner| runner.name)
+        .collect();
+    let last_runner =
+        PromptSelectionService::new(FilePromptSelectionStore::new(state_dir)).last_runner();
+    Ok(ReviewDefaults {
+        runner_names,
+        last_runner: (!last_runner.is_empty()).then_some(last_runner),
+        runner: options.runner.clone(),
+        name: options.name.clone().filter(|name| !name.is_empty()),
+        description: options.description.clone(),
+        reference: options.reference,
+        dependencies: options.dependencies.clone(),
+        requires_python: options.requires_python.clone(),
+        // `--no-interpolate` is the only spelling, so its absence is not an answer.
+        interpolate: options.no_interpolate.then_some(false),
+    })
 }
 
 fn refuse_bare_add_flags(options: &AddOptions) -> Result<(), CliError> {

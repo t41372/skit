@@ -46,7 +46,7 @@ where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    let _: Option<()> = run_hosted_state(state, host, locale, |_| None)?;
+    let _: Option<()> = run_hosted_state(state, Vec::new(), host, locale, |_| None)?;
     Ok(())
 }
 
@@ -57,6 +57,7 @@ where
 /// selection or status text.
 pub fn run_add_workflow<F, E>(
     workflow: AddWorkflowState,
+    opening: Vec<Action>,
     host: F,
     locale: Locale,
 ) -> Result<Option<Slug>, TuiError>
@@ -66,7 +67,7 @@ where
 {
     let mut state = LibraryState::default();
     state.update(Action::Present(Screen::Add(Box::new(workflow))));
-    run_hosted_state(state, host, locale, add_workflow_outcome).map(|outcome| {
+    run_hosted_state(state, opening, host, locale, add_workflow_outcome).map(|outcome| {
         outcome.and_then(|outcome| match outcome {
             AddWorkflowOutcome::Completed(slug) => Some(slug),
             AddWorkflowOutcome::Cancelled => None,
@@ -74,8 +75,16 @@ where
     })
 }
 
+/// Drive one hosted screen until it reports an outcome.
+///
+/// `opening` is applied before the first draw, through the same reducer and the same host as a key
+/// press. A shell that already named its subject — `skit add greet.py` — arrives at the panel the
+/// subject belongs to rather than at a source picker asking for what it was just given
+/// (`src/skit/cli.py:2116-2126`). Replaying it as actions rather than as a second construction path
+/// means the shell door and the `a` door cannot answer the same command differently.
 fn run_hosted_state<F, E, O>(
     mut state: LibraryState,
+    opening: Vec<Action>,
     mut host: F,
     mut locale: Locale,
     mut observe: impl FnMut(&Action) -> Option<O>,
@@ -84,6 +93,24 @@ where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
+    for action in opening {
+        if let Some(outcome) = observe(&action) {
+            return Ok(Some(outcome));
+        }
+        let effect = state.update(action);
+        if !matches!(effect, Effect::None) {
+            let (quit, outcome) = drain_host_effects_observed(
+                &mut state,
+                &mut host,
+                effect,
+                &mut locale,
+                &mut observe,
+            )?;
+            if quit || outcome.is_some() {
+                return Ok(outcome);
+            }
+        }
+    }
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     let _restore = RestoreTerminal;

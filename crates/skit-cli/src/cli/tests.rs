@@ -27,6 +27,26 @@ fn write_meta(root: &TempDir, slug: &str, name: &str, description: &str) {
     FileStore::new(root.path()).rebuild_registry().unwrap();
 }
 
+/// The add options a command line produces when it names nothing but the lane.
+fn add_options() -> AddOptions {
+    AddOptions {
+        source: None,
+        kind: None,
+        name: None,
+        description: None,
+        reference: false,
+        command_template: None,
+        prompt: false,
+        executable: false,
+        runner: None,
+        no_interpolate: false,
+        dependencies: Vec::new(),
+        dependencies_explicit: false,
+        requires_python: None,
+        no_input: false,
+    }
+}
+
 fn add_command(service: &LibraryService<FileStore>, name: &str, template: &str) -> Entry {
     add(
         service,
@@ -4661,6 +4681,122 @@ fn a_source_that_moves_between_open_and_save_cannot_change_which_rows_persist() 
         undisturbed,
         "an unreadable source changed which rows persist"
     );
+}
+
+/// `skit add <path>` from a terminal reviews before it writes.
+///
+/// This is version 0.4's common path — its own tape says so
+/// (`docs/assets/demo/demo.tape:8`, `:47`) — and it hosts the same review panel its `a` door hosts
+/// for every source kind (`src/skit/cli.py:2001-2009`, `:2076-2086`, `:2116-2126`). Writing the
+/// entry and printing a summary skips the one place a person names it, chooses copy or link, and
+/// edits the detected dependencies.
+///
+/// Interactive is both streams being terminals (`:83-84`). It is a parameter here so the rule is
+/// testable; the composition root supplies the real probe.
+#[test]
+fn a_path_add_from_a_terminal_opens_the_review_and_every_other_lane_does_not() {
+    let path = || AddOptions {
+        source: Some(PathBuf::from("greet.py")),
+        ..add_options()
+    };
+    assert_eq!(
+        review_before_add(&path(), true),
+        Some("greet.py".to_owned()),
+        "the common path must review before it writes"
+    );
+
+    // A pipe, CI, or a redirected stream has nobody to ask.
+    assert_eq!(review_before_add(&path(), false), None);
+
+    // `--no-input` is the contract that says do not ask.
+    assert_eq!(
+        review_before_add(
+            &AddOptions {
+                no_input: true,
+                ..path()
+            },
+            true
+        ),
+        None
+    );
+
+    // Standard input is the non-interactive spelling, and it is also the source.
+    assert_eq!(
+        review_before_add(
+            &AddOptions {
+                source: Some(PathBuf::from("-")),
+                ..path()
+            },
+            true
+        ),
+        None
+    );
+
+    // A command template has no file to inspect.
+    assert_eq!(
+        review_before_add(
+            &AddOptions {
+                source: None,
+                command_template: Some("echo {name}".to_owned()),
+                ..path()
+            },
+            true
+        ),
+        None
+    );
+
+    // A bare add has no path yet; it opens the source picker through its own branch.
+    assert_eq!(
+        review_before_add(
+            &AddOptions {
+                source: None,
+                ..path()
+            },
+            true
+        ),
+        None
+    );
+}
+
+/// The opening actions land the panel on the review for the path the shell already named.
+///
+/// The shell door and the `a` door must not answer the same command differently, so the path
+/// arrives as the same actions a person's keystrokes produce rather than as a second construction
+/// path into the same state.
+#[test]
+fn the_opening_actions_reach_the_review_for_the_path_the_shell_named() {
+    let root = TempDir::new().unwrap();
+    let store_root = TempDir::new().unwrap();
+    let source = root.path().join("greet.py");
+    fs::write(&source, "GREETING = \"hello\"\nprint(GREETING)\n").unwrap();
+
+    let mut workflow = AddWorkflowState::new(Vec::new());
+    let effects = workflow.reduce(AddAction::SetSourcePath(source.display().to_string()));
+    assert!(
+        effects.is_empty(),
+        "naming a path inspects nothing by itself"
+    );
+    let effects = workflow.reduce(AddAction::Continue);
+    let AddEffect::InspectSource { request, path } = effects
+        .into_iter()
+        .next()
+        .expect("continuing must ask the host to read the source")
+    else {
+        panic!("the workflow must inspect the named source");
+    };
+    assert_eq!(path, source);
+
+    // The host reads the bytes and hands them back, which is what the real loop does.
+    let snapshot = tui_add_source(store_root.path(), &path).unwrap();
+    let _ = workflow.reduce(AddAction::SourceInspected {
+        request,
+        result: Ok(snapshot),
+    });
+
+    let review = workflow
+        .review()
+        .expect("the panel must open on the review, not on a source picker");
+    assert_eq!(review.name(), "greet");
 }
 
 /// Everything one settings save could damage, read as text so a failure names the axis.

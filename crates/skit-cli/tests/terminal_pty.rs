@@ -341,6 +341,107 @@ fn bare_add_uses_the_typed_workflow_and_returns_the_created_entry() {
     assert!(output.contains("Added: typed-add"), "{output}");
 }
 
+/// `skit add <path>` from a terminal opens the review panel instead of writing the entry.
+///
+/// Version 0.4's own tape calls this "the common path, since the shell"
+/// (`docs/assets/demo/demo.tape:8`), and it hosts the same panel the `a` door hosts
+/// (`src/skit/cli.py:2116-2126`). Replaying that tape against this build is what found the loss:
+/// the entry was written and summarized before anyone could name it, choose copy or link, or edit
+/// the detected dependencies. A pty is the only place the rule is real, because the rule is that
+/// both standard streams are terminals.
+///
+/// This reads the panel and stops. Submitting from here would need `Ctrl+S`, which the pty's own
+/// flow control eats as XOFF — the same thing that froze the recorded tape — so the submit path is
+/// covered by the workflow's own tests instead.
+#[test]
+fn a_path_add_from_a_terminal_opens_the_review_panel() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("greet.py");
+    fs::write(&source, b"GREETING = \"hello\"\nprint(GREETING)\n").unwrap();
+
+    let screen = read_pty_screen(
+        &["add", &source.to_string_lossy()],
+        data.path(),
+        state.path(),
+        config.path(),
+    );
+
+    // The panel's own controls, none of which the direct-write lane ever drew.
+    for expected in [
+        "Package dependencies",
+        "Python constraint",
+        "Tick the ones the run form should ask for:",
+        "GREETING",
+        // The footer chips in full: the filter keeps SGR parameter text, so a bare word could
+        // match escape-code residue rather than anything a person reads.
+        "[Ctrl+S] Add",
+        "[Esc] Cancel",
+    ] {
+        assert!(
+            screen.contains(expected),
+            "the review panel never drew {expected}: {screen}"
+        );
+    }
+    // Nothing was written: the review is a question, not a receipt.
+    assert!(
+        FileStore::new(data.path()).resolve("greet").is_err(),
+        "the entry was created before anyone reviewed it"
+    );
+}
+
+/// Run one command on a pty, answer the cursor query, and return what it drew.
+///
+/// The child is stopped rather than driven: this reports the first screen, which is the claim.
+fn read_pty_screen(args: &[&str], data: &Path, state: &Path, config: &Path) -> String {
+    use std::io::Read as _;
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_LANG", "en");
+    command.env("SKIT_DATA_DIR", data.to_string_lossy().as_ref());
+    command.env("SKIT_STATE_DIR", state.to_string_lossy().as_ref());
+    command.env("SKIT_CONFIG_DIR", config.to_string_lossy().as_ref());
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = thread::spawn(move || {
+        let mut buffer = vec![0_u8; 65_536];
+        let mut total = Vec::new();
+        while total.len() < 400_000 {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => total.extend_from_slice(&buffer[..read]),
+            }
+        }
+        total
+    });
+    let mut writer = pair.master.take_writer().unwrap();
+    thread::sleep(Duration::from_millis(60));
+    let _ = writer.write_all(b"\x1b[1;1R");
+    let _ = writer.flush();
+    thread::sleep(Duration::from_millis(1_500));
+    let _ = child.kill();
+    let _ = child.wait();
+    drop(writer);
+    let raw = drain.join().unwrap();
+    String::from_utf8_lossy(&raw)
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\n')
+        .collect()
+}
+
 #[test]
 fn bare_add_plain_menu_and_typed_cancel_keep_the_latest_main_contract() {
     let data = TempDir::new().unwrap();
@@ -793,6 +894,10 @@ fn add_onboarding_accepts_clean_defaults_and_leaves_demoted_candidates_unmanaged
     let data = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();
     let config = TempDir::new().unwrap();
+    // The plain lane, named outright. `form = "tui"` sends `skit add <path>` to the review
+    // panel, whose own tick list is this onboarding's twin
+    // (`src/skit/cli.py:2116-2126`); these tests are about the line-prompt half.
+    fs::write(config.path().join("config.toml"), "form = \"plain\"\n").unwrap();
     let source = data.path().join("parameters.py");
     fs::write(
         &source,
@@ -819,6 +924,10 @@ fn add_onboarding_space_toggles_the_focused_checkbox() {
     let data = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();
     let config = TempDir::new().unwrap();
+    // The plain lane, named outright. `form = "tui"` sends `skit add <path>` to the review
+    // panel, whose own tick list is this onboarding's twin
+    // (`src/skit/cli.py:2116-2126`); these tests are about the line-prompt half.
+    fs::write(config.path().join("config.toml"), "form = \"plain\"\n").unwrap();
     let source = data.path().join("toggle.py");
     fs::write(&source, "VALUE = 1\nprint(VALUE)\n").unwrap();
     let source = source.to_string_lossy().into_owned();
@@ -841,6 +950,10 @@ fn an_empty_onboarding_selection_does_not_delete_existing_managed_metadata() {
     let data = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();
     let config = TempDir::new().unwrap();
+    // The plain lane, named outright. `form = "tui"` sends `skit add <path>` to the review
+    // panel, whose own tick list is this onboarding's twin
+    // (`src/skit/cli.py:2116-2126`); these tests are about the line-prompt half.
+    fs::write(config.path().join("config.toml"), "form = \"plain\"\n").unwrap();
     let source = data.path().join("existing.py");
     let original = concat!(
         "# /// script\n",
@@ -877,6 +990,10 @@ fn add_onboarding_distinguishes_modeled_and_dynamic_cli_surfaces() {
     let data = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();
     let config = TempDir::new().unwrap();
+    // The plain lane, named outright. `form = "tui"` sends `skit add <path>` to the review
+    // panel, whose own tick list is this onboarding's twin
+    // (`src/skit/cli.py:2116-2126`); these tests are about the line-prompt half.
+    fs::write(config.path().join("config.toml"), "form = \"plain\"\n").unwrap();
     let modeled = data.path().join("modeled.py");
     fs::write(
         &modeled,
@@ -934,6 +1051,10 @@ fn reference_add_reports_onboarding_but_never_writes_the_original() {
     let data = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();
     let config = TempDir::new().unwrap();
+    // The plain lane, named outright. `form = "tui"` sends `skit add <path>` to the review
+    // panel, whose own tick list is this onboarding's twin
+    // (`src/skit/cli.py:2116-2126`); these tests are about the line-prompt half.
+    fs::write(config.path().join("config.toml"), "form = \"plain\"\n").unwrap();
     let source = data.path().join("reference.py");
     let original = b"VALUE = 1\n";
     fs::write(&source, original).unwrap();
