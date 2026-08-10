@@ -76,9 +76,9 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_store.py | 78 | skit-store | todo |
+| test_store.py | 78 | skit-store | pilot (registry self-heal slice) |
 | test_store_fix.py | 38 | skit-store | todo |
-| test_atomic.py | 32 | skit-store | todo |
+| test_atomic.py | 32 | skit-store | pilot (10/32) |
 
 ### Tier 3 — flows and runtime (`skit-runtime`, `skit-application`)
 
@@ -87,7 +87,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_flows.py | 102 | skit-runtime / skit-application | todo |
 | test_uvman.py | 36 | skit-runtime | todo |
 | test_launcher.py | 38 | skit-runtime / skit-application | todo |
-| test_launcher_fix.py | 12 | skit-runtime | todo |
+| test_launcher_fix.py | 12 | skit-runtime | pilot (11/12 + 1 private-helper map) |
 | test_shim.py | 38 | skit-language / skit-runtime | todo |
 | test_entrypoint.py | 10 | skit-cli / skit-runtime | todo |
 
@@ -213,3 +213,47 @@ that owns the code:
   duplicate-named specs dedup without crashing; `--no-secret` clears `env_source`; `not-managed`
   warnings for secret/no_secret/prompts targets; `drift_lines`/`render_warning` localized output.
   These behaviors must be shown to survive at their new layer or the gap is real.
+
+### test_atomic.py → skit-store atomic boundaries (pilot: 10/32)
+
+10 Python contracts are ported by original test name. Two implementation gaps were confirmed and
+fixed rather than encoded as new Rust behavior:
+
+- **Windows replacement sharing violations:** Python retries `PermissionError` exactly seven times
+  with 10/20/40/80/160/320/640 ms backoff, then makes one final loud attempt. Both Rust atomic
+  replacement paths previously called `fs::rename` once. They now share one bounded retry helper;
+  non-permission errors still fail immediately.
+- **temporary-file cleanup on `fsync` failure:** Python requires a failed temp-file sync to leave
+  neither the destination nor a `.tmp` file. Rust previously returned through `?` before cleanup.
+  Both store atomic paths now remove the staged file before propagating the error.
+
+The port also pins the persistent one-byte lock inode, thread serialization, kernel lock release
+after a real crashing subprocess, lock-open recovery, mode preservation, and best-effort chmod.
+
+### test_launcher_fix.py → port_test_launcher_fix.rs (pilot)
+
+11 of 12 Python tests are granular integration tests through the public Rust launch plan and real
+child-process boundary. They pin brace-bearing values, POSIX shell quoting and injection resistance,
+child argv fidelity, signal exit normalization (139/143), and the preflight ordering that refuses a
+missing Python script before looking up `uv`. The remaining Python test calls the private
+`_quote_for_shell` helper while monkeypatching `sys.platform`; Rust keeps the Windows quoter private
+and compile-time-selected, so its behavior remains mapped through the Windows launch surface rather
+than making a production helper public only for a test.
+
+### test_store.py registry projection slice (pilot)
+
+The port found an explicit contradiction in rewrite-authored Rust tests. Those tests required stale
+registry rows to fall back **without ever repairing the index**. Python `main@206f9ef` requires the
+opposite: the first authoritative fallback best-effort repairs that row, while listing/completion
+uses a try-only `registry.native.lock` and must never wait.
+
+The Rust read path now stages stale valid slugs, acquires the registry lock only if immediately
+available, reloads the registry and each current `meta.toml` while holding that lock, repairs only
+still-present rows, and saves only when the projection changed. Repair errors are ignored because
+index widening is a side effect of a read, not a precondition for listing. This also preserves the
+Python race contracts: concurrent add is not dropped, remove is not resurrected, rename wins, a
+slug reused by an older skit is re-derived from its new metadata, and corrupt/unrepresentable
+metadata is skipped. A corrupt registry read also preserves the bad bytes as `registry.toml.corrupt`
+and degrades to an empty listing, so `doctor --rebuild` can reconstruct membership from untouched
+entry metadata. Existing rewrite tests that asserted permanent no-repair semantics are changed
+to assert one-time convergence instead.

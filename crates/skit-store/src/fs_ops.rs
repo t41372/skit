@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File, OpenOptions, TryLockError},
     io::{self, Write as _},
     path::Path,
     thread,
@@ -19,6 +19,21 @@ pub(crate) struct FileLock {
 }
 
 pub(crate) fn acquire_lock(path: &Path) -> io::Result<FileLock> {
+    let file = open_lock_file(path)?;
+    file.lock()?;
+    Ok(FileLock { _file: file })
+}
+
+pub(crate) fn try_acquire_lock(path: &Path) -> io::Result<Option<FileLock>> {
+    let file = open_lock_file(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(FileLock { _file: file })),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
+}
+
+fn open_lock_file(path: &Path) -> io::Result<File> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "lock path has no parent"))?;
@@ -32,8 +47,7 @@ pub(crate) fn acquire_lock(path: &Path) -> io::Result<FileLock> {
     if file.metadata()?.len() == 0 {
         file.set_len(1)?;
     }
-    file.lock()?;
-    Ok(FileLock { _file: file })
+    Ok(file)
 }
 
 pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {

@@ -11,7 +11,7 @@ use skit_application::{Diagnostic, DiagnosticCode, EntryRepository, LibraryScan,
 use skit_domain::{Entry, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
 use skit_i18n::Localize;
 
-use crate::mutations::registry::Registry;
+use crate::{fs_ops::try_acquire_lock, mutations::registry::Registry};
 
 /// Filesystem adapter for an existing skit data directory.
 #[derive(Clone, Debug)]
@@ -94,6 +94,32 @@ impl FileStore {
         }
         Ok(entries)
     }
+
+    fn repair_registry_rows(&self, slugs: &[Slug]) {
+        let lock_path = self.data_dir.join("registry.native.lock");
+        let Ok(Some(_lock)) = try_acquire_lock(&lock_path) else {
+            return;
+        };
+        let Some(mut registry) = Registry::read(self.data_dir()) else {
+            return;
+        };
+        let mut changed = false;
+        for slug in slugs {
+            if !registry.contains(slug) {
+                continue;
+            }
+            let Ok(entry) = self.read_entry(slug.clone()) else {
+                continue;
+            };
+            let entry_dir = self.scripts_dir().join(slug.as_str());
+            if let Ok(repaired) = registry.repair_existing(&entry, &entry_dir) {
+                changed |= repaired;
+            }
+        }
+        if changed {
+            let _ = registry.save();
+        }
+    }
 }
 
 impl EntryRepository for FileStore {
@@ -102,8 +128,12 @@ impl EntryRepository for FileStore {
             return Ok(LibraryScan::default());
         };
         let mut scan = LibraryScan::default();
+        let mut stale = Vec::new();
         for candidate in registry.row_keys() {
-            scan_registry_row(self, &registry, candidate, &mut scan);
+            scan_registry_row(self, &registry, candidate, &mut scan, &mut stale);
+        }
+        if !stale.is_empty() {
+            self.repair_registry_rows(&stale);
         }
         Ok(scan)
     }
@@ -185,6 +215,7 @@ fn scan_registry_row(
     registry: &Registry,
     candidate: String,
     scan: &mut LibraryScan,
+    stale: &mut Vec<Slug>,
 ) {
     let slug = match Slug::parse(candidate.clone()) {
         Ok(slug) => slug,
@@ -198,10 +229,15 @@ fn scan_registry_row(
         }
     };
     let meta_path = store.scripts_dir().join(slug.as_str()).join("meta.toml");
-    match cached_or_authoritative_summary(Some(registry), &slug, &meta_path, || {
-        store.read_entry(slug.clone())
-    }) {
-        Ok(summary) => scan.entries.push(summary),
+    if let Some(summary) = registry.summary(&slug, &meta_path) {
+        scan.entries.push(summary);
+        return;
+    }
+    match store.read_entry(slug.clone()) {
+        Ok(entry) => {
+            scan.entries.push(summary_from(&entry));
+            stale.push(slug);
+        }
         Err(error) => scan.diagnostics.push(diagnostic_from(error, &slug)),
     }
 }
@@ -406,6 +442,197 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    fn registry_table(root: &TempDir) -> toml::Table {
+        toml::from_str(&fs::read_to_string(root.path().join("registry.toml")).unwrap()).unwrap()
+    }
+
+    fn registry_row<'a>(document: &'a toml::Table, slug: &str) -> &'a toml::Table {
+        document
+            .get("entries")
+            .and_then(toml::Value::as_table)
+            .and_then(|entries| entries.get(slug))
+            .and_then(toml::Value::as_table)
+            .unwrap()
+    }
+
+    #[test]
+    fn test_repair_skips_an_entry_removed_meanwhile() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "legacy".to_owned(),
+                kind: EntryKind::parse("future-kind").unwrap(),
+                mode: StorageMode::Reference,
+                source: "/original/legacy.tool".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let slug = entry.slug.clone();
+
+        store.remove(&entry).unwrap();
+        store.repair_registry_rows(std::slice::from_ref(&slug));
+
+        let document = registry_table(&root);
+        assert!(
+            document
+                .get("entries")
+                .and_then(toml::Value::as_table)
+                .is_none_or(|entries| !entries.contains_key(slug.as_str()))
+        );
+    }
+
+    #[test]
+    fn test_repair_keeps_a_rename_that_landed_meanwhile() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "before".to_owned(),
+                kind: EntryKind::parse("future-kind").unwrap(),
+                mode: StorageMode::Reference,
+                source: "/original/tool".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let renamed = store.rename(&entry, "after").unwrap();
+
+        store.repair_registry_rows(std::slice::from_ref(&renamed.slug));
+
+        let document = registry_table(&root);
+        let row = registry_row(&document, renamed.slug.as_str());
+        assert_eq!(row.get("name").and_then(toml::Value::as_str), Some("after"));
+        assert_eq!(
+            row.get("mode").and_then(toml::Value::as_str),
+            Some("reference")
+        );
+    }
+
+    #[test]
+    fn test_repair_adopts_a_slug_reused_by_an_older_skit_meanwhile() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "deploy".to_owned(),
+                kind: EntryKind::parse("future-kind").unwrap(),
+                mode: StorageMode::Reference,
+                source: "/original/old.tool".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let meta_path = root
+            .path()
+            .join("scripts")
+            .join(entry.slug.as_str())
+            .join("meta.toml");
+        fs::write(
+            &meta_path,
+            concat!(
+                "schema = 1\n",
+                "name = \"deploy\"\n",
+                "kind = \"shell\"\n",
+                "mode = \"copy\"\n",
+                "source = \"/original/new.sh\"\n",
+                "source_hash = \"\"\n",
+                "added_at = \"2026-08-10T00:00:00Z\"\n",
+                "workdir = \"invoke\"\n",
+                "description = \"\"\n",
+            ),
+        )
+        .unwrap();
+        let registry_path = root.path().join("registry.toml");
+        let mut document = registry_table(&root);
+        let rows = document
+            .get_mut("entries")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap();
+        rows.insert(
+            entry.slug.as_str().to_owned(),
+            toml::Value::Table(toml::Table::from_iter([
+                ("name".to_owned(), toml::Value::String("deploy".to_owned())),
+                ("kind".to_owned(), toml::Value::String("shell".to_owned())),
+                (
+                    "description".to_owned(),
+                    toml::Value::String(String::new()),
+                ),
+            ])),
+        );
+        fs::write(&registry_path, toml::to_string_pretty(&document).unwrap()).unwrap();
+
+        store.repair_registry_rows(std::slice::from_ref(&entry.slug));
+
+        let repaired = registry_table(&root);
+        let row = registry_row(&repaired, entry.slug.as_str());
+        assert_eq!(row.get("kind").and_then(toml::Value::as_str), Some("shell"));
+        assert_eq!(row.get("mode").and_then(toml::Value::as_str), Some("copy"));
+        assert!(row.get("target").is_none());
+    }
+
+    #[test]
+    fn test_repair_skips_a_meta_that_broke_or_went_unrepresentable_meanwhile() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let corrupt = store
+            .create(CreateEntry {
+                name: "corrupt".to_owned(),
+                kind: EntryKind::parse("future-kind").unwrap(),
+                mode: StorageMode::Reference,
+                source: "/original/corrupt.tool".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let sideways = store
+            .create(CreateEntry {
+                name: "sideways".to_owned(),
+                kind: EntryKind::parse("future-kind").unwrap(),
+                mode: StorageMode::Reference,
+                source: "/original/sideways.tool".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let before = fs::read(root.path().join("registry.toml")).unwrap();
+        fs::write(
+            root.path()
+                .join("scripts")
+                .join(corrupt.slug.as_str())
+                .join("meta.toml"),
+            "not [ toml",
+        )
+        .unwrap();
+        let sideways_meta = root
+            .path()
+            .join("scripts")
+            .join(sideways.slug.as_str())
+            .join("meta.toml");
+        let mut document = toml::from_str::<toml::Table>(&fs::read_to_string(&sideways_meta).unwrap())
+            .unwrap();
+        document.insert(
+            "mode".to_owned(),
+            toml::Value::String("sideways".to_owned()),
+        );
+        fs::write(sideways_meta, toml::to_string_pretty(&document).unwrap()).unwrap();
+
+        store.repair_registry_rows(&[corrupt.slug, sideways.slug]);
+
+        assert_eq!(fs::read(root.path().join("registry.toml")).unwrap(), before);
     }
 
     #[test]
