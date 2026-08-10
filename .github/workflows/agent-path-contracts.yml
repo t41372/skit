@@ -41,6 +41,12 @@ jobs:
         run: cargo test --locked -p skit-language --test port_test_argspec -- --nocapture
       - name: Run the Click and Typer contracts
         run: cargo test --locked -p skit-language --test port_test_argspec_click_typer -- --nocapture
+      - name: Run source-default contracts
+        run: |
+          cargo test --locked -p skit-form --test port_test_source_default_semantics -- --nocapture
+          cargo test --locked -p skit-language --test port_test_source_default_semantics -- --nocapture
+          cargo test --locked -p skit-application --test port_test_source_default_semantics -- --nocapture
+          cargo test --locked -p skit-cli-rs --test port_test_source_default_semantics -- --nocapture
       - name: Check i18n and the machine-readable port map
         run: |
           cargo test --locked -p skit-i18n --test catalog -- --nocapture
