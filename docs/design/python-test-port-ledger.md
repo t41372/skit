@@ -78,7 +78,7 @@ adjudicated · counts are Python `def test_` counts.
 | --- | --- | --- | --- |
 | test_store.py | 78 | skit-store | todo |
 | test_store_fix.py | 38 | skit-store | todo |
-| test_atomic.py | 32 | skit-store | todo |
+| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs | done (13) · temp-leak fixed · 2 gaps flagged · 19 deferred |
 
 ### Tier 3 — flows and runtime (`skit-runtime`, `skit-application`)
 
@@ -213,6 +213,38 @@ reader surfaced 3 field-output gaps, all now resolved:
   addition (the free-text field could only hold a Boolean anyway), recorded in
   `docs/behavior-changes.md`; `test_bool_default_is_carried` asserts the kept behavior with a
   BEHAVIOR-CHANGE note. Reversible on request.
+
+### test_atomic.py → port_test_atomic.rs (13 done · 1 fix · 2 gaps flagged · 19 deferred) — Tier 2
+
+32 ported / 13 passed / 19 `#[ignore]`. The Rust atomic mechanism is `pub(crate)`, so the port drives
+it through the public `FileConfigStore`/`FileStore` seams. This is the data-safety tier; the port
+surfaced three real concerns:
+
+- **FIXED — `.tmp` leak on an fsync failure.** `atomic_write_bytes` removed the temp only on a rename
+  failure; a `write_all` or `sync_all` (fsync) error returned early via `?` and leaked the `.tmp`
+  beside the target (the target itself always stays intact — only the rename touches it). The oracle
+  cleans the temp on every failure path. Wrapped the write→fsync→rename in a closure and remove the
+  temp on any error. Workspace green (130 test binaries), clippy + fmt clean. The
+  `..._temp_fsync_failure_still_cleans_up_tmp_file` test stays `#[ignore]` (no public fsync-injection
+  seam to force the failure), but the contract now holds.
+- **FLAGGED (needs direction) — no Windows `os.replace` sharing-violation retry (oracle issue #4).**
+  The oracle's `_replace_with_retry` retries a rename that fails with a Windows sharing violation (a
+  concurrent reader holding the target open); Rust calls `fs::rename` once and gives up. Real
+  superset gap, but Windows-only — cannot be validated on this Linux host. `replace_retries_*`,
+  `replace_gives_up_loudly_*` are `#[ignore]`.
+- **FLAGGED (needs direction) — no opportunistic read-path registry self-heal.** The oracle's
+  `skit list` self-heals the registry index opportunistically under a NON-BLOCKING lock
+  (`try_advisory_file_lock`, `store.py:1037`) — "a read that used the blocking variant would freeze
+  TAB completion behind any process on the lock." Rust's read path (`read.rs`) takes no lock and does
+  not self-heal on read; the blocking `registry.native.lock` is mutation-only, and an unlisted dir
+  needs an explicit `doctor --rebuild`. This is an architecture decision (opportunistic self-heal vs
+  explicit rebuild), not just a missing lock variant — surface for the user.
+
+Also deferred (`#[ignore]`): crash-injection ordering/swallow tests (no public fsync/rename seam;
+each carries a MUST-VERIFY note pinning the source lines — fsync-before-rename, dir-fsync-after,
+dir-fsync-swallowed, chmod-swallowed, the last already covered by an in-module test), and Windows
+msvcrt / two-layer thread-mutex / kernel-crash-flock-release tests (Rust uses kernel flock only, no
+in-process mutex layer, RAII fd cleanup).
 
 ## Adjudication log
 
