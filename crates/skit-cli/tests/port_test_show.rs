@@ -274,7 +274,11 @@ impl Sandbox {
     }
 
     fn seed_state(&self, slug: &str, body: &str) {
-        let path = self.state.path().join("values").join(format!("{slug}.toml"));
+        let path = self
+            .state
+            .path()
+            .join("values")
+            .join(format!("{slug}.toml"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
     }
@@ -479,7 +483,10 @@ fn test_show_json_command_kind() {
     assert_eq!(payload["param_origin"], "command");
     let fields = fields_by_key(&payload);
     assert_eq!(
-        fields.iter().map(|(name, _)| *name).collect::<BTreeSet<_>>(),
+        fields
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<BTreeSet<_>>(),
         BTreeSet::from(["target", "level"])
     );
     let target = fields.iter().find(|(name, _)| *name == "target").unwrap().1;
@@ -548,7 +555,10 @@ fn test_show_human_argparse_table() {
         "Source:",
         "Run it: skit run resize",
     ] {
-        assert!(output.contains(expected), "missing {expected:?} in:\n{output}");
+        assert!(
+            output.contains(expected),
+            "missing {expected:?} in:\n{output}"
+        );
     }
 }
 
@@ -586,7 +596,10 @@ fn test_show_human_secret_without_env_source() {
     sandbox.write_python_copy("tok", "tok", source, &original, "");
     let output = sandbox.show_human("tok");
     assert_eq!(output.matches("yes").count(), 1, "{output}");
-    assert!(!output.contains('←'), "unexpected env-source arrow:\n{output}");
+    assert!(
+        !output.contains('←'),
+        "unexpected env-source arrow:\n{output}"
+    );
 }
 
 #[test]
@@ -638,7 +651,10 @@ fn test_show_human_description_deps_presets_and_drift() {
         "Presets: quick",
         "drifted from the script",
     ] {
-        assert!(output.contains(expected), "missing {expected:?} in:\n{output}");
+        assert!(
+            output.contains(expected),
+            "missing {expected:?} in:\n{output}"
+        );
     }
 }
 

@@ -161,7 +161,10 @@ fn test_raw_skips_form_and_injection() {
         sandbox.run_and_capture(&["run", "hello", "--raw", "--no-input"]);
 
     assert_eq!(launched_path, sandbox.stored_script());
-    assert!(launched_bytes.contains("CITY = \"Taipei\""), "{launched_bytes}");
+    assert!(
+        launched_bytes.contains("CITY = \"Taipei\""),
+        "{launched_bytes}"
+    );
     assert!(!launched_bytes.contains("Kaohsiung"), "{launched_bytes}");
 }
 
@@ -191,7 +194,10 @@ fn test_no_values_runs_copy_directly() {
         sandbox.run_and_capture(&["run", "hello", "--no-input"]);
 
     assert_eq!(launched_path, sandbox.stored_script());
-    assert!(launched_bytes.contains("CITY = \"Taipei\""), "{launched_bytes}");
+    assert!(
+        launched_bytes.contains("CITY = \"Taipei\""),
+        "{launched_bytes}"
+    );
 }
 
 #[test]
@@ -207,9 +213,11 @@ fn test_raw_does_not_leave_injected_artifact() {
     let stored_script = sandbox.stored_script();
     let entry_dir = stored_script.parent().unwrap();
     assert!(
-        fs::read_dir(entry_dir)
+        fs::read_dir(entry_dir).unwrap().all(|entry| !entry
             .unwrap()
-            .all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(".injected")),
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".injected")),
         "raw run left an injected artifact beside the stored copy"
     );
 }
@@ -232,9 +240,11 @@ fn test_normal_run_cleans_injected_artifact() {
     let stored_script = sandbox.stored_script();
     let entry_dir = stored_script.parent().unwrap();
     assert!(
-        fs::read_dir(entry_dir)
+        fs::read_dir(entry_dir).unwrap().all(|entry| !entry
             .unwrap()
-            .all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(".injected")),
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".injected")),
         "normal run left an injected artifact beside the stored copy"
     );
 }
