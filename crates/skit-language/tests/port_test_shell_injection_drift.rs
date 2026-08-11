@@ -6,9 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::inject_values;
 
 fn values(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {

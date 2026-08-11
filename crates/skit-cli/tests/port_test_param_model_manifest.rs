@@ -37,7 +37,9 @@ const EXECUTABLE: &[&str] = &[
 const BLOCKED_HELPER: &str = "test_field_replace_returns_modified_copy";
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 fn names(source: &str) -> Vec<String> {
@@ -46,7 +48,9 @@ fn names(source: &str) -> Vec<String> {
         .items
         .into_iter()
         .filter_map(|item| match item {
-            Item::Fn(function) if has_test_attribute(&function.attrs) => Some(function.sig.ident.to_string()),
+            Item::Fn(function) if has_test_attribute(&function.attrs) => {
+                Some(function.sig.ident.to_string())
+            }
             _ => None,
         })
         .collect()

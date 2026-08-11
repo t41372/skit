@@ -6,9 +6,7 @@
 //! real source analysis rather than constructing a candidate whose declaration is pre-filled by the
 //! test itself.
 
-use skit_domain::parameters::{
-    ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-};
+use skit_domain::parameters::{ParameterBinding, ParameterDelivery, ParameterType, ParameterValue};
 use skit_language::{ParseOutcome, parse_document};
 
 #[test]

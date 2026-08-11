@@ -175,7 +175,10 @@ fn test_meta_dict_includes_binding_and_order_when_set() {
     source.order = 2;
     let encoded = source.to_meta_map();
 
-    assert_eq!(encoded.get("binding"), Some(&Value::String("input".to_owned())));
+    assert_eq!(
+        encoded.get("binding"),
+        Some(&Value::String("input".to_owned()))
+    );
     assert_eq!(encoded.get("order"), Some(&Value::Number(Number::from(2))));
     assert_eq!(ParamDecl::from_meta_map(&encoded), source);
 }
@@ -230,7 +233,10 @@ fn test_invariants_binding_implies_delivery() {
 
     let mut bad = ok.clone();
     bad.delivery = ParameterDelivery::Env;
-    assert_eq!(bad.validate(), Some(ParameterInvariant::BindingDeliveryMismatch));
+    assert_eq!(
+        bad.validate(),
+        Some(ParameterInvariant::BindingDeliveryMismatch)
+    );
 
     let mut envd = ParamDecl::new("a");
     envd.binding = ParameterBinding::EnvDefault;
@@ -273,7 +279,8 @@ fn test_normalize_repairs_delivery_from_binding() {
 }
 
 #[test]
-fn rust_additive_block_order_coercion_keeps_numeric_string_and_truncates_float_but_rejects_garbage() {
+fn rust_additive_block_order_coercion_keeps_numeric_string_and_truncates_float_but_rejects_garbage()
+{
     for (value, expected) in [
         (Value::String("3".to_owned()), 3),
         (

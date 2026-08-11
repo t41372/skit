@@ -25,9 +25,15 @@ fn visit(directory: &Path, offenders: &mut Vec<String>) {
         let text = fs::read_to_string(&path).unwrap();
         let forbidden = [
             (["#[", "ignore"].concat(), "ignored test"),
-            (["#[", "should_", "panic"].concat(), "unscoped panic-as-success test"),
+            (
+                ["#[", "should_", "panic"].concat(),
+                "unscoped panic-as-success test",
+            ),
             (["todo", "!()"].concat(), "todo placeholder"),
-            (["unimplemented", "!()"].concat(), "unimplemented placeholder"),
+            (
+                ["unimplemented", "!()"].concat(),
+                "unimplemented placeholder",
+            ),
             (["assert!", "(true)"].concat(), "vacuous true assertion"),
             (
                 ["assert_eq!", "(true, true)"].concat(),

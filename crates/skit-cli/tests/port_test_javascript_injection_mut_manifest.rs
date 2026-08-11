@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 
 use syn::{Attribute, Item};
 
-const SOURCE: &str = include_str!("../../skit-language/tests/port_test_javascript_injection_mut.rs");
+const SOURCE: &str =
+    include_str!("../../skit-language/tests/port_test_javascript_injection_mut.rs");
 
 const EXECUTABLE: &[&str] = &[
     "test_bad_value_error_carries_the_raw_value_and_type",
@@ -24,7 +25,9 @@ const BLOCKED_PRIVATE: &[&str] = &[
 ];
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 fn names() -> Vec<String> {
@@ -33,7 +36,9 @@ fn names() -> Vec<String> {
         .items
         .into_iter()
         .filter_map(|item| match item {
-            Item::Fn(function) if has_test_attribute(&function.attrs) => Some(function.sig.ident.to_string()),
+            Item::Fn(function) if has_test_attribute(&function.attrs) => {
+                Some(function.sig.ident.to_string())
+            }
             _ => None,
         })
         .collect()
