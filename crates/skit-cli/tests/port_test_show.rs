@@ -618,8 +618,13 @@ fn test_show_human_description_deps_presets_and_drift() {
         "trip",
         managed_city_source(),
         &original,
-        "description = \"plan a trip\"\ndependencies = [\"rich>=15\"]\nrequires_python = \">=3.12\"",
+        "dependencies = [\"rich>=15\"]\nrequires_python = \">=3.12\"",
     );
+    let meta_path = sandbox.entry_dir("trip").join("meta.toml");
+    let meta = fs::read_to_string(&meta_path)
+        .unwrap()
+        .replace("description = \"\"", "description = \"plan a trip\"");
+    fs::write(meta_path, meta).unwrap();
     sandbox.seed_state("trip", "[presets.quick]\nCITY = \"Tainan\"\n");
     let moved = fs::read_to_string(&script)
         .unwrap()
@@ -645,9 +650,8 @@ fn test_show_human_degraded_parser_notice() {
     sandbox.write_python_copy("multi", "multi", DEGRADED, &original, "");
     let output = sandbox.show_human("multi");
     assert!(
-        output
-            .lines()
-            .any(|line| line == "skit could not model this script's own arguments; pass them after -- instead."),
+        output.lines().any(|line| line
+            == "skit could not model this script's own arguments; pass them after -- instead."),
         "exact degraded notice missing:\n{output}"
     );
 }
