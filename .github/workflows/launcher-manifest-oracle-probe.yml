@@ -1,0 +1,79 @@
+name: Launcher and manifest oracle probe
+
+on:
+  push:
+    branches:
+      - agent/port-python-test-contracts-v3
+    paths:
+      - .github/workflows/launcher-manifest-oracle-probe.yml
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/port-python-test-contracts-v3
+          persist-credentials: true
+      - name: Run launcher and manifest guards
+        shell: bash
+        run: |
+          set +e
+          files=(
+            crates/skit-runtime/tests/port_test_launcher_workdir_regressions.rs
+            crates/skit-cli/tests/port_test_manifest_integrity.rs
+          )
+          rustfmt --edition 2024 "${files[@]}" > /tmp/lm-format.log 2>&1
+          format_rc=$?
+          rustfmt --edition 2024 --check "${files[@]}" > /tmp/lm-rustfmt.log 2>&1
+          rustfmt_rc=$?
+          cargo test --locked -p skit-runtime --test port_test_launcher_workdir_regressions -- --nocapture --test-threads=1 > /tmp/lm-launcher.log 2>&1
+          launcher_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_manifest_integrity -- --nocapture > /tmp/lm-manifest.log 2>&1
+          manifest_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_declared_params_manifest -- --nocapture > /tmp/lm-declared.log 2>&1
+          declared_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_params_edit_manifest -- --nocapture > /tmp/lm-edit.log 2>&1
+          edit_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture > /tmp/lm-strength.log 2>&1
+          strength_rc=$?
+
+          result=crates/skit-cli/tests/launcher_manifest_oracle_probe_result.txt
+          {
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "FORMAT_RC=$format_rc"
+            echo "RUSTFMT_RC=$rustfmt_rc"
+            echo "LAUNCHER_REGRESSION_RC=$launcher_rc"
+            echo "MANIFEST_INTEGRITY_RC=$manifest_rc"
+            echo "DECLARED_MANIFEST_RC=$declared_rc"
+            echo "PARAMS_EDIT_MANIFEST_RC=$edit_rc"
+            echo "STRENGTH_GATE_RC=$strength_rc"
+            for pair in \
+              "format:$format_rc:/tmp/lm-format.log" \
+              "rustfmt:$rustfmt_rc:/tmp/lm-rustfmt.log" \
+              "launcher:$launcher_rc:/tmp/lm-launcher.log" \
+              "manifest-integrity:$manifest_rc:/tmp/lm-manifest.log" \
+              "declared:$declared_rc:/tmp/lm-declared.log" \
+              "params-edit:$edit_rc:/tmp/lm-edit.log" \
+              "strength:$strength_rc:/tmp/lm-strength.log"
+            do
+              IFS=: read -r label rc log <<< "$pair"
+              if [ "$rc" -ne 0 ]; then
+                echo
+                echo "===== $label failure log ====="
+                cat "$log"
+              fi
+            done
+          } > "$result"
+          git add -- "${files[@]}" "$result"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if ! git diff --cached --quiet; then
+            git commit -m "test(port): format and record launcher manifest probe"
+            git push origin HEAD:agent/port-python-test-contracts-v3
+          fi
+          exit 0
