@@ -1,6 +1,6 @@
 name: Argspec oracle probe
 
-# Temporary self-trigger; deleted after diagnostics are read.
+# Temporary self-trigger; deleted after argparse + Click/Typer diagnostics are read.
 on:
   push:
     branches:
@@ -20,40 +20,49 @@ jobs:
         with:
           ref: agent/port-python-test-contracts-v3
           persist-credentials: true
-      - name: Run exact argspec oracles
+      - name: Run exact Python CLI-reader oracles
         shell: bash
         run: |
           set +e
           files=(
             crates/skit-form/tests/port_test_argspec_exact.rs
             crates/skit-cli/tests/port_test_argspec_manifest.rs
+            crates/skit-form/tests/port_test_argspec_click_typer_exact.rs
+            crates/skit-cli/tests/port_test_argspec_click_typer_manifest.rs
           )
           rustfmt --edition 2024 "${files[@]}" > /tmp/argspec-format.log 2>&1
           format_rc=$?
           rustfmt --edition 2024 --check "${files[@]}" > /tmp/argspec-rustfmt.log 2>&1
           rustfmt_rc=$?
           cargo test --locked -p skit-cli-rs --test port_test_argspec_manifest -- --nocapture > /tmp/argspec-manifest.log 2>&1
-          manifest_rc=$?
+          argparse_manifest_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_argspec_click_typer_manifest -- --nocapture > /tmp/click-typer-manifest.log 2>&1
+          click_typer_manifest_rc=$?
           cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture > /tmp/argspec-strength.log 2>&1
           strength_rc=$?
-          cargo test --locked -p skit-form --test port_test_argspec_exact -- --nocapture --test-threads=1 > /tmp/argspec.log 2>&1
-          argspec_rc=$?
+          cargo test --locked -p skit-form --test port_test_argspec_exact -- --nocapture --test-threads=1 > /tmp/argparse.log 2>&1
+          argparse_rc=$?
+          cargo test --locked -p skit-form --test port_test_argspec_click_typer_exact -- --nocapture --test-threads=1 > /tmp/click-typer.log 2>&1
+          click_typer_rc=$?
 
           result=crates/skit-cli/tests/argspec_oracle_probe_result.txt
           {
             echo "HEAD=$(git rev-parse HEAD)"
             echo "FORMAT_RC=$format_rc"
             echo "RUSTFMT_RC=$rustfmt_rc"
-            echo "MANIFEST_RC=$manifest_rc"
+            echo "ARGPARSE_MANIFEST_RC=$argparse_manifest_rc"
+            echo "CLICK_TYPER_MANIFEST_RC=$click_typer_manifest_rc"
             echo "STRENGTH_GATE_RC=$strength_rc"
-            echo "ARGSPEC_RC=$argspec_rc"
-            grep -E '^test result:|^test .* \.\.\. (ok|FAILED)$|^failures:$|^    test_' /tmp/argspec.log || true
+            echo "ARGPARSE_34_RC=$argparse_rc"
+            echo "CLICK_TYPER_66_RC=$click_typer_rc"
             for pair in \
               "format:$format_rc:/tmp/argspec-format.log" \
               "rustfmt:$rustfmt_rc:/tmp/argspec-rustfmt.log" \
-              "manifest:$manifest_rc:/tmp/argspec-manifest.log" \
+              "argparse-manifest:$argparse_manifest_rc:/tmp/argspec-manifest.log" \
+              "click-typer-manifest:$click_typer_manifest_rc:/tmp/click-typer-manifest.log" \
               "strength:$strength_rc:/tmp/argspec-strength.log" \
-              "argspec:$argspec_rc:/tmp/argspec.log"
+              "argparse:$argparse_rc:/tmp/argparse.log" \
+              "click-typer:$click_typer_rc:/tmp/click-typer.log"
             do
               IFS=: read -r label rc log <<< "$pair"
               if [ "$rc" -ne 0 ]; then
@@ -67,7 +76,7 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           if ! git diff --cached --quiet; then
-            git commit -m "test(port): format and record argspec probe"
+            git commit -m "test(port): format and record Python CLI reader probe"
             git push origin HEAD:agent/port-python-test-contracts-v3
           fi
           exit 0
