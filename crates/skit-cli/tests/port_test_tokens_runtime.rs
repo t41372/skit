@@ -4,6 +4,7 @@
 //! there would not test the Python contract: omitted env/time come from the ambient run. This test
 //! crosses the real CLI composition boundary and a real command child instead. The stored intent is
 //! still the token string; the child must receive the freshly expanded process environment/date.
+//! Frozen oracle: `origin/main@206f9ef946fc45835cb2479593794431f2620c32`.
 
 use std::fs;
 
