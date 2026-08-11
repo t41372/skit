@@ -160,6 +160,9 @@ fn test_plan_dynamic_getopts_degrades_with_reason() {
     let plan = form_plan("shell", source, &EntrySettings::default());
 
     assert_eq!(plan.source, FormSource::Reader);
-    assert_eq!(plan.degradation, Some(DegradationReason::DynamicDeclaration));
+    assert_eq!(
+        plan.degradation,
+        Some(DegradationReason::DynamicDeclaration)
+    );
     assert!(plan.fields.is_empty());
 }
