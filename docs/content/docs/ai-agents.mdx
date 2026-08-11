@@ -13,10 +13,15 @@ The official [Agent Skill](https://agentskills.io) teaches compatible agents
 library:
 
 ```bash
-skit agent install            # pick one of the agent directories found on your machine
-skit agent install claude     # or name it: claude / codex / agents (--project for this repo only)
+skit agent install            # use the sole detected agent directory; otherwise, select one
+skit agent install claude     # select claude / codex / agents (--project limits it to this repo)
 npx skills add t41372/skit    # or install through skills.sh into 70+ agents
 ```
+
+The bare command uses an agent directory only when it finds exactly one supported
+directory. If it finds none or more than one, select `claude`, `codex`, or `agents`,
+or use `--to DIR`. This rule prevents skit from creating an agent directory that you
+did not select.
 
 ## What the skill teaches
 

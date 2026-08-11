@@ -1,0 +1,5 @@
+test_workspace = true
+all_features = true
+minimum_test_timeout = 20
+timeout_multiplier = 3.0
+

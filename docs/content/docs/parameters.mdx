@@ -17,22 +17,21 @@ exit 125 — skit never guesses.
 
 ## Defaults come from the script
 
-The launch menu prefills each parameter with the script's **current** default —
+The launch menu prefills each parameter with the script's **current** default.
 skit re-reads the source every time, so editing a constant in the script updates
-the menu immediately (no stale manage-time cache; `skit params --resync` writes
-refreshed definitions back). After you've overridden a value, `↺ default`
-(`Ctrl+O`) restores the script's own value.
+the menu immediately. `skit params --resync` writes refreshed definitions back.
+Clear an override to use the script's current value.
 
 When a CLI parser's default names a constant (`default=DEFAULT_HOST` in
 argparse/click/typer/`parseArgs`), skit resolves it to the literal — but only
-when that name is bound exactly once in the file and doesn't look like a secret.
+when that name is bound exactly once in the file and does not look like a secret.
 A secret-looking constant's literal never leaves the script's own text.
 
 ## Empty means empty
 
 Fields arrive prefilled with their default, so clearing one is a deliberate act:
 it delivers a real empty string (`''`) through inject, env, or flag delivery.
-`--set NAME=` expresses the same thing from the CLI. For types where empty can't
+`--set NAME=` expresses the same thing from the CLI. For types where empty cannot
 be a value — `int`, `float`, `bool`, `choice`, secrets, and defaultless
 parameters — empty still means "unset". Agents can tell the two apart via the
 per-field `delivers_empty` in `skit show --json`.
@@ -41,7 +40,7 @@ per-field `delivers_empty` in `skit show --json`.
 
 - **Last-used values** come back prefilled on the next run. A submitted value
   that equals the declared default is *not* stored — so a future change to the
-  script's default isn't buried by an old run. To pin a value deliberately, use
+  script's default is not buried by an old run. To pin a value deliberately, use
   a preset: presets store the run verbatim, cleared fields included.
 - **The `--` tail** (extra arguments after `--`) is remembered per entry and
   replays on the next argument-less run, with a note on stderr. `--forget-args`

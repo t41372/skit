@@ -1,0 +1,31 @@
+---
+title: 組態
+description: config.toml 與每個 `skit config` 鍵。
+---
+
+`skit config` 採用 git-config 語法：裸寫的 `skit config` 列出全部，
+`skit config KEY` 讀取一個鍵，`skit config KEY VALUE` 寫入它，`--json`
+供機器使用。所有內容都落在 skit 組態目錄中的 `config.toml`
+（`skit doctor` 會印出解析後的路徑；`SKIT_CONFIG_DIR` 可以覆寫它）。
+
+| 鍵 | 取值 | 意義 |
+| --- | --- | --- |
+| `lang` | 語言標籤，或 `auto` | 介面語言 |
+| `editor` | 一條命令（允許帶引數） | `skit edit` 與 `Ctrl+E` 使用的編輯器 |
+| `form` | `tui` / `plain` | 互動樣式：內嵌小表單，或純文字逐行提問 |
+| `after_run` | `exit` / `stay` | 選單啟動的執行結束後：結束 skit（預設），或作為工作檯返回選單 |
+| `shell.bash_path` | 一個路徑 | Windows：當 `PATH` 上沒有 bash 時，用來執行 shell 項目的 bash（設定時會驗證其存在） |
+| `js.runner` | `deno` / `bun` / `node`，為空表示自動 | 強制指定 JS 執行環境，而不是取先找到的 |
+| `mirror` | `on` / `off` | 鏡像總開關 —— `off` 會保留已儲存的 URL |
+| `mirror.pypi` | `tsinghua` / `aliyun` / `ustc` / 一個 URL / `off` | Python 套件索引 |
+| `mirror.github` | `nju` / 一個 `https://` 基礎 URL / `off` | Python 建置版本與 uv 執行檔 —— 必須使用 https，因為下載的執行檔會被執行 |
+| `mirror.npm` | `npmmirror` / 一個 URL / `off` | JS/TS 套件登錄庫 |
+
+說明：
+
+- `mirror` 總開關只接受 `on`/`off` —— 供應商依軸分別選擇。
+  在總開關關閉時寫入某個軸，會在標準錯誤上給出警告。
+- 鏡像設定從不觸碰你的全域 uv 組態或 shell；它們以環境覆蓋層的方式
+  作用於 skit 的子行程 —— 參見[環境變數](/zh-TW/docs/environment)。
+- 提示詞執行器也儲存在這個檔案中（`[[prompt.runners]]`），但你應該透過
+  `skit runner add` / `remove` / `list` 管理它們，而不是原始鍵。

@@ -1,0 +1,53 @@
+---
+title: AI 代理与自动化
+description: Agent Skill 与确定的 CLI 约定。
+---
+
+skit 是一个面向人*和* AI 代理的脚本仓库：同一个程序库 —— 你得到 TUI，
+代理得到确定的 CLI。
+
+## 安装 Agent Skill [#install-the-agent-skill]
+
+官方的 [Agent Skill](https://agentskills.io) 教会兼容的代理
+（Claude Code、Codex、Cursor、Gemini CLI 等许多代理）如何驱动你的程序库：
+
+```bash
+skit agent install            # 使用唯一检测到的代理目录；否则请选择一个
+skit agent install claude     # 选择 claude / codex / agents（--project 把范围限制在本仓库）
+npx skills add t41372/skit    # 或通过 skills.sh 安装到 70 多个代理中
+```
+
+不带参数的命令只在恰好找到一个受支持目录时才使用代理目录。
+如果一个也没找到，或者找到多个，请选择 `claude`、`codex` 或 `agents`，
+或使用 `--to DIR`。这条规则可以防止 skit 创建你并未选择的代理目录。
+
+## 这个 Skill 教了什么 [#what-the-skill-teaches]
+
+- **先查程序库**（`skit list`），再去写又一个一次性脚本 —— 它可能已经存在。
+- **运行前先检查**：`skit show <name> --json` 返回该条目完整的、机器可读的参数结构。
+- **确定地运行**：`skit run <name> --set key=value --no-input`。
+- **主动提议保存**它写出的有用脚本 —— 在你同意后 —— 让它们比创建它们的会话活得更久。
+
+## CLI 约定 [#the-cli-contract]
+
+每个启动菜单操作同时也是一个 CLI 命令，专为机器驱动而设计：
+
+- 每个列表与检查命令都有 **`--json`** 输出 —— `skit show --json`
+  返回稳定的按参数结构（类型、默认值、`delivers_empty`、敏感值标记、可选值），
+  记录在 [CLI 参考](/zh-CN/docs/cli)中。
+- **有意义的退出码**，遵循 docker 约定：`skit run` 原样传递脚本自身的退出码；
+  skit 自身的错误使用 125/126/127，130 表示用户取消，
+  被信号终止报告为 `128+N` —— 完整表格见
+  [CLI 参考](/zh-CN/docs/cli#exit-codes)。
+- **确定的值解析**：`--set` → 预设 → 上次使用值 → 声明的默认值。
+  未知的参数名称退出码为 2；错误的值退出码为 125。
+- `--no-input` 从不提问，也从不猜测 —— 如果信息缺失，skit 会以具名错误快速失败，
+  而不是静默地组装一个错误的命令。
+- `--dry-run` 打印将要运行的准确命令，但不运行它。
+
+```bash
+skit list --json              # 机器可读的列表
+skit show my_script --json    # 完整参数结构
+skit run my_script --set width=800 --no-input
+skit run my_script --dry-run
+```

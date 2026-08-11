@@ -1,11 +1,10 @@
 [project]
-# Distribution name only ("skit" is admin-prohibited on PyPI); the import package,
-# CLI command, and config dirs all stay "skit".
+# The distribution name remains skit-cli. The installed command remains skit.
 name = "skit-cli"
-version = "0.4.1.dev0"
-description = "A terminal script manager and launcher for humans and AI agents: put any script, prompt, or program in one library; skit turns its inputs and flags into a run form and remembers past parameters. Ships an Agent Skill so agents reuse the scripts they wrote."
+version = "0.5.0"
+description = "A terminal library and launcher for scripts, prompts, programs, and commands."
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.9"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Yi-Ting Chiu", email = "mytim710@gmail.com" }]
@@ -14,6 +13,7 @@ keywords = [
     "launcher",
     "uv",
     "tui",
+    "ratatui",
     "pep723",
     "script-manager",
     "script-runner",
@@ -25,247 +25,32 @@ keywords = [
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
-    "Environment :: Console :: Curses",
     "Intended Audience :: Developers",
     "Intended Audience :: End Users/Desktop",
-    "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Rust",
     "Topic :: Software Development :: Build Tools",
     "Topic :: Utilities",
-]
-# Upper caps let a lockfile-less `uv tool install skit-cli` refuse a future breaking major
-# (or minor, for pre-1.0 deps). Reproducible dev/CI installs are hash-pinned by uv.lock.
-dependencies = [
-    "typer>=0.26,<1",
-    "platformdirs>=4.10,<5",
-    "packaging>=24,<27",
-    "tomli-w>=1.2,<2",
-    "textual>=8.2,<9",
-    "rich>=15,<16",
-    "tree-sitter>=0.25,<0.27",
-    "tree-sitter-bash>=0.25,<0.26",
-    "tree-sitter-javascript>=0.25,<0.26",
-    "tree-sitter-typescript>=0.23,<0.24",
 ]
 
 [project.urls]
 Repository = "https://github.com/t41372/skit"
 Issues = "https://github.com/t41372/skit/issues"
-
-[project.scripts]
-# The dispatcher, not the Typer app: it answers --version without importing the CLI.
-skit = "skit.__main__:main"
-
-[dependency-groups]
-dev = [
-    "pytest>=9.1,<10",
-    "pytest-asyncio>=1.4,<2",
-    "pytest-cov>=7.1,<8",
-    "textual-serve>=1.1,<2",
-    "ty>=0.0.56,<0.1",
-    "ruff>=0.15,<0.16",
-    "mutmut>=3.6,<4",
-    "zizmor>=1.26,<2",
-    "babel>=2.18,<3",  # dev-only: extract/update/compile .po↔.mo (runtime uses stdlib gettext)
-    "pytest-rerunfailures>=16.4",
-    "pytest-codspeed>=4,<5",
-]
-# The benchmark pipeline's only extra dependency (benchmarks/ — never a runtime dep).
-# Kept as its own group for clarity, but default-installed (see [tool.uv]) so ty's
-# strictest mode resolves `import pyperf` in every environment, not just bench CI.
-# (pyperf itself is small; its closure includes psutil, a C extension — still never
-# a runtime dependency of skit.)
-bench = [
-    "pyperf>=2.9,<3",
-]
-
-[tool.uv]
-default-groups = ["dev", "bench"]
+Documentation = "https://t41372.github.io/skit/"
 
 [build-system]
-requires = ["uv_build>=0.11,<0.12"]
-build-backend = "uv_build"
+requires = ["maturin>=1.14.1,<2"]
+build-backend = "maturin"
 
-[tool.uv.build-backend]
-# The distribution is skit-cli but the import package stays src/skit; without this the
-# backend would look for src/skit_cli.
-module-name = "skit"
-# Catalog sources (.po/.pot) are maintainer-only inputs to `scripts/i18n.py compile`; the
-# runtime (src/skit/i18n.py) loads only compiled .mo via stdlib gettext. Keep sources in the
-# sdist for maintainers/rebuilds, drop them from the wheel that end users install.
-wheel-exclude = ["**/*.po", "**/*.pot"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
-addopts = "--strict-markers --strict-config"
-xfail_strict = true
-filterwarnings = ["error::DeprecationWarning:skit"]
-# Puts the repo root on sys.path so tests can `import benchmarks` (the top-level
-# benchmark pipeline package). Resolved relative to this inifile, which mutmut copies
-# into mutants/, so the import keeps working there too (benchmarks/ is in also_copy).
-pythonpath = ["."]
-
-[tool.coverage.run]
-source = ["skit", "benchmarks"]
-branch = true
-parallel = true
-# The benchmark pipeline's trust split (docs/design/benchmarks.md): everything that
-# computes, decides, or persuades is covered at the same 100% floor as src/skit; the
-# ONLY exemptions are spawn-and-wait orchestration around external binaries and the
-# benchmark subjects themselves.
-omit = [
-    "benchmarks/suites/*",         # subprocess orchestration around hyperfine/strace/uv/probes
-    "benchmarks/micro/*",          # pyperf scripts re-exec'd as worker processes
-    "benchmarks/fixtures/noop.py", # benchmark subject (a script the benchmarks run), not harness code
-    "benchmarks/codspeed/*",       # pytest benchmark subjects, collected only by the CodSpeed job
+[tool.maturin]
+bindings = "bin"
+manifest-path = "crates/skit-cli/Cargo.toml"
+locked = true
+strip = true
+include = [
+    { path = "skills/skit/SKILL.md", format = "sdist" },
+    { path = "crates/skit-benchmarks/**/*", format = "sdist" },
+    { path = "tests/corpus/**/*", format = "sdist" },
 ]
-
-[tool.coverage.paths]
-source = ["src/skit", "*/site-packages/skit"]
-
-[tool.coverage.report]
-fail_under = 100
-show_missing = true
-skip_covered = true
-exclude_also = [
-    "if TYPE_CHECKING:",
-    "@overload",
-    'if __name__ == "__main__":',
-]
-
-[tool.ty.rules]
-all = "error"
-
-[tool.ty.environment]
-python-version = "3.12"
-python-platform = "all"
-
-[tool.ruff]
-line-length = 100
-target-version = "py312"
-src = ["src", "tests"]
-
-[tool.ruff.lint]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # pyflakes
-    "I",      # isort
-    "B",      # flake8-bugbear
-    "C4",     # flake8-comprehensions
-    "UP",     # pyupgrade
-    "SIM",    # flake8-simplify
-    "RUF",    # ruff-specific
-    "PT",     # flake8-pytest-style
-    "PL",     # pylint
-    "TRY",    # tryceratops
-    "PERF",   # perflint
-    "S",      # flake8-bandit
-]
-ignore = [
-    "PLR0913",  # too many arguments — CLI entry points legitimately take many options
-    "PLR2004",  # magic values in comparisons — noisy in parsers
-    "TRY003",   # long exception messages — user-facing i18n messages
-    "B008",     # function calls in defaults — the canonical typer.Option/Argument pattern
-    "PLC0415",  # imports inside functions — deliberate lazy imports for CLI startup speed
-    "E501",     # line length — the formatter owns wrapping; source-string gettext msgids can't be split
-]
-
-[tool.ruff.lint.per-file-ignores]
-"src/skit/tui.py" = [
-    "RUF012",  # Textual BINDINGS/CSS class attributes are the framework's documented pattern
-]
-"src/skit/tui_*.py" = [
-    "RUF012",  # Textual BINDINGS/CSS class attributes are the framework's documented pattern
-]
-"src/skit/inlineform.py" = [
-    "RUF012",  # Textual BINDINGS/CSS class attributes are the framework's documented pattern
-]
-"src/skit/i18n.py" = [
-    "PLW0603", # module-level localization singleton is intentional
-]
-"src/skit/cli.py" = [
-    "PLR0912", # typer command bodies with many options naturally branch a lot
-    "PLR0915",
-]
-"scripts/serve_preview.py" = [
-    "S104",    # dev-only preview server binds 0.0.0.0 on purpose
-    "S108",    # dev-only demo sandbox under /tmp on purpose
-]
-"scripts/i18n.py" = [
-    "S603",    # dev-only maintainer tool: fixed-arg subprocess to pybabel
-    "PLR0911", # subcommand dispatcher returns once per command
-]
-"docs/assets/demo/scripts/zh/*.py" = [
-    "RUF001",  # the Chinese demo scripts use fullwidth punctuation on purpose
-]
-"scripts/i18n_coverage.py" = [
-    "S603",    # dev-only maintainer tool: fixed-arg subprocess to pybabel extract
-    "PLR0912", # the sink-dispatch scan is inherently branchy
-    "PERF401", # explicit append loops read clearer than comprehensions in the AST walk
-]
-"benchmarks/__main__.py" = [
-    "PLR0911", # subcommand dispatcher returns once per command (same as scripts/i18n.py)
-]
-"benchmarks/budgets.py" = [
-    "PLR0911", # the outcome evaluator returns exactly once per decay channel by design
-    "PLR0912", # the row validator checks one field per branch; collapsing them hides errors
-]
-"src/skit/store.py" = [
-    "PLR0911", # _summary_from_row refuses once per distrust reason; collapsing them hides which
-]
-"tests/**" = [
-    "S101",    # assert is the point of tests
-    "S108",    # tests use fixed /tmp fixtures as opaque path strings
-    "S310",    # tests exercise file:// URLs against local fixtures
-    "S603",    # subprocess calls with fixed args in tests
-    "PLR0912", # long/branchy test helpers are fine
-    "PLR0915",
-    "SIM117",  # nested with statements readable in tests
-]
-"tests/corpus/**" = ["ALL"]  # corpus files are verbatim analyzer inputs, not code style subjects
-"benchmarks/codspeed/**" = [
-    "S101",    # assert is how the CodSpeed benchmarks sanity-check the measured call
-]
-
-[tool.mutmut]
-# Modern key names (paths_to_mutate / tests_dir print deprecation warnings on 3.6).
-source_paths = ["src/skit/"]
-pytest_add_cli_args_test_selection = ["tests/"]
-# The skill-sync test (tests/test_agent_skill.py) compares the repo-root skill against
-# the packaged copy; mutmut's mutants/ tree only carries src/ + tests/ by default.
-# README.md rides along because pyproject's `readme` references it — without it, uv
-# can't build the project inside mutants/ on a cold cache. scripts/ rides along because
-# the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path.
-# benchmarks/ rides along because tests/test_benchmarks_tooling.py imports the
-# benchmarks package (pytest's inifile-relative pythonpath resolves it inside
-# mutants/). .github/workflows/ rides along because the same file's contract-sync
-# tests read the benchmark workflows and the install-hyperfine composite action
-# (hyperfine pin, BENCH_CI_RUNNER label). locales/
-# must be explicit too: mutmut never refreshes non-Python files already present under a
-# reused source_paths copy, while also_copy directories are overlaid on every run. That
-# applies to both runtime package-data trees: translation catalogs and the bundled skill.
-also_copy = [
-    "skills/",
-    "README.md",
-    "scripts/",
-    "benchmarks/",
-    ".github/workflows/",
-    ".github/actions/",
-    "src/skit/locales/",
-    "src/skit/skills/",
-]
-# mutmut's native pragma scan only sees statement-level comments: a trailing pragma on a
-# multi-line statement marks the first line only, so an equivalent mutant on a later line
-# of the same statement can't be pinned natively. This pattern makes any line that carries
-# the pragma text skip the expression starting there, so a pragma can sit exactly on the
-# equivalent-mutant line (e.g. one branch of a wrapped ternary) without silencing its
-# siblings — mutants on the statement's other lines stay live. (Note the anchor is the
-# expression's FIRST line: call-argument mutants belong to the whole Call node, so they
-# can't be pinned per-argument this way — kill those with a forwarding test instead.) No
-# existing pragma line opens a multi-line expression, so for every other site this is a
-# no-op.
-do_not_mutate_patterns = ['pragma: no mutate']

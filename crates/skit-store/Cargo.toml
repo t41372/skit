@@ -1,0 +1,35 @@
+[package]
+name = "skit-store"
+description = "Filesystem and TOML adapters for skit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+skit-i18n.workspace = true
+glob.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+shellexpand.workspace = true
+thiserror.workspace = true
+time.workspace = true
+toml.workspace = true
+toml_edit.workspace = true
+skit-domain.workspace = true
+skit-application.workspace = true
+# The Library projection reconciles each entry's form against its stored source. skit-runtime
+# does not depend on this crate, so the launch path keeps its parser-free rule.
+skit-form.workspace = true
+skit-language.workspace = true
+
+[dev-dependencies]
+skit-i18n.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

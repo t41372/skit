@@ -1,0 +1,41 @@
+---
+title: 環境變數
+description: skit 讀取的每個變數，以及它為子行程設定的變數。
+---
+
+## skit 讀取的變數 [#variables-skit-reads]
+
+| 變數 | 作用 |
+| --- | --- |
+| `SKIT_DATA_DIR` | 覆寫資料根目錄 —— 程式庫、儲存的副本、草稿，以及 skit 的專用 uv |
+| `SKIT_STATE_DIR` | 覆寫狀態根目錄 —— 上次使用的值、預設、執行歷史 |
+| `SKIT_CONFIG_DIR` | 覆寫組態根目錄 —— `config.toml` |
+| `SKIT_LANG` | 本行程的介面語言（`SKIT_LANG=zh-TW skit`） |
+| `VISUAL` / `EDITOR` | 當 `editor` 組態鍵未設定時使用的編輯器 |
+| `TERM` | `TERM=dumb` 把互動流程切換為純文字逐行提問（螢幕閱讀器、Emacs shell） |
+| `PATHEXT`（Windows） | 在分類執行檔時，決定哪些副檔名算作可執行 |
+
+優先順序細節：
+
+- **語言**：`SKIT_LANG` → `lang` 組態鍵 → `LC_ALL` → `LC_MESSAGES` →
+  `LANG` → 系統地區設定。值為 `C` 時被忽略。
+- **編輯器**：`editor` 組態鍵 → `VISUAL` → `EDITOR` → 平台預設值
+  （Windows 上是 `notepad`，其他平台是 `vi`）。空白值算作未設定。
+
+`skit doctor` 會印出解析後的資料、狀態與組態路徑。
+
+## skit 為它啟動的行程設定的變數 [#variables-skit-sets-for-the-processes-it-launches]
+
+鏡像設定以環境覆蓋層的方式套用於 skit **自己的子行程** ——
+從不寫入你的 shell、`PATH` 或全域 uv 組態 —— 並且每一項都讓位於
+你自己已經設定的值：
+
+| 變數 | 來自 | 讓位於 |
+| --- | --- | --- |
+| `UV_DEFAULT_INDEX` | `mirror.pypi` | 你自己的 `UV_DEFAULT_INDEX` 或 `UV_INDEX_URL` |
+| `UV_PYTHON_INSTALL_MIRROR` | `mirror.github` | —— |
+| `NPM_CONFIG_REGISTRY` | `mirror.npm` | 你自己的 `NPM_CONFIG_REGISTRY` / `npm_config_registry`（注意：npm 把這個變數排在 `~/.npmrc` 之上） |
+
+大寫的 `NPM_CONFIG_REGISTRY` 形式對 npm、bun 與 deno 都有效。
+透過環境傳遞的參數值最後疊加，因此明確設定的參數勝過環境本身與
+skit 的鏡像變數。
