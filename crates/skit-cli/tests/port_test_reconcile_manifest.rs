@@ -6,6 +6,8 @@
 
 use std::{fs, path::Path};
 
+use syn::{Attribute, Item};
+
 const LANGUAGE: &[&str] = &[
     "test_all_ok_no_drift",
     "test_const_missing_by_name",
@@ -39,13 +41,24 @@ const HIGHER: &[&str] = &[
     "test_no_secret_also_clears_the_env_source",
 ];
 
+fn has_test_attribute(attributes: &[Attribute]) -> bool {
+    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+}
+
 fn missing(path: &Path, names: &[&str]) -> Vec<String> {
     let source = fs::read_to_string(path).unwrap();
+    let file = syn::parse_file(&source)
+        .unwrap_or_else(|error| panic!("{} is not valid Rust: {error}", path.display()));
     names
         .iter()
         .filter_map(|name| {
-            let needle = format!("fn {name}(");
-            (!source.contains(&needle)).then(|| (*name).to_owned())
+            let executable = file.items.iter().any(|item| match item {
+                Item::Fn(function) => {
+                    function.sig.ident == *name && has_test_attribute(&function.attrs)
+                }
+                _ => false,
+            });
+            (!executable).then(|| (*name).to_owned())
         })
         .collect()
 }
@@ -67,7 +80,7 @@ fn every_python_reconcile_test_has_an_executable_rust_oracle() {
     ));
     assert!(
         absent.is_empty(),
-        "frozen Python reconcile tests disappeared:\n{}",
+        "frozen Python reconcile tests are missing or not executable #[test] functions:\n{}",
         absent.join("\n")
     );
 }
@@ -80,9 +93,13 @@ fn higher_layer_reconcile_contracts_are_not_backfilled_with_ignore_stubs() {
         .unwrap();
     let source = fs::read_to_string(repo.join("crates/skit-language/tests/port_test_reconcile.rs"))
         .unwrap();
+    let file = syn::parse_file(&source).unwrap();
     for name in HIGHER {
         assert!(
-            !source.contains(&format!("fn {name}(")),
+            !file.items.iter().any(|item| match item {
+                Item::Fn(function) => function.sig.ident == *name,
+                _ => false,
+            }),
             "{name} belongs to the executable higher-layer target, not a language placeholder"
         );
     }
