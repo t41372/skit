@@ -54,13 +54,13 @@ adjudicated · counts are Python `def test_` counts.
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
 | test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (36) · 115 cross-crate/absent · 27 divergences (manifest name-key, installer argv, staging cwd, stamp path, sweep) · 6 verifier-caught defects fixed |
 | test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (16) launch/invoke half · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language · 2 divergences |
-| test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (14) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · 1 divergence (params-msg) · 6 unmappable |
-| test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (3) · 2 divergences (exe/prompt picker labels) |
+| test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
+| test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
 | test_pep723_split.py | 24 | crates/skit-language/tests/port_test_pep723_split.rs (+ skit-ui re-home) | done (3) · 14 → skit-ui · 7 white-box/CLI |
 | test_metawriter.py | 24 | crates/skit-language/tests/port_test_metawriter.rs | done (29) · float-order gap fixed · 2 white-box |
 | test_template_context_quoting.py | 44 | crates/skit-runtime/tests/port_test_template_context_quoting.rs | done (28) · 16 white-box _posix_quote_state / cross-crate |
-| test_declared_params.py | 52 | crates/skit-cli/tests/port_test_declared_params.rs | done (36) · 15 divergences (batch fault tolerance, secret/env, template defaults) · 1 weakening caught+fixed by verify |
+| test_declared_params.py | 52 | crates/skit-cli/tests/port_test_declared_params.rs | done (37) · **empty-params plain line FIXED 8633128** · 14 divergences (batch fault tolerance, secret/env, template defaults) · 1 weakening caught+fixed by verify |
 | test_source_default_semantics.py | 19 | crates/skit-form/tests/port_test_source_default_semantics.rs | done (7) · 12 cross-crate (assemble→skit-application, edit_specs→skit-cli) + 2 injection-seam |
 | test_default_semantics_review_fixes.py | 18 | crates/skit-language/tests/port_test_default_semantics_review_fixes.rs | done (6) · 12 cross-crate (flows/preset/argstate) + _record_default divergence + const-lane coercibility MUST-FIX |
 | test_effective_uv_metadata.py | 22 | crates/skit-language/tests/port_test_effective_uv_metadata.rs | done (11) · 15 cross-crate/deferred |
@@ -107,10 +107,10 @@ adjudicated · counts are Python `def test_` counts.
 | test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | done (12) · 17 divergences (drafts-boundary guard absent #15, editor-validates-after-open, kind_for_draft missing, --python normalize + error wording) + 2 absent (interactive re-ask) · 1 weakening fixed |
 | test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
 | test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | done (12) · 15 cross-crate/divergence |
-| test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (14) · 10 divergences (draft not unlinked, kind_for_draft absent, pin-announce missing, read-view --manage) ties #15 · 3 cross-crate/absent |
+| test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (18) · **read-view voices ×4 FIXED 8633128** · 6 divergences (draft not unlinked, kind_for_draft absent, pin-announce missing) ties #15 · 3 cross-crate/absent |
 | test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | done (17) · 5 deferred |
 | test_dependency_write_validation.py | 21 | crates/skit-cli/tests/port_test_dependency_write_validation.rs | done (12) · 9 divergence/cross-crate |
-| test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | done (10) · 11 cross-crate/divergence |
+| test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | done (12) · **read-view voices ×2 FIXED 8633128** · 9 cross-crate/divergence |
 | test_dependency_command_contracts.py | 20 | crates/skit-cli/tests/port_test_dependency_command_contracts.rs | done (5) · 15 divergence/cross-crate |
 | test_params_model.py | 19 | crates/skit-domain/tests/port_test_params_model.rs | done (18) · 1 deferred · no gap |
 | test_show.py | 17 | crates/skit-cli/tests/port_test_show.rs | done (16) · 1 deferred |
