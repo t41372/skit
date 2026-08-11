@@ -1,6 +1,6 @@
 name: Launcher and manifest oracle probe
 
-# Temporary self-trigger; deleted after diagnostics are read.
+# Retry self-trigger after manifest integrity and params-edit ledger fixes.
 on:
   push:
     branches:
@@ -40,6 +40,8 @@ jobs:
           declared_rc=$?
           cargo test --locked -p skit-cli-rs --test port_test_params_edit_manifest -- --nocapture > /tmp/lm-edit.log 2>&1
           edit_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_reconcile_manifest -- --nocapture > /tmp/lm-reconcile.log 2>&1
+          reconcile_rc=$?
           cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture > /tmp/lm-strength.log 2>&1
           strength_rc=$?
 
@@ -52,6 +54,7 @@ jobs:
             echo "MANIFEST_INTEGRITY_RC=$manifest_rc"
             echo "DECLARED_MANIFEST_RC=$declared_rc"
             echo "PARAMS_EDIT_MANIFEST_RC=$edit_rc"
+            echo "RECONCILE_MANIFEST_RC=$reconcile_rc"
             echo "STRENGTH_GATE_RC=$strength_rc"
             for pair in \
               "format:$format_rc:/tmp/lm-format.log" \
@@ -60,6 +63,7 @@ jobs:
               "manifest-integrity:$manifest_rc:/tmp/lm-manifest.log" \
               "declared:$declared_rc:/tmp/lm-declared.log" \
               "params-edit:$edit_rc:/tmp/lm-edit.log" \
+              "reconcile:$reconcile_rc:/tmp/lm-reconcile.log" \
               "strength:$strength_rc:/tmp/lm-strength.log"
             do
               IFS=: read -r label rc log <<< "$pair"
