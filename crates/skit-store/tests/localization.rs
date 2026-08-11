@@ -53,11 +53,15 @@ fn every_config_error_localizes_and_keeps_its_values() {
         &["unsupported value"],
     );
     assert_localized(
-        &ConfigError::Invalid(Message::new("unknown configuration key: {}").with("colour")),
-        &["colour"],
+        &ConfigError::Invalid(
+            Message::new("Unknown setting: {}. Available: {}")
+                .with("colour")
+                .with("lang, editor, mirror"),
+        ),
+        &["colour", "lang, editor, mirror"],
     );
     assert_localized(
-        &ConfigError::Usage(Message::new("bash path is not a file: {}").with("/missing/bash")),
+        &ConfigError::Usage(Message::new("No such file: {}").with("/missing/bash")),
         &["/missing/bash"],
     );
 }
@@ -87,18 +91,16 @@ fn a_multi_value_message_places_every_value_in_its_own_hole() {
 
 #[test]
 fn a_rejected_configuration_value_stays_verbatim() {
-    // `on` and `off` are catalog words, so a value must never change.
-    let error = ConfigError::Invalid(
-        Message::new("invalid configuration value for {}: {}")
-            .with("after_run")
-            .with("on-off"),
+    // `exit` and `stay` are catalog words, so a value must never change.
+    let error = ConfigError::Usage(
+        Message::new("Unknown after-run behavior: {}. Choose from: exit, stay").with("on-off"),
     );
     assert_eq!(
         error.message().localize(Locale::ZhCn),
-        "after_run 的配置值无效：on-off"
+        "未知的运行后行为：on-off。可选：exit、stay"
     );
     assert_eq!(
         error.message().localize(Locale::ZhTw),
-        "after_run 的組態值無效：on-off"
+        "未知的執行後行為：on-off。可選：exit、stay"
     );
 }

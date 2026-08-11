@@ -298,11 +298,6 @@ const CATALOG: &[Translation] = &[
     ),
     row!("backup", "备份", "備份"),
     row!(
-        "bash path is not a file: {}",
-        "Bash 路径不是文件：{}",
-        "Bash 路徑不是檔案：{}",
-    ),
-    row!(
         "skit could not parse {}. skit backed up the file to {} before this change. Recover missing settings from the backup.",
         "skit 无法解析 {}。skit 在更改前将文件备份到 {}。请从备份中恢复缺失的设置。",
         "skit 無法解析 {}。skit 在變更前將檔案備份到 {}。請從備份中復原缺少的設定。",
@@ -755,7 +750,6 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Removed: {}", "已删除：{}", "已移除：{}"),
     row!("Edited: {} ({})", "已编辑：{} ({})", "已編輯：{} ({})"),
-    row!("Set: {}={}", "已设置：{}={}", "已設定：{}={}"),
     row!("Added runner: {}", "已添加运行器：{}", "已新增執行器：{}"),
     row!(
         "Runner {} added: {}",
@@ -2591,9 +2585,44 @@ const CATALOG: &[Translation] = &[
         "{} 不是有效的 PEP 508 相依描述：{}",
     ),
     row!(
-        "invalid configuration value for {}: {}",
-        "{} 的配置值无效：{}",
-        "{} 的組態值無效：{}",
+        "Unknown language: {}. Available: {}",
+        "未知语言:{}。可用语言:{}",
+        "未知語言:{}。可用語言:{}",
+    ),
+    row!(
+        "Unknown setting: {}. Available: {}",
+        "未知的设置：{}。可用：{}",
+        "未知的設定：{}。可用：{}",
+    ),
+    row!(
+        "Unknown form style: {}. Choose from: tui, plain",
+        "未知的表单形态：{}。可选：tui、plain",
+        "未知的表單形態：{}。可選：tui、plain",
+    ),
+    row!(
+        "Unknown after-run behavior: {}. Choose from: exit, stay",
+        "未知的运行后行为：{}。可选：exit、stay",
+        "未知的執行後行為：{}。可選：exit、stay",
+    ),
+    row!(
+        "Unknown JS runner: {}. Choose from: {}",
+        "未知的 JS 运行时：{}。可选：{}",
+        "未知的 JS 執行環境：{}。可選：{}",
+    ),
+    row!(
+        "Unknown mirror value: {}. \"mirror\" is the master switch (on / off); mirrors are picked per ecosystem: mirror.pypi ({}), mirror.github ({}), mirror.npm ({}) — each also takes a URL or \"off\".",
+        "未知的 mirror 值：{}。“mirror”只是总开关（on / off）；镜像按生态各自挑选：mirror.pypi（{}）、mirror.github（{}）、mirror.npm（{}）——每项也接受 URL 或“off”。",
+        "未知的 mirror 值：{}。「mirror」只是總開關（on / off）；鏡像按生態系各自挑選：mirror.pypi（{}）、mirror.github（{}）、mirror.npm（{}）——每項也接受 URL 或「off」。",
+    ),
+    row!(
+        "Unknown {} value: {}. Choose from: {}, off — or give a full URL.",
+        "未知的 {} 值：{}。可选：{}、off——或直接给出完整 URL。",
+        "未知的 {} 值：{}。可選：{}、off——或直接給完整 URL。",
+    ),
+    row!(
+        "Unknown mirror.github value: {}. Choose from: {}, off — or give an https:// github-release base URL (the uv binary is downloaded and executed, so https:// is required).",
+        "未知的 mirror.github 值：{}。可选：{}、off——或给出一个 https:// 的 github-release 基底 URL（uv 主程序会被下载并执行，因此必须是 https://）。",
+        "未知的 mirror.github 值：{}。可選：{}、off——或給一個 https:// 的 github-release 基底 URL（uv 主程式會被下載並執行，因此必須是 https://）。",
     ),
     row!(
         "invalid entry id: {}",
@@ -2651,9 +2680,9 @@ const CATALOG: &[Translation] = &[
         "沒有名為 {} 的可編輯項目",
     ),
     row!(
-        "no mirror URLs are stored; set one mirror axis first",
-        "没有存储镜像 URL；请先设置一个镜像轴",
-        "沒有儲存鏡像 URL；請先設定一個鏡像軸",
+        "Nothing to enable: no mirror URLs are saved. Set an axis first: mirror.pypi / mirror.github / mirror.npm.",
+        "没有可启用的镜像：尚未保存任何镜像 URL。请先设置某个轴：mirror.pypi / mirror.github / mirror.npm。",
+        "沒有可啟用的鏡像：尚未儲存任何鏡像 URL。請先設定某個軸：mirror.pypi / mirror.github / mirror.npm。",
     ),
     row!("operation cancelled", "操作已取消", "操作已取消",),
     row!(
@@ -2933,11 +2962,6 @@ const CATALOG: &[Translation] = &[
         "未知的 agent 慣例：{}",
     ),
     row!(
-        "unknown configuration key: {}",
-        "未知的配置键：{}",
-        "未知的組態鍵：{}",
-    ),
-    row!(
         "unknown entry kind: {}",
         "未知的条目类型：{}",
         "未知的項目類型：{}",
@@ -3215,12 +3239,33 @@ const CATALOG: &[Translation] = &[
         "自定义选项需要 URL。",
         "自訂選項需要 URL。"
     ),
+    row!("auto ({})", "自动（{}）", "自動（{}）"),
+    row!(
+        "default ($VISUAL / $EDITOR)",
+        "默认（$VISUAL / $EDITOR）",
+        "預設（$VISUAL / $EDITOR）",
+    ),
+    row!(
+        "auto (bash on PATH)",
+        "自动（使用 PATH 上的 bash）",
+        "自動（使用 PATH 上的 bash）",
+    ),
+    row!(
+        "auto (deno > bun > node)",
+        "自动（deno > bun > node）",
+        "自動（deno > bun > node）",
+    ),
+    row!(
+        "Mirrors are switched off — run `skit config mirror on` to activate them.",
+        "镜像当前处于关闭状态——运行 `skit config mirror on` 启用。",
+        "鏡像目前是關閉狀態——執行 `skit config mirror on` 啟用。",
+    ),
     row!(
         "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: {}).",
         "uv 二进制文件会被下载并执行，因此 github-release 基础 URL 必须使用 https://（当前为：{}）。",
         "uv 二進位檔會被下載並執行，因此 github-release 基礎 URL 必須使用 https://（目前為：{}）。",
     ),
-    row!("No such file: {}", "没有此文件：{}", "沒有此檔案：{}"),
+    row!("No such file: {}", "找不到文件：{}", "找不到檔案：{}"),
     row!(
         "{} needs NAME=VALUE",
         "{}需要 NAME=VALUE",

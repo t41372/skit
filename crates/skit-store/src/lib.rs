@@ -16,7 +16,8 @@ mod state;
 mod toml_document;
 
 pub use config::{
-    ConfigError, ConfigRecovery, FileConfigStore, MirrorSettings, PromptRunner, PromptRunnerRow,
+    CONFIG_KEYS, ConfigError, ConfigRecovery, FileConfigStore, MirrorSettings, PromptRunner,
+    PromptRunnerRow,
 };
 #[doc(hidden)]
 pub use fs_ops::replace_with_retry_impl;

@@ -95,11 +95,18 @@ fn human_success_and_health_output_use_the_requested_catalog_but_json_does_not()
         .assert()
         .success()
         .stdout(predicate::str::contains("已新增：Library"));
+    // The v0.4 write confirmation is `key = value` with no localizable words; the
+    // localized human surface for config is the unset display sentinel on a read.
     command()
         .args(["config", "after_run", "stay"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("已設定：after_run=stay"));
+        .stdout(predicate::str::contains("after_run = stay"));
+    command()
+        .args(["config", "js.runner"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("自動（deno > bun > node）"));
     command()
         .arg("doctor")
         .assert()

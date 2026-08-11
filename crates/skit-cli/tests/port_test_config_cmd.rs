@@ -16,21 +16,18 @@
 //!   name / URL / "off" / "custom"), the `config mirror --json` master token ("on"/"off"), and
 //!   direct `config.toml` inspection where an exact stored URL is the claim.
 //! - Python `config.load_config()["language"]` / `config.load_form()` / `config.load_after_run()`
-//!   / `config.load_bash_path()` / `config.load_js_runner()` -> the corresponding `config KEY`
-//!   READ path (raw machine token), or `config KEY --json`.
+//!   / `config.load_bash_path()` / `config.load_js_runner()` -> `config KEY --json` (the raw
+//!   machine token; the human `config KEY` read carries the localized display sentinels).
 //! - Python `config.save_config({...})` / `config.save_mirror(...)` (hand-writing a corrupt or
 //!   underivable document) -> writing `config.toml` bytes directly before the invocation.
 //! - Python `cli._lang_override()` (a private helper) -> the `config lang --json` raw value, which
 //!   is exactly `_config_raw_value("lang") == _lang_override()`.
 //!
 //! Buckets:
-//! - Bucket 1 (API EXISTS, asserting): the bulk below — every `config` read/write/list path.
-//! - Bucket 2 (DIVERGENCE, `#[ignore]` with the full asserting body): ten tests where the Rust CLI
-//!   genuinely differs from the oracle — it has no localized human display sentinels
-//!   ("default ($VISUAL / $EDITOR)", "auto (…)"), prints no paused "switched off" stderr notice on
-//!   an axis write, gives no `mirror.pypi` axis pointer in the master-switch errors, names no
-//!   choices in the `js.runner` error, and lists settings as `key=value` (not padded columns). The
-//!   body is kept intact; deleting the `#[ignore]` after an impl fix must go green.
+//! - Bucket 1 (API EXISTS, asserting): the bulk below — every `config` read/write/list path,
+//!   including the localized human display layer (sentinels, padded list columns, the
+//!   space-padded `key = value` confirmation, the paused "switched off" stderr notice, and
+//!   the choice-naming refusals).
 //! - Bucket 3 (CROSS-CRATE, `#[ignore]` stub): the mirror-wizard and first-run tests. Both drive
 //!   the private, interactive helpers `mirror_wizard(store, &dyn FirstRunPrompt)` and
 //!   `first_run_mirror_offer(store, &dyn NetworkProbe, &dyn FirstRunPrompt, interactive)` in
@@ -129,9 +126,12 @@ impl Sandbox {
     }
 }
 
-/// The value a `config KEY` READ path prints, trimmed of the trailing newline.
+/// The raw stored value (the oracle's `config.load_*()` reads): `config KEY --json`.
+/// The human `config KEY` read now carries the localized display sentinels, so raw
+/// claims must go through the machine face.
 fn read_key(sandbox: &Sandbox, key: &str) -> String {
-    sandbox.run(&["config", key]).stdout.trim().to_owned()
+    let mut doc = parse_flat_json(&sandbox.run(&["config", key, "--json"]).stdout);
+    doc.remove(key).unwrap_or_default()
 }
 
 /// Parse the flat `{"key":"value",...}` object the CLI emits (a string->string map, no nesting;
@@ -206,7 +206,6 @@ fn test_bare_config_json() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle config LIST shows localized display sentinels (cli.py:5301-5326); Rust prints raw empty values, no human display column"]
 fn test_config_json_emits_raw_values_never_a_localized_sentinel() {
     // `config --json` is a STABLE machine contract: it emits the RAW stored values, never the
     // localized DISPLAY sentinels. Under a non-English locale the payload must be byte-identical
@@ -425,7 +424,6 @@ fn test_set_mirror_github_off_clears_both_urls() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a URL-storing write under pause prints no \"switched off\" stderr notice (cli.py:5335-5345 _finish_axis_write) — the Rust set path emits only the confirmation."]
 fn test_paused_github_write_prints_notice_and_clear_does_not() {
     // F2 for the github axis: a URL-storing write under pause emits the stderr notice and stays
     // paused; the clearing write emits none and leaves the other paused axes alone.
@@ -523,7 +521,6 @@ fn test_mirror_master_off_preserves_urls_and_on_restores() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the 'mirror on' with nothing saved error does not point at the mirror.pypi axis keys (cli.py:5368-5372) — the Rust message reads 'no mirror URLs are stored; set one mirror axis first'."]
 fn test_mirror_master_on_with_nothing_saved_exits_2() {
     let sandbox = Sandbox::new();
     let result = sandbox.run(&["config", "mirror", "on"]);
@@ -532,7 +529,6 @@ fn test_mirror_master_on_with_nothing_saved_exits_2() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the master-level vendor-name rejection does not point at mirror.pypi (cli.py:5354-5364 _set_mirror_master) — the Rust message reads 'invalid configuration value for mirror: tsinghua'."]
 fn test_mirror_master_rejects_vendor_names_with_axis_pointer() {
     // `skit config mirror tsinghua` (the old grammar) must fail loudly and point at mirror.pypi —
     // a vendor name at the master level would have to guess the other axes.
@@ -544,7 +540,6 @@ fn test_mirror_master_rejects_vendor_names_with_axis_pointer() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a paused axis write prints no 'switched off' stderr notice and its stdout confirmation has no space-padded '= ' (cli.py:5335-5345, 5323 'Set: k=v') — state stays correct but the notice/format diverge."]
 fn test_paused_axis_write_preserves_other_axes_and_stays_paused() {
     // F2: after `mirror off` the config is PAUSED (URLs kept, master off). Writing another axis
     // must preserve the paused axes' URLs, keep the master off, and print the re-enable notice —
@@ -591,7 +586,6 @@ fn test_paused_axis_clear_leaves_other_axes_and_prints_no_notice() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the human list is 'key=value', not the padded 'key<pad>value' columns the oracle prints (cli.py:5509 f'  {k:<16}{value}') — the space-separated flatten assertions fail against 'mirror=off'."]
 fn test_paused_config_is_fully_visible_in_config_list() {
     // F4: a paused config stays legible key-by-key in `skit config` — the master reads off (paused)
     // while each axis key still shows its stored token, so nothing is silently hidden.
@@ -757,7 +751,6 @@ fn test_clear_editor_with_empty_value() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the human editor read shows no '$VISUAL / $EDITOR' default sentinel (cli.py:5303-5306) — the Rust read prints the raw \"\"."]
 fn test_read_editor_default_line() {
     let sandbox = Sandbox::new();
     let result = sandbox.run(&["config", "editor"]);
@@ -866,7 +859,6 @@ fn test_form_write_preserves_mirror_and_language() {
 // --- shell.bash_path ---
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the human shell.bash_path read shows no 'auto' placeholder (cli.py:5318-5321) — the Rust read prints the raw \"\"."]
 fn test_read_bash_path_default_line() {
     let sandbox = Sandbox::new();
     let result = sandbox.run(&["config", "shell.bash_path"]);
@@ -919,7 +911,6 @@ fn test_bare_config_lists_dotted_keys() {
 // --- js.runner ---
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the human js.runner read shows no 'auto' placeholder (cli.py:5322-5325) — the Rust read prints the raw \"\"."]
 fn test_read_js_runner_default_line() {
     let sandbox = Sandbox::new();
     let result = sandbox.run(&["config", "js.runner"]);
@@ -939,7 +930,6 @@ fn test_set_js_runner() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the unknown js.runner error does not name the real choices (cli.py:5464-5468 names 'deno, bun, node') — the Rust message reads 'invalid configuration value for js.runner: carrier-pigeon'."]
 fn test_set_js_runner_unknown_is_usage_error() {
     let sandbox = Sandbox::new();
     let result = sandbox.run(&["config", "js.runner", "carrier-pigeon"]);

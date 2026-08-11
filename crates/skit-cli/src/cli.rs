@@ -66,9 +66,9 @@ use skit_runtime::{
     resolve_javascript_runtime, resolve_launch_workdir,
 };
 use skit_store::{
-    ConfigError, FileAgentSkillStore, FileConfigStore, FileFormStateStore, FileGlobExpander,
-    FilePromptSelectionStore, FileRunnerManagementStore, PromptRunner, RunnerManagementStoreError,
-    RunnerRemovalCas, expand_user_path,
+    CONFIG_KEYS, ConfigError, FileAgentSkillStore, FileConfigStore, FileFormStateStore,
+    FileGlobExpander, FilePromptSelectionStore, FileRunnerManagementStore, PromptRunner,
+    RunnerManagementStoreError, RunnerRemovalCas, expand_user_path,
 };
 use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
@@ -4313,25 +4313,36 @@ fn config_in(
                     recovery.backup_path.display(),
                 );
             }
-            let value = store.get(key)?;
+            // A URL-storing axis write under a paused master must say so: the write must
+            // neither silently do nothing nor silently resurrect the other axes. The
+            // notice is a skit-side signal, so it goes to stderr like the drift banner.
+            if matches!(key, "mirror.pypi" | "mirror.github" | "mirror.npm")
+                && value != "off"
+                && store.get("mirror")? == "off"
+            {
+                humanerrln!(
+                    "Mirrors are switched off — run `skit config mirror on` to activate them."
+                );
+            }
+            let raw = store.get(key)?;
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string(&BTreeMap::from([(key, value.as_str())]))?
+                    serde_json::to_string(&BTreeMap::from([(key, raw.as_str())]))?
                 );
             } else {
-                humanln!("Set: {}={}", key, value);
+                println!("{} = {}", key, config_display_value(store, key, &raw)?);
             }
         }
         (Some(key), None) => {
-            let value = store.get(key)?;
+            let raw = store.get(key)?;
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string(&BTreeMap::from([(key, value.as_str())]))?
+                    serde_json::to_string(&BTreeMap::from([(key, raw.as_str())]))?
                 );
             } else {
-                println!("{value}");
+                println!("{}", config_display_value(store, key, &raw)?);
             }
         }
         (None, None) => {
@@ -4339,8 +4350,9 @@ fn config_in(
             if json {
                 println!("{}", serde_json::to_string(&settings)?);
             } else {
-                for (key, value) in settings {
-                    println!("{key}={value}");
+                for key in CONFIG_KEYS {
+                    let raw = settings.get(key).map_or("", String::as_str);
+                    println!("  {key:<16}{}", config_display_value(store, key, raw)?);
                 }
             }
         }
@@ -4351,6 +4363,35 @@ fn config_in(
         }
     }
     Ok(())
+}
+
+/// Give the human column for one setting.
+///
+/// The raw machine token feeds `--json` unchanged; this layer replaces an unset value
+/// with its localized sentinel, so a person can see what the empty value means.
+fn config_display_value(store: &FileConfigStore, key: &str, raw: &str) -> Result<String, CliError> {
+    let locale = active_locale();
+    Ok(match key {
+        "lang" if raw.is_empty() => format_text(locale, "auto ({})", &[&locale.tag()]),
+        "editor" if raw.is_empty() => text(locale, "default ($VISUAL / $EDITOR)").into_owned(),
+        "shell.bash_path" if raw.is_empty() => text(locale, "auto (bash on PATH)").into_owned(),
+        "js.runner" if raw.is_empty() => text(locale, "auto (deno > bun > node)").into_owned(),
+        // A hand-edited github pair that no base URL derives: show both stored URLs,
+        // joined with " + " (never " · ", the axes-summary separator).
+        "mirror.github" if raw == "custom" => {
+            let mirror = store.mirror()?;
+            format!(
+                "{} + {}",
+                stored_url_or_off(&mirror.python_install),
+                stored_url_or_off(&mirror.uv_binary),
+            )
+        }
+        _ => raw.to_owned(),
+    })
+}
+
+fn stored_url_or_off(value: &str) -> &str {
+    if value.is_empty() { "off" } else { value }
 }
 
 fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result<(), CliError> {

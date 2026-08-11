@@ -36,6 +36,20 @@ const PYPI_PRESETS: &[(&str, &str)] = &[
 const GITHUB_PRESETS: &[(&str, &str)] = &[("nju", "https://mirror.nju.edu.cn/github-release")];
 const NPM_PRESETS: &[(&str, &str)] = &[("npmmirror", "https://registry.npmmirror.com")];
 
+/// Supported setting names in the v0.4 listing order.
+pub const CONFIG_KEYS: [&str; 10] = [
+    "lang",
+    "editor",
+    "mirror",
+    "mirror.pypi",
+    "mirror.github",
+    "mirror.npm",
+    "form",
+    "after_run",
+    "shell.bash_path",
+    "js.runner",
+];
+
 /// Stored mirror axes and their master switch.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MirrorSettings {
@@ -366,9 +380,9 @@ impl FileConfigStore {
 
     /// Read one supported scalar setting.
     pub fn get(&self, key: &str) -> Result<String, ConfigError> {
-        self.settings()?.remove(key).ok_or_else(|| {
-            ConfigError::Usage(Message::new("unknown configuration key: {}").with(key))
-        })
+        self.settings()?
+            .remove(key)
+            .ok_or_else(|| unknown_setting_error(key))
     }
 
     /// Set one supported scalar setting without changing unknown TOML fields.
@@ -825,39 +839,96 @@ impl FileConfigStore {
 }
 
 fn normalize_setting(key: &str, value: &str) -> Result<String, ConfigError> {
-    let normalized = match key {
-        "lang" if value.trim().eq_ignore_ascii_case("auto") => Some(String::new()),
-        "lang" => normalize_supported_language(value),
-        "editor" => Some(value.trim().to_owned()),
-        "form" if matches!(value, "tui" | "plain") => Some(value.to_owned()),
-        "after_run" if matches!(value, "exit" | "stay") => Some(value.to_owned()),
+    match key {
+        "lang" if value.trim().eq_ignore_ascii_case("auto") => Ok(String::new()),
+        "lang" => normalize_supported_language(value).ok_or_else(|| {
+            ConfigError::Usage(
+                Message::new("Unknown language: {}. Available: {}")
+                    .with(value)
+                    .with(skit_i18n::available_locale_tags().join(", ")),
+            )
+        }),
+        "editor" => Ok(value.trim().to_owned()),
+        "form" if matches!(value, "tui" | "plain") => Ok(value.to_owned()),
+        "form" => Err(ConfigError::Usage(
+            Message::new("Unknown form style: {}. Choose from: tui, plain").with(value),
+        )),
+        "after_run" if matches!(value, "exit" | "stay") => Ok(value.to_owned()),
+        "after_run" => Err(ConfigError::Usage(
+            Message::new("Unknown after-run behavior: {}. Choose from: exit, stay").with(value),
+        )),
         "shell.bash_path" => {
             let path = value.trim();
             if path.is_empty() {
-                Some(String::new())
+                Ok(String::new())
             } else if crate::expand_user_path(Path::new(path)).is_file() {
-                Some(path.to_owned())
+                Ok(path.to_owned())
             } else {
-                return Err(ConfigError::Usage(
-                    Message::new("bash path is not a file: {}").with(path),
-                ));
+                Err(ConfigError::Usage(
+                    Message::new("No such file: {}").with(path),
+                ))
             }
         }
-        "js.runner" if value.trim().is_empty() => Some(String::new()),
-        "js.runner" if matches!(value, "deno" | "bun" | "node") => Some(value.to_owned()),
-        "mirror" if matches!(value, "on" | "off") => Some(value.to_owned()),
-        "mirror.pypi" if valid_axis_value(value, PYPI_PRESETS, false) => Some(value.to_owned()),
-        "mirror.github" if valid_axis_value(value, GITHUB_PRESETS, true) => Some(value.to_owned()),
-        "mirror.npm" if valid_axis_value(value, NPM_PRESETS, false) => Some(value.to_owned()),
-        _ => None,
-    };
-    normalized.ok_or_else(|| {
-        ConfigError::Usage(
-            Message::new("invalid configuration value for {}: {}")
-                .with(key)
-                .with(value),
-        )
-    })
+        "js.runner" if value.trim().is_empty() => Ok(String::new()),
+        "js.runner" if matches!(value, "deno" | "bun" | "node") => Ok(value.to_owned()),
+        "js.runner" => Err(ConfigError::Usage(
+            Message::new("Unknown JS runner: {}. Choose from: {}")
+                .with(value)
+                .with("deno, bun, node"),
+        )),
+        "mirror" if matches!(value, "on" | "off") => Ok(value.to_owned()),
+        "mirror" => Err(ConfigError::Usage(
+            Message::new(
+                "Unknown mirror value: {}. \"mirror\" is the master switch (on / off); mirrors are picked per ecosystem: mirror.pypi ({}), mirror.github ({}), mirror.npm ({}) — each also takes a URL or \"off\".",
+            )
+            .with(value)
+            .with(preset_names(PYPI_PRESETS))
+            .with(preset_names(GITHUB_PRESETS))
+            .with(preset_names(NPM_PRESETS)),
+        )),
+        "mirror.pypi" | "mirror.npm" => {
+            let presets = if key == "mirror.pypi" {
+                PYPI_PRESETS
+            } else {
+                NPM_PRESETS
+            };
+            if valid_axis_value(value, presets, false) {
+                Ok(value.to_owned())
+            } else {
+                Err(ConfigError::Usage(
+                    Message::new("Unknown {} value: {}. Choose from: {}, off — or give a full URL.")
+                        .with(key)
+                        .with(value)
+                        .with(preset_names(presets)),
+                ))
+            }
+        }
+        "mirror.github" if valid_axis_value(value, GITHUB_PRESETS, true) => Ok(value.to_owned()),
+        "mirror.github" => Err(ConfigError::Usage(
+            Message::new(
+                "Unknown mirror.github value: {}. Choose from: {}, off — or give an https:// github-release base URL (the uv binary is downloaded and executed, so https:// is required).",
+            )
+            .with(value)
+            .with(preset_names(GITHUB_PRESETS)),
+        )),
+        _ => Err(unknown_setting_error(key)),
+    }
+}
+
+fn preset_names(presets: &[(&str, &str)]) -> String {
+    presets
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn unknown_setting_error(key: &str) -> ConfigError {
+    ConfigError::Usage(
+        Message::new("Unknown setting: {}. Available: {}")
+            .with(key)
+            .with(CONFIG_KEYS.join(", ")),
+    )
 }
 
 fn normalize_supported_language(value: &str) -> Option<String> {
@@ -912,7 +983,7 @@ fn write_key(document: &mut Table, key: &str, value: &str) -> Result<(), ConfigE
         let table = repairable_table_mut(document, "mirror");
         if value == "on" && !table_has_urls(table) {
             return Err(ConfigError::Usage(Message::new(
-                "no mirror URLs are stored; set one mirror axis first",
+                "Nothing to enable: no mirror URLs are saved. Set an axis first: mirror.pypi / mirror.github / mirror.npm.",
             )));
         }
         table.insert("enabled".to_owned(), Value::Boolean(value == "on"));
