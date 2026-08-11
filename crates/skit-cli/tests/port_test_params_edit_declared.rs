@@ -209,9 +209,7 @@ fn test_rm_unknown_name_warns_not_declared() {
 fn test_apply_order_is_rm_then_add_then_tweak() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
-    sandbox.ok(&[
-        "params", "binary", "--add", "a", "--type", "a=int",
-    ]);
+    sandbox.ok(&["params", "binary", "--add", "a", "--type", "a=int"]);
     sandbox.ok(&[
         "params", "binary", "--rm", "a", "--add", "a", "--type", "a=float",
     ]);
@@ -225,7 +223,10 @@ fn test_delivery_tweak_within_allowed_set() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
     sandbox.ok(&["params", "binary", "--add", "a", "--deliver", "a=env"]);
-    assert_eq!(string(row(&sandbox.params("binary"), "a"), "delivery"), "env");
+    assert_eq!(
+        string(row(&sandbox.params("binary"), "a"), "delivery"),
+        "env"
+    );
 }
 
 #[test]
@@ -237,7 +238,10 @@ fn test_delivery_outside_allowed_set_warns_bad_delivery() {
     let document = sandbox.params("binary");
     assert!(
         output.status.success()
-            && exact_line(&output, "a: that delivery isn't available for this kind; skipped.")
+            && exact_line(
+                &output,
+                "a: that delivery isn't available for this kind; skipped."
+            )
             && string(row(&document, "a"), "delivery") == "flag",
         "invalid delivery must warn and roll back the row\nstatus={:?}\noutput={}\nstate={document}",
         output.status.code(),
@@ -310,9 +314,19 @@ fn test_choices_tweak_sets_the_tuple() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
     sandbox.ok(&[
-        "params", "binary", "--add", "a", "--type", "a=choice", "--choices", "a=x,y",
+        "params",
+        "binary",
+        "--add",
+        "a",
+        "--type",
+        "a=choice",
+        "--choices",
+        "a=x,y",
     ]);
-    assert_eq!(row(&sandbox.params("binary"), "a")["choices"], serde_json::json!(["x", "y"]));
+    assert_eq!(
+        row(&sandbox.params("binary"), "a")["choices"],
+        serde_json::json!(["x", "y"])
+    );
 }
 
 #[test]
@@ -320,7 +334,14 @@ fn test_default_coerced_to_the_declared_type() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
     sandbox.ok(&[
-        "params", "binary", "--add", "a", "--type", "a=int", "--default", "a=42",
+        "params",
+        "binary",
+        "--add",
+        "a",
+        "--type",
+        "a=int",
+        "--default",
+        "a=42",
     ]);
     assert_eq!(row(&sandbox.params("binary"), "a")["default"], 42);
 }
@@ -330,7 +351,14 @@ fn test_default_type_set_in_same_call_applies_before_coercion() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
     sandbox.ok(&[
-        "params", "binary", "--add", "a", "--type", "a=float", "--default", "a=1.5",
+        "params",
+        "binary",
+        "--add",
+        "a",
+        "--type",
+        "a=float",
+        "--default",
+        "a=1.5",
     ]);
     assert_eq!(row(&sandbox.params("binary"), "a")["default"], 1.5);
 }
@@ -340,7 +368,14 @@ fn test_default_bad_value_warns_bad_default_and_keeps_old() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
     sandbox.ok(&[
-        "params", "binary", "--add", "a", "--type", "a=int", "--default", "a=3",
+        "params",
+        "binary",
+        "--add",
+        "a",
+        "--type",
+        "a=int",
+        "--default",
+        "a=3",
     ]);
     let output = sandbox.output(&["params", "binary", "--default", "a=notanint"]);
     let document = sandbox.params("binary");
@@ -383,11 +418,21 @@ fn test_help_text_and_prompt_tweaks() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
     sandbox.ok(&[
-        "params", "binary", "--add", "a", "--help-text", "a=what it does", "--prompt", "a=A?",
+        "params",
+        "binary",
+        "--add",
+        "a",
+        "--help-text",
+        "a=what it does",
+        "--prompt",
+        "a=A?",
     ]);
     let document = sandbox.params("binary");
     let a = row(&document, "a");
-    assert_eq!((string(a, "help"), string(a, "prompt")), ("what it does", "A?"));
+    assert_eq!(
+        (string(a, "help"), string(a, "prompt")),
+        ("what it does", "A?")
+    );
 }
 
 #[test]
@@ -395,7 +440,14 @@ fn test_secret_and_env_source_together() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
     sandbox.ok(&[
-        "params", "binary", "--add", "tok", "--secret", "tok", "--env-source", "tok= API_TOKEN ",
+        "params",
+        "binary",
+        "--add",
+        "tok",
+        "--secret",
+        "tok",
+        "--env-source",
+        "tok= API_TOKEN ",
     ]);
     let document = sandbox.params("binary");
     let tok = row(&document, "tok");
@@ -426,7 +478,14 @@ fn test_no_secret_clears_the_env_source() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
     sandbox.ok(&[
-        "params", "binary", "--add", "tok", "--secret", "tok", "--env-source", "tok=API_TOKEN",
+        "params",
+        "binary",
+        "--add",
+        "tok",
+        "--secret",
+        "tok",
+        "--env-source",
+        "tok=API_TOKEN",
     ]);
     sandbox.ok(&["params", "binary", "--no-secret", "tok"]);
     let document = sandbox.params("binary");
@@ -458,7 +517,16 @@ fn test_a_name_touched_by_two_ops_is_listed_once_and_both_apply() {
     sandbox.add_exe("binary");
     sandbox.ok(&["params", "binary", "--add", "a"]);
     sandbox.ok(&[
-        "params", "binary", "--type", "a=int", "--default", "a=5", "--secret", "a", "--prompt", "a=A?",
+        "params",
+        "binary",
+        "--type",
+        "a=int",
+        "--default",
+        "a=5",
+        "--secret",
+        "a",
+        "--prompt",
+        "a=A?",
     ]);
     let document = sandbox.params("binary");
     let a = row(&document, "a");
@@ -473,17 +541,23 @@ fn test_a_name_touched_by_two_ops_is_listed_once_and_both_apply() {
 fn test_choice_type_without_choices_reverts_and_warns() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
-    sandbox.ok(&[
-        "params", "binary", "--add", "a", "--help-text", "a=keep me",
-    ]);
+    sandbox.ok(&["params", "binary", "--add", "a", "--help-text", "a=keep me"]);
     let output = sandbox.output(&[
-        "params", "binary", "--type", "a=choice", "--help-text", "a=changed",
+        "params",
+        "binary",
+        "--type",
+        "a=choice",
+        "--help-text",
+        "a=changed",
     ]);
     let document = sandbox.params("binary");
     let a = row(&document, "a");
     assert!(
         output.status.success()
-            && exact_line(&output, "a: a choice parameter needs choices; set --choices a=a,b,c.")
+            && exact_line(
+                &output,
+                "a: a choice parameter needs choices; set --choices a=a,b,c."
+            )
             && string(a, "type") == "str"
             && string(a, "help") == "keep me",
         "invalid choice edit must roll back the whole row\nstatus={:?}\noutput={}\nstate={a}",
@@ -497,7 +571,14 @@ fn test_choice_type_with_choices_in_the_same_call_is_valid() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
     sandbox.ok(&[
-        "params", "binary", "--add", "a", "--type", "a=choice", "--choices", "a=r,g",
+        "params",
+        "binary",
+        "--add",
+        "a",
+        "--type",
+        "a=choice",
+        "--choices",
+        "a=r,g",
     ]);
     let document = sandbox.params("binary");
     let a = row(&document, "a");
@@ -506,7 +587,7 @@ fn test_choice_type_with_choices_in_the_same_call_is_valid() {
 }
 
 #[test]
-fn test_inputs_are_never_mutated() {
+fn rust_additive_cli_edit_of_one_row_does_not_mutate_sibling_row() {
     // Rust has no caller-owned in-memory `edit_declared(list)` API. The executable behavioral
     // equivalent is that an edit addressed to `a` must not mutate the full persisted machine row
     // owned by sibling `b`. Forward-compatible metadata preservation is a separate storage
