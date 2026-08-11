@@ -8,32 +8,71 @@ on:
       - .github/workflows/token-oracle-probe.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   probe:
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out source
+      - name: Check out branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: agent/port-python-test-contracts-v3
-          persist-credentials: false
-      - name: Run exact token oracles
+          persist-credentials: true
+      - name: Run and persist exact token diagnostics
         shell: bash
         run: |
           set +e
           rustfmt --edition 2024 --check \
             crates/skit-application/tests/port_test_tokens.rs \
             crates/skit-cli/tests/port_test_tokens_runtime.rs \
-            crates/skit-cli/tests/port_test_tokens_manifest.rs
-          echo "TOKEN_RUSTFMT_RC=$?"
-          cargo test --locked -p skit-cli-rs --test port_test_tokens_manifest -- --nocapture
-          echo "TOKEN_MANIFEST_RC=$?"
-          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture
-          echo "STRENGTH_GATE_RC=$?"
-          cargo test --locked -p skit-application --test port_test_tokens -- --nocapture --test-threads=1
-          echo "TOKEN_APPLICATION_RC=$?"
-          cargo test --locked -p skit-cli-rs --test port_test_tokens_runtime -- --nocapture --test-threads=1
-          echo "TOKEN_RUNTIME_RC=$?"
+            crates/skit-cli/tests/port_test_tokens_manifest.rs \
+            > /tmp/token-rustfmt.log 2>&1
+          rustfmt_rc=$?
+
+          cargo test --locked -p skit-cli-rs --test port_test_tokens_manifest -- --nocapture \
+            > /tmp/token-manifest.log 2>&1
+          manifest_rc=$?
+
+          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture \
+            > /tmp/token-strength.log 2>&1
+          strength_rc=$?
+
+          cargo test --locked -p skit-application --test port_test_tokens -- --nocapture --test-threads=1 \
+            > /tmp/token-application.log 2>&1
+          application_rc=$?
+
+          cargo test --locked -p skit-cli-rs --test port_test_tokens_runtime -- --nocapture --test-threads=1 \
+            > /tmp/token-runtime.log 2>&1
+          runtime_rc=$?
+
+          result=crates/skit-cli/tests/token_oracle_probe_result.txt
+          {
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "TOKEN_RUSTFMT_RC=$rustfmt_rc"
+            echo "TOKEN_MANIFEST_RC=$manifest_rc"
+            echo "STRENGTH_GATE_RC=$strength_rc"
+            echo "TOKEN_APPLICATION_RC=$application_rc"
+            echo "TOKEN_RUNTIME_RC=$runtime_rc"
+            for pair in \
+              "rustfmt:$rustfmt_rc:/tmp/token-rustfmt.log" \
+              "manifest:$manifest_rc:/tmp/token-manifest.log" \
+              "strength:$strength_rc:/tmp/token-strength.log" \
+              "application:$application_rc:/tmp/token-application.log" \
+              "runtime:$runtime_rc:/tmp/token-runtime.log"
+            do
+              IFS=: read -r label rc log <<< "$pair"
+              if [ "$rc" -ne 0 ]; then
+                echo
+                echo "===== $label failure tail ====="
+                tail -n 160 "$log"
+              fi
+            done
+          } > "$result"
+
+          git add -- "$result"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m "ci(probe): record token oracle diagnostics"
+          git push origin HEAD:agent/port-python-test-contracts-v3
           exit 0
