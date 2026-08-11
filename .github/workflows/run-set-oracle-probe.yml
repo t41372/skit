@@ -1,0 +1,34 @@
+name: Run-set oracle probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/run-set-oracle-probe.yml
+      - crates/skit-cli/tests/port_test_run_set.rs
+      - crates/skit-cli/tests/port_test_run_set_manifest.rs
+      - crates/skit-cli/tests/port_test_strength_gate.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run run-set port oracles
+        shell: bash
+        run: |
+          set +e
+          rustfmt --edition 2024 --check crates/skit-cli/tests/port_test_run_set.rs crates/skit-cli/tests/port_test_run_set_manifest.rs
+          echo "RUN_SET_RUSTFMT_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_run_set_manifest -- --nocapture
+          echo "RUN_SET_MANIFEST_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture
+          echo "STRENGTH_GATE_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_run_set -- --nocapture --test-threads=1
+          echo "RUN_SET_ORACLE_RC=$?"
+          exit 0
