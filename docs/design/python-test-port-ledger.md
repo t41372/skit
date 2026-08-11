@@ -142,12 +142,12 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_i18n.py | 38 | skit-i18n | todo |
-| test_prompt_utf8.py | 16 | skit-i18n / skit-language | todo |
-| test_packaging.py | 7 | skit-cli / packaging | todo |
-| test_benchmarks_tooling.py | 156 | skit-benchmarks (adapt; Rust harness differs) | todo |
-| test_mutation_gate.py | 4 | N/A — Rust uses cargo-mutants; adapt or drop | todo |
-| test_hermeticity.py | 1 | skit-store / skit-cli | todo |
+| test_i18n.py | 38 | crates/skit-i18n/tests/port_test_i18n.rs | done (25) · architecture-mapped (compiled catalog) · 3 divergences (zh-MY/zh-XX→En, Library term #9) · 3 absent (Babel/ngettext) · 7 cross-crate |
+| test_prompt_utf8.py | 16 | crates/skit-cli/tests/port_test_prompt_utf8.rs | done (3) · 16 cross-crate (runtime UTF-8 path) |
+| test_packaging.py | 7 | crates/skit-cli/tests/port_test_packaging.rs | done (3) · 4 release-gate (Maturin wheel/PyPI) |
+| test_benchmarks_tooling.py | 156 | N/A (adapt) — Rust skit-benchmarks crate is a native reimplementation with 92 #[test]s (budget/dataset/parsers/pipeline_plan/suites); the Python benchmarks/__main__ CLI does not port 1:1. Dev tooling, gate-enforced via benchmarks/check.sh + cargo bench | done (N/A) |
+| test_mutation_gate.py | 4 | N/A — Rust uses cargo-mutants (Phase 3 gate); the Python scripts/check_mutation_stats.py has no Rust analog | done (N/A) |
+| test_hermeticity.py | 1 | crates/skit-cli/tests/port_test_hermeticity.rs | done (1) · no gap |
 
 ### test_metawriter.py → port_test_metawriter.rs (29 done · FOURTH REAL GAP · 2 white-box)
 
