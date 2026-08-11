@@ -1,4 +1,5 @@
-//! Completeness guard for Python v0.4 `tests/test_raw.py`.
+//! Completeness guard for Python v0.4 `tests/test_raw.py` at
+//! `origin/main@206f9ef946fc45835cb2479593794431f2620c32`.
 //!
 //! Behavioral strength lives in `port_test_raw.rs`; this file only prevents silent loss or rename.
 
