@@ -3,9 +3,10 @@
 //! A manifest entry is not allowed to pass merely because a target file contains *some* `#[test]`
 //! and *some* function with the mapped name. Each mapped Rust function itself must exist and carry
 //! `#[test]`. The mapping list remains single-sourced in its original manifest; this test parses that
-//! manifest text instead of copying 52/41 rows into a second ledger.
+//! manifest text instead of copying the ledger into a second list.
 
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -27,15 +28,46 @@ fn quoted_field(line: &str, field: &str) -> Option<String> {
     Some(tail.split_once('"')?.0.to_owned())
 }
 
+fn path_aliases(manifest: &str) -> BTreeMap<String, String> {
+    manifest
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let tail = line.strip_prefix("const ")?;
+            let (name, value) = tail.split_once(": &str = \"")?;
+            let value = value.split_once('"')?.0;
+            Some((name.trim().to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+fn path_field(line: &str, aliases: &BTreeMap<String, String>) -> String {
+    if let Some(path) = quoted_field(line, "path") {
+        return path;
+    }
+    let tail = line
+        .split_once("path: ")
+        .unwrap_or_else(|| panic!("manifest mapping lacks path: {line}"))
+        .1;
+    let token = tail
+        .split_once(',')
+        .map_or(tail, |(token, _)| token)
+        .trim();
+    aliases
+        .get(token)
+        .cloned()
+        .unwrap_or_else(|| panic!("manifest mapping uses unknown path alias {token}: {line}"))
+}
+
 fn mapped_targets(manifest: &str) -> Vec<Target> {
+    let aliases = path_aliases(manifest);
     manifest
         .lines()
         .filter(|line| {
             line.contains("Mapping {") && line.contains(" path: ") && line.contains(" rust: ")
         })
         .map(|line| Target {
-            path: quoted_field(line, "path")
-                .unwrap_or_else(|| panic!("manifest mapping lacks quoted path: {line}")),
+            path: path_field(line, &aliases),
             rust: quoted_field(line, "rust")
                 .unwrap_or_else(|| panic!("manifest mapping lacks quoted Rust test name: {line}")),
         })
@@ -53,7 +85,7 @@ fn assert_real_tests(manifest_name: &str, manifest: &str, expected_count: usize)
     assert_eq!(
         targets.len(),
         expected_count,
-        "{manifest_name} mapping count changed; update the frozen Python test count intentionally"
+        "{manifest_name} mapping count changed; update the executable Python test count intentionally"
     );
 
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -103,5 +135,5 @@ fn declared_params_manifest_targets_are_themselves_executable_tests() {
 
 #[test]
 fn params_edit_manifest_targets_are_themselves_executable_tests() {
-    assert_real_tests("params edit", PARAMS_EDIT_MANIFEST, 41);
+    assert_real_tests("params edit", PARAMS_EDIT_MANIFEST, 39);
 }
