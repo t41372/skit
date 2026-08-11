@@ -18,7 +18,7 @@ fn help_uses_the_requested_traditional_chinese_catalog() {
         .assert()
         .success()
         .stdout(predicate::str::contains("程式、提示詞、執行檔與命令程式庫"))
-        .stdout(predicate::str::contains("列出程式庫中的項目"))
+        .stdout(predicate::str::contains("列出工具庫中的項目"))
         .stdout(predicate::str::contains("選項"));
 }
 
@@ -105,7 +105,7 @@ fn human_success_and_health_output_use_the_requested_catalog_but_json_does_not()
         .assert()
         .success()
         .stdout(predicate::str::contains("項目：1"))
-        .stdout(predicate::str::contains("程式庫："))
+        .stdout(predicate::str::contains("工具庫："))
         .stdout(predicate::str::contains("狀態資料："))
         .stdout(predicate::str::contains("組態："));
     command()

@@ -90,8 +90,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "List entries in the library",
-        "列出程序库中的条目",
-        "列出程式庫中的項目",
+        "列出工具库中的条目",
+        "列出工具庫中的項目",
     ),
     row!(
         "Show one entry by exact slug or exact display name",
@@ -105,8 +105,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "Run one library entry",
-        "运行一个程序库条目",
-        "執行一個程式庫項目",
+        "运行一个工具库条目",
+        "執行一個工具庫項目",
     ),
     row!(
         "Replace one entry description",
@@ -182,8 +182,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "Check runtime and library health",
-        "检查运行环境与程序库健康状态",
-        "檢查執行環境與程式庫健康狀態",
+        "检查运行环境与工具库健康状态",
+        "檢查執行環境與工具庫健康狀態",
     ),
     row!(
         "Read or set skit configuration",
@@ -207,13 +207,13 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "Open the Ratatui library browser",
-        "打开 Ratatui 程序库浏览器",
-        "開啟 Ratatui 程式庫瀏覽器",
+        "打开 Ratatui 工具库浏览器",
+        "開啟 Ratatui 工具庫瀏覽器",
     ),
     composable!(
         "Library: all entries",
-        "程序库：所有条目",
-        "程式庫：所有項目",
+        "工具库：所有条目",
+        "工具庫：所有項目",
     ),
     composable!(
         "No matching entries. Press [q] Quit.",
@@ -293,8 +293,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "{} was removed from the library, but its files couldn't be fully deleted: {} — close any program using them, then delete the folder (or run `skit doctor --rebuild` to restore the entry and retry).",
-        "{} 已从程序库移除，但无法完整删除其文件：{} — 请关闭正在使用这些文件的程序，然后删除该文件夹（或运行 `skit doctor --rebuild` 恢复条目后重试）。",
-        "{} 已從程式庫移除，但無法完整刪除其檔案：{} — 請關閉正在使用這些檔案的程式，然後刪除該資料夾（或執行 `skit doctor --rebuild` 復原項目後重試）。",
+        "{} 已从工具库移除，但无法完整删除其文件：{} — 请关闭正在使用这些文件的程序，然后删除该文件夹（或运行 `skit doctor --rebuild` 恢复条目后重试）。",
+        "{} 已從工具庫移除，但無法完整刪除其檔案：{} — 請關閉正在使用這些檔案的程式，然後刪除該資料夾（或執行 `skit doctor --rebuild` 復原項目後重試）。",
     ),
     row!("backup", "备份", "備份"),
     row!(
@@ -360,7 +360,7 @@ const CATALOG: &[Translation] = &[
     row!("start", "启动", "啟動"),
     row!("test", "测试", "測試"),
     row!("all entries", "所有条目", "所有項目"),
-    row!("Library", "程序库", "程式庫"),
+    row!("Library", "工具库", "工具庫"),
     row!("Search", "搜索", "搜尋"),
     row!("Entries", "条目", "項目"),
     row!("Details", "详细信息", "詳細資料"),
@@ -423,8 +423,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "Library: {} ({} · {})",
-        "程序库：{}（{} 个条目 · {}）",
-        "程式庫：{}（{} 個項目 · {}）",
+        "工具库：{}（{} 个条目 · {}）",
+        "工具庫：{}（{} 個項目 · {}）",
     ),
     row!(
         "Index rebuilt: {} entry",
@@ -1095,8 +1095,8 @@ const CATALOG: &[Translation] = &[
     row!("Entries: {}", "条目：{}", "項目：{}"),
     row!(
         "Library: {} ({} bytes)",
-        "程序库：{}（{} 字节）",
-        "程式庫：{}（{} 位元組）",
+        "工具库：{}（{} 字节）",
+        "工具庫：{}（{} 位元組）",
     ),
     row!("State: {}", "状态数据：{}", "狀態資料：{}"),
     row!("Config: {}", "配置：{}", "組態：{}"),
@@ -1844,8 +1844,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "Description shown in the library",
-        "程序库中显示的说明",
-        "程式庫中顯示的說明",
+        "工具库中显示的说明",
+        "工具庫中顯示的說明",
     ),
     row!(
         "Disable enhanced terminal presentation for this run",
@@ -3107,8 +3107,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "Return to the Library immediately",
-        "立即返回程序库",
-        "立即返回程式庫",
+        "立即返回工具库",
+        "立即回到工具庫",
     ),
     row!(
         "Automatic — the first of deno / bun / node found",
@@ -3545,7 +3545,7 @@ pub fn detect_locale(value: Option<&str>) -> Locale {
         .trim()
         .replace('_', "-")
         .to_ascii_lowercase();
-    // Hong Kong and Macau use Traditional Chinese; Singapore uses Simplified.
+    // Hong Kong, Macau, and Taiwan use Traditional Chinese.
     if normalized == "x-pseudo" {
         Locale::Pseudo
     } else if normalized.starts_with("zh-tw")
@@ -3554,11 +3554,15 @@ pub fn detect_locale(value: Option<&str>) -> Locale {
         || normalized.starts_with("zh-hant")
     {
         Locale::ZhTw
-    } else if normalized.starts_with("zh-cn")
-        || normalized.starts_with("zh-sg")
-        || normalized.starts_with("zh-hans")
-        || normalized == "zh"
+    } else if normalized == "zh"
+        || normalized.starts_with("zh-")
+        || normalized.starts_with("zh.")
+        || normalized.starts_with("zh@")
     {
+        // Simplified Chinese is the default for the Chinese macrolanguage. Mainland China,
+        // Singapore, and Malaysia use Simplified Chinese. A bare "zh" tag, and any Chinese tag
+        // with no Traditional hint, also use Simplified Chinese. The Traditional branch runs
+        // first, so an explicit script subtag wins over a region subtag.
         Locale::ZhCn
     } else {
         Locale::En

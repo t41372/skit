@@ -191,7 +191,6 @@ fn test_traditional_chain_excludes_simplified() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle _ALIASES[\"zh-my\"]=\"zh-CN\" (i18n.py:44) and _HANS_REGION_HINTS={cn,sg,my} (i18n.py:63) make negotiate(\"zh-MY\") -> primary \"zh-CN\" (asserted at test_i18n.py:193-199), but Rust detect_locale(\"zh-MY\") returns Locale::En because its Simplified branch matches only zh-cn/zh-sg/zh-hans/==zh (crates/skit-i18n/src/lib.rs:3560)."]
 fn test_simplified_chain_still_resolves_to_zh_cn() {
     // Preserve existing correct behavior: Simplified-family tags (and the bare "zh" request) all
     // resolve to zh-CN.
@@ -201,7 +200,6 @@ fn test_simplified_chain_still_resolves_to_zh_cn() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle negotiate(\"zh-XX\") -> primary \"zh-CN\" (asserted at test_i18n.py:201-208) because the bare-\"zh\" truncation step defaults to Simplified via _ALIASES[\"zh\"]=\"zh-CN\" (i18n.py:41), but Rust detect_locale(\"zh-XX\") returns Locale::En (crates/skit-i18n/src/lib.rs:3560)."]
 fn test_zh_region_with_no_script_hint_defaults_to_simplified() {
     // A "zh-*" tag whose subtag is not a known Hant/Hans hint has no inferable family, so the
     // bare-"zh" fallback step keeps its unconditional default of zh-CN. (_zh_family is a private
@@ -254,7 +252,6 @@ fn test_zh_cn_message() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle zh_CN/LC_MESSAGES/skit.po:2534 translates \"Library\" -> \"工具库\" (zh_TW -> \"工具庫\"), but the Rust catalog uses \"程序库\"/\"程式庫\" for \"Library\" and \"Library: {} (…)\" (crates/skit-i18n/src/lib.rs:363,425). Task #9 (\"Sweep the catalog back to the v0.4 translations\") owns this. Note: the oracle's 5th string \"(shown in the Library — you can write one line)\" is absent from the Rust catalog, so it is excluded here to fail for the right reason."]
 fn test_entry_library_copy_does_not_narrow_the_mixed_library_to_scripts() {
     // The generic library term must stay the mixed-library word (工具库/工具庫), never the
     // script-library word (脚本库/腳本庫), across every "Library"-bearing message.

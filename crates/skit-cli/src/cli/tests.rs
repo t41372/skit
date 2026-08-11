@@ -3477,7 +3477,7 @@ fn the_localized_command_tree_translates_every_description() {
         .expect("the list subcommand exists");
     assert_eq!(
         list.get_about().map(ToString::to_string).unwrap(),
-        "列出程式庫中的項目"
+        "列出工具庫中的項目"
     );
     // A Clap token such as `--help` must never change.
     let rendered = command.clone().render_help().to_string();
@@ -3579,7 +3579,7 @@ fn the_command_translator_is_total_over_every_clap_field() {
 
     assert_eq!(
         command.get_about().map(ToString::to_string).unwrap(),
-        "程式庫"
+        "工具庫"
     );
     assert_eq!(
         command.get_long_about().map(ToString::to_string).unwrap(),

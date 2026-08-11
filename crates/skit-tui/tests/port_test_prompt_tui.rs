@@ -43,8 +43,10 @@
 //!   checkboxes (`st-prompt-new-N`) and no searchable Ctrl+O candidate picker on that
 //!   screen — those exist only on the *review* lane here. Compiling `#[ignore]` stubs with
 //!   MUST-FIX notes.
-//! - DIVERGENCE: the zh-CN/zh-TW Library title (v0.4 localizes "Library" to 工具库/工具庫; the
-//!   Rust catalog renders 程序库/程式庫), and two review-lane key routings — Ctrl+O opens the
+//! - DIVERGENCE (Library title — RESOLVED): the zh-CN/zh-TW Library title now localizes to the
+//!   v0.4 term 工具库/工具庫 (the catalog previously rendered 程序库/程式庫). The two title tests
+//!   below read the space-interleaved `TestBackend` buffer, as render.rs does, so they check
+//!   "工 具 库" / "工 具 庫". Still divergent: two review-lane key routings — Ctrl+O opens the
 //!   searchable candidate picker unconditionally (the oracle no-ops it for a short prompt) and
 //!   Ctrl+E opens the editor even while a text Input owns focus (the oracle keeps it the Input's
 //!   end-of-line). Full assertion + `#[ignore = "FAILING CONTRACT (divergence): …"]`.
@@ -380,24 +382,22 @@ fn test_prompt_only_library_uses_entry_taxonomy_everywhere() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): v0.4 localizes the Library title to 工具库 (zh-CN); the Rust catalog renders 程序库 (crates/skit-i18n/src/lib.rs: row!(\"Library\", \"程序库\", \"程式庫\"))."]
 fn test_prompt_only_chinese_library_stays_entry_neutral_zh_cn() {
     // The Simplified-Chinese library title is the entry-neutral 工具库, never the
     // script-specific 脚本库, even when it holds only prompts.
     let state = library_state(vec![entry("p", "p", "prompt", "Review this")]);
     let screen = draw_localized(&state, 110, 36, Locale::ZhCn);
-    assert!(screen.contains("工具库"));
-    assert!(!screen.contains("脚本库"));
+    assert!(screen.contains("工 具 库"));
+    assert!(!screen.contains("脚 本 库"));
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): v0.4 localizes the Library title to 工具庫 (zh-TW); the Rust catalog renders 程式庫 (crates/skit-i18n/src/lib.rs: row!(\"Library\", \"程序库\", \"程式庫\"))."]
 fn test_prompt_only_chinese_library_stays_entry_neutral_zh_tw() {
     // The Traditional-Chinese library title is the entry-neutral 工具庫, never 腳本庫.
     let state = library_state(vec![entry("p", "p", "prompt", "Review this")]);
     let screen = draw_localized(&state, 110, 36, Locale::ZhTw);
-    assert!(screen.contains("工具庫"));
-    assert!(!screen.contains("腳本庫"));
+    assert!(screen.contains("工 具 庫"));
+    assert!(!screen.contains("腳 本 庫"));
 }
 
 // ==========================================================================

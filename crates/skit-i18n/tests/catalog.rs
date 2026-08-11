@@ -78,14 +78,14 @@ fn every_catalog_row_has_two_complete_translations() {
 
 #[test]
 fn exact_text_and_longest_first_rendering_are_deterministic() {
-    assert_eq!(text(Locale::ZhTw, "Library"), "程式庫");
-    assert_eq!(text(Locale::ZhCn, "Library"), "程序库");
+    assert_eq!(text(Locale::ZhTw, "Library"), "工具庫");
+    assert_eq!(text(Locale::ZhCn, "Library"), "工具库");
     assert_eq!(text(Locale::En, "Library"), "Library");
     assert_eq!(text(Locale::ZhTw, "not catalog text"), "not catalog text");
 
     assert_eq!(
         render(Locale::ZhTw, "Library: all entries"),
-        "程式庫：所有項目"
+        "工具庫：所有項目"
     );
     assert_eq!(
         render(Locale::ZhCn, "No matching entries. Press [q] Quit."),

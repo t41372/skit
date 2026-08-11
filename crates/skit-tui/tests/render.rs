@@ -167,7 +167,7 @@ fn renderer_uses_the_explicit_frontend_locale() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("程 式 庫"));
+    assert!(text.contains("工 具 庫"));
     assert!(text.contains("項 目"));
     assert!(text.contains("詳 細 資 料"));
     assert!(text.contains("結 束"));
