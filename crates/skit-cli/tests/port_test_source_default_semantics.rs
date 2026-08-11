@@ -208,12 +208,6 @@ print(CITY, who, pw)
         String::from_utf8_lossy(&resync.stderr)
     );
     let stderr = String::from_utf8(resync.stderr).unwrap();
-    assert!(
-        stderr.lines().any(|line| {
-            line == "input-2: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct."
-        }),
-        "{stderr}"
-    );
 
     let document = sandbox.params("mixed");
     let city = parameter(&document, "CITY");
@@ -234,4 +228,11 @@ print(CITY, who, pw)
     assert!(stored.contains("prompt = \"Name: \""), "{stored}");
     assert!(stored.contains("prompt = \"New label: \""), "{stored}");
     assert!(!stored.contains("prompt = \"Old label: \""), "{stored}");
+
+    assert!(
+        stderr.lines().any(|line| {
+            line == "input-2: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct."
+        }),
+        "{stderr}"
+    );
 }
