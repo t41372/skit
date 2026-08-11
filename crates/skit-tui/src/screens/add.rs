@@ -24,8 +24,8 @@ use skit_domain::StorageMode;
 use skit_i18n::{Locale, format_text, kind_label, text};
 use skit_ui::{
     AddAction, AddNotice, AddProblem, AddStage, AddWorkflowState, DependencySurface, DraftKind,
-    KnownEntryKind, PathOutputPolicy, PathPickerState, PathSelectionMode, PickerPurpose,
-    ReviewLane,
+    KnownEntryKind, PROMPT_LIST_PREVIEW_LIMIT, PathOutputPolicy, PathPickerState,
+    PathSelectionMode, PickerPurpose, ReviewLane,
 };
 use tui_input::{Input as LineInput, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
@@ -361,27 +361,45 @@ impl AddScreenSession {
             return None;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            return match (key.code, state.stage()) {
-                (KeyCode::Char('n'), AddStage::Source) => Some(AddScreenEvent::Action(
-                    AddAction::NewDraft(DraftKind::Script),
-                )),
-                (KeyCode::Char('p'), AddStage::Source) => Some(AddScreenEvent::Action(
-                    AddAction::NewDraft(DraftKind::Prompt),
-                )),
-                (KeyCode::Char('d'), AddStage::Source) => {
-                    Some(AddScreenEvent::Action(AddAction::DeleteSelectedDraft))
-                }
-                (KeyCode::Char('e'), AddStage::Review) => {
-                    Some(AddScreenEvent::Action(AddAction::EditSource))
-                }
-                (KeyCode::Char('s'), AddStage::Review) => {
-                    Some(AddScreenEvent::Action(AddAction::Save))
-                }
-                (KeyCode::Char('o'), AddStage::Review) => {
-                    Some(AddScreenEvent::OpenPromptCandidates)
-                }
-                _ => None,
-            };
+            // Ctrl+E belongs to a focused text Input as its end-of-line motion (the
+            // oracle's Ctrl+A rule); it opens $EDITOR only when no Input owns focus.
+            // So while a review text field is focused, do not consume Ctrl+E here —
+            // let it fall through to the Input below, which maps it to end-of-line.
+            let text_focused = matches!(self.focus.current(), Some(AddControlId::Text(_)));
+            if !(text_focused
+                && key.code == KeyCode::Char('e')
+                && state.stage() == AddStage::Review)
+            {
+                return match (key.code, state.stage()) {
+                    (KeyCode::Char('n'), AddStage::Source) => Some(AddScreenEvent::Action(
+                        AddAction::NewDraft(DraftKind::Script),
+                    )),
+                    (KeyCode::Char('p'), AddStage::Source) => Some(AddScreenEvent::Action(
+                        AddAction::NewDraft(DraftKind::Prompt),
+                    )),
+                    (KeyCode::Char('d'), AddStage::Source) => {
+                        Some(AddScreenEvent::Action(AddAction::DeleteSelectedDraft))
+                    }
+                    (KeyCode::Char('e'), AddStage::Review) => {
+                        Some(AddScreenEvent::Action(AddAction::EditSource))
+                    }
+                    (KeyCode::Char('s'), AddStage::Review) => {
+                        Some(AddScreenEvent::Action(AddAction::Save))
+                    }
+                    // Ctrl+O opens the searchable candidate picker only when the
+                    // detected list is capped (more placeholders than the inline
+                    // preview shows). A short prompt lists every candidate inline, so
+                    // Ctrl+O is a no-op.
+                    (KeyCode::Char('o'), AddStage::Review)
+                        if state.review().is_some_and(|review| {
+                            review.prompt_candidates().len() > PROMPT_LIST_PREVIEW_LIMIT
+                        }) =>
+                    {
+                        Some(AddScreenEvent::OpenPromptCandidates)
+                    }
+                    _ => None,
+                };
+            }
         }
         if key.code == KeyCode::Tab {
             self.focus.next();

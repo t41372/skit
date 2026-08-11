@@ -46,10 +46,11 @@
 //! - DIVERGENCE (Library title — RESOLVED): the zh-CN/zh-TW Library title now localizes to the
 //!   v0.4 term 工具库/工具庫 (the catalog previously rendered 程序库/程式庫). The two title tests
 //!   below read the space-interleaved `TestBackend` buffer, as render.rs does, so they check
-//!   "工 具 库" / "工 具 庫". Still divergent: two review-lane key routings — Ctrl+O opens the
-//!   searchable candidate picker unconditionally (the oracle no-ops it for a short prompt) and
-//!   Ctrl+E opens the editor even while a text Input owns focus (the oracle keeps it the Input's
-//!   end-of-line). Full assertion + `#[ignore = "FAILING CONTRACT (divergence): …"]`.
+//!   "工 具 库" / "工 具 庫". DIVERGENCE (two review-lane key routings — RESOLVED): Ctrl+O now
+//!   opens the searchable candidate picker only when the detected list is capped (the oracle
+//!   no-ops it for a short prompt), and Ctrl+E is the focused Input's end-of-line and opens the
+//!   editor only when no Input owns focus (the oracle's Ctrl+A rule). The two tests below assert
+//!   the fixed behavior with no `#[ignore]`.
 
 use std::collections::BTreeMap;
 
@@ -1142,11 +1143,6 @@ fn test_review_candidate_picker_tolerates_preview_recompose() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust review screen opens the searchable candidate \
-picker UNCONDITIONALLY on Ctrl+O (screens/add.rs:380-381 -> session.rs:467 opens the overlay \
-whenever a review is present, with no `detected <= LIST_PREVIEW_LIMIT` gate). The oracle's \
-action_choose_prompt_candidates returns early for a short prompt, so the picker never opens and \
-app.screen stays the review (tui_add.py:1471-1472; test_prompt_tui.py:1343)."]
 fn test_review_choose_variables_key_is_harmless_for_a_short_prompt() {
     // A short prompt (holes at or under LIST_PREVIEW_LIMIT) has no capped list, so Ctrl+O is a
     // NO-OP: the searchable candidate picker never opens and the screen stays on review.
@@ -1285,10 +1281,6 @@ fn test_review_ctrl_e_rescans_and_keeps_edits() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust review screen maps Ctrl+E to EditSource inside \
-its Control-chord block (screens/add.rs:363 gate, add.rs:374 arm) with no focus check, so it opens \
-the editor even while a text Input owns focus. The oracle's Ctrl+E is non-priority: while an Input \
-has focus it is that Input's end-of-line and never $EDITOR (test_prompt_tui.py:1555)."]
 fn test_review_ctrl_e_in_input_is_end_of_line_not_editor() {
     // Ctrl+E while the review's name Input has focus is that Input's end-of-line, never $EDITOR
     // (oracle: edited == []).

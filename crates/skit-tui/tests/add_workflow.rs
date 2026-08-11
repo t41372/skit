@@ -11,7 +11,16 @@ use skit_ui::{
 };
 
 fn draw(session: &mut TuiSession, state: &LibraryState) -> (Terminal<TestBackend>, ViewGeometry) {
-    let mut terminal = Terminal::new(TestBackend::new(80, 34)).unwrap();
+    draw_sized(session, state, 80, 34)
+}
+
+fn draw_sized(
+    session: &mut TuiSession,
+    state: &LibraryState,
+    width: u16,
+    height: u16,
+) -> (Terminal<TestBackend>, ViewGeometry) {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut geometry = ViewGeometry::default();
     terminal
         .draw(|frame| {
@@ -137,11 +146,20 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
 
 #[test]
 fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
+    // Ctrl+O opens the searchable candidate picker only when the detected list is capped
+    // (more placeholders than the inline preview shows), so this seam needs a capped prompt:
+    // 21 holes exceeds the preview limit (20) but stays under the auto-manage flood limit (30),
+    // so every candidate ticks on by default and a Space untick narrows the set. A taller
+    // backend keeps the runner section on screen past the 20-row preview.
+    let body = (0..21)
+        .map(|index| format!("{{{{h{index:02}}}}}"))
+        .collect::<Vec<_>>()
+        .join(" ");
     let review = ReviewState::from_source(
         SourceSnapshot {
             path: "task.prompt.md".into(),
             source_record: "task.prompt.md".to_owned(),
-            bytes: b"{{topic}} {{api_key}} {{format}}".to_vec(),
+            bytes: body.into_bytes(),
             permissions: SourcePermissions::default(),
             is_regular: true,
             is_directory: false,
@@ -155,7 +173,7 @@ fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
         AddWorkflowState::from_review(review),
     ))));
     let mut session = TuiSession::default();
-    let (terminal, geometry) = draw(&mut session, &state);
+    let (terminal, geometry) = draw_sized(&mut session, &state, 80, 60);
     let rendered = text(terminal.backend().buffer());
     assert!(rendered.contains("Prompt runner"));
     assert!(rendered.contains("Add Runner"));
@@ -168,7 +186,7 @@ fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
         ),
         EventHandling::Consumed
     );
-    let (terminal, geometry) = draw(&mut session, &state);
+    let (terminal, geometry) = draw_sized(&mut session, &state, 80, 60);
     let rendered = text(terminal.backend().buffer());
     assert!(rendered.contains("Choose prompt variables"));
     assert!(rendered.contains("Select all variables"));
@@ -181,19 +199,20 @@ fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
         ),
         EventHandling::Consumed
     );
+    // Space unticked the focused first row (h00); Ctrl+S commits the rest in source order.
+    let expected = (1..21)
+        .map(|index| format!("h{index:02}"))
+        .collect::<Vec<_>>();
     assert_eq!(
         session.handle_event(
             Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL)),
             &state,
             &geometry,
         ),
-        EventHandling::Action(Action::Add(AddAction::SetPromptCandidates(vec![
-            "api_key".to_owned(),
-            "format".to_owned(),
-        ])))
+        EventHandling::Action(Action::Add(AddAction::SetPromptCandidates(expected)))
     );
 
-    let (terminal, geometry) = draw(&mut session, &state);
+    let (terminal, geometry) = draw_sized(&mut session, &state, 80, 60);
     let (runner_x, runner_y) = position_of(terminal.backend().buffer(), "Add Runner");
     assert_eq!(
         session.handle_event(mouse(runner_x, runner_y), &state, &geometry),
