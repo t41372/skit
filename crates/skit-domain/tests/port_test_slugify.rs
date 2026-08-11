@@ -24,7 +24,10 @@ fn test_slugify() {
 
 #[test]
 fn rust_additive_slugify_hello_world() {
-    assert_eq!(Slug::from_display_name("Hello World!").as_str(), "hello-world");
+    assert_eq!(
+        Slug::from_display_name("Hello World!").as_str(),
+        "hello-world"
+    );
 }
 
 #[test]

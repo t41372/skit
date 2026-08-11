@@ -83,7 +83,8 @@ fn test_corpus_basic_detection_and_render_byte_identity() {
 
     assert!(rendered.contains("Review T for F. Again: T."), "{rendered}");
     assert!(
-        rendered.contains("Literals: {code} and JSON {\"key\": 1} and f'{value}' and {{{handlebars}}}"),
+        rendered
+            .contains("Literals: {code} and JSON {\"key\": 1} and f'{value}' and {{{handlebars}}}"),
         "{rendered}"
     );
     assert!(rendered.contains("Unmanaged hole: {{x}}"), "{rendered}");
@@ -100,7 +101,10 @@ fn test_corpus_crlf_preserved_verbatim() {
 
     let rendered = render_prompt_body(text, &values, true);
     assert!(rendered.contains("\r\n"));
-    assert_eq!(rendered, text.replace("{{task}}", "X").replace("{{repo}}", "Y"));
+    assert_eq!(
+        rendered,
+        text.replace("{{task}}", "X").replace("{{repo}}", "Y")
+    );
 }
 
 #[test]
