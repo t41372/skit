@@ -1,0 +1,100 @@
+name: Path type oracle probe
+
+on:
+  push:
+    branches:
+      - agent/port-python-test-contracts-v3
+    paths:
+      - .github/workflows/path-type-oracle-probe.yml
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/port-python-test-contracts-v3
+          persist-credentials: true
+      - name: Format, run, and persist path-type diagnostics
+        shell: bash
+        run: |
+          set +e
+          files=(
+            crates/skit-domain/tests/port_test_path_type.rs
+            crates/skit-application/tests/port_test_path_type.rs
+            crates/skit-language/tests/port_test_path_reconcile.rs
+            crates/skit-ui/tests/port_test_path_type.rs
+            crates/skit-cli/tests/port_test_path_type.rs
+            crates/skit-cli/tests/port_test_path_type_manifest.rs
+          )
+          rustfmt --edition 2024 "${files[@]}" > /tmp/path-format.log 2>&1
+          format_rc=$?
+          rustfmt --edition 2024 --check "${files[@]}" > /tmp/path-rustfmt.log 2>&1
+          rustfmt_rc=$?
+
+          cargo test --locked -p skit-cli-rs --test port_test_path_type_manifest -- --nocapture \
+            > /tmp/path-manifest.log 2>&1
+          manifest_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture \
+            > /tmp/path-strength.log 2>&1
+          strength_rc=$?
+          cargo test --locked -p skit-domain --test port_test_path_type -- --nocapture --test-threads=1 \
+            > /tmp/path-domain.log 2>&1
+          domain_rc=$?
+          cargo test --locked -p skit-application --test port_test_path_type -- --nocapture --test-threads=1 \
+            > /tmp/path-application.log 2>&1
+          application_rc=$?
+          cargo test --locked -p skit-language --test port_test_path_reconcile -- --nocapture --test-threads=1 \
+            > /tmp/path-language.log 2>&1
+          language_rc=$?
+          cargo test --locked -p skit-ui --test port_test_path_type -- --nocapture --test-threads=1 \
+            > /tmp/path-ui.log 2>&1
+          ui_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_path_type -- --nocapture --test-threads=1 \
+            > /tmp/path-cli.log 2>&1
+          cli_rc=$?
+
+          result=crates/skit-cli/tests/path_type_oracle_probe_result.txt
+          {
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "PATH_FORMAT_RC=$format_rc"
+            echo "PATH_RUSTFMT_RC=$rustfmt_rc"
+            echo "PATH_MANIFEST_RC=$manifest_rc"
+            echo "STRENGTH_GATE_RC=$strength_rc"
+            echo "PATH_DOMAIN_RC=$domain_rc"
+            echo "PATH_APPLICATION_RC=$application_rc"
+            echo "PATH_LANGUAGE_RC=$language_rc"
+            echo "PATH_UI_RC=$ui_rc"
+            echo "PATH_CLI_RC=$cli_rc"
+            for pair in \
+              "format:$format_rc:/tmp/path-format.log" \
+              "rustfmt:$rustfmt_rc:/tmp/path-rustfmt.log" \
+              "manifest:$manifest_rc:/tmp/path-manifest.log" \
+              "strength:$strength_rc:/tmp/path-strength.log" \
+              "domain:$domain_rc:/tmp/path-domain.log" \
+              "application:$application_rc:/tmp/path-application.log" \
+              "language:$language_rc:/tmp/path-language.log" \
+              "ui:$ui_rc:/tmp/path-ui.log" \
+              "cli:$cli_rc:/tmp/path-cli.log"
+            do
+              IFS=: read -r label rc log <<< "$pair"
+              if [ "$rc" -ne 0 ]; then
+                echo
+                echo "===== $label failure tail ====="
+                tail -n 180 "$log"
+              fi
+            done
+          } > "$result"
+
+          git add -- "${files[@]}" "$result"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if ! git diff --cached --quiet; then
+            git commit -m "test(port): format and verify path type oracles"
+            git push origin HEAD:agent/port-python-test-contracts-v3
+          fi
+          exit 0
