@@ -53,7 +53,12 @@ fn test_preset_roundtrip() {
     let declarations = [public("CITY")];
 
     service
-        .save_preset(&slug(), "prod", &declarations, &values(&[("CITY", "Taipei")]))
+        .save_preset(
+            &slug(),
+            "prod",
+            &declarations,
+            &values(&[("CITY", "Taipei")]),
+        )
         .unwrap();
     assert_eq!(
         service.load(&slug()).presets.get("prod"),
@@ -68,7 +73,10 @@ fn test_preset_roundtrip() {
 fn test_resolution_order_preset_over_last_over_default() {
     let root = TempDir::new().unwrap();
     let service = FormStateService::new(FileFormStateStore::new(root.path()));
-    let declarations = [spec("CITY", Some("Osaka"), false), spec("N", Some("1"), false)];
+    let declarations = [
+        spec("CITY", Some("Osaka"), false),
+        spec("N", Some("1"), false),
+    ];
 
     assert_eq!(
         prefill(&declarations, &BTreeMap::new(), None),
@@ -85,17 +93,14 @@ fn test_resolution_order_preset_over_last_over_default() {
         .unwrap();
     let last = service.load(&slug());
     assert_eq!(
-        prefill(&declarations, &last.values, None).get("CITY").map(String::as_str),
+        prefill(&declarations, &last.values, None)
+            .get("CITY")
+            .map(String::as_str),
         Some("Taipei")
     );
 
     service
-        .save_preset(
-            &slug(),
-            "jp",
-            &declarations,
-            &values(&[("CITY", "Kyoto")]),
-        )
+        .save_preset(&slug(), "jp", &declarations, &values(&[("CITY", "Kyoto")]))
         .unwrap();
     let state = service.load(&slug());
     assert_eq!(
@@ -134,8 +139,15 @@ fn test_c3_secret_never_touches_disk() {
     assert!(!state.values.contains_key("API_KEY"));
     assert!(!state.presets["prod"].contains_key("API_KEY"));
     assert_eq!(state.values.get("CITY").map(String::as_str), Some("Taipei"));
-    assert_eq!(state.presets["prod"].get("CITY").map(String::as_str), Some("Taipei"));
-    assert!(!fs::read_to_string(state_file(&root)).unwrap().contains("hunter2"));
+    assert_eq!(
+        state.presets["prod"].get("CITY").map(String::as_str),
+        Some("Taipei")
+    );
+    assert!(
+        !fs::read_to_string(state_file(&root))
+            .unwrap()
+            .contains("hunter2")
+    );
 }
 
 #[test]
@@ -144,7 +156,12 @@ fn test_preset_preserved_across_save_last() {
     let service = FormStateService::new(FileFormStateStore::new(root.path()));
     let declarations = [public("CITY")];
     service
-        .save_preset(&slug(), "prod", &declarations, &values(&[("CITY", "Taipei")]))
+        .save_preset(
+            &slug(),
+            "prod",
+            &declarations,
+            &values(&[("CITY", "Taipei")]),
+        )
         .unwrap();
     service
         .save_last(
@@ -195,9 +212,16 @@ fn test_purge_secret_removes_from_values_and_every_preset() {
     assert!(!state.values.contains_key("API_KEY"));
     assert_eq!(state.values.get("CITY").map(String::as_str), Some("Taipei"));
     assert!(!state.presets["prod"].contains_key("API_KEY"));
-    assert_eq!(state.presets["prod"].get("CITY").map(String::as_str), Some("Taipei"));
+    assert_eq!(
+        state.presets["prod"].get("CITY").map(String::as_str),
+        Some("Taipei")
+    );
     assert!(!state.presets.contains_key("dev"));
-    assert!(!fs::read_to_string(state_file(&root)).unwrap().contains("shown"));
+    assert!(
+        !fs::read_to_string(state_file(&root))
+            .unwrap()
+            .contains("shown")
+    );
 }
 
 #[test]
@@ -284,7 +308,11 @@ fn test_save_last_drops_stale_value_once_param_becomes_secret() {
         )
         .unwrap();
     assert_eq!(
-        service.load(&slug()).values.get("API_KEY").map(String::as_str),
+        service
+            .load(&slug())
+            .values
+            .get("API_KEY")
+            .map(String::as_str),
         Some("old-secret")
     );
     service

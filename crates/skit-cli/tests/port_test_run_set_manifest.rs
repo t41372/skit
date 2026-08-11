@@ -37,7 +37,9 @@ const PYTHON_TESTS: &[&str] = &[
 ];
 
 fn is_test(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 #[test]

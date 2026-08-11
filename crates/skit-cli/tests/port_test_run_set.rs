@@ -16,7 +16,7 @@ use std::{
 
 use assert_cmd::Command;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterType};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::inject_values;
 use tempfile::TempDir;
 use toml::Value;
@@ -200,7 +200,10 @@ impl Sandbox {
     }
 
     fn state_path(&self, slug: &str) -> PathBuf {
-        self.state.path().join("values").join(format!("{slug}.toml"))
+        self.state
+            .path()
+            .join("values")
+            .join(format!("{slug}.toml"))
     }
 
     fn state_text(&self, slug: &str) -> String {
@@ -297,10 +300,11 @@ fn main() {
 "#,
         )
         .unwrap();
-        let executable = self
-            .home
-            .path()
-            .join(if cfg!(windows) { "child-probe.exe" } else { "child-probe" });
+        let executable = self.home.path().join(if cfg!(windows) {
+            "child-probe.exe"
+        } else {
+            "child-probe"
+        });
         let status = StdCommand::new("rustc")
             .arg(&source)
             .arg("-o")
@@ -450,9 +454,11 @@ fn test_set_inject_values_non_interactive() {
 
     let mut city = ParamDecl::new("CITY");
     city.binding = ParameterBinding::Const;
+    city.delivery = ParameterDelivery::Inject;
     city.parameter_type = ParameterType::Str;
     let mut times = ParamDecl::new("TIMES");
     times.binding = ParameterBinding::Const;
+    times.delivery = ParameterDelivery::Inject;
     times.parameter_type = ParameterType::Int;
     let values = BTreeMap::from([
         ("CITY".to_owned(), "Kaohsiung".to_owned()),
@@ -486,7 +492,11 @@ fn test_set_makes_command_placeholders_runnable() {
         "--no-input",
     ]);
     assert_success(&["run", "deploy"], &output);
-    assert!(combined(&output).contains("prod high"), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("prod high"),
+        "{}",
+        combined(&output)
+    );
     assert_eq!(sandbox.value("deploy", "target").as_deref(), Some("prod"));
     assert_eq!(sandbox.value("deploy", "level").as_deref(), Some("high"));
 }
@@ -515,7 +525,11 @@ fn test_set_wins_over_preset() {
     assert_success(&["run", "d2"], &output);
     assert_eq!(sandbox.value("d2", "target").as_deref(), Some("prod"));
     assert!(combined(&output).contains("prod"), "{}", combined(&output));
-    assert!(!combined(&output).contains("staging"), "{}", combined(&output));
+    assert!(
+        !combined(&output).contains("staging"),
+        "{}",
+        combined(&output)
+    );
 }
 
 #[test]
@@ -571,9 +585,20 @@ fn test_set_saves_preset_with_dry_run_without_running() {
         "--no-input",
     ]);
     assert_success(&["run", "d3"], &output);
-    assert_eq!(sandbox.preset_value("d3", "quick", "target").as_deref(), Some("stage"));
-    assert_eq!(sandbox.last_exit("d3"), None, "dry-run must not record a child exit");
-    assert_eq!(sandbox.value("d3", "target"), None, "dry-run must not save last-used values");
+    assert_eq!(
+        sandbox.preset_value("d3", "quick", "target").as_deref(),
+        Some("stage")
+    );
+    assert_eq!(
+        sandbox.last_exit("d3"),
+        None,
+        "dry-run must not record a child exit"
+    );
+    assert_eq!(
+        sandbox.value("d3", "target"),
+        None,
+        "dry-run must not save last-used values"
+    );
 }
 
 #[test]
@@ -588,7 +613,11 @@ fn test_save_preset_on_field_less_entry_refused_saves_nothing() {
         combined(&output)
     );
     assert!(sandbox.preset_value("noargs", "nope", "anything").is_none());
-    assert_eq!(sandbox.last_exit("noargs"), None, "refused run must not launch");
+    assert_eq!(
+        sandbox.last_exit("noargs"),
+        None,
+        "refused run must not launch"
+    );
 }
 
 #[test]
@@ -623,8 +652,14 @@ fn test_save_preset_deferred_until_a_real_run_is_accepted() {
         .output()
         .unwrap();
     assert_success(&["run", "e"], &output);
-    assert_eq!(fs::read_to_string(capture).unwrap().lines().last(), Some("MSG=hi"));
-    assert_eq!(sandbox.preset_value("e", "prod", "msg").as_deref(), Some("hi"));
+    assert_eq!(
+        fs::read_to_string(capture).unwrap().lines().last(),
+        Some("MSG=hi")
+    );
+    assert_eq!(
+        sandbox.preset_value("e", "prod", "msg").as_deref(),
+        Some("hi")
+    );
     assert_eq!(sandbox.last_exit("e"), Some(0));
 }
 
@@ -653,7 +688,10 @@ fn test_save_preset_not_written_when_launch_is_refused() {
         "prod",
         "--no-input",
     ]);
-    assert!(!output.status.success(), "launch refusal unexpectedly succeeded");
+    assert!(
+        !output.status.success(),
+        "launch refusal unexpectedly succeeded"
+    );
     assert_eq!(sandbox.preset_value("e", "prod", "msg"), None);
     assert_eq!(sandbox.last_exit("e"), None);
 }
@@ -706,18 +744,20 @@ fn test_save_preset_dry_run_validation_failure_writes_nothing() {
 fn test_set_secret_never_persisted_and_masked_in_dry_run() {
     let sandbox = Sandbox::new();
     sandbox.write_python_entry("api", managed_secret_source());
-    let dry = sandbox.output(&[
-        "run",
-        "api",
-        "--set",
-        "KEY=s3cret-value",
-        "--dry-run",
-        "--no-input",
-    ]);
-    assert_success(&["run", "api", "--dry-run"], &dry);
-    assert!(!combined(&dry).contains("s3cret-value"), "{}", combined(&dry));
-    assert!(combined(&dry).contains("•••"), "{}", combined(&dry));
+    let show = sandbox.ok(&["show", "api", "--json"]);
+    let document: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
+    let field = document["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["key"] == "KEY")
+        .expect("managed KEY field must be visible to the same CLI");
+    assert_eq!(
+        field["secret"], true,
+        "fixture failed to mark KEY secret: {document}"
+    );
 
+    // Prove the accepted-run half before the deliberately red dry-run transparency assertion.
     let uv = sandbox.compile_fake_uv();
     let capture = sandbox.home.path().join("secret-captured.py");
     let run = sandbox
@@ -728,23 +768,39 @@ fn test_set_secret_never_persisted_and_masked_in_dry_run() {
         .output()
         .unwrap();
     assert_success(&["run", "api"], &run);
-    assert!(fs::read_to_string(capture).unwrap().contains("s3cret-value"));
+    assert!(
+        fs::read_to_string(capture)
+            .unwrap()
+            .contains("s3cret-value")
+    );
     let state = sandbox.state_text("api");
-    assert!(!state.contains("s3cret-value"), "secret leaked to state:\n{state}");
+    assert!(
+        !state.contains("s3cret-value"),
+        "secret leaked to state:\n{state}"
+    );
     assert_eq!(sandbox.value("api", "KEY"), None);
+
+    let dry = sandbox.output(&[
+        "run",
+        "api",
+        "--set",
+        "KEY=s3cret-value",
+        "--dry-run",
+        "--no-input",
+    ]);
+    assert_success(&["run", "api", "--dry-run"], &dry);
+    assert!(
+        !combined(&dry).contains("s3cret-value"),
+        "{}",
+        combined(&dry)
+    );
+    assert!(combined(&dry).contains("•••"), "{}", combined(&dry));
 }
 
 #[test]
 fn test_set_token_values_expand_at_assembly() {
     let sandbox = Sandbox::new();
-    sandbox.ok(&[
-        "add",
-        "--cmd",
-        "echo {where}",
-        "--name",
-        "d4",
-        "--no-input",
-    ]);
+    sandbox.ok(&["add", "--cmd", "echo {where}", "--name", "d4", "--no-input"]);
     let output = sandbox.output(&["run", "d4", "--set", "where={cwd}", "--no-input"]);
     assert_success(&["run", "d4"], &output);
     assert!(
@@ -866,16 +922,13 @@ fn test_set_on_entry_without_fields_lists_a_dash() {
 fn test_set_with_raw_is_a_usage_conflict() {
     let sandbox = Sandbox::new();
     sandbox.write_python_entry("trip", managed_trip_source());
-    let output = sandbox.output(&[
-        "run",
-        "trip",
-        "--raw",
-        "--set",
-        "CITY=x",
-        "--no-input",
-    ]);
+    let output = sandbox.output(&["run", "trip", "--raw", "--set", "CITY=x", "--no-input"]);
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(has_exact_line(&output, RAW_CONFLICT), "{}", combined(&output));
+    assert!(
+        has_exact_line(&output, RAW_CONFLICT),
+        "{}",
+        combined(&output)
+    );
     assert_eq!(sandbox.last_exit("trip"), None);
 }
 
@@ -884,16 +937,13 @@ fn test_preset_with_raw_is_a_usage_conflict() {
     let sandbox = Sandbox::new();
     sandbox.write_python_entry("trip", managed_trip_source());
     sandbox.seed_state("trip", "[presets.loud]\nCITY = \"Tainan\"\n");
-    let output = sandbox.output(&[
-        "run",
-        "trip",
-        "--raw",
-        "-p",
-        "loud",
-        "--no-input",
-    ]);
+    let output = sandbox.output(&["run", "trip", "--raw", "-p", "loud", "--no-input"]);
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(has_exact_line(&output, RAW_CONFLICT), "{}", combined(&output));
+    assert!(
+        has_exact_line(&output, RAW_CONFLICT),
+        "{}",
+        combined(&output)
+    );
     assert_eq!(sandbox.last_exit("trip"), None);
 }
 
@@ -910,7 +960,11 @@ fn test_save_preset_with_raw_is_a_usage_conflict() {
         "--no-input",
     ]);
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(has_exact_line(&output, RAW_CONFLICT), "{}", combined(&output));
+    assert!(
+        has_exact_line(&output, RAW_CONFLICT),
+        "{}",
+        combined(&output)
+    );
     assert_eq!(sandbox.preset_value("trip", "ghost", "CITY"), None);
     assert_eq!(sandbox.last_exit("trip"), None);
 }
@@ -953,8 +1007,14 @@ fn test_raw_never_replays_last_extra_args() {
     assert_eq!(fs::read_to_string(&capture).unwrap(), "--verbose\nx.png");
     let stdout = String::from_utf8_lossy(&reused.stdout);
     let stderr = String::from_utf8_lossy(&reused.stderr);
-    assert!(stderr.contains("Reusing your last arguments"), "stderr={stderr}");
-    assert!(!stdout.contains("Reusing your last arguments"), "stdout={stdout}");
+    assert!(
+        stderr.contains("Reusing your last arguments"),
+        "stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("Reusing your last arguments"),
+        "stdout={stdout}"
+    );
 }
 
 #[test]
@@ -1011,7 +1071,12 @@ fn test_set_bad_value_fails_before_the_form_opens() {
         !output.contains("CITY [") && !output.contains("CITY: "),
         "the form opened before --set validation:\n{output}"
     );
-    assert!(output.lines().any(|line| line.contains("TIMES needs a whole number")), "{output}");
+    assert!(
+        output
+            .lines()
+            .any(|line| line.contains("TIMES needs a whole number")),
+        "{output}"
+    );
     assert_eq!(sandbox.last_exit("trip"), None);
 }
 
@@ -1058,7 +1123,10 @@ fn test_interactive_form_skips_set_fields() {
     );
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("CITY [old-city]"), "{output}");
-    assert!(!output.contains("TIMES ["), "fixed TIMES must never be asked:\n{output}");
+    assert!(
+        !output.contains("TIMES ["),
+        "fixed TIMES must never be asked:\n{output}"
+    );
     assert_eq!(sandbox.value("trip", "CITY").as_deref(), Some("form-city"));
     assert_eq!(sandbox.value("trip", "TIMES").as_deref(), Some("9"));
 }
@@ -1083,18 +1151,15 @@ fn test_interactive_all_fields_set_skips_the_form_entirely() {
     );
     let (code, output) = sandbox.run_plain_pty(
         &[
-            "run",
-            "trip",
-            "--plain",
-            "--set",
-            "CITY=x",
-            "--set",
-            "TIMES=1",
+            "run", "trip", "--plain", "--set", "CITY=x", "--set", "TIMES=1",
         ],
         &[],
     );
     assert_eq!(code, 0, "{output}");
-    assert!(!output.contains("CITY: ") && !output.contains("TIMES: "), "{output}");
+    assert!(
+        !output.contains("CITY: ") && !output.contains("TIMES: "),
+        "{output}"
+    );
     assert_eq!(sandbox.value("trip", "CITY").as_deref(), Some("x"));
     assert_eq!(sandbox.value("trip", "TIMES").as_deref(), Some("1"));
 }
@@ -1114,13 +1179,14 @@ fn test_save_preset_no_fields_refused_before_any_form() {
         ),
     )
     .unwrap();
-    let (code, output) = sandbox.run_plain_pty(
-        &["run", "plainp", "--plain", "--save-preset", "x"],
-        &[],
-    );
+    let (code, output) =
+        sandbox.run_plain_pty(&["run", "plainp", "--plain", "--save-preset", "x"], &[]);
     assert_eq!(code, 2, "{output}");
     assert!(output.contains("has no form fields"), "{output}");
-    assert!(!output.contains("Prompt runner"), "runner picker opened before refusal:\n{output}");
+    assert!(
+        !output.contains("Prompt runner"),
+        "runner picker opened before refusal:\n{output}"
+    );
     assert!(
         fs::read_dir(sandbox.state.path())
             .map(|mut entries| entries.next().is_none())
@@ -1160,6 +1226,9 @@ fn test_save_preset_persists_when_ctrl_c_ends_an_accepted_run() {
         "--no-input",
     ]);
     assert_eq!(output.status.code(), Some(130), "{}", combined(&output));
-    assert_eq!(sandbox.preset_value("e", "prod", "msg").as_deref(), Some("hi"));
+    assert_eq!(
+        sandbox.preset_value("e", "prod", "msg").as_deref(),
+        Some("hi")
+    );
     assert_eq!(sandbox.last_exit("e"), Some(130));
 }
