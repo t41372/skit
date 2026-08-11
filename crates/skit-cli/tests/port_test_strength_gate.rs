@@ -1,7 +1,8 @@
 //! Mechanical guardrails for the Python-to-Rust parity suite.
 //!
-//! This does not substitute for behavioral tests. It only prevents a mapped Python contract from
-//! being represented by an ignored or unfinished Rust placeholder again.
+//! This does not substitute for behavioral review. It only prevents mapped Python contracts from
+//! being represented by ignored/unfinished placeholders or by a few mechanically obvious vacuous
+//! patterns. Assertion strength still has to be checked against the frozen Python oracle.
 
 use std::{fs, path::Path};
 
@@ -23,20 +24,25 @@ fn visit(directory: &Path, offenders: &mut Vec<String>) {
         }
         let text = fs::read_to_string(&path).unwrap();
         let forbidden = [
-            ["#[", "ignore"].concat(),
-            ["todo", "!()"].concat(),
-            ["unimplemented", "!()"].concat(),
+            (["#[", "ignore"].concat(), "ignored test"),
+            (["#[", "should_panic"].concat(), "unscoped panic-as-success test"),
+            (["todo", "!()"].concat(), "todo placeholder"),
+            (["unimplemented", "!()"].concat(), "unimplemented placeholder"),
+            ("assert!(true)".to_owned(), "vacuous true assertion"),
+            ("assert_eq!(true, true)".to_owned(), "vacuous constant equality"),
+            ("assert_eq!(false, false)".to_owned(), "vacuous constant equality"),
+            ("assert_ne!(true, false)".to_owned(), "vacuous constant inequality"),
         ];
-        for forbidden in &forbidden {
-            if text.contains(forbidden) {
-                offenders.push(format!("{} contains {forbidden}", path.display()));
+        for (needle, reason) in &forbidden {
+            if text.contains(needle) {
+                offenders.push(format!("{} contains {reason}: {needle}", path.display()));
             }
         }
     }
 }
 
 #[test]
-fn python_parity_tests_cannot_be_ignored_or_left_as_unimplemented_stubs() {
+fn python_parity_tests_cannot_be_ignored_unfinished_or_obviously_vacuous() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -45,7 +51,7 @@ fn python_parity_tests_cannot_be_ignored_or_left_as_unimplemented_stubs() {
     visit(&root.join("crates"), &mut offenders);
     assert!(
         offenders.is_empty(),
-        "Python parity coverage must stay executable:\n{}",
+        "Python parity coverage must stay executable and non-vacuous:\n{}",
         offenders.join("\n")
     );
 }
