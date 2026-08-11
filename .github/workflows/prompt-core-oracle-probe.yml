@@ -1,5 +1,6 @@
 name: Prompt core oracle probe
 
+# Temporary self-trigger; deleted after diagnostics are read.
 on:
   push:
     branches:
