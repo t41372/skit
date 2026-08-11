@@ -1,5 +1,6 @@
 name: Default name variant probe
 
+# Temporary self-trigger; deleted after the 24 parametrized rows are classified.
 on:
   push:
     branches:
