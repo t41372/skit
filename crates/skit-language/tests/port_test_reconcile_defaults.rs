@@ -98,7 +98,7 @@ fn test_reconcile_secret_const_never_publishes_its_source_literal() {
 }
 
 #[test]
-fn test_envdefault_default_that_no_longer_fits_the_declared_type_is_not_published() {
+fn test_envdefault_default_that_no_longer_fits_the_type_is_not_published() {
     let mut stored = envdefault("PORT", ParameterType::Int);
     stored.default = Some(ParameterValue::Integer(8080));
     let report = reconcile(
@@ -112,7 +112,7 @@ fn test_envdefault_default_that_no_longer_fits_the_declared_type_is_not_publishe
 }
 
 #[test]
-fn test_int_shaped_literal_can_refresh_a_string_envdefault() {
+fn test_int_shaped_literal_still_refreshes_a_str_envdefault() {
     let report = reconcile(
         "shell",
         "PORT=${PORT:-8080}\necho \"$PORT\"\n",
