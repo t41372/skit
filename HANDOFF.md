@@ -1,11 +1,13 @@
 # skit Rust rewrite — session handoff (2026-08-10)
 
 **Read this first, then `docs/design/python-test-port-ledger.md` (the authoritative per-module
-record + fix-list) and the memory at `~/.claude/projects/-home-ubuntu-coding-skit/memory/`.**
-This supersedes the stale `CLAUDE_HANDOFF.md` (codex's; delete it at Phase 5).
+record + fix-list).** This file is SELF-CONTAINED: it does not depend on any `.claude` memory (that
+is machine-local and may be gone on a new box). Everything you need is here or in the repo.
+Supersedes the stale `CLAUDE_HANDOFF.md` (codex's; delete it at Phase 5).
 
-Branch: `rewrite/rust-ratatui-complete-20260808-codex`. Oracle checkout: `/home/ubuntu/coding/skit-oracle`
-(pinned `origin/main@206f9ef`, v0.4.1.dev0). Rust workspace: `/home/ubuntu/coding/skit`.
+Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo pinned at
+`origin/main@206f9ef` (v0.4.1.dev0). Any `/home/ubuntu/coding/...` path below is this machine's —
+**see §0.5 to recreate the oracle checkout and the rest on a new box.**
 
 ---
 
@@ -17,6 +19,40 @@ clean, 81 `port_test_*.rs` files). The impl-fix pass has STARTED — 2 clusters 
 impl-fix pass (in progress).
 
 ---
+
+## 0.5 Environment — recreate local checkouts FIRST on a new machine
+
+Local absolute paths in this doc were `/home/ubuntu/coding/...`; on a new box they won't exist.
+Recreate them (all are derivable from this one git repo):
+
+- **The Rust workspace** = THIS repo, branch `rewrite/rust-ratatui-complete-20260808-codex`. Wherever
+  you clone it, that is what this doc calls `<repo>` / `/home/ubuntu/coding/skit`. `cd` there.
+- **The oracle** (the v0.4 Python source you translate FROM) is a **git worktree of this same repo**
+  at the pinned commit `206f9ef946fc45835cb2479593794431f2620c32` (it IS in this repo's history:
+  "docs(readme): Add text to avoid scaring off CLI-newbies"). Recreate it:
+  ```
+  git -C <repo> worktree add ../skit-oracle 206f9ef946fc45835cb2479593794431f2620c32
+  ```
+  After that, the Python impl is at `../skit-oracle/src/skit/*.py` and the tests at
+  `../skit-oracle/tests/test_*.py`. **Everywhere this doc writes `skit-oracle/...` or
+  `/home/ubuntu/coding/skit-oracle/...`, it means that worktree.** (Fallback if worktrees are
+  awkward: `git clone` the repo elsewhere and `git checkout 206f9ef...` in it.)
+- **The demo harness** (`/home/ubuntu/coding/skit-harness`, Phase 5 ONLY): a VHS/Docker frame-compare
+  harness. The product SPEC — the tapes — lives IN this repo at `docs/assets/demo/{demo,shots}.tape`
+  (`shots.tape` has deterministic `Screenshot` points; `demo.tape` is the keystroke choreography).
+  Phase 5 replays them UNCHANGED against the Rust binary and diffs frames. Operating knowledge from
+  the prior demo work: Docker volume paths must be ABSOLUTE; chain build `&&` record (a failed build
+  silently records the PREVIOUS image); the image build fails under contention with a host
+  `cargo test` (don't run them together). The 8 `tui-*-{en,zh}.png` + `demo-mouse.gif` + mp4s were
+  deleted on this branch and must be re-recorded at Phase 5.
+- **The port fan-out script** `port_wave.js` lived in a session scratchpad (gone). You do NOT need it
+  for the fix pass (that uses serialized subagents, not fan-out — §7). If you ever re-port modules,
+  rewrite it per the §2 contract: a `Workflow`-tool script, one tests-only subagent per module
+  (reads oracle impl + test, writes `crates/<crate>/tests/port_test_<module>.rs`, reports gaps) each
+  paired with an adversarial verify subagent.
+- **Devbox caveat:** this box was MISSING some interpreters (fish / pwsh / deno / ruby / lua / R).
+  Interpreter-dependent tests SKIP rather than fail — a skip is NOT a pass. Install them, or expect
+  skips (and don't chase a "green" that is really a skip).
 
 ## 1. The mission (do not lose this)
 
@@ -32,8 +68,9 @@ copying Python's reviewed behavior. When in doubt, read `skit-oracle/src/skit/*.
   `crates/<crate>/tests/port_test_<module>.rs`, produced by a **tests-only** subagent (writes tests,
   reports gaps, NEVER edits production — so it structurally cannot reinvent), paired with an
   independent **adversarial verify** subagent that tries to refute "faithful". Driver:
-  `Workflow` tool, script at `/tmp/.../scratchpad/port_wave.js` (persisted per-invocation; the path
-  is printed by the tool). 13 waves ran this way.
+  `Workflow` tool with a script (the port ran one called `port_wave.js`; the `Workflow` tool persists
+  each invocation's script and prints its path — the session copy is gone, see §0.5). 13 waves ran
+  this way.
 - **Fix phase (IN PROGRESS): serialized implementation subagents, NOT fan-out.** Production edits
   overlap and need review, so run ONE focused implementation subagent per cluster (or 2 in parallel
   only if clearly-separate crates). Each **translates the oracle impl**, then **deletes the
@@ -100,6 +137,15 @@ copying Python's reviewed behavior. When in doubt, read `skit-oracle/src/skit/*.
 Each has oracle line refs in the FAILING CONTRACT `#[ignore]` reason + the ledger adjudication log.
 Recommended order: small/clear first (bank the loop), then the big clusters, `edit_declared` last.
 
+`#N` below are the (machine-local, will-be-gone) task-list IDs, kept only as shorthand — the
+descriptions here + in the ledger are authoritative. Legend: **#14** = prompt analyzer defects
+(incl. `{{unicode}}` placeholders undetected); **#15** = refuse the add-lane inputs v0.4 refuses
+(drafts-boundary guard etc.); **#16** = restore params batch fault tolerance (`edit_declared` warn-
+and-continue); **#17** = give the English/ASD-STE100 gate an oracle-derived exemption; **#18** = let
+a translation reorder its `{}` placeholders (positional→named format holes); **#19** = prepare a
+build for the user's hands-on test; **#20** = run mutation testing (BLOCKED on explicit user
+approval).
+
 - **launcher describe** (§4) + **doctor uv exit** (skit-cli: uv "not required" for a pure library →
   exit 0, not 1; healthcheck.py; un-ignores langs #18/#20, healthcheck) — small, clear.
 - **review-lane** (§4) — Ctrl+O gate, Ctrl+E focus.
@@ -165,25 +211,54 @@ Recommended order: small/clear first (bank the loop), then the big clusters, `ed
   unchanged; the 8 tui-*.png + demo-mouse.gif were deleted on this branch and must be restored),
   delete CLAUDE_HANDOFF.md + this HANDOFF.md + mutation artifacts, open a non-draft PR.
 
-## 7. Working mode (the user's rules — follow exactly)
+## 7. Working mode (the user's rules — follow exactly; inlined so nothing is lost)
 
-- **Translate the oracle, never reinvent.** Read `skit-oracle/src/skit/*.py`. Match its behavior,
-  messages, edge cases, exit codes.
-- **Verify through the composition root.** A skit-ui/skit-tui test green while skit-cli never wires
-  the feature = false pass. Grep for a production caller. (Memory: skit-verify-through-composition-root.)
-- **Supervisor re-runs and adjudicates every subagent delivery.** Never trust self-reports. The
-  verify stage catches weakenings; when it flags one, fix it against the oracle (do not accept a
-  softened/tautological/no-op assertion, a gutted divergence body, or a wrong-evidence stub).
+- **Translate the oracle, never reinvent.** Read `skit-oracle/src/skit/*.py` at the pin
+  `origin/main@206f9ef` (NOT the `v0.4.0` tag — an earlier audit used the tag and had to be redone).
+  Match its behavior, messages, edge cases, exit codes. Cost is not a factor: "永遠遵守長期最優解和最
+  佳架構，任何技術決策只考慮用戶體驗和實現優雅，不考慮實現成本，不接受最小或最簡單修復。可以多，不能
+  少。" Prefer adding a maintained crate over hand-writing a widget — hand-rolled components from this
+  assistant have been consistently broken. Feature loss is a RELEASE BLOCKER, tracked in
+  `docs/design/rust-contract-matrix.md`.
+- **Verify through the composition root — layer-local green is NOT proof.** skit's layering
+  (`skit-ui` reducer → `skit-tui` renderer → `skit-cli` composition root) lets a capability be fully
+  implemented and fully tested at the UI layer while the composition root never feeds it. PROVEN
+  CASE: `LibraryEntryDetail` / `LibraryState::from_surface` / `Action::ReplaceSurface` had complete
+  impls + passing tests, but skit-cli called `LibraryState::from_scan(scan)` (no `details`) — so the
+  detail pane, the missing-target `⚠`, activity sort, and remove-confirm were all DEAD in the running
+  binary. This class is invisible to per-crate tests, coverage, AND mutation. For any restored
+  capability, **grep for a production caller outside `tests/`** before believing it works. The
+  end-to-end proof is the VHS tape harness (Phase 5).
+- **Review principles (each from a defect that passing tests missed):**
+  1. **Assert what the user gets, not what the code drew** (a "scrollbar exists" test passed while
+     the focused control wasn't rendered; assert the focused control's rect is inside the viewport).
+  2. **Resolve against the current set on every read** — a cached key is as stale as a cached index
+     (runner-select value-keyed, preset checkboxes name-keyed, settings focus field-keyed, positional
+     `{}` format holes — same bug in four domains: don't assume hole/key order is stable).
+  3. **When you find a defect, ask where else it lives** (the viewport-follow bug existed on two
+     screens; the second was found only because the question was asked).
+  4. **Stop when a slice stops being coherent, and say so** — park it and hand back a GREEN tree
+     rather than bending tests to fit a half-finished change (a half-landed feature "looks finished in
+     a diff" — that is exactly how this branch accumulated its regressions).
+- **Supervisor re-runs and adjudicates every subagent delivery.** Never trust self-reports; re-run,
+  grep the composition root, adjudicate against the oracle. When the verify stage flags a weakening,
+  fix it (never accept a softened/tautological/no-op assertion, a gutted divergence body, or a
+  wrong-evidence stub). Welcome being overturned — the implementation agent corrected the supervisor
+  five times and was right each time.
 - **A divergence keeps its FULL asserting body** under `#[ignore = "FAILING CONTRACT (divergence):
   <oracle evidence>"]`. Stubs only for genuinely-absent-API or off-crate. `#[ignore]` NEVER hides a
   mismatch.
-- **Fan-out subagent safety (learned the hard way):** a subagent once ran `rm -rf .locks values` in
-  the repo root on a guess (harmless — skit's own scratch — but a real risk). The port_wave contract
-  now forbids deleting anything the agent didn't create AND requires sandboxing the real `skit`
-  binary's SKIT_DATA/STATE/CONFIG_DIR to temp on every call. Keep those rules on any shell-capable
-  fan-out.
-- **Commits: NO trailers** in this repo (no Co-Authored-By / Claude-Session). `git commit -F -` with a
-  heredoc. Commit fix and its un-ignore together; keep the tree green.
+- **Subagent modes:** mechanical, non-overlapping, tests-only work → large-scale fan-out (the
+  `Workflow` tool + `port_wave.js`), tests-only + adversarial verify. Production edits / anything
+  touching a shared file → FEW long-lived serialized subagents, supervisor verifies (the codex
+  disaster was 4 agents editing one worktree). **Fan-out safety (learned the hard way):** a subagent
+  once ran `rm -rf .locks values` in the repo root on a guess (harmless — skit's own scratch — but a
+  real risk); forbid deleting anything the agent didn't create, and sandbox the real `skit` binary's
+  `SKIT_DATA/STATE/CONFIG_DIR` to temp on every call. Expect ~1 in 8 subagents to stall (API); relaunch
+  just that one.
+- **Commits: NO trailers** in this repo (NO `Co-Authored-By:`, NO `Claude-Session:`). `git commit -F -`
+  with a heredoc, plain subject/blank/body. If a trailer slips in, `git commit --amend`. Commit a fix
+  and its un-ignore together; keep the tree green.
 - **Two policy items keep their oracle-matching defaults** (user did not object): the store self-heal
   reversal (`c04395c`) and fixing shim secret crash-safety. Reversible if the user changes their mind.
 
@@ -217,10 +292,10 @@ Recommended order: small/clear first (bank the loop), then the big clusters, `ed
 - **Ledger (authoritative):** `docs/design/python-test-port-ledger.md` — every module, its crate/file,
   status, and the adjudication log with per-divergence oracle refs. Wave blocks + the "Wave N" and
   per-module adjudication entries are the detailed record.
-- **Memory:** `~/.claude/projects/-home-ubuntu-coding-skit/memory/` — MEMORY.md index +
-  skit-python-test-port.md (workstream), skit-few-long-lived-subagents.md (fan-out vs serialized +
-  safety), skit-rust-rewrite-superset-rule.md, skit-verify-through-composition-root.md,
-  skit-review-principles.md, skit-commit-trailers.md.
+- **Machine-local `.claude` memory is NOT a dependency** — its essential content (superset rule,
+  composition-root verification + proof case, review principles, subagent modes + fan-out safety,
+  commit-trailer rule, environment rebuild) is inlined into §0.5 and §7 of THIS file. Do not rely on
+  it existing.
 - **Contract matrix:** `docs/design/rust-contract-matrix.md` (22 rows, still "In progress" — a release
   blocker until Complete with evidence).
 - **AGENTS.md / CLAUDE.md:** product rules, trust model (skit is a launcher, NOT a sandbox — do not
