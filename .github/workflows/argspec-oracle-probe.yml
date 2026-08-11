@@ -1,0 +1,72 @@
+name: Argspec oracle probe
+
+on:
+  push:
+    branches:
+      - agent/port-python-test-contracts-v3
+    paths:
+      - .github/workflows/argspec-oracle-probe.yml
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/port-python-test-contracts-v3
+          persist-credentials: true
+      - name: Run exact argspec oracles
+        shell: bash
+        run: |
+          set +e
+          files=(
+            crates/skit-form/tests/port_test_argspec_exact.rs
+            crates/skit-cli/tests/port_test_argspec_manifest.rs
+          )
+          rustfmt --edition 2024 "${files[@]}" > /tmp/argspec-format.log 2>&1
+          format_rc=$?
+          rustfmt --edition 2024 --check "${files[@]}" > /tmp/argspec-rustfmt.log 2>&1
+          rustfmt_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_argspec_manifest -- --nocapture > /tmp/argspec-manifest.log 2>&1
+          manifest_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture > /tmp/argspec-strength.log 2>&1
+          strength_rc=$?
+          cargo test --locked -p skit-form --test port_test_argspec_exact -- --nocapture --test-threads=1 > /tmp/argspec.log 2>&1
+          argspec_rc=$?
+
+          result=crates/skit-cli/tests/argspec_oracle_probe_result.txt
+          {
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "FORMAT_RC=$format_rc"
+            echo "RUSTFMT_RC=$rustfmt_rc"
+            echo "MANIFEST_RC=$manifest_rc"
+            echo "STRENGTH_GATE_RC=$strength_rc"
+            echo "ARGSPEC_RC=$argspec_rc"
+            grep -E '^test result:|^test .* \.\.\. (ok|FAILED)$|^failures:$|^    test_' /tmp/argspec.log || true
+            for pair in \
+              "format:$format_rc:/tmp/argspec-format.log" \
+              "rustfmt:$rustfmt_rc:/tmp/argspec-rustfmt.log" \
+              "manifest:$manifest_rc:/tmp/argspec-manifest.log" \
+              "strength:$strength_rc:/tmp/argspec-strength.log" \
+              "argspec:$argspec_rc:/tmp/argspec.log"
+            do
+              IFS=: read -r label rc log <<< "$pair"
+              if [ "$rc" -ne 0 ]; then
+                echo
+                echo "===== $label failure log ====="
+                cat "$log"
+              fi
+            done
+          } > "$result"
+          git add -- "${files[@]}" "$result"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if ! git diff --cached --quiet; then
+            git commit -m "test(port): format and record argspec probe"
+            git push origin HEAD:agent/port-python-test-contracts-v3
+          fi
+          exit 0
