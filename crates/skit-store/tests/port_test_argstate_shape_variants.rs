@@ -62,11 +62,7 @@ fn rust_additive_scalar_presets_drops_only_presets_section() {
     let root = TempDir::new().unwrap();
     let store = FileFormStateStore::new(root.path());
     let id = slug("scalar-presets");
-    write_state(
-        &root,
-        &id,
-        "presets = 5\n[values]\nCITY = \"Taipei\"\n",
-    );
+    write_state(&root, &id, "presets = 5\n[values]\nCITY = \"Taipei\"\n");
 
     let state = store.load(&id);
     assert_eq!(state.values, values(&[("CITY", "Taipei")]));

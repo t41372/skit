@@ -63,14 +63,7 @@ impl Sandbox {
 #[test]
 fn test_a_scalar_last_run_still_lists_through_the_cli() {
     let sandbox = Sandbox::new();
-    sandbox.ok(&[
-        "add",
-        "--cmd",
-        "echo hi",
-        "--name",
-        "chores",
-        "--no-input",
-    ]);
+    sandbox.ok(&["add", "--cmd", "echo hi", "--name", "chores", "--no-input"]);
 
     let values_dir = sandbox.state.path().join("values");
     fs::create_dir_all(&values_dir).unwrap();
