@@ -1,6 +1,5 @@
 name: Params edit ledger cleanup
 
-# Retry self-trigger after later test-only commits; deleted after the rename lands.
 on:
   push:
     branches:
@@ -15,33 +14,15 @@ jobs:
   cleanup:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: agent/port-python-test-contracts-v3
           persist-credentials: true
-      - shell: bash
+      - name: Rename the Rust-additive sibling-row test
+        shell: bash
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          p = Path('crates/skit-cli/tests/port_test_params_edit_declared.rs')
-          text = p.read_text()
-          old_name = 'fn test_inputs_are_never_mutated() {'
-          new_name = 'fn rust_additive_cli_edit_of_one_row_does_not_mutate_sibling_row() {'
-          assert text.count(old_name) == 1, text.count(old_name)
-          text = text.replace(old_name, new_name)
-          old_comment = '''    // Rust has no caller-owned in-memory `edit_declared(list)` API. The executable behavioral
-    // equivalent is that an edit addressed to `a` must not mutate the full persisted machine row
-    // owned by sibling `b`. Forward-compatible metadata preservation is a separate storage
-    // contract and is tested elsewhere; adding it here would manufacture a stronger, unrelated
-    // failure and no longer represent this Python test.
-'''
-          new_comment = '''    // Rust-additive CLI isolation coverage. This is deliberately NOT presented as Python's
-    // `test_inputs_are_never_mutated`: Rust has no caller-owned public in-memory
-    // `edit_declared(list)` API, so sibling-row persistence is a different contract.
-'''
-          assert text.count(old_comment) == 1, text.count(old_comment)
-          p.write_text(text.replace(old_comment, new_comment))
-          PY
+          python -c 'from pathlib import Path; p=Path("crates/skit-cli/tests/port_test_params_edit_declared.rs"); t=p.read_text(); old="fn test_inputs_are_never_mutated() {"; new="fn rust_additive_cli_edit_of_one_row_does_not_mutate_sibling_row() {"; assert t.count(old)==1, t.count(old); p.write_text(t.replace(old,new))'
           rustfmt --edition 2024 crates/skit-cli/tests/port_test_params_edit_declared.rs crates/skit-cli/tests/port_test_params_edit_manifest.rs
           git add -- crates/skit-cli/tests/port_test_params_edit_declared.rs crates/skit-cli/tests/port_test_params_edit_manifest.rs
           git config user.name github-actions[bot]
