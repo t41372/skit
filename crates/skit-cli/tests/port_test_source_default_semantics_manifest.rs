@@ -9,8 +9,10 @@ use std::collections::BTreeMap;
 use syn::{Attribute, Item};
 
 const FORM_SOURCE: &str = include_str!("../../skit-form/tests/port_test_source_defaults.rs");
-const LANGUAGE_SOURCE: &str = include_str!("../../skit-language/tests/port_test_reconcile_defaults.rs");
-const STORE_SOURCE: &str = include_str!("../../skit-store/tests/port_test_source_default_pipeline.rs");
+const LANGUAGE_SOURCE: &str =
+    include_str!("../../skit-language/tests/port_test_reconcile_defaults.rs");
+const STORE_SOURCE: &str =
+    include_str!("../../skit-store/tests/port_test_source_default_pipeline.rs");
 const CLI_SOURCE: &str = include_str!("port_test_source_default_semantics.rs");
 
 const EXECUTABLE_PYTHON_TESTS: &[&str] = &[
@@ -39,7 +41,9 @@ const BLOCKED_SYNTHETIC_TESTS: &[&str] = &[
 ];
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 fn rust_test_names(source: &str) -> Vec<String> {
@@ -47,7 +51,9 @@ fn rust_test_names(source: &str) -> Vec<String> {
     file.items
         .into_iter()
         .filter_map(|item| match item {
-            Item::Fn(function) if has_test_attribute(&function.attrs) => Some(function.sig.ident.to_string()),
+            Item::Fn(function) if has_test_attribute(&function.attrs) => {
+                Some(function.sig.ident.to_string())
+            }
             _ => None,
         })
         .collect()

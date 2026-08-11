@@ -86,7 +86,14 @@ impl Sandbox {
     }
 
     fn stored(&self, slug: &str) -> String {
-        fs::read_to_string(self.data.path().join("scripts").join(slug).join("script.py")).unwrap()
+        fs::read_to_string(
+            self.data
+                .path()
+                .join("scripts")
+                .join(slug)
+                .join("script.py"),
+        )
+        .unwrap()
     }
 }
 
@@ -139,8 +146,14 @@ print(CITY, RETRIES)
     let document = sandbox.params("defaults");
     let city = parameter(&document, "CITY");
     let retries = parameter(&document, "RETRIES");
-    assert_eq!((city["type"].as_str(), city["default"].as_str()), (Some("str"), Some("Taipei")));
-    assert_eq!((retries["type"].as_str(), retries["default"].as_str()), (Some("str"), Some("three")));
+    assert_eq!(
+        (city["type"].as_str(), city["default"].as_str()),
+        (Some("str"), Some("Taipei"))
+    );
+    assert_eq!(
+        (retries["type"].as_str(), retries["default"].as_str()),
+        (Some("str"), Some("three"))
+    );
 
     let stored = sandbox.stored("defaults");
     assert!(stored.contains("default = \"Taipei\""), "{stored}");
@@ -207,8 +220,14 @@ print(CITY, who, pw)
     let first = parameter(&document, "input-1");
     let second = parameter(&document, "input-2");
     assert_eq!(city["default"], "Taipei");
-    assert_eq!((first["order"].as_i64(), first["prompt"].as_str()), (Some(0), Some("Name: ")));
-    assert_eq!((second["order"].as_i64(), second["prompt"].as_str()), (Some(1), Some("New label: ")));
+    assert_eq!(
+        (first["order"].as_i64(), first["prompt"].as_str()),
+        (Some(0), Some("Name: "))
+    );
+    assert_eq!(
+        (second["order"].as_i64(), second["prompt"].as_str()),
+        (Some(1), Some("New label: "))
+    );
 
     let stored = sandbox.stored("mixed");
     assert!(stored.contains("default = \"Taipei\""), "{stored}");

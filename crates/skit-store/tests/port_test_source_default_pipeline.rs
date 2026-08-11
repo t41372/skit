@@ -104,26 +104,17 @@ fn test_assemble_injects_the_expansion_of_an_untouched_token_default() {
         Some(ParameterValue::String("out_{today}.csv".to_owned()))
     );
 
-    let raw = BTreeMap::from([(
-        "GREETING".to_owned(),
-        "out_{today}.csv".to_owned(),
-    )]);
+    let raw = BTreeMap::from([("GREETING".to_owned(), "out_{today}.csv".to_owned())]);
     let resolved = resolve_values(&declarations, &raw, &token_context()).unwrap();
     assert_eq!(
         resolved,
-        BTreeMap::from([(
-            "GREETING".to_owned(),
-            "out_2026-07-09.csv".to_owned()
-        )])
+        BTreeMap::from([("GREETING".to_owned(), "out_2026-07-09.csv".to_owned())])
     );
     let prepared = prepare_values(&declarations, &raw, &resolved).unwrap();
     let assembly = assemble(&declarations, &prepared, &[]).unwrap();
     assert_eq!(
         assembly.inject_values,
-        BTreeMap::from([(
-            "GREETING".to_owned(),
-            "out_2026-07-09.csv".to_owned()
-        )])
+        BTreeMap::from([("GREETING".to_owned(), "out_2026-07-09.csv".to_owned())])
     );
 }
 
@@ -131,10 +122,7 @@ fn test_assemble_injects_the_expansion_of_an_untouched_token_default() {
 fn test_assemble_inject_delivers_empty_string_when_cleared() {
     let plan = form_plan("python", REFRESH_SCRIPT, &EntrySettings::default());
     let declarations = plan.declarations();
-    let prepared = BTreeMap::from([(
-        "GREETING".to_owned(),
-        PreparedValue::Scalar(String::new()),
-    )]);
+    let prepared = BTreeMap::from([("GREETING".to_owned(), PreparedValue::Scalar(String::new()))]);
 
     let assembly = assemble(&declarations, &prepared, &[]).unwrap();
     assert_eq!(
@@ -164,10 +152,7 @@ fn test_assemble_inject_delivers_empty_string_when_cleared() {
 fn test_assemble_env_delivers_empty_string_when_cleared() {
     let mut declaration = text_default("CITY", ParameterDelivery::Env, "Taipei");
     declaration.env_target = "CITY".to_owned();
-    let prepared = BTreeMap::from([(
-        "CITY".to_owned(),
-        PreparedValue::Scalar(String::new()),
-    )]);
+    let prepared = BTreeMap::from([("CITY".to_owned(), PreparedValue::Scalar(String::new()))]);
 
     let assembly = assemble(&[declaration], &prepared, &[]).unwrap();
     assert_eq!(
@@ -180,10 +165,7 @@ fn test_assemble_env_delivers_empty_string_when_cleared() {
 fn test_assemble_flag_delivers_empty_string_when_cleared() {
     let mut declaration = text_default("x", ParameterDelivery::Flag, "def");
     declaration.flag = "--x".to_owned();
-    let prepared = BTreeMap::from([(
-        "x".to_owned(),
-        PreparedValue::Scalar(String::new()),
-    )]);
+    let prepared = BTreeMap::from([("x".to_owned(), PreparedValue::Scalar(String::new()))]);
 
     let assembly = assemble(&[declaration], &prepared, &[]).unwrap();
     assert_eq!(assembly.args, ["--x", ""]);
@@ -236,7 +218,13 @@ fn test_save_after_run_persists_via_the_remembered_rule() {
     ]);
 
     service
-        .save_last(&slug, &declarations, Some(&submitted), Some(Vec::new()), false)
+        .save_last(
+            &slug,
+            &declarations,
+            Some(&submitted),
+            Some(Vec::new()),
+            false,
+        )
         .unwrap();
     service
         .record_run(

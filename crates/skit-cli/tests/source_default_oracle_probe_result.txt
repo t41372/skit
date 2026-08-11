@@ -1,0 +1,42 @@
+HEAD=b36381dda81b8c54c89849a03b1fdb891beef20b
+FORMAT_RC=0
+RUSTFMT_RC=0
+MANIFEST_RC=0
+STRENGTH_GATE_RC=0
+test_plan_refreshes_a_stale_block_default_from_the_python_body=0
+test_plan_refreshes_a_stale_shell_envdefault_from_the_body=0
+test_reconcile_records_current_default_for_an_ok_const=0
+test_reconcile_records_current_default_for_an_ok_envdefault=0
+test_reconcile_omits_current_default_for_a_type_changed_const=0
+test_resync_writes_source_default_into_ok_and_type_changed_specs=0
+test_resync_current_default_and_rebind_and_untouched_input_share_one_pass=101
+
+===== test_resync_current_default_and_rebind_and_untouched_input_share_one_pass failure tail =====
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running tests/port_test_source_default_semantics.rs (target/debug/deps/port_test_source_default_semantics-c7eaaec668039bf7)
+
+running 1 test
+
+thread 'test_resync_current_default_and_rebind_and_untouched_input_share_one_pass' (9382) panicked at crates/skit-cli/tests/port_test_source_default_semantics.rs:211:5:
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test test_resync_current_default_and_rebind_and_untouched_input_share_one_pass ... FAILED
+
+failures:
+
+failures:
+    test_resync_current_default_and_rebind_and_untouched_input_share_one_pass
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p skit-cli-rs --test port_test_source_default_semantics`
+test_assemble_injects_a_value_that_equals_the_source_default=0
+test_assemble_injects_the_expansion_of_an_untouched_token_default=0
+test_assemble_inject_delivers_empty_string_when_cleared=0
+test_assemble_env_delivers_empty_string_when_cleared=0
+test_assemble_flag_delivers_empty_string_when_cleared=0
+test_delivers_empty_matrix=0
+test_last_used_drops_values_equal_to_their_default=0
+test_last_used_keeps_a_cleared_empty_only_where_it_was_delivered=0
+test_save_after_run_persists_via_the_remembered_rule=0
+test_input_binding_flag_reflects_the_decl_binding=0
