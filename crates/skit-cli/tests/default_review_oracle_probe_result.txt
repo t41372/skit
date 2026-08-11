@@ -1,4 +1,4 @@
-HEAD=8933519a7f659219595f4acae1404b578d8622c6
+HEAD=ab79a9085eaaedc4bb841e838c6f106820adc26e
 FORMAT_RC=0
 RUSTFMT_RC=0
 MANIFEST_RC=0
@@ -20,22 +20,22 @@ test_envdefault_default_that_no_longer_fits_the_type_is_not_published=101
    Compiling toml v1.1.4+spec-1.1.0
    Compiling getrandom v0.4.3
    Compiling tree-sitter v0.26.12
-   Compiling tree-sitter-python v0.25.0
-   Compiling tree-sitter-bash v0.25.1
+   Compiling tree-sitter-powershell v0.26.4
    Compiling tree-sitter-javascript v0.25.0
    Compiling tree-sitter-fish v3.6.0
-   Compiling tree-sitter-powershell v0.26.4
+   Compiling tree-sitter-bash v0.25.1
    Compiling tree-sitter-typescript v0.23.2
+   Compiling tree-sitter-python v0.25.0
    Compiling uuid v1.24.0
    Compiling skit-domain v0.5.0 (/home/runner/work/skit/skit/crates/skit-domain)
    Compiling tempfile v3.27.0
    Compiling skit-language v0.5.0 (/home/runner/work/skit/skit/crates/skit-language)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.09s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.07s
      Running tests/port_test_reconcile_defaults.rs (target/debug/deps/port_test_reconcile_defaults-04aef51e5a857772)
 
 running 1 test
 
-thread 'test_envdefault_default_that_no_longer_fits_the_type_is_not_published' (10245) panicked at crates/skit-language/tests/port_test_reconcile_defaults.rs:110:5:
+thread 'test_envdefault_default_that_no_longer_fits_the_type_is_not_published' (10237) panicked at crates/skit-language/tests/port_test_reconcile_defaults.rs:110:5:
 assertion `left == right` failed
   left: 0
  right: 1
@@ -53,12 +53,12 @@ error: test failed, to rerun pass `-p skit-language --test port_test_reconcile_d
 test_int_shaped_literal_still_refreshes_a_str_envdefault=101
 
 ===== test_int_shaped_literal_still_refreshes_a_str_envdefault failure tail =====
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.11s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
      Running tests/port_test_reconcile_defaults.rs (target/debug/deps/port_test_reconcile_defaults-04aef51e5a857772)
 
 running 1 test
 
-thread 'test_int_shaped_literal_still_refreshes_a_str_envdefault' (10255) panicked at crates/skit-language/tests/port_test_reconcile_defaults.rs:122:5:
+thread 'test_int_shaped_literal_still_refreshes_a_str_envdefault' (10247) panicked at crates/skit-language/tests/port_test_reconcile_defaults.rs:122:5:
 assertion `left == right` failed
   left: 0
  right: 1
@@ -77,12 +77,12 @@ test_secret_source_literal_is_absent_from_reconcile_and_json=101
 
 ===== test_secret_source_literal_is_absent_from_reconcile_and_json failure tail =====
    Compiling skit-cli-rs v0.5.0 (/home/runner/work/skit/skit/crates/skit-cli)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.72s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.71s
      Running tests/port_test_default_review_cli.rs (target/debug/deps/port_test_default_review_cli-b59591b2928ce37f)
 
 running 1 test
 
-thread 'test_secret_source_literal_is_absent_from_reconcile_and_json' (10342) panicked at crates/skit-cli/tests/port_test_default_review_cli.rs:227:5:
+thread 'test_secret_source_literal_is_absent_from_reconcile_and_json' (10334) panicked at crates/skit-cli/tests/port_test_default_review_cli.rs:227:5:
 assertion `left == right` failed
   left: Object {"TOKEN": String("sk-live-SUPERSECRET")}
  right: Object {}
@@ -94,7 +94,7 @@ failures:
 failures:
     test_secret_source_literal_is_absent_from_reconcile_and_json
 
-test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.03s
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.05s
 
 error: test failed, to rerun pass `-p skit-cli-rs --test port_test_default_review_cli`
 test_preset_from_last_saves_effective_values_after_an_all_defaults_run=0
@@ -106,12 +106,12 @@ test_run_save_preset_stores_a_default_equal_value_verbatim=0
 test_resync_and_secret_in_one_edit_drops_the_refreshed_literal=101
 
 ===== test_resync_and_secret_in_one_edit_drops_the_refreshed_literal failure tail =====
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.18s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
      Running tests/port_test_default_review_cli.rs (target/debug/deps/port_test_default_review_cli-b59591b2928ce37f)
 
 running 1 test
 
-thread 'test_resync_and_secret_in_one_edit_drops_the_refreshed_literal' (10443) panicked at crates/skit-cli/tests/port_test_default_review_cli.rs:408:5:
+thread 'test_resync_and_secret_in_one_edit_drops_the_refreshed_literal' (10434) panicked at crates/skit-cli/tests/port_test_default_review_cli.rs:408:5:
 # /// script
 # dependencies = []
 #
@@ -141,12 +141,12 @@ test_shell_colon_envdefaults_do_not_claim_to_deliver_empty=101
 
 ===== test_shell_colon_envdefaults_do_not_claim_to_deliver_empty failure tail =====
    Compiling skit-store v0.5.0 (/home/runner/work/skit/skit/crates/skit-store)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.50s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
      Running tests/port_test_default_delivery_bridge.rs (target/debug/deps/port_test_default_delivery_bridge-d519b661a1de9c17)
 
 running 1 test
 
-thread 'test_shell_colon_envdefaults_do_not_claim_to_deliver_empty' (10548) panicked at crates/skit-store/tests/port_test_default_delivery_bridge.rs:54:9:
+thread 'test_shell_colon_envdefaults_do_not_claim_to_deliver_empty' (10538) panicked at crates/skit-store/tests/port_test_default_delivery_bridge.rs:54:9:
 operator :- treats an empty environment value as unset: Assembly { args: [], masked_args: [], inject_values: {}, command_values: {}, masked_command_values: {}, env_values: {"CITY": ""}, masked_env: {"CITY": ""}, display: [] }
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 test test_shell_colon_envdefaults_do_not_claim_to_deliver_empty ... FAILED
