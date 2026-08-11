@@ -176,7 +176,10 @@ fn test_default_run_injects() {
 
     assert_ne!(launched_path, sandbox.stored_script());
     assert!(launched_bytes.contains("Kaohsiung"), "{launched_bytes}");
-    assert!(!launched_path.exists(), "injected artifact survived launch: {launched_path:?}");
+    assert!(
+        !launched_path.exists(),
+        "injected artifact survived launch: {launched_path:?}"
+    );
 }
 
 #[test]
@@ -201,7 +204,8 @@ fn test_raw_does_not_leave_injected_artifact() {
         sandbox.run_and_capture(&["run", "hello", "--raw", "--no-input"]);
 
     assert_eq!(launched_path, sandbox.stored_script());
-    let entry_dir = sandbox.stored_script().parent().unwrap();
+    let stored_script = sandbox.stored_script();
+    let entry_dir = stored_script.parent().unwrap();
     assert!(
         fs::read_dir(entry_dir)
             .unwrap()
@@ -225,7 +229,8 @@ fn test_normal_run_cleans_injected_artifact() {
         !launched_path.exists(),
         "normal run failed to remove the real staged artifact: {launched_path:?}"
     );
-    let entry_dir = sandbox.stored_script().parent().unwrap();
+    let stored_script = sandbox.stored_script();
+    let entry_dir = stored_script.parent().unwrap();
     assert!(
         fs::read_dir(entry_dir)
             .unwrap()
