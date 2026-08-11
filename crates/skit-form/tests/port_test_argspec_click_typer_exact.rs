@@ -78,7 +78,10 @@ fn one(source: &str, framework: &str) -> ParamDecl {
 }
 
 fn by_name(fields: &[ParamDecl]) -> BTreeMap<&str, &ParamDecl> {
-    fields.iter().map(|field| (field.name.as_str(), field)).collect()
+    fields
+        .iter()
+        .map(|field| (field.name.as_str(), field))
+        .collect()
 }
 
 fn assert_dynamic(source: &str, framework: &str) {
@@ -95,7 +98,10 @@ fn assert_dynamic(source: &str, framework: &str) {
 fn test_click_fields_bottom_up_order_matches_runtime() {
     let fields = static_fields(CLICK_SCRIPT, "click");
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["inputs", "fast", "mode", "gap", "output"]
     );
 }
@@ -118,7 +124,10 @@ fn test_click_is_flag_choice_int_and_required() {
     assert_eq!(by["fast"].action, "store_true");
     assert_eq!(by["mode"].parameter_type, ParameterType::Choice);
     assert_eq!(by["mode"].choices, ["a", "b"]);
-    assert_eq!(by["mode"].default, Some(ParameterValue::String("a".to_owned())));
+    assert_eq!(
+        by["mode"].default,
+        Some(ParameterValue::String("a".to_owned()))
+    );
     assert_eq!(by["gap"].parameter_type, ParameterType::Int);
     assert_eq!(by["gap"].default, Some(ParameterValue::Integer(0)));
     assert!(by["output"].required);
@@ -156,7 +165,10 @@ fn test_click_count_option_degrades_field() {
 fn test_typer_signature_order_and_kinds() {
     let fields = static_fields(TYPER_SCRIPT, "typer");
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["inputs", "output", "gap", "fast", "label"]
     );
     let by = by_name(&fields);
@@ -170,7 +182,10 @@ fn test_typer_signature_order_and_kinds() {
     assert_eq!(by["gap"].flag, "--gap");
     assert_eq!(by["fast"].parameter_type, ParameterType::Bool);
     assert_eq!(by["fast"].action, "store_true");
-    assert_eq!(by["label"].default, Some(ParameterValue::String("x".to_owned())));
+    assert_eq!(
+        by["label"].default,
+        Some(ParameterValue::String("x".to_owned()))
+    );
     assert_eq!(by["label"].flag, "--label");
 }
 
@@ -218,7 +233,13 @@ fn test_argparse_still_wins_when_present() {
         "import argparse\nimport click\nap = argparse.ArgumentParser()\nap.add_argument('--x')\nap.parse_args()\n",
         "argparse",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["x"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["x"]
+    );
 }
 
 #[test]
@@ -243,7 +264,13 @@ fn test_click_from_import_form_is_recognized() {
         "from click import command, option\n@command()\n@option('--x', type=int)\ndef m(x): pass\n",
         "click",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["x"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["x"]
+    );
 }
 
 #[test]
@@ -252,7 +279,13 @@ fn test_click_dotted_import_is_recognized() {
         "import click.decorators\nimport click\n@click.command()\n@click.option('--x')\ndef m(x): pass\n",
         "click",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["x"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["x"]
+    );
 }
 
 #[test]
@@ -274,7 +307,10 @@ fn test_click_uppercase_type_constants() {
         "click",
     );
     assert_eq!(
-        fields.iter().map(|field| field.parameter_type).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.parameter_type)
+            .collect::<Vec<_>>(),
         [ParameterType::Str, ParameterType::Float, ParameterType::Int]
     );
     assert!(fields.iter().all(|field| !field.degraded));
@@ -326,7 +362,13 @@ fn test_typer_from_import_form_is_recognized() {
         "from typer import Typer\napp = Typer()\n@app.command()\ndef m(x: int = 1): pass\n",
         "typer",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["x"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["x"]
+    );
 }
 
 #[test]
@@ -403,7 +445,13 @@ fn test_click_dotted_only_import_counts() {
         "import click.testing\n@click.command()\n@click.option('--x')\ndef m(x): pass\n",
         "click",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["x"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["x"]
+    );
 }
 
 #[test]
@@ -412,7 +460,13 @@ fn test_click_from_dotted_module_counts() {
         "from click.decorators import command, option\n@command()\n@option('--x')\ndef m(x): pass\n",
         "click",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["x"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["x"]
+    );
 }
 
 #[test]
@@ -421,7 +475,13 @@ fn test_typer_dotted_only_import_counts() {
         "import typer.main\n\ndef main(n: int = 1):\n    pass\n\ntyper.run(main)\n",
         "typer",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["n"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["n"]
+    );
 }
 
 #[test]
@@ -430,7 +490,13 @@ fn test_typer_from_dotted_module_counts() {
         "from typer.main import Typer\napp = Typer()\n@app.command()\ndef m(x: int = 1): pass\n",
         "typer",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["x"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["x"]
+    );
 }
 
 #[test]
@@ -447,7 +513,10 @@ fn test_click_foreign_decorators_between_options_are_skipped_not_fatal() {
         "import click\nimport functools\n@click.command()\n@click.option('--first')\n@functools.cache\n@other.thing()\n@click.option('--second')\ndef m(first, second): pass\n",
         "click",
     );
-    let mut names = fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>();
+    let mut names = fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect::<Vec<_>>();
     names.sort_unstable();
     assert_eq!(names, ["first", "second"]);
 }
@@ -458,7 +527,13 @@ fn test_click_non_literal_name_skips_that_call_only() {
         "import click\n@click.command()\n@click.option(FLAG_CONST)\n@click.option('--real')\ndef m(real): pass\n",
         "click",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["real"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["real"]
+    );
 }
 
 #[test]
@@ -467,7 +542,13 @@ fn test_click_partly_non_literal_names_skip_that_call_only() {
         "import click\n@click.command()\n@click.option('-x', EXTRA)\n@click.option('--real')\ndef m(x, real): pass\n",
         "click",
     );
-    assert_eq!(fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(), ["real"]);
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["real"]
+    );
 }
 
 #[test]
@@ -506,7 +587,10 @@ fn test_click_bare_float_and_str_types() {
         "click",
     );
     assert_eq!(
-        fields.iter().map(|field| field.parameter_type).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.parameter_type)
+            .collect::<Vec<_>>(),
         [ParameterType::Str, ParameterType::Float]
     );
     assert!(fields.iter().all(|field| !field.degraded));
@@ -528,8 +612,15 @@ fn test_click_path_and_file_types() {
         "click",
     );
     assert_eq!(
-        fields.iter().map(|field| field.parameter_type).collect::<Vec<_>>(),
-        [ParameterType::Path, ParameterType::Path, ParameterType::Path]
+        fields
+            .iter()
+            .map(|field| field.parameter_type)
+            .collect::<Vec<_>>(),
+        [
+            ParameterType::Path,
+            ParameterType::Path,
+            ParameterType::Path
+        ]
     );
     assert!(fields.iter().all(|field| !field.degraded));
 }
@@ -551,7 +642,10 @@ fn test_typer_path_annotation_is_path() {
         "typer",
     );
     assert_eq!(
-        fields.iter().map(|field| field.parameter_type).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.parameter_type)
+            .collect::<Vec<_>>(),
         [ParameterType::Path, ParameterType::Path]
     );
 }
@@ -648,7 +742,10 @@ fn test_annotated_reads_type_and_metadata() {
     assert_eq!(by["count"].help, "how many");
     assert!(!by["count"].degraded);
     assert_eq!(by["mode"].flag, "--mode");
-    assert_eq!(by["mode"].default, Some(ParameterValue::String("fast".to_owned())));
+    assert_eq!(
+        by["mode"].default,
+        Some(ParameterValue::String("fast".to_owned()))
+    );
     assert_eq!(by["fast"].parameter_type, ParameterType::Bool);
     assert_eq!(by["fast"].action, "store_true");
 }
@@ -672,7 +769,10 @@ fn test_annotated_argument_with_default_is_optional_positional() {
     );
     assert_eq!(field.flag, "");
     assert!(!field.required);
-    assert_eq!(field.default, Some(ParameterValue::String("anon".to_owned())));
+    assert_eq!(
+        field.default,
+        Some(ParameterValue::String("anon".to_owned()))
+    );
 }
 
 #[test]

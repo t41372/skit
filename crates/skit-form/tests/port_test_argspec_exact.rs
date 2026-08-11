@@ -79,7 +79,10 @@ fn test_syntax_error_returns_none() {
 fn test_stitch_reads_eight_fields_in_source_order() {
     let fields = argparse_fields(STITCH);
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         [
             "inputs",
             "output",
@@ -117,7 +120,10 @@ fn test_argparse_path_type_spellings() {
     );
     let fields = argparse_fields(source);
     assert_eq!(
-        fields.iter().map(|field| field.parameter_type).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.parameter_type)
+            .collect::<Vec<_>>(),
         [ParameterType::Path; 4]
     );
     assert!(fields.iter().all(|field| !field.degraded));
@@ -252,16 +258,18 @@ fn test_help_and_version_actions_are_not_fields() {
         "ap.add_argument('--real')\n",
     ));
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["real"]
     );
 }
 
 #[test]
 fn test_secret_name_precheck() {
-    let field = one(
-        "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--api-key')\n",
-    );
+    let field =
+        one("import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--api-key')\n");
     assert!(field.secret);
 }
 
@@ -312,7 +320,10 @@ fn test_non_literal_argument_name_skips_that_field_only() {
         "ap.add_argument(FLAG_NAME)\nap.add_argument('--real')\n",
     ));
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["real"]
     );
 }
@@ -327,7 +338,10 @@ fn test_short_flag_only_keeps_short_name() {
 #[test]
 fn test_field_order_matches_source_order() {
     let fields = argparse_fields(STITCH);
-    assert_eq!((0..fields.len()).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>());
+    assert_eq!(
+        (0..fields.len()).collect::<Vec<_>>(),
+        (0..8).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -358,16 +372,18 @@ fn test_partly_non_literal_name_list_skips_that_field_only() {
         "ap.add_argument('-x', EXTRA)\nap.add_argument('--real')\n",
     ));
     assert_eq!(
-        fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["real"]
     );
 }
 
 #[test]
 fn test_flag_dest_only_strips_dashes_not_letters() {
-    let field = one(
-        "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--Xterm')\n",
-    );
+    let field =
+        one("import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--Xterm')\n");
     assert_eq!(field.name, "Xterm");
 }
 
@@ -425,7 +441,10 @@ fn test_click_multiple_with_fixed_nargs_is_not_modelled_at_all() {
             "def main(point, tag):\n    pass\n",
         ),
     );
-    let names = fields.iter().map(|field| field.name.as_str()).collect::<Vec<_>>();
+    let names = fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect::<Vec<_>>();
     assert!(!names.contains(&"point"));
     assert!(names.contains(&"tag"));
 }
