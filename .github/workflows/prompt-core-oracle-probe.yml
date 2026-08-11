@@ -1,6 +1,6 @@
 name: Prompt core oracle probe
 
-# Temporary self-trigger; deleted after prompt/guard/slug/launcher diagnostics are read.
+# Retry self-trigger after model/drift cleanup; deleted after diagnostics are read.
 on:
   push:
     branches:
