@@ -5,7 +5,10 @@
 //! `#[test]`. The mapping list remains single-sourced in its original manifest; this test parses that
 //! manifest text instead of copying 52/41 rows into a second ledger.
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use syn::{Attribute, Item};
 
@@ -27,7 +30,9 @@ fn quoted_field(line: &str, field: &str) -> Option<String> {
 fn mapped_targets(manifest: &str) -> Vec<Target> {
     manifest
         .lines()
-        .filter(|line| line.contains("Mapping {") && line.contains(" path: ") && line.contains(" rust: "))
+        .filter(|line| {
+            line.contains("Mapping {") && line.contains(" path: ") && line.contains(" rust: ")
+        })
         .map(|line| Target {
             path: quoted_field(line, "path")
                 .unwrap_or_else(|| panic!("manifest mapping lacks quoted path: {line}")),
@@ -38,7 +43,9 @@ fn mapped_targets(manifest: &str) -> Vec<Target> {
 }
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 fn assert_real_tests(manifest_name: &str, manifest: &str, expected_count: usize) {
@@ -57,12 +64,19 @@ fn assert_real_tests(manifest_name: &str, manifest: &str, expected_count: usize)
 
     for target in targets {
         let path: PathBuf = repo.join(&target.path);
-        let source = fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("could not read mapped target {}: {error}", path.display()));
-        let file = syn::parse_file(&source)
-            .unwrap_or_else(|error| panic!("mapped target {} is not valid Rust: {error}", path.display()));
+        let source = fs::read_to_string(&path).unwrap_or_else(|error| {
+            panic!("could not read mapped target {}: {error}", path.display())
+        });
+        let file = syn::parse_file(&source).unwrap_or_else(|error| {
+            panic!(
+                "mapped target {} is not valid Rust: {error}",
+                path.display()
+            )
+        });
         let matched = file.items.iter().find_map(|item| match item {
-            Item::Fn(function) if function.sig.ident == target.rust => Some(has_test_attribute(&function.attrs)),
+            Item::Fn(function) if function.sig.ident == target.rust => {
+                Some(has_test_attribute(&function.attrs))
+            }
             _ => None,
         });
         match matched {
@@ -71,10 +85,7 @@ fn assert_real_tests(manifest_name: &str, manifest: &str, expected_count: usize)
                 "{}::{} exists but is not #[test]",
                 target.path, target.rust
             )),
-            None => failures.push(format!(
-                "{}::{} does not exist",
-                target.path, target.rust
-            )),
+            None => failures.push(format!("{}::{} does not exist", target.path, target.rust)),
         }
     }
 

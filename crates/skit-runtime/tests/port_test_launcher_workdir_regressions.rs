@@ -5,7 +5,10 @@
 //! copied entry whose historical origin disappeared (fallback is safe) from a reference entry whose
 //! origin disappeared (fallback would mask a broken reference).
 
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, Slug, StorageMode};
@@ -79,8 +82,8 @@ fn test_resolve_workdir_reference_mode_does_not_mask_missing_origin() {
         ..Probe::default()
     };
 
-    let error = resolve_launch_workdir(&referenced, &paths("/gone/project/script.py"), &probe)
-        .unwrap_err();
+    let error =
+        resolve_launch_workdir(&referenced, &paths("/gone/project/script.py"), &probe).unwrap_err();
     assert!(matches!(
         error,
         LaunchError::WorkdirMissing { ref path } if path == Path::new("/gone/project")
