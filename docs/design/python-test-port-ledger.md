@@ -54,7 +54,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
 | test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (36) · 115 cross-crate/absent · 27 divergences (manifest name-key, installer argv, staging cwd, stamp path, sweep) · 6 verifier-caught defects fixed |
 | test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (16) launch/invoke half · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language · 2 divergences |
-| test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (11) · 4 divergences (describe-total, params-msg, doctor-uv ×2) · 6 unmappable |
+| test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (14) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · 1 divergence (params-msg) · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (3) · 2 divergences (exe/prompt picker labels) |
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
 | test_pep723_split.py | 24 | crates/skit-language/tests/port_test_pep723_split.rs (+ skit-ui re-home) | done (3) · 14 → skit-ui · 7 white-box/CLI |
@@ -121,7 +121,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_rename.py | 10 | crates/skit-cli/tests/port_test_rename.rs | done (6) · 4 cross-crate |
 | test_add_review_validation.py | 10 | crates/skit-ui/tests/port_test_add_review_validation.rs | done (10) · async Textual add-review-validation (skit-ui reducer) · no gap |
 | test_agent_skill.py | 8 | crates/skit-cli/tests/port_test_agent_skill.rs | done (6) · 2 deferred |
-| test_healthcheck.py | 6 | crates/skit-cli/tests/port_test_healthcheck.rs | done (5) · 1 deferred · confirms doctor uv exit-code divergence |
+| test_healthcheck.py | 6 | crates/skit-cli/tests/port_test_healthcheck.rs | done (6) · **uv launch-block + exit-code FIXED a8e2480** |
 
 ### Tier 5 — frontend (`skit-ui` reducer, `skit-tui` TestBackend)
 
