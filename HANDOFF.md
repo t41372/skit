@@ -11,9 +11,9 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. Oracle checkout: `/home/
 
 ## 0. One-line status
 
-**The Python behavior port is COMPLETE and green (2840 pass / 0 fail / 1179 ignored, tree clean, 81
-`port_test_*.rs` files). The impl-fix pass has STARTED (i18n cluster done). ~85 v0.4 divergences
-remain to fix.** The user chose plan **A**: finish the whole port FIRST (done), THEN one comprehensive
+**The Python behavior port is COMPLETE and green (workspace 2842 pass / 0 fail / 1177 ignored, tree
+clean, 81 `port_test_*.rs` files). The impl-fix pass has STARTED — 2 clusters done (i18n
+`5574ff1`, review-lane `22b9773`); ~80 v0.4 divergences remain. Next: launcher `describe` (§4).** The user chose plan **A**: finish the whole port FIRST (done), THEN one comprehensive
 impl-fix pass (in progress).
 
 ---
@@ -77,25 +77,23 @@ copying Python's reviewed behavior. When in doubt, read `skit-oracle/src/skit/*.
   interleaves a blank cell after each wide glyph, so `contains("工具库")` never matched — assertions
   now use the spaced form `"工 具 库"`).
 
-## 4. In-flight / needs immediate attention
+## 4. Fix pass done so far / next up
 
-- **launcher `describe` totality fix — NOT STARTED (agent stalled with no changes; tree is clean).**
-  Do this next. DIVERGENCE: oracle `launcher.describe_command` (launcher.py:117-133) is total/
-  side-effect-free — for an unknown kind returns `meta.template` (usually ""), never raises. Rust
-  `build_launch_preview` (crates/skit-runtime/src/launch.rs) returns `Err(LaunchError::UnknownKind)`.
-  FIX: make ONLY the preview/describe path total (return the stored template as the preview) — do NOT
-  touch `build_launch_plan` (the run path stays refusing). Un-ignore
+- **DONE — i18n cluster** (`5574ff1`): Library term + zh negotiation (§3).
+- **DONE — review-lane Ctrl+O / Ctrl+E** (`22b9773`): Ctrl+O now no-ops for a short prompt (gated on
+  PROMPT_LIST_PREVIEW_LIMIT); Ctrl+E in a focused review Input is end-of-line, EditSource only when
+  no Input owns focus. Un-ignored both port_test_prompt_tui tests; a sibling `add_workflow.rs` seam
+  test was adapted to a capped (21-hole) prompt so it still exercises the picker. skit-tui+skit-ui
+  391/0.
+- **NEXT (not started) — launcher `describe` totality.** DIVERGENCE: oracle
+  `launcher.describe_command` (launcher.py:117-133) is total/side-effect-free — for an unknown kind
+  returns `meta.template` (usually ""), never raises. Rust `build_launch_preview`
+  (crates/skit-runtime/src/launch.rs) returns `Err(LaunchError::UnknownKind)`. FIX: make ONLY the
+  preview/describe path total (return the stored template as the preview) — do NOT touch
+  `build_launch_plan` (the run path stays refusing). Un-ignore
   `test_unknown_kind_describe_returns_template_and_never_raises` in
-  crates/skit-cli/tests/port_test_langs.rs.
-- **review-lane Ctrl+O / Ctrl+E fix — was RUNNING when the session ended; CHECK `git status` for
-  uncommitted changes and either verify+commit or discard+redo.** Two divergences in the add/review
-  TUI (crates/skit-tui/src/screens/add.rs, session.rs): (A) Ctrl+O opens the candidate picker
-  UNCONDITIONALLY — oracle (tui_add.py:1471-1472) makes it a no-op when detected placeholders ≤
-  LIST_PREVIEW_LIMIT; add the gate. (B) Ctrl+E binds → EditSource with NO focus check
-  (add.rs:363/374) — oracle: Ctrl+E in a focused Input is end-of-line, never opens the editor; gate
-  it on focus. Un-ignore `test_review_choose_variables_key_is_harmless_for_a_short_prompt` and
-  `test_review_ctrl_e_in_input_is_end_of_line_not_editor` in port_test_prompt_tui.rs.
-  **NOTE: these A/B are REAL production defects the port surfaced (see the fix agents' handoff notes).**
+  crates/skit-cli/tests/port_test_langs.rs. (A subagent stalled on this before writing anything; tree
+  was clean.) Then continue §5.
 
 ## 5. Not-yet-done: the fix-pass backlog (~85 divergences, by cluster)
 
