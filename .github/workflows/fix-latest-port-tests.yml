@@ -1,7 +1,9 @@
 name: Fix latest port tests
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/port-python-test-contracts-v3
     paths:
       - .github/workflows/fix-latest-port-tests.yml
 
