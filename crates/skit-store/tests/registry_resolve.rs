@@ -90,7 +90,7 @@ fn a_unique_registry_name_hit_propagates_selected_metadata_corruption() {
 }
 
 #[test]
-fn a_stale_name_hit_sweeps_truth_without_rewriting_the_row() {
+fn a_stale_name_hit_sweeps_truth_and_repairs_the_row() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     store.create(request("Before", "rename by hand")).unwrap();
@@ -98,16 +98,16 @@ fn a_stale_name_hit_sweeps_truth_without_rewriting_the_row() {
     let mut document = registry(&root);
     force_row_stale(&mut document, "before");
     write_registry(&root, &document);
-    let registry_before = fs::read(root.path().join("registry.toml")).unwrap();
-
     assert!(matches!(
         store.resolve("Before").unwrap_err(),
         RepositoryError::NotFound { .. }
     ));
 
     assert_eq!(
-        fs::read(root.path().join("registry.toml")).unwrap(),
-        registry_before
+        row(&registry(&root), "before")
+            .get("name")
+            .and_then(Value::as_str),
+        Some("After")
     );
     assert_eq!(store.resolve("After").unwrap().slug.as_str(), "before");
 }
@@ -141,7 +141,7 @@ fn a_fast_name_hit_does_not_sweep_or_repair_unrelated_rows() {
 }
 
 #[test]
-fn hand_edited_duplicate_names_are_ambiguous_without_read_side_repair() {
+fn hand_edited_duplicate_names_are_ambiguous_and_repair_during_the_sweep() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     store.create(request("Alpha", "first")).unwrap();
@@ -152,8 +152,6 @@ fn hand_edited_duplicate_names_are_ambiguous_without_read_side_repair() {
     force_row_stale(&mut document, "alpha");
     force_row_stale(&mut document, "beta");
     write_registry(&root, &document);
-    let registry_before = fs::read(root.path().join("registry.toml")).unwrap();
-
     assert_eq!(
         store.resolve("Shared").unwrap_err(),
         RepositoryError::Ambiguous {
@@ -162,8 +160,13 @@ fn hand_edited_duplicate_names_are_ambiguous_without_read_side_repair() {
         }
     );
 
+    let repaired = registry(&root);
     assert_eq!(
-        fs::read(root.path().join("registry.toml")).unwrap(),
-        registry_before
+        row(&repaired, "alpha").get("name").and_then(Value::as_str),
+        Some("Shared")
+    );
+    assert_eq!(
+        row(&repaired, "beta").get("name").and_then(Value::as_str),
+        Some("Shared")
     );
 }
