@@ -2811,6 +2811,11 @@ const CATALOG: &[Translation] = &[
         "找不到必要程式：{}",
     ),
     row!(
+        "No JavaScript runtime found (looked for: {}). Install deno, bun, or node — or pick one with: skit config js.runner <name>",
+        "找不到 JavaScript 运行时（查找过：{}）。请安装 deno、bun 或 node——或用 skit config js.runner <name> 指定一个。",
+        "找不到 JavaScript 執行環境（查找過：{}）。請安裝 deno、bun 或 node——或用 skit config js.runner <name> 指定一個。",
+    ),
+    row!(
         "run source, schema, launch, runner, and interpolation changes as separate params operations",
         "请将源、结构、启动、运行器和插值更改作为单独的 params 操作运行",
         "請將來源、結構、啟動、執行器與插值變更作為單獨的 params 操作執行",

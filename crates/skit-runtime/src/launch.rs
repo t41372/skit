@@ -121,6 +121,11 @@ pub enum LaunchError {
     /// A required runtime or command is not on PATH.
     #[error("required program was not found: {name}")]
     ProgramNotFound { name: String },
+    /// No JavaScript runtime candidate resolved on PATH.
+    #[error(
+        "No JavaScript runtime found (looked for: {names}). Install deno, bun, or node — or pick one with: skit config js.runner <name>"
+    )]
+    JsRuntimeMissing { names: String },
     /// A declared external command is not on PATH.
     #[error("required command was not found: {name}")]
     MissingNeed { name: String },
@@ -188,6 +193,10 @@ impl Localize for LaunchError {
             Self::ProgramNotFound { name } => {
                 Message::new("required program was not found: {}").with(name)
             }
+            Self::JsRuntimeMissing { names } => Message::new(
+                "No JavaScript runtime found (looked for: {}). Install deno, bun, or node — or pick one with: skit config js.runner <name>",
+            )
+            .with(names),
             Self::MissingNeed { name } => {
                 Message::new("required command was not found: {}").with(name)
             }
@@ -232,6 +241,7 @@ impl LaunchError {
             Self::TargetMissing { .. } => 127,
             Self::TargetNotExecutable { .. }
             | Self::ProgramNotFound { .. }
+            | Self::JsRuntimeMissing { .. }
             | Self::MissingNeed { .. }
             | Self::PromptRunnerRequired
             | Self::InvalidPromptRunner { .. } => 126,
@@ -520,10 +530,14 @@ fn javascript_plan<P: ProgramProbe>(
     require_file(&paths.script, probe)?;
     let runtime = resolve_javascript_runtime(settings, probe)?;
     let program = require_program(&runtime, probe)?;
-    let mut prefix = if runtime == "deno" {
-        vec!["run".to_owned(), "--allow-all".to_owned()]
-    } else {
-        Vec::new()
+    // The same script must behave the same under all three runtimes — node and bun
+    // have no sandbox, and deno's would otherwise deny env/fs probes (auto-deny when
+    // stdin is not a TTY: exactly the agent/CI path). skit is a launcher, not a
+    // sandbox. An unknown pinned runtime name takes no subcommand.
+    let mut prefix = match runtime.as_str() {
+        "deno" => vec!["run".to_owned(), "--allow-all".to_owned()],
+        "bun" => vec!["run".to_owned()],
+        _ => Vec::new(),
     };
     prefix.push(paths.script.display().to_string());
     let mut args = prefix.clone();
@@ -538,16 +552,17 @@ pub fn resolve_javascript_runtime<P: ProgramProbe>(
     settings: &EntrySettings,
     probe: &P,
 ) -> Result<String, LaunchError> {
-    if !settings.interpreter.is_empty() {
-        require_program(&settings.interpreter, probe)?;
-        return Ok(settings.interpreter.clone());
-    }
-    ["deno", "bun", "node"]
-        .into_iter()
+    let candidates: &[&str] = if settings.interpreter.is_empty() {
+        &["deno", "bun", "node"]
+    } else {
+        &[settings.interpreter.as_str()]
+    };
+    candidates
+        .iter()
         .find(|name| probe.find_program(name).is_some())
-        .map(str::to_owned)
-        .ok_or_else(|| LaunchError::ProgramNotFound {
-            name: "deno, bun, or node".to_owned(),
+        .map(|name| (*name).to_owned())
+        .ok_or_else(|| LaunchError::JsRuntimeMissing {
+            names: candidates.join(", "),
         })
 }
 

@@ -399,10 +399,6 @@ fn test_runner_detection_order_prefers_deno() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle `RunnerLaunch._INVOKE` gives bun a `run` \
-subcommand (bun: (\"run\",)) so bun launches `bun run <script>`; Rust `javascript_plan` prefixes \
-`run --allow-all` ONLY for deno, so bun launches `bun <script>` — the `run` is dropped \
-(crates/skit-runtime/src/launch.rs). node correctly takes no subcommand."]
 fn test_runner_falls_to_bun_then_node() {
     let script = "/data/scripts/demo/script.js";
     let mut bun_probe = probe_for(script);
@@ -478,10 +474,6 @@ so the config layer cannot be injected through this surface."]
 fn test_runner_config_override() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle refusal names the candidates AND teaches the \
-`skit config js.runner` escape hatch; Rust `ProgramNotFound` is \"required program was not found: \
-deno, bun, or node\" — it names the candidates but drops the config-key guidance \
-(crates/skit-runtime/src/launch.rs `resolve_javascript_runtime`)."]
 fn test_runner_none_installed_names_candidates_and_config_key() {
     let script = "/data/scripts/demo/script.js";
     let probe = probe_for(script); // no runtimes resolve
@@ -534,7 +526,10 @@ fn test_runner_preflight_checks_script_and_runner() {
         &probe,
     )
     .unwrap_err();
-    assert!(matches!(error, LaunchError::ProgramNotFound { .. }));
+    // The oracle raises the NotExecutableError family (exit 126); the typed Rust
+    // refusal for a JS entry is the runtime-missing error with the config hint.
+    assert!(matches!(error, LaunchError::JsRuntimeMissing { .. }));
+    assert_eq!(error.exit_code(), 126);
 }
 
 #[test]

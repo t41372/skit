@@ -260,7 +260,8 @@ fn javascript_runtime_order_is_deno_then_bun_then_node_and_a_pin_wins() {
     )
     .unwrap();
     assert_eq!(plan.program, PathBuf::from("/bin/bun"));
-    assert_eq!(plan.args, ["/copy/script.js"]);
+    // bun takes the `run` subcommand; only node runs the script bare.
+    assert_eq!(plan.args, ["run", "/copy/script.js"]);
 
     let mut pinned = entry("js");
     let settings = EntrySettings {
@@ -620,7 +621,7 @@ fn unknown_kinds_and_missing_runtimes_are_typed_refusals() {
             None,
             &probe,
         ),
-        Err(LaunchError::ProgramNotFound { name }) if name == "deno, bun, or node"
+        Err(LaunchError::JsRuntimeMissing { names }) if names == "deno, bun, node"
     ));
 }
 
