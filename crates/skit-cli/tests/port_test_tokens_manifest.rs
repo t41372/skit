@@ -7,8 +7,7 @@ use std::collections::BTreeSet;
 
 use syn::{Attribute, Item};
 
-const APPLICATION_SOURCE: &str =
-    include_str!("../../skit-application/tests/port_test_tokens.rs");
+const APPLICATION_SOURCE: &str = include_str!("../../skit-application/tests/port_test_tokens.rs");
 const RUNTIME_SOURCE: &str = include_str!("port_test_tokens_runtime.rs");
 
 const APPLICATION_PYTHON_TESTS: &[&str] = &[
@@ -94,5 +93,9 @@ fn every_python_token_test_has_one_executable_rust_oracle() {
         .chain(RUNTIME_PYTHON_TESTS.iter())
         .copied()
         .collect::<BTreeSet<_>>();
-    assert_eq!(all_python.len(), 21, "Python token oracle names must be unique");
+    assert_eq!(
+        all_python.len(),
+        21,
+        "Python token oracle names must be unique"
+    );
 }

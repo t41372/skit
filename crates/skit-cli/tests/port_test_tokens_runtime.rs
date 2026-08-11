@@ -147,13 +147,7 @@ fn test_default_env_and_now_paths() {
 
     let today_run = sandbox
         .command()
-        .args([
-            "run",
-            "ambient",
-            "--set",
-            "value={today}",
-            "--no-input",
-        ])
+        .args(["run", "ambient", "--set", "value={today}", "--no-input"])
         .output()
         .unwrap();
     Sandbox::assert_success(&["run", "ambient", "today"], &today_run);

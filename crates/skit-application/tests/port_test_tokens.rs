@@ -184,10 +184,7 @@ fn test_escape_sequences_mid_string_exact() {
 #[test]
 fn test_preview_forwards_every_argument() {
     let ctx = context(&[("K", "v")]);
-    assert_eq!(
-        preview("{cwd}", &ctx, true),
-        (native_cwd(), None)
-    );
+    assert_eq!(preview("{cwd}", &ctx, true), (native_cwd(), None));
     assert_eq!(preview("{env:K}", &ctx, true), ("v".to_owned(), None));
     assert_eq!(preview("{now}", &ctx, true), ("14-30-05".to_owned(), None));
 }
@@ -195,10 +192,7 @@ fn test_preview_forwards_every_argument() {
 #[test]
 fn test_escape_deep_in_string_exact() {
     assert_eq!(x("abc{{d}}e"), "abc{d}e");
-    assert_eq!(
-        x("word {today} tail{{x}}"),
-        "word 2026-07-09 tail{x}"
-    );
+    assert_eq!(x("word {today} tail{{x}}"), "word 2026-07-09 tail{x}");
     assert_eq!(x("plain tail"), "plain tail");
 }
 
