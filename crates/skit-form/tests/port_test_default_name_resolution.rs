@@ -34,7 +34,10 @@ fn by_name(fields: &[ParamDecl]) -> BTreeMap<&str, &ParamDecl> {
 
 fn assert_degraded_without_default(field: &ParamDecl) {
     assert!(field.degraded, "field was not degraded: {field:?}");
-    assert_eq!(field.default, None, "degraded field leaked a default: {field:?}");
+    assert_eq!(
+        field.default, None,
+        "degraded field leaked a default: {field:?}"
+    );
 }
 
 fn assert_string_default(field: &ParamDecl, expected: &str) {
@@ -200,7 +203,10 @@ fn test_argparse_secret_constant_never_resolves() {
         "import argparse\nAPI_KEY = 'sk-live-abc123'\nap = argparse.ArgumentParser()\nap.add_argument('--auth', default=API_KEY)\n",
     );
     assert_degraded_without_default(&field);
-    assert!(!format!("{field:?}").contains("sk-live-abc123"), "{field:?}");
+    assert!(
+        !format!("{field:?}").contains("sk-live-abc123"),
+        "{field:?}"
+    );
 }
 
 #[test]
@@ -251,7 +257,10 @@ fn test_click_secret_constant_default_degrades() {
         "import click\nAPI_KEY = 'sk-live-abc123'\n@click.command()\n@click.option('--auth', default=API_KEY)\ndef m(auth): pass\n",
     );
     assert_degraded_without_default(&field);
-    assert!(!format!("{field:?}").contains("sk-live-abc123"), "{field:?}");
+    assert!(
+        !format!("{field:?}").contains("sk-live-abc123"),
+        "{field:?}"
+    );
 }
 
 #[test]
@@ -416,7 +425,10 @@ fn test_js_secret_constant_never_resolves() {
         "const API_KEY = \"sk-live-abc123\";\nparseArgs({options:{auth:{type:\"string\", default: API_KEY}}});\n",
     );
     assert_degraded_without_default(&field);
-    assert!(!format!("{field:?}").contains("sk-live-abc123"), "{field:?}");
+    assert!(
+        !format!("{field:?}").contains("sk-live-abc123"),
+        "{field:?}"
+    );
 }
 
 #[test]

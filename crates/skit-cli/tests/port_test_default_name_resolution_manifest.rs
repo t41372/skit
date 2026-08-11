@@ -54,7 +54,9 @@ const PYTHON_TESTS: &[&str] = &[
 ];
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 fn rust_test_names() -> Vec<String> {
@@ -62,7 +64,9 @@ fn rust_test_names() -> Vec<String> {
     file.items
         .into_iter()
         .filter_map(|item| match item {
-            Item::Fn(function) if has_test_attribute(&function.attrs) => Some(function.sig.ident.to_string()),
+            Item::Fn(function) if has_test_attribute(&function.attrs) => {
+                Some(function.sig.ident.to_string())
+            }
             _ => None,
         })
         .collect()
