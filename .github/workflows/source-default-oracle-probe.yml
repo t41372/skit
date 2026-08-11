@@ -1,5 +1,6 @@
 name: Source default oracle probe
 
+# Temporary self-path push trigger; deleted after diagnostics are read.
 on:
   push:
     branches:
