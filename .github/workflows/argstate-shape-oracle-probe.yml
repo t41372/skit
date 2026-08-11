@@ -1,0 +1,72 @@
+name: Argstate shape oracle probe
+
+on:
+  push:
+    branches:
+      - agent/port-python-test-contracts-v3
+    paths:
+      - .github/workflows/argstate-shape-oracle-probe.yml
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/port-python-test-contracts-v3
+          persist-credentials: true
+      - name: Format and run argstate shape oracles
+        shell: bash
+        run: |
+          set +e
+          files=(
+            crates/skit-cli/tests/port_test_argstate_cli_shapes.rs
+            crates/skit-store/tests/port_test_argstate_shape_variants.rs
+          )
+          rustfmt --edition 2024 "${files[@]}" > /tmp/argstate-format.log 2>&1
+          format_rc=$?
+          rustfmt --edition 2024 --check "${files[@]}" > /tmp/argstate-rustfmt.log 2>&1
+          rustfmt_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture > /tmp/argstate-strength.log 2>&1
+          strength_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_argstate_cli_shapes -- --nocapture --test-threads=1 > /tmp/argstate-cli.log 2>&1
+          cli_rc=$?
+          cargo test --locked -p skit-store --test port_test_argstate_shape_variants -- --nocapture --test-threads=1 > /tmp/argstate-variants.log 2>&1
+          variants_rc=$?
+
+          result=crates/skit-cli/tests/argstate_shape_oracle_probe_result.txt
+          {
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "FORMAT_RC=$format_rc"
+            echo "RUSTFMT_RC=$rustfmt_rc"
+            echo "STRENGTH_GATE_RC=$strength_rc"
+            echo "ARGSTATE_CLI_RC=$cli_rc"
+            echo "ARGSTATE_VARIANTS_RC=$variants_rc"
+            for pair in \
+              "format:$format_rc:/tmp/argstate-format.log" \
+              "rustfmt:$rustfmt_rc:/tmp/argstate-rustfmt.log" \
+              "strength:$strength_rc:/tmp/argstate-strength.log" \
+              "cli:$cli_rc:/tmp/argstate-cli.log" \
+              "variants:$variants_rc:/tmp/argstate-variants.log"
+            do
+              IFS=: read -r label rc log <<< "$pair"
+              if [ "$rc" -ne 0 ]; then
+                echo
+                echo "===== $label failure log ====="
+                cat "$log"
+              fi
+            done
+          } > "$result"
+
+          git add -- "${files[@]}" "$result"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if ! git diff --cached --quiet; then
+            git commit -m "test(port): format and record argstate shape probe"
+            git push origin HEAD:agent/port-python-test-contracts-v3
+          fi
+          exit 0
