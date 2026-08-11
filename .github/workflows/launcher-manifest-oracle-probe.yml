@@ -1,5 +1,6 @@
 name: Launcher and manifest oracle probe
 
+# Temporary self-trigger; deleted after diagnostics are read.
 on:
   push:
     branches:
