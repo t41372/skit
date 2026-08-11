@@ -1,9 +1,8 @@
 //! Mechanical completeness guard for Python v0.4 `tests/test_params_edit.py`.
 //!
-//! This is not behavioral coverage. It only freezes the 41 Python test names and points each at a
-//! real executable Rust oracle. One Python private-helper contract has no public Rust seam; that
-//! entry is explicitly mapped to Python's own stronger public command-template contract rather than
-//! faking an internal helper through the wrong layer.
+//! This is not behavioral coverage. Thirty-nine Python contracts have equivalent executable Rust
+//! oracles. Two pure `edit_declared` helper contracts have no equivalent public Rust in-memory edit
+//! seam and are explicitly blocked rather than mapped to different CLI behavior.
 
 use std::{fs, path::Path};
 
@@ -17,17 +16,19 @@ struct Mapping {
 const D: &str = "crates/skit-cli/tests/port_test_params_edit_declared.rs";
 const B: &str = "crates/skit-cli/tests/port_test_params_edit_bool_pipeline.rs";
 const H: &str = "crates/skit-domain/tests/port_test_params_edit_helpers.rs";
-const C: &str = "crates/skit-cli/tests/port_test_declared_params_cli.rs";
+
+const BLOCKED_NO_PUBLIC_SEAM: &[&str] = &[
+    "test_add_non_placeholder_name_on_a_template_uses_first_allowed_delivery",
+    "test_inputs_are_never_mutated",
+];
 
 const MAPPINGS: &[Mapping] = &[
     Mapping { python: "test_add_defaults_to_first_allowed_delivery_for_a_binary", path: D, rust: "test_add_defaults_to_first_allowed_delivery_for_a_binary", architectural_note: "" },
     Mapping { python: "test_add_on_a_template_placeholder_name_becomes_a_required_placeholder", path: D, rust: "test_add_on_a_template_placeholder_name_becomes_a_required_placeholder", architectural_note: "" },
-    Mapping { python: "test_add_non_placeholder_name_on_a_template_uses_first_allowed_delivery", path: C, rust: "test_template_add_of_a_non_placeholder_name_creates_a_deliverable_env_row", architectural_note: "Python's edit_declared helper takes an injected allowed-delivery tuple; Rust has no public equivalent. Python's own CLI contract overrides the helper default for command templates and is the executable product oracle." },
     Mapping { python: "test_add_existing_name_warns_already_declared", path: D, rust: "test_add_existing_name_warns_already_declared", architectural_note: "" },
     Mapping { python: "test_rm_drops_the_row", path: D, rust: "test_rm_drops_the_row", architectural_note: "" },
     Mapping { python: "test_rm_unknown_name_warns_not_declared", path: D, rust: "test_rm_unknown_name_warns_not_declared", architectural_note: "" },
     Mapping { python: "test_apply_order_is_rm_then_add_then_tweak", path: D, rust: "test_apply_order_is_rm_then_add_then_tweak", architectural_note: "" },
-    Mapping { python: "test_inputs_are_never_mutated", path: D, rust: "test_inputs_are_never_mutated", architectural_note: "" },
     Mapping { python: "test_delivery_tweak_within_allowed_set", path: D, rust: "test_delivery_tweak_within_allowed_set", architectural_note: "" },
     Mapping { python: "test_delivery_outside_allowed_set_warns_bad_delivery", path: D, rust: "test_delivery_outside_allowed_set_warns_bad_delivery", architectural_note: "" },
     Mapping { python: "test_placeholder_delivery_on_a_non_placeholder_name_warns", path: D, rust: "test_placeholder_delivery_on_a_non_placeholder_name_warns", architectural_note: "" },
@@ -64,8 +65,9 @@ const MAPPINGS: &[Mapping] = &[
 ];
 
 #[test]
-fn every_python_params_edit_test_has_an_executable_rust_oracle() {
-    assert_eq!(MAPPINGS.len(), 41, "frozen Python module has 41 top-level tests");
+fn every_executable_python_params_edit_test_has_a_rust_oracle() {
+    assert_eq!(MAPPINGS.len(), 39);
+    assert_eq!(MAPPINGS.len() + BLOCKED_NO_PUBLIC_SEAM.len(), 41);
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -96,20 +98,21 @@ fn every_python_params_edit_test_has_an_executable_rust_oracle() {
 }
 
 #[test]
+fn blocked_in_memory_helper_contracts_are_not_impersonated_by_other_cli_tests() {
+    for blocked in BLOCKED_NO_PUBLIC_SEAM {
+        assert!(
+            MAPPINGS.iter().all(|mapping| mapping.python != *blocked),
+            "{blocked} has no equivalent public Rust in-memory edit seam; do not map a different CLI behavior to this Python name"
+        );
+    }
+}
+
+#[test]
 fn architectural_exceptions_are_explicit_and_narrow() {
     let exceptions = MAPPINGS
         .iter()
         .filter(|mapping| !mapping.architectural_note.is_empty())
         .collect::<Vec<_>>();
-    assert_eq!(exceptions.len(), 2);
-    assert_eq!(
-        exceptions
-            .iter()
-            .map(|mapping| mapping.python)
-            .collect::<Vec<_>>(),
-        [
-            "test_add_non_placeholder_name_on_a_template_uses_first_allowed_delivery",
-            "test_as_param_type_accepts_the_five",
-        ]
-    );
+    assert_eq!(exceptions.len(), 1);
+    assert_eq!(exceptions[0].python, "test_as_param_type_accepts_the_five");
 }
