@@ -5042,7 +5042,10 @@ fn doctor_launch_block<P: ProgramProbe>(
         }
     }
     let required = match entry.meta.kind.as_str() {
-        "python" => Some(interpreter_name(settings, "uv")),
+        // The oracle python preflight checks only that the script exists (the
+        // missing-target sweep already covers that here). uv is a run-time concern:
+        // a run bootstraps it, so its absence never blocks a launch.
+        "python" => None,
         "shell" => Some(if settings.interpreter.is_empty() {
             let configured = config.get("shell.bash_path")?;
             if configured.is_empty() {
@@ -5093,6 +5096,19 @@ fn interpreter_name(settings: &EntrySettings, default: &str) -> String {
     } else {
         settings.interpreter.clone()
     }
+}
+
+/// Report whether a missing uv must fail the doctor exit code.
+///
+/// uv runs python entries, so it is required when any python entry exists — and also
+/// for an empty library (a fresh install's doctor must still steer the user toward a
+/// working setup). A non-empty library with no python entries runs fine without uv,
+/// and an exit code of 1 there sends automation after a phantom problem.
+fn uv_required(entries: &[Entry]) -> bool {
+    entries.is_empty()
+        || entries
+            .iter()
+            .any(|entry| entry.meta.kind.as_str() == "python")
 }
 
 fn directory_size(path: &Path) -> u64 {
@@ -6371,7 +6387,8 @@ impl<'a> CliHealthInspector<'a> {
             .or_else(|| probe.is_executable(&private_uv).then_some(private_uv));
         let uv = match uv_path {
             Some(path) => UvHealth::Found(path.display().to_string()),
-            None => UvHealth::Missing,
+            None if uv_required(&entries) => UvHealth::Missing,
+            None => UvHealth::NotRequired,
         };
         let config = FileConfigStore::new(self.config_dir);
         let mut missing = Vec::new();
@@ -6393,13 +6410,7 @@ impl<'a> CliHealthInspector<'a> {
                     kind: HealthIssueKind::DriftedForm,
                 });
             }
-            let mut settings = EntrySettings::from_meta(&entry.meta);
-            if entry.meta.kind.as_str() == "python"
-                && settings.interpreter.is_empty()
-                && let UvHealth::Found(path) = &uv
-            {
-                settings.interpreter.clone_from(path);
-            }
+            let settings = EntrySettings::from_meta(&entry.meta);
             let absent = settings
                 .needs
                 .iter()

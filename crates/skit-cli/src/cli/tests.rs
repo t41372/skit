@@ -1755,8 +1755,21 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
             .contains(custom_bash.to_str().unwrap())
     );
 
+    // A python entry is never launch-blocked over uv: the oracle python preflight
+    // checks only that the script exists, and uv is bootstrapped at run time.
+    let python = health_entry("python");
+    assert_eq!(
+        doctor_launch_block(
+            &python,
+            &EntrySettings::default(),
+            &config,
+            &HealthProbe::default()
+        )
+        .unwrap(),
+        None,
+    );
+
     for (kind, program) in [
-        ("python", "uv"),
         ("fish", "fish"),
         ("powershell", "pwsh"),
         ("ruby", "ruby"),

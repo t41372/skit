@@ -51,17 +51,8 @@
 //!   error is swallowed (non-root) or the read succeeds (root, body still matches).
 //!
 //! Buckets:
-//! - REAL asserting `#[test]` (API exists): tests 1, 2, 3, 5, 6. Everything is reachable
+//! - REAL asserting `#[test]` (API exists): tests 1, 2, 3, 4, 5, 6. Everything is reachable
 //!   through the binary; there is no cross-crate or absent-gap bucket.
-//! - DIVERGENCE (full asserting body, `#[ignore]`d): test 4
-//!   `test_collect_reports_every_category_and_excludes_double_reports`. The assertion set is
-//!   faithful to the oracle and compiles; it fails because Rust's `doctor_launch_block`
-//!   reports a python entry as launch-blocked when uv is off PATH
-//!   (`crates/skit-cli/src/cli.rs:5045`), while the oracle's `UvLaunch.preflight` checks only
-//!   that the script exists — uv is a build-time concern, never a per-entry launch block
-//!   (`src/skit/langs/launch.py:155-156`; `tests/test_healthcheck.py:133`). Fixing the impl
-//!   and deleting the `#[ignore]` line turns it green. (This is the same tier of uv-handling
-//!   divergence already recorded at `crates/skit-cli/tests/port_test_langs.rs:523,594`.)
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -326,7 +317,6 @@ fn test_entry_drifted_false_for_insertion_off_prompt() {
 // ---------------------------------------------------------------- collect
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a python entry with an existing script is never launch_blocked in the oracle — UvLaunch.preflight only checks the script exists, uv is a build-time concern (src/skit/langs/launch.py:155-156; tests/test_healthcheck.py:133). Rust doctor_launch_block requires uv on PATH (crates/skit-cli/src/cli.rs:5045), so with nothing on PATH the python entry drift_py wrongly lands in launch_blocked. Same uv-handling divergence tier as crates/skit-cli/tests/port_test_langs.rs:523,594."]
 fn test_collect_reports_every_category_and_excludes_double_reports() {
     let lib = Lib::new();
     // (a) target-missing

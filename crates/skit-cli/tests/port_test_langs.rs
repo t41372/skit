@@ -33,12 +33,12 @@
 //! - Python `store.add_exe` / CLI `params` / `doctor` -> the real `skit` binary via assert_cmd.
 //!
 //! Buckets:
-//! - REAL asserting `#[test]` (API exists): 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 19. Where a
-//!   Python def mixes clauses whose CONCEPT has no public Rust surface (glyph, family,
+//! - REAL asserting `#[test]` (API exists): 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 18, 19, 20.
+//!   Where a Python def mixes clauses whose CONCEPT has no public Rust surface (glyph, family,
 //!   has_original_file, takes_argv, deps_flavor), the mappable clauses assert for real and
 //!   the unmappable clauses are named in the WHY comment and the port ledger (NOT weakened
 //!   into a match against Rust output).
-//! - DIVERGENCE (full asserting body, `#[ignore]`d): 17, 18, 20 — the assertion is
+//! - DIVERGENCE (full asserting body, `#[ignore]`d): 17 — the assertion is
 //!   faithful to the oracle and compiles; it fails because Rust diverges. Fixing the impl
 //!   and deleting the `#[ignore]` line turns it green.
 //! - UNMAPPABLE / ABSENT SEAM (compiling `#[ignore]` stub): 4, 5, 6, 7, 16, 21 — Python
@@ -519,7 +519,6 @@ fn test_params_exe_prints_plain_message_without_manage_dead_end() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a library with no python entries runs fine without uv, so doctor exits 0 (uv 'not required') — exit 1 sends automation chasing a phantom problem (src/skit/healthcheck.py). Rust's CliHealthInspector reports UvHealth::Missing whenever the uv binary is absent, regardless of library composition, so doctor exits 1 (crates/skit-cli/src/cli.rs:6372-6375 and :4930)."]
 fn test_doctor_missing_uv_pure_exe_library_exits_zero() {
     // A library with no python entries runs fine without uv — exit 1 there sent
     // automation chasing a phantom problem. The red uv line still prints.
@@ -590,7 +589,6 @@ fn test_doctor_missing_uv_with_python_entry_exits_one() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): doctor --json exits 0 for a uv-less library with no python entries (uv 'not required'). Rust's CliHealthInspector reports UvHealth::Missing whenever the uv binary is absent, so doctor --json exits 1 (crates/skit-cli/src/cli.rs:6372-6375 and :4930)."]
 fn test_doctor_json_missing_uv_pure_exe_library_exits_zero() {
     let data = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();

@@ -406,6 +406,8 @@ fn doctor_keeps_the_v040_fresh_install_uv_check() {
         .code(1)
         .stdout(predicate::str::contains("\"uv\":null"));
 
+    // A non-empty library with no python entries runs fine without uv: the report
+    // still shows uv as absent, but the exit code is 0 (uv "not required").
     let commands = Sandbox::new();
     commands.write_command_entry();
     commands
@@ -413,7 +415,7 @@ fn doctor_keeps_the_v040_fresh_install_uv_check() {
         .env("PATH", commands.data.path())
         .args(["doctor", "--json"])
         .assert()
-        .code(1)
+        .code(0)
         .stdout(predicate::str::contains("\"uv\":null"));
 
     let python = Sandbox::new();
