@@ -1,5 +1,6 @@
 //! Exact-name/order completeness guard for Python v0.4 `tests/test_default_name_resolution.py`.
 //!
+//! Frozen oracle: `origin/main@206f9ef946fc45835cb2479593794431f2620c32`.
 //! This does not count as behavioral coverage. The 42 behavioral tests live in `skit-form`; this
 //! guard only prevents omissions, renames, reorder drift, or extra fake parity tests.
 
