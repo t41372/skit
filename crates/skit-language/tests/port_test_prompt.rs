@@ -1,7 +1,8 @@
 //! Public-surface behavioral ports from `origin/main@206f9ef:tests/test_prompt_kind.py`.
 //!
-//! The Python prompt grammar is the oracle. A red test in this file is intentionally retained as
-//! a parity finding; this branch does not change the language implementation to make it green.
+//! This file owns only the public prompt grammar/render/inference slice. Store, runner, launch, CLI,
+//! and TUI contracts live at their real public boundaries. The Python suite is authoritative: a red
+//! assertion stays red and does not justify changing production code on this branch.
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -57,7 +58,81 @@ fn test_placeholder_names_high_cardinality_stays_ordered_and_complete() {
 }
 
 #[test]
-fn test_render_body_substitutes_raw_never_quotes_or_rescans() {
+fn test_prompt_grammar_is_independent_of_command_templates() {
+    assert!(names("{name}").is_empty());
+    assert_eq!(
+        placeholder_params("command", "{name}")
+            .into_iter()
+            .map(|parameter| parameter.name)
+            .collect::<Vec<_>>(),
+        ["name"]
+    );
+    assert_eq!(names("{{name}}"), ["name"]);
+}
+
+#[test]
+fn test_corpus_basic_detection_and_render_byte_identity() {
+    let text = "# Review helper\n\nReview {{target}} for {{focus}}. Again: {{target}}.\nLiterals: {code} and JSON {\"key\": 1} and f'{value}' and {{{handlebars}}}\nUnmanaged hole: {{x}}\n";
+    assert_eq!(names(text), ["target", "focus", "x"]);
+
+    let values = BTreeMap::from([
+        ("target".to_owned(), "T".to_owned()),
+        ("focus".to_owned(), "F".to_owned()),
+    ]);
+    let rendered = render_prompt_body(text, &values, true);
+
+    assert!(rendered.contains("Review T for F. Again: T."), "{rendered}");
+    assert!(
+        rendered.contains("Literals: {code} and JSON {\"key\": 1} and f'{value}' and {{{handlebars}}}"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("Unmanaged hole: {{x}}"), "{rendered}");
+}
+
+#[test]
+fn test_corpus_crlf_preserved_verbatim() {
+    let text = "A={{task}}\r\nB={{repo}}\r\n";
+    assert!(text.contains("\r\n"));
+    let values = BTreeMap::from([
+        ("task".to_owned(), "X".to_owned()),
+        ("repo".to_owned(), "Y".to_owned()),
+    ]);
+
+    let rendered = render_prompt_body(text, &values, true);
+    assert!(rendered.contains("\r\n"));
+    assert_eq!(rendered, text.replace("{{task}}", "X").replace("{{repo}}", "Y"));
+}
+
+#[test]
+fn test_corpus_cjk_emoji_no_trailing_newline() {
+    let text = "審查 {{目標檔案}} 🎯\n專注於 {{focus}}";
+    assert!(!text.ends_with('\n'));
+    assert_eq!(names(text), ["目標檔案", "focus"]);
+    let values = BTreeMap::from([
+        ("目標檔案".to_owned(), "src/主程式.py".to_owned()),
+        ("focus".to_owned(), "效能".to_owned()),
+    ]);
+
+    let rendered = render_prompt_body(text, &values, true);
+    assert!(rendered.contains("審查 src/主程式.py"), "{rendered}");
+    assert!(rendered.contains("專注於 效能"), "{rendered}");
+    assert!(!rendered.ends_with('\n'));
+}
+
+#[test]
+fn test_corpus_reserved_prompt_stays_verbatim() {
+    let text = "{{prompt}}\tliterally\n{{real}}";
+    assert_eq!(names(text), ["real"]);
+    let values = BTreeMap::from([("real".to_owned(), "R".to_owned())]);
+
+    assert_eq!(
+        render_prompt_body(text, &values, true),
+        "{{prompt}}\tliterally\nR"
+    );
+}
+
+#[test]
+fn test_render_body_substitutes_raw_never_quotes() {
     let payload = r#"'; rm -rf ~; $(touch pwned) `echo hi` "x" {inner} {{deep}}"#;
     let values = BTreeMap::from([("v".to_owned(), payload.to_owned())]);
 
@@ -73,7 +148,7 @@ fn test_render_body_empty_value_substitutes_empty() {
 }
 
 #[test]
-fn test_render_body_unmanaged_hole_stays_verbatim() {
+fn rust_additive_render_body_unmanaged_hole_stays_verbatim() {
     let values = BTreeMap::from([("managed".to_owned(), "M".to_owned())]);
     assert_eq!(
         render_prompt_body("{{managed}} {{unmanaged}}", &values, true),
@@ -82,45 +157,10 @@ fn test_render_body_unmanaged_hole_stays_verbatim() {
 }
 
 #[test]
-fn test_render_body_interpolation_can_be_disabled_without_touching_bytes() {
+fn rust_additive_render_body_interpolation_can_be_disabled_without_touching_bytes() {
     let body = "line1\r\n{{task}}\r\n{{prompt}}";
     let values = BTreeMap::from([("task".to_owned(), "X".to_owned())]);
     assert_eq!(render_prompt_body(body, &values, false), body);
-}
-
-#[test]
-fn test_corpus_crlf_shape_is_preserved_by_rendering() {
-    let body = "A={{task}}\r\nB={{repo}}\r\n";
-    let values = BTreeMap::from([
-        ("task".to_owned(), "X".to_owned()),
-        ("repo".to_owned(), "Y".to_owned()),
-    ]);
-
-    assert_eq!(render_prompt_body(body, &values, true), "A=X\r\nB=Y\r\n");
-}
-
-#[test]
-fn test_corpus_cjk_emoji_no_trailing_newline() {
-    let body = "審查 {{目標檔案}} 🎯\n專注於 {{focus}}";
-    let values = BTreeMap::from([
-        ("目標檔案".to_owned(), "src/主程式.py".to_owned()),
-        ("focus".to_owned(), "效能".to_owned()),
-    ]);
-
-    let rendered = render_prompt_body(body, &values, true);
-    assert_eq!(rendered, "審查 src/主程式.py 🎯\n專注於 效能");
-    assert!(!rendered.ends_with('\n'));
-}
-
-#[test]
-fn test_corpus_reserved_prompt_stays_verbatim() {
-    let body = "{{prompt}}\tliterally\n{{real}}";
-    let values = BTreeMap::from([("real".to_owned(), "R".to_owned())]);
-
-    assert_eq!(
-        render_prompt_body(body, &values, true),
-        "{{prompt}}\tliterally\nR"
-    );
 }
 
 #[test]
