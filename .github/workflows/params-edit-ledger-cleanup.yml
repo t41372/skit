@@ -1,5 +1,6 @@
 name: Params edit ledger cleanup
 
+# Temporary self-trigger; deleted after the test-only rename lands.
 on:
   push:
     branches:
