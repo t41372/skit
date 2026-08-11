@@ -1,4 +1,4 @@
-HEAD=280daaec560d8a17143c477f7516b4438179308a
+HEAD=457c9269359fdbbd5f15e40bb8b576efb60cc028
 PATH_FORMAT_RC=0
 PATH_RUSTFMT_RC=0
 PATH_MANIFEST_RC=0
@@ -10,8 +10,8 @@ PATH_UI_RC=101
 PATH_CLI_RC=101
 
 ===== ui failure tail =====
-   Compiling serde_json v1.0.151
    Compiling regex-automata v0.4.18
+   Compiling serde_json v1.0.151
    Compiling skit-domain v0.5.0 (/home/runner/work/skit/skit/crates/skit-domain)
    Compiling tree-sitter v0.26.12
    Compiling regex v1.13.1
@@ -21,12 +21,12 @@ PATH_CLI_RC=101
    Compiling skit-language v0.5.0 (/home/runner/work/skit/skit/crates/skit-language)
    Compiling skit-form v0.5.0 (/home/runner/work/skit/skit/crates/skit-form)
    Compiling skit-ui v0.5.0 (/home/runner/work/skit/skit/crates/skit-ui)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.99s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.90s
      Running tests/port_test_path_type.rs (target/debug/deps/port_test_path_type-b24be96743207d65)
 
 running 3 tests
 test test_degraded_flag_field_still_renders_free_text ... 
-thread 'test_degraded_flag_field_still_renders_free_text' (10850) panicked at crates/skit-ui/tests/port_test_path_type.rs:74:5:
+thread 'test_degraded_flag_field_still_renders_free_text' (10795) panicked at crates/skit-ui/tests/port_test_path_type.rs:74:5:
 assertion `left == right` failed: a degraded path is unmodeled free text; keeping path-specific UI invents structure
   left: Path
  right: Text
@@ -46,33 +46,25 @@ error: test failed, to rerun pass `-p skit-ui --test port_test_path_type`
 
 ===== cli failure tail =====
    Compiling skit-cli-rs v0.5.0 (/home/runner/work/skit/skit/crates/skit-cli)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
      Running tests/port_test_path_type.rs (target/debug/deps/port_test_path_type-a57ae3dd024fc8c8)
 
 running 3 tests
 test test_edit_declared_accepts_path_type ... ok
 test test_resync_preserves_declared_path ... 
-thread 'test_resync_preserves_declared_path' (10928) panicked at crates/skit-cli/tests/port_test_path_type.rs:57:9:
-args=["params", "paths", "--type", "SRC=path", "--prompt", "SRC=Which file? "]
-stdout=
-stderr=paths manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block.
-
+thread 'test_resync_preserves_declared_path' (10873) panicked at crates/skit-cli/tests/port_test_path_type.rs:160:5:
+assertion `left == right` failed: resync lost the str->path refinement: {"action":"","binding":"const","default":"./data.csv","delivery":"inject","env_target":"","multiple":false,"name":"SRC","prompt":"Which file? ","repeat":false,"type":"str"}
+  left: String("str")
+ right: "path"
 note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 FAILED
-test test_resync_still_corrects_real_type_drift ... 
-thread 'test_resync_still_corrects_real_type_drift' (10938) panicked at crates/skit-cli/tests/port_test_path_type.rs:57:9:
-args=["params", "paths", "--type", "RETRIES=path"]
-stdout=
-stderr=paths manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block.
-
-FAILED
+test test_resync_still_corrects_real_type_drift ... ok
 
 failures:
 
 failures:
     test_resync_preserves_declared_path
-    test_resync_still_corrects_real_type_drift
 
-test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
 
 error: test failed, to rerun pass `-p skit-cli-rs --test port_test_path_type`
