@@ -5,9 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_ui::{FormControl, FormInputKind, RunFormView};
 
 fn view(declaration: ParamDecl) -> RunFormView {
@@ -55,7 +53,11 @@ fn test_formfield_carries_path_for_every_delivery() {
             .iter()
             .find(|field| field.key == "value:src")
             .unwrap();
-        assert_eq!(parameter.parameter_type, ParameterType::Path, "{delivery:?}");
+        assert_eq!(
+            parameter.parameter_type,
+            ParameterType::Path,
+            "{delivery:?}"
+        );
         let FormControl::Text(control) = &parameter.control else {
             panic!("path must stay a text-shaped control for {delivery:?}: {parameter:?}");
         };
@@ -87,8 +89,11 @@ fn test_type_label_path() {
         .find(|field| field.key == "value:src")
         .unwrap();
     assert_eq!(parameter.parameter_type.as_str(), "path");
-    assert_eq!(path_control_kind(ParamDecl {
-        parameter_type: ParameterType::Path,
-        ..ParamDecl::new("src")
-    }), FormInputKind::Path);
+    assert_eq!(
+        path_control_kind(ParamDecl {
+            parameter_type: ParameterType::Path,
+            ..ParamDecl::new("src")
+        }),
+        FormInputKind::Path
+    );
 }

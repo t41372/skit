@@ -66,7 +66,11 @@ fn every_python_path_type_test_has_exactly_one_executable_rust_oracle() {
     let actual = python.iter().cloned().collect::<BTreeSet<_>>();
 
     assert_eq!(PYTHON_TESTS.len(), 14);
-    assert_eq!(python.len(), 14, "duplicate or missing Python path-type oracle: {python:?}");
+    assert_eq!(
+        python.len(),
+        14,
+        "duplicate or missing Python path-type oracle: {python:?}"
+    );
     assert_eq!(actual, expected);
 
     let additive = all

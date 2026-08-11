@@ -84,13 +84,7 @@ impl Sandbox {
     fn add_python(&self, name: &str, source: &str) {
         let path = self.home.path().join(format!("{name}.py"));
         fs::write(&path, source).unwrap();
-        self.ok(&[
-            "add",
-            path.to_str().unwrap(),
-            "--name",
-            name,
-            "--no-input",
-        ]);
+        self.ok(&["add", path.to_str().unwrap(), "--name", name, "--no-input"]);
     }
 }
 
@@ -109,14 +103,7 @@ const SCRIPT: &str = "SRC = \"./data.csv\"\nRETRIES = 3\nprint(SRC, RETRIES)\n";
 fn test_edit_declared_accepts_path_type() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("binary");
-    let edited = sandbox.output(&[
-        "params",
-        "binary",
-        "--add",
-        "src",
-        "--type",
-        "src=path",
-    ]);
+    let edited = sandbox.output(&["params", "binary", "--add", "src", "--type", "src=path"]);
     assert!(
         edited.status.success(),
         "stdout={}\nstderr={}",
@@ -157,13 +144,18 @@ fn test_resync_preserves_declared_path() {
     );
     let after = sandbox.params("paths");
     let src = parameter(&after, "SRC");
-    assert_eq!(src["type"], "path", "resync lost the str->path refinement: {src}");
+    assert_eq!(
+        src["type"], "path",
+        "resync lost the str->path refinement: {src}"
+    );
     assert_eq!(
         src["prompt"], "Which file? ",
         "resync discarded the user-owned prompt: {src}"
     );
     assert!(
-        !String::from_utf8_lossy(&resync.stderr).to_ascii_lowercase().contains("dropped"),
+        !String::from_utf8_lossy(&resync.stderr)
+            .to_ascii_lowercase()
+            .contains("dropped"),
         "a surviving SRC refinement was reported as dropped: {}",
         String::from_utf8_lossy(&resync.stderr)
     );
@@ -175,7 +167,10 @@ fn test_resync_still_corrects_real_type_drift() {
     sandbox.add_python("paths", SCRIPT);
     sandbox.ok(&["params", "paths", "--manage", "RETRIES"]);
     sandbox.ok(&["params", "paths", "--type", "RETRIES=path"]);
-    assert_eq!(parameter(&sandbox.params("paths"), "RETRIES")["type"], "path");
+    assert_eq!(
+        parameter(&sandbox.params("paths"), "RETRIES")["type"],
+        "path"
+    );
 
     let resync = sandbox.output(&["params", "paths", "--resync"]);
     assert!(
