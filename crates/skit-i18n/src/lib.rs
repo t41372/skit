@@ -3372,6 +3372,16 @@ const CATALOG: &[Translation] = &[
         "{} 是什麼？skit 無法從名稱判斷。",
     ),
     row!(
+        "A program (run it directly)",
+        "一个程序（直接运行）",
+        "一個程式（直接執行）",
+    ),
+    row!(
+        "A prompt for an AI agent",
+        "给 AI agent 的提示词",
+        "給 AI agent 的提示詞",
+    ),
+    row!(
         "💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",
         "💡 {} 直接写在代码中，因此 skit 无法将其转换为表单字段。要管理其中一个，请先在脚本顶部为其命名，例如 OUTPUT = '…'（Ctrl+E 可立即编辑）。",
         "💡 {} 直接寫在程式碼中，因此 skit 無法將其轉換為表單欄位。若要管理其中一個，請先在指令稿頂端為其命名，例如 OUTPUT = '…'（Ctrl+E 可立即編輯）。",
@@ -3688,6 +3698,20 @@ pub fn kind_label<'a>(locale: Locale, kind: &'a str) -> Cow<'a, str> {
         _ => return Cow::Borrowed(kind),
     };
     text(locale, english)
+}
+
+/// Return the localized ask-face choice label for a registered entry kind.
+///
+/// The interpreted kinds keep their [`kind_label`] names. The exe and prompt choices
+/// answer the picker's question about one unclassified file, so they describe the entry
+/// instead of naming a language.
+#[must_use]
+pub fn kind_choice_label<'a>(locale: Locale, kind: &'a str) -> Cow<'a, str> {
+    match kind {
+        "exe" => text(locale, "A program (run it directly)"),
+        "prompt" => text(locale, "A prompt for an AI agent"),
+        _ => kind_label(locale, kind),
+    }
 }
 
 /// Translate one template and insert values without translating user data.

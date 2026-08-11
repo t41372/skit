@@ -21,7 +21,7 @@ use ratatui_interact::{
 };
 use ratatui_widgets::paragraph::Paragraph;
 use skit_domain::StorageMode;
-use skit_i18n::{Locale, format_text, kind_label, text};
+use skit_i18n::{Locale, format_text, kind_choice_label, text};
 use skit_ui::{
     AddAction, AddNotice, AddProblem, AddStage, AddWorkflowState, DependencySurface, DraftKind,
     KnownEntryKind, PROMPT_LIST_PREVIEW_LIMIT, PathOutputPolicy, PathPickerState,
@@ -933,7 +933,7 @@ fn kind_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     rows.extend(picker.choices().iter().enumerate().map(|(index, kind)| {
         RenderRow::Button(
             AddControlId::Kind(index),
-            kind_label(locale, kind.as_str()).into_owned(),
+            kind_choice_label(locale, kind.as_str()).into_owned(),
         )
     }));
     rows.push(RenderRow::Button(

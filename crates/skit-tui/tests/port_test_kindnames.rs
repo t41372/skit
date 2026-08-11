@@ -17,22 +17,17 @@
 //! - Python autouse `_english` fixture (`SKIT_LANG=en`) -> passing `Locale::En` explicitly.
 //! - Python `kindnames.kind_choices(offer_exe=...)` (a `list[(kind, label)]`) -> the Rust
 //!   composition `KnownEntryKind::picker_choices(offer_exe)` (the ids/order) each mapped
-//!   through `kind_label` (the labels) -- exactly what production `kind_rows` renders.
+//!   through `kind_choice_label` (the labels) -- exactly what production `kind_rows` renders.
 //! - Python `skit.langs.registry.KNOWN_KINDS` / `spec_for` / `LangSpec.family`: NO Rust
 //!   registry equivalent (`EntryKind` is an open string, and there is no enumerable
 //!   family/spec surface). The label contract is still fully asserted; see the notes below.
 //!
 //! Buckets:
-//! - Bucket 1 (kind_label map -- real, passing): `test_kind_label_maps_each_registered_kind`,
-//!   `test_every_known_kind_has_a_dedicated_label`, `test_unknown_kind_falls_through_to_its_raw_id`.
-//! - Bucket 2 (divergence -- full body, `#[ignore]`): the two `kind_choices` tests. The Rust
-//!   picker renders exe/prompt through `kind_label` ("Program" / "Prompt"); the oracle gives
-//!   them dedicated descriptive wording ("A program (run it directly)" / "A prompt for an AI
-//!   agent"), which is ABSENT from the whole Rust workspace including the i18n catalog. The
-//!   id/order half passes and rides under the ignore; it goes green when the impl restores
-//!   the descriptive labels.
+//! - Bucket 1 (all real, passing): the three kind_label tests and the two `kind_choices`
+//!   tests. exe and prompt carry their dedicated descriptive choice wording ("A program
+//!   (run it directly)" / "A prompt for an AI agent") through `kind_choice_label`.
 
-use skit_i18n::{Locale, kind_label};
+use skit_i18n::{Locale, kind_choice_label, kind_label};
 use skit_ui::KnownEntryKind;
 
 /// The English label each registered kind renders as (the oracle's module-level EXPECTED;
@@ -62,17 +57,17 @@ fn expected_label(kind: &str) -> Option<&'static str> {
 }
 
 /// The Rust composition of the oracle's `kind_choices`: the picker ids/order, each mapped
-/// through `kind_label` -- byte-for-byte what production `kind_rows` (add.rs:915-920)
-/// renders (EVERY choice, exe and prompt included, goes through `kind_label`). Labels live
-/// only on this side; the oracle's expected literals never leak into the construction, so a
-/// mismatch is a real finding, not a tautology.
+/// through `kind_choice_label` -- byte-for-byte what production `kind_rows` (add.rs)
+/// renders (interpreted kinds keep `kind_label`; exe and prompt get their descriptive
+/// choice labels). Labels live only on this side; the oracle's expected literals never
+/// leak into the construction, so a mismatch is a real finding, not a tautology.
 fn labeled_choices(offer_exe: bool) -> Vec<(String, String)> {
     KnownEntryKind::picker_choices(offer_exe)
         .iter()
         .map(|kind| {
             (
                 kind.as_str().to_owned(),
-                kind_label(Locale::En, kind.as_str()).into_owned(),
+                kind_choice_label(Locale::En, kind.as_str()).into_owned(),
             )
         })
         .collect()
@@ -121,7 +116,6 @@ fn test_unknown_kind_falls_through_to_its_raw_id() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle kind_choices labels exe 'A program (run it directly)' / prompt 'A prompt for an AI agent' (src/skit/kindnames.py:50-52); Rust renders kind_label -> 'Program'/'Prompt' and the descriptive strings are absent from the whole workspace including the i18n catalog"]
 fn test_kind_choices_exact_options_and_order() {
     // The ONE option list both ask faces render: sorted interpreted kinds (prompt excluded --
     // it gets its own dedicated wording), then exe (gated), then prompt. Exact ids and labels --
@@ -168,7 +162,6 @@ fn test_kind_choices_exact_options_and_order() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle kind_choices labels prompt 'A prompt for an AI agent' (src/skit/kindnames.py:52); Rust renders kind_label -> 'Prompt' and the descriptive string is absent from the whole workspace including the i18n catalog"]
 fn test_kind_choices_offer_exe_false_drops_only_exe() {
     let full = labeled_choices(true);
     let gated = labeled_choices(false);
