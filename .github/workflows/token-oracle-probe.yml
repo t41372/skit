@@ -1,0 +1,40 @@
+name: Token oracle probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/token-oracle-probe.yml
+      - crates/skit-application/tests/port_test_tokens.rs
+      - crates/skit-cli/tests/port_test_tokens_runtime.rs
+      - crates/skit-cli/tests/port_test_tokens_manifest.rs
+      - crates/skit-cli/tests/port_test_strength_gate.rs
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Run exact token oracles
+        shell: bash
+        run: |
+          set +e
+          rustfmt --edition 2024 --check \
+            crates/skit-application/tests/port_test_tokens.rs \
+            crates/skit-cli/tests/port_test_tokens_runtime.rs \
+            crates/skit-cli/tests/port_test_tokens_manifest.rs
+          echo "TOKEN_RUSTFMT_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_tokens_manifest -- --nocapture
+          echo "TOKEN_MANIFEST_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture
+          echo "STRENGTH_GATE_RC=$?"
+          cargo test --locked -p skit-application --test port_test_tokens -- --nocapture --test-threads=1
+          echo "TOKEN_APPLICATION_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_tokens_runtime -- --nocapture --test-threads=1
+          echo "TOKEN_RUNTIME_RC=$?"
+          exit 0
