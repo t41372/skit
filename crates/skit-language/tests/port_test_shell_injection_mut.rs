@@ -6,9 +6,7 @@
 
 use std::{collections::BTreeMap, fs, process::Command};
 
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::{
     LanguageError, ParseOutcome, ShellInputError, inject_values, inject_values_for_interpreter,
     parse_document,
@@ -60,7 +58,10 @@ fn test_gap_after_the_first_filled_variable_is_still_refused() {
     let source = "#!/usr/bin/env bash\nread -p \"p: \" A B C\n";
     let declarations = input_declarations(source);
     assert_eq!(
-        declarations.iter().map(|decl| decl.name.as_str()).collect::<Vec<_>>(),
+        declarations
+            .iter()
+            .map(|decl| decl.name.as_str())
+            .collect::<Vec<_>>(),
         ["input-1", "input-2", "input-3"]
     );
 
@@ -94,7 +95,10 @@ fn test_two_empty_values_are_a_short_line_not_a_gap() {
     )
     .unwrap();
 
-    assert!(matches!(parse_document("shell", &rewritten), ParseOutcome::Parsed(_)));
+    assert!(matches!(
+        parse_document("shell", &rewritten),
+        ParseOutcome::Parsed(_)
+    ));
 }
 
 #[cfg(unix)]
@@ -111,12 +115,23 @@ fn test_command_read_spelling_is_rewritten_whole() {
     )
     .unwrap();
 
-    assert!(!rewritten.contains("command read -p \"Name: \" who"), "{rewritten}");
+    assert!(
+        !rewritten.contains("command read -p \"Name: \" who"),
+        "{rewritten}"
+    );
     assert!(rewritten.contains("_skit_read 0 "), "{rewritten}");
 
     let output = run_shell("sh", &rewritten);
-    assert_eq!(output.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Name: Ada\nhi Ada\n");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Name: Ada\nhi Ada\n"
+    );
 }
 
 #[test]
@@ -214,11 +229,27 @@ fn test_preamble_is_a_pure_insertion_not_a_duplicating_splice() {
     )
     .unwrap();
 
-    assert_eq!(rewritten.matches("#!/usr/bin/env bash").count(), 1, "{rewritten}");
-    assert_eq!(rewritten.matches("echo \"hi $who\"").count(), 1, "{rewritten}");
+    assert_eq!(
+        rewritten.matches("#!/usr/bin/env bash").count(),
+        1,
+        "{rewritten}"
+    );
+    assert_eq!(
+        rewritten.matches("echo \"hi $who\"").count(),
+        1,
+        "{rewritten}"
+    );
     let output = run_shell("bash", &rewritten);
-    assert_eq!(output.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&output.stderr));
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), "Name: Ada\nhi Ada\n");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Name: Ada\nhi Ada\n"
+    );
 }
 
 #[test]
@@ -255,9 +286,17 @@ fn test_analyzer_detected_secret_is_masked_even_without_a_secret_spec() {
     )
     .unwrap();
     let output = run_shell("bash", &rewritten);
-    assert_eq!(output.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("Password: ***"), "{stdout}\nsource:\n{rewritten}");
+    assert!(
+        stdout.contains("Password: ***"),
+        "{stdout}\nsource:\n{rewritten}"
+    );
     assert!(!stdout.contains("hunter2"), "{stdout}");
     assert!(stdout.contains("len=7"), "{stdout}");
 }
@@ -281,7 +320,12 @@ fn test_spec_marked_secret_masks_a_plain_read_via_its_order() {
     )
     .unwrap();
     let output = run_shell("bash", &rewritten);
-    assert_eq!(output.status.code(), Some(0), "stderr={}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("K: ***"), "{stdout}\nsource:\n{rewritten}");
     assert!(!stdout.contains("K: topsecret"), "{stdout}");

@@ -6,9 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::{LanguageError, detect_candidates, inject_values};
 
 fn const_decl(name: &str, parameter_type: ParameterType) -> ParamDecl {
@@ -56,7 +54,10 @@ fn test_a_spec_without_a_value_does_not_stop_later_injection() {
     let source = "const A = 1;\nconst B = 2;\n";
     let declarations = detect_candidates("js", source);
     assert_eq!(
-        declarations.iter().map(|decl| decl.name.as_str()).collect::<Vec<_>>(),
+        declarations
+            .iter()
+            .map(|decl| decl.name.as_str())
+            .collect::<Vec<_>>(),
         ["A", "B"]
     );
 
