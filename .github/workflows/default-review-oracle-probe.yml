@@ -1,5 +1,6 @@
 name: Default review oracle probe
 
+# Self-path push trigger: this workflow is temporary and is deleted after diagnostics are read.
 on:
   push:
     branches:
