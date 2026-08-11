@@ -1365,6 +1365,31 @@ const CATALOG: &[Translation] = &[
     row!("Presets: {}", "参数组合:{}", "參數組合:{}"),
     row!("Run: skit run {}", "运行：skit run {}", "執行：skit run {}"),
     row!("Parameter: {}", "参数：{}", "參數：{}"),
+    row!(
+        "{} has no managed parameters.",
+        "{} 没有管理的参数。",
+        "{} 沒有管理的參數。",
+    ),
+    row!(
+        "{} has no managed parameters. Use --manage to bring a detected candidate under management.",
+        "{} 没有管理的参数。用 --manage 把检测到的候选纳入管理。",
+        "{} 沒有管理的參數。用 --manage 把偵測到的候選納入管理。",
+    ),
+    row!(
+        "Detected but not yet managed: {}",
+        "检测到但尚未管理：{}",
+        "偵測到但尚未管理：{}",
+    ),
+    row!(
+        "Detected but not yet managed: {} (use --manage to manage them)",
+        "检测到但尚未管理：{}（用 --manage 管理）",
+        "偵測到但尚未管理：{}（用 --manage 管理）",
+    ),
+    row!(
+        "Reference mode: skit never writes the original file — manage parameters by editing its [tool.skit] block in the source directly.",
+        "参照模式：skit 绝不写入原始文件——请直接编辑源码中的 [tool.skit] 区块来管理参数。",
+        "參照模式：skit 絕不寫入原始檔案——請直接編輯原始碼中的 [tool.skit] 區塊來管理參數。",
+    ),
     row!("Type: {}", "类型：{}", "類型：{}"),
     row!("Delivery: {}", "传递方式：{}", "傳遞方式：{}"),
     row!("Current default: {}", "当前默认值：{}", "目前預設值：{}"),
@@ -1378,16 +1403,6 @@ const CATALOG: &[Translation] = &[
         "環境變數來源：{}",
     ),
     row!("Secret: yes", "敏感值：是", "敏感值：是"),
-    row!(
-        "Unmanaged candidates: {}",
-        "未管理候选项：{}",
-        "未管理候選項：{}"
-    ),
-    row!(
-        "Source management is not available for a reference entry.",
-        "引用条目不能使用来源管理。",
-        "參照項目不能使用來源管理。",
-    ),
     row!("yes", "是", "是"),
     row!("no", "否", "否"),
     row!("on", "开启", "開啟"),

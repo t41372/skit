@@ -753,7 +753,6 @@ fn test_cli_exe_show_table_and_json() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle prints \"<name> has no managed parameters.\" for an entry with no managed params (src/skit/cli.py:3934-3943); the Rust params read view for a reference-mode exe prints only \"Source management is not available for a reference entry.\" (crates/skit-cli/src/cli.rs) — the plain empty-params line is absent from skit-i18n. Same seam as port_test_langs::test_params_exe_prints_plain_message_without_manage_dead_end."]
 fn test_cli_exe_show_without_declared_is_plain_message() {
     let workspace = lib();
     workspace.add_exe("prog");

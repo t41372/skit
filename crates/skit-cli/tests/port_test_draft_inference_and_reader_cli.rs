@@ -525,7 +525,6 @@ fn test_onboard_script_params_returns_empty_for_analyzerless_kind() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the JSON half holds (unmanaged == [\"CITY\"]), but the human read view prints 'Unmanaged candidates: CITY' with no '--manage' advertisement, where the oracle prints 'Detected but not yet managed: CITY (use --manage to manage them)' (cli.py:3956/4009). Same read-view diagnosis as the sibling `port_test_add_lane_contracts.rs`. Verified against the built binary."]
 fn test_docopt_python_read_view_offers_manage() {
     // docopt self-parses but skit can't MODEL it: the run form is passthrough-only, so the read
     // view still lists the unmanaged constant AND advertises --manage (additive, not a
@@ -573,7 +572,6 @@ fn test_docopt_python_manage_prints_no_flip_note() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the JSON half holds (unmanaged contains \"OUTDIR\"), but the human read view prints 'Unmanaged candidates: …' with no '--manage' advertisement, where the oracle prints '… (use --manage to manage them)' (cli.py:4009). Same read-view diagnosis as the sibling `port_test_add_lane_contracts.rs`. Verified against the built binary."]
 fn test_dynamic_getopts_read_view_offers_manage() {
     // A dynamic optstring shell is detected but unmodelable: the read view lists candidates and
     // offers --manage (the passthrough field carries the reader; constants are additive).
@@ -624,7 +622,6 @@ fn test_dynamic_getopts_manage_prints_no_flip_note() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the no-`--manage` half and the JSON `param_source == \"argparse\"` half both hold, but the oracle's plain read view prints '%(name)s has no managed parameters.' (cli.py:3941) while Rust lists the reader fields themselves ('Parameter: n' / 'Parameter: v'). Same reader-driven read-view diagnosis as the sibling `port_test_add_lane_contracts.rs`. Verified against the built binary."]
 fn test_reference_getopts_read_view_has_no_manage_advice() {
     // A reference getopts entry's parser IS the form (reader-driven): the read view says the plain
     // 'no managed parameters.' with NO --manage advice, and its plan is reader-driven.
@@ -661,7 +658,6 @@ fn test_reference_getopts_read_view_has_no_manage_advice() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the no-advice half and the JSON `unmanaged == [\"OUTDIR\"]` half both hold, but the oracle names the candidate as 'Detected but not yet managed: OUTDIR' (cli.py:3994) and prints the reference teaching 'skit never writes the original file …' (cli.py:4001), where Rust prints 'Unmanaged candidates: OUTDIR' and 'Source management is not available for a reference entry.' Same read-view diagnosis as the sibling. Verified against the built binary."]
 fn test_reference_constants_read_view_names_unmanaged_with_teaching() {
     // A reference constants entry is NOT reader-driven: its unmanaged candidate is named, the
     // --manage advice is dropped for the reference-mode teaching, and --json still populates

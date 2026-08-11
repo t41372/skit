@@ -127,8 +127,9 @@ fn human_show_and_params_expose_the_discovery_context() {
         .args(["params", "hello"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Current default: result.txt"))
-        .stdout(predicate::str::contains("Last value: other.txt"))
-        .stdout(predicate::str::contains("Choices: result.txt, other.txt"))
-        .stdout(predicate::str::contains("Help: Output file"));
+        // The argparse form IS the interface (reader-driven), so the v0.4 read view is
+        // the one plain line with no --manage advice; the discovery context (defaults,
+        // choices, help) belongs to `show` above and to the run form.
+        .stdout(predicate::str::contains("Hello has no managed parameters."))
+        .stdout(predicate::str::contains("--manage").not());
 }

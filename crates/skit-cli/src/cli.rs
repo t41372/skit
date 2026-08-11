@@ -4132,6 +4132,36 @@ fn write_params(
             FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
         let candidates = detect_candidates(entry.meta.kind.as_str(), source);
         let reader_driven = !cli_params(entry.meta.kind.as_str(), source).is_empty();
+        let ref_mode = entry.meta.mode == StorageMode::Reference;
+        // cli.py:3934-3960 — the empty-managed voices. Placeholder kinds (command,
+        // prompt) and declared [[parameters]] rows keep their own views.
+        let analyzer_kind = matches!(
+            entry.meta.kind.as_str(),
+            "python" | "shell" | "fish" | "js" | "ts"
+        );
+        let placeholder_kind = matches!(entry.meta.kind.as_str(), "command" | "prompt");
+        let nothing_managed = !placeholder_kind
+            && settings.parameters.is_empty()
+            && managed_params(entry.meta.kind.as_str(), source).is_empty();
+        if nothing_managed && (!analyzer_kind || reader_driven) {
+            // No analyzer to manage anything (or a modeled reader form that IS the
+            // interface): one plain line, no dead-end --manage advice.
+            humanln!("{} has no managed parameters.", entry.meta.name);
+            return Ok(());
+        }
+        if nothing_managed {
+            // An analyzer kind with nothing managed yet. The detected names still
+            // print below; only this advice voice switches on the storage mode,
+            // because --manage is structurally refused on a reference entry.
+            if ref_mode {
+                humanln!("{} has no managed parameters.", entry.meta.name);
+            } else {
+                humanln!(
+                    "{} has no managed parameters. Use --manage to bring a detected candidate under management.",
+                    entry.meta.name
+                );
+            }
+        }
         let declared_names = declarations
             .iter()
             .map(|item| item.name.as_str())
@@ -4177,10 +4207,19 @@ fn write_params(
             }
         }
         if !unmanaged.is_empty() {
-            humanln!("Unmanaged candidates: {}", unmanaged.join(", "));
-        }
-        if entry.meta.mode == StorageMode::Reference {
-            humanln!("Source management is not available for a reference entry.");
+            // cli.py:3991-4011 — the reference voice states the fact and the real fix
+            // path; the copy voice advertises --manage.
+            if ref_mode {
+                humanln!("Detected but not yet managed: {}", unmanaged.join(", "));
+                humanln!(
+                    "Reference mode: skit never writes the original file — manage parameters by editing its [tool.skit] block in the source directly."
+                );
+            } else {
+                humanln!(
+                    "Detected but not yet managed: {} (use --manage to manage them)",
+                    unmanaged.join(", ")
+                );
+            }
         }
         if entry.meta.kind.as_str() == "prompt" {
             humanln!(

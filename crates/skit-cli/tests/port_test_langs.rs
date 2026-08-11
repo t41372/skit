@@ -485,7 +485,6 @@ fn write_exe(dir: &Path) -> PathBuf {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the params read view for an analyzer-less kind must print '<name> has no managed parameters.' (src/skit/cli.py:3934-3943, the analyzer-None branch fires before the ref-mode branch). Rust's params read view (crates/skit-cli/src/cli.rs:4130-4203) never emits that message — for a reference-mode exe it prints only 'Source management is not available for a reference entry.', so the plain empty-params line is lost."]
 fn test_params_exe_prints_plain_message_without_manage_dead_end() {
     // `--manage` hard-errors for kinds without an analyzer, so the empty-params message
     // must not send exe users down that dead end (it used to suggest --manage).

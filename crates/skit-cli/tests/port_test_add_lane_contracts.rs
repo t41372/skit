@@ -644,7 +644,6 @@ fn test_js_parseargs_add_prints_the_read_notice() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a reader-driven python's JSON view is already plain (unmanaged == [], no --manage candidate — cli.rs:4074-4076 gates on cli_params), but the human read view has no 'has no managed parameters.' line at all: Rust lists the argparse field itself ('Parameter: n', cli.rs:4148). The oracle's plain read view prints '%(name)s has no managed parameters.' with no --manage advertisement (src/skit/cli.py:3810,3956). Verified against the built binary."]
 fn test_params_python_argparse_read_view_is_plain() {
     // A python entry that parses its own arguments is reader-driven like every kind: its
     // parser IS the run form, so the read view says the plain 'no managed parameters.' and does
@@ -680,7 +679,6 @@ fn test_params_python_argparse_read_view_is_plain() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the JSON half holds (unmanaged == ['OUT']), but the human read view never advertises '--manage' — Rust prints 'Unmanaged candidates: OUT' (cli.rs:4179-4180) instead of the oracle's '… Use --manage to bring a detected candidate under management.' (src/skit/cli.py:3956). Verified against the built binary."]
 fn test_params_python_constants_only_still_offers_manage() {
     // The gate is scoped to reader-driven entries: a constants-only python (no argparse) is
     // NOT reader-driven, so it keeps advertising --manage and lists the detected candidate.
