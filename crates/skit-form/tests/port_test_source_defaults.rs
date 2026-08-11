@@ -168,7 +168,7 @@ fn test_missing_managed_binding_is_removed_from_fields_but_reported_as_drift() {
 }
 
 #[test]
-fn test_input_binding_flag_reflects_the_source_binding() {
+fn test_input_binding_flag_reflects_the_decl_binding() {
     let plan = form_plan("python", INPUT_SCRIPT, &EntrySettings::default());
     let [field] = plan.fields.as_slice() else {
         panic!("expected exactly one input field: {plan:?}");
@@ -254,7 +254,7 @@ fn test_shell_noncolon_envdefaults_genuinely_deliver_empty() {
 }
 
 #[test]
-fn test_delivers_empty_matrix_matches_the_python_form_contract() {
+fn test_delivers_empty_matrix() {
     fn field(
         parameter_type: ParameterType,
         delivery: ParameterDelivery,
