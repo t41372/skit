@@ -1,8 +1,8 @@
 //! Exact CLI-boundary ports of Python v0.4 `tests/test_path_type.py` edit/resync contracts.
 //!
 //! The Python helper returned declarations plus warning codes. Rust's public edit boundary is
-//! `skit params`, so these tests require both the persisted final row and the absence/presence of
-//! user-visible edit consequences. No production seam is added for the port.
+//! `skit params`; these tests therefore start resync from a real managed `[tool.skit]` source block
+//! and require the persisted post-resync row. No production seam is added for the port.
 
 use std::fs;
 
@@ -97,7 +97,28 @@ fn parameter<'a>(document: &'a Value, name: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("missing parameter {name}: {document}"))
 }
 
-const SCRIPT: &str = "SRC = \"./data.csv\"\nRETRIES = 3\nprint(SRC, RETRIES)\n";
+fn managed_path_source(name: &str, prompt: Option<&str>) -> String {
+    let prompt = prompt.map_or_else(String::new, |prompt| format!("# prompt = {prompt:?}\n"));
+    format!(
+        concat!(
+            "# /// script\n",
+            "# [tool.skit]\n",
+            "# schema = 1\n",
+            "#\n",
+            "# [[tool.skit.params]]\n",
+            "# name = {name:?}\n",
+            "# kind = \"const\"\n",
+            "# type = \"path\"\n",
+            "{prompt}",
+            "# ///\n",
+            "SRC = \"./data.csv\"\n",
+            "RETRIES = 3\n",
+            "print(SRC, RETRIES)\n",
+        ),
+        name = name,
+        prompt = prompt,
+    )
+}
 
 #[test]
 fn test_edit_declared_accepts_path_type() {
@@ -121,19 +142,11 @@ fn test_edit_declared_accepts_path_type() {
 #[test]
 fn test_resync_preserves_declared_path() {
     let sandbox = Sandbox::new();
-    sandbox.add_python("paths", SCRIPT);
-    sandbox.ok(&["params", "paths", "--manage", "SRC"]);
-    sandbox.ok(&[
-        "params",
-        "paths",
-        "--type",
-        "SRC=path",
-        "--prompt",
-        "SRC=Which file? ",
-    ]);
+    sandbox.add_python("paths", &managed_path_source("SRC", Some("Which file? ")));
     let before = sandbox.params("paths");
-    assert_eq!(parameter(&before, "SRC")["type"], "path");
-    assert_eq!(parameter(&before, "SRC")["prompt"], "Which file? ");
+    let src = parameter(&before, "SRC");
+    assert_eq!(src["type"], "path");
+    assert_eq!(src["prompt"], "Which file? ");
 
     let resync = sandbox.output(&["params", "paths", "--resync"]);
     assert!(
@@ -164,9 +177,7 @@ fn test_resync_preserves_declared_path() {
 #[test]
 fn test_resync_still_corrects_real_type_drift() {
     let sandbox = Sandbox::new();
-    sandbox.add_python("paths", SCRIPT);
-    sandbox.ok(&["params", "paths", "--manage", "RETRIES"]);
-    sandbox.ok(&["params", "paths", "--type", "RETRIES=path"]);
+    sandbox.add_python("paths", &managed_path_source("RETRIES", None));
     assert_eq!(
         parameter(&sandbox.params("paths"), "RETRIES")["type"],
         "path"
