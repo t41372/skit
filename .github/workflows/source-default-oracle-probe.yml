@@ -1,0 +1,103 @@
+name: Source default oracle probe
+
+on:
+  push:
+    branches:
+      - agent/port-python-test-contracts-v3
+    paths:
+      - .github/workflows/source-default-oracle-probe.yml
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: agent/port-python-test-contracts-v3
+          persist-credentials: true
+      - name: Format and run exact source-default oracles
+        shell: bash
+        run: |
+          set +e
+          files=(
+            crates/skit-form/tests/port_test_source_defaults.rs
+            crates/skit-language/tests/port_test_reconcile_defaults.rs
+            crates/skit-store/tests/port_test_source_default_pipeline.rs
+            crates/skit-cli/tests/port_test_source_default_semantics.rs
+            crates/skit-cli/tests/port_test_source_default_semantics_manifest.rs
+          )
+          rustfmt --edition 2024 "${files[@]}" > /tmp/source-default-format.log 2>&1
+          format_rc=$?
+          rustfmt --edition 2024 --check "${files[@]}" > /tmp/source-default-rustfmt.log 2>&1
+          rustfmt_rc=$?
+
+          cargo test --locked -p skit-cli-rs --test port_test_source_default_semantics_manifest -- --nocapture > /tmp/source-default-manifest.log 2>&1
+          manifest_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture > /tmp/source-default-strength.log 2>&1
+          strength_rc=$?
+
+          result=crates/skit-cli/tests/source_default_oracle_probe_result.txt
+          : > "$result"
+          echo "HEAD=$(git rev-parse HEAD)" >> "$result"
+          echo "FORMAT_RC=$format_rc" >> "$result"
+          echo "RUSTFMT_RC=$rustfmt_rc" >> "$result"
+          echo "MANIFEST_RC=$manifest_rc" >> "$result"
+          echo "STRENGTH_GATE_RC=$strength_rc" >> "$result"
+
+          run_one() {
+            crate="$1"; binary="$2"; name="$3"
+            log="/tmp/source-default-${name}.log"
+            cargo test --locked -p "$crate" --test "$binary" "$name" -- --exact --nocapture > "$log" 2>&1
+            rc=$?
+            echo "$name=$rc" >> "$result"
+            if [ "$rc" -ne 0 ]; then
+              echo >> "$result"
+              echo "===== $name failure tail =====" >> "$result"
+              tail -n 120 "$log" >> "$result"
+            fi
+          }
+
+          run_one skit-form port_test_source_defaults test_plan_refreshes_a_stale_block_default_from_the_python_body
+          run_one skit-form port_test_source_defaults test_plan_refreshes_a_stale_shell_envdefault_from_the_body
+          run_one skit-language port_test_reconcile_defaults test_reconcile_records_current_default_for_an_ok_const
+          run_one skit-language port_test_reconcile_defaults test_reconcile_records_current_default_for_an_ok_envdefault
+          run_one skit-language port_test_reconcile_defaults test_reconcile_omits_current_default_for_a_type_changed_const
+          run_one skit-cli-rs port_test_source_default_semantics test_resync_writes_source_default_into_ok_and_type_changed_specs
+          run_one skit-cli-rs port_test_source_default_semantics test_resync_current_default_and_rebind_and_untouched_input_share_one_pass
+          run_one skit-store port_test_source_default_pipeline test_assemble_injects_a_value_that_equals_the_source_default
+          run_one skit-store port_test_source_default_pipeline test_assemble_injects_the_expansion_of_an_untouched_token_default
+          run_one skit-store port_test_source_default_pipeline test_assemble_inject_delivers_empty_string_when_cleared
+          run_one skit-store port_test_source_default_pipeline test_assemble_env_delivers_empty_string_when_cleared
+          run_one skit-store port_test_source_default_pipeline test_assemble_flag_delivers_empty_string_when_cleared
+          run_one skit-form port_test_source_defaults test_delivers_empty_matrix
+          run_one skit-store port_test_source_default_pipeline test_last_used_drops_values_equal_to_their_default
+          run_one skit-store port_test_source_default_pipeline test_last_used_keeps_a_cleared_empty_only_where_it_was_delivered
+          run_one skit-store port_test_source_default_pipeline test_save_after_run_persists_via_the_remembered_rule
+          run_one skit-form port_test_source_defaults test_input_binding_flag_reflects_the_decl_binding
+
+          for pair in \
+            "format:$format_rc:/tmp/source-default-format.log" \
+            "rustfmt:$rustfmt_rc:/tmp/source-default-rustfmt.log" \
+            "manifest:$manifest_rc:/tmp/source-default-manifest.log" \
+            "strength:$strength_rc:/tmp/source-default-strength.log"
+          do
+            IFS=: read -r label rc log <<< "$pair"
+            if [ "$rc" -ne 0 ]; then
+              echo >> "$result"
+              echo "===== $label failure tail =====" >> "$result"
+              tail -n 140 "$log" >> "$result"
+            fi
+          done
+
+          git add -- "${files[@]}" "$result"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          if ! git diff --cached --quiet; then
+            git commit -m "test(port): format and record source-default probe"
+            git push origin HEAD:agent/port-python-test-contracts-v3
+          fi
+          exit 0
