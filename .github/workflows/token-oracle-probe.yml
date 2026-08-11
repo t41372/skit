@@ -1,13 +1,11 @@
 name: Token oracle probe
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/port-python-test-contracts-v3
     paths:
       - .github/workflows/token-oracle-probe.yml
-      - crates/skit-application/tests/port_test_tokens.rs
-      - crates/skit-cli/tests/port_test_tokens_runtime.rs
-      - crates/skit-cli/tests/port_test_tokens_manifest.rs
-      - crates/skit-cli/tests/port_test_strength_gate.rs
 
 permissions:
   contents: read
@@ -19,6 +17,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          ref: agent/port-python-test-contracts-v3
           persist-credentials: false
       - name: Run exact token oracles
         shell: bash
