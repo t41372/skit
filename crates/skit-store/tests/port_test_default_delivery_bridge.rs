@@ -40,7 +40,7 @@ fn empty_submitted() -> BTreeMap<String, String> {
 }
 
 #[test]
-fn test_shell_colon_envdefault_does_not_export_empty_after_form_planning() {
+fn test_shell_colon_envdefaults_do_not_claim_to_deliver_empty() {
     for operator in [":-", ":="] {
         let text = shell_envdefault(operator);
         let plan = form_plan("shell", &text, &EntrySettings::default());
@@ -59,7 +59,7 @@ fn test_shell_colon_envdefault_does_not_export_empty_after_form_planning() {
 }
 
 #[test]
-fn test_shell_noncolon_envdefault_exports_explicit_empty_after_form_planning() {
+fn test_shell_noncolon_envdefaults_genuinely_deliver_empty() {
     for operator in ["-", "="] {
         let text = shell_envdefault(operator);
         let plan = form_plan("shell", &text, &EntrySettings::default());
