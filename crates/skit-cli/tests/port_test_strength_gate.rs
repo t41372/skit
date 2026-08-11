@@ -25,13 +25,22 @@ fn visit(directory: &Path, offenders: &mut Vec<String>) {
         let text = fs::read_to_string(&path).unwrap();
         let forbidden = [
             (["#[", "ignore"].concat(), "ignored test"),
-            (["#[", "should_panic"].concat(), "unscoped panic-as-success test"),
+            (["#[", "should_", "panic"].concat(), "unscoped panic-as-success test"),
             (["todo", "!()"].concat(), "todo placeholder"),
             (["unimplemented", "!()"].concat(), "unimplemented placeholder"),
-            ("assert!(true)".to_owned(), "vacuous true assertion"),
-            ("assert_eq!(true, true)".to_owned(), "vacuous constant equality"),
-            ("assert_eq!(false, false)".to_owned(), "vacuous constant equality"),
-            ("assert_ne!(true, false)".to_owned(), "vacuous constant inequality"),
+            (["assert!", "(true)"].concat(), "vacuous true assertion"),
+            (
+                ["assert_eq!", "(true, true)"].concat(),
+                "vacuous constant equality",
+            ),
+            (
+                ["assert_eq!", "(false, false)"].concat(),
+                "vacuous constant equality",
+            ),
+            (
+                ["assert_ne!", "(true, false)"].concat(),
+                "vacuous constant inequality",
+            ),
         ];
         for (needle, reason) in &forbidden {
             if text.contains(needle) {
