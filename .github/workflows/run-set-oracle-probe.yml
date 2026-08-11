@@ -8,6 +8,8 @@ on:
       - crates/skit-cli/tests/port_test_run_set_manifest.rs
       - crates/skit-cli/tests/port_test_raw.rs
       - crates/skit-cli/tests/port_test_raw_manifest.rs
+      - crates/skit-cli/tests/port_test_show.rs
+      - crates/skit-cli/tests/port_test_show_manifest.rs
       - crates/skit-cli/tests/port_test_strength_gate.rs
       - crates/skit-store/tests/port_test_presets.rs
       - crates/skit-store/tests/port_test_presets_manifest.rs
@@ -23,7 +25,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Run run-set, preset, and raw port oracles
+      - name: Run run-set, preset, raw, and show port oracles
         shell: bash
         run: |
           set +e
@@ -32,6 +34,8 @@ jobs:
             crates/skit-cli/tests/port_test_run_set_manifest.rs \
             crates/skit-cli/tests/port_test_raw.rs \
             crates/skit-cli/tests/port_test_raw_manifest.rs \
+            crates/skit-cli/tests/port_test_show.rs \
+            crates/skit-cli/tests/port_test_show_manifest.rs \
             crates/skit-store/tests/port_test_presets.rs \
             crates/skit-store/tests/port_test_presets_manifest.rs
           echo "PORT_RUSTFMT_RC=$?"
@@ -39,6 +43,8 @@ jobs:
           echo "RUN_SET_MANIFEST_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_raw_manifest -- --nocapture
           echo "RAW_MANIFEST_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_show_manifest -- --nocapture
+          echo "SHOW_MANIFEST_RC=$?"
           cargo test --locked -p skit-store --test port_test_presets_manifest -- --nocapture
           echo "PRESETS_MANIFEST_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture
@@ -49,4 +55,6 @@ jobs:
           echo "PRESETS_ORACLE_RC=$?"
           cargo test --locked -p skit-cli-rs --test port_test_raw -- --nocapture --test-threads=1
           echo "RAW_ORACLE_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_show -- --nocapture --test-threads=1
+          echo "SHOW_ORACLE_RC=$?"
           exit 0
