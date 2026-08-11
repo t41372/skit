@@ -1,6 +1,6 @@
 name: Default name oracle probe
 
-# Temporary self-path push trigger; deleted after diagnostics are read.
+# Retry trigger with one full Rust test-harness run; deleted after diagnostics are read.
 on:
   push:
     branches:
@@ -38,90 +38,39 @@ jobs:
           manifest_rc=$?
           cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture > /tmp/default-name-strength.log 2>&1
           strength_rc=$?
+          cargo test --locked -p skit-cli-rs --test port_test_source_default_semantics test_resync_current_default_and_rebind_and_untouched_input_share_one_pass -- --exact --nocapture > /tmp/source-default-rebind.log 2>&1
+          source_default_rc=$?
+          cargo test --locked -p skit-form --test port_test_default_name_resolution -- --nocapture --test-threads=1 > /tmp/default-name-tests.log 2>&1
+          tests_rc=$?
 
           result=crates/skit-cli/tests/default_name_oracle_probe_result.txt
-          : > "$result"
-          echo "HEAD=$(git rev-parse HEAD)" >> "$result"
-          echo "FORMAT_RC=$format_rc" >> "$result"
-          echo "RUSTFMT_RC=$rustfmt_rc" >> "$result"
-          echo "MANIFEST_RC=$manifest_rc" >> "$result"
-          echo "STRENGTH_GATE_RC=$strength_rc" >> "$result"
-
-          run_one() {
-            crate="$1"; binary="$2"; name="$3"
-            log="/tmp/default-name-${name}.log"
-            cargo test --locked -p "$crate" --test "$binary" "$name" -- --exact --nocapture > "$log" 2>&1
-            rc=$?
-            echo "$name=$rc" >> "$result"
-            if [ "$rc" -ne 0 ]; then
-              echo >> "$result"
-              echo "===== $name failure tail =====" >> "$result"
-              tail -n 100 "$log" >> "$result"
-            fi
-          }
-
-          run_one skit-cli-rs port_test_source_default_semantics test_resync_current_default_and_rebind_and_untouched_input_share_one_pass
-
-          names=(
-            test_argparse_string_constant_default_resolves
-            test_argparse_int_and_bool_constant_defaults_resolve
-            test_argparse_augmented_assigned_name_does_not_resolve
-            test_argparse_loop_reassigned_name_does_not_resolve
-            test_argparse_non_store_value_binding_does_not_resolve
-            test_argparse_star_import_makes_every_constant_default_opaque
-            test_argparse_unknown_name_default_degrades
-            test_argparse_call_default_still_degrades
-            test_argparse_constant_used_twice_resolves_in_both_fields
-            test_argparse_conditional_rebinding_does_not_resolve
-            test_argparse_try_except_rebinding_does_not_resolve
-            test_argparse_with_block_rebinding_does_not_resolve
-            test_argparse_function_local_assignment_blocks_resolution
-            test_argparse_function_parameter_shadow_blocks_resolution
-            test_argparse_secret_constant_never_resolves
-            test_argparse_password_and_token_constants_never_resolve
-            test_argparse_constant_bound_twice_does_not_resolve
-            test_click_constant_default_resolves
-            test_click_constant_also_read_inside_the_body_still_resolves
-            test_click_secret_constant_default_degrades
-            test_click_unknown_name_default_degrades
-            test_typer_legacy_option_constant_default_resolves
-            test_typer_annotated_signature_constant_default_resolves
-            test_typer_bare_signature_constant_default_resolves
-            test_typer_unknown_signature_default_degrades
-            test_js_constant_default_resolves
-            test_js_let_binding_default_does_not_resolve
-            test_js_reassigned_const_default_does_not_resolve
-            test_js_unknown_identifier_default_degrades
-            test_js_function_local_const_shadow_does_not_resolve
-            test_js_function_parameter_shadow_does_not_resolve
-            test_js_constant_read_as_a_parameter_default_still_resolves
-            test_ts_typed_parameter_default_reads_the_constant_without_declaring_it
-            test_ts_destructured_parameter_default_is_also_only_a_read
-            test_ts_typed_parameter_with_a_default_still_shadows_by_its_bound_name
-            test_js_parameter_with_a_default_still_shadows_by_its_bound_name
-            test_ts_typed_function_parameter_shadow_does_not_resolve
-            test_js_secret_constant_never_resolves
-            test_js_non_parameter_value_binding_does_not_resolve
-            test_js_import_binding_does_not_resolve
-            test_js_nonbinding_shapes_leave_constant_resolution_intact
-            test_ts_constant_default_resolves
-          )
-          echo "DEFAULT_NAME_COUNT=${#names[@]}" >> "$result"
-          for name in "${names[@]}"; do
-            run_one skit-form port_test_default_name_resolution "$name"
-          done
+          {
+            echo "HEAD=$(git rev-parse HEAD)"
+            echo "FORMAT_RC=$format_rc"
+            echo "RUSTFMT_RC=$rustfmt_rc"
+            echo "MANIFEST_RC=$manifest_rc"
+            echo "STRENGTH_GATE_RC=$strength_rc"
+            echo "SOURCE_DEFAULT_REBIND_RC=$source_default_rc"
+            echo "DEFAULT_NAME_COUNT=42"
+            echo "DEFAULT_NAME_TEST_RC=$tests_rc"
+            echo
+            echo "===== default-name test summary ====="
+            grep -E '^test result:|^test .* \.\.\. (ok|FAILED)$|^failures:$|^    test_' /tmp/default-name-tests.log || true
+          } > "$result"
 
           for pair in \
             "format:$format_rc:/tmp/default-name-format.log" \
             "rustfmt:$rustfmt_rc:/tmp/default-name-rustfmt.log" \
             "manifest:$manifest_rc:/tmp/default-name-manifest.log" \
-            "strength:$strength_rc:/tmp/default-name-strength.log"
+            "strength:$strength_rc:/tmp/default-name-strength.log" \
+            "source-default-rebind:$source_default_rc:/tmp/source-default-rebind.log" \
+            "default-name:$tests_rc:/tmp/default-name-tests.log"
           do
             IFS=: read -r label rc log <<< "$pair"
             if [ "$rc" -ne 0 ]; then
               echo >> "$result"
-              echo "===== $label failure tail =====" >> "$result"
-              tail -n 140 "$log" >> "$result"
+              echo "===== $label failure log =====" >> "$result"
+              cat "$log" >> "$result"
             fi
           done
 
