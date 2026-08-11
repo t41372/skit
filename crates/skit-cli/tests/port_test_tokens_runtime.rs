@@ -72,6 +72,10 @@ impl Sandbox {
         let path = self.state.path().join("values/ambient.toml");
         fs::read_to_string(path).unwrap_or_default()
     }
+
+    fn state_doc(&self) -> toml::Value {
+        toml::from_str(&self.state_text()).expect("ambient state must be valid TOML")
+    }
 }
 
 fn is_yyyy_mm_dd(value: &str) -> bool {
@@ -127,9 +131,14 @@ fn test_default_env_and_now_paths() {
         !env_text.contains("{env:SKIT_TOKEN_TEST}"),
         "unexpanded environment token reached output:\n{env_text}"
     );
-    assert!(
-        sandbox.state_text().contains("{env:SKIT_TOKEN_TEST}"),
-        "last-used state must preserve token intent rather than the ambient secret/value"
+    let env_state = sandbox.state_doc();
+    assert_eq!(
+        env_state["values"]["value"].as_str(),
+        Some("{env:SKIT_TOKEN_TEST}")
+    );
+    assert_eq!(
+        env_state["last_run"]["values"]["value"].as_str(),
+        Some("{env:SKIT_TOKEN_TEST}")
     );
     assert!(
         !sandbox.state_text().contains(env_value),
@@ -162,10 +171,10 @@ fn test_default_env_and_now_paths() {
         !today_text.contains("{today}"),
         "unexpanded date token reached output:\n{today_text}"
     );
-    let state = sandbox.state_text();
-    assert!(state.contains("{today}"), "last-used state lost date-token intent:\n{state}");
-    assert!(
-        delivered_date.is_none_or(|date| !state.contains(date)),
-        "runtime date was incorrectly frozen into persisted intent:\n{state}"
+    let today_state = sandbox.state_doc();
+    assert_eq!(today_state["values"]["value"].as_str(), Some("{today}"));
+    assert_eq!(
+        today_state["last_run"]["values"]["value"].as_str(),
+        Some("{today}")
     );
 }
