@@ -1,84 +1,41 @@
 name: Default name oracle probe
 
-# Retry trigger with one full Rust test-harness run; deleted after diagnostics are read.
 on:
-  push:
-    branches:
-      - agent/port-python-test-contracts-v3
+  pull_request:
     paths:
       - .github/workflows/default-name-oracle-probe.yml
+      - crates/skit-form/tests/port_test_default_name_resolution.rs
+      - crates/skit-cli/tests/port_test_default_name_resolution_manifest.rs
+      - crates/skit-cli/tests/port_test_source_default_semantics.rs
+      - crates/skit-cli/tests/port_test_strength_gate.rs
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   probe:
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out branch
+      - name: Check out PR branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: agent/port-python-test-contracts-v3
-          persist-credentials: true
-      - name: Format and run exact default-name oracles
+          persist-credentials: false
+      - name: Run exact default-name oracles
         shell: bash
         run: |
           set +e
-          files=(
-            crates/skit-form/tests/port_test_default_name_resolution.rs
-            crates/skit-cli/tests/port_test_default_name_resolution_manifest.rs
+          rustfmt --edition 2024 --check \
+            crates/skit-form/tests/port_test_default_name_resolution.rs \
+            crates/skit-cli/tests/port_test_default_name_resolution_manifest.rs \
             crates/skit-cli/tests/port_test_source_default_semantics.rs
-          )
-          rustfmt --edition 2024 "${files[@]}" > /tmp/default-name-format.log 2>&1
-          format_rc=$?
-          rustfmt --edition 2024 --check "${files[@]}" > /tmp/default-name-rustfmt.log 2>&1
-          rustfmt_rc=$?
-
-          cargo test --locked -p skit-cli-rs --test port_test_default_name_resolution_manifest -- --nocapture > /tmp/default-name-manifest.log 2>&1
-          manifest_rc=$?
-          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture > /tmp/default-name-strength.log 2>&1
-          strength_rc=$?
-          cargo test --locked -p skit-cli-rs --test port_test_source_default_semantics test_resync_current_default_and_rebind_and_untouched_input_share_one_pass -- --exact --nocapture > /tmp/source-default-rebind.log 2>&1
-          source_default_rc=$?
-          cargo test --locked -p skit-form --test port_test_default_name_resolution -- --nocapture --test-threads=1 > /tmp/default-name-tests.log 2>&1
-          tests_rc=$?
-
-          result=crates/skit-cli/tests/default_name_oracle_probe_result.txt
-          {
-            echo "HEAD=$(git rev-parse HEAD)"
-            echo "FORMAT_RC=$format_rc"
-            echo "RUSTFMT_RC=$rustfmt_rc"
-            echo "MANIFEST_RC=$manifest_rc"
-            echo "STRENGTH_GATE_RC=$strength_rc"
-            echo "SOURCE_DEFAULT_REBIND_RC=$source_default_rc"
-            echo "DEFAULT_NAME_COUNT=42"
-            echo "DEFAULT_NAME_TEST_RC=$tests_rc"
-            echo
-            echo "===== default-name test summary ====="
-            grep -E '^test result:|^test .* \.\.\. (ok|FAILED)$|^failures:$|^    test_' /tmp/default-name-tests.log || true
-          } > "$result"
-
-          for pair in \
-            "format:$format_rc:/tmp/default-name-format.log" \
-            "rustfmt:$rustfmt_rc:/tmp/default-name-rustfmt.log" \
-            "manifest:$manifest_rc:/tmp/default-name-manifest.log" \
-            "strength:$strength_rc:/tmp/default-name-strength.log" \
-            "source-default-rebind:$source_default_rc:/tmp/source-default-rebind.log" \
-            "default-name:$tests_rc:/tmp/default-name-tests.log"
-          do
-            IFS=: read -r label rc log <<< "$pair"
-            if [ "$rc" -ne 0 ]; then
-              echo >> "$result"
-              echo "===== $label failure log =====" >> "$result"
-              cat "$log" >> "$result"
-            fi
-          done
-
-          git add -- "${files[@]}" "$result"
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          if ! git diff --cached --quiet; then
-            git commit -m "test(port): format and record default-name probe"
-            git push origin HEAD:agent/port-python-test-contracts-v3
-          fi
+          echo "DEFAULT_NAME_RUSTFMT_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_default_name_resolution_manifest -- --nocapture
+          echo "DEFAULT_NAME_MANIFEST_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture
+          echo "STRENGTH_GATE_RC=$?"
+          cargo test --locked -p skit-cli-rs --test port_test_source_default_semantics test_resync_current_default_and_rebind_and_untouched_input_share_one_pass -- --exact --nocapture
+          echo "SOURCE_DEFAULT_REBIND_RC=$?"
+          cargo test --locked -p skit-form --test port_test_default_name_resolution -- --nocapture --test-threads=1
+          echo "DEFAULT_NAME_ORACLE_RC=$?"
           exit 0
