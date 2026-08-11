@@ -8,14 +8,10 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use assert_cmd::Command;
 use serde_json::Value;
-use skit_application::form_state::{
-    FormStateRepository, FormStateService, prefill,
-};
+use skit_application::form_state::{FormStateRepository, FormStateService, prefill};
 use skit_domain::{
     EntrySettings, Slug,
-    parameters::{
-        ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-    },
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
 };
 use skit_form::form_plan;
 use skit_language::{ParseOutcome, parse_document};
@@ -90,18 +86,16 @@ impl Sandbox {
     fn add_python(&self, name: &str, source: &str) -> PathBuf {
         let input = self.home.path().join(format!("{name}.py"));
         fs::write(&input, source).unwrap();
-        self.ok(&[
-            "add",
-            input.to_str().unwrap(),
-            "--name",
-            name,
-            "--no-input",
-        ]);
+        self.ok(&["add", input.to_str().unwrap(), "--name", name, "--no-input"]);
         self.stored(name)
     }
 
     fn stored(&self, slug: &str) -> PathBuf {
-        self.data.path().join("scripts").join(slug).join("script.py")
+        self.data
+            .path()
+            .join("scripts")
+            .join(slug)
+            .join("script.py")
     }
 
     fn state_store(&self) -> FileFormStateStore {
@@ -233,7 +227,10 @@ print(TOKEN)
     assert_eq!(params["current_defaults"], serde_json::json!({}));
     let row = parameter(&params, "TOKEN");
     assert_eq!(row["secret"], true);
-    assert!(row.get("default").is_none(), "secret row leaked a default: {row}");
+    assert!(
+        row.get("default").is_none(),
+        "secret row leaked a default: {row}"
+    );
     assert!(!raw_params.contains(SECRET_LITERAL), "{raw_params}");
 
     let (raw_show, show) = sandbox.json(&["show", "tok", "--json"]);
@@ -259,7 +256,13 @@ fn test_preset_from_last_saves_effective_values_after_an_all_defaults_run() {
     let accepted = values(&[("GREETING", "bonjour")]);
 
     service
-        .save_last(&slug, &declarations, Some(&accepted), Some(Vec::new()), false)
+        .save_last(
+            &slug,
+            &declarations,
+            Some(&accepted),
+            Some(Vec::new()),
+            false,
+        )
         .unwrap();
     service
         .record_run(
@@ -290,7 +293,11 @@ fn test_preset_from_last_still_refuses_an_entry_that_never_ran() {
     let output = sandbox.output(&["preset", "save", "fresh", "p", "--from-last"]);
 
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert!(combined(&output).contains("no remembered values yet"), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("no remembered values yet"),
+        "{}",
+        combined(&output)
+    );
     assert!(service.load(&slug("fresh")).presets.is_empty());
 }
 
@@ -316,7 +323,11 @@ fn test_preset_from_last_pins_the_default_that_actually_ran() {
         .unwrap();
 
     let current = fs::read_to_string(&stored).unwrap();
-    fs::write(&stored, current.replace("GREETING = \"A\"", "GREETING = \"B\"")).unwrap();
+    fs::write(
+        &stored,
+        current.replace("GREETING = \"A\"", "GREETING = \"B\""),
+    )
+    .unwrap();
     let updated = fs::read_to_string(&stored).unwrap();
     let plan = form_plan("python", &updated, &EntrySettings::default());
     assert_eq!(
@@ -346,15 +357,13 @@ fn test_preset_from_legacy_run_without_snapshot_refuses_to_guess() {
         })
         .unwrap();
 
-    let output = sandbox.output(&[
-        "preset",
-        "save",
-        "legacy-history",
-        "p",
-        "--from-last",
-    ]);
+    let output = sandbox.output(&["preset", "save", "legacy-history", "p", "--from-last"]);
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert!(combined(&output).contains("run it once first"), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("run it once first"),
+        "{}",
+        combined(&output)
+    );
     assert!(service.load(&slug).presets.is_empty());
 }
 
@@ -377,10 +386,7 @@ fn test_run_save_preset_stores_a_default_equal_value_verbatim() {
     let state = FormStateService::new(sandbox.state_store()).load(&slug("pinned"));
     assert_eq!(
         state.presets,
-        BTreeMap::from([(
-            "p".to_owned(),
-            values(&[("GREETING", "bonjour")])
-        )])
+        BTreeMap::from([("p".to_owned(), values(&[("GREETING", "bonjour")]))])
     );
     assert!(state.values.is_empty());
 }
@@ -390,13 +396,7 @@ fn test_resync_and_secret_in_one_edit_drops_the_refreshed_literal() {
     let sandbox = Sandbox::new();
     let stored = sandbox.add_python("secret-edit", &source_with_city("old", "sk-live-source"));
 
-    let output = sandbox.output(&[
-        "params",
-        "secret-edit",
-        "--resync",
-        "--secret",
-        "CITY",
-    ]);
+    let output = sandbox.output(&["params", "secret-edit", "--resync", "--secret", "CITY"]);
     assert!(output.status.success(), "{}", combined(&output));
     let (_, document) = sandbox.json(&["params", "secret-edit", "--json"]);
     let city = parameter(&document, "CITY");

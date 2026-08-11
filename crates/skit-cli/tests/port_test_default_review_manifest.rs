@@ -52,7 +52,11 @@ fn every_executable_default_review_python_contract_has_one_real_rust_oracle() {
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    assert_eq!(expected.len(), 17, "the executable Python names must be unique");
+    assert_eq!(
+        expected.len(),
+        17,
+        "the executable Python names must be unique"
+    );
 
     let mut counts = BTreeMap::<String, usize>::new();
     for source in SOURCES {
@@ -85,7 +89,10 @@ fn every_executable_default_review_python_contract_has_one_real_rust_oracle() {
 
 #[test]
 fn blocked_default_review_contract_is_not_counted_as_coverage() {
-    assert_eq!(BLOCKED_PRIVATE_SYNTHETIC_TEST, "test_const_default_that_no_longer_fits_the_declared_type_is_not_published");
+    assert_eq!(
+        BLOCKED_PRIVATE_SYNTHETIC_TEST,
+        "test_const_default_that_no_longer_fits_the_declared_type_is_not_published"
+    );
     assert_eq!(EXECUTABLE_PYTHON_TESTS.len(), 17);
     assert_eq!(EXECUTABLE_PYTHON_TESTS.len() + 1, 18);
 }

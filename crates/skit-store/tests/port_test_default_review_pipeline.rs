@@ -160,7 +160,10 @@ fn test_input_binding_with_a_default_is_delivered() {
         field.declaration.default,
         Some(ParameterValue::String("Tim".to_owned()))
     );
-    assert!(plan.drift.is_empty(), "the stored prompt/order must still resolve");
+    assert!(
+        plan.drift.is_empty(),
+        "the stored prompt/order must still resolve"
+    );
 
     let declarations = plan.declarations();
     let raw = prefill(&declarations, &BTreeMap::new(), None);
@@ -207,7 +210,11 @@ fn test_main_guard_override_receives_the_unchanged_default() {
         &assembly.inject_values,
     )
     .unwrap();
-    assert_eq!(injected.matches("HOST = 'localhost'").count(), 2, "{injected}");
+    assert_eq!(
+        injected.matches("HOST = 'localhost'").count(),
+        2,
+        "{injected}"
+    );
     assert!(!injected.contains("127.0.0.1"), "{injected}");
 }
 
