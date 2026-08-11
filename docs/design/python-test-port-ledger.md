@@ -131,12 +131,12 @@ adjudicated · counts are Python `def test_` counts.
 | test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs | in fix (28/33) · 1 empty-needle weakening being fixed · 2 private-render drops |
 | test_phase1.py | 27 | crates/skit-cli/tests/port_test_phase1.rs | done (27) · no gap |
 | test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs | in fix (10/9) · 4 render-model narrowings being tightened/noted |
-| test_settings_and_draft_review_atomicity.py | 16 | skit-ui / skit-store | todo |
-| test_draft_and_reader_tui.py | 16 | skit-ui / skit-tui | todo |
-| test_reset_default_ui.py | 14 | skit-ui / skit-tui | todo |
-| test_tui_edit.py | 6 | skit-ui / skit-tui | todo |
-| test_tui_nav.py | 5 | skit-ui / skit-tui | todo |
-| test_ime_input.py | 3 | skit-tui | todo |
+| test_settings_and_draft_review_atomicity.py | 16 | crates/skit-ui/tests/port_test_settings_and_draft_review_atomicity.rs | in fix (8/8) · settings-save npm-clear-first atomic-refusal ABSENT from Rust (mislabel being corrected) |
+| test_draft_and_reader_tui.py | 16 | crates/skit-tui/tests/port_test_draft_and_reader_tui.rs | done (14) · 2 deferred |
+| test_reset_default_ui.py | 14 | crates/skit-tui/tests/port_test_reset_default_ui.rs | in fix (10/4) · const-field help weakening + param-row live-default fixture being fixed |
+| test_tui_edit.py | 6 | crates/skit-tui/tests/port_test_tui_edit.rs | done (1) · 5 cross-crate (editor lane) |
+| test_tui_nav.py | 5 | crates/skit-tui/tests/port_test_tui_nav.rs | done (1) · 4 cross-crate (terminal nav) |
+| test_ime_input.py | 3 | crates/skit-tui/tests/port_test_ime_input.rs | done (0) · 3 cross-crate (kitty-key/PTY terminal input) |
 
 ### Tier 6 — i18n and packaging (`skit-i18n`, tooling)
 
