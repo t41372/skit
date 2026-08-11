@@ -16,114 +16,16 @@ on:
       - crates/skit-store/tests/port_test_presets_manifest.rs
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   probe:
     runs-on: ubuntu-24.04
     steps:
-      - name: Check out branch
+      - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: agent/port-python-test-contracts-v3
-          persist-credentials: true
-      - name: Fix only test translation and formatting issues
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-          import re
-
-          raw = Path('crates/skit-cli/tests/port_test_raw.rs')
-          text = raw.read_text()
-          needle = '    let entry_dir = sandbox.stored_script().parent().unwrap();\n'
-          if text.count(needle) == 2:
-              text = text.replace(
-                  needle,
-                  '    let stored_script = sandbox.stored_script();\n'
-                  '    let entry_dir = stored_script.parent().unwrap();\n',
-              )
-              raw.write_text(text)
-          elif text.count(needle) != 0:
-              raise SystemExit('raw lifetime fix matched an unexpected count')
-
-          manifest = Path('crates/skit-store/tests/port_test_presets_manifest.rs')
-          text = manifest.read_text()
-          pattern = re.compile(
-              r'\n    for forbidden in \["#\[ignore", "todo!", "unimplemented!"\] \{\n'
-              r'        assert!\(\n'
-              r'            !SOURCE\.contains\(forbidden\),\n'
-              r'            "preset parity tests may not contain \{forbidden\}"\n'
-              r'        \);\n'
-              r'    \}\n'
-          )
-          text, count = pattern.subn('\n', text)
-          if count == 1:
-              manifest.write_text(text)
-          elif count != 0:
-              raise SystemExit('preset manifest cleanup matched unexpectedly')
-
-          show = Path('crates/skit-cli/tests/port_test_show.rs')
-          text = show.read_text()
-          marker = '    let meta_path = sandbox.entry_dir("trip").join("meta.toml");\n'
-          if marker not in text:
-              old = '''    let script = sandbox.write_python_copy(
-        "trip",
-        "trip",
-        managed_city_source(),
-        &original,
-        "description = \\"plan a trip\\"\\ndependencies = [\\"rich>=15\\"]\\nrequires_python = \\">=3.12\\"",
-    );
-    sandbox.seed_state("trip", "[presets.quick]\\nCITY = \\"Tainan\\"\\n");
-'''
-              new = '''    let script = sandbox.write_python_copy(
-        "trip",
-        "trip",
-        managed_city_source(),
-        &original,
-        "dependencies = [\\"rich>=15\\"]\\nrequires_python = \\">=3.12\\"",
-    );
-    let meta_path = sandbox.entry_dir("trip").join("meta.toml");
-    let meta = fs::read_to_string(&meta_path)
-        .unwrap()
-        .replace("description = \\\"\\\"", "description = \\\"plan a trip\\\"");
-    fs::write(meta_path, meta).unwrap();
-    sandbox.seed_state("trip", "[presets.quick]\\nCITY = \\"Tainan\\"\\n");
-'''
-              if old not in text:
-                  raise SystemExit('show description fixture block was not found')
-              show.write_text(text.replace(old, new, 1))
-          PY
-
-          rustfmt --edition 2024 \
-            crates/skit-application/tests/port_test_argv_text.rs \
-            crates/skit-cli/tests/port_test_run_set.rs \
-            crates/skit-cli/tests/port_test_run_set_manifest.rs \
-            crates/skit-cli/tests/port_test_raw.rs \
-            crates/skit-cli/tests/port_test_raw_manifest.rs \
-            crates/skit-cli/tests/port_test_show.rs \
-            crates/skit-cli/tests/port_test_show_manifest.rs \
-            crates/skit-store/tests/port_test_presets.rs \
-            crates/skit-store/tests/port_test_presets_manifest.rs
-
-          git add -- \
-            crates/skit-application/tests/port_test_argv_text.rs \
-            crates/skit-cli/tests/port_test_run_set.rs \
-            crates/skit-cli/tests/port_test_run_set_manifest.rs \
-            crates/skit-cli/tests/port_test_raw.rs \
-            crates/skit-cli/tests/port_test_raw_manifest.rs \
-            crates/skit-cli/tests/port_test_show.rs \
-            crates/skit-cli/tests/port_test_show_manifest.rs \
-            crates/skit-store/tests/port_test_presets.rs \
-            crates/skit-store/tests/port_test_presets_manifest.rs
-          git diff --cached --check
-          if ! git diff --cached --quiet; then
-            git config user.name github-actions[bot]
-            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-            git commit -m 'test(port): fix latest oracle translations'
-            git push origin HEAD:agent/port-python-test-contracts-v3
-          fi
+          persist-credentials: false
       - name: Run exact port oracles
         shell: bash
         run: |
