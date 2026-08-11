@@ -1,0 +1,259 @@
+HEAD=09cc113e635f5e6de77b8875b100724f6b0cd64b
+FORMAT_RC=0
+RUSTFMT_RC=0
+VARIANT_TEST_RC=101
+test rust_additive_argparse_async_function_definition_binding_invalidates_constant ... ok
+test rust_additive_argparse_class_definition_binding_invalidates_constant ... ok
+test rust_additive_argparse_delete_binding_invalidates_constant ... ok
+test rust_additive_argparse_except_alias_binding_invalidates_constant ... ok
+test rust_additive_argparse_from_import_alias_binding_invalidates_constant ... ok
+test rust_additive_argparse_function_definition_binding_invalidates_constant ... ok
+test rust_additive_argparse_import_alias_binding_invalidates_constant ... ok
+test rust_additive_argparse_match_dictionary_splat_binding_invalidates_constant ... ok
+test rust_additive_argparse_match_splat_binding_invalidates_constant ... ok
+test rust_additive_js_anonymous_class_expression_does_not_invalidate_constant ... ok
+test rust_additive_js_catch_binding_invalidates_constant ... ok
+test rust_additive_js_catch_without_binding_does_not_invalidate_constant ... ok
+test rust_additive_js_class_binding_invalidates_constant ... ok
+test rust_additive_js_default_import_binding_invalidates_constant ... ok
+test rust_additive_js_destructured_binding_invalidates_constant ... ok
+test rust_additive_js_empty_named_import_does_not_invalidate_constant ... ok
+test rust_additive_js_function_binding_invalidates_constant ... ok
+test rust_additive_js_named_function_expression_binding_invalidates_constant ... ok
+test rust_additive_js_named_import_binding_invalidates_constant ... ok
+test rust_additive_js_namespace_import_binding_invalidates_constant ... ok
+test rust_additive_js_renamed_destructured_binding_invalidates_constant ... ok
+test rust_additive_js_renamed_named_import_binding_invalidates_constant ... ok
+test rust_additive_js_side_effect_import_does_not_invalidate_constant ... ok
+failures:
+failures:
+    rust_additive_argparse_match_capture_binding_invalidates_constant
+test result: FAILED. 23 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+===== full variant failure log =====
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded cfg-if v1.0.4
+  Downloaded displaydoc v0.2.7
+  Downloaded either v1.17.0
+  Downloaded boxcar v0.2.14
+  Downloaded getrandom v0.4.3
+  Downloaded icu_properties v2.2.0
+  Downloaded icu_normalizer v2.2.0
+  Downloaded cc v1.4.2
+  Downloaded icu_properties_data v2.2.0
+  Downloaded aho-corasick v1.1.5
+  Downloaded idna_adapter v1.2.2
+  Downloaded itoa v1.0.18
+  Downloaded idna v1.1.0
+  Downloaded itertools v0.13.0
+  Downloaded memchr v2.8.3
+  Downloaded proc-macro2 v1.0.107
+  Downloaded pep440_rs v0.7.3
+  Downloaded serde v1.0.229
+  Downloaded icu_provider v2.2.0
+  Downloaded serde_spanned v1.1.1
+  Downloaded utf8_iter v1.0.4
+  Downloaded serde_core v1.0.229
+  Downloaded sys-locale v0.3.2
+  Downloaded thiserror-impl v1.0.69
+  Downloaded percent-encoding v2.3.2
+  Downloaded rustc-hash v2.1.3
+  Downloaded serde_json v1.0.151
+  Downloaded shlex v2.0.1
+  Downloaded yoke-derive v0.8.2
+  Downloaded toml_datetime v1.1.1+spec-1.1.0
+  Downloaded form_urlencoded v1.2.2
+  Downloaded tree-sitter-language v0.1.7
+  Downloaded urlencoding v2.1.3
+  Downloaded potential_utf v0.1.5
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded zerofrom v0.1.8
+  Downloaded zerofrom-derive v0.1.7
+  Downloaded find-msvc-tools v0.1.10
+  Downloaded streaming-iterator v0.1.9
+  Downloaded thiserror v1.0.69
+  Downloaded unscanny v0.1.0
+  Downloaded smallvec v1.15.2
+  Downloaded unicode-ident v1.0.24
+  Downloaded thiserror v2.0.20
+  Downloaded version-ranges v0.1.3
+  Downloaded thiserror-impl v2.0.20
+  Downloaded tinystr v0.8.3
+  Downloaded toml_parser v1.1.3+spec-1.1.0
+  Downloaded yoke v0.8.3
+  Downloaded zmij v1.0.23
+  Downloaded quote v1.0.47
+  Downloaded toml_writer v1.1.2+spec-1.1.0
+  Downloaded writeable v0.6.3
+  Downloaded litemap v0.8.2
+  Downloaded synstructure v0.13.2
+  Downloaded once_cell v1.21.4
+  Downloaded pep508_rs v0.9.2
+  Downloaded icu_normalizer_data v2.2.0
+  Downloaded tree-sitter-javascript v0.25.0
+  Downloaded uuid v1.24.0
+  Downloaded icu_locale_core v2.2.0
+  Downloaded serde_derive v1.0.229
+  Downloaded tree-sitter-fish v3.6.0
+  Downloaded zerovec-derive v0.11.3
+  Downloaded icu_collections v2.2.0
+  Downloaded indexmap v2.14.0
+  Downloaded toml v1.1.4+spec-1.1.0
+  Downloaded zerotrie v0.2.4
+  Downloaded equivalent v1.0.2
+  Downloaded regex v1.13.1
+  Downloaded url v2.5.8
+  Downloaded libc v0.2.189
+  Downloaded hashbrown v0.17.1
+  Downloaded tree-sitter v0.26.12
+  Downloaded winnow v1.0.4
+  Downloaded zerovec v0.11.6
+  Downloaded syn v2.0.119
+  Downloaded syn v3.0.3
+  Downloaded tree-sitter-powershell v0.26.4
+  Downloaded unicode-width v0.2.2
+  Downloaded tree-sitter-python v0.25.0
+  Downloaded regex-automata v0.4.18
+  Downloaded regex-syntax v0.8.11
+  Downloaded tree-sitter-bash v0.25.1
+  Downloaded tree-sitter-typescript v0.23.2
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling find-msvc-tools v0.1.10
+   Compiling shlex v2.0.1
+   Compiling tree-sitter-language v0.1.7
+   Compiling cc v1.4.2
+   Compiling stable_deref_trait v1.2.1
+   Compiling memchr v2.8.3
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling hashbrown v0.17.1
+   Compiling syn v2.0.119
+   Compiling syn v3.0.3
+   Compiling writeable v0.6.3
+   Compiling itoa v1.0.18
+   Compiling equivalent v1.0.2
+   Compiling litemap v0.8.2
+   Compiling indexmap v2.14.0
+   Compiling icu_properties_data v2.2.0
+   Compiling smallvec v1.15.2
+   Compiling serde_json v1.0.151
+   Compiling icu_normalizer_data v2.2.0
+   Compiling utf8_iter v1.0.4
+   Compiling synstructure v0.13.2
+   Compiling displaydoc v0.2.7
+   Compiling serde v1.0.229
+   Compiling serde_derive v1.0.229
+   Compiling zerofrom-derive v0.1.7
+   Compiling yoke-derive v0.8.2
+   Compiling zerofrom v0.1.8
+   Compiling zerovec-derive v0.11.3
+   Compiling yoke v0.8.3
+   Compiling zerotrie v0.2.4
+   Compiling aho-corasick v1.1.5
+   Compiling zerovec v0.11.6
+   Compiling tinystr v0.8.3
+   Compiling icu_locale_core v2.2.0
+   Compiling potential_utf v0.1.5
+   Compiling icu_collections v2.2.0
+   Compiling libc v0.2.189
+   Compiling regex-syntax v0.8.11
+   Compiling icu_provider v2.2.0
+   Compiling tree-sitter v0.26.12
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling getrandom v0.4.3
+   Compiling regex-automata v0.4.18
+   Compiling idna_adapter v1.2.2
+   Compiling cfg-if v1.0.4
+   Compiling thiserror v2.0.20
+   Compiling percent-encoding v2.3.2
+   Compiling thiserror v1.0.69
+   Compiling form_urlencoded v1.2.2
+   Compiling idna v1.1.0
+   Compiling thiserror-impl v1.0.69
+   Compiling regex v1.13.1
+   Compiling thiserror-impl v2.0.20
+   Compiling version-ranges v0.1.3
+   Compiling tree-sitter-python v0.25.0
+   Compiling tree-sitter-powershell v0.26.4
+   Compiling tree-sitter-bash v0.25.1
+   Compiling tree-sitter-javascript v0.25.0
+   Compiling tree-sitter-typescript v0.23.2
+   Compiling tree-sitter-fish v3.6.0
+   Compiling either v1.17.0
+   Compiling streaming-iterator v0.1.9
+   Compiling unicode-width v0.2.2
+   Compiling once_cell v1.21.4
+   Compiling winnow v1.0.4
+   Compiling unscanny v0.1.0
+   Compiling sys-locale v0.3.2
+   Compiling pep440_rs v0.7.3
+   Compiling skit-i18n v0.5.0 (/home/runner/work/skit/skit/crates/skit-i18n)
+   Compiling toml_parser v1.1.3+spec-1.1.0
+   Compiling itertools v0.13.0
+   Compiling url v2.5.8
+   Compiling uuid v1.24.0
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling serde_spanned v1.1.1
+   Compiling rustc-hash v2.1.3
+   Compiling urlencoding v2.1.3
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling boxcar v0.2.14
+   Compiling toml v1.1.4+spec-1.1.0
+   Compiling skit-domain v0.5.0 (/home/runner/work/skit/skit/crates/skit-domain)
+   Compiling pep508_rs v0.9.2
+   Compiling skit-language v0.5.0 (/home/runner/work/skit/skit/crates/skit-language)
+   Compiling skit-form v0.5.0 (/home/runner/work/skit/skit/crates/skit-form)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.62s
+     Running tests/port_test_default_name_resolution_variants.rs (target/debug/deps/port_test_default_name_resolution_variants-c3a051c4f1dc8de5)
+
+running 24 tests
+test rust_additive_argparse_async_function_definition_binding_invalidates_constant ... ok
+test rust_additive_argparse_class_definition_binding_invalidates_constant ... ok
+test rust_additive_argparse_delete_binding_invalidates_constant ... ok
+test rust_additive_argparse_except_alias_binding_invalidates_constant ... ok
+test rust_additive_argparse_from_import_alias_binding_invalidates_constant ... ok
+test rust_additive_argparse_function_definition_binding_invalidates_constant ... ok
+test rust_additive_argparse_import_alias_binding_invalidates_constant ... ok
+test rust_additive_argparse_match_capture_binding_invalidates_constant ... 
+thread 'rust_additive_argparse_match_capture_binding_invalidates_constant' (4246) panicked at crates/skit-form/tests/port_test_default_name_resolution_variants.rs:25:5:
+field was not degraded: ParamDecl { name: "host", binding: None, delivery: Flag, parameter_type: Str, default: Some(String("outer")), required: false, multiple: false, repeat: false, choices: [], prompt: "", help: "", secret: false, env_source: "", flag: "--host", action: "", order: -1, env_target: "", degraded: false }
+source:
+import argparse
+HOST = 'outer'
+match value:
+    case HOST:
+        pass
+ap = argparse.ArgumentParser()
+ap.add_argument('--host', default=HOST)
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test rust_additive_argparse_match_dictionary_splat_binding_invalidates_constant ... ok
+test rust_additive_argparse_match_splat_binding_invalidates_constant ... ok
+test rust_additive_js_anonymous_class_expression_does_not_invalidate_constant ... ok
+test rust_additive_js_catch_binding_invalidates_constant ... ok
+test rust_additive_js_catch_without_binding_does_not_invalidate_constant ... ok
+test rust_additive_js_class_binding_invalidates_constant ... ok
+test rust_additive_js_default_import_binding_invalidates_constant ... ok
+test rust_additive_js_destructured_binding_invalidates_constant ... ok
+test rust_additive_js_empty_named_import_does_not_invalidate_constant ... ok
+test rust_additive_js_function_binding_invalidates_constant ... ok
+test rust_additive_js_named_function_expression_binding_invalidates_constant ... ok
+test rust_additive_js_named_import_binding_invalidates_constant ... ok
+test rust_additive_js_namespace_import_binding_invalidates_constant ... ok
+test rust_additive_js_renamed_destructured_binding_invalidates_constant ... ok
+test rust_additive_js_renamed_named_import_binding_invalidates_constant ... ok
+test rust_additive_js_side_effect_import_does_not_invalidate_constant ... ok
+
+failures:
+
+failures:
+    rust_additive_argparse_match_capture_binding_invalidates_constant
+
+test result: FAILED. 23 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `-p skit-form --test port_test_default_name_resolution_variants`

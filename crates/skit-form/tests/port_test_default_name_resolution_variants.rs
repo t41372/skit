@@ -22,7 +22,10 @@ fn one(kind: &str, source: &str) -> ParamDecl {
 
 fn assert_degraded(kind: &str, source: &str) {
     let field = one(kind, source);
-    assert!(field.degraded, "field was not degraded: {field:?}\nsource:\n{source}");
+    assert!(
+        field.degraded,
+        "field was not degraded: {field:?}\nsource:\n{source}"
+    );
     assert_eq!(
         field.default, None,
         "degraded field leaked a default: {field:?}\nsource:\n{source}"
@@ -209,11 +212,7 @@ fn rust_additive_js_empty_named_import_does_not_invalidate_constant() {
 
 #[test]
 fn rust_additive_js_anonymous_class_expression_does_not_invalidate_constant() {
-    assert_string_default(
-        "js",
-        &js_nonbinding("const Anonymous = class {};"),
-        "outer",
-    );
+    assert_string_default("js", &js_nonbinding("const Anonymous = class {};"), "outer");
 }
 
 #[test]
