@@ -127,7 +127,7 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_prompt_tui.py | 83 | crates/skit-tui/tests/port_test_prompt_tui.rs | in fix (48/36) · Chinese Library title 程序库/程式庫 vs 工具库/工具庫 (catalog drift #9) · 26 cross-crate run routing · Ctrl+O hidden divergence + Ctrl+E stub being fixed |
+| test_prompt_tui.py | 83 | crates/skit-tui/tests/port_test_prompt_tui.rs | done (49) · **Library title FIXED 5574ff1** (工具库/庫) · 26 cross-crate run routing · Ctrl+O/Ctrl+E divergences in fix pass |
 | test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs | in fix (28/33) · 1 empty-needle weakening being fixed · 2 private-render drops |
 | test_phase1.py | 27 | crates/skit-cli/tests/port_test_phase1.rs | done (27) · no gap |
 | test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs | in fix (10/9) · 4 render-model narrowings being tightened/noted |
@@ -142,7 +142,7 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_i18n.py | 38 | crates/skit-i18n/tests/port_test_i18n.rs | done (25) · architecture-mapped (compiled catalog) · 3 divergences (zh-MY/zh-XX→En, Library term #9) · 3 absent (Babel/ngettext) · 7 cross-crate |
+| test_i18n.py | 38 | crates/skit-i18n/tests/port_test_i18n.rs | done (28) · architecture-mapped (compiled catalog) · **3 divergences FIXED 5574ff1** (zh-MY/zh-XX→ZhCn negotiation, Library term 工具库/庫; #9 done) · 3 absent (Babel/ngettext) · 7 cross-crate |
 | test_prompt_utf8.py | 16 | crates/skit-cli/tests/port_test_prompt_utf8.rs | done (3) · 16 cross-crate (runtime UTF-8 path) |
 | test_packaging.py | 7 | crates/skit-cli/tests/port_test_packaging.rs | done (3) · 4 release-gate (Maturin wheel/PyPI) |
 | test_benchmarks_tooling.py | 156 | N/A (adapt) — Rust skit-benchmarks crate is a native reimplementation with 92 #[test]s (budget/dataset/parsers/pipeline_plan/suites); the Python benchmarks/__main__ CLI does not port 1:1. Dev tooling, gate-enforced via benchmarks/check.sh + cargo bench | done (N/A) |
