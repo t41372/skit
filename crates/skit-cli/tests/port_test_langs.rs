@@ -33,12 +33,12 @@
 //! - Python `store.add_exe` / CLI `params` / `doctor` -> the real `skit` binary via assert_cmd.
 //!
 //! Buckets:
-//! - REAL asserting `#[test]` (API exists): 1, 2, 3, 8, 9, 10, 11, 13, 14, 15, 19. Where a
+//! - REAL asserting `#[test]` (API exists): 1, 2, 3, 8, 9, 10, 11, 12, 13, 14, 15, 19. Where a
 //!   Python def mixes clauses whose CONCEPT has no public Rust surface (glyph, family,
 //!   has_original_file, takes_argv, deps_flavor), the mappable clauses assert for real and
 //!   the unmappable clauses are named in the WHY comment and the port ledger (NOT weakened
 //!   into a match against Rust output).
-//! - DIVERGENCE (full asserting body, `#[ignore]`d): 12, 17, 18, 20 — the assertion is
+//! - DIVERGENCE (full asserting body, `#[ignore]`d): 17, 18, 20 — the assertion is
 //!   faithful to the oracle and compiles; it fails because Rust diverges. Fixing the impl
 //!   and deleting the `#[ignore]` line turns it green.
 //! - UNMAPPABLE / ABSENT SEAM (compiling `#[ignore]` stub): 4, 5, 6, 7, 16, 21 — Python
@@ -338,7 +338,6 @@ fn test_unknown_kind_run_entry_raises_before_spawning() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): launcher.describe_command is contracted side-effect-free and TOTAL — for an unknown kind it returns meta.template (usually \"\") and never raises (src/skit/launcher.py:117-133). Rust build_launch_preview returns Err(LaunchError::UnknownKind) for an unknown kind instead of degrading to the stored template."]
 fn test_unknown_kind_describe_returns_template_and_never_raises() {
     // describe_command is contracted side-effect-free and total: for a kind this skit
     // version doesn't know, the template is the only launch material meta carries.

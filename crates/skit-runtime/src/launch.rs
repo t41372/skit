@@ -269,6 +269,10 @@ pub fn build_launch_plan<P: ProgramProbe>(
 }
 
 /// Build a complete launch preview without looking up programs on `PATH`.
+///
+/// The preview is total: for an entry kind that this skit version does not know, the
+/// preview degrades to the stored command template instead of an error. The run path
+/// (`build_launch_plan`) keeps its refusal.
 pub fn build_launch_preview<P: ProgramProbe>(
     entry: &Entry,
     paths: &LaunchPaths,
@@ -278,6 +282,9 @@ pub fn build_launch_preview<P: ProgramProbe>(
     prompt_runner: Option<&PromptRunner>,
     probe: &P,
 ) -> Result<LaunchPlan, LaunchError> {
+    if !is_known_launch_kind(entry.meta.kind.as_str()) {
+        return Ok(unknown_kind_preview(entry, paths, assembly));
+    }
     build_launch_plan_inner(
         entry,
         paths,
@@ -287,6 +294,49 @@ pub fn build_launch_preview<P: ProgramProbe>(
         prompt_runner,
         &PreviewProbe { local: probe },
     )
+}
+
+/// Report whether this skit version can assemble a launch for `kind`.
+///
+/// Keep this list synchronized with the kind `match` in `build_launch_plan_inner`.
+fn is_known_launch_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "python"
+            | "shell"
+            | "fish"
+            | "powershell"
+            | "ruby"
+            | "perl"
+            | "lua"
+            | "r"
+            | "js"
+            | "ts"
+            | "exe"
+            | "command"
+            | "prompt"
+    )
+}
+
+/// Build the degraded preview for a kind written by a newer skit.
+///
+/// The template is the only launch material the metadata itself carries, so it becomes
+/// the display text. The template stays raw: it is descriptive text, not an argument.
+fn unknown_kind_preview(entry: &Entry, paths: &LaunchPaths, assembly: &Assembly) -> LaunchPlan {
+    let mut parts = assembly
+        .masked_env
+        .iter()
+        .map(|(name, value)| format!("{name}={}", quote_shell_arg(value)))
+        .collect::<Vec<_>>();
+    parts.push(EntrySettings::from_meta(&entry.meta).template);
+    LaunchPlan {
+        program: PathBuf::new(),
+        args: Vec::new(),
+        env: assembly.env_values.clone(),
+        cwd: paths.invoke_cwd.clone(),
+        display: parts.join(" "),
+        warnings: Vec::new(),
+    }
 }
 
 #[derive(Debug)]
