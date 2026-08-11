@@ -49,10 +49,7 @@ fn path_field(line: &str, aliases: &BTreeMap<String, String>) -> String {
         .split_once("path: ")
         .unwrap_or_else(|| panic!("manifest mapping lacks path: {line}"))
         .1;
-    let token = tail
-        .split_once(',')
-        .map_or(tail, |(token, _)| token)
-        .trim();
+    let token = tail.split_once(',').map_or(tail, |(token, _)| token).trim();
     aliases
         .get(token)
         .cloned()
