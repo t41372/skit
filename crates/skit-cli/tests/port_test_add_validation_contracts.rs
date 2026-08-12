@@ -130,9 +130,6 @@ fn test_requires_python_error_is_none_for_valid_constraints() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle pep723.requires_python_error returns \
-'<value> isn't a Python version constraint (e.g. ...)'; Rust PythonMetadataError renders \
-'invalid PEP 440 version constraint \"not-a-version\": ...' (skit-language/src/lib.rs:194)."]
 fn test_requires_python_error_localizes_a_message_for_an_invalid_constraint() {
     let error = validate_pep440_specifiers("not-a-version").unwrap_err();
     let message = error.message().localize(Locale::En);
@@ -156,9 +153,6 @@ fn test_requirement_error_is_none_for_valid_requirements() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle pep723.requirement_error returns \
-'<value> isn't a package requirement (e.g. ...)'; Rust PythonMetadataError renders \
-'invalid PEP 508 requirement \"@@@\": ...' (skit-language/src/lib.rs:189)."]
 fn test_requirement_error_localizes_a_message_for_an_invalid_requirement() {
     let error = validate_pep508_requirement("@@@").unwrap_err();
     let message = error.message().localize(Locale::En);

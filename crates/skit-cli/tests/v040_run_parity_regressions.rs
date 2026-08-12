@@ -20,7 +20,7 @@ fn new_refusal_messages_have_complete_chinese_rows() {
         "cannot save a preset because the entry has no form fields",
         "invalid Boolean value {}; use true or false",
         "{} is not valid UTF-8",
-        "invalid PEP 508 requirement {}: {}",
+        "{} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").",
     ] {
         assert_ne!(text(Locale::ZhCn, english), english);
         assert_ne!(text(Locale::ZhTw, english), english);

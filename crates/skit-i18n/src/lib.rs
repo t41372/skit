@@ -2590,14 +2590,14 @@ const CATALOG: &[Translation] = &[
         "無效的 JavaScript 套件描述：{}",
     ),
     row!(
-        "invalid PEP 440 version constraint {}: {}",
-        "{} 不是有效的 PEP 440 版本约束：{}",
-        "{} 不是有效的 PEP 440 版本限制：{}",
+        "{} isn't a Python version constraint (e.g. \">=3.11\" or \">=3.12,<3.13\").",
+        "{} 不是 Python 版本约束(例如 \">=3.11\" 或 \">=3.12,<3.13\")。",
+        "{} 不是 Python 版本約束(例如 \">=3.11\" 或 \">=3.12,<3.13\")。",
     ),
     row!(
-        "invalid PEP 508 requirement {}: {}",
-        "{} 不是有效的 PEP 508 依赖描述：{}",
-        "{} 不是有效的 PEP 508 相依描述：{}",
+        "{} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").",
+        "{} 不是软件包依赖(例如 \"requests\" 或 \"rich>=13,<16\")。",
+        "{} 不是套件需求(例如 \"requests\" 或 \"rich>=13,<16\")。",
     ),
     row!(
         "Unknown language: {}. Available: {}",

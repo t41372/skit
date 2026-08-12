@@ -167,10 +167,6 @@ fn flat(output: &Output) -> String {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the refusal fires (exit 2, meta+block byte-unchanged), \
-but the Rust validator's copy is `invalid PEP 508 requirement \"@@@\": …` (skit-language \
-lib.rs:123) — the oracle substring `isn't a package requirement` is absent. Fixing the wording \
-alone turns this green. Python ref test_dependency_write_validation.py:75-88."]
 fn test_deps_garbage_dep_is_refused_and_nothing_changes() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_source(
@@ -188,10 +184,6 @@ fn test_deps_garbage_dep_is_refused_and_nothing_changes() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the refusal fires (exit 2, block byte-unchanged), but \
-the Rust validator's copy is `invalid PEP 440 version constraint \"not-a-version\": …` \
-(skit-language lib.rs:126) — the oracle substring `isn't a Python version constraint` is absent. \
-Python ref test_dependency_write_validation.py:91-99."]
 fn test_deps_garbage_python_is_refused_and_nothing_changes() {
     let sandbox = Sandbox::new();
     sandbox.add_python_print("a");
@@ -310,10 +302,6 @@ fn test_deps_npm_entry_takes_an_npm_shaped_dep_that_fails_pep508() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the store chokepoint moved to the CLI `deps` handler, \
-which DOES refuse `@@@` (exit 2, nothing written), but its copy is `invalid PEP 508 requirement \
-\"@@@\": …` — the oracle substring `isn't a package requirement` is absent. Python ref \
-test_dependency_write_validation.py:189-194."]
 fn test_update_dependencies_uv_invalid_dep_raises_usage_error() {
     let sandbox = Sandbox::new();
     sandbox.add_python_print("a");
@@ -325,10 +313,6 @@ fn test_update_dependencies_uv_invalid_dep_raises_usage_error() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the CLI chokepoint DOES refuse `not-a-version` (exit \
-2), but its copy is `invalid PEP 440 version constraint \"not-a-version\": …` — the oracle \
-substring `isn't a Python version constraint` is absent. Python ref \
-test_dependency_write_validation.py:197-201."]
 fn test_update_dependencies_uv_invalid_python_raises_usage_error() {
     let sandbox = Sandbox::new();
     sandbox.add_python_print("a");

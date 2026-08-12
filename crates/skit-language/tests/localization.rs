@@ -91,7 +91,7 @@ fn package_metadata_errors_localize_and_keep_the_value_verbatim() {
         requirement
             .message()
             .localize(Locale::ZhCn)
-            .contains("不是有效的 PEP 508 依赖描述")
+            .contains("不是软件包依赖")
     );
 
     let constraint = validate_pep440_specifiers("not a version").unwrap_err();
@@ -100,7 +100,7 @@ fn package_metadata_errors_localize_and_keep_the_value_verbatim() {
         constraint
             .message()
             .localize(Locale::ZhTw)
-            .contains("不是有效的 PEP 440 版本限制")
+            .contains("不是 Python 版本約束")
     );
 
     assert!(matches!(

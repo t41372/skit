@@ -120,11 +120,11 @@ pub enum LanguageError {
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PythonMetadataError {
     /// A package requirement does not use the PEP 508 grammar.
-    #[error("invalid PEP 508 requirement {value:?}: {reason}")]
-    InvalidRequirement { value: String, reason: String },
+    #[error("{value} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").")]
+    InvalidRequirement { value: String },
     /// A Python version constraint does not use the PEP 440 grammar.
-    #[error("invalid PEP 440 version constraint {value:?}: {reason}")]
-    InvalidVersionConstraint { value: String, reason: String },
+    #[error("{value} isn't a Python version constraint (e.g. \">=3.11\" or \">=3.12,<3.13\").")]
+    InvalidVersionConstraint { value: String },
 }
 
 impl Localize for LanguageError {
@@ -186,16 +186,14 @@ impl Localize for ShellInputError {
 impl Localize for PythonMetadataError {
     fn message(&self) -> Message {
         match self {
-            Self::InvalidRequirement { value, reason } => {
-                Message::new("invalid PEP 508 requirement {}: {}")
-                    .quoted(value)
-                    .with(reason)
-            }
-            Self::InvalidVersionConstraint { value, reason } => {
-                Message::new("invalid PEP 440 version constraint {}: {}")
-                    .quoted(value)
-                    .with(reason)
-            }
+            Self::InvalidRequirement { value } => Message::new(
+                "{} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").",
+            )
+            .with(value),
+            Self::InvalidVersionConstraint { value } => Message::new(
+                "{} isn't a Python version constraint (e.g. \">=3.11\" or \">=3.12,<3.13\").",
+            )
+            .with(value),
         }
     }
 }
@@ -319,20 +317,18 @@ fn basename(value: &str) -> &str {
 pub fn validate_pep508_requirement(value: &str) -> Result<(), PythonMetadataError> {
     Requirement::<VerbatimUrl>::from_str(value)
         .map(|_| ())
-        .map_err(|error| PythonMetadataError::InvalidRequirement {
+        .map_err(|_| PythonMetadataError::InvalidRequirement {
             value: value.to_owned(),
-            reason: error.to_string(),
         })
 }
 
 /// Validate one PEP 440 version-specifier list.
 pub fn validate_pep440_specifiers(value: &str) -> Result<(), PythonMetadataError> {
-    VersionSpecifiers::from_str(value)
-        .map(|_| ())
-        .map_err(|error| PythonMetadataError::InvalidVersionConstraint {
+    VersionSpecifiers::from_str(value).map(|_| ()).map_err(|_| {
+        PythonMetadataError::InvalidVersionConstraint {
             value: value.to_owned(),
-            reason: error.to_string(),
-        })
+        }
+    })
 }
 
 /// Read managed parameter declarations from the inline metadata block.
