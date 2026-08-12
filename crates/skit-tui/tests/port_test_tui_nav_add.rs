@@ -5,7 +5,7 @@
 //! first text control rather than their scroll container. Current Rust behavior may fail these tests;
 //! that is a parity finding, not a reason to weaken them.
 
-use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+use ratatui_core::{backend::TestBackend, buffer::Buffer, layout::Rect, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -37,26 +37,21 @@ fn draw(
     let mut geometry = AddScreenGeometry::default();
     terminal
         .draw(|frame| {
-            geometry = render_add(frame, frame.area(), state, session, Locale::En);
+            let area = frame.area();
+            geometry = render_add(frame, area, state, session, Locale::En);
         })
         .unwrap();
     (terminal, geometry)
 }
 
-fn row_text(buffer: &Buffer, row: u16) -> String {
-    (0..buffer.area.width)
-        .map(|column| buffer[(column, row)].symbol())
-        .collect()
-}
-
-fn position_of(buffer: &Buffer, needle: &str) -> (u16, u16) {
-    for row in 0..buffer.area.height {
-        let line = row_text(buffer, row);
-        if let Some(column) = line.find(needle) {
-            return (u16::try_from(column).unwrap(), row);
+fn region_text(buffer: &Buffer, area: Rect) -> String {
+    let mut out = String::new();
+    for row in area.y..area.y.saturating_add(area.height).min(buffer.area.height) {
+        for column in area.x..area.x.saturating_add(area.width).min(buffer.area.width) {
+            out.push_str(buffer[(column, row)].symbol());
         }
     }
-    panic!("missing advertised navigation chip {needle:?}");
+    out
 }
 
 fn click_advertised_chip(
@@ -66,15 +61,12 @@ fn click_advertised_chip(
     geometry: &AddScreenGeometry,
     label: &str,
 ) -> Option<AddScreenEvent> {
-    let (column, row) = position_of(terminal.backend().buffer(), label);
-    assert!(
-        geometry
-            .hits
-            .iter()
-            .any(|hit| hit.area.contains((column, row).into())),
-        "advertised chip {label:?} has no clickable hit region"
-    );
-    session.handle_event(mouse(column, row), state, geometry)
+    let hit = geometry
+        .hits
+        .iter()
+        .find(|hit| region_text(terminal.backend().buffer(), hit.area).contains(label))
+        .unwrap_or_else(|| panic!("missing clickable advertised navigation chip {label:?}"));
+    session.handle_event(mouse(hit.area.x, hit.area.y), state, geometry)
 }
 
 fn assert_source_focus(session: &AddScreenSession, field: AddTextField) {
@@ -85,7 +77,7 @@ fn assert_source_focus(session: &AddScreenSession, field: AddTextField) {
 fn test_add_source_arrows_walk_path_template_name() {
     let state = AddWorkflowState::new(Vec::new());
     let mut session = AddScreenSession::default();
-    let (terminal, geometry) = draw(&mut session, &state);
+    let (_, geometry) = draw(&mut session, &state);
     assert_source_focus(&session, AddTextField::SourcePath);
 
     assert_eq!(
@@ -157,7 +149,7 @@ fn review_state() -> AddWorkflowState {
 fn test_add_review_boots_on_name_and_arrows_move() {
     let state = review_state();
     let mut session = AddScreenSession::default();
-    let (terminal, geometry) = draw(&mut session, &state);
+    let (_, geometry) = draw(&mut session, &state);
     assert_source_focus(&session, AddTextField::ReviewName);
 
     assert_eq!(
