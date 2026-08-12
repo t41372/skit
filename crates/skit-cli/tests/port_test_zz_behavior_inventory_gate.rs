@@ -91,7 +91,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_tui_responsive.py", tests: 19, guard: None },
     Module { python: "test_settings_and_draft_review_atomicity.py", tests: 16, guard: None },
     Module { python: "test_draft_and_reader_tui.py", tests: 16, guard: None },
-    Module { python: "test_reset_default_ui.py", tests: 14, guard: None },
+    Module { python: "test_reset_default_ui.py", tests: 14, guard: Some("crates/skit-cli/tests/port_test_reset_default_ui_manifest.rs") },
     Module { python: "test_tui_edit.py", tests: 6, guard: Some("crates/skit-cli/tests/port_test_tui_edit_manifest.rs") },
     Module { python: "test_tui_nav.py", tests: 5, guard: Some(SMALL) },
     Module { python: "test_ime_input.py", tests: 3, guard: Some("crates/skit-cli/tests/port_test_ime_input_manifest.rs") },
