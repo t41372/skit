@@ -3,7 +3,6 @@
 
 use std::{collections::BTreeSet, fs, sync::Arc, thread};
 
-use same_file::Handle;
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
 };
@@ -76,19 +75,39 @@ fn test_registry_lock_uses_a_versioned_persistent_native_inode() {
 
     store.create(request(1)).unwrap();
     assert!(native.is_file());
-    let first_identity = Handle::from_path(&native).unwrap();
     assert!(!old_protocol.exists());
+
+    #[cfg(unix)]
+    let first_identity = {
+        use std::os::unix::fs::MetadataExt as _;
+        fs::metadata(&native).unwrap().ino()
+    };
+
+    // Stable Rust does not expose the Windows file index without an experimental API. Instead pin
+    // an opaque payload into the persistent lock file. A path-unlink/recreate lease protocol loses
+    // these bytes, while a kernel lock on the same persistent file leaves them untouched.
+    #[cfg(windows)]
+    let sentinel = b"skit-native-lock-persistent-sentinel-20260812";
+    #[cfg(windows)]
+    fs::write(&native, sentinel).unwrap();
 
     store.create(request(2)).unwrap();
     assert!(native.is_file());
-    let second_identity = Handle::from_path(&native).unwrap();
-    assert_eq!(
-        second_identity, first_identity,
-        "the native registry lock was deleted/recreated instead of remaining the same filesystem object"
-    );
     assert!(!old_protocol.exists());
 
-    // The identity assertion is the cross-platform inode/file-index contract. Keep an ordinary
-    // metadata read too so the lock file cannot be replaced by a non-file object between holders.
-    assert!(fs::metadata(&native).unwrap().is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        assert_eq!(
+            fs::metadata(&native).unwrap().ino(),
+            first_identity,
+            "the native registry lock was deleted/recreated between holders"
+        );
+    }
+    #[cfg(windows)]
+    assert_eq!(
+        fs::read(&native).unwrap(),
+        sentinel,
+        "the native registry lock path was replaced instead of preserving the persistent lock file"
+    );
 }
