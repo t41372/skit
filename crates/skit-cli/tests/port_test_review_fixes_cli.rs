@@ -87,7 +87,11 @@ fn test_update_dependencies_reference_mode() {
 
     fixture.ok(&["deps", "refdeps", "--dep", "httpx"]);
 
-    assert_eq!(fs::read(&source).unwrap(), original, "reference dependency edit touched the original");
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        original,
+        "reference dependency edit touched the original"
+    );
     let output = fixture.ok(&["deps", "refdeps", "--json"]);
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(document["dependencies"], serde_json::json!(["httpx"]));
@@ -96,7 +100,10 @@ fn test_update_dependencies_reference_mode() {
 #[test]
 fn test_update_dependencies_exe_entry() {
     let fixture = Fixture::new();
-    let executable = fixture.home.path().join(if cfg!(windows) { "tool.exe" } else { "tool" });
+    let executable = fixture
+        .home
+        .path()
+        .join(if cfg!(windows) { "tool.exe" } else { "tool" });
     fs::write(&executable, b"opaque executable fixture").unwrap();
     let store = fixture.store();
     let created = store
@@ -147,7 +154,11 @@ fn main() {
 "#,
     )
     .unwrap();
-    let output = root.join(if cfg!(windows) { "stage-probe.exe" } else { "stage-probe" });
+    let output = root.join(if cfg!(windows) {
+        "stage-probe.exe"
+    } else {
+        "stage-probe"
+    });
     let status = Command::new("rustc")
         .arg(source)
         .arg("-o")
@@ -183,10 +194,11 @@ fn test_write_injected_unique_and_private() {
         .unwrap();
 
     for value in ["2", "3"] {
+        let setting = format!("VALUE={value}");
         let mut command = fixture.command();
         let output = command
             .env("SKIT_STAGE_CAPTURE", &capture)
-            .args(["run", "managed", "--set", &format!("VALUE={value}"), "--no-input"])
+            .args(["run", "managed", "--set", setting.as_str(), "--no-input"])
             .output()
             .unwrap();
         assert_success(&output, &["run", "managed"]);
@@ -197,23 +209,47 @@ fn test_write_injected_unique_and_private() {
         .lines()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    assert_eq!(rows.len(), 2, "child did not observe both staged launches: {rows:?}");
+    assert_eq!(
+        rows.len(),
+        2,
+        "child did not observe both staged launches: {rows:?}"
+    );
     let parsed = rows
         .iter()
         .map(|row| row.splitn(3, '\t').collect::<Vec<_>>())
         .collect::<Vec<_>>();
-    assert!(parsed.iter().all(|row| row.len() == 3), "malformed child capture: {rows:?}");
+    assert!(
+        parsed.iter().all(|row| row.len() == 3),
+        "malformed child capture: {rows:?}"
+    );
     let names = parsed.iter().map(|row| row[0]).collect::<Vec<_>>();
     assert_ne!(names[0], names[1], "two launches reused one injected filename");
     for name in &names {
-        assert!(name.starts_with(".injected-"), "staged source name lost Python contract: {name}");
-        assert!(name.ends_with(".py"), "staged Python source lost .py suffix: {name}");
+        assert!(
+            name.starts_with(".injected-"),
+            "staged source name lost Python contract: {name}"
+        );
+        assert!(
+            name.ends_with(".py"),
+            "staged Python source lost .py suffix: {name}"
+        );
     }
     #[cfg(unix)]
     for row in &parsed {
         assert_eq!(row[1], "600", "staged source was not private: {row:?}");
     }
-    assert!(parsed[0][2].contains("VALUE = 2"), "first injection did not reach staged bytes: {:?}", parsed[0]);
-    assert!(parsed[1][2].contains("VALUE = 3"), "second injection did not reach staged bytes: {:?}", parsed[1]);
-    assert!(parsed.iter().all(|row| row[2].contains("print(VALUE)")), "unrelated source was lost: {parsed:?}");
+    assert!(
+        parsed[0][2].contains("VALUE = 2"),
+        "first injection did not reach staged bytes: {:?}",
+        parsed[0]
+    );
+    assert!(
+        parsed[1][2].contains("VALUE = 3"),
+        "second injection did not reach staged bytes: {:?}",
+        parsed[1]
+    );
+    assert!(
+        parsed.iter().all(|row| row[2].contains("print(VALUE)")),
+        "unrelated source was lost: {parsed:?}"
+    );
 }
