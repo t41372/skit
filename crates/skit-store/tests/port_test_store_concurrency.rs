@@ -3,6 +3,7 @@
 
 use std::{collections::BTreeSet, fs, sync::Arc, thread};
 
+use same_file::Handle;
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
 };
@@ -66,11 +67,8 @@ fn test_concurrent_add_python_both_succeed_with_distinct_slugs() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn test_registry_lock_uses_a_versioned_persistent_native_inode() {
-    use std::os::unix::fs::MetadataExt as _;
-
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     let native = root.path().join("registry.native.lock");
@@ -78,11 +76,19 @@ fn test_registry_lock_uses_a_versioned_persistent_native_inode() {
 
     store.create(request(1)).unwrap();
     assert!(native.is_file());
-    let first_inode = fs::metadata(&native).unwrap().ino();
+    let first_identity = Handle::from_path(&native).unwrap();
     assert!(!old_protocol.exists());
 
     store.create(request(2)).unwrap();
     assert!(native.is_file());
-    assert_eq!(fs::metadata(&native).unwrap().ino(), first_inode);
+    let second_identity = Handle::from_path(&native).unwrap();
+    assert_eq!(
+        second_identity, first_identity,
+        "the native registry lock was deleted/recreated instead of remaining the same filesystem object"
+    );
     assert!(!old_protocol.exists());
+
+    // The identity assertion is the cross-platform inode/file-index contract. Keep an ordinary
+    // metadata read too so the lock file cannot be replaced by a non-file object between holders.
+    assert!(fs::metadata(&native).unwrap().is_file());
 }
