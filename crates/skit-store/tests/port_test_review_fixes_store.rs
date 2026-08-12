@@ -7,11 +7,14 @@ use skit_application::{
     form_state::FormStateRepository as _,
 };
 use skit_domain::{EntryKind, EntrySettings, Slug, StorageMode};
+use skit_i18n::requested_locale;
 use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
 use tempfile::TempDir;
 
 #[test]
 fn test_is_supported_rejects_junk() {
+    // Nonempty supported spellings exercise the same canonicalization the persisted language
+    // setting uses. A rejected family must never become an accepted stored language.
     for (input, canonical) in [
         ("zh-TW", "zh-TW"),
         ("zh_TW.UTF-8", "zh-TW"),
@@ -26,7 +29,7 @@ fn test_is_supported_rejects_junk() {
         assert_eq!(config.get("lang").unwrap(), canonical, "input={input:?}");
     }
 
-    for input in ["ent", "english", "fr", ""] {
+    for input in ["ent", "english", "fr"] {
         let root = TempDir::new().unwrap();
         let config = FileConfigStore::new(root.path());
         assert!(
@@ -34,6 +37,11 @@ fn test_is_supported_rejects_junk() {
             "unsupported locale {input:?} was accepted"
         );
     }
+
+    // An empty string is not a supported language tag in the Python helper. Rust's config command
+    // intentionally gives an empty language a different meaning (`auto`), so test the public locale
+    // request boundary instead of incorrectly requiring the config setter to reject its own syntax.
+    assert_eq!(requested_locale(Some("")), None);
 }
 
 #[test]
@@ -52,7 +60,11 @@ fn test_argstate_corrupt_file_fallback() {
     assert!(state.values.is_empty());
     assert!(state.presets.is_empty());
     assert!(state.extra_args.is_empty());
-    assert_eq!(fs::read(&path).unwrap(), before, "a read repaired the corrupt state file");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "a read repaired the corrupt state file"
+    );
 }
 
 #[test]
@@ -64,7 +76,11 @@ fn test_config_language_corrupt_file() {
     let config = FileConfigStore::new(root.path());
 
     assert_eq!(config.get("lang").unwrap(), "");
-    assert_eq!(fs::read(&path).unwrap(), before, "a config read silently rewrote corruption");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "a config read silently rewrote corruption"
+    );
 }
 
 #[test]
