@@ -2,7 +2,11 @@
 //! All uv tests are hermetic: asset construction is pure, the platform test only resolves the build
 //! target, and the installer test pre-creates the managed binary so the network path must not run.
 
-use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug};
@@ -83,10 +87,22 @@ fn test_build_command_reference_deps() {
     .unwrap();
 
     assert_eq!(plan.program, PathBuf::from("uv"));
-    assert_eq!(&plan.args[..4], ["run", "--no-project", "--python", ">=3.11"]);
+    let prefix = ["run", "--no-project", "--python", ">=3.11"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(&plan.args[..prefix.len()], prefix.as_slice());
     assert_eq!(plan.args.iter().filter(|arg| *arg == "--with").count(), 2);
-    assert!(plan.args.windows(2).any(|pair| pair == ["--with", "requests"]));
-    assert!(plan.args.windows(2).any(|pair| pair == ["--with", "rich"]));
+    assert!(
+        plan.args
+            .windows(2)
+            .any(|pair| pair[0] == "--with" && pair[1] == "requests")
+    );
+    assert!(
+        plan.args
+            .windows(2)
+            .any(|pair| pair[0] == "--with" && pair[1] == "rich")
+    );
     assert!(plan.args.iter().any(|arg| arg == "--script"));
     assert!(plan.args.iter().any(|arg| arg == "/source/s.py"));
 }
@@ -153,9 +169,17 @@ fn test_command_missing_values_raises() {
 fn test_uv_download_url_shape() {
     let linux = UvTarget::from_parts("x86_64", "linux", false).unwrap();
     let linux_asset = uv_asset(&linux, None);
-    assert!(linux_asset.url.starts_with("https://github.com/astral-sh/uv/releases/download/"));
+    assert!(
+        linux_asset
+            .url
+            .starts_with("https://github.com/astral-sh/uv/releases/download/")
+    );
     assert!(linux_asset.url.contains(UV_VERSION));
-    assert!(linux_asset.url.ends_with("uv-x86_64-unknown-linux-gnu.tar.gz"));
+    assert!(
+        linux_asset
+            .url
+            .ends_with("uv-x86_64-unknown-linux-gnu.tar.gz")
+    );
 
     let windows = UvTarget::from_parts("x86_64", "windows", false).unwrap();
     let windows_asset = uv_asset(&windows, None);
@@ -167,7 +191,9 @@ fn test_uv_download_url_shape() {
 fn test_uv_triple_current_platform() {
     let triple = UvTarget::current().unwrap().triple().to_owned();
     assert!(
-        ["linux", "darwin", "windows"].iter().any(|token| triple.contains(token)),
+        ["linux", "darwin", "windows"]
+            .iter()
+            .any(|token| triple.contains(token)),
         "current uv target is not a supported OS triple: {triple}"
     );
 }
@@ -183,5 +209,9 @@ fn test_ensure_uv_downloaded_skips_when_present() {
     let resolved = ensure_managed_uv(data.path(), None).unwrap();
 
     assert_eq!(resolved, managed);
-    assert_eq!(fs::read(&resolved).unwrap(), before, "existing private uv was rewritten");
+    assert_eq!(
+        fs::read(&resolved).unwrap(),
+        before,
+        "existing private uv was rewritten"
+    );
 }
