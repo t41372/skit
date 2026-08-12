@@ -22,7 +22,7 @@ struct Fixture {
     data: TempDir,
     state: TempDir,
     config: TempDir,
-    tools: TempDir,
+    _tools: TempDir,
     editor: PathBuf,
     capture: PathBuf,
 }
@@ -39,7 +39,7 @@ impl Fixture {
             data,
             state,
             config,
-            tools,
+            _tools: tools,
             editor,
             capture,
         }
@@ -123,7 +123,8 @@ fn test_fresh_draft_copy_flow_unlinks_the_file() {
     let entry = fixture.store().resolve("copied").unwrap();
     assert_eq!(entry.meta.mode, StorageMode::Copy);
     let draft = PathBuf::from(fs::read_to_string(&fixture.capture).unwrap());
-    assert_eq!(draft.parent(), Some(fixture.data.path().join("drafts").as_path()));
+    let drafts_dir = fixture.data.path().join("drafts");
+    assert_eq!(draft.parent(), Some(drafts_dir.as_path()));
     assert!(
         !draft.exists(),
         "successful copy-mode authoring left the owned draft behind: {draft:?}"
