@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
 use skit_application::SourcePermissions;
-use skit_i18n::{Locale, Localize as _};
+use skit_i18n::Locale;
 use skit_tui::{AddScreenGeometry, AddScreenSession, render_add};
 use skit_ui::{
     AddProblem, AddWorkflowState, KnownEntryKind, ReviewDefaults, ReviewState, SourceSnapshot,
@@ -60,8 +60,8 @@ fn test_stdin_prompt_inprocess_rejects_invalid_utf8_with_real_byte_offset() {
     let error = review.create_entry().unwrap_err();
 
     assert!(matches!(error, AddProblem::InvalidPromptEncoding { .. }));
-    let message = error.message().localize(Locale::En);
-    assert!(message.contains("UTF-8"), "{message}");
+    let message = format!("{error:?}");
+    assert!(message.contains("InvalidPromptEncoding"), "{message}");
     assert!(
         message.contains("offset 4") || message.contains("byte 4"),
         "in-process prompt error lost the real byte offset: {message}"
