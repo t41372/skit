@@ -1,4 +1,4 @@
-# skit Rust rewrite — session handoff (2026-08-10)
+# skit Rust rewrite — session handoff (2026-08-12)
 
 **Read this first, then `docs/design/python-test-port-ledger.md` (the authoritative per-module
 record + fix-list).** This file is SELF-CONTAINED: it does not depend on any `.claude` memory (that
@@ -13,10 +13,12 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**The Python behavior port is COMPLETE and green (workspace 2842 pass / 0 fail / 1177 ignored, tree
-clean, 81 `port_test_*.rs` files). The impl-fix pass has STARTED — 2 clusters done (i18n
-`5574ff1`, review-lane `22b9773`); ~80 v0.4 divergences remain. Next: launcher `describe` (§4).** The user chose plan **A**: finish the whole port FIRST (done), THEN one comprehensive
-impl-fix pass (in progress).
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 13 fix commits landed, 43 FAILING CONTRACTs closed
+(41 un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added. Verified
+baseline: workspace 2887 pass / 0 fail / 1134 ignored, tree clean, all gates green at every
+commit. 243 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: pick a cluster
+from §5 — js_deps (27) or add-lane are the biggest coherent bites.** The user chose plan **A**:
+finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
 
 ---
 
@@ -37,6 +39,12 @@ Recreate them (all are derivable from this one git repo):
   `../skit-oracle/tests/test_*.py`. **Everywhere this doc writes `skit-oracle/...` or
   `/home/ubuntu/coding/skit-oracle/...`, it means that worktree.** (Fallback if worktrees are
   awkward: `git clone` the repo elsewhere and `git checkout 206f9ef...` in it.)
+- **The v0.4 zh translations** live IN the oracle worktree at
+  `skit-oracle/src/skit/locales/{zh_CN,zh_TW}/LC_MESSAGES/skit.po`. Every zh string you add to
+  `crates/skit-i18n/src/lib.rs` MUST be copied verbatim from there (msgid lookup), never invented —
+  codex-invented rows are themselves divergences (several were found and fixed). Extraction
+  one-liner pattern (regex over msgid/msgstr pairs) is in the session log; a python3 heredoc with
+  `re.finditer(r'msgid ((?:"..."\s*)+)msgstr (...)')` + unicode_escape decoding works.
 - **The demo harness** (`/home/ubuntu/coding/skit-harness`, Phase 5 ONLY): a VHS/Docker frame-compare
   harness. The product SPEC — the tapes — lives IN this repo at `docs/assets/demo/{demo,shots}.tape`
   (`shots.tape` has deterministic `Screenshot` points; `demo.tape` is the keystroke choreography).
@@ -45,14 +53,10 @@ Recreate them (all are derivable from this one git repo):
   silently records the PREVIOUS image); the image build fails under contention with a host
   `cargo test` (don't run them together). The 8 `tui-*-{en,zh}.png` + `demo-mouse.gif` + mp4s were
   deleted on this branch and must be re-recorded at Phase 5.
-- **The port fan-out script** `port_wave.js` lived in a session scratchpad (gone). You do NOT need it
-  for the fix pass (that uses serialized subagents, not fan-out — §7). If you ever re-port modules,
-  rewrite it per the §2 contract: a `Workflow`-tool script, one tests-only subagent per module
-  (reads oracle impl + test, writes `crates/<crate>/tests/port_test_<module>.rs`, reports gaps) each
-  paired with an adversarial verify subagent.
 - **Devbox caveat:** this box was MISSING some interpreters (fish / pwsh / deno / ruby / lua / R).
   Interpreter-dependent tests SKIP rather than fail — a skip is NOT a pass. Install them, or expect
-  skips (and don't chase a "green" that is really a skip).
+  skips (and don't chase a "green" that is really a skip). This box HAS `/usr/bin/vi` — see §8 for
+  the vi-hang trap that follows from that.
 
 ## 1. The mission (do not lose this)
 
@@ -62,242 +66,225 @@ implementation — read the Python impl AND the Python tests, transcribe the beh
 Rust logic. The user was repeatedly furious about exactly that: inventing fresh Rust instead of
 copying Python's reviewed behavior. When in doubt, read `skit-oracle/src/skit/*.py` and match it.
 
-## 2. How the work is structured (two phases, two modes)
+## 2. The fix-loop (the exact procedure — it works; 13 commits ran it verbatim)
 
-- **Port phase (DONE): large-scale fan-out.** One Python test module → one Rust
-  `crates/<crate>/tests/port_test_<module>.rs`, produced by a **tests-only** subagent (writes tests,
-  reports gaps, NEVER edits production — so it structurally cannot reinvent), paired with an
-  independent **adversarial verify** subagent that tries to refute "faithful". Driver:
-  `Workflow` tool with a script (the port ran one called `port_wave.js`; the `Workflow` tool persists
-  each invocation's script and prints its path — the session copy is gone, see §0.5). 13 waves ran
-  this way.
-- **Fix phase (IN PROGRESS): serialized implementation subagents, NOT fan-out.** Production edits
-  overlap and need review, so run ONE focused implementation subagent per cluster (or 2 in parallel
-  only if clearly-separate crates). Each **translates the oracle impl**, then **deletes the
-  `#[ignore]` line(s)** from the corresponding FAILING CONTRACT test(s) so they go green — that is the
-  proof the fix matches the oracle. The supervisor (you) re-runs and verifies every delivery; never
-  trust a subagent's self-report.
+1. Read the oracle impl (`skit-oracle/src/skit/*.py`) for the behavior + the FAILING CONTRACT
+   test's `#[ignore]` reason (it has the oracle line refs + what Rust does).
+2. Verify the contract is real: `cargo test ... -- --ignored --exact <name>` must fail at the REAL
+   last assertion (not setup).
+3. Translate the behavior into the Rust production code. If a user-visible string changes, pull the
+   zh rows verbatim from the oracle `.po` (§0.5) and update `crates/skit-i18n/src/lib.rs` (remove
+   replaced rows — the catalog is a linear-scan array, thematically grouped, no order/dup test).
+4. Delete the `#[ignore = "FAILING CONTRACT (divergence): ..."]` line (leave the test body intact).
+5. Run the crate suite `cargo test --locked -p <pkg> --all-targets --all-features`. **Expect 1-3
+   SIBLINGS to fail** — every cluster this session had siblings asserting the OLD divergent
+   behavior, including tests whose NAME claims "v0.4" (`doctor_keeps_the_v040_fresh_install_uv_check`
+   asserted the divergence itself). Correct them to the oracle and say so in the commit.
+6. Gates: `cargo fmt --check -p <pkg>`, `cargo clippy --locked -p <pkg> --all-targets
+   --all-features -- -D warnings`, `RUSTDOCFLAGS='-D warnings' cargo doc --locked -p <pkg>
+   --no-deps`.
+7. Full workspace aggregate (`cargo test --locked --workspace --all-targets --all-features` piped
+   through the awk sum, §8). **The ignored count must drop by EXACTLY the number un-ignored; passed
+   grows by that plus any new tests. Do the arithmetic every time** — a discrepancy means a sibling
+   changed silently. Takes ~7-9 min; background it or `timeout 550`.
+8. Commit fix + un-ignores + sibling corrections together (message format: what diverged, the
+   oracle refs, what was un-ignored, which siblings were corrected and why, the new aggregate).
+   Then update the ledger row(s) in `docs/design/python-test-port-ledger.md` (`**X FIXED <sha>**`
+   convention) as a separate `docs(ledger):` commit.
 
-### The fix-loop (the exact procedure for each divergence)
-1. Read the oracle impl (`skit-oracle/src/skit/*.py`) for the behavior + the FAILING CONTRACT test's
-   `#[ignore]` reason (it has the oracle line refs + what Rust does).
-2. Translate the behavior into the Rust production code.
-3. Delete the `#[ignore = "FAILING CONTRACT (divergence): ..."]` line (leave the test body intact).
-4. Run the crate's whole suite `cargo test --locked -p <pkg> --all-targets --all-features` — the
-   un-ignored test now PASSES and nothing else broke. If a SIBLING test asserted the OLD (divergent)
-   behavior, it was encoding the divergence — correct it to v0.4 and note it.
-5. Gates: `cargo fmt --check -p <pkg>`, `cargo clippy --locked -p <pkg> --all-targets --all-features
-   -- -D warnings`, `RUSTDOCFLAGS='-D warnings' cargo doc --locked -p <pkg> --no-deps`.
-6. Supervisor verifies: re-run, confirm the un-ignore, run the FULL workspace test (the aggregate
-   should show ignored dropping by exactly the number un-ignored, 0 failed), commit.
+## 3. Fix-pass work COMPLETED (all committed; sequence `git log 052dcd3..HEAD`)
 
-## 3. Completed work (all committed; `git log 052dcd3..HEAD`)
+Pre-session (previous agents): store data-safety (`2aebe6f`,`c04395c`), 13 port waves, i18n Library
+term + zh negotiation (`5574ff1`), review-lane Ctrl+O/Ctrl+E (`22b9773`).
 
-- **Store data-safety translation** (`2aebe6f`, `c04395c`): S1 resolve→NotFound for corrupt/missing
-  meta (exit 127); S2 corrupt registry.toml → `.corrupt` backup; A2 opportunistic read-path
-  self-heal (`_repair_rows` under a non-blocking lock; `resolve` never self-heals); A1 replace-retry
-  test seam. **A2 reversed codex's "pure reads" design to match v0.4** — `rust-contract-matrix.md`
-  rescoped (reads-never-migrate = user data; the registry cache is the oracle-defined self-heal
-  exception). Reversible if the user objects.
-- **13 fan-out waves → 81 port_test files, 2840 passing.** Every module verified against the oracle,
-  gaps adjudicated, gates green before commit. The adversarial verify stage caught a weakened/
-  mislabeled assertion in **8 modules** (declared_params, js_deps×6, review_fixes,
-  add_validation_contracts, editor, config_cmd, prompt_kind, prompt_cli, prompt_tui, path_tui,
-  tui_responsive, settings_atomicity, reset_default_ui, add_feedback_contracts, cli) — every one
-  corrected against the oracle before commit. This is the whole point: the verify stage is what stops
-  the reinvention/weakening the user hated.
-- **Tooling adjudicated N/A**: `benchmarks_tooling` (Rust `skit-benchmarks` crate has 92 native
-  tests) + `mutation_gate` (Rust uses cargo-mutants). Not portable 1:1.
-- **First fix-pass change** (`5574ff1`, task #9 done): restored the v0.4 Library term (工具库/工具庫,
-  not codex's 程序库/程式庫) across the catalog + `detect_locale` zh negotiation (zh-MY/zh-XX/bare-zh →
-  ZhCn). Un-ignored 5 failing contracts; also fixed a latent defect (Ratatui `TestBackend`
-  interleaves a blank cell after each wide glyph, so `contains("工具库")` never matched — assertions
-  now use the spaced form `"工 具 库"`).
+This session (2026-08-11/12), in order — each closed the named contracts:
 
-## 4. Fix pass done so far / next up
+| Commit | What | Contracts |
+|---|---|---|
+| `8af2d92` | launch preview total for unknown kind (returns template; display byte-matches flows.py:915 env-prefix line) | 1 |
+| `a8e2480` | doctor uv rules: exit 0 for non-empty no-python library (`UvHealth::NotRequired` now produced); python never launch-blocked over uv | 3 (+2 siblings) |
+| `3bb4fbf` | config command display layer: localized unset sentinels, padded `{k:<16}` list in v0.4 key order (`CONFIG_KEYS` exported from skit-store), `k = v` confirmation, paused-axis stderr notice, choice-naming refusals (store `normalize_setting` voices) | 10 |
+| `8633128` | params read-view empty/unmanaged voices: "<name> has no managed parameters." (analyzer-less OR reader-driven → early return; ref/copy advice split), "Detected but not yet managed: ..." tail voices | 8 |
+| `dc58131` | kind-picker labels: `kind_choice_label` in skit-i18n ("A program (run it directly)" / "A prompt for an AI agent"); badge `kind_label` unchanged | 2 |
+| `19e5ab8` | bun gets `run` subcommand; JS refusal = oracle text naming candidates + `skit config js.runner` hint (`JsRuntimeMissing`, exit 126, pinned-missing takes same voice) | 2 |
+| `7977386` | uv checksum error carries expected+actual digests; dir-fsync swallowed post-rename; unpinned triple = typed `NoPinnedChecksum` (white-box unit) not a panic | 1 (+2 re-labeled) |
+| `76aaab1` | owed orphan-pin completeness white-box unit (CHECKSUMS == producible triples, digest shape) | — |
+| `c5e84ea` | PEP 440/508 refusal wording: "<value> isn't a package requirement (e.g. ...)" / "... isn't a Python version constraint (e.g. ...)", raw value, parser reason dropped | 6 |
+| `592d236` | name-conflict voices: create = "The name X is already taken — pick another name." (`Conflict{name}`), rename = "The name X is already taken." (new `RenameConflict{name}`); slug no longer leaked | 2 |
+| `1cac4a4` | editor resolution total (config > $VISUAL > $EDITOR > vi/notepad, blank falls through, unbalanced-quote → raw argv[0]); edit-lane voices ("Saved X." + drift hint, reference-gone guard BEFORE launch, "no editable source ... run as-is" exit 1, "Could not launch the editor (...)" exit 1, editor rc IGNORED on edit lane) | 6 |
+| `c1964dc` | promoted 2 now-observable editor stubs (whitespace-config→VISUAL, all-blank→vi via PATH shim) | — |
 
-- **DONE — i18n cluster** (`5574ff1`): Library term + zh negotiation (§3).
-- **DONE — review-lane Ctrl+O / Ctrl+E** (`22b9773`): Ctrl+O now no-ops for a short prompt (gated on
-  PROMPT_LIST_PREVIEW_LIMIT); Ctrl+E in a focused review Input is end-of-line, EditSource only when
-  no Input owns focus. Un-ignored both port_test_prompt_tui tests; a sibling `add_workflow.rs` seam
-  test was adapted to a capped (21-hole) prompt so it still exercises the picker. skit-tui+skit-ui
-  391/0.
-- **NEXT (not started) — launcher `describe` totality.** DIVERGENCE: oracle
-  `launcher.describe_command` (launcher.py:117-133) is total/side-effect-free — for an unknown kind
-  returns `meta.template` (usually ""), never raises. Rust `build_launch_preview`
-  (crates/skit-runtime/src/launch.rs) returns `Err(LaunchError::UnknownKind)`. FIX: make ONLY the
-  preview/describe path total (return the stored template as the preview) — do NOT touch
-  `build_launch_plan` (the run path stays refusing). Un-ignore
-  `test_unknown_kind_describe_returns_template_and_never_raises` in
-  crates/skit-cli/tests/port_test_langs.rs. (A subagent stalled on this before writing anything; tree
-  was clean.) Then continue §5.
+Two policy items keep their oracle-matching defaults (user did not object): the store self-heal
+reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to implement). Reversible.
 
-## 5. Not-yet-done: the fix-pass backlog (~85 divergences, by cluster)
+## 4. Verified baseline (re-verify on arrival)
 
-Each has oracle line refs in the FAILING CONTRACT `#[ignore]` reason + the ledger adjudication log.
-Recommended order: small/clear first (bank the loop), then the big clusters, `edit_declared` last.
+```
+git status --short          # only stray .coverage (untracked, leave it)
+cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
+# => 2887 passed / 0 failed / 1134 ignored
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 243
+```
 
-`#N` below are the (machine-local, will-be-gone) task-list IDs, kept only as shorthand — the
-descriptions here + in the ledger are authoritative. Legend: **#14** = prompt analyzer defects
-(incl. `{{unicode}}` placeholders undetected); **#15** = refuse the add-lane inputs v0.4 refuses
-(drafts-boundary guard etc.); **#16** = restore params batch fault tolerance (`edit_declared` warn-
-and-continue); **#17** = give the English/ASD-STE100 gate an oracle-derived exemption; **#18** = let
-a translation reorder its `{}` placeholders (positional→named format holes); **#19** = prepare a
-build for the user's hands-on test; **#20** = run mutation testing (BLOCKED on explicit user
-approval).
+## 5. REMAINING work — 243 FAILING CONTRACTs by file (fix-pass backlog)
 
-- **launcher describe** (§4) + **doctor uv exit** (skit-cli: uv "not required" for a pure library →
-  exit 0, not 1; healthcheck.py; un-ignores langs #18/#20, healthcheck) — small, clear.
-- **review-lane** (§4) — Ctrl+O gate, Ctrl+E focus.
-- **config-display** (skit-cli cli.rs): the `config` command lost its human display layer — default
-  sentinels ("default ($VISUAL / $EDITOR)", "auto (deno > bun > node)"), padded list columns,
-  "k = v" (space-padded) set confirmation, errors that NAME the valid choices, the paused-axis
-  "switched off" notice. cli.py:5301-5326, 5509, 5523. (port_test_config_cmd.rs, ~10 divergences.)
-- **add-lane (#15, big cluster, skit-cli cli.rs)**: the drafts-boundary guard is ABSENT (refuse
-  `--exe/--ref/--kind exe` on a kept draft — cli.py:1894-1933); a resumed draft is NOT consumed on
-  success (cli.py:258-266); the editor lane validates AFTER opening $EDITOR (should validate first —
-  cli.py:309-329); `kind_for_draft` shebang-first classifier is MISSING (a .py draft with a bash
-  shebang stores kind=python not shell — registry.py:442-473); `--python -/none/blank` normalization
-  (case-insensitive, blank→auto — cli.py:279-281); unknown-kind refusal voices ("isn't a script..."
-  / "names no interpreter..." vs the generic "could not infer" — cli.py:2040-2070); the interactive
-  deps/python re-ask loop is ABSENT (cli.py:224-261). Spread across port_test_add_lane_contracts.rs,
-  port_test_add_validation_contracts.rs, port_test_add_feedback_contracts.rs,
-  port_test_draft_inference_and_reader_cli.rs (all deduped to the same shapes).
-- **prompt (#14 + more, skit-cli)**: add name derivation keeps `.prompt` (`p.prompt.md`→`p-prompt`
-  not `p`, store.py:571); stdin `add -` with no name defaults to 'stdin' vs requiring --name; stdin
-  whitespace body accepted vs "Nothing arrived on stdin"; `{{目标}}` unicode placeholders undetected →
-  empty fields (**task #14**); deleted prompt body → run exits 2 "invalid entry mutation" not 127;
-  126 unknown-runner lists no names; empty-runner-list run lacks "No agents configured" + recovery;
-  edit surfaces no reconcile hint; the params HUMAN read view drops the unmanaged/"(use --manage...)"
-  listing (only --json carries it). **Plus a genuine internal bug the port found: the add lane trims
-  `--runner " claude "` but the run lane does NOT** — make them consistent. (port_test_prompt_cli.rs
-  ~10, port_test_prompt_kind.rs.)
-- **params/edit (#16, big — reimplementation-scale)**: `edit_declared` (params.py:352-472) is a whole
-  pure WARN-AND-CONTINUE batch editor returning `DeclEditResult{decls, warnings}` with 9 closed
-  warning codes (already-declared, not-declared, bad-delivery/type/default, choice-without-choices,
-  not-a-placeholder, env-source-not-secret, bool-flag-on-by-default), reverting a bad row but keeping
-  the batch — ABSENT in Rust, which fail-fast-aborts on the first bad row (cli.rs:3762-3973).
-  `reconcile.edit_specs` (--resync/--remove/--secret/--prompt) is inlined private in cli.rs — expose
-  it. The params/edit CLI exits 2 (Usage) where v0.4 warns+exits 0 (bad --type/--prompt) or refuses
-  with exit 1 (--resync on a reference entry; edit a non-editable kind). `[[parameters]]` unknown-key
-  preservation: oracle `to_toml_dict` passes raw param dicts through (keep-unknown-fields,
-  models.py:112-113); Rust's typed `to_meta_map` always adds `type` + drops unmodeled keys
-  (parameters.rs:340-349). (port_test_params_edit.rs 36 absent, port_test_declared_params.rs,
-  port_test_edit.rs.)
-- **data-safety**: shim writes the plaintext-secret injected copy to `entry_dir` unconditionally;
-  oracle writes OS-temp-first (rewrite.py:176-180) so a crash never persists a secret in the store —
-  fix `stage_injected_source` (command.rs:686-693). settings-save npm-clear atomic refusal is ABSENT
-  (tui_submit_settings never clears node_modules; only the deps command does). `deps`-clear must
-  sweep node_modules (js_deps).
-- **launcher/interpreters**: bun `run` subcommand + refusal-message wording (interpreters);
-  interpreters DETECTION half (shebang_program/infer_kind) still OWED as a skit-language port (58
-  cross-crate stubs point there — a coverage obligation, not a divergence).
-- **misc wording**: kindnames picker labels ("A program (run it directly)" / "A prompt for an AI
-  agent" — kindnames.py:50-52); PEP 440/508 error wording; name-conflict "taken" vs "already
-  exists"; etc.
-- **uvman orphan-pin completeness** → re-home to a skit-runtime white-box unit test (private
-  CHECKSUMS unenumerable from an integration test).
+Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `8e103de`.
+
+- **47 port_test_prompt_cli.rs + 9 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
+  prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
+  removesuffix); stdin `add -` no name → defaults 'stdin'; stdin whitespace body accepted; `{{目标}}`
+  unicode placeholders undetected → empty fields (**the #14 analyzer defect** — likely in
+  skit-language's prompt placeholder scan, check `\w`-class vs oracle regex); deleted prompt body →
+  run exits 2 "invalid entry mutation" not 127; exit-126 unknown-runner must list configured names;
+  empty-runner-list run needs "No agents configured" + recovery; `_reconcile_prompt_after_edit`
+  (the edit-lane prompt half — the generic drift hint is DONE `1cac4a4`, the prompt reconcile
+  offer is NOT); params human read view for prompts (placeholder table via `_show_command_params`);
+  **genuine internal bug: add lane trims `--runner " claude "`, run lane does not — make
+  consistent**. Oracle: cli.py prompt lanes, store.py:571, langs/prompt/*.
+- **27 port_test_js_deps.rs — JS dependency materialization.** Includes the data-safety `deps`-clear
+  node_modules sweep (§ data-safety below). Oracle: langs/javascript/deps.py.
+- **17 port_test_cli.rs — mixed add/File-not-found voices.** "File not found" phrase (oracle
+  `_require_exists`/`_require_file`, cli.py:420-428) vs Rust "could not resolve ...os error 2";
+  plus add-lane overlaps (see add-lane cluster).
+- **16 port_test_add_validation_contracts.rs + 9 port_test_add_lane_contracts.rs + 6
+  port_test_add_feedback_contracts.rs + 6 port_test_draft_inference_and_reader_cli.rs + 13
+  port_test_add_no_source.rs + ~8 of port_test_editor.rs (the `-e` lane) — the add-lane cluster
+  (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
+  cli.py:1894-1933); resumed draft not consumed on success (cli.py:258-266); editor lane must
+  validate BEFORE opening $EDITOR (cli.py:309-329); `kind_for_draft` shebang-first classifier
+  (registry.py:442-473 — a `.py` draft with a bash shebang stores kind=shell); `--python -/none/blank`
+  normalization (case-insensitive, blank→auto, cli.py:279-281); unknown-kind refusal voices
+  ("isn't a script..." / "names no interpreter..." — cli.py:2040-2070); interactive deps/python
+  re-ask loop (cli.py:224-261); `-e` lane name prompt/interactivity gate; untouched-draft exit 0
+  "Nothing was added" + unlink vs Rust's exit-2 keep; awk-shebang → ask, not python-fallback;
+  `_offer_create_in_editor` decline = clean exit 0 (Rust: 130 Aborted).
+- **14 port_test_dependency_command_contracts.rs** — deps belt refusals before entry existence etc.
+- **14 port_test_declared_params.rs + 3 port_test_edit.rs + 2 of port_test_editor.rs (params
+  resync) + port_test_params_edit.rs (36 tests currently ABSENT-stubbed) — the params/edit cluster
+  (#16), reimplementation-scale, LAST.** `edit_declared` (params.py:352-472): pure warn-and-continue
+  batch editor returning `DeclEditResult{decls, warnings}` with 9 closed warning codes, reverting a
+  bad row but keeping the batch (Rust fail-fast-aborts, cli.rs:3762-3973 region); expose
+  `reconcile.edit_specs`; exits: warn+0 (bad --type/--prompt), refuse 1 (--resync on reference,
+  non-editable kind) vs Rust's blanket Usage 2; `[[parameters]]` unknown-key preservation
+  (models.py:112-113 pass-through vs typed `to_meta_map` dropping unmodeled keys,
+  parameters.rs:340-349).
+- **11 port_test_run_set.rs** — run --set lane divergences.
+- **6 port_test_config.rs** — config store-level leftovers (distinct from the DONE config_cmd).
+- **Data-safety (in js_deps + elsewhere):** shim writes the plaintext-secret injected copy to
+  `entry_dir` unconditionally; oracle stages OS-temp-first (rewrite.py:176-180) so a crash never
+  persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
+  region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
+  `deps`-clear must sweep node_modules.
+- **TUI: 5 path_tui + 4 tui_nav + 2 tui_responsive + 2 draft_and_reader_tui + 1 reset_default_ui.**
+- **Small:** 2 agent_install, 2 default_semantics_review_fixes, 1 default_name_resolution, 1 show,
+  1 entrypoint, 1 dependency_write_validation (unclassifiable-file-outside-drafts, ties add-lane),
+  1 flows.
+- **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
+  shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
+  port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job
+  per the §7 port mode).
+
+Each contract's `#[ignore]` reason carries the oracle line refs + what Rust does. The ledger has
+the per-module adjudication log.
 
 ## 6. After the fix pass (Phase 3–5, do NOT start early)
 
 - Phase 3 gates: 100% executable-source line coverage (`cargo llvm-cov` + `scripts/check_coverage.sh`
   — do NOT relax it), i18n completeness (3 locales), ASD-STE100 English, cargo deny/audit, zizmor,
   docs build, benchmark budget, Maturin wheel + `uv tool install` smoke.
-- **User's hands-on test (task #19)** fits AFTER the fix pass restores behavior, BEFORE mutation.
-- Mutation (`cargo mutants`, task #20) is **BLOCKED on explicit user approval** — it invalidates on
-  any change, so it runs only after behavior is frozen; ~4.5h local, likely on another box/modal.com.
+- **User's hands-on test** fits AFTER the fix pass restores behavior, BEFORE mutation.
+- Mutation (`cargo mutants`) is **BLOCKED on explicit user approval** — it invalidates on any
+  change, so it runs only after behavior is frozen; ~4.5h local, likely on another box/modal.com.
+  (Local mutants runs show ~9-15% survivors on ANY branch including pristine main; the CI nightly
+  on 3.13/hosted runner is the authoritative zero-survivor gate.)
 - Phase 4: multi-round read-only independent review. Phase 5: re-record demo assets (main's
   `docs/assets/demo/{demo,shots}.tape` are the product spec — the acceptance harness runs them
   unchanged; the 8 tui-*.png + demo-mouse.gif were deleted on this branch and must be restored),
   delete CLAUDE_HANDOFF.md + this HANDOFF.md + mutation artifacts, open a non-draft PR.
 
-## 7. Working mode (the user's rules — follow exactly; inlined so nothing is lost)
+## 7. Working mode (the user's rules — follow exactly)
 
 - **Translate the oracle, never reinvent.** Read `skit-oracle/src/skit/*.py` at the pin
-  `origin/main@206f9ef` (NOT the `v0.4.0` tag — an earlier audit used the tag and had to be redone).
-  Match its behavior, messages, edge cases, exit codes. Cost is not a factor: "永遠遵守長期最優解和最
-  佳架構，任何技術決策只考慮用戶體驗和實現優雅，不考慮實現成本，不接受最小或最簡單修復。可以多，不能
-  少。" Prefer adding a maintained crate over hand-writing a widget — hand-rolled components from this
-  assistant have been consistently broken. Feature loss is a RELEASE BLOCKER, tracked in
-  `docs/design/rust-contract-matrix.md`.
-- **Verify through the composition root — layer-local green is NOT proof.** skit's layering
-  (`skit-ui` reducer → `skit-tui` renderer → `skit-cli` composition root) lets a capability be fully
-  implemented and fully tested at the UI layer while the composition root never feeds it. PROVEN
-  CASE: `LibraryEntryDetail` / `LibraryState::from_surface` / `Action::ReplaceSurface` had complete
-  impls + passing tests, but skit-cli called `LibraryState::from_scan(scan)` (no `details`) — so the
-  detail pane, the missing-target `⚠`, activity sort, and remove-confirm were all DEAD in the running
-  binary. This class is invisible to per-crate tests, coverage, AND mutation. For any restored
-  capability, **grep for a production caller outside `tests/`** before believing it works. The
-  end-to-end proof is the VHS tape harness (Phase 5).
-- **Review principles (each from a defect that passing tests missed):**
-  1. **Assert what the user gets, not what the code drew** (a "scrollbar exists" test passed while
-     the focused control wasn't rendered; assert the focused control's rect is inside the viewport).
-  2. **Resolve against the current set on every read** — a cached key is as stale as a cached index
-     (runner-select value-keyed, preset checkboxes name-keyed, settings focus field-keyed, positional
-     `{}` format holes — same bug in four domains: don't assume hole/key order is stable).
-  3. **When you find a defect, ask where else it lives** (the viewport-follow bug existed on two
-     screens; the second was found only because the question was asked).
-  4. **Stop when a slice stops being coherent, and say so** — park it and hand back a GREEN tree
-     rather than bending tests to fit a half-finished change (a half-landed feature "looks finished in
-     a diff" — that is exactly how this branch accumulated its regressions).
-- **Supervisor re-runs and adjudicates every subagent delivery.** Never trust self-reports; re-run,
-  grep the composition root, adjudicate against the oracle. When the verify stage flags a weakening,
-  fix it (never accept a softened/tautological/no-op assertion, a gutted divergence body, or a
-  wrong-evidence stub). Welcome being overturned — the implementation agent corrected the supervisor
-  five times and was right each time.
+  `origin/main@206f9ef` (NOT the `v0.4.0` tag — an earlier audit used the tag and had to be
+  redone). Match its behavior, messages, edge cases, exit codes. Cost is not a factor: "永遠遵守長
+  期最優解和最佳架構，任何技術決策只考慮用戶體驗和實現優雅，不考慮實現成本，不接受最小或最簡單修
+  復。可以多，不能少。" Prefer a maintained crate over hand-writing a widget. Feature loss is a
+  RELEASE BLOCKER, tracked in `docs/design/rust-contract-matrix.md`.
+- **Implementation happens in the MAIN context, serially** (the user's later preference confirmed:
+  plan → adversarial review → main-context implementation; no blind implementer fan-out). This
+  session ran 13 clusters that way with zero rework. Fan-out is ONLY for mechanical tests-only work
+  (like the owed detection port), each paired with an adversarial verify subagent.
+- **Verify through the composition root — layer-local green is NOT proof.** PROVEN CASE:
+  `LibraryEntryDetail` had complete impls + passing tests but skit-cli never fed it (dead in the
+  binary). For any restored capability, grep for a production caller outside `tests/`. End-to-end
+  proof is the VHS tape harness (Phase 5).
+- **Review principles:** (1) assert what the user gets, not what the code drew; (2) resolve against
+  the current set on every read (cached keys are as stale as cached indexes); (3) when you find a
+  defect, ask where else it lives (this session: the same invented-zh-translation defect existed in
+  "No such file", the PEP rows, AND the conflict rows); (4) stop when a slice stops being coherent
+  and hand back a GREEN tree.
 - **A divergence keeps its FULL asserting body** under `#[ignore = "FAILING CONTRACT (divergence):
   <oracle evidence>"]`. Stubs only for genuinely-absent-API or off-crate. `#[ignore]` NEVER hides a
-  mismatch.
-- **Subagent modes:** mechanical, non-overlapping, tests-only work → large-scale fan-out (the
-  `Workflow` tool + `port_wave.js`), tests-only + adversarial verify. Production edits / anything
-  touching a shared file → FEW long-lived serialized subagents, supervisor verifies (the codex
-  disaster was 4 agents editing one worktree). **Fan-out safety (learned the hard way):** a subagent
-  once ran `rm -rf .locks values` in the repo root on a guess (harmless — skit's own scratch — but a
-  real risk); forbid deleting anything the agent didn't create, and sandbox the real `skit` binary's
-  `SKIT_DATA/STATE/CONFIG_DIR` to temp on every call. Expect ~1 in 8 subagents to stall (API); relaunch
-  just that one.
-- **Commits: NO trailers** in this repo (NO `Co-Authored-By:`, NO `Claude-Session:`). `git commit -F -`
-  with a heredoc, plain subject/blank/body. If a trailer slips in, `git commit --amend`. Commit a fix
-  and its un-ignore together; keep the tree green.
-- **Two policy items keep their oracle-matching defaults** (user did not object): the store self-heal
-  reversal (`c04395c`) and fixing shim secret crash-safety. Reversible if the user changes their mind.
+  mismatch. When an impl fix makes a stubbed behavior observable, PROMOTE the stub to a real test
+  (precedent: `c1964dc`).
+- **Commits: NO trailers** (NO `Co-Authored-By:`, NO `Claude-Session:`). `git commit -F -` with a
+  heredoc, plain subject/blank/body. ASD-STE100-ish English. Commit a fix and its un-ignores
+  together; keep the tree green. Ledger updates as separate `docs(ledger):` commits.
+- Subagent safety (if you fan out): forbid deleting anything the agent didn't create; sandbox
+  `SKIT_DATA/STATE/CONFIG_DIR` to temp on every real-binary call; expect ~1 in 8 to stall
+  (relaunch just that one).
 
 ## 8. Hard-won knowledge / gotchas (save the next agent hours)
 
-- **The CLI crate's package name is `skit-cli-rs`, NOT `skit-cli`** (dir is crates/skit-cli). `-p
-  skit-cli --all-features` errors "packages outside of workspace". Always `-p skit-cli-rs`.
-- **Ratatui `TestBackend` interleaves a blank cell after each wide (CJK) glyph** — assert `"工 具 库"`
-  not `"工具库"`. A no-space `contains` silently never matches (and makes negative assertions
-  vacuous). See render.rs:170.
-- **An empty filter needle does NOT run `apply_filter`** (falls back to the default sort) — to test a
-  comparator you must use a non-empty needle. (path_tui tiebreak.)
-- **~1 in 8 subagents stalls mid-stream (API error).** The Workflow reports which; the fix is a
-  1-module relaunch, not a full re-run. A failed agent may have left NO changes (check `git status`).
-- **Reducer/render driving (skit-tui):** present a screen with `state.update(Action::Present(...))`;
-  persistent session across events uses one `TuiSession`; `render_with_session(...)` calls
-  `begin_render`(sync); reachable geometry = `ViewGeometry.hits`, `ChoicePickerGeometry` (Done/rows),
-  `FilePickerGeometry`, `AddScreenGeometry` (skit_tui re-exports `AddScreenSession::focused()`), and
-  buffer contents. UNreachable (use `// private-render:` / `// render-model:` notes): widget region
-  heights, `run_modal::picked_path_text`, LineInput cursor, Textual rich-markup.
-- **Verify a FAILING CONTRACT is real:** `cargo test ... -- --ignored --exact <name>` must fail at the
-  REAL last assertion (not setup).
-- **The full-workspace aggregate command** (use it to confirm a fix): pipe `cargo test --locked
-  --workspace --all-targets --all-features` through the awk one-liner that sums passed/failed/ignored
-  (see the session log). Baseline after the port: **2840 / 0 / 1179**.
-- **`skit-benchmarks/src/suites/micro.rs` and `dataset.rs`** had the two compile errors codex left;
-  already fixed early this session.
+- **THE vi-HANG TRAP (new, cost this session an hour):** editor resolution now falls back to `vi`
+  (v0.4 behavior). Any test that invokes `edit`/`add --edit` WITHOUT pinning an editor now launches
+  the REAL `/usr/bin/vi`, which HANGS the suite under `.output()` capture (stdin is null but vi
+  retries reads). Every such test must set `EDITOR`/`VISUAL`/config editor, or empty the `PATH`
+  (`env("PATH", empty_tempdir)`) when the vi-fallback itself is under test. If the full suite
+  hangs: run per-test-binary with `timeout 100 cargo test --test <name>`, bisect to the file, then
+  `-- --exact` per test. Kill leftovers with `pkill -9 -f target/debug`.
+- **zh rows come from the oracle .po, verbatim** (§0.5). If a catalog row you're replacing has no
+  .po counterpart, suspect the ENGLISH text is also invented — find the oracle msgid first.
+- **The CLI crate's package name is `skit-cli-rs`, NOT `skit-cli`** (dir is crates/skit-cli).
+- **Ratatui `TestBackend` interleaves a blank cell after each wide (CJK) glyph** — assert
+  `"工 具 库"` not `"工具库"`. A no-space `contains` silently never matches.
+- **An empty filter needle does NOT run `apply_filter`** (path_tui tiebreak tests need a non-empty
+  needle).
+- **Multi-line `#[ignore]` attributes exist** (backslash continuations in port_test_interpreters,
+  uvman). Line-based un-ignore scripts must handle them (regex over the whole attribute, or match
+  the first line and skip until `"]`).
+- **The full-workspace aggregate command:**
+  ```
+  cargo test --locked --workspace --all-targets --all-features 2>&1 \
+    | grep -E "^test result" \
+    | awk -F'[ .;]+' '{p+=$4; f+=$6; i+=$8} END {print "passed="p" failed="f" ignored="i}'
+  ```
+  ~7-9 min. Run per-crate suites during the loop; full workspace before each commit.
+- **Verify a FAILING CONTRACT is real before fixing:** `cargo test ... -- --ignored --exact <name>`
+  fails at the REAL last assertion.
+- **Reducer/render driving (skit-tui):** `state.update(Action::Present(...))`; one `TuiSession`
+  across events; `render_with_session` calls `begin_render`; reachable geometry =
+  `ViewGeometry.hits`, `ChoicePickerGeometry`, `FilePickerGeometry`, `AddScreenGeometry`, buffer
+  contents. UNreachable: widget region heights, `run_modal::picked_path_text`, LineInput cursor.
+- **skit-store `settings()`/`get()` return RAW machine tokens**; the HUMAN display layer
+  (sentinels) lives in skit-cli `config_display_value`. Tests reading raw values go through
+  `--json`.
+- **`resolve_editor_argv` / `launch_editor` / `report_saved_edit`** (cli.rs) are the edit-lane
+  seams now; `open_editor_in` (add lane) still refuses editor rc≠0 — the add-lane cluster will
+  adjudicate that against cli.py:309-329.
+- **Message hole order:** all oracle zh translations so far keep the En `{}` hole order, so
+  positional holes suffice. If you hit a translation that reorders holes, that's the deferred
+  "positional→named format holes" work item — surface it, don't bodge it.
 
 ## 9. Pointers
 
-- **Ledger (authoritative):** `docs/design/python-test-port-ledger.md` — every module, its crate/file,
-  status, and the adjudication log with per-divergence oracle refs. Wave blocks + the "Wave N" and
-  per-module adjudication entries are the detailed record.
-- **Machine-local `.claude` memory is NOT a dependency** — its essential content (superset rule,
-  composition-root verification + proof case, review principles, subagent modes + fan-out safety,
-  commit-trailer rule, environment rebuild) is inlined into §0.5 and §7 of THIS file. Do not rely on
-  it existing.
-- **Contract matrix:** `docs/design/rust-contract-matrix.md` (22 rows, still "In progress" — a release
-  blocker until Complete with evidence).
+- **Ledger (authoritative):** `docs/design/python-test-port-ledger.md` — every module, its
+  crate/file, status (`**X FIXED <sha>**` convention), and the adjudication log with per-divergence
+  oracle refs.
+- **Contract matrix:** `docs/design/rust-contract-matrix.md` (22 rows, still "In progress" — a
+  release blocker until Complete with evidence).
 - **AGENTS.md / CLAUDE.md:** product rules, trust model (skit is a launcher, NOT a sandbox — do not
-  add sanitization/threat-mitigation for trusted local content), architecture, gates.
-- Commands to run gates are in AGENTS.md "## Commands".
+  add sanitization/threat-mitigation for trusted local content), architecture, gates. Commands to
+  run gates are in AGENTS.md "## Commands".
+- **Machine-local `.claude` memory is NOT a dependency** — everything essential is inlined here.
