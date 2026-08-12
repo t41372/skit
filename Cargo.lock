@@ -2678,6 +2678,7 @@ dependencies = [
  "dialoguer",
  "portable-pty",
  "predicates",
+ "ratatui-core",
  "rpassword",
  "serde",
  "serde_json",
