@@ -20,7 +20,7 @@ struct UnknownFixture {
     data: TempDir,
     state: TempDir,
     config: TempDir,
-    tools: TempDir,
+    _tools: TempDir,
     editor: PathBuf,
     capture: PathBuf,
 }
@@ -37,7 +37,7 @@ impl UnknownFixture {
             data,
             state,
             config,
-            tools,
+            _tools: tools,
             editor,
             capture,
         }
