@@ -16,7 +16,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-use skit_store::{FileConfigStore, managed_uv_path};
+use skit_runtime::managed_uv_path;
+use skit_store::FileConfigStore;
 use tempfile::TempDir;
 
 struct Fixture {
