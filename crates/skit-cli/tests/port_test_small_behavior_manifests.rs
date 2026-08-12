@@ -160,3 +160,13 @@ fn tui_nav_has_all_5_positive_pilots() {
         ],
     );
 }
+
+#[test]
+fn hermeticity_has_the_frozen_posix_only_python_test() {
+    // Python itself marks this test skipif(win32): the fallback-isolation incident and mutation job
+    // are POSIX-only because Windows known-folder APIs do not honor HOME/XDG redirection.
+    assert_exact(
+        "crates/skit-cli/tests/port_test_hermeticity.rs",
+        &["test_platformdirs_fallback_stays_isolated_when_skit_env_missing"],
+    );
+}
