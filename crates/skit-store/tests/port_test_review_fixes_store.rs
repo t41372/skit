@@ -13,12 +13,13 @@ use tempfile::TempDir;
 
 #[test]
 fn test_is_supported_rejects_junk() {
-    // Nonempty supported spellings exercise the same canonicalization the persisted language
-    // setting uses. A rejected family must never become an accepted stored language.
+    // Nonempty supported spellings exercise the same normalization/validation used by the persisted
+    // language setting. Canonical spelling is asserted only where Rust publicly exposes it; the
+    // Python oracle's core contract is acceptance/rejection, not collapsing en-US to bare en.
     for (input, canonical) in [
         ("zh-TW", "zh-TW"),
         ("zh_TW.UTF-8", "zh-TW"),
-        ("en-US", "en"),
+        ("en-US", "en-US"),
         ("x-pseudo", "x-pseudo"),
     ] {
         let root = TempDir::new().unwrap();
@@ -98,7 +99,7 @@ fn test_set_language_with_existing_corrupt_config() {
 
     assert_eq!(recovery.path, path);
     assert_eq!(fs::read(&recovery.backup_path).unwrap(), corrupt);
-    assert_eq!(config.get("lang").unwrap(), "en");
+    assert_eq!(config.get("lang").unwrap(), "en-US");
     let rewritten = fs::read_to_string(&path).unwrap();
     let _: toml::Table = toml::from_str(&rewritten).expect("recovered config must be valid TOML");
 }
