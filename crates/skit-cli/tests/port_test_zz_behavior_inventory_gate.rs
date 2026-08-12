@@ -517,10 +517,12 @@ fn every_behavior_module_has_an_audited_executable_completeness_guard() {
     assert!(
         missing.is_empty(),
         concat!(
-            "Python behavior parity is not merge-ready: {accounted_modules}/84 modules and ",
-            "{accounted_tests}/3018 test functions have audited executable completeness guards. ",
+            "Python behavior parity is not merge-ready: {}/84 modules and ",
+            "{}/3018 test functions have audited executable completeness guards. ",
             "Missing accounting:\n{}"
         ),
+        accounted_modules,
+        accounted_tests,
         missing.join("\n")
     );
 }
