@@ -1,6 +1,6 @@
 name: Launcher and manifest oracle probe
 
-# Retry self-trigger after manifest integrity and params-edit ledger fixes.
+# Final self-trigger after params-edit and provenance cleanup.
 on:
   push:
     branches:
@@ -27,6 +27,9 @@ jobs:
           files=(
             crates/skit-runtime/tests/port_test_launcher_workdir_regressions.rs
             crates/skit-cli/tests/port_test_manifest_integrity.rs
+            crates/skit-cli/tests/port_test_params_edit_manifest.rs
+            crates/skit-cli/tests/port_test_reconcile_manifest.rs
+            crates/skit-store/tests/port_test_flows_mut_public.rs
           )
           rustfmt --edition 2024 "${files[@]}" > /tmp/lm-format.log 2>&1
           format_rc=$?
@@ -44,6 +47,8 @@ jobs:
           reconcile_rc=$?
           cargo test --locked -p skit-cli-rs --test port_test_strength_gate -- --nocapture > /tmp/lm-strength.log 2>&1
           strength_rc=$?
+          cargo test --locked -p skit-store --test port_test_flows_mut_public -- --nocapture --test-threads=1 > /tmp/lm-additive.log 2>&1
+          additive_rc=$?
 
           result=crates/skit-cli/tests/launcher_manifest_oracle_probe_result.txt
           {
@@ -56,6 +61,7 @@ jobs:
             echo "PARAMS_EDIT_MANIFEST_RC=$edit_rc"
             echo "RECONCILE_MANIFEST_RC=$reconcile_rc"
             echo "STRENGTH_GATE_RC=$strength_rc"
+            echo "FLOWS_ADDITIVE_RC=$additive_rc"
             for pair in \
               "format:$format_rc:/tmp/lm-format.log" \
               "rustfmt:$rustfmt_rc:/tmp/lm-rustfmt.log" \
@@ -64,7 +70,8 @@ jobs:
               "declared:$declared_rc:/tmp/lm-declared.log" \
               "params-edit:$edit_rc:/tmp/lm-edit.log" \
               "reconcile:$reconcile_rc:/tmp/lm-reconcile.log" \
-              "strength:$strength_rc:/tmp/lm-strength.log"
+              "strength:$strength_rc:/tmp/lm-strength.log" \
+              "flows-additive:$additive_rc:/tmp/lm-additive.log"
             do
               IFS=: read -r label rc log <<< "$pair"
               if [ "$rc" -ne 0 ]; then
