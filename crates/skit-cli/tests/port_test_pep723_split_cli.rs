@@ -70,6 +70,7 @@ impl Sandbox {
         let source = fs::read_to_string(self.data.path().join("scripts").join(slug).join("script.py"))
             .unwrap();
         let metadata = read_uv_metadata(&source).expect("stored Python copy must own a PEP 723 block");
+        let expected = expected.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>();
         assert_eq!(metadata.dependencies, expected);
     }
 }
