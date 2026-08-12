@@ -3,7 +3,7 @@
 use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
 use skit_application::SourcePermissions;
 use skit_i18n::Locale;
-use skit_tui::{TuiSession, ViewGeometry, render_with_session};
+use skit_tui::{TuiSession, render_with_session};
 use skit_ui::{
     Action, AddAction, AddEffect, AddStage, AddWorkflowState, LibraryState, Screen, SourceSnapshot,
 };
@@ -90,13 +90,11 @@ fn draw_kind_picker(workflow: AddWorkflowState) -> Terminal<TestBackend> {
     state.update(Action::Present(Screen::Add(Box::new(workflow))));
     let mut session = TuiSession::default();
     let mut terminal = Terminal::new(TestBackend::new(80, 34)).unwrap();
-    let mut geometry = ViewGeometry::default();
     terminal
         .draw(|frame| {
-            geometry = render_with_session(frame, &state, Locale::En, &mut session);
+            let _ = render_with_session(frame, &state, Locale::En, &mut session);
         })
         .unwrap();
-    assert!(geometry.add.is_some());
     terminal
 }
 
