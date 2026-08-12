@@ -60,7 +60,7 @@ const MODULES: &[Module] = &[
 
     // Tier 2 — stateful data boundaries.
     Module { python: "test_store.py", tests: 78, guard: None },
-    Module { python: "test_store_fix.py", tests: 38, guard: None },
+    Module { python: "test_store_fix.py", tests: 38, guard: Some("crates/skit-cli/tests/port_test_store_fix_manifest.rs") },
     Module { python: "test_atomic.py", tests: 32, guard: None },
 
     // Tier 3 — flows and runtime.
