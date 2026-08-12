@@ -1,11 +1,11 @@
 //! Behavioral ports of the public `tests/test_tui_edit.py` contracts from Python `main@206f9ef`.
 //!
-//! Five of the six Python tests have observable Rust seams here. Source resolution is asserted at
-//! the store boundary, while the editor round trip crosses the real `skit tui` PTY boundary. The
-//! sixth Python test reaches Textual's private `_drift_cache` tuple directly. Rust has no equivalent
-//! public cache object; that contract is intentionally not replaced with a weaker assertion here.
-//! A future port must prove the post-editor Library projection re-derives drift, not merely that a
-//! source file changed.
+//! All six contracts are observable here. Source resolution is asserted at the store boundary; the
+//! editor round trips cross the real `skit tui` PTY boundary. Python's last test pokes Textual's
+//! private `_drift_cache`; Rust has no corresponding cache object, so its architectural port proves
+//! the stronger user-visible invariant: within the same TUI session an initially-drifted Library
+//! row is re-derived after the editor repairs the source, and the final alternate-screen frame no
+//! longer carries the stale drift warning.
 
 use std::{
     fs,
@@ -18,6 +18,7 @@ use std::{
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use skit_application::EntryRepository as _;
+use skit_language::{detect_candidates, write_managed_params};
 use skit_store::FileStore;
 use tempfile::TempDir;
 
@@ -76,7 +77,9 @@ fn main() {
     if let Some(capture) = env::var_os("SKIT_EDIT_CAPTURE") {
         fs::write(capture, target.to_string_lossy().as_bytes()).expect("capture editor target");
     }
-    if env::var_os("SKIT_EDIT_MARK").is_some() {
+    if let Some(repair) = env::var_os("SKIT_EDIT_REPAIR") {
+        fs::copy(repair, &target).expect("repair editor target");
+    } else if env::var_os("SKIT_EDIT_MARK").is_some() {
         let mut file = fs::OpenOptions::new().append(true).open(&target).expect("open target");
         file.write_all(b"# edited by probe\n").expect("edit target");
     }
@@ -105,13 +108,14 @@ fn editor_probe_name() -> &'static str {
     "editor-probe"
 }
 
-fn tui_edit(
+fn run_tui_edit(
     data: &Path,
     state: &Path,
     config: &Path,
     editor: &Path,
     capture: &Path,
-) -> (u32, String) {
+    repair: Option<&Path>,
+) -> (u32, Vec<u8>) {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 30,
@@ -130,7 +134,11 @@ fn tui_edit(
     command.env("VISUAL", editor);
     command.env("EDITOR", editor);
     command.env("SKIT_EDIT_CAPTURE", capture);
-    command.env("SKIT_EDIT_MARK", "1");
+    if let Some(repair) = repair {
+        command.env("SKIT_EDIT_REPAIR", repair);
+    } else {
+        command.env("SKIT_EDIT_MARK", "1");
+    }
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
 
@@ -150,14 +158,258 @@ fn tui_edit(
     thread::sleep(Duration::from_millis(180));
     writer.write_all(b"e").unwrap();
     writer.flush().unwrap();
-    thread::sleep(Duration::from_millis(300));
+    thread::sleep(Duration::from_millis(450));
     writer.write_all(b"q").unwrap();
     writer.flush().unwrap();
 
     let status = child.wait().unwrap();
     drop(writer);
-    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
-    (status.exit_code(), output)
+    (status.exit_code(), drain.join().unwrap())
+}
+
+fn tui_edit(
+    data: &Path,
+    state: &Path,
+    config: &Path,
+    editor: &Path,
+    capture: &Path,
+) -> (u32, String) {
+    let (code, bytes) = run_tui_edit(data, state, config, editor, capture, None);
+    (code, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Minimal terminal-state interpreter for the crossterm operations Ratatui uses in these tests.
+///
+/// A raw PTY log contains every old frame, so `!log.contains("script changed")` would be a weak and
+/// incorrect cache-invalidation assertion. This model follows cursor placement, screen/line erasure,
+/// and the alternate-screen lifetime, and snapshots the frame that was visible immediately before
+/// `LeaveAlternateScreen`. It also remembers whether any earlier rendered frame contained the drift
+/// sentence, proving the fixture really exercised stale-state removal.
+struct TerminalState {
+    width: usize,
+    height: usize,
+    row: usize,
+    col: usize,
+    saved: (usize, usize),
+    cells: Vec<Vec<char>>,
+    last_alt: Option<Vec<Vec<char>>>,
+    saw_drift: bool,
+}
+
+impl TerminalState {
+    fn new(width: usize, height: usize) -> Self {
+        Self {
+            width,
+            height,
+            row: 0,
+            col: 0,
+            saved: (0, 0),
+            cells: vec![vec![' '; width]; height],
+            last_alt: None,
+            saw_drift: false,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.cells.iter_mut().for_each(|row| row.fill(' '));
+        self.row = 0;
+        self.col = 0;
+    }
+
+    fn row_contains_drift(&self, row: usize) -> bool {
+        self.cells
+            .get(row)
+            .map(|cells| cells.iter().collect::<String>().contains("script changed"))
+            .unwrap_or(false)
+    }
+
+    fn put(&mut self, character: char) {
+        if self.row >= self.height {
+            return;
+        }
+        if self.col >= self.width {
+            self.col = 0;
+            self.row = self.row.saturating_add(1);
+            if self.row >= self.height {
+                return;
+            }
+        }
+        self.cells[self.row][self.col] = character;
+        self.col = self.col.saturating_add(1);
+        self.saw_drift |= self.row_contains_drift(self.row);
+    }
+
+    fn param(params: &str, index: usize, default: usize) -> usize {
+        params
+            .trim_start_matches('?')
+            .split(';')
+            .nth(index)
+            .filter(|value| !value.is_empty())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    }
+
+    fn erase_line(&mut self, mode: usize) {
+        if self.row >= self.height {
+            return;
+        }
+        match mode {
+            1 => self.cells[self.row][..self.col.min(self.width)].fill(' '),
+            2 => self.cells[self.row].fill(' '),
+            _ => self.cells[self.row][self.col.min(self.width)..].fill(' '),
+        }
+    }
+
+    fn erase_display(&mut self, mode: usize) {
+        match mode {
+            2 | 3 => self.clear(),
+            1 => {
+                for row in 0..self.row.min(self.height) {
+                    self.cells[row].fill(' ');
+                }
+                if self.row < self.height {
+                    self.cells[self.row][..self.col.min(self.width)].fill(' ');
+                }
+            }
+            _ => {
+                if self.row < self.height {
+                    self.cells[self.row][self.col.min(self.width)..].fill(' ');
+                    for row in self.row.saturating_add(1)..self.height {
+                        self.cells[row].fill(' ');
+                    }
+                }
+            }
+        }
+    }
+
+    fn csi(&mut self, params: &str, final_byte: u8) {
+        match final_byte {
+            b'H' | b'f' => {
+                self.row = Self::param(params, 0, 1).saturating_sub(1).min(self.height.saturating_sub(1));
+                self.col = Self::param(params, 1, 1).saturating_sub(1).min(self.width.saturating_sub(1));
+            }
+            b'A' => self.row = self.row.saturating_sub(Self::param(params, 0, 1)),
+            b'B' => self.row = self.row.saturating_add(Self::param(params, 0, 1)).min(self.height.saturating_sub(1)),
+            b'C' => self.col = self.col.saturating_add(Self::param(params, 0, 1)).min(self.width.saturating_sub(1)),
+            b'D' => self.col = self.col.saturating_sub(Self::param(params, 0, 1)),
+            b'G' => self.col = Self::param(params, 0, 1).saturating_sub(1).min(self.width.saturating_sub(1)),
+            b'd' => self.row = Self::param(params, 0, 1).saturating_sub(1).min(self.height.saturating_sub(1)),
+            b'J' => self.erase_display(Self::param(params, 0, 0)),
+            b'K' => self.erase_line(Self::param(params, 0, 0)),
+            b's' => self.saved = (self.row, self.col),
+            b'u' => (self.row, self.col) = self.saved,
+            b'h' if params == "?1049" => self.clear(),
+            b'l' if params == "?1049" => self.last_alt = Some(self.cells.clone()),
+            // SGR, cursor visibility, bracketed paste, mouse modes, cursor query and other terminal
+            // modes do not alter the text grid relevant to this contract.
+            _ => {}
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\x1b' if bytes.get(index + 1) == Some(&b'[') => {
+                    let start = index + 2;
+                    let mut end = start;
+                    while end < bytes.len() && !(0x40..=0x7e).contains(&bytes[end]) {
+                        end += 1;
+                    }
+                    if end >= bytes.len() {
+                        break;
+                    }
+                    let params = String::from_utf8_lossy(&bytes[start..end]);
+                    self.csi(&params, bytes[end]);
+                    index = end + 1;
+                }
+                b'\x1b' if bytes.get(index + 1) == Some(&b']') => {
+                    // OSC: consume through BEL or ST (ESC backslash).
+                    index += 2;
+                    while index < bytes.len() {
+                        if bytes[index] == 0x07 {
+                            index += 1;
+                            break;
+                        }
+                        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                            index += 2;
+                            break;
+                        }
+                        index += 1;
+                    }
+                }
+                b'\x1b' => {
+                    // DECSC/DECRC and charset selectors are the only non-CSI escapes crossterm may
+                    // place here that affect cursor interpretation.
+                    match bytes.get(index + 1).copied() {
+                        Some(b'7') => {
+                            self.saved = (self.row, self.col);
+                            index += 2;
+                        }
+                        Some(b'8') => {
+                            (self.row, self.col) = self.saved;
+                            index += 2;
+                        }
+                        Some(b'(' | b')') => index = (index + 3).min(bytes.len()),
+                        Some(_) => index += 2,
+                        None => break,
+                    }
+                }
+                b'\r' => {
+                    self.col = 0;
+                    index += 1;
+                }
+                b'\n' => {
+                    self.row = self.row.saturating_add(1).min(self.height.saturating_sub(1));
+                    index += 1;
+                }
+                0x08 => {
+                    self.col = self.col.saturating_sub(1);
+                    index += 1;
+                }
+                byte if byte < 0x20 || byte == 0x7f => index += 1,
+                _ => {
+                    let Ok(text) = std::str::from_utf8(&bytes[index..]) else {
+                        // Decode exactly one UTF-8 scalar by trying the legal prefix lengths. PTY
+                        // output from skit is UTF-8; incomplete tail bytes are simply ignored.
+                        let mut decoded = None;
+                        for length in 1..=4 {
+                            if index + length <= bytes.len()
+                                && let Ok(piece) = std::str::from_utf8(&bytes[index..index + length])
+                                && let Some(character) = piece.chars().next()
+                                && character.len_utf8() == length
+                            {
+                                decoded = Some((character, length));
+                                break;
+                            }
+                        }
+                        if let Some((character, length)) = decoded {
+                            self.put(character);
+                            index += length;
+                        } else {
+                            index += 1;
+                        }
+                        continue;
+                    };
+                    let Some(character) = text.chars().next() else {
+                        break;
+                    };
+                    self.put(character);
+                    index += character.len_utf8();
+                }
+            }
+        }
+    }
+
+    fn final_text(&self) -> String {
+        self.last_alt
+            .as_ref()
+            .unwrap_or(&self.cells)
+            .iter()
+            .map(|row| row.iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 }
 
 #[test]
@@ -309,4 +561,84 @@ fn test_edit_command_entry_reports_no_source() {
     );
     assert!(!capture.exists(), "the editor ran for a command entry");
     assert!(output.contains("no editable source"), "{output}");
+}
+
+#[test]
+fn test_edit_invalidates_the_drift_cache() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let tools = TempDir::new().unwrap();
+    let original = data.path().join("original.py");
+    let base = "CITY = 'Taipei'\nprint(CITY)\n";
+    fs::write(&original, base).unwrap();
+
+    let declarations = detect_candidates("python", base);
+    assert_eq!(declarations.len(), 1, "fixture must expose exactly CITY");
+    assert_eq!(declarations[0].name, "CITY");
+    let clean = write_managed_params("python", base, &declarations).unwrap();
+    let drifted = clean.replacen("CITY = 'Taipei'", "CITY = 42", 1);
+    assert_ne!(drifted, clean, "fixture did not create a type/default drift");
+
+    write_entry(
+        data.path(),
+        "a",
+        "a",
+        "python",
+        "copy",
+        &original,
+        Some(("script.py", drifted.as_bytes())),
+    );
+    let store = FileStore::new(data.path());
+    let entry = store.resolve("a").unwrap();
+    let before = skit_store::library_surface(&store, state.path(), config.path()).unwrap();
+    assert!(
+        before.details.get(&entry.slug).unwrap().drifted,
+        "fixture must begin with a real drift warning"
+    );
+
+    let repair = tools.path().join("clean.py");
+    fs::write(&repair, clean.as_bytes()).unwrap();
+    let editor = compile_editor(tools.path());
+    let capture = tools.path().join("capture.txt");
+    let (code, bytes) = run_tui_edit(
+        data.path(),
+        state.path(),
+        config.path(),
+        &editor,
+        &capture,
+        Some(&repair),
+    );
+    assert_eq!(
+        code,
+        0,
+        "TUI did not exit cleanly: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    assert_eq!(
+        fs::read_to_string(data.path().join("scripts/a/script.py")).unwrap(),
+        clean,
+        "the editor probe did not actually repair the drifted source"
+    );
+
+    let mut terminal = TerminalState::new(120, 30);
+    terminal.feed(&bytes);
+    assert!(
+        terminal.saw_drift,
+        "the same TUI session never rendered the fixture's initial drift warning"
+    );
+    let final_frame = terminal.final_text();
+    assert!(
+        !final_frame.contains("script changed"),
+        "the post-editor Library frame reused stale drift state instead of re-deriving it:\n{final_frame}"
+    );
+
+    // Independently pin the returned store projection so a parser bug cannot turn a stale TUI into
+    // a false success: the source now has no drift according to the same public Library projection
+    // the TUI reload consumes.
+    let after = skit_store::library_surface(&store, state.path(), config.path()).unwrap();
+    assert!(
+        !after.details.get(&entry.slug).unwrap().drifted,
+        "the repaired source still projects as drifted"
+    );
 }
