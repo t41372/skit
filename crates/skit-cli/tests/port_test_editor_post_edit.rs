@@ -5,7 +5,11 @@
 //! a real editor deletes the exact path it was given, exits successfully, and skit must then fail
 //! cleanly while naming that path and reporting the Python `Can't read` user-facing semantics.
 
-use std::{fs, path::{Path, PathBuf}, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use skit_store::FileStore;
 use tempfile::TempDir;
@@ -14,7 +18,7 @@ struct RemovedTargetFixture {
     data: TempDir,
     state: TempDir,
     config: TempDir,
-    tools: TempDir,
+    _tools: TempDir,
     capture: PathBuf,
     editor: PathBuf,
 }
@@ -58,7 +62,7 @@ impl RemovedTargetFixture {
             data,
             state,
             config,
-            tools,
+            _tools: tools,
             capture,
             editor,
         }
@@ -135,10 +139,16 @@ fn test_open_entry_prompt_removed_by_editor_is_a_clean_edited_source_error() {
         .unwrap_or_else(|error| panic!("editor did not capture the removed target: {error}"));
 
     assert_eq!(output.status.code(), Some(1), "{text}");
-    assert!(text.contains("Can't read"), "post-edit read failure lost Python user semantics: {text}");
+    assert!(
+        text.contains("Can't read"),
+        "post-edit read failure lost Python user semantics: {text}"
+    );
     assert!(
         text.contains(&removed),
         "post-edit read failure did not name the editor target {removed:?}: {text}"
     );
-    assert!(!Path::new(&removed).exists(), "editor target unexpectedly survived deletion");
+    assert!(
+        !Path::new(&removed).exists(),
+        "editor target unexpectedly survived deletion"
+    );
 }
