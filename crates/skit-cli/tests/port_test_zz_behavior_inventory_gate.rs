@@ -44,7 +44,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_kindnames.py", tests: 5, guard: Some(SMALL) },
     Module { python: "test_tokens.py", tests: 21, guard: Some("crates/skit-cli/tests/port_test_tokens_manifest.rs") },
     Module { python: "test_pep723_split.py", tests: 24, guard: Some("crates/skit-cli/tests/port_test_pep723_split_manifest.rs") },
-    Module { python: "test_metawriter.py", tests: 24, guard: None },
+    Module { python: "test_metawriter.py", tests: 24, guard: Some("crates/skit-cli/tests/port_test_metawriter_manifest.rs") },
     Module { python: "test_template_context_quoting.py", tests: 44, guard: None },
     Module { python: "test_declared_params.py", tests: 52, guard: Some("crates/skit-cli/tests/port_test_declared_params_manifest.rs") },
     Module { python: "test_source_default_semantics.py", tests: 19, guard: Some("crates/skit-cli/tests/port_test_source_default_semantics_manifest.rs") },
