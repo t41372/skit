@@ -46,8 +46,9 @@ fn config_mutation_coverage_is_five_executable_two_blocked() {
         .parent()
         .and_then(Path::parent)
         .unwrap();
-    let source = fs::read_to_string(repo.join("crates/skit-store/tests/port_test_config_mut_exact.rs"))
-        .unwrap();
+    let source =
+        fs::read_to_string(repo.join("crates/skit-store/tests/port_test_config_mut_exact.rs"))
+            .unwrap();
     assert_eq!(
         test_names(&source),
         EXECUTABLE
