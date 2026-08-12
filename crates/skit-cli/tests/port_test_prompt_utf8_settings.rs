@@ -83,9 +83,10 @@ fn prompt_utf8_settings_surface_rejects_invalid_bytes_without_replacement_charac
     writer.write_all(b"\x1b[1;1R").unwrap();
     writer.flush().unwrap();
     thread::sleep(Duration::from_millis(180));
-    // `s` is the library's entry-settings door. If Settings incorrectly opens, Escape returns to
-    // the library before `q`; if the strict reader refuses, Escape is harmless and `q` still exits.
-    writer.write_all(b"s").unwrap();
+    // `p` is the Rust Library's entry-settings door used by the existing real-TUI Settings tests.
+    // If Settings incorrectly opens, Escape returns to the library before `q`; if the strict reader
+    // refuses, Escape is harmless and `q` still exits.
+    writer.write_all(b"p").unwrap();
     writer.flush().unwrap();
     thread::sleep(Duration::from_millis(180));
     // Keep Escape and q as separate terminal events: one read containing ESC+q may decode as Alt-q.
@@ -103,6 +104,9 @@ fn prompt_utf8_settings_surface_rejects_invalid_bytes_without_replacement_charac
 
     assert_eq!(status.exit_code(), 0, "{transcript}");
     assert!(transcript.contains("isn't valid UTF-8"), "{transcript}");
-    assert!(!transcript.contains('\u{fffd}'), "Settings replacement-decoded the prompt: {transcript}");
+    assert!(
+        !transcript.contains('\u{fffd}'),
+        "Settings replacement-decoded the prompt: {transcript}"
+    );
     assert_eq!(fs::read(&payload).unwrap(), b"hello \xff changed\n");
 }
