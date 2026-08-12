@@ -96,12 +96,12 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (82/58) · 2 weakenings being fixed (whitespace-constraint stored-value, reused-arg markup isolation) |
-| test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (58/93) · **stdin store-error 'taken' FIXED 592d236** · ~9 prompt-CLI divergences (name keeps .prompt, stdin defaults, {{目标}} undetected #14, deleted-body run exit, runner recovery msgs) + add/run --runner trim INCONSISTENCY |
+| test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (60/90) · **stdin store-error 'taken' FIXED 592d236** · **edit drift hint FIXED 1cac4a4** · ~8 prompt-CLI divergences (name keeps .prompt, stdin defaults, {{目标}} undetected #14, deleted-body run exit, runner recovery msgs) + add/run --runner trim INCONSISTENCY |
 | test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | in fix (65/50) · 4 undisclosed partial ports + gutted 127 stub being fixed |
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | done (61) · **human-display layer FIXED 3bb4fbf** (sentinels, padded list, `k = v`, paused notice, choice-naming errors) · 14 cross-crate wizard/first-run |
 | test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs | done (17) · 51 cross-crate/absent (interactive add lane) |
 | test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs | done (55) · 8 deferred |
-| test_editor.py | 50 | crates/skit-cli/tests/port_test_editor.rs | in fix (21/30) · **name-conflict 'taken' FIXED 592d236** · verifier caught 5 weakenings + 4 mislabels (add -e has no interactivity gate; resolve_editor divergences filed as absent) |
+| test_editor.py | 50 | crates/skit-cli/tests/port_test_editor.rs | in fix (28/25) · **name-conflict FIXED 592d236** · **editor resolution (vi default, blank fall-through, raw fallback) + Saved verb + reference-gone guard FIXED 1cac4a4** · **2 stubs promoted c1964dc** · remaining: add -e lane (#15) + params resync |
 | test_default_name_resolution.py | 42 | crates/skit-language/tests/port_test_default_name_resolution.rs | done (42) · 1 deferred · no gap |
 | test_params_edit.py | 41 | crates/skit-domain/tests/port_test_params_edit.rs | done (3) · 36 ABSENT: edit_declared (pure warn-and-continue batch editor + 9 warning codes) missing, CLI is fail-fast (#16) · 2 as_param_type |
 | test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | done (14) · **PEP 440/508 wording ×2 FIXED c5e84ea** · 15 divergences (drafts-boundary guard absent #15, editor-validates-after-open, kind_for_draft missing, --python normalize + error wording) + 2 absent (interactive re-ask) · 1 weakening fixed |
