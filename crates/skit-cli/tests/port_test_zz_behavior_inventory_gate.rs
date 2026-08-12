@@ -25,7 +25,7 @@ const SMALL: &str = "crates/skit-cli/tests/port_test_small_behavior_manifests.rs
 
 const MODULES: &[Module] = &[
     // Tier 1 — language and analysis.
-    Module { python: "test_analyzer.py", tests: 37, guard: None },
+    Module { python: "test_analyzer.py", tests: 37, guard: Some("crates/skit-cli/tests/port_test_analyzer_manifest.rs") },
     Module { python: "test_analyzer_signals.py", tests: 9, guard: Some(SMALL) },
     Module { python: "test_argspec.py", tests: 34, guard: Some("crates/skit-cli/tests/port_test_argspec_manifest.rs") },
     Module { python: "test_argspec_click_typer.py", tests: 67, guard: Some("crates/skit-cli/tests/port_test_argspec_click_typer_manifest.rs") },
@@ -50,7 +50,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_source_default_semantics.py", tests: 19, guard: Some("crates/skit-cli/tests/port_test_source_default_semantics_manifest.rs") },
     Module { python: "test_default_semantics_review_fixes.py", tests: 18, guard: Some("crates/skit-cli/tests/port_test_default_review_manifest.rs") },
     Module { python: "test_effective_uv_metadata.py", tests: 26, guard: Some("crates/skit-cli/tests/port_test_effective_uv_metadata_manifest.rs") },
-    Module { python: "test_uv_metadata_views.py", tests: 6, guard: None },
+    Module { python: "test_uv_metadata_views.py", tests: 6, guard: Some("crates/skit-cli/tests/port_test_uv_metadata_views_manifest.rs") },
     Module { python: "test_uv_metadata_unpinning.py", tests: 4, guard: Some("crates/skit-cli/tests/port_test_uv_metadata_unpinning_manifest.rs") },
     Module { python: "test_path_type.py", tests: 14, guard: Some("crates/skit-cli/tests/port_test_path_type_manifest.rs") },
     Module { python: "test_corpus.py", tests: 11, guard: Some(SMALL) },
@@ -108,9 +108,9 @@ const MODULES: &[Module] = &[
     Module { python: "test_settings_and_draft_review_atomicity.py", tests: 16, guard: None },
     Module { python: "test_draft_and_reader_tui.py", tests: 16, guard: None },
     Module { python: "test_reset_default_ui.py", tests: 14, guard: None },
-    Module { python: "test_tui_edit.py", tests: 6, guard: None },
+    Module { python: "test_tui_edit.py", tests: 6, guard: Some("crates/skit-cli/tests/port_test_tui_edit_manifest.rs") },
     Module { python: "test_tui_nav.py", tests: 5, guard: Some(SMALL) },
-    Module { python: "test_ime_input.py", tests: 3, guard: None },
+    Module { python: "test_ime_input.py", tests: 3, guard: Some("crates/skit-cli/tests/port_test_ime_input_manifest.rs") },
 
     // Tier 6 — i18n / packaging / tooling behavior.
     Module { python: "test_i18n.py", tests: 38, guard: None },
@@ -118,7 +118,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_packaging.py", tests: 7, guard: None },
     Module { python: "test_benchmarks_tooling.py", tests: 156, guard: None },
     Module { python: "test_mutation_gate.py", tests: 4, guard: None },
-    Module { python: "test_hermeticity.py", tests: 1, guard: None },
+    Module { python: "test_hermeticity.py", tests: 1, guard: Some(SMALL) },
 ];
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
