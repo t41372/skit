@@ -142,7 +142,7 @@ fn test_show_json_delivers_empty_true_for_str_const_false_for_int() {
     let by_key = |key: &str| {
         fields
             .iter()
-            .find(|field| field["key"] == key)
+            .find(|field| field["key"].as_str() == Some(key))
             .unwrap_or_else(|| panic!("missing field {key}: {payload}"))
     };
     assert_eq!(by_key("NAME")["delivers_empty"], true);
@@ -191,7 +191,7 @@ fn test_settings_param_row_shows_the_sources_live_default() {
     writer.write_all(b"\x1b[1;1R").unwrap();
     writer.flush().unwrap();
     thread::sleep(Duration::from_millis(180));
-    writer.write_all(b"s").unwrap();
+    writer.write_all(b"p").unwrap();
     writer.flush().unwrap();
     thread::sleep(Duration::from_millis(280));
     writer.write_all(b"\x1b").unwrap();
@@ -207,7 +207,17 @@ fn test_settings_param_row_shows_the_sources_live_default() {
         .replace('\r', "");
 
     assert_eq!(status.exit_code(), 0, "{text}");
-    assert!(text.contains("bonjour"), "Settings did not show the live source default: {text}");
-    assert!(!text.contains("'hello'"), "Settings showed the stale managed-block default: {text}");
-    assert_eq!(fs::read(&payload).unwrap(), before, "opening Settings mutated source bytes");
+    assert!(
+        text.contains("bonjour"),
+        "Settings did not show the live source default: {text}"
+    );
+    assert!(
+        !text.contains("'hello'"),
+        "Settings showed the stale managed-block default: {text}"
+    );
+    assert_eq!(
+        fs::read(&payload).unwrap(),
+        before,
+        "opening Settings mutated source bytes"
+    );
 }
