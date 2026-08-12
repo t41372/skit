@@ -2906,9 +2906,14 @@ const CATALOG: &[Translation] = &[
         "註解中繼資料區塊不是有效的 TOML：{}",
     ),
     row!(
-        "the downloaded uv archive failed checksum verification",
-        "下载的 uv 压缩包未通过校验和验证",
-        "下載的 uv 封存檔未通過總和檢查碼驗證",
+        "Downloaded uv failed its checksum (the mirror may be compromised or the file corrupt). Expected {}, got {}.",
+        "下载的 uv 未通过校验(镜像可能被篡改,或文件已损坏)。期望 {},实际为 {}。",
+        "下載的 uv 未通過校驗(鏡像可能遭竄改,或檔案已損毀)。預期 {},實際為 {}。",
+    ),
+    row!(
+        "No pinned checksum for platform {}; refusing to run an unverified uv.",
+        "没有为平台 {} 预置校验和,拒绝运行未经校验的 uv。",
+        "沒有為平台 {} 預置校驗碼,拒絕執行未經校驗的 uv。",
     ),
     row!(
         "the draft is empty and was kept at {}",

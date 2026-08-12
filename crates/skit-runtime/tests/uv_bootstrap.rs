@@ -24,7 +24,7 @@ fn current_uv_assets_cover_the_supported_v040_platforms_and_mirrors() {
     assert_eq!(windows.triple(), "x86_64-pc-windows-msvc");
     assert!(UvTarget::from_parts("riscv64", "linux", false).is_err());
 
-    let official = uv_asset(&linux, None);
+    let official = uv_asset(&linux, None).unwrap();
     assert_eq!(official.version, "0.12.3");
     assert_eq!(
         official.url,
@@ -34,9 +34,10 @@ fn current_uv_assets_cover_the_supported_v040_platforms_and_mirrors() {
         official.checksum,
         "600cf9a742aca00d292673b16b5acffaa7b8c269a364ad0c2e79498dcb1fe101"
     );
-    assert!(uv_asset(&windows, None).filename.ends_with(".zip"));
+    assert!(uv_asset(&windows, None).unwrap().filename.ends_with(".zip"));
     assert!(
         uv_asset(&linux, Some("https://mirror.example/astral-sh/uv"))
+            .unwrap()
             .url
             .starts_with("https://mirror.example/astral-sh/uv/0.12.3/")
     );

@@ -160,8 +160,21 @@ pub enum UvBootstrapError {
     #[error("could not download uv from {url}: {reason}")]
     Download { url: String, reason: String },
     /// The archive digest did not match the official digest.
-    #[error("the downloaded uv archive failed checksum verification")]
-    Checksum,
+    #[error(
+        "Downloaded uv failed its checksum (the mirror may be compromised or the file corrupt). Expected {expected}, got {actual}."
+    )]
+    Checksum {
+        /// Pinned official digest.
+        expected: String,
+        /// Digest of the downloaded bytes.
+        actual: String,
+    },
+    /// The build target has no pinned digest to verify against.
+    #[error("No pinned checksum for platform {triple}; refusing to run an unverified uv.")]
+    NoPinnedChecksum {
+        /// Target triple with no pin.
+        triple: String,
+    },
     /// The authenticated archive did not contain the expected executable.
     #[error("the uv archive is invalid: {reason}")]
     Archive { reason: String },
@@ -190,8 +203,14 @@ impl Localize for UvBootstrapError {
             Self::Download { url, reason } => Message::new("could not download uv from {}: {}")
                 .with(url)
                 .with(reason),
-            Self::Checksum => {
-                Message::new("the downloaded uv archive failed checksum verification")
+            Self::Checksum { expected, actual } => Message::new(
+                "Downloaded uv failed its checksum (the mirror may be compromised or the file corrupt). Expected {}, got {}.",
+            )
+            .with(expected)
+            .with(actual),
+            Self::NoPinnedChecksum { triple } => {
+                Message::new("No pinned checksum for platform {}; refusing to run an unverified uv.")
+                    .with(triple)
             }
             Self::Archive { reason } => Message::new("the uv archive is invalid: {}").with(reason),
             Self::Io {
@@ -207,22 +226,30 @@ impl Localize for UvBootstrapError {
 }
 
 /// Build the current authenticated asset description for one target.
-#[must_use]
-pub fn uv_asset(target: &UvTarget, mirror_base: Option<&str>) -> UvAsset {
+///
+/// Fails closed: a triple with no pinned digest refuses rather than describing an
+/// archive skit could never authenticate.
+pub fn uv_asset(target: &UvTarget, mirror_base: Option<&str>) -> Result<UvAsset, UvBootstrapError> {
     let extension = if target.windows { "zip" } else { "tar.gz" };
     let filename = format!("uv-{}.{extension}", target.triple);
     let base = mirror_base.unwrap_or(OFFICIAL_BASE).trim_end_matches('/');
-    let checksum = CHECKSUMS
-        .iter()
-        .find_map(|(triple, checksum)| (*triple == target.triple).then_some(*checksum))
-        .expect("each supported target has a pinned checksum");
-    UvAsset {
+    let checksum = pinned_checksum(&target.triple)?;
+    Ok(UvAsset {
         version: UV_VERSION.to_owned(),
         url: format!("{base}/{UV_VERSION}/{filename}"),
         filename,
         checksum: checksum.to_owned(),
         executable_name: if target.windows { "uv.exe" } else { "uv" }.to_owned(),
-    }
+    })
+}
+
+fn pinned_checksum(triple: &str) -> Result<&'static str, UvBootstrapError> {
+    CHECKSUMS
+        .iter()
+        .find_map(|(pinned, checksum)| (*pinned == triple).then_some(*checksum))
+        .ok_or_else(|| UvBootstrapError::NoPinnedChecksum {
+            triple: triple.to_owned(),
+        })
 }
 
 /// Return the private uv path when it is already installed.
@@ -242,7 +269,7 @@ pub fn ensure_managed_uv(
     if destination.is_file() {
         return Ok(destination);
     }
-    let asset = uv_asset(&UvTarget::current()?, mirror_base);
+    let asset = uv_asset(&UvTarget::current()?, mirror_base)?;
     ensure_managed_uv_from_asset(data_dir, &asset, download_archive)
 }
 
@@ -311,8 +338,12 @@ pub fn install_verified_uv_archive(
     asset: &UvAsset,
     destination_dir: &Path,
 ) -> Result<PathBuf, UvBootstrapError> {
-    if hex_digest(archive) != asset.checksum {
-        return Err(UvBootstrapError::Checksum);
+    let actual = hex_digest(archive);
+    if actual != asset.checksum {
+        return Err(UvBootstrapError::Checksum {
+            expected: asset.checksum.clone(),
+            actual,
+        });
     }
     let bytes = if asset.filename.ends_with(".zip") {
         executable_from_zip(archive, &asset.executable_name)?
@@ -335,7 +366,10 @@ pub fn install_verified_uv_archive(
         file.sync_all()
             .map_err(|source| io_error("sync staged", &staged, source))?;
         fs::rename(&staged, &target).map_err(|source| io_error("install", &target, source))?;
-        sync_directory(destination_dir)?;
+        // Best-effort: persist the rename's directory entry too. The staged-file sync
+        // already secured the content, so a failure here must not fail an install
+        // whose rename landed.
+        let _ = sync_directory(destination_dir);
         Ok(target)
     })();
     if result.is_err() {
@@ -460,6 +494,23 @@ mod private_tests {
     use flate2::{Compression, write::GzEncoder};
     use std::{net::TcpListener, thread};
     use tempfile::TempDir;
+
+    #[test]
+    fn unpinned_triple_fails_closed_with_a_typed_error() {
+        // uvman.py:229-233: a triple with no pinned hash refuses with a typed error
+        // naming the triple, never an unverified download. Every producible triple
+        // is pinned, so only this white-box construction can reach the branch.
+        let martian = UvTarget {
+            triple: "riscv64-unknown-linux-gnu".to_owned(),
+            windows: false,
+        };
+        let error = uv_asset(&martian, None).unwrap_err();
+        assert!(matches!(
+            &error,
+            UvBootstrapError::NoPinnedChecksum { triple } if triple == "riscv64-unknown-linux-gnu"
+        ));
+        assert!(error.to_string().contains("riscv64-unknown-linux-gnu"));
+    }
 
     fn tar_archive() -> Vec<u8> {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());

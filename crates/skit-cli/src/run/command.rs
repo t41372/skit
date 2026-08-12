@@ -1536,7 +1536,13 @@ mod localization_tests {
             }),
             &["npm"],
         );
-        assert_localized(&RunError::Uv(UvBootstrapError::Checksum), &[]);
+        assert_localized(
+            &RunError::Uv(UvBootstrapError::Checksum {
+                expected: "aaaa".to_owned(),
+                actual: "bbbb".to_owned(),
+            }),
+            &["aaaa", "bbbb"],
+        );
         assert_localized(
             &RunError::Config(ConfigError::Encode {
                 reason: "unsupported value".to_owned(),

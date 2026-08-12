@@ -729,13 +729,13 @@ fn test_remove_clears_argstate() {
 #[test]
 fn test_uv_download_url_shape() {
     let target = UvTarget::from_parts("x86_64", "linux", false).unwrap();
-    let url = uv_asset(&target, None).url;
+    let url = uv_asset(&target, None).unwrap().url;
     assert!(url.starts_with("https://github.com/astral-sh/uv/releases/download/"));
     assert!(url.contains(UV_VERSION)); // the pinned version appears in the URL
     assert!(url.ends_with("uv-x86_64-unknown-linux-gnu.tar.gz"));
 
     let windows = UvTarget::from_parts("x86_64", "windows", false).unwrap();
-    assert!(uv_asset(&windows, None).url.ends_with(".zip"));
+    assert!(uv_asset(&windows, None).unwrap().url.ends_with(".zip"));
 }
 
 #[test]

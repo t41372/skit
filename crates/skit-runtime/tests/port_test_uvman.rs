@@ -159,11 +159,12 @@ fn test_triples_covers_every_pinned_and_producible_triple() {
     let produced = producible_triples();
     let declared: BTreeSet<String> = TRIPLES.iter().map(|t| (*t).to_owned()).collect();
     assert_eq!(declared, produced);
-    // Every producible triple resolves to a pinned asset: `uv_asset` panics on a missing pin, so a
-    // successful build proves the producible -> pinned direction (Python's `== _UV_SHA256`). The
-    // reverse (no EXTRA stale pin) can't be checked here — `CHECKSUMS` is private to skit-runtime.
+    // Every producible triple resolves to a pinned asset: `uv_asset` fails closed on a missing
+    // pin, so an Ok for each target proves the producible -> pinned direction (Python's
+    // `== _UV_SHA256`). The reverse (no EXTRA stale pin) can't be checked here — `CHECKSUMS` is
+    // private to skit-runtime.
     for target in all_targets() {
-        let _ = uv_asset(&target, None);
+        assert!(uv_asset(&target, None).is_ok());
     }
 }
 
@@ -172,7 +173,7 @@ fn test_triples_covers_every_pinned_and_producible_triple() {
 fn test_pinned_uv_release_exists() {
     let agent = ureq_agent();
     for target in all_targets() {
-        let url = uv_asset(&target, None).url;
+        let url = uv_asset(&target, None).unwrap().url;
         let response = agent
             .get(&url)
             .call()
@@ -189,7 +190,7 @@ fn test_pinned_sha256_matches_live_sidecar() {
     // (mirror_base = None) so a configured mirror can't skew the check.
     let agent = ureq_agent();
     for target in all_targets() {
-        let asset = uv_asset(&target, None);
+        let asset = uv_asset(&target, None).unwrap();
         let sidecar = format!("{}.sha256", asset.url);
         let mut response = agent
             .get(&sidecar)
@@ -339,7 +340,7 @@ fn test_download_url_musl_triple_targz() {
     // The musl triples are Linux, so they must still map to the tar.gz archive extension (only the
     // windows triples use .zip).
     let target = UvTarget::from_parts("x86_64", "linux", true).unwrap();
-    let url = uv_asset(&target, None).url;
+    let url = uv_asset(&target, None).unwrap().url;
     assert!(url.ends_with(".tar.gz"));
     assert!(url.contains(&format!("{UV_VERSION}/uv-x86_64-unknown-linux-musl.tar.gz")));
 }
@@ -349,11 +350,11 @@ fn test_download_url_musl_triple_targz() {
 #[test]
 fn test_download_url_structure() {
     let gnu = UvTarget::from_parts("x86_64", "linux", false).unwrap();
-    let url = uv_asset(&gnu, None).url;
+    let url = uv_asset(&gnu, None).unwrap().url;
     assert!(url.contains(UV_VERSION));
     assert!(url.ends_with(".tar.gz"));
     let windows = UvTarget::from_parts("x86_64", "windows", false).unwrap();
-    assert!(uv_asset(&windows, None).url.ends_with(".zip"));
+    assert!(uv_asset(&windows, None).unwrap().url.ends_with(".zip"));
 }
 
 // ---- ensure_uv_downloaded: binary already exists ----------
@@ -403,7 +404,7 @@ fn test_download_url_uses_configured_mirror() {
     // pass the resolved base directly — the oracle's config.UV_BINARY_MIRROR.)
     let base = "https://mirror.nju.edu.cn/github-release/astral-sh/uv";
     let target = UvTarget::from_parts("aarch64", "darwin", false).unwrap();
-    let url = uv_asset(&target, Some(base)).url;
+    let url = uv_asset(&target, Some(base)).unwrap().url;
     assert!(url.starts_with(base));
     assert!(url.contains(&format!("{UV_VERSION}/uv-aarch64-apple-darwin.tar.gz")));
 }
@@ -411,7 +412,7 @@ fn test_download_url_uses_configured_mirror() {
 #[test]
 fn test_download_url_defaults_to_github_without_mirror() {
     let target = UvTarget::from_parts("x86_64", "linux", false).unwrap();
-    let url = uv_asset(&target, None).url;
+    let url = uv_asset(&target, None).unwrap().url;
     assert!(url.starts_with("https://github.com/astral-sh/uv/releases/download"));
     assert!(url.ends_with(".tar.gz"));
 }
@@ -432,7 +433,7 @@ fn test_uv_sha256_covers_every_producible_triple() {
     assert_eq!(produced.len(), 8);
     // Each pinned value (surfaced through the built asset) is a 64-char lowercase-hex SHA256 digest.
     for target in all_targets() {
-        let checksum = uv_asset(&target, None).checksum;
+        let checksum = uv_asset(&target, None).unwrap().checksum;
         assert_eq!(checksum.len(), 64);
         assert!(
             checksum
@@ -456,7 +457,6 @@ fn test_checksum_pass_proceeds_to_extraction() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust checksum error omits the expected/actual digests the oracle surfaces. UvBootstrapError::Checksum is a unit variant whose only message is \"the downloaded uv archive failed checksum verification\" (crates/skit-runtime/src/uv.rs:163,193), whereas uvman._verify_checksum puts both hashes in the message (uvman.py:236-241). Fix: carry expected+actual on the Checksum variant, delete this #[ignore], go green."]
 fn test_checksum_mismatch_raises_checksum_error_not_generic() {
     // A tampered/corrupt archive (hash != pinned) fails closed with the checksum message — NOT the
     // generic download wrapper — and extraction is never reached; both digests are surfaced.
@@ -472,7 +472,7 @@ fn test_checksum_mismatch_raises_checksum_error_not_generic() {
     let destination = TempDir::new().unwrap();
     let error = install_verified_uv_archive(data, &asset, destination.path()).unwrap_err();
     let message = error.to_string();
-    assert!(matches!(error, UvBootstrapError::Checksum));
+    assert!(matches!(error, UvBootstrapError::Checksum { .. }));
     assert!(message.to_lowercase().contains("checksum")); // distinguishes it from the generic failure
     assert!(!message.contains("Failed to download"));
     assert!(message.contains(&pinned)); // expected digest surfaced
@@ -538,7 +538,7 @@ fn test_extract_uv_fsyncs_staged_file_before_replace() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence, no drivable seam): a directory-fsync failure must be swallowed (uvman.py:210-212 wraps _fsync_path(dest_dir) in contextlib.suppress). Rust propagates it — install_verified_uv_archive calls `sync_directory(destination_dir)?` (crates/skit-runtime/src/uv.rs:338), so on a filesystem where directory fsync fails the install errors AFTER the rename already landed. No public API can force sync_directory to fail, so the asserting body is impossible; recorded as a divergence. Fix: swallow the directory-sync error, then delete this #[ignore]."]
+#[ignore = "CROSS-CRATE (white-box): the directory-fsync swallow is implemented — install_verified_uv_archive wraps the post-rename sync_directory in `let _ =` (crates/skit-runtime/src/uv.rs), matching uvman.py:210-212 contextlib.suppress — but no public API can force sync_directory to fail, so the asserting body is not drivable from an integration test."]
 fn test_extract_uv_dir_fsync_failure_is_swallowed() {
     // Oracle: the post-replace directory fsync is best-effort; a failure there must not fail the
     // install (dest's content durability was already secured by the staged-file fsync).
@@ -565,7 +565,7 @@ fn test_ensure_uv_downloaded_atomic_install_self_heals() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence, structurally unreachable): an unpinned triple must fail closed with a typed error naming the triple (uvman._verify_checksum, uvman.py:229-233). Rust guarantees pins at asset construction instead — uv_asset `.expect(\"each supported target has a pinned checksum\")` (crates/skit-runtime/src/uv.rs:217) PANICS for an unpinned triple, and install_verified_uv_archive always receives an asset that already carries a checksum, so there is no typed fail-closed path. In practice unreachable (all producible triples are pinned — see test_triples_covers_every_pinned_and_producible_triple). Fix: return a typed UnsupportedPlatform/Checksum error for an unpinned triple rather than expect-panicking, then delete this #[ignore]."]
+#[ignore = "CROSS-CRATE (white-box): the fail-closed path is implemented — uv_asset returns UvBootstrapError::NoPinnedChecksum naming the triple (uvman.py:229-233 parity) — but every producible UvTarget triple is pinned, so the branch is reachable only by constructing a martian triple in-crate. Covered by private_tests::unpinned_triple_fails_closed_with_a_typed_error (crates/skit-runtime/src/uv.rs)."]
 fn test_checksum_fail_closed_when_triple_unpinned() {
     // Oracle: a triple with no pinned hash raises UvDownloadError naming the triple, never extracts.
 }
