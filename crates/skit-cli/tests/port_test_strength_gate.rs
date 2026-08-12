@@ -6,6 +6,8 @@
 
 use std::{fs, path::Path};
 
+use syn::{Expr, Item, Stmt};
+
 fn visit(directory: &Path, offenders: &mut Vec<String>) {
     for entry in fs::read_dir(directory).unwrap() {
         let entry = entry.unwrap();
@@ -35,6 +37,7 @@ fn visit(directory: &Path, offenders: &mut Vec<String>) {
                 "unimplemented placeholder",
             ),
             (["assert!", "(true)"].concat(), "vacuous true assertion"),
+            (["assert!", "(false)"].concat(), "fixed-failure assertion"),
             (
                 ["assert_eq!", "(true, true)"].concat(),
                 "vacuous constant equality",
@@ -52,6 +55,36 @@ fn visit(directory: &Path, offenders: &mut Vec<String>) {
             if text.contains(needle) {
                 offenders.push(format!("{} contains {reason}: {needle}", path.display()));
             }
+        }
+        reject_fixed_failure_tests(&path, &text, offenders);
+    }
+}
+
+fn reject_fixed_failure_tests(path: &Path, text: &str, offenders: &mut Vec<String>) {
+    let Ok(file) = syn::parse_file(text) else {
+        // Compilation will report syntax errors. This gate only classifies parsed parity tests.
+        return;
+    };
+    for item in file.items {
+        let Item::Fn(function) = item else {
+            continue;
+        };
+        if !function.attrs.iter().any(|attr| attr.path().is_ident("test"))
+            || function.block.stmts.len() != 1
+        {
+            continue;
+        }
+        let macro_path = match &function.block.stmts[0] {
+            Stmt::Macro(statement) => Some(&statement.mac.path),
+            Stmt::Expr(Expr::Macro(expression), _) => Some(&expression.mac.path),
+            _ => None,
+        };
+        if macro_path.is_some_and(|path| path.is_ident("panic") || path.is_ident("unreachable")) {
+            offenders.push(format!(
+                "{} contains fixed-failure parity test {}",
+                path.display(),
+                function.sig.ident
+            ));
         }
     }
 }
