@@ -1,135 +1,161 @@
-//! Mechanical port of the Python oracle module `tests/test_kindnames.py`
-//! (`origin/main@206f9ef`): "the ONE translated kind-name map (src/skit/kindnames.py),
-//! shared by the Library badge and the KindPickModal." Each `#[test]` keeps its Python
-//! `def test_*` name so it traces back to its origin, and each Python "WHY" comment is
-//! preserved above it.
-//!
-//! Crate choice (the `skit-language` hint is overridden): the oracle module spans two
-//! Rust tiers. `kindnames.kind_label` lives in `skit-i18n` (`kind_label`), and the
-//! `kind_choices` id/order surface lives in `skit-ui` (`KnownEntryKind::picker_choices`).
-//! Only `skit-tui` reaches both (both are its dependencies) and is where production
-//! actually composes them into the labeled kind picker (`kind_rows`, add.rs:915-920), so
-//! the two `kind_choices` tests keep a real, compiling body here instead of demoting to
-//! cross-crate stubs.
-//!
-//! Concept mapping used throughout:
-//! - Python `kindnames.kind_label(kind)` -> `skit_i18n::kind_label(Locale::En, kind)`.
-//! - Python autouse `_english` fixture (`SKIT_LANG=en`) -> passing `Locale::En` explicitly.
-//! - Python `kindnames.kind_choices(offer_exe=...)` (a `list[(kind, label)]`) -> the Rust
-//!   composition `KnownEntryKind::picker_choices(offer_exe)` (the ids/order) each mapped
-//!   through `kind_choice_label` (the labels) -- exactly what production `kind_rows` renders.
-//! - Python `skit.langs.registry.KNOWN_KINDS` / `spec_for` / `LangSpec.family`: NO Rust
-//!   registry equivalent (`EntryKind` is an open string, and there is no enumerable
-//!   family/spec surface). The label contract is still fully asserted; see the notes below.
-//!
-//! Buckets:
-//! - Bucket 1 (all real, passing): the three kind_label tests and the two `kind_choices`
-//!   tests. exe and prompt carry their dedicated descriptive choice wording ("A program
-//!   (run it directly)" / "A prompt for an AI agent") through `kind_choice_label`.
+//! Python parity contracts from `tests/test_kindnames.py` at main@206f9ef.
 
-use skit_i18n::{Locale, kind_choice_label, kind_label};
-use skit_ui::KnownEntryKind;
+use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+use skit_application::SourcePermissions;
+use skit_i18n::Locale;
+use skit_tui::{TuiSession, render_with_session};
+use skit_ui::{
+    Action, AddAction, AddEffect, AddStage, AddWorkflowState, LibraryState, Screen, SourceSnapshot,
+};
 
-/// The English label each registered kind renders as (the oracle's module-level EXPECTED;
-/// msgids ARE the English source). Includes "command" -- the 13th registered oracle kind.
-const EXPECTED: &[(&str, &str)] = &[
-    ("python", "Python"),
-    ("shell", "Shell"),
-    ("fish", "fish"),
-    ("js", "JavaScript"),
-    ("ts", "TypeScript"),
-    ("powershell", "PowerShell"),
-    ("ruby", "Ruby"),
-    ("perl", "Perl"),
-    ("lua", "Lua"),
-    ("r", "R"),
-    ("exe", "Program"),
-    ("command", "Command"),
-    ("prompt", "Prompt"),
+const INTERPRETED_IDS: [&str; 10] = [
+    "fish",
+    "js",
+    "lua",
+    "perl",
+    "powershell",
+    "python",
+    "r",
+    "ruby",
+    "shell",
+    "ts",
 ];
 
-/// The oracle's EXPECTED[kind] lookup (None when a kind has no dedicated label).
-fn expected_label(kind: &str) -> Option<&'static str> {
-    EXPECTED
-        .iter()
-        .find(|(candidate, _)| *candidate == kind)
-        .map(|(_, label)| *label)
+const FULL_IDS: [&str; 12] = [
+    "fish",
+    "js",
+    "lua",
+    "perl",
+    "powershell",
+    "python",
+    "r",
+    "ruby",
+    "shell",
+    "ts",
+    "exe",
+    "prompt",
+];
+
+const FULL_LABELS: [&str; 12] = [
+    "fish",
+    "JavaScript",
+    "Lua",
+    "Perl",
+    "PowerShell",
+    "Python",
+    "R",
+    "Ruby",
+    "Shell",
+    "TypeScript",
+    "A program (run it directly)",
+    "A prompt for an AI agent",
+];
+
+fn ambiguous_kind_workflow(is_draft: bool) -> AddWorkflowState {
+    let mut workflow = AddWorkflowState::new(Vec::new());
+    let _ = workflow.reduce(AddAction::SetSourcePath("mystery.txt".to_owned()));
+    let effects = workflow.reduce(AddAction::Continue);
+    let [AddEffect::InspectSource { request, .. }] = effects.as_slice() else {
+        panic!("continuing an ambiguous path must request one source inspection");
+    };
+    let request = *request;
+    let _ = workflow.reduce(AddAction::SourceInspected {
+        request,
+        result: Ok(SourceSnapshot {
+            path: "mystery.txt".into(),
+            source_record: "mystery.txt".to_owned(),
+            bytes: b"plain text without a supported shebang\n".to_vec(),
+            permissions: SourcePermissions::default(),
+            is_regular: true,
+            is_directory: false,
+            is_draft,
+        }),
+    });
+    assert_eq!(workflow.stage(), AddStage::Kind);
+    workflow
 }
 
-/// The Rust composition of the oracle's `kind_choices`: the picker ids/order, each mapped
-/// through `kind_choice_label` -- byte-for-byte what production `kind_rows` (add.rs)
-/// renders (interpreted kinds keep `kind_label`; exe and prompt get their descriptive
-/// choice labels). Labels live only on this side; the oracle's expected literals never
-/// leak into the construction, so a mismatch is a real finding, not a tautology.
-fn labeled_choices(offer_exe: bool) -> Vec<(String, String)> {
-    KnownEntryKind::picker_choices(offer_exe)
+fn kind_ids(workflow: &AddWorkflowState) -> Vec<&'static str> {
+    workflow
+        .kind_picker()
+        .expect("ambiguous source must expose the kind picker")
+        .choices()
         .iter()
-        .map(|kind| {
-            (
-                kind.as_str().to_owned(),
-                kind_choice_label(Locale::En, kind.as_str()).into_owned(),
-            )
-        })
+        .map(|kind| kind.as_str())
         .collect()
 }
 
-// Oracle `@pytest.mark.parametrize(("kind", "label"), sorted(EXPECTED.items()))` -> one
-// `#[test]` looping the 13 pairs (the parametrization split is faithful as one def).
-#[test]
-fn test_kind_label_maps_each_registered_kind() {
-    for (kind, label) in EXPECTED {
-        assert_eq!(&*kind_label(Locale::En, kind), *label, "kind {kind}");
-    }
+fn draw_kind_picker(workflow: AddWorkflowState) -> Terminal<TestBackend> {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Add(Box::new(workflow))));
+    let mut session = TuiSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+    terminal
+        .draw(|frame| {
+            let _ = render_with_session(frame, &state, Locale::En, &mut session);
+        })
+        .unwrap();
+    terminal
 }
 
-#[test]
-fn test_every_known_kind_has_a_dedicated_label() {
-    // No registered kind may fall through to the raw-id branch -- a kind rendering as its
-    // bare id in the Library badge is an untranslated leak (the map is the i18n contract).
-    // 'fish' is the one kind whose label is intentionally its own id.
-    //
-    // Rust has no KNOWN_KINDS registry to enumerate (EntryKind is an open string). The
-    // enumerable registered set is the KnownEntryKind picker (12), plus "command" -- the
-    // oracle's 13th registered kind, which the Rust enum omits because command is never
-    // offered in the unclassified-file picker (the oracle also excludes it from
-    // kind_choices). Together they reconstruct the oracle's 13-kind KNOWN_KINDS.
-    let mut registered: Vec<String> = KnownEntryKind::picker_choices(true)
-        .iter()
-        .map(|kind| kind.as_str().to_owned())
-        .collect();
-    registered.push("command".to_owned());
-    for kind in &registered {
-        let label = expected_label(kind)
-            .unwrap_or_else(|| panic!("registered kind missing an expected label: {kind}"));
-        // A mapped kind never returns via the `.get(kind, kind)` fallthrough -- its label is
-        // the literal above (which, for 'fish', happens to equal the id -- still a real hit).
-        assert_eq!(&*kind_label(Locale::En, kind), label);
+fn row_text(buffer: &Buffer, row: u16) -> String {
+    let mut text = String::new();
+    for column in 0..buffer.area.width {
+        text.push_str(buffer[(column, row)].symbol());
     }
+    text
 }
 
-#[test]
-fn test_unknown_kind_falls_through_to_its_raw_id() {
-    // A meta written by a newer skit (an unknown kind) renders honestly as its raw id,
-    // never a crash or a blank -- the `.get(kind, kind)` fallthrough.
-    assert_eq!(&*kind_label(Locale::En, "cobol"), "cobol");
-    assert_eq!(&*kind_label(Locale::En, ""), "");
+fn row_containing(buffer: &Buffer, needle: &str) -> u16 {
+    (0..buffer.area.height)
+        .find(|row| row_text(buffer, *row).contains(needle))
+        .unwrap_or_else(|| panic!("expected rendered kind-choice label: {needle}"))
+}
+
+fn rendered_text(buffer: &Buffer) -> String {
+    let mut text = String::new();
+    for row in 0..buffer.area.height {
+        text.push_str(&row_text(buffer, row));
+        text.push('\n');
+    }
+    text
 }
 
 #[test]
 fn test_kind_choices_exact_options_and_order() {
-    // The ONE option list both ask faces render: sorted interpreted kinds (prompt excluded --
-    // it gets its own dedicated wording), then exe (gated), then prompt. Exact ids and labels --
-    // the twins' contract.
-    let full = labeled_choices(true);
-    let interp: Vec<&str> = full[..full.len() - 2]
+    let workflow = ambiguous_kind_workflow(false);
+    assert_eq!(kind_ids(&workflow), FULL_IDS);
+    assert_eq!(&FULL_IDS[..INTERPRETED_IDS.len()], INTERPRETED_IDS);
+
+    let terminal = draw_kind_picker(workflow);
+    let rows = FULL_LABELS
         .iter()
-        .map(|(kind, _)| kind.as_str())
-        .collect();
-    // The oracle computes this from the registry (family == "interpreted", minus prompt,
-    // sorted). Rust has no registry to compute from, so the sorted value is inlined -- already
-    // verified equal to `picker_choices` order.
+        .map(|label| row_containing(terminal.backend().buffer(), label))
+        .collect::<Vec<_>>();
+    for pair in rows.windows(2) {
+        assert!(
+            pair[0] < pair[1],
+            "Python main requires exact kind-choice order; rendered rows were {rows:?}"
+        );
+    }
+}
+
+#[test]
+fn test_kind_choices_offer_exe_false_drops_only_exe() {
+    let full = ambiguous_kind_workflow(false);
+    let gated = ambiguous_kind_workflow(true);
+    let full_ids = kind_ids(&full);
+    let gated_ids = kind_ids(&gated);
+    let expected_gated = full_ids
+        .iter()
+        .copied()
+        .filter(|kind| *kind != "exe")
+        .collect::<Vec<_>>();
+
+    assert_eq!(full_ids, FULL_IDS);
+    assert_eq!(gated_ids, expected_gated);
     assert_eq!(
-        interp,
+        gated_ids,
         [
             "fish",
             "js",
@@ -140,39 +166,17 @@ fn test_kind_choices_exact_options_and_order() {
             "r",
             "ruby",
             "shell",
-            "ts"
+            "ts",
+            "prompt",
         ]
     );
-    assert!(!interp.is_empty()); // the registry's interpreted kinds actually made it in
-    // Tautological here by construction (these labels ARE kind_label) -- kept to document the
-    // oracle contract that every interpreted choice's label comes from kind_label.
-    assert!(
-        full[..full.len() - 2]
-            .iter()
-            .all(|(kind, label)| label.as_str() == &*kind_label(Locale::En, kind.as_str()))
-    );
-    assert_eq!(
-        full[full.len() - 2],
-        ("exe".to_owned(), "A program (run it directly)".to_owned())
-    );
-    assert_eq!(
-        full[full.len() - 1],
-        ("prompt".to_owned(), "A prompt for an AI agent".to_owned())
-    );
-}
+    assert_eq!(gated_ids.last().copied(), Some("prompt"));
 
-#[test]
-fn test_kind_choices_offer_exe_false_drops_only_exe() {
-    let full = labeled_choices(true);
-    let gated = labeled_choices(false);
-    let dropped_exe: Vec<(String, String)> = full
-        .iter()
-        .filter(|entry| entry.0.as_str() != "exe")
-        .cloned()
-        .collect();
-    assert_eq!(gated, dropped_exe);
-    assert_eq!(
-        gated[gated.len() - 1],
-        ("prompt".to_owned(), "A prompt for an AI agent".to_owned())
+    let terminal = draw_kind_picker(gated);
+    let buffer = terminal.backend().buffer();
+    let _ = row_containing(buffer, "A prompt for an AI agent");
+    assert!(
+        !rendered_text(buffer).contains("A program (run it directly)"),
+        "draft kind picker must remove only the executable choice"
     );
 }

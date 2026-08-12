@@ -1,217 +1,250 @@
-//! Mechanical port of the Python oracle module `tests/test_raw.py`
-//! (`origin/main@206f9ef`): "`skit run --raw` escape hatch: skip the parameter form and
-//! injection, run the script as-is." Each `#[test]` keeps its Python `def test_*` name and
-//! its WHY comment so it traces back to its origin.
+//! Strong behavioral ports of Python v0.4 `tests/test_raw.py`.
 //!
-//! WHY `skit-cli`: the oracle drives the whole `run` pipeline through Typer's `CliRunner`
-//! and inspects the launcher call. Only the composition-root crate can run the real `skit`
-//! binary end to end (resolve -> reconcile -> prefill -> assemble -> stage -> launch).
-//!
-//! KIND SUBSTITUTION (python oracle fixture -> shell here). The oracle builds a PYTHON entry
-//! (`store.add_python`) with one managed const `CITY`. A python entry can only launch through
-//! `uv run --script`, which needs a uv-downloaded interpreter and network — the whole Rust
-//! suite avoids it (every python `run_cli` test uses `--dry-run`). The behavior under test is
-//! kind-agnostic in BOTH impls: the oracle's `flows.execute` documents "the caller function
-//! knows nothing about any language", and the Rust `stage_injected_source`
-//! (`crates/skit-cli/src/run/command.rs`) is generic. This port therefore uses a shell entry as
-//! the uv-free vehicle and builds its managed source with `write_managed_params("shell", ...)`
-//! exactly as the oracle builds its python source with `metawriter.write_params`.
-//!
-//! The one shell-vs-python worry — that the shell reconcile would read the body's `CITY=Taipei`
-//! assignment as a const default and inject it even with no saved value — was disproven directly:
-//! a bare managed const (no recorded default) stays `default = None` through `form_params` and
-//! `prefill` (`refresh_default` only refreshes a default that is already `Some`), so `assemble`
-//! yields an EMPTY `inject_values` for the no-value case, identical to the python const. The
-//! injection DECISION is faithful; only the previous observable was wrong (see below).
-//!
-//! OBSERVABLE MAPPING. The oracle intercepts `launcher.run_entry` and reads its `script_override`
-//! kwarg — `None` when the stored copy runs as-is, a path when an injected temp copy runs. A
-//! black-box binary port cannot see that kwarg, and `$0` CANNOT stand in for it: the Rust store
-//! snapshots EVERY copy-mode launch to a `.run-<id>` working copy in `prepare_launch`
-//! (`crates/skit-store/src/mutations.rs`, the `write_launch_snapshot` call), so `$0` holds a
-//! `.run-` path on every run — injected or not — and has zero discriminating power.
-//!
-//! The faithful, discriminating signal is the `→ inject:` transparency line. In BOTH impls it is
-//! emitted on exactly the predicate that produces the injected copy:
-//! - oracle `flows.transparency_lines` appends `→ inject: %(pairs)s` iff `asm.inject_values`
-//!   (`src/skit/flows.py`), the same condition that sets `injected` / `script_override`;
-//! - Rust `skit_application::delivery::assemble` pushes the display pair (rendered as
-//!   `→ inject: {}`) in the same branch that fills `inject_values`
-//!   (`crates/skit-application/src/delivery.rs`), the same map `stage_injected_source` gates on.
-//!
-//! So `→ inject:` present <-> `script_override is not None`, and absent <-> `script_override is
-//! None`. (Precisely, `script_override` also requires an inject plan + a language injector, while
-//! the line keys on values alone; the two coincide for this module's fixture — a managed const on
-//! a kind that has both an analyzer and an injector — so the equivalence holds here and should not
-//! be over-generalized.) `SKIT_LANG=en` pins the English string; the zh catalog uses `→ 注入：`.
-//!
-//! The `→ inject:` line and the run's transparency go to stdout, exactly like the launched
-//! script's own output, so `assert_cmd`'s `.stdout(...)` observes both together. The injected
-//! VALUE reaching the script is a second, independent witness of the same decision: the source
-//! constant is `Taipei`, and a run that injects the saved `Kaohsiung` prints `Kaohsiung`, while a
-//! run that injects nothing prints the un-replaced `Taipei`.
-//!
-//! Python `entry.dir.glob(".injected*")` (no injected artifact left behind) <-> no `.run-*` file
-//! in the entry directory: Rust names both its launch snapshot and its injected copy `.run-<id>`
-//! and removes them after the run, so an empty entry directory verifies the same "no leftover"
-//! claim (and now also covers snapshot cleanup for free).
-//!
-//! Buckets: all five are REAL asserting `#[test]`s (API EXISTS). None is cross-crate, absent, or
-//! divergent — the injection decision reproduces the oracle exactly for every fixture.
+//! The Python tests only observed `script_override`; this Rust port additionally records the real
+//! `uv --script` path and bytes. Remembered state is seeded in the raw/cleanup cases so an
+//! accidental fall-through into normal injection cannot pass vacuously.
 
-#![cfg(unix)]
+use std::{fs, path::PathBuf, process::Command as StdCommand};
 
-use std::fs;
-use std::path::{Path, PathBuf};
-
-use predicates::prelude::*;
-use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
-use skit_language::write_managed_params;
+use assert_cmd::Command;
 use tempfile::TempDir;
 
-/// The distinctive transparency prefix skit prints iff an injected temp copy is made — the
-/// black-box witness for the oracle's `script_override is not None`.
-const INJECT_MARKER: &str = "→ inject:";
-
-/// The oracle's module-level fixture parameter:
-/// `ParamDecl(name="CITY", binding="const", type="str")` — a managed const with NO default.
-fn city_const() -> ParamDecl {
-    let mut declaration = ParamDecl::new("CITY");
-    declaration.binding = ParameterBinding::Const;
-    declaration.delivery = ParameterDelivery::Inject;
-    declaration.parameter_type = ParameterType::Str;
-    declaration
+struct Sandbox {
+    data: TempDir,
+    state: TempDir,
+    config: TempDir,
+    home: TempDir,
 }
 
-/// Give the hand-written entry directory its registry membership (see `run_cli.rs`).
-fn register(data: &TempDir, slug: &str) {
-    fs::write(
-        data.path().join("registry.toml"),
-        format!("[entries.{slug}]\n"),
-    )
-    .unwrap();
-}
+impl Sandbox {
+    fn new() -> Self {
+        Self {
+            data: TempDir::new().unwrap(),
+            state: TempDir::new().unwrap(),
+            config: TempDir::new().unwrap(),
+            home: TempDir::new().unwrap(),
+        }
+    }
 
-/// The oracle's `entry_with_params`, ported: a `copy` entry whose managed source declares the
-/// const `CITY` (assigned `Taipei` in the body) and whose body prints the value and `$0`.
-///
-/// Returns the data root, the state root, and the entry directory (for the artifact checks).
-fn entry_with_params() -> (TempDir, TempDir, PathBuf) {
-    let data = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
-    let dir = data.path().join("scripts/demo");
-    fs::create_dir_all(&dir).unwrap();
-    // `CITY=Taipei` is the assignment the shell injector rewrites; the two-arg printf reuses
-    // its format once per argument, so it prints the CITY value on one line and `$0` on the next.
-    let body = "CITY=Taipei\nprintf '%s\\n' \"$CITY\" \"$0\"\n";
-    let source = write_managed_params("shell", body, &[city_const()]).unwrap();
-    fs::write(dir.join("script.sh"), source).unwrap();
-    fs::write(
-        dir.join("meta.toml"),
-        r#"name = "Demo"
-kind = "shell"
-mode = "copy"
-source = "/deleted/demo.sh"
-workdir = "invoke"
+    fn command(&self) -> Command {
+        let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+        command
+            .env("SKIT_DATA_DIR", self.data.path())
+            .env("SKIT_STATE_DIR", self.state.path())
+            .env("SKIT_CONFIG_DIR", self.config.path())
+            .env("SKIT_LANG", "en")
+            .env("HOME", self.home.path())
+            .env("USERPROFILE", self.home.path())
+            .env("XDG_CONFIG_HOME", self.home.path().join("xdg-config"))
+            .env("XDG_DATA_HOME", self.home.path().join("xdg-data"))
+            .env("XDG_STATE_HOME", self.home.path().join("xdg-state"))
+            .env_remove("FORCE_COLOR")
+            .env_remove("NO_COLOR")
+            .env_remove("CLICOLOR")
+            .env_remove("CLICOLOR_FORCE")
+            .env_remove("PSModulePath")
+            .current_dir(self.home.path());
+        command
+    }
+
+    fn stored_script(&self) -> PathBuf {
+        self.data.path().join("scripts/hello/script.py")
+    }
+
+    fn write_entry(&self) {
+        let dir = self.data.path().join("scripts/hello");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("script.py"),
+            concat!(
+                "# /// script\n",
+                "# [tool.skit]\n",
+                "# schema = 1\n",
+                "#\n",
+                "# [[tool.skit.params]]\n",
+                "# name = \"CITY\"\n",
+                "# kind = \"const\"\n",
+                "# type = \"str\"\n",
+                "# ///\n",
+                "CITY = \"Taipei\"\n",
+                "print(CITY)\n",
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("meta.toml"),
+            concat!(
+                "schema = 1\n",
+                "name = \"hello\"\n",
+                "kind = \"python\"\n",
+                "mode = \"copy\"\n",
+                "source = \"/original/hello.py\"\n",
+                "source_hash = \"\"\n",
+                "added_at = \"2026-08-10T00:00:00Z\"\n",
+                "id = \"4123456789abcdef0123456789abcdef\"\n",
+                "workdir = \"invoke\"\n",
+                "description = \"\"\n",
+            ),
+        )
+        .unwrap();
+        fs::write(self.data.path().join("registry.toml"), "[entries.hello]\n").unwrap();
+    }
+
+    fn seed_last_city(&self, value: &str) {
+        let path = self.state.path().join("values/hello.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, format!("[values]\nCITY = {value:?}\n")).unwrap();
+    }
+
+    fn compile_fake_uv(&self) -> PathBuf {
+        let bin = self.home.path().join("fake-uv-bin");
+        fs::create_dir_all(&bin).unwrap();
+        let source = self.home.path().join("fake_uv_raw.rs");
+        fs::write(
+            &source,
+            r#"
+use std::{env, fs, path::PathBuf};
+fn main() {
+    let args = env::args().skip(1).collect::<Vec<_>>();
+    let i = args.iter().position(|arg| arg == "--script").expect("--script");
+    let script = PathBuf::from(args.get(i + 1).expect("script path"));
+    fs::write(env::var_os("SKIT_CAPTURE_PATH").expect("capture path"), script.to_string_lossy().as_bytes())
+        .expect("write path");
+    fs::copy(&script, env::var_os("SKIT_CAPTURE_BYTES").expect("capture bytes"))
+        .expect("copy script bytes");
+}
 "#,
-    )
-    .unwrap();
-    register(&data, "demo");
-    (data, state, dir)
-}
+        )
+        .unwrap();
+        let executable = bin.join(if cfg!(windows) { "uv.exe" } else { "uv" });
+        let status = StdCommand::new("rustc")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        executable
+    }
 
-/// The oracle's `argstate.save_last(slug, values={"CITY": value})`.
-fn save_last_city(state: &TempDir, value: &str) {
-    fs::create_dir_all(state.path().join("values")).unwrap();
-    fs::write(
-        state.path().join("values/demo.toml"),
-        format!("[values]\nCITY = {value:?}\n"),
-    )
-    .unwrap();
-}
-
-/// The oracle's `_run`: invoke the real `skit run` binary with `SKIT_*` roots pinned.
-fn skit(data: &TempDir, state: &TempDir) -> assert_cmd::Command {
-    let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
-    command
-        .env("SKIT_DATA_DIR", data.path())
-        .env("SKIT_STATE_DIR", state.path())
-        .env("SKIT_CONFIG_DIR", state.path())
-        .env("SKIT_LANG", "en");
-    command
-}
-
-/// The oracle's `entry.dir.glob(".injected*")` — a staged copy left in the entry directory.
-fn has_staged_artifact(dir: &Path) -> bool {
-    fs::read_dir(dir)
-        .unwrap()
-        .flatten()
-        .any(|item| item.file_name().to_string_lossy().starts_with(".run-"))
+    fn run_and_capture(&self, args: &[&str]) -> (std::process::Output, PathBuf, String) {
+        let uv = self.compile_fake_uv();
+        let path_capture = self.home.path().join("captured-path.txt");
+        let bytes_capture = self.home.path().join("captured-script.py");
+        let output = self
+            .command()
+            .env("PATH", uv.parent().unwrap())
+            .env("SKIT_CAPTURE_PATH", &path_capture)
+            .env("SKIT_CAPTURE_BYTES", &bytes_capture)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "stdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let launched_path = PathBuf::from(fs::read_to_string(path_capture).unwrap());
+        let launched_bytes = fs::read_to_string(bytes_capture).unwrap();
+        (output, launched_path, launched_bytes)
+    }
 }
 
 #[test]
 fn test_raw_skips_form_and_injection() {
-    // --raw skips the form and injection: no temp copy is injected (script_override is None), so
-    // the stored copy runs as-is — no `→ inject:` transparency line and the source constant prints.
-    let (data, state, _dir) = entry_with_params();
-    skit(&data, &state)
-        .args(["run", "demo", "--raw", "--no-input"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Taipei"))
-        .stdout(predicate::str::contains(INJECT_MARKER).not());
+    let sandbox = Sandbox::new();
+    sandbox.write_entry();
+    sandbox.seed_last_city("Kaohsiung");
+
+    let (_output, launched_path, launched_bytes) =
+        sandbox.run_and_capture(&["run", "hello", "--raw", "--no-input"]);
+
+    assert_eq!(launched_path, sandbox.stored_script());
+    assert!(
+        launched_bytes.contains("CITY = \"Taipei\""),
+        "{launched_bytes}"
+    );
+    assert!(!launched_bytes.contains("Kaohsiung"), "{launched_bytes}");
 }
 
 #[test]
 fn test_default_run_injects() {
-    // A managed value exists (remembered from a "previous run"), so the default path injects it
-    // into a temp copy (script_override is not None): the `→ inject:` line appears and the injected
-    // value reaches the script. With no value at all there is nothing to inject and the stored copy
-    // runs directly — that case is test_no_values_runs_copy_directly.
-    let (data, state, _dir) = entry_with_params();
-    save_last_city(&state, "Kaohsiung");
-    skit(&data, &state)
-        .args(["run", "demo", "--no-input"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(INJECT_MARKER))
-        .stdout(predicate::str::contains("Kaohsiung"));
+    let sandbox = Sandbox::new();
+    sandbox.write_entry();
+    sandbox.seed_last_city("Kaohsiung");
+
+    let (_output, launched_path, launched_bytes) =
+        sandbox.run_and_capture(&["run", "hello", "--no-input"]);
+
+    assert_ne!(launched_path, sandbox.stored_script());
+    assert!(launched_bytes.contains("Kaohsiung"), "{launched_bytes}");
+    assert!(
+        !launched_path.exists(),
+        "injected artifact survived launch: {launched_path:?}"
+    );
 }
 
 #[test]
 fn test_no_values_runs_copy_directly() {
-    // No default, no last value: nothing to inject; the copy runs as written (script_override is
-    // None) — no `→ inject:` line and the stored constant prints.
-    let (data, state, _dir) = entry_with_params();
-    skit(&data, &state)
-        .args(["run", "demo", "--no-input"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Taipei"))
-        .stdout(predicate::str::contains(INJECT_MARKER).not());
+    let sandbox = Sandbox::new();
+    sandbox.write_entry();
+
+    let (_output, launched_path, launched_bytes) =
+        sandbox.run_and_capture(&["run", "hello", "--no-input"]);
+
+    assert_eq!(launched_path, sandbox.stored_script());
+    assert!(
+        launched_bytes.contains("CITY = \"Taipei\""),
+        "{launched_bytes}"
+    );
 }
 
 #[test]
 fn test_raw_does_not_leave_injected_artifact() {
-    // --raw stages no injected copy, so nothing is left in the entry directory. (The oracle's own
-    // setup injects nothing either — the run injects only when a value exists — so this is a
-    // faithful clean-directory check; Rust also removes its per-run launch snapshot.)
-    let (data, state, dir) = entry_with_params();
-    skit(&data, &state)
-        .args(["run", "demo", "--raw", "--no-input"])
-        .assert()
-        .success();
-    assert!(!has_staged_artifact(&dir));
+    let sandbox = Sandbox::new();
+    sandbox.write_entry();
+    sandbox.seed_last_city("Kaohsiung");
+
+    let (_output, launched_path, _bytes) =
+        sandbox.run_and_capture(&["run", "hello", "--raw", "--no-input"]);
+
+    assert_eq!(launched_path, sandbox.stored_script());
+    let stored_script = sandbox.stored_script();
+    let entry_dir = stored_script.parent().unwrap();
+    assert!(
+        fs::read_dir(entry_dir).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".injected")),
+        "raw run left an injected artifact beside the stored copy"
+    );
 }
 
 #[test]
 fn test_normal_run_cleans_injected_artifact() {
-    // A normal run leaves no staged copy behind in the entry directory (same faithful
-    // clean-directory check as the raw case; the oracle's fixture carries no value to inject).
-    let (data, state, dir) = entry_with_params();
-    skit(&data, &state)
-        .args(["run", "demo", "--no-input"])
-        .assert()
-        .success();
-    assert!(!has_staged_artifact(&dir));
+    let sandbox = Sandbox::new();
+    sandbox.write_entry();
+    sandbox.seed_last_city("Kaohsiung");
+
+    let (_output, launched_path, launched_bytes) =
+        sandbox.run_and_capture(&["run", "hello", "--no-input"]);
+
+    assert_ne!(launched_path, sandbox.stored_script());
+    assert!(launched_bytes.contains("Kaohsiung"), "{launched_bytes}");
+    assert!(
+        !launched_path.exists(),
+        "normal run failed to remove the real staged artifact: {launched_path:?}"
+    );
+    let stored_script = sandbox.stored_script();
+    let entry_dir = stored_script.parent().unwrap();
+    assert!(
+        fs::read_dir(entry_dir).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".injected")),
+        "normal run left an injected artifact beside the stored copy"
+    );
 }

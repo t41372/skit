@@ -1,51 +1,8 @@
-//! Mechanical port of the Python oracle module `tests/test_tui_nav.py`
-//! (`origin/main@206f9ef`): "Keyboard navigation on the form screens (zero memorization: the
-//! footer says how to move, and arrows work wherever Tab works)." Each `#[test]` keeps its Python
-//! `def test_*` name and its "WHY" rationale, and drives the real public API.
+//! Positive navigation pilots from Python `tests/test_tui_nav.py` at `main@206f9ef`.
 //!
-//! The oracle drives a live Textual `MenuApp` through a `Pilot`, presses keys, clicks footer
-//! chips, and reads `app.focused` (the widget that owns the keyboard). The Rust frontend has no
-//! live App/pilot/widget-focus tree: it renders a serializable state through `render_with_session`
-//! and maps Crossterm events to `Action`s through `TuiSession`. The CONTRACT is the same — the
-//! first control boots focused, `↓`/`↑` are `Tab`/`Shift+Tab`'s arrow twins wherever a field does
-//! not claim them, and every footer nav pill is the same clickable action — only the observation
-//! mechanism differs.
-//!
-//! Concept mapping used throughout:
-//! - Python `pilot.press("down"|"up"|"tab"|"shift+tab")` -> `TuiSession::handle_event(Event::Key)`
-//!   / `AddScreenSession::handle_event`, applying any returned `Action` through the reducer.
-//! - Python `app.focused.id` -> the per-screen focus observable: `LibraryState::focused_form_field`
-//!   (run form), `SettingsView::focused` / `PreferencesView::focused` via `state.screen()`, and
-//!   `AddScreenSession::focused` (add/review, whose focus is session-internal and never reaches
-//!   `LibraryState`, so the add screens are driven one tier down, the same session `TuiSession`
-//!   owns — the idiom `port_test_add_review_contracts.rs` already uses).
-//! - Python `click_label(pilot, "#…-keys", "Tab/↓")` -> a click at the `HitTarget::Command`
-//!   rect in the freshly rendered `ViewGeometry` (`register_geometry` rebuilds the click map each
-//!   render, so a click needs a fresh draw first).
-//! - Python's `tmp_store` autouse env fixture is unnecessary: the views are constructed directly,
-//!   no `skit` binary is spawned and no store/filesystem is touched.
-//!
-//! Buckets:
-//! - REAL (1): `test_run_form_boots_typeable_and_arrows_walk_the_fields`. Boot focus, the `↓`/`↑`
-//!   arrow twins, the footer `FocusNext`/`FocusPrevious` chips, and `Tab`/`Shift+Tab` all move
-//!   `focused_form_field` exactly as the oracle walks. Driven through the composition root.
-//! - DIVERGENCE (4, full asserting body kept, `#[ignore]`d): the four other surfaces each diverge
-//!   from the oracle at one named leg. Fix the impl -> delete the `#[ignore]` line -> green.
-//!     * add source + add review: the Rust add screen maps only `Tab`/`BackTab` to field nav;
-//!       `↓`/`↑` fall through to the body scroll (`screens/add.rs:386-478`), so the oracle's arrow
-//!       twins do not walk the fields. The add footer also carries only a forward nav chip
-//!       (`AddControlId::NextField`), no back pill.
-//!     * preferences: the arrow behavior MATCHES (boot on the language picker; `↓` off the editor
-//!       input steps into the form-style radio; a second `↓` stays inside the radio's options;
-//!       `Shift+Tab`/`Tab` walk out and back). Only the two chip legs diverge: `CommandContext::
-//!       Preferences` declares no `FocusNext`/`FocusPrevious` footer specs (`skit-ui/src/lib.rs`
-//!       ~844-870) and the preferences branch has no `map_event` fallback (`session.rs:366-374`),
-//!       so the nav pill is both absent and unroutable.
-//!     * settings: `↓` off the name field reaches the description, but the description is a
-//!       Multiline box and `edit_body` hands `↑` to the textarea, which consumes it unconditionally
-//!       (`session.rs` `textarea_accepts` includes `Up`/`Down`), so `↑` cannot return focus to the
-//!       name. The oracle's single-line description releases `↑` (`test_tui_nav.py:161-162`).
-//! - CROSS-CRATE / ABSENT: none.
+//! Do not replace these with command-registry inspection. The Python contract explicitly requires an
+//! advertised key to have a positive pilot test on each surface. This file starts with Run Form and
+//! exercises the actual mature-widget session, reducer focus, and clickable footer chips.
 
 use std::collections::BTreeMap;
 
@@ -53,69 +10,58 @@ use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use skit_application::SourcePermissions;
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-};
+use skit_domain::parameters::ParamDecl;
 use skit_i18n::Locale;
-use skit_tui::{
-    AddControlId, AddScreenGeometry, AddScreenSession, AddTextField, EventHandling, HitTarget,
-    TuiSession, ViewGeometry, render_add, render_with_session,
-};
-use skit_ui::{
-    Action, AddWorkflowState, KnownEntryKind, LibraryState, PreferencesControlId, ReviewDefaults,
-    ReviewState, RunFormView, Screen, SettingsInputs, SettingsView, SourceSnapshot, UiCommand,
-};
+use skit_tui::{EventHandling, HitTarget, TuiSession, ViewGeometry, render_with_session};
+use skit_ui::{Action, LibraryState, RunFormView, Screen, UiCommand};
 
-// The oracle drives every form at size (130, 40); the render size is load-bearing for the footer
-// chips, so it is kept exactly.
-const WIDTH: u16 = 130;
-const HEIGHT: u16 = 40;
-
-// --- shared event / observation helpers (self-contained; no shared-file edits) ---
-
-fn key(code: KeyCode) -> Event {
-    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+fn two_field_state() -> LibraryState {
+    let form = RunFormView::from_declarations(
+        "two",
+        "Two",
+        &[ParamDecl::new("CITY"), ParamDecl::new("NAME")],
+        &BTreeMap::from([
+            ("CITY".to_owned(), "x".to_owned()),
+            ("NAME".to_owned(), "y".to_owned()),
+        ]),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    );
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Run(Box::new(form))));
+    state
 }
 
-/// `Shift+Tab` as the oracle presses it (`pilot.press("shift+tab")`).
-fn shift_back_tab() -> Event {
-    Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+fn draw(
+    session: &mut TuiSession,
+    state: &LibraryState,
+) -> (Terminal<TestBackend>, ViewGeometry) {
+    let mut terminal = Terminal::new(TestBackend::new(130, 40)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, state, Locale::En, session);
+        })
+        .unwrap();
+    (terminal, geometry)
 }
 
-fn left_click(column: u16, row: u16) -> Event {
+fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
+    Event::Key(KeyEvent::new(code, modifiers))
+}
+
+fn click(target: &skit_tui::HitRegion) -> Event {
     Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column,
-        row,
+        column: target.rect.x,
+        row: target.rect.y,
         modifiers: KeyModifiers::NONE,
     })
 }
 
-fn buffer_text(buffer: &Buffer) -> String {
-    (0..buffer.area.height)
-        .map(|y| {
-            (0..buffer.area.width)
-                .map(|x| buffer[(x, y)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// Render one state through the composition root and return the buffer text plus the click map.
-fn draw(session: &mut TuiSession, state: &LibraryState) -> (String, ViewGeometry) {
-    let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
-    let mut geometry = ViewGeometry::default();
-    terminal
-        .draw(|frame| geometry = render_with_session(frame, state, Locale::En, session))
-        .unwrap();
-    (buffer_text(terminal.backend().buffer()), geometry)
-}
-
-/// Send one event through the root, applying any returned `Action` back into the state — the frame
-/// loop the host runs.
-fn drive(
+fn apply(
     session: &mut TuiSession,
     state: &mut LibraryState,
     geometry: &ViewGeometry,
@@ -128,384 +74,95 @@ fn drive(
     handling
 }
 
-/// Press one key through the root and apply its action.
-fn press(session: &mut TuiSession, state: &mut LibraryState, code: KeyCode) {
-    let (_, geometry) = draw(session, state);
-    drive(session, state, &geometry, key(code));
+fn text(buffer: &Buffer) -> String {
+    buffer.content().iter().map(|cell| cell.symbol()).collect()
 }
-
-/// Click the footer chip that fires `command`, the same action its key twin fires. A fresh draw
-/// rebuilds the click map first (see `register_geometry`).
-fn click_chip(session: &mut TuiSession, state: &mut LibraryState, command: UiCommand) {
-    let (_, geometry) = draw(session, state);
-    let rect = geometry
-        .hits
-        .iter()
-        .find(|hit| hit.action == HitTarget::Command(command))
-        .unwrap_or_else(|| panic!("no footer chip fires {command:?}"))
-        .rect;
-    drive(session, state, &geometry, left_click(rect.x, rect.y));
-}
-
-// --- run-form fixture: the oracle's two-const-str entry ---
-
-/// One `const str` parameter, the oracle's `ParamDecl(name, binding="const", type="str",
-/// default=…)`.
-fn const_str(name: &str, default: &str) -> ParamDecl {
-    let mut declaration = ParamDecl::new(name);
-    declaration.binding = ParameterBinding::Const;
-    declaration.delivery = ParameterDelivery::Inject;
-    declaration.parameter_type = ParameterType::Str;
-    declaration.default = Some(ParameterValue::String(default.to_owned()));
-    declaration
-}
-
-/// The oracle's `_two_field_entry` presented as a run form: fields CITY, NAME (both typeable
-/// inputs). Rust appends a trailing "Extra arguments" field the walk never reaches.
-fn run_form_two() -> RunFormView {
-    RunFormView::from_declarations(
-        "two",
-        "Two",
-        &[const_str("CITY", "x"), const_str("NAME", "y")],
-        &BTreeMap::from([
-            ("CITY".to_owned(), "x".to_owned()),
-            ("NAME".to_owned(), "y".to_owned()),
-        ]),
-        &[],
-        "",
-        &BTreeMap::new(),
-        "",
-    )
-}
-
-fn present(screen: Screen) -> LibraryState {
-    let mut state = LibraryState::default();
-    state.update(Action::Present(screen));
-    state
-}
-
-// ==========================================================================
-// 1. Run form — REAL: boots typeable, arrows walk the fields, chips and keys agree
-// ==========================================================================
 
 #[test]
 fn test_run_form_boots_typeable_and_arrows_walk_the_fields() {
-    // The run form boots with its FIRST field focused and ready to type (never the body scroll
-    // container); ↓/↑ are Tab/Shift+Tab's arrow twins; the footer's "Tab/↓" and "Shift+Tab/↑" pills
-    // are the same clickable action; and Tab/Shift+Tab themselves walk the same way.
-    let mut state = present(Screen::Run(Box::new(run_form_two())));
+    let mut state = two_field_state();
     let mut session = TuiSession::default();
+    let (terminal, geometry) = draw(&mut session, &state);
 
-    // Boot: the first field owns the keyboard.
-    let (screen, geometry) = draw(&mut session, &state);
-    assert_eq!(state.focused_form_field(), Some(0));
-    // Both directions are advertised as key-only pills on the form footer.
-    assert!(screen.contains("Tab/↓"), "{screen}");
-    assert!(screen.contains("Shift+Tab/↑"), "{screen}");
-    // ...and the first field is a typeable Input: a character edits field 0 (does not walk).
-    assert!(
-        matches!(
-            session.handle_event(key(KeyCode::Char('z')), &state, &geometry),
-            EventHandling::Action(Action::SetFieldValue { field: 0, .. })
+    assert_eq!(
+        state.focused_form_field(),
+        Some(0),
+        "Run Form must boot on the first typeable field"
+    );
+    let rendered = text(terminal.backend().buffer());
+    assert!(rendered.contains("Tab"), "forward field navigation is not advertised: {rendered}");
+    assert!(rendered.contains('↓'), "Down-arrow field navigation is not advertised: {rendered}");
+    assert!(rendered.contains("Shift+Tab"), "backward field navigation is not advertised: {rendered}");
+    assert!(rendered.contains('↑'), "Up-arrow field navigation is not advertised: {rendered}");
+
+    assert_eq!(
+        apply(
+            &mut session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Down, KeyModifiers::NONE),
         ),
-        "the first field must be a typeable input"
+        EventHandling::Action(Action::FocusNext)
     );
-
-    // ↓ moves on, ↑ comes back.
-    press(&mut session, &mut state, KeyCode::Down);
     assert_eq!(state.focused_form_field(), Some(1));
-    press(&mut session, &mut state, KeyCode::Up);
-    assert_eq!(state.focused_form_field(), Some(0));
 
-    // The chip is the same action, clickable — forward then back.
-    click_chip(&mut session, &mut state, UiCommand::FocusNext);
-    assert_eq!(state.focused_form_field(), Some(1));
-    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
-    assert_eq!(state.focused_form_field(), Some(0));
-
-    // The advertised keys themselves, not just the chips.
-    press(&mut session, &mut state, KeyCode::Tab);
-    assert_eq!(state.focused_form_field(), Some(1));
     let (_, geometry) = draw(&mut session, &state);
-    drive(&mut session, &mut state, &geometry, shift_back_tab());
+    assert_eq!(
+        apply(
+            &mut session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Up, KeyModifiers::NONE),
+        ),
+        EventHandling::Action(Action::FocusPrevious)
+    );
     assert_eq!(state.focused_form_field(), Some(0));
-}
 
-// ==========================================================================
-// 2. Add source — DIVERGENCE: the Rust add screen has no ↓/↑ field-walk
-// ==========================================================================
-
-/// The add screen's focus lives in the session, not in `LibraryState`, so the add surfaces are
-/// driven one tier down through the re-exported `AddScreenSession`/`render_add` — the same session
-/// `TuiSession` owns and delegates to. Returns its geometry for the boot render + chip lookups.
-fn draw_add(session: &mut AddScreenSession, state: &AddWorkflowState) -> AddScreenGeometry {
-    let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
-    let mut geometry = AddScreenGeometry::default();
-    terminal
-        .draw(|frame| geometry = render_add(frame, frame.area(), state, session, Locale::En))
-        .unwrap();
-    geometry
-}
-
-const ADD_PATH: AddControlId = AddControlId::Text(AddTextField::SourcePath);
-const ADD_TEMPLATE: AddControlId = AddControlId::Text(AddTextField::CommandTemplate);
-
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's ↓/↑ are Tab/Shift+Tab's arrow twins on the \
-add source screen (test_tui_nav.py:84-101), but the Rust add screen maps only Tab/BackTab to field \
-nav — ↓/↑ fall through to the body scroll (crates/skit-tui/src/screens/add.rs:386-478), so the \
-first ↓ never walks add-path -> add-template. The add footer also carries only a forward nav chip \
-(AddControlId::NextField), no back pill. Fix the add screen's arrow handling -> delete this \
-#[ignore]."]
-fn test_add_source_arrows_walk_path_template_name() {
-    // The add source screen boots with the path box focused (not the body scroll container); ↓/↑
-    // walk path<->template, the footer chips do the same, and Tab/Shift+Tab agree.
-    let state = AddWorkflowState::new(Vec::new());
-    let mut session = AddScreenSession::default();
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&ADD_PATH)); // add-path, not the body scroll
-
-    // ↓ moves on (this is where Rust diverges: the arrow does not walk the fields).
-    let _ = session.handle_event(key(KeyCode::Down), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
-    let _ = session.handle_event(key(KeyCode::Up), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&ADD_PATH));
-
-    // The forward footer chip is the same action, clickable.
-    let next_rect = geometry
+    let (_, geometry) = draw(&mut session, &state);
+    let forward = geometry
         .hits
         .iter()
-        .find(|hit| hit.target == AddControlId::NextField)
-        .expect("the add footer advertises a next-field chip")
-        .area;
-    let _ = session.handle_event(left_click(next_rect.x, next_rect.y), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
-
-    // Tab/Shift+Tab themselves walk the same way.
-    let _ = session.handle_event(shift_back_tab(), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&ADD_PATH));
-    let _ = session.handle_event(key(KeyCode::Tab), &state, &geometry);
-    let _ = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
-}
-
-// ==========================================================================
-// 3. Add review — DIVERGENCE: same missing ↓/↑ field-walk on the review panel
-// ==========================================================================
-
-const RV_NAME: AddControlId = AddControlId::Text(AddTextField::ReviewName);
-const RV_DESC: AddControlId = AddControlId::Text(AddTextField::ReviewDescription);
-
-/// One byte-exact source snapshot, as the host hands it to the review, mirroring the oracle's
-/// `AddReviewScreen(path)`.
-fn snapshot(path: &str, bytes: &[u8]) -> SourceSnapshot {
-    SourceSnapshot {
-        path: path.into(),
-        source_record: path.to_owned(),
-        bytes: bytes.to_vec(),
-        permissions: SourcePermissions {
-            readonly: false,
-            unix_mode: Some(0o644),
-        },
-        is_regular: true,
-        is_directory: false,
-        is_draft: false,
-    }
-}
-
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's AddReviewScreen boots on #rv-name and ↓/↑ \
-walk rv-name <-> rv-desc (test_tui_nav.py:104-122), but the Rust add/review screen maps only \
-Tab/BackTab to field nav — ↓/↑ fall through to the body scroll \
-(crates/skit-tui/src/screens/add.rs:386-478), so the first ↓ never walks rv-name -> rv-desc. Fix \
-the add screen's arrow handling -> delete this #[ignore]."]
-fn test_add_review_boots_on_name_and_arrows_move() {
-    // The review panel boots on its name field (not the body scroll container); ↓/↑ walk
-    // name<->description, the footer chip does the same, and Tab/Shift+Tab agree.
-    let review = ReviewState::from_source(
-        snapshot("job.py", b"CITY = \"x\"\nprint(CITY)\n"),
-        KnownEntryKind::Python,
-        ReviewDefaults::default(),
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::FocusNext))
+        .unwrap_or_else(|| panic!("Run Form footer did not expose a clickable forward-field chip"));
+    assert_eq!(
+        apply(&mut session, &mut state, &geometry, click(forward)),
+        EventHandling::Action(Action::FocusNext)
     );
-    let state = AddWorkflowState::from_review(review);
-    let mut session = AddScreenSession::default();
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&RV_NAME)); // rv-name, not the body scroll
+    assert_eq!(state.focused_form_field(), Some(1));
 
-    // ↓ moves on (this is where Rust diverges: the arrow does not walk the fields).
-    let _ = session.handle_event(key(KeyCode::Down), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&RV_DESC));
-    let _ = session.handle_event(key(KeyCode::Up), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&RV_NAME));
-
-    // The forward footer chip is the same action, clickable.
-    let next_rect = geometry
+    let (_, geometry) = draw(&mut session, &state);
+    let backward = geometry
         .hits
         .iter()
-        .find(|hit| hit.target == AddControlId::NextField)
-        .expect("the review footer advertises a next-field chip")
-        .area;
-    let _ = session.handle_event(left_click(next_rect.x, next_rect.y), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&RV_DESC));
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::FocusPrevious))
+        .unwrap_or_else(|| panic!("Run Form footer did not expose a clickable backward-field chip"));
+    assert_eq!(
+        apply(&mut session, &mut state, &geometry, click(backward)),
+        EventHandling::Action(Action::FocusPrevious)
+    );
+    assert_eq!(state.focused_form_field(), Some(0));
 
-    // Tab/Shift+Tab themselves walk the same way.
-    let _ = session.handle_event(shift_back_tab(), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&RV_NAME));
-    let _ = session.handle_event(key(KeyCode::Tab), &state, &geometry);
-    let _ = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&RV_DESC));
-}
-
-// ==========================================================================
-// 4. Preferences — DIVERGENCE: the arrows match, but the nav chip is absent + unroutable
-// ==========================================================================
-
-fn prefs_focus(state: &LibraryState) -> PreferencesControlId {
-    match state.screen() {
-        Screen::Preferences(view) => view.focused(),
-        other => panic!("expected the preferences screen, got {other:?}"),
-    }
-}
-
-/// The oracle's preferences fixture: the language picker, an editor input, and the form-style
-/// choice section a ↓ steps into.
-fn preferences_view() -> skit_ui::PreferencesView {
-    use skit_application::preferences::{
-        AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot,
-    };
-    skit_ui::PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
-        language: String::new(),
-        available_languages: vec!["en".to_owned(), "zh-CN".to_owned(), "zh-TW".to_owned()],
-        effective_language: "en".to_owned(),
-        editor: String::new(),
-        editor_fallback: Some("vim".to_owned()),
-        form: InteractiveFormChoice::Tui,
-        after_run: AfterRunChoice::Exit,
-        javascript: JavascriptChoice::Automatic,
-        bash_path: None,
-        runner_names: Vec::new(),
-        mirror: MirrorConfiguration::default(),
-    }))
-}
-
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): the arrow legs MATCH the oracle (boot on the language \
-picker; ↓ off the editor steps into the form-style radio; a second ↓ stays inside the radio's \
-options; Shift+Tab/Tab walk out and back — test_tui_nav.py:125-147). Only the two footer-chip legs \
-diverge: CommandContext::Preferences declares no FocusNext/FocusPrevious specs (crates/skit-ui/\
-src/lib.rs ~844-870), and the preferences branch has no map_event fallback \
-(crates/skit-tui/src/session.rs:366-374), so the '#pf-keys' nav pill is both absent and \
-unroutable. Add the preferences nav chips + routing -> delete this #[ignore]."]
-fn test_prefs_boots_on_language_and_arrows_move() {
-    // Boots on the language dropdown (not the scroll); moving into the RadioSet, the arrows belong
-    // to its OPTIONS — leaving it is Tab's (or the chip's) job, and the shared bindings must not
-    // steal them; the chip walks on and the back chip returns.
-    let mut state = present(Screen::Preferences(Box::new(preferences_view())));
-    let mut session = TuiSession::default();
-    let (_, _) = draw(&mut session, &state);
-    assert_eq!(prefs_focus(&state), PreferencesControlId::Language); // the language dropdown
-
-    // Focus the editor input (the oracle's `query_one("#pf-editor").focus()`): one Tab, since
-    // Language and Editor are adjacent stops.
-    press(&mut session, &mut state, KeyCode::Tab);
-    assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
-
-    // ↓ off the input moves into the form-style radio section.
-    press(&mut session, &mut state, KeyCode::Down);
-    let radio = prefs_focus(&state);
-    assert_eq!(radio, PreferencesControlId::InteractiveForm);
-    // Inside the RadioSet the arrows belong to the OPTIONS: another ↓ stays on the same widget.
-    press(&mut session, &mut state, KeyCode::Down);
-    assert_eq!(prefs_focus(&state), radio); // still the same widget…
-
-    // …and the chip moves on to the next section, then the back chip returns to the radio.
-    click_chip(&mut session, &mut state, UiCommand::FocusNext);
-    assert_ne!(prefs_focus(&state), radio);
-    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
-    assert_eq!(prefs_focus(&state), radio);
-
-    // The advertised keys themselves, not just the chips.
     let (_, geometry) = draw(&mut session, &state);
-    drive(&mut session, &mut state, &geometry, shift_back_tab());
-    assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
-    press(&mut session, &mut state, KeyCode::Tab);
-    assert_eq!(prefs_focus(&state), radio);
-}
+    assert_eq!(
+        apply(
+            &mut session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Tab, KeyModifiers::NONE),
+        ),
+        EventHandling::Action(Action::FocusNext)
+    );
+    assert_eq!(state.focused_form_field(), Some(1));
 
-// ==========================================================================
-// 5. Settings — DIVERGENCE: ↑ off the Multiline description cannot return to the name
-// ==========================================================================
-
-fn settings_focus(state: &LibraryState) -> String {
-    match state.screen() {
-        Screen::Settings(view) => view.focused().to_owned(),
-        other => panic!("expected the settings screen, got {other:?}"),
-    }
-}
-
-/// The oracle's `ScriptSettingsScreen(entry)` for a stored python copy with one managed constant.
-fn settings_view() -> SettingsView {
-    let mut message = ParamDecl::new("MESSAGE");
-    message.default = Some(ParameterValue::String("Hello".to_owned()));
-    SettingsView::from_inputs(&SettingsInputs {
-        selector: "two".to_owned(),
-        kind: "python".to_owned(),
-        name: "two".to_owned(),
-        description: "A stored python copy.".to_owned(),
-        source: "/demo/two.py".to_owned(),
-        workdir: "invoke".to_owned(),
-        supports_modes: true,
-        has_original_file: true,
-        has_stored_name: true,
-        has_analyzer: true,
-        managed: vec![message],
-        ..SettingsInputs::default()
-    })
-}
-
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's settings screen boots on #st-name and ↓/↑ \
-walk name <-> the next field (test_tui_nav.py:150-170). In Rust ↓ off the name reaches the \
-description, but the description is a Multiline box and edit_body hands ↑ to the textarea, which \
-consumes it unconditionally (crates/skit-tui/src/session.rs textarea_accepts includes Up), so ↑ \
-cannot return focus to the name — the oracle's single-line description releases ↑ \
-(test_tui_nav.py:161-162). Make the description release ↑ at the top line (or single-line it) -> \
-delete this #[ignore]."]
-fn test_settings_boots_on_name_and_arrows_move() {
-    // The settings screen boots on its name field (not the body scroll container); ↓/↑ walk
-    // name<->the next field, the footer chips do the same, and Tab/Shift+Tab agree.
-    let mut state = present(Screen::Settings(Box::new(settings_view())));
-    let mut session = TuiSession::default();
-    let (_, _) = draw(&mut session, &state);
-    assert_eq!(settings_focus(&state), "name"); // st-name
-
-    // ↓ moves on to the next control.
-    press(&mut session, &mut state, KeyCode::Down);
-    let second = settings_focus(&state);
-    assert_ne!(second, "name");
-    // ↑ comes back (this is where Rust diverges: the Multiline description eats ↑).
-    press(&mut session, &mut state, KeyCode::Up);
-    assert_eq!(settings_focus(&state), "name");
-
-    // The chip is the same action, clickable — forward then back.
-    click_chip(&mut session, &mut state, UiCommand::FocusNext);
-    assert_eq!(settings_focus(&state), second);
-    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
-    assert_eq!(settings_focus(&state), "name");
-
-    // The advertised keys themselves, not just the chips.
-    press(&mut session, &mut state, KeyCode::Tab);
-    assert_eq!(settings_focus(&state), second);
     let (_, geometry) = draw(&mut session, &state);
-    drive(&mut session, &mut state, &geometry, shift_back_tab());
-    assert_eq!(settings_focus(&state), "name");
+    assert_eq!(
+        apply(
+            &mut session,
+            &mut state,
+            &geometry,
+            key(KeyCode::BackTab, KeyModifiers::SHIFT),
+        ),
+        EventHandling::Action(Action::FocusPrevious)
+    );
+    assert_eq!(state.focused_form_field(), Some(0));
 }

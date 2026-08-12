@@ -12,11 +12,9 @@
 //!   `.missing` is `Vec<ParamDecl>`, `.new` is `Vec<SemanticCandidate>`, `.usable()` is a method,
 //!   `.has_drift()` is a method, `.syntax_error` is a field.
 //!
-//! UNMAPPED: `reconcile.drift_lines`, `reconcile.render_warning`, and `reconcile.edit_specs`
-//! (resync/remove/secret/prompts and their warnings) are higher-level use cases that do NOT exist in
-//! `skit-language`; they live in `skit-cli`/`skit-ui`/`skit-form`, which this integration test cannot
-//! depend on (adding a crate dependency needs a Cargo.toml edit, which is out of scope). Those tests
-//! keep their WHY comment, are marked `#[ignore = "UNMAPPED: ..."]`, and carry a compiling stub.
+//! Higher-layer Python contracts for drift rendering and source-parameter editing/resync live in
+//! `crates/skit-cli/tests/port_test_reconcile_edit.rs`, where the same Python test names execute
+//! against the real CLI/storage boundary. This language target contains only reconcile-owned logic.
 
 use std::collections::BTreeSet;
 
@@ -333,22 +331,6 @@ fn test_input_rebind_flagged_when_prompt_can_no_longer_disambiguate() {
 }
 
 #[test]
-#[ignore = "UNMAPPED: reconcile.drift_lines has no skit-language equivalent (human-string rendering lives in skit-cli/skit-ui)"]
-fn test_drift_lines_mention_rebind() {
-    // A syntax-error resync combined with drift-line rendering. drift_lines is a CLI/UI concern.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs(resync=...) has no skit-language equivalent (spec editing/resync lives in skit-application/skit-cli)"]
-fn test_resync_reanchors_rebound_input_order_and_prompt() {
-    // --resync must not just prune/retype: an input whose prompt no longer uniquely resolves should
-    // be re-anchored to wherever the fallback landed, so the *next* plain run sees an exact prompt
-    // match again instead of re-deriving the same fallback (and the same warning) every time.
-    let _ = reconcile;
-}
-
-#[test]
 fn test_unselected_candidates_are_new_but_not_drift() {
     // Onboarding only selected CITY; RETRIES and input are "new" but must never nag the user on
     // every run.
@@ -440,89 +422,4 @@ fn test_syntax_error_marks_all_missing() {
     assert!(report.syntax_error);
     assert_eq!(missing_names(&report), ["CITY"]);
     assert!(usable_names(&report).is_empty());
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.drift_lines has no skit-language equivalent (human-string rendering lives in skit-cli/skit-ui)"]
-fn test_drift_lines_mention_old_and_new_type() {
-    // drift_lines renders old-vs-new type text for a warning; that string rendering is a CLI/UI
-    // concern, not part of skit-language's ReconcileReport surface.
-    let _ = reconcile;
-}
-
-// ---------- edit_specs: not-managed warning branches ----------
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_not_managed_in_secret_warning() {
-    // Passing a name that isn't managed into secret= must record a warning, not crash.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_not_managed_in_no_secret_warning() {
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_not_managed_in_prompts_warning() {
-    let _ = reconcile;
-}
-
-// ---------- Resync must not wipe definitions on a transient syntax error ----------
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs(resync=...) has no skit-language equivalent (spec editing/resync lives in skit-application/skit-cli)"]
-fn test_resync_on_unparseable_script_leaves_definitions_untouched() {
-    // A copy-mode script left mid-edit with a syntax error must not have its entire
-    // managed-parameter set dropped by --resync. reconcile() can't distinguish "really
-    // gone" from "can't parse right now", so _apply_resync must consult report.syntax_error itself.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs(resync=...) has no skit-language equivalent (spec editing/resync lives in skit-application/skit-cli)"]
-fn test_resync_syntax_error_does_not_also_apply_other_edits_incorrectly() {
-    // A syntax-error resync combined with --remove: the resync guard must only skip the resync
-    // step; the rest of edit_specs (remove/add/tweaks) still runs normally on the untouched specs.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.render_warning has no skit-language equivalent (warning rendering lives in skit-cli/skit-ui)"]
-fn test_render_warning_resync_skipped() {
-    let _ = reconcile;
-}
-
-// ---------- edit_specs must not crash on duplicate-named specs ----------
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_remove_with_duplicate_names_does_not_crash() {
-    // A duplicate-named const used to make `order.remove(name)` leave a dangling name in `order`
-    // after `del by_name[name]`, raising KeyError on the final list-comp.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs(resync=...) has no skit-language equivalent (spec editing/resync lives in skit-application/skit-cli)"]
-fn test_edit_specs_resync_drop_with_duplicate_names_does_not_crash() {
-    // Same dangling-name crash, reached via --resync instead of --remove.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_edit_specs_dedups_duplicate_names_even_when_untouched() {
-    // Duplicate names must never survive edit_specs, even when no operation targets them directly.
-    let _ = reconcile;
-}
-
-#[test]
-#[ignore = "UNMAPPED: reconcile.edit_specs has no skit-language equivalent (spec editing lives in skit-application/skit-cli)"]
-fn test_no_secret_also_clears_the_env_source() {
-    // Clearing secret must also clear env_source (an env source only means anything on a secret).
-    let _ = reconcile;
 }
