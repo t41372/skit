@@ -4,8 +4,6 @@
 //! Python contract at a stronger public boundary: the exact path passed to the editor, pre-launch
 //! refusal for a missing reference, user-visible success copy, and launch-failure propagation.
 
-#![cfg(unix)]
-
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -86,7 +84,7 @@ fn main() {
 "#,
         )
         .unwrap();
-        let executable = self.tools.path().join("editor-probe");
+        let executable = self.tools.path().join(probe_executable_name());
         let status = Command::new("rustc")
             .arg(source)
             .arg("-o")
@@ -103,7 +101,7 @@ fn main() {
             .env("SKIT_STATE_DIR", self.state.path())
             .env("SKIT_CONFIG_DIR", self.config.path())
             .env("SKIT_LANG", "en")
-            .env_remove("VISUAL")
+            .env("VISUAL", editor)
             .env("EDITOR", editor)
             .env("SKIT_EDITOR_CAPTURE", &self.capture)
             .args(["edit", "a"])
@@ -117,6 +115,16 @@ fn main() {
         assert_eq!(argv.len(), 2, "editor must receive only its argv[0] and the source path: {argv:?}");
         PathBuf::from(argv[1])
     }
+}
+
+#[cfg(windows)]
+fn probe_executable_name() -> &'static str {
+    "editor-probe.exe"
+}
+
+#[cfg(not(windows))]
+fn probe_executable_name() -> &'static str {
+    "editor-probe"
 }
 
 fn combined(output: &Output) -> String {
