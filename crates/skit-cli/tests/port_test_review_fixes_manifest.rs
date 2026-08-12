@@ -1,7 +1,7 @@
 //! Completeness guard for Python `tests/test_review_fixes.py` at `main@206f9ef`.
 //!
 //! This file is accounting only: behavioral assertions live beside the public Rust seam they test.
-//! Twenty-one Python regressions have executable Rust equivalents. Nine are implementation/runtime
+//! Twenty-three Python regressions have executable Rust equivalents. Seven are implementation/runtime
 //! seams that do not exist in the Rust architecture; they remain explicitly architecture-closed
 //! rather than being impersonated by same-named tests of different behavior.
 
@@ -34,6 +34,7 @@ const EXECUTABLE: &[Mapping] = &[
     Mapping { python: "test_write_params_no_block_no_params", path: L },
     Mapping { python: "test_parse_block_corrupt_body_returns_none", path: L },
     Mapping { python: "test_argstate_corrupt_file_fallback", path: S },
+    Mapping { python: "test_normalize_four_char_subtag", path: S },
     Mapping { python: "test_config_language_corrupt_file", path: S },
     Mapping { python: "test_set_language_with_existing_corrupt_config", path: S },
     Mapping { python: "test_slugify_leading_trailing_special", path: D },
@@ -41,6 +42,7 @@ const EXECUTABLE: &[Mapping] = &[
     Mapping { python: "test_unique_slug_multiple_collisions", path: S },
     Mapping { python: "test_update_dependencies_reference_mode", path: C },
     Mapping { python: "test_update_dependencies_exe_entry", path: C },
+    Mapping { python: "test_find_uv_private_bin_exe_variant", path: C },
     Mapping { python: "test_build_python_only_requires_python", path: R },
 ];
 
@@ -58,10 +60,6 @@ const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[
         "Python discovers compiled locale data from a runtime directory. Rust embeds a static catalog, so there is no locale-data directory whose absence can be observed at runtime.",
     ),
     (
-        "test_normalize_four_char_subtag",
-        "Python exposes a private string normalizer that returns zh-Hant-TW. Rust's public locale API resolves directly to a Locale enum and does not expose a canonicalized BCP-47 string for this input.",
-    ),
-    (
         "test_detect_locale_locale_module_error",
         "Python catches ValueError/TypeError from locale.getlocale(). Rust delegates platform locale discovery to sys_locale and has no equivalent exception-producing locale-module seam.",
     ),
@@ -72,10 +70,6 @@ const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[
     (
         "test_preamble_appends_newline_when_missing",
         "Same Python-only shim-preamble architecture: Rust emits no preamble, so there is no preamble-newline branch to exercise without fabricating an implementation detail.",
-    ),
-    (
-        "test_find_uv_private_bin_exe_variant",
-        "Python monkeypatches Windows private-bin lookup on any host. Rust's managed private-uv path is compile-time cfg-selected; constructing a Windows UvTarget would test asset naming, not the actual current-host private-bin discovery branch.",
     ),
     (
         "test_ensure_uv_downloaded_success",
@@ -115,8 +109,8 @@ fn load_targets(repo: &Path) -> BTreeMap<&'static str, BTreeSet<String>> {
 
 #[test]
 fn every_executable_review_fix_has_exactly_one_rust_oracle() {
-    assert_eq!(EXECUTABLE.len(), 21);
-    assert_eq!(ARCHITECTURE_CLOSED.len(), 9);
+    assert_eq!(EXECUTABLE.len(), 23);
+    assert_eq!(ARCHITECTURE_CLOSED.len(), 7);
     assert_eq!(EXECUTABLE.len() + ARCHITECTURE_CLOSED.len(), 30);
     assert_eq!(
         EXECUTABLE
