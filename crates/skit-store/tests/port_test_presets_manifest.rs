@@ -1,7 +1,11 @@
 //! Mechanical completeness guard for Python v0.4 `tests/test_presets.py`.
 //!
 //! This is not behavioral coverage. `port_test_presets.rs` owns the behavioral assertions; this
-//! guard only prevents a frozen Python oracle from silently disappearing or being renamed.
+//! guard only prevents a frozen Python oracle from silently disappearing or being renamed. The
+//! target function itself must carry `#[test]`; a stray attribute elsewhere cannot satisfy this
+//! manifest.
+
+use syn::{Attribute, Item};
 
 const SOURCE: &str = include_str!("port_test_presets.rs");
 
@@ -20,21 +24,30 @@ const PYTHON_TESTS: &[&str] = &[
     "test_save_last_regression_non_secret_values_persist_normally",
 ];
 
+fn is_test(attributes: &[Attribute]) -> bool {
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
+}
+
 #[test]
 fn every_python_preset_test_has_the_same_named_executable_rust_oracle_in_order() {
     assert_eq!(PYTHON_TESTS.len(), 12);
+    let parsed = syn::parse_file(SOURCE).expect("preset parity source must parse as Rust");
+    let actual = parsed
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Fn(function) if is_test(&function.attrs) => Some(function.sig.ident.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let expected = PYTHON_TESTS
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect::<Vec<_>>();
     assert_eq!(
-        SOURCE.matches("#[test]").count(),
-        PYTHON_TESTS.len(),
-        "the behavioral file must contain exactly the frozen Python test count"
+        actual, expected,
+        "preset behavioral tests must be exactly the frozen Python tests, executable and in order"
     );
-
-    let mut cursor = 0;
-    for name in PYTHON_TESTS {
-        let needle = format!("fn {name}()");
-        let offset = SOURCE[cursor..]
-            .find(&needle)
-            .unwrap_or_else(|| panic!("missing executable Rust oracle {name}"));
-        cursor += offset + needle.len();
-    }
 }
