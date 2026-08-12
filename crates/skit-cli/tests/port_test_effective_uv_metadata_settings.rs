@@ -1,4 +1,5 @@
-//! Real-TUI Settings ports from Python `tests/test_effective_uv_metadata.py` at `main@206f9ef`.
+//! Real-TUI Settings ports from Python `tests/test_effective_uv_metadata.py` and
+//! `tests/test_uv_metadata_unpinning.py` at `main@206f9ef`.
 //!
 //! These are intentionally not reducer-only checks. The entry is created through the real CLI,
 //! Settings is opened through an actual `skit tui` PTY, edits travel through the terminal widget,
@@ -58,6 +59,17 @@ impl Sandbox {
         command
     }
 
+    fn add_plain(&self) {
+        let source = self.home.path().join("x.py");
+        fs::write(&source, "print(1)\n").unwrap();
+        self.command()
+            .arg("add")
+            .arg(&source)
+            .args(["--name", "x", "--no-input"])
+            .assert()
+            .success();
+    }
+
     fn add_block_only(&self) {
         let source = self.home.path().join("x.py");
         fs::write(&source, "print(1)\n").unwrap();
@@ -86,6 +98,31 @@ impl Sandbox {
             !meta.lines()
                 .any(|line| line.trim_start().starts_with("requires_python =")),
             "fixture must keep the Python constraint block-only: {meta}"
+        );
+        let effective = read_uv_metadata(&self.stored_source()).expect("fixture PEP 723 block");
+        assert_eq!(effective.dependencies, ["requests"]);
+        assert_eq!(effective.requires_python, ">=3.11");
+    }
+
+    fn add_meta_pinned(&self) {
+        self.add_plain();
+        // A post-add deps edit is the oracle's meta-carried branch: unlike add-time injection, the
+        // stored record owns the pin as well as the synchronized PEP 723 block.
+        self.command()
+            .args([
+                "deps",
+                "x",
+                "--dep",
+                "requests",
+                "--python",
+                ">=3.11",
+            ])
+            .assert()
+            .success();
+        let meta = fs::read_to_string(self.data.path().join("scripts/x/meta.toml")).unwrap();
+        assert!(
+            meta.contains("requires_python = \">=3.11\""),
+            "fixture must carry the pin in meta.toml: {meta}"
         );
         let effective = read_uv_metadata(&self.stored_source()).expect("fixture PEP 723 block");
         assert_eq!(effective.dependencies, ["requests"]);
@@ -282,4 +319,38 @@ fn test_settings_untouched_save_never_touches_the_deps_axis() {
     let effective = read_uv_metadata(std::str::from_utf8(&after).unwrap()).expect("PEP 723 block");
     assert_eq!(effective.dependencies, ["requests"]);
     assert_eq!(effective.requires_python, ">=3.11");
+}
+
+#[test]
+fn test_settings_clearing_python_unpins_the_block() {
+    let sandbox = Sandbox::new();
+    sandbox.add_meta_pinned();
+
+    let inputs = replace_focused_line(PYTHON_KEY, ">=3.11", "");
+    let (code, output) = sandbox.run_settings(&inputs);
+    assert_eq!(code, 0, "{output}");
+
+    let source = sandbox.stored_source();
+    let effective = read_uv_metadata(&source).expect("dependency block must survive Settings unpin");
+    assert_eq!(effective.dependencies, ["requests"]);
+    assert_eq!(effective.requires_python, "");
+    assert!(
+        !source.contains("requires-python"),
+        "Settings cleared meta but left uv's authoritative block pinned: {source}"
+    );
+
+    let meta = fs::read_to_string(sandbox.data.path().join("scripts/x/meta.toml")).unwrap();
+    assert!(
+        !meta.lines()
+            .any(|line| line.trim_start().starts_with("requires_python =")),
+        "Settings unpin left the meta constraint behind: {meta}"
+    );
+    let view = sandbox
+        .command()
+        .args(["deps", "x", "--json"])
+        .output()
+        .unwrap();
+    assert!(view.status.success(), "{}", String::from_utf8_lossy(&view.stderr));
+    let payload: serde_json::Value = serde_json::from_slice(&view.stdout).unwrap();
+    assert_eq!(payload["requires_python"], "");
 }
