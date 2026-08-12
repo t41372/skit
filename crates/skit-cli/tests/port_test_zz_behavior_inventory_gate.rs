@@ -68,7 +68,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_default_name_resolution.py", tests: 42, guard: Some("crates/skit-cli/tests/port_test_default_name_resolution_manifest.rs") },
     Module { python: "test_params_edit.py", tests: 41, guard: Some("crates/skit-cli/tests/port_test_params_edit_manifest.rs") },
     Module { python: "test_add_validation_contracts.py", tests: 31, guard: Some("crates/skit-cli/tests/port_test_add_validation_contracts_manifest.rs") },
-    Module { python: "test_review_fixes.py", tests: 30, guard: None },
+    Module { python: "test_review_fixes.py", tests: 30, guard: Some("crates/skit-cli/tests/port_test_review_fixes_manifest.rs") },
     Module { python: "test_run_set.py", tests: 27, guard: Some("crates/skit-cli/tests/port_test_run_set_manifest.rs") },
     Module { python: "test_draft_inference_and_reader_cli.py", tests: 27, guard: None },
     Module { python: "test_agent_install.py", tests: 22, guard: Some("crates/skit-cli/tests/port_test_agent_install_manifest.rs") },
