@@ -85,7 +85,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_review_fixes.py", tests: 30, guard: None },
     Module { python: "test_run_set.py", tests: 27, guard: Some("crates/skit-cli/tests/port_test_run_set_manifest.rs") },
     Module { python: "test_draft_inference_and_reader_cli.py", tests: 27, guard: None },
-    Module { python: "test_agent_install.py", tests: 22, guard: None },
+    Module { python: "test_agent_install.py", tests: 22, guard: Some("crates/skit-cli/tests/port_test_agent_install_manifest.rs") },
     Module { python: "test_dependency_write_validation.py", tests: 21, guard: None },
     Module { python: "test_add_lane_contracts.py", tests: 21, guard: None },
     Module { python: "test_dependency_command_contracts.py", tests: 20, guard: None },
