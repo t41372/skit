@@ -1,9 +1,9 @@
 //! Real-TUI Settings ports from Python `tests/test_effective_uv_metadata.py` at `main@206f9ef`.
 //!
 //! These are intentionally not reducer-only checks. The entry is created through the real CLI,
-//! Settings is opened through an actual `skit tui` PTY, and the final source is read back from the
-//! store. A block-only dependency axis therefore has to survive the entire store -> host -> UI ->
-//! save path.
+//! Settings is opened through an actual `skit tui` PTY, edits travel through the terminal widget,
+//! and the final source is read back from the store. A block-only dependency axis therefore has to
+//! survive the entire store -> host -> UI -> save path.
 
 use std::{
     fs,
@@ -16,6 +16,9 @@ use std::{
 use assert_cmd::Command;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use skit_language::read_uv_metadata;
+use skit_ui::{
+    DEPENDENCIES_KEY, DependencyFlavor, NAME_KEY, PYTHON_KEY, SettingsInputs, SettingsView,
+};
 use tempfile::TempDir;
 
 struct Sandbox {
@@ -97,7 +100,7 @@ impl Sandbox {
         fs::read_to_string(self.stored_source_path()).unwrap()
     }
 
-    fn run_settings(&self, inputs: &[&[u8]]) -> (u32, String) {
+    fn run_settings(&self, inputs: &[Vec<u8>]) -> (u32, String) {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 40,
@@ -151,6 +154,55 @@ impl Sandbox {
     }
 }
 
+/// Reconstruct the typed Settings surface for the deliberately-simple Python-copy fixture above.
+///
+/// This is used only to derive navigation from stable field keys. The behavioral assertions still
+/// run against the real PTY/store path below. Keeping the Tab distance model-derived avoids a
+/// brittle magic number while also pinning the exact surface the fixture is supposed to expose.
+fn settings_navigation_model() -> SettingsView {
+    SettingsView::from_inputs(&SettingsInputs {
+        selector: "x".to_owned(),
+        kind: "python".to_owned(),
+        name: "x".to_owned(),
+        source: "x.py".to_owned(),
+        workdir: "invoke".to_owned(),
+        supports_modes: true,
+        has_original_file: true,
+        has_stored_name: true,
+        has_analyzer: true,
+        dependency_flavor: Some(DependencyFlavor::Uv),
+        effective_dependencies: vec!["requests".to_owned()],
+        effective_requires_python: ">=3.11".to_owned(),
+        ..SettingsInputs::default()
+    })
+}
+
+fn tabs_to(target: &str) -> usize {
+    let view = settings_navigation_model();
+    assert_eq!(view.focused(), NAME_KEY);
+    let keys = view.focusable_keys();
+    let index = keys
+        .iter()
+        .position(|key| *key == target)
+        .unwrap_or_else(|| panic!("fixture Settings surface has no {target:?} field: {keys:?}"));
+    assert!(index > 0, "target field must not already own initial focus");
+    index
+}
+
+fn replace_focused_line(target: &str, old_value: &str, new_value: &str) -> Vec<Vec<u8>> {
+    let mut inputs = (0..tabs_to(target))
+        .map(|_| b"\t".to_vec())
+        .collect::<Vec<_>>();
+    // xterm End. This makes deletion independent of where `tui-input` initializes the cursor.
+    inputs.push(b"\x1b[F".to_vec());
+    inputs.extend((0..old_value.chars().count()).map(|_| vec![0x7f]));
+    if !new_value.is_empty() {
+        inputs.push(new_value.as_bytes().to_vec());
+    }
+    inputs.push(b"\x13".to_vec()); // Ctrl+S
+    inputs
+}
+
 #[test]
 fn test_settings_prefills_deps_and_python_from_the_block() {
     let sandbox = Sandbox::new();
@@ -168,12 +220,58 @@ fn test_settings_prefills_deps_and_python_from_the_block() {
 }
 
 #[test]
+fn test_settings_deps_only_edit_preserves_the_block_pin() {
+    let sandbox = Sandbox::new();
+    sandbox.add_block_only();
+
+    let inputs = replace_focused_line(DEPENDENCIES_KEY, "requests", "requests, rich");
+    let (code, output) = sandbox.run_settings(&inputs);
+    assert_eq!(code, 0, "{output}");
+
+    let source = sandbox.stored_source();
+    let effective = read_uv_metadata(&source).expect("saved PEP 723 block");
+    assert_eq!(
+        effective.dependencies,
+        ["requests", "rich"],
+        "the dependency-only Settings edit did not land exactly"
+    );
+    assert_eq!(
+        effective.requires_python, ">=3.11",
+        "editing dependencies unpinned the untouched block-only Python constraint"
+    );
+    assert!(source.contains("requires-python = \">=3.11\""));
+}
+
+#[test]
+fn test_settings_clearing_python_on_block_only_entry_unpins() {
+    let sandbox = Sandbox::new();
+    sandbox.add_block_only();
+
+    let inputs = replace_focused_line(PYTHON_KEY, ">=3.11", "");
+    let (code, output) = sandbox.run_settings(&inputs);
+    assert_eq!(code, 0, "{output}");
+
+    let source = sandbox.stored_source();
+    let effective = read_uv_metadata(&source).expect("dependency block must survive unpinning");
+    assert_eq!(
+        effective.dependencies,
+        ["requests"],
+        "clearing only Python constraint changed the dependency axis"
+    );
+    assert_eq!(effective.requires_python, "");
+    assert!(
+        !source.contains("requires-python"),
+        "clearing the visibly-prefilled Settings field did not remove the block pin: {source}"
+    );
+}
+
+#[test]
 fn test_settings_untouched_save_never_touches_the_deps_axis() {
     let sandbox = Sandbox::new();
     sandbox.add_block_only();
     let before = fs::read(sandbox.stored_source_path()).unwrap();
 
-    let (code, output) = sandbox.run_settings(&[b"\x13"]); // Ctrl+S, no field edits.
+    let (code, output) = sandbox.run_settings(&[b"\x13".to_vec()]); // Ctrl+S, no field edits.
     assert_eq!(code, 0, "{output}");
 
     let after = fs::read(sandbox.stored_source_path()).unwrap();
