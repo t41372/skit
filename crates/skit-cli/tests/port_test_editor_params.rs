@@ -1,6 +1,6 @@
 //! Parameter-resync refusal ports from Python `tests/test_editor.py` at `main@206f9ef`.
 
-use std::{fs, path::Path, process::Command};
+use std::{fs, process::Command};
 
 use skit_store::FileStore;
 use tempfile::TempDir;
@@ -95,6 +95,3 @@ fn test_params_edit_missing_copy_refused() {
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
     assert!(combined(&output).contains("no stored copy"), "{}", combined(&output));
 }
-
-#[allow(dead_code)]
-fn _assert_path_type(_: &Path) {}
