@@ -1,4 +1,5 @@
-//! High-value CLI ports from Python `tests/test_effective_uv_metadata.py` at `main@206f9ef`.
+//! High-value CLI ports from Python `tests/test_effective_uv_metadata.py` and
+//! `tests/test_uv_metadata_views.py` at `main@206f9ef`.
 //!
 //! These tests keep the original observable boundaries: the stored PEP 723 block, human/JSON read
 //! surfaces, and the dry-run launch command. They do not substitute the lower-level edit-plan tests
@@ -81,6 +82,21 @@ impl Sandbox {
         );
         serde_json::from_slice(&output.stdout).unwrap()
     }
+
+    fn human(&self, args: &[&str]) -> String {
+        let output = self.command().args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "command failed: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    }
 }
 
 #[test]
@@ -151,13 +167,7 @@ fn test_deps_read_human_reports_effective_block_only() {
     let sandbox = Sandbox::new();
     sandbox.add_block_only(Some(">=3.11"));
 
-    let output = sandbox.command().args(["deps", "x"]).output().unwrap();
-    assert!(output.status.success());
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let text = sandbox.human(&["deps", "x"]);
     assert!(text.contains("Dependencies of x: requests"), "{text}");
     assert!(text.contains("Python constraint: >=3.11"), "{text}");
 }
@@ -180,4 +190,47 @@ fn test_show_json_reports_effective_deps_for_block_only() {
     let payload = sandbox.json(&["show", "x", "--json"]);
     assert_eq!(payload["dependencies"], serde_json::json!(["requests"]));
     assert_eq!(payload["requires_python"], ">=3.11");
+}
+
+#[test]
+fn test_show_human_block_only_prints_effective_deps_and_constraint() {
+    let sandbox = Sandbox::new();
+    sandbox.add_block_only(Some(">=3.11"));
+
+    let text = sandbox.human(&["show", "x"]);
+    assert!(text.contains("Dependencies: requests"), "{text}");
+    assert!(text.contains("Python constraint: >=3.11"), "{text}");
+}
+
+#[test]
+fn test_show_human_meta_carried_deps_unchanged() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.python();
+    sandbox
+        .command()
+        .arg("add")
+        .arg(source)
+        .args(["--name", "x", "--ref", "--dep", "rich", "--no-input"])
+        .assert()
+        .success();
+
+    let text = sandbox.human(&["show", "x"]);
+    assert!(text.contains("Dependencies: rich"), "{text}");
+}
+
+#[test]
+fn test_show_human_no_uv_metadata_prints_neither_line() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.python();
+    sandbox
+        .command()
+        .arg("add")
+        .arg(source)
+        .args(["--name", "x", "--no-input"])
+        .assert()
+        .success();
+
+    let text = sandbox.human(&["show", "x"]);
+    assert!(!text.contains("Dependencies:"), "{text}");
+    assert!(!text.contains("Python constraint:"), "{text}");
 }
