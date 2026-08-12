@@ -66,7 +66,7 @@ const MODULES: &[Module] = &[
     // Tier 3 — flows and runtime.
     Module { python: "test_flows.py", tests: 102, guard: None },
     Module { python: "test_uvman.py", tests: 36, guard: None },
-    Module { python: "test_launcher.py", tests: 38, guard: None },
+    Module { python: "test_launcher.py", tests: 38, guard: Some("crates/skit-cli/tests/port_test_launcher_manifest.rs") },
     Module { python: "test_launcher_fix.py", tests: 12, guard: Some("crates/skit-cli/tests/port_test_launcher_fix_manifest.rs") },
     Module { python: "test_shim.py", tests: 38, guard: None },
     Module { python: "test_entrypoint.py", tests: 10, guard: None },
