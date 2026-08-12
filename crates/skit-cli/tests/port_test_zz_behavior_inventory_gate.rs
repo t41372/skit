@@ -11,18 +11,11 @@
 //! migration is incomplete; its failure is dynamic inventory, not a fixed-failure placeholder.
 
 use std::{collections::BTreeSet, fs, path::Path};
-
 use syn::{Attribute, Item};
 
 #[derive(Clone, Copy)]
-struct Module {
-    python: &'static str,
-    tests: usize,
-    guard: Option<&'static str>,
-}
-
+struct Module { python: &'static str, tests: usize, guard: Option<&'static str> }
 const SMALL: &str = "crates/skit-cli/tests/port_test_small_behavior_manifests.rs";
-
 const MODULES: &[Module] = &[
     Module { python: "test_analyzer.py", tests: 37, guard: Some("crates/skit-cli/tests/port_test_analyzer_manifest.rs") },
     Module { python: "test_analyzer_signals.py", tests: 9, guard: Some(SMALL) },
@@ -74,7 +67,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_editor.py", tests: 50, guard: Some("crates/skit-cli/tests/port_test_editor_manifest.rs") },
     Module { python: "test_default_name_resolution.py", tests: 42, guard: Some("crates/skit-cli/tests/port_test_default_name_resolution_manifest.rs") },
     Module { python: "test_params_edit.py", tests: 41, guard: Some("crates/skit-cli/tests/port_test_params_edit_manifest.rs") },
-    Module { python: "test_add_validation_contracts.py", tests: 31, guard: None },
+    Module { python: "test_add_validation_contracts.py", tests: 31, guard: Some("crates/skit-cli/tests/port_test_add_validation_contracts_manifest.rs") },
     Module { python: "test_review_fixes.py", tests: 30, guard: None },
     Module { python: "test_run_set.py", tests: 27, guard: Some("crates/skit-cli/tests/port_test_run_set_manifest.rs") },
     Module { python: "test_draft_inference_and_reader_cli.py", tests: 27, guard: None },
@@ -110,20 +103,13 @@ const MODULES: &[Module] = &[
     Module { python: "test_hermeticity.py", tests: 1, guard: Some(SMALL) },
 ];
 
-fn has_test_attribute(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
-}
-
+fn has_test_attribute(attributes: &[Attribute]) -> bool { attributes.iter().any(|attribute| attribute.path().is_ident("test")) }
 fn guard_has_executable_test(repo: &Path, relative: &str) -> bool {
     let path = repo.join(relative);
     let Ok(source) = fs::read_to_string(&path) else { return false; };
     let Ok(file) = syn::parse_file(&source) else { return false; };
-    file.items.iter().any(|item| match item {
-        Item::Fn(function) => has_test_attribute(&function.attrs),
-        _ => false,
-    })
+    file.items.iter().any(|item| matches!(item, Item::Fn(function) if has_test_attribute(&function.attrs)))
 }
-
 #[test]
 fn frozen_behavior_inventory_shape_is_exact() {
     assert_eq!(MODULES.len(), 84, "the frozen behavior-module inventory changed");
@@ -131,7 +117,6 @@ fn frozen_behavior_inventory_shape_is_exact() {
     assert!(MODULES.iter().all(|module| module.tests > 0), "zero-count modules do not belong in the behavior inventory");
     assert_eq!(MODULES.iter().map(|module| module.tests).sum::<usize>(), 3_018, "the frozen behavior test-function denominator changed");
 }
-
 #[test]
 fn every_behavior_module_has_an_audited_executable_completeness_guard() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(Path::parent).expect("skit-cli lives under <repo>/crates/skit-cli");
