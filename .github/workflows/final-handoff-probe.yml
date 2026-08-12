@@ -1,5 +1,6 @@
 name: Final handoff test integrity probe
 
+# Temporary self-trigger; deleted after result is read.
 on:
   push:
     branches:
