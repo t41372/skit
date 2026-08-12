@@ -1168,7 +1168,6 @@ fn test_add_edit_editor_error_exits_one() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): message wording — the oracle's store.py says \"The name <name> is already taken.\" (\"taken\"); Rust says \"already exists\". Exit 1 and the name both match. Verified against the built binary."]
 fn test_add_edit_name_conflict_exits_one() {
     // A store name conflict is a failed operation (exit 1) that names the entry and says "taken".
     let sandbox = Sandbox::new();

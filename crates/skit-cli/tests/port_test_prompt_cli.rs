@@ -2124,7 +2124,6 @@ fn test_add_no_interpolate_refused_up_front_on_non_prompt_path_lane() {
 fn test_add_prompt_editor_lane_reports_store_errors() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 1 matches. Oracle prints 'already taken'; Rust prints 'entry \"taken\" already exists at slug \"taken\"'."]
 fn test_add_prompt_stdin_lane_reports_store_errors() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["add", "--cmd", "echo hi", "-n", "taken", "--no-input"]);

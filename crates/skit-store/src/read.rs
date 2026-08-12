@@ -343,6 +343,7 @@ fn diagnostic_from(error: RepositoryError, slug: &Slug) -> Diagnostic {
         RepositoryError::NotFound { .. }
         | RepositoryError::Ambiguous { .. }
         | RepositoryError::Conflict { .. }
+        | RepositoryError::RenameConflict { .. }
         | RepositoryError::InvalidMutation { .. }
         | RepositoryError::StaleEntry { .. }
         | RepositoryError::SourceChanged { .. }

@@ -41,9 +41,14 @@ fn every_repository_error_localizes_and_keeps_its_values() {
     assert_localized(
         &RepositoryError::Conflict {
             name: "Taken".to_owned(),
-            slug: "taken".to_owned(),
         },
-        &["Taken", "taken"],
+        &["Taken"],
+    );
+    assert_localized(
+        &RepositoryError::RenameConflict {
+            name: "Taken".to_owned(),
+        },
+        &["Taken"],
     );
     assert_localized(
         &RepositoryError::InvalidMutation {

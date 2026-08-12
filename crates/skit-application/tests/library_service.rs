@@ -164,10 +164,16 @@ fn repository_failures_keep_the_cli_exit_and_display_contracts() {
         (
             RepositoryError::Conflict {
                 name: "Taken".to_owned(),
-                slug: "taken".to_owned(),
             },
             ExitClass::Usage,
-            "entry \"Taken\" already exists at slug \"taken\"",
+            "The name Taken is already taken — pick another name.",
+        ),
+        (
+            RepositoryError::RenameConflict {
+                name: "Taken".to_owned(),
+            },
+            ExitClass::Usage,
+            "The name Taken is already taken.",
         ),
         (
             RepositoryError::InvalidMutation {

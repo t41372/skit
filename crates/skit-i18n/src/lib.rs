@@ -2545,9 +2545,14 @@ const CATALOG: &[Translation] = &[
         "項目短名的後綴空間已用盡",
     ),
     row!(
-        "entry {} already exists at slug {}",
-        "条目 {} 已存在于短名 {}",
-        "項目 {} 已存在於短名 {}",
+        "The name {} is already taken — pick another name.",
+        "名称 {} 已被占用——请换一个名称。",
+        "名稱 {} 已被使用——請換一個名稱。",
+    ),
+    row!(
+        "The name {} is already taken.",
+        "名称 {} 已被使用。",
+        "名稱 {} 已被使用。",
     ),
     row!(
         "entry {} changed while this operation was underway",
