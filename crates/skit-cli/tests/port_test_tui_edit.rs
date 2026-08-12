@@ -7,8 +7,6 @@
 //! A future port must prove the post-editor Library projection re-derives drift, not merely that a
 //! source file changed.
 
-#![cfg(unix)]
-
 use std::{
     fs,
     io::{Read as _, Write as _},
@@ -37,7 +35,9 @@ fn write_entry(
     if let Some((filename, bytes)) = payload {
         fs::write(directory.join(filename), bytes).unwrap();
     }
-    let template = (kind == "command").then_some("template = \"echo hi\"\n").unwrap_or("");
+    let template = (kind == "command")
+        .then_some("template = \"echo hi\"\n")
+        .unwrap_or("");
     fs::write(
         directory.join("meta.toml"),
         format!(
@@ -84,7 +84,7 @@ fn main() {
 "#,
     )
     .unwrap();
-    let executable = root.join("editor-probe");
+    let executable = root.join(editor_probe_name());
     let status = StdCommand::new("rustc")
         .arg(&source)
         .arg("-o")
@@ -93,6 +93,16 @@ fn main() {
         .unwrap();
     assert!(status.success(), "failed to compile editor probe");
     executable
+}
+
+#[cfg(windows)]
+fn editor_probe_name() -> &'static str {
+    "editor-probe.exe"
+}
+
+#[cfg(not(windows))]
+fn editor_probe_name() -> &'static str {
+    "editor-probe"
 }
 
 fn tui_edit(
