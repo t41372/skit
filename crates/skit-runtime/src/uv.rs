@@ -512,6 +512,41 @@ mod private_tests {
         assert!(error.to_string().contains("riscv64-unknown-linux-gnu"));
     }
 
+    #[test]
+    fn checksum_table_pins_exactly_the_producible_triples() {
+        // test_uv_sha256_covers_every_producible_triple (tests/test_uvman.py): the
+        // pinned table keys on exactly the triples from_parts can emit — no stale
+        // orphan pin, no reachable platform without a hash to verify against. The
+        // integration ports prove the producible -> pinned direction through
+        // uv_asset; CHECKSUMS is private, so the reverse direction lives here.
+        let produced: std::collections::BTreeSet<String> = [
+            ("x86_64", "linux", false),
+            ("aarch64", "linux", false),
+            ("x86_64", "linux", true),
+            ("aarch64", "linux", true),
+            ("x86_64", "macos", false),
+            ("aarch64", "macos", false),
+            ("x86_64", "windows", false),
+            ("aarch64", "windows", false),
+        ]
+        .iter()
+        .map(|(arch, os, musl)| UvTarget::from_parts(arch, os, *musl).unwrap().triple)
+        .collect();
+        assert_eq!(produced.len(), 8);
+        let pinned: std::collections::BTreeSet<String> = CHECKSUMS
+            .iter()
+            .map(|(triple, _)| (*triple).to_owned())
+            .collect();
+        assert_eq!(pinned, produced);
+        // Each pinned value is a 64-character lowercase-hex SHA-256 digest.
+        assert!(CHECKSUMS.iter().all(|(_, hash)| {
+            hash.len() == 64
+                && hash
+                    .chars()
+                    .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character))
+        }));
+    }
+
     fn tar_archive() -> Vec<u8> {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut tar = tar::Builder::new(encoder);
