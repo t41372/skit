@@ -11,12 +11,12 @@ use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterType, ParameterValue};
+use skit_domain::parameters::{
+    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+};
 use skit_i18n::Locale;
 use skit_tui::{EventHandling, HitTarget, TuiSession, ViewGeometry, render_with_session};
-use skit_ui::{
-    Action, FormControl, LibraryState, RunFormView, Screen, UiCommand,
-};
+use skit_ui::{Action, LibraryState, RunFormView, Screen, UiCommand};
 
 const INPUT_BINDING_HINT: &str = "Leave empty and the script will ask you in the terminal.";
 
@@ -330,6 +330,7 @@ fn test_ctrl_o_with_focus_outside_any_field_row_is_a_no_op() {
 fn test_input_binding_field_renders_the_ask_in_terminal_hint() {
     let mut question = ParamDecl::new("q");
     question.binding = ParameterBinding::Input;
+    question.delivery = ParameterDelivery::Inject;
     let state = state_with_form(form(&[question], &[], &[]));
     let mut session = TuiSession::default();
     let (terminal, _) = draw(&mut session, &state, 100, 24);
