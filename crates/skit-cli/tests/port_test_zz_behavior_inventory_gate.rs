@@ -95,9 +95,9 @@ const MODULES: &[Module] = &[
     Module { python: "test_edit.py", tests: 14, guard: None },
     Module { python: "test_presets.py", tests: 12, guard: Some("crates/skit-store/tests/port_test_presets_manifest.rs") },
     Module { python: "test_add_review_contracts.py", tests: 12, guard: None },
-    Module { python: "test_rename.py", tests: 10, guard: None },
+    Module { python: "test_rename.py", tests: 10, guard: Some("crates/skit-cli/tests/port_test_rename_manifest.rs") },
     Module { python: "test_add_review_validation.py", tests: 10, guard: None },
-    Module { python: "test_agent_skill.py", tests: 8, guard: None },
+    Module { python: "test_agent_skill.py", tests: 8, guard: Some("crates/skit-cli/tests/port_test_agent_skill_manifest.rs") },
     Module { python: "test_healthcheck.py", tests: 6, guard: Some("crates/skit-cli/tests/port_test_healthcheck_manifest.rs") },
 
     // Tier 5 — frontend.
