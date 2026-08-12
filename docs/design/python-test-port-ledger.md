@@ -53,7 +53,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
 | test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (36) · 115 cross-crate/absent · 27 divergences (manifest name-key, installer argv, staging cwd, stamp path, sweep) · 6 verifier-caught defects fixed |
-| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (16) launch/invoke half · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language · 2 divergences |
+| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (18) launch/invoke half · **bun run + JS refusal FIXED 19e5ab8** · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
@@ -85,7 +85,7 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_flows.py | 102 | crates/skit-application/tests/port_test_flows.rs | done (58) · 44 cross-crate (plan_for_entry/execute/transparency → skit-cli, exact messages → skit-tui) · divergences kept |
-| test_uvman.py | 36 | crates/skit-runtime/tests/port_test_uvman.rs | done (18) · 18 white-box/cross-crate · orphan-pin completeness OWED as skit-runtime unit test · 3 divergences |
+| test_uvman.py | 36 | crates/skit-runtime/tests/port_test_uvman.rs | done (19) · **checksum digests + dir-fsync swallow + unpinned-triple fail-closed FIXED 7977386** (white-box unit added in uv.rs) · 17 white-box/cross-crate · orphan-pin completeness OWED as skit-runtime unit test |
 | test_launcher.py | 38 | crates/skit-runtime/tests/port_test_launcher.rs | done (17) · 21 cross-crate |
 | test_launcher_fix.py | 12 | crates/skit-runtime/tests/port_test_launcher_fix.rs | done (11) · 1 cfg-gated Windows quoting · no gap (3 promotions stronger than oracle) |
 | test_shim.py | 38 | crates/skit-language/tests/port_test_shim.rs | done (33) · 5 cross-crate (write_injected → skit-cli) · SECRET-CRASH-SAFETY divergence flagged |
