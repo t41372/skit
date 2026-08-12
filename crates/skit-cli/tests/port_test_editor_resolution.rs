@@ -3,13 +3,14 @@
 //!
 //! The Python module tests the private `resolve_editor()` helper directly. Rust does not expose an
 //! equivalent helper, so these tests prove the same contract through `skit edit`: a real executable
-//! probe records which editor won precedence and exactly which arguments reached the process.
+//! probe records which editor won precedence and exactly which editor arguments reached the process.
 //!
-//! Thirteen of the fourteen Python resolution contracts have an observable process-level seam.
+//! Thirteen of the fourteen Python resolution test names have an observable process-level mapping.
 //! `test_resolve_editor_windows_empty_quoted_token_strips_to_empty` is intentionally not mapped:
-//! once `argv[0]` is either `""` or `""`, the public Rust edit boundary exposes only launch failure,
-//! so it cannot distinguish the Python helper's empty-token shape without inventing a test-only
-//! production API. Do not replace that blocked contract with a weaker launch-error assertion.
+//! the public edit boundary cannot distinguish an empty `argv[0]` from a literal `"\"\""` token
+//! after process launch has already failed. The Windows facet of the unbalanced-quote test has the
+//! same limitation because `"` is not a legal Windows file-name character. Those gaps stay explicit;
+//! they are not replaced by fixed failures or weaker launch-error assertions.
 
 use std::{
     ffi::OsStr,
@@ -184,12 +185,15 @@ fn assert_success(output: &Output) {
     );
 }
 
-fn captured_program_name(fixture: &EditFixture) -> String {
-    Path::new(&fixture.captured()[0])
-        .file_name()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned()
+fn assert_editor_argv(fixture: &EditFixture, expected: &[String]) {
+    let captured = fixture.captured();
+    assert_eq!(
+        captured.len(),
+        expected.len() + 1,
+        "editor argv must be the resolved command plus exactly one edited path: {captured:?}"
+    );
+    assert_eq!(&captured[..expected.len()], expected);
+    assert!(!captured.last().unwrap().is_empty(), "the edited path is empty");
 }
 
 #[test]
@@ -202,9 +206,10 @@ fn test_resolve_editor_config_wins_over_env() {
 
     let output = fixture.run(Some(visual.as_os_str()), Some(editor.as_os_str()), None);
     assert_success(&output);
-    let captured = fixture.captured();
-    assert_eq!(Path::new(&captured[0]), configured);
-    assert_eq!(captured[1], "--wait");
+    assert_editor_argv(
+        &fixture,
+        &[configured.display().to_string(), "--wait".to_owned()],
+    );
 }
 
 #[test]
@@ -212,10 +217,15 @@ fn test_resolve_editor_visual_over_editor() {
     let fixture = EditFixture::new();
     let visual = probe(&fixture, executable_name("visual"));
     let editor = probe(&fixture, executable_name("editor"));
+    let visual_command = format!("{} -f", quote_path(&visual));
 
-    let output = fixture.run(Some(visual.as_os_str()), Some(editor.as_os_str()), None);
+    let output = fixture.run(
+        Some(OsStr::new(&visual_command)),
+        Some(editor.as_os_str()),
+        None,
+    );
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), visual);
+    assert_editor_argv(&fixture, &[visual.display().to_string(), "-f".to_owned()]);
 }
 
 #[test]
@@ -225,30 +235,34 @@ fn test_resolve_editor_editor_env_when_no_visual() {
 
     let output = fixture.run(None, Some(editor.as_os_str()), None);
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), editor);
+    assert_editor_argv(&fixture, &[editor.display().to_string()]);
 }
 
 #[cfg(unix)]
 #[test]
 fn test_resolve_editor_platform_default_unix() {
     let fixture = EditFixture::new();
-    let default = probe(&fixture, "vi");
+    probe(&fixture, "vi");
 
     let output = fixture.run(None, None, Some(fixture.tools.path().as_os_str()));
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), default);
+    assert_editor_argv(&fixture, &["vi".to_owned()]);
 }
 
 #[cfg(windows)]
 #[test]
 fn test_resolve_editor_platform_default_windows() {
     let fixture = EditFixture::new();
-    let default = probe(&fixture, "notepad.exe");
+    probe(&fixture, "notepad.exe");
     fixture.set_editor("");
 
     let output = fixture.run(None, None, Some(fixture.tools.path().as_os_str()));
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), default);
+    assert_eq!(
+        Path::new(&fixture.captured()[0]).file_name().unwrap(),
+        OsStr::new("notepad.exe")
+    );
+    assert_eq!(fixture.captured().len(), 2);
 }
 
 #[cfg(not(windows))]
@@ -260,9 +274,10 @@ fn test_resolve_editor_quoted_value_uses_posix_split_off_windows() {
 
     let output = fixture.run(None, None, None);
     assert_success(&output);
-    let captured = fixture.captured();
-    assert_eq!(Path::new(&captured[0]), configured);
-    assert_eq!(captured[1], "--wait");
+    assert_editor_argv(
+        &fixture,
+        &[configured.display().to_string(), "--wait".to_owned()],
+    );
 }
 
 #[cfg(windows)]
@@ -274,9 +289,10 @@ fn test_resolve_editor_quoted_value_non_posix_on_windows() {
 
     let output = fixture.run(None, None, None);
     assert_success(&output);
-    let captured = fixture.captured();
-    assert_eq!(Path::new(&captured[0]), configured);
-    assert_eq!(captured[1], "--wait");
+    assert_editor_argv(
+        &fixture,
+        &[configured.display().to_string(), "--wait".to_owned()],
+    );
 }
 
 #[cfg(windows)]
@@ -288,9 +304,10 @@ fn test_resolve_editor_quoted_spaced_path_on_windows() {
 
     let output = fixture.run(None, None, None);
     assert_success(&output);
-    let captured = fixture.captured();
-    assert_eq!(Path::new(&captured[0]), configured);
-    assert_eq!(captured[1], "--wait");
+    assert_editor_argv(
+        &fixture,
+        &[configured.display().to_string(), "--wait".to_owned()],
+    );
 }
 
 #[cfg(windows)]
@@ -302,7 +319,10 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
 
     let output = fixture.run(None, None, None);
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), configured);
+    assert_editor_argv(
+        &fixture,
+        &[configured.display().to_string(), "--wait".to_owned()],
+    );
 }
 
 #[test]
@@ -312,7 +332,7 @@ fn test_resolve_editor_whitespace_visual_falls_through_to_editor() {
 
     let output = fixture.run(Some(OsStr::new("   ")), Some(editor.as_os_str()), None);
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), editor);
+    assert_editor_argv(&fixture, &[editor.display().to_string()]);
 }
 
 #[test]
@@ -321,17 +341,22 @@ fn test_resolve_editor_whitespace_config_falls_through_to_visual() {
     let visual = probe(&fixture, executable_name("visual"));
     let editor = probe(&fixture, executable_name("editor"));
     fixture.hand_edit_editor("   ");
+    let visual_command = format!("{} -f", quote_path(&visual));
 
-    let output = fixture.run(Some(visual.as_os_str()), Some(editor.as_os_str()), None);
+    let output = fixture.run(
+        Some(OsStr::new(&visual_command)),
+        Some(editor.as_os_str()),
+        None,
+    );
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), visual);
+    assert_editor_argv(&fixture, &[visual.display().to_string(), "-f".to_owned()]);
 }
 
 #[cfg(unix)]
 #[test]
 fn test_resolve_editor_all_whitespace_candidates_use_platform_default() {
     let fixture = EditFixture::new();
-    let default = probe(&fixture, "vi");
+    probe(&fixture, "vi");
     fixture.hand_edit_editor("  ");
 
     let output = fixture.run(
@@ -340,14 +365,14 @@ fn test_resolve_editor_all_whitespace_candidates_use_platform_default() {
         Some(fixture.tools.path().as_os_str()),
     );
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), default);
+    assert_editor_argv(&fixture, &["vi".to_owned()]);
 }
 
 #[cfg(windows)]
 #[test]
 fn test_resolve_editor_all_whitespace_candidates_use_platform_default() {
     let fixture = EditFixture::new();
-    let default = probe(&fixture, "notepad.exe");
+    probe(&fixture, "notepad.exe");
     fixture.hand_edit_editor("  ");
 
     let output = fixture.run(
@@ -356,7 +381,11 @@ fn test_resolve_editor_all_whitespace_candidates_use_platform_default() {
         Some(fixture.tools.path().as_os_str()),
     );
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), default);
+    assert_eq!(
+        Path::new(&fixture.captured()[0]).file_name().unwrap(),
+        OsStr::new("notepad.exe")
+    );
+    assert_eq!(fixture.captured().len(), 2);
 }
 
 #[cfg(unix)]
@@ -364,26 +393,18 @@ fn test_resolve_editor_all_whitespace_candidates_use_platform_default() {
 fn test_resolve_editor_unbalanced_quotes_falls_back_to_raw() {
     let fixture = EditFixture::new();
     let raw_name = "weird \"editor";
-    let expected = probe(&fixture, raw_name);
+    probe(&fixture, raw_name);
 
     let output = fixture.run(None, Some(OsStr::new(raw_name)), Some(fixture.tools.path().as_os_str()));
     assert_success(&output);
-    assert_eq!(Path::new(&fixture.captured()[0]), expected);
-}
-
-#[cfg(windows)]
-#[test]
-fn test_resolve_editor_unbalanced_quotes_falls_back_to_raw() {
-    // Windows file names cannot contain a literal quote, so the public launch seam cannot create the
-    // exact raw fallback executable used by the Python helper test. Keep the contract visibly red
-    // rather than claiming a weaker launch-error mapping is equivalent.
-    panic!("BLOCKED parity contract: public editor launch cannot distinguish the raw quoted token on Windows");
+    assert_editor_argv(&fixture, &[raw_name.to_owned()]);
 }
 
 #[cfg(windows)]
 const _: () = {
     // Python `test_resolve_editor_windows_empty_quoted_token_strips_to_empty` remains intentionally
-    // unmapped. Public process launch cannot distinguish empty argv[0] from a literal quoted token.
+    // unmapped. The Windows facet of `test_resolve_editor_unbalanced_quotes_falls_back_to_raw` is
+    // also not represented by a fake test: Windows cannot create a probe executable containing `"`.
 };
 
 #[cfg(windows)]
