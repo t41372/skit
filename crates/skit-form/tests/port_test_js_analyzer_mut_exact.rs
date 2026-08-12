@@ -17,7 +17,11 @@ fn names(source: &str) -> Vec<String> {
 
 #[test]
 fn test_destructuring_with_literal_value_is_not_a_candidate() {
-    assert!(onboarding_plan("js", "const {p} = 5;\n").candidates.is_empty());
+    assert!(
+        onboarding_plan("js", "const {p} = 5;\n")
+            .candidates
+            .is_empty()
+    );
     assert!(names("const [x] = 5;\n").is_empty());
     assert_eq!(names("const {p} = 5;\nconst KEEP = 7;\n"), ["KEEP"]);
 }

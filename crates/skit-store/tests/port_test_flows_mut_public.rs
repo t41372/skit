@@ -12,9 +12,7 @@ use skit_application::{
 };
 use skit_domain::{
     EntrySettings,
-    parameters::{
-        ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-    },
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
 };
 use skit_form::form_plan;
 use skit_language::{inject_values, render_prompt_body};

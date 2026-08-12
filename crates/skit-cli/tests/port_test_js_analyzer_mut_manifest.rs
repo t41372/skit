@@ -19,8 +19,9 @@ fn javascript_analyzer_mutation_oracles_match_the_frozen_python_module_exactly()
         .parent()
         .and_then(Path::parent)
         .unwrap();
-    let source = fs::read_to_string(repo.join("crates/skit-form/tests/port_test_js_analyzer_mut_exact.rs"))
-        .unwrap();
+    let source =
+        fs::read_to_string(repo.join("crates/skit-form/tests/port_test_js_analyzer_mut_exact.rs"))
+            .unwrap();
     let names = syn::parse_file(&source)
         .unwrap()
         .items
@@ -37,5 +38,11 @@ fn javascript_analyzer_mutation_oracles_match_the_frozen_python_module_exactly()
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(names, EXPECTED.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>());
+    assert_eq!(
+        names,
+        EXPECTED
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
+    );
 }

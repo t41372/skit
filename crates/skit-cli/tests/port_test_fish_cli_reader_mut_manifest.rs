@@ -44,6 +44,9 @@ fn fish_cli_reader_mutation_oracles_match_the_frozen_python_module_exactly() {
         .collect::<Vec<_>>();
     assert_eq!(
         names,
-        EXPECTED.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>()
+        EXPECTED
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
     );
 }

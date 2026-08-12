@@ -50,6 +50,9 @@ fn javascript_parseargs_mutation_oracles_match_the_frozen_python_module_exactly(
     .unwrap();
     assert_eq!(
         test_names(&source),
-        EXPECTED.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>()
+        EXPECTED
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>()
     );
 }

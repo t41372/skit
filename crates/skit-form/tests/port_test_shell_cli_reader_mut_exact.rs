@@ -49,7 +49,10 @@ fn test_trailing_value_marker_makes_a_str_flag() {
 fn test_repeated_letter_emits_exactly_one_field() {
     let actual = fields("while getopts \"vv\" opt; do :; done\n");
     assert_eq!(
-        actual.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        actual
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["v"]
     );
 }

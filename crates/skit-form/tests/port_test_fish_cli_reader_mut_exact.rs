@@ -32,7 +32,10 @@ fn by_name(
 fn test_find_argparse_skips_a_lone_leading_prefix() {
     let actual = fields("or\nargparse 'h/help' -- $argv\n");
     assert_eq!(
-        actual.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        actual
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["help"]
     );
 }
@@ -41,7 +44,10 @@ fn test_find_argparse_skips_a_lone_leading_prefix() {
 fn test_find_argparse_advances_past_every_stacked_prefix() {
     let actual = fields("or not argparse 'h/help' -- $argv\n");
     assert_eq!(
-        actual.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        actual
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["help"]
     );
 }
@@ -99,7 +105,10 @@ fn test_plain_long_flag_is_not_degraded() {
 fn test_validator_is_dropped_from_the_first_bang_forward() {
     let actual = fields("argparse 'verbose!a!b' -- $argv\n");
     assert_eq!(
-        actual.iter().map(|field| field.name.as_str()).collect::<Vec<_>>(),
+        actual
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
         ["verbose"]
     );
     assert_eq!(actual[0].flag, "--verbose");
