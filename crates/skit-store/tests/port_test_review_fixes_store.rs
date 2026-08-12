@@ -104,6 +104,21 @@ fn test_set_language_with_existing_corrupt_config() {
     let _: toml::Table = toml::from_str(&rewritten).expect("recovered config must be valid TOML");
 }
 
+#[test]
+fn test_normalize_four_char_subtag() {
+    let root = TempDir::new().unwrap();
+    let config = FileConfigStore::new(root.path());
+
+    config.set("lang", "zh-hant-tw").unwrap();
+
+    assert_eq!(config.get("lang").unwrap(), "zh-Hant-TW");
+    let stored = fs::read_to_string(root.path().join("config.toml")).unwrap();
+    assert!(
+        stored.contains("zh-Hant-TW"),
+        "the canonical four-character script subtag did not reach persisted config: {stored}"
+    );
+}
+
 fn command_entry(name: &str) -> CreateEntry {
     CreateEntry {
         name: name.to_owned(),
