@@ -3,10 +3,16 @@
 //! followed by `LibraryService<FileStore>::add`, so metadata ownership is tested without injecting
 //! unrelated CLI-parser policy.
 
-use std::{collections::BTreeMap, fs, path::PathBuf, process::{Command, Output}};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::PathBuf,
+    process::{Command, Output},
+};
 
 use skit_application::{
-    CreateEntry, EntryMutationRepository as _, EntryRepository as _, LibraryService, SourcePermissions,
+    CreateEntry, EntryMutationRepository as _, EntryRepository as _, LibraryService,
+    SourcePermissions,
     form_state::FormStateService,
 };
 use skit_domain::{
@@ -53,6 +59,14 @@ impl Fixture {
             .env("XDG_STATE_HOME", self.home.path().join("xdg-state"))
             .current_dir(self.home.path());
         command
+    }
+
+    fn meta_path(&self, slug: &Slug) -> PathBuf {
+        self.data
+            .path()
+            .join("scripts")
+            .join(slug.as_str())
+            .join("meta.toml")
     }
 }
 
@@ -101,13 +115,29 @@ fn test_add_python_copy_injects_pep723() {
 
     assert_eq!(metadata.dependencies, ["requests"]);
     assert_eq!(metadata.requires_python, ">=3.11");
-    assert_eq!(fs::read(&source).unwrap(), original, "copy add touched the user's original");
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        original,
+        "copy add touched the user's original"
+    );
     let stored_settings = EntrySettings::from_meta(&entry.meta);
-    assert!(stored_settings.dependencies.is_empty(), "copy entry duplicated PEP 723 deps in meta");
-    assert!(stored_settings.requires_python.is_empty(), "copy entry duplicated requires-python in meta");
-    let meta_text = fs::read_to_string(store.entry_dir_path(&entry.slug).join("meta.toml")).unwrap();
-    assert!(!meta_text.contains("requests"), "copy meta duplicated package dependency: {meta_text}");
-    assert!(!meta_text.contains(">=3.11"), "copy meta duplicated Python constraint: {meta_text}");
+    assert!(
+        stored_settings.dependencies.is_empty(),
+        "copy entry duplicated PEP 723 deps in meta"
+    );
+    assert!(
+        stored_settings.requires_python.is_empty(),
+        "copy entry duplicated requires-python in meta"
+    );
+    let meta_text = fs::read_to_string(fixture.meta_path(&entry.slug)).unwrap();
+    assert!(
+        !meta_text.contains("requests"),
+        "copy meta duplicated package dependency: {meta_text}"
+    );
+    assert!(
+        !meta_text.contains(">=3.11"),
+        "copy meta duplicated Python constraint: {meta_text}"
+    );
 }
 
 #[test]
@@ -135,10 +165,20 @@ fn test_add_python_reference_records_in_meta() {
     assert_eq!(entry.meta.mode, StorageMode::Reference);
     assert_eq!(settings.dependencies, ["requests"]);
     assert_eq!(settings.requires_python, ">=3.11");
-    assert_eq!(fs::read(&source).unwrap(), original, "reference add touched the original");
-    let meta_text = fs::read_to_string(service.repository().entry_dir_path(&entry.slug).join("meta.toml")).unwrap();
-    assert!(meta_text.contains("requests"), "reference meta lost dependency: {meta_text}");
-    assert!(meta_text.contains(">=3.11"), "reference meta lost Python constraint: {meta_text}");
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        original,
+        "reference add touched the original"
+    );
+    let meta_text = fs::read_to_string(fixture.meta_path(&entry.slug)).unwrap();
+    assert!(
+        meta_text.contains("requests"),
+        "reference meta lost dependency: {meta_text}"
+    );
+    assert!(
+        meta_text.contains(">=3.11"),
+        "reference meta lost Python constraint: {meta_text}"
+    );
 }
 
 #[test]
@@ -167,7 +207,10 @@ fn test_add_python_existing_block_not_touched() {
     let entry = service.add(review.create_entry().unwrap()).unwrap();
     let store = service.repository();
 
-    assert_eq!(fs::read(store.payload_path(&entry).unwrap()).unwrap(), existing.as_bytes());
+    assert_eq!(
+        fs::read(store.payload_path(&entry).unwrap()).unwrap(),
+        existing.as_bytes()
+    );
     let settings = EntrySettings::from_meta(&entry.meta);
     assert!(settings.dependencies.is_empty());
     assert!(settings.requires_python.is_empty());
@@ -195,7 +238,7 @@ fn test_argstate_roundtrip_and_forget() {
         .unwrap();
     let loaded = service.load(&slug);
     assert_eq!(loaded.values, values);
-    assert_eq!(loaded.extra_args, ["--foo"]);
+    assert_eq!(loaded.extra_args, vec!["--foo".to_owned()]);
 
     service.forget(&slug).unwrap();
     let empty = service.load(&slug);
@@ -227,7 +270,13 @@ fn test_remove_clears_argstate() {
     let declaration = ParamDecl::new("x");
     let values = BTreeMap::from([("x".to_owned(), "1".to_owned())]);
     state
-        .save_last(&entry.slug, &[declaration], Some(&values), Some(vec!["--foo".to_owned()]), false)
+        .save_last(
+            &entry.slug,
+            &[declaration],
+            Some(&values),
+            Some(vec!["--foo".to_owned()]),
+            false,
+        )
         .unwrap();
     assert!(!state.load(&entry.slug).values.is_empty());
 
