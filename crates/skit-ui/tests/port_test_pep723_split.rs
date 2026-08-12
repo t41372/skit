@@ -2,12 +2,16 @@
 //! from `main@206f9ef`.
 //!
 //! Rust keeps the actual PEP 508 comma partitioner private to the add/settings model. These tests
-//! deliberately reach it through `SettingsView::dependencies_edit`, the public settings behavior
-//! that consumes the same comma-composed field. This avoids exposing a test-only product seam while
-//! preserving each mutation-grade Python input and its exact partition.
+//! deliberately reach it through public product behavior: `SettingsView::dependencies_edit` for
+//! the shared splitter and `ReviewState::create_entry` for the interactive Add-review intake. This
+//! avoids a test-only product seam while preserving the mutation-grade Python inputs and their exact
+//! partitions.
 
+use skit_application::SourcePermissions;
+use skit_language::read_uv_metadata;
 use skit_ui::{
-    DEPENDENCIES_KEY, DependencyFlavor, FieldValue, SettingsInputs, SettingsView,
+    DEPENDENCIES_KEY, DependencyFlavor, FieldValue, KnownEntryKind, ReviewDefaults, ReviewState,
+    SettingsInputs, SettingsView, SourceSnapshot,
 };
 
 fn split_requirements(value: &str) -> Vec<String> {
@@ -129,4 +133,46 @@ fn test_nested_brackets_tracked_by_depth_not_flag() {
         split_requirements("a[[x],y], b"),
         ["a[[x],y]", "b"]
     );
+}
+
+#[test]
+fn test_next_nonspace_end_of_text_is_empty_string() {
+    // Python pins the private `_next_nonspace` sentinel directly because it kills mutants that can
+    // otherwise look equivalent through one caller. Rust has no public helper with that identity,
+    // so pin both public partitions that the sentinel distinguishes: end-of-text after a comma is
+    // not a new requirement, while a following alphanumeric name is.
+    assert_eq!(split_requirements("a,  "), ["a"]);
+    assert_eq!(split_requirements("a, b"), ["a", "b"]);
+}
+
+#[test]
+fn test_interactive_deps_answer_keeps_specifier_commas() {
+    // Python's call site is `_resolve_python_metadata`, the interactive intake before an add. Rust's
+    // architectural twin is the Add review model. Drive its public editable field all the way to
+    // the atomic CreateEntry request; testing the shared splitter alone would miss a call-site bug.
+    let source = SourceSnapshot {
+        path: "s.py".into(),
+        source_record: "s.py".to_owned(),
+        bytes: b"import requests\nprint(requests)\n".to_vec(),
+        permissions: SourcePermissions::default(),
+        is_regular: true,
+        is_directory: false,
+        is_draft: false,
+    };
+    let mut review = ReviewState::from_source(
+        source,
+        KnownEntryKind::Python,
+        ReviewDefaults::default(),
+    );
+    review.set_dependencies_text("requests>=2,<3, rich");
+
+    let create = review
+        .create_entry()
+        .expect("the interactive review must accept both valid PEP 508 requirements");
+    let payload = create
+        .payload
+        .expect("a copied Python add must carry the source payload");
+    let stored = std::str::from_utf8(&payload.bytes).expect("Python fixture remains UTF-8");
+    let metadata = read_uv_metadata(stored).expect("interactive dependencies must reach PEP 723");
+    assert_eq!(metadata.dependencies, ["requests>=2,<3", "rich"]);
 }
