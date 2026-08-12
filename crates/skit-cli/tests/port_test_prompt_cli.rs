@@ -2580,7 +2580,6 @@ fn test_edit_prompt_with_no_new_placeholders_is_silent() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust `edit` on a script prints no reconcile hint; the oracle's generic 'skit reconciles parameter drift at run time' line is absent."]
 fn test_edit_non_prompt_keeps_the_generic_drift_hint() {
     let sandbox = Sandbox::new();
     let script = sandbox.write_file("s.py", b"print(1)\n");

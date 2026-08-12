@@ -3226,6 +3226,73 @@ fn edit(
     edit_with_config(service, store, &config_dir, selector, no_input)
 }
 
+/// Resolve the editor command as an argv prefix; the file path is appended later.
+///
+/// Precedence: the configured editor, then `$VISUAL`, then `$EDITOR`, then the
+/// platform default (`notepad` on Windows, `vi` elsewhere). A blank or
+/// whitespace-only candidate is treated as unset so the next candidate gets a
+/// chance. An unbalanced-quote value is unusable as a parsed command, so the whole
+/// text becomes the program name rather than an error (editor.py:34-60).
+fn resolve_editor_argv(config_dir: &Path) -> Vec<String> {
+    let configured = FileConfigStore::new(config_dir)
+        .get("editor")
+        .unwrap_or_default();
+    let raw = [
+        configured,
+        env::var("VISUAL").unwrap_or_default(),
+        env::var("EDITOR").unwrap_or_default(),
+    ]
+    .into_iter()
+    .map(|candidate| candidate.trim().to_owned())
+    .find(|candidate| !candidate.is_empty())
+    .unwrap_or_else(|| platform_default_editor().to_owned());
+    let argv = shlex::split(&raw).unwrap_or_else(|| vec![raw.clone()]);
+    if argv.is_empty() {
+        vec![platform_default_editor().to_owned()]
+    } else {
+        argv
+    }
+}
+
+const fn platform_default_editor() -> &'static str {
+    if cfg!(windows) { "notepad" } else { "vi" }
+}
+
+/// Launch the resolved editor on `path` and wait for it to exit.
+///
+/// Only a launch failure is an error (cli.py:2727-2730); the editor's own exit
+/// status is returned unchecked, because some editors exit non-zero on an
+/// unmodified close (editor.py:63-67).
+fn launch_editor(argv: &[String], path: &Path) -> Result<std::process::ExitStatus, CliError> {
+    ProcessCommand::new(&argv[0])
+        .args(&argv[1..])
+        .arg(path)
+        .status()
+        .map_err(|error| {
+            CliError::Failure(
+                Message::new(
+                    "Could not launch the editor ({}): {}. Set one with: skit config editor <cmd>",
+                )
+                .with(argv.join(" "))
+                .with(error),
+            )
+        })
+}
+
+/// Print the edit lane's success report (cli.py:2731-2741).
+///
+/// A prompt entry reconciles its placeholders instead of printing the generic
+/// drift hint.
+fn report_saved_edit(entry: &Entry) {
+    humanln!("Saved {}.", entry.meta.name);
+    if entry.meta.kind.as_str() != "prompt" {
+        humanln!(
+            "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
+            entry.meta.name
+        );
+    }
+}
+
 fn edit_with_config(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -3272,44 +3339,55 @@ fn edit_with_config(
         }
         Err(error) => return Err(error.into()),
     };
-    if matches!(held.meta.kind.as_str(), "command" | "exe") {
-        return Err(CliError::Usage(
-            Message::new("entry {} does not have an editable source").with(&held.slug),
+    // cli.py:2702-2708 — programs, command templates, and kinds this version cannot
+    // name run as-is; the refusal is a failed operation (exit 1), not a usage error.
+    let editable = matches!(
+        held.meta.kind.as_str(),
+        "python"
+            | "shell"
+            | "fish"
+            | "js"
+            | "ts"
+            | "powershell"
+            | "ruby"
+            | "perl"
+            | "lua"
+            | "r"
+            | "prompt"
+    );
+    if !editable {
+        return Err(CliError::Failure(
+            Message::new("{} has no editable source (programs and command templates run as-is).")
+                .with(&held.meta.name),
         ));
     }
-    let target = source_path(store, &held).ok_or_else(|| {
-        CliError::Usage(Message::new("entry {} does not have an editable source").with(&held.slug))
-    })?;
-    let editor = FileConfigStore::new(config_dir)
-        .get("editor")
-        .unwrap_or_default();
-    let editor = if editor.trim().is_empty() {
-        env::var("VISUAL")
-            .or_else(|_| env::var("EDITOR"))
-            .map_err(|_| CliError::Usage(Message::new("configure an editor before you use edit")))?
-    } else {
-        editor
-    };
-    let mut argv = shlex::split(&editor)
-        .ok_or_else(|| CliError::Usage(Message::new("the editor command has invalid quoting")))?;
-    if argv.is_empty() {
-        return Err(CliError::Usage(Message::new("the editor command is empty")));
-    }
+    let argv = resolve_editor_argv(config_dir);
 
     if held.meta.mode == StorageMode::Reference {
-        let status = ProcessCommand::new(&argv[0])
-            .args(&argv[1..])
-            .arg(&target)
-            .status()
-            .map_err(|error| source_error("start editor for", &target, error))?;
-        if !status.success() {
-            return Err(CliError::Usage(
-                Message::new("the editor exited with status {}").with(status.code().unwrap_or(1)),
+        // Reference mode edits the user's original in place; a gone original is
+        // refused BEFORE any editor launches (cli.py:2709-2720).
+        let source = PathBuf::from(&held.meta.source);
+        if !source.exists() {
+            return Err(CliError::Failure(
+                Message::new("{}: the referenced source file is gone: {}")
+                    .with(&held.meta.name)
+                    .with(source.display()),
             ));
         }
+        humanln!(
+            "Editing the original file (reference mode): {}",
+            source.display()
+        );
+        launch_editor(&argv, &source)?;
+        report_saved_edit(&held);
         return Ok(());
     }
 
+    let target = source_path(store, &held)
+        .filter(|path| path.exists())
+        .ok_or_else(|| {
+            CliError::Failure(Message::new("{} has no stored copy to edit.").with(&held.meta.name))
+        })?;
     let original = fs::read(&target).map_err(|error| source_error("read", &target, error))?;
     let temp = tempfile::tempdir().map_err(CliError::Io)?;
     let staged = temp.path().join(
@@ -3318,22 +3396,13 @@ fn edit_with_config(
             .unwrap_or_else(|| std::ffi::OsStr::new("script")),
     );
     fs::write(&staged, &original).map_err(|error| source_error("stage", &staged, error))?;
-    let status = ProcessCommand::new(argv.remove(0))
-        .args(argv)
-        .arg(&staged)
-        .status()
-        .map_err(|error| source_error("start editor for", &staged, error))?;
-    if !status.success() {
-        return Err(CliError::Usage(
-            Message::new("the editor exited with status {}").with(status.code().unwrap_or(1)),
-        ));
-    }
+    launch_editor(&argv, &staged)?;
     let edited = fs::read(&staged).map_err(|error| source_error("read", &staged, error))?;
     if edited != original {
         let claimed = service.claim_identity(&held)?;
         service.commit_copy_edit(&claimed, &edited, &held.meta.source_hash)?;
-        humanln!("Edited: {} ({})", held.meta.name, held.slug);
     }
+    report_saved_edit(&held);
     Ok(())
 }
 
@@ -3342,28 +3411,8 @@ fn open_editor(target: &Path) -> Result<(), CliError> {
 }
 
 fn open_editor_in(config_dir: &Path, target: &Path) -> Result<(), CliError> {
-    let configured = FileConfigStore::new(config_dir)
-        .get("editor")
-        .unwrap_or_default();
-    let editor = if configured.trim().is_empty() {
-        env::var("VISUAL")
-            .or_else(|_| env::var("EDITOR"))
-            .map_err(|_| {
-                CliError::Usage(Message::new("configure an editor before you use --edit"))
-            })?
-    } else {
-        configured
-    };
-    let mut argv = shlex::split(&editor)
-        .ok_or_else(|| CliError::Usage(Message::new("the editor command has invalid quoting")))?;
-    if argv.is_empty() {
-        return Err(CliError::Usage(Message::new("the editor command is empty")));
-    }
-    let status = ProcessCommand::new(argv.remove(0))
-        .args(argv)
-        .arg(target)
-        .status()
-        .map_err(|error| source_error("start editor for", target, error))?;
+    let argv = resolve_editor_argv(config_dir);
+    let status = launch_editor(&argv, target)?;
     if status.success() {
         Ok(())
     } else {

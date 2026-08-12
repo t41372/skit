@@ -515,7 +515,7 @@ fn edit_uses_the_configured_editor_and_refuses_payloadless_entries() {
             .command()
             .args(["edit", selector, "--no-input"])
             .assert()
-            .code(2)
+            .code(1)
             .stderr(predicate::str::contains("editable source"));
     }
 
@@ -531,6 +531,6 @@ fn edit_uses_the_configured_editor_and_refuses_payloadless_entries() {
         .command()
         .args(["edit", "missing", "--no-input"])
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains("editable source"));
+        .code(1)
+        .stderr(predicate::str::contains("no stored copy to edit"));
 }

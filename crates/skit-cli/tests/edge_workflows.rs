@@ -638,34 +638,42 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
         fs::read_to_string(sandbox.data.path().join("scripts/edit-copy/script.sh")).unwrap(),
         "changedn"
     );
+    // v0.4 ignores the editor's own exit status (some editors exit non-zero on an
+    // unmodified close), so a non-zero editor still saves cleanly.
     sandbox.ok(&["config", "editor", "sh -c 'exit 3'"]);
-    sandbox.code(&["edit", "edit-copy", "--no-input"], 2);
+    sandbox.ok(&["edit", "edit-copy", "--no-input"]);
+    // An unbalanced-quote value becomes the program name; launching it fails (1).
     sandbox.ok(&["config", "editor", "'"]);
-    sandbox.code(&["edit", "edit-copy", "--no-input"], 2);
+    sandbox.code(&["edit", "edit-copy", "--no-input"], 1);
+    // Every candidate blank resolves the platform default `vi`; with an empty PATH
+    // the launch fails as a failed operation, never a usage error.
     sandbox.ok(&["config", "editor", "   "]);
+    let empty_path = TempDir::new().unwrap();
     sandbox
         .command()
         .env_remove("VISUAL")
         .env_remove("EDITOR")
+        .env("PATH", empty_path.path())
         .args(["edit", "edit-copy", "--no-input"])
         .assert()
-        .code(2);
+        .code(1);
     sandbox
         .command()
         .env_remove("VISUAL")
         .env("EDITOR", "")
+        .env("PATH", empty_path.path())
         .args(["edit", "edit-copy", "--no-input"])
         .assert()
-        .code(2);
+        .code(1);
 
     let reference = sandbox.source("reference.sh", b"echo reference\n");
     sandbox.ok(&["add", &reference, "--ref", "--name", "Reference"]);
     sandbox.ok(&["config", "editor", "true"]);
     sandbox.ok(&["edit", "reference", "--no-input"]);
     sandbox.ok(&["config", "editor", "false"]);
-    sandbox.code(&["edit", "reference", "--no-input"], 2);
+    sandbox.ok(&["edit", "reference", "--no-input"]);
     sandbox.ok(&["add", "--cmd", "echo ok", "--name", "No source"]);
-    sandbox.code(&["edit", "no-source", "--no-input"], 2);
+    sandbox.code(&["edit", "no-source", "--no-input"], 1);
     sandbox.code(&["edit", "missing", "--no-input"], 1);
 
     let managed = sandbox.source("managed.sh", b"NAME=old\necho \"$NAME\"\n");
@@ -728,8 +736,10 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
 
     sandbox.ok(&["config", "editor", "false"]);
     sandbox.code(&["add", "--edit", "--name", "Failed Editor"], 2);
+    // An unbalanced-quote value becomes the program name; the launch failure is a
+    // failed operation (exit 1), and the draft is kept like every editor failure.
     sandbox.ok(&["config", "editor", "'"]);
-    sandbox.code(&["add", "--edit", "--name", "Bad Quote"], 2);
+    sandbox.code(&["add", "--edit", "--name", "Bad Quote"], 1);
 
     let editor = sandbox.source(
         "draft-editor.sh",
@@ -742,13 +752,17 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     }
     sandbox.ok(&["config", "editor", &editor]);
     sandbox.ok(&["config", "editor", "   "]);
+    // Every candidate blank resolves the platform default `vi`; an empty PATH turns
+    // the launch into the failed-operation refusal (exit 1) with the config hint.
+    let empty_path = TempDir::new().unwrap();
     sandbox
         .command()
         .env_remove("VISUAL")
         .env("EDITOR", "")
+        .env("PATH", empty_path.path())
         .args(["add", "--edit", "--name", "Empty command"])
         .assert()
-        .code(2);
+        .code(1);
     sandbox
         .command()
         .env("VISUAL", &editor)

@@ -328,7 +328,6 @@ fn test_resolve_editor_editor_env_when_no_visual() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle resolves the unix platform default [\"vi\"] and launches it (editor.py:30-31,46); Rust has no platform default and exits 2 \"configure an editor before you use edit\" (cli.rs:3289), the editor never launched. Verified against the built binary."]
 fn test_resolve_editor_platform_default_unix() {
     // Nothing configured, VISUAL/EDITOR unset -> the oracle falls all the way through to the unix
     // platform default ["vi"] and launches it (`resolve_editor() == ["vi"]`). Observable: a fake
@@ -418,7 +417,6 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle skips a blank/whitespace $VISUAL and uses $EDITOR (editor.py:39,46); Rust uses VISUAL=\"   \" as-is, so shlex yields [] and it exits 2 \"the editor command is empty\" (cli.rs:3295) and $EDITOR is never launched. Verified against the built binary."]
 fn test_resolve_editor_whitespace_visual_falls_through_to_editor() {
     // A blank/whitespace-only $VISUAL is treated as unset, so a good $EDITOR still wins and is
     // launched (`resolve_editor() == ["nano"]`). Observable: the $EDITOR program is the one the edit
@@ -464,7 +462,6 @@ fn test_resolve_editor_all_whitespace_candidates_use_platform_default() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle catches the shlex ValueError and falls back to the raw string as argv[0] (editor.py:47-52); Rust's shlex::split returns None and it exits 2 \"the editor command has invalid quoting\" (cli.rs:3294), never launching. Verified against the built binary."]
 fn test_resolve_editor_unbalanced_quotes_falls_back_to_raw() {
     // An unbalanced-quote value is unusable as a parsed command; the oracle treats the whole raw
     // string as argv[0] (`resolve_editor() == ['weird "editor']`). Observable: a fake editor whose
@@ -614,7 +611,6 @@ fn test_save_editor_clear_when_absent_does_not_raise() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): success verb — the oracle prints \"Saved a\" on an edit; Rust prints \"Edited: a (a)\". Exit 0 and the stored-copy update both match. Verified against the built binary."]
 fn test_edit_opens_copy_source() {
     // edit opens the copy's stored source; a change is saved back and reported with "Saved a". (The
     // oracle's white-box opened-path capture == scripts/a/script.py is observed here as the stored
@@ -669,7 +665,6 @@ fn test_edit_opens_reference_original() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): source_path returns the (now missing) reference path, so Rust LAUNCHES the editor on it and exits 0; the oracle refuses BEFORE launching with exit 1 and 'gone' in the output (src/skit/cli.py edit reference-gone guard). Verified against the built binary."]
 fn test_edit_reference_source_gone() {
     // A reference whose original was deleted -> exit 1, "gone", editor never launched.
     let sandbox = Sandbox::new();

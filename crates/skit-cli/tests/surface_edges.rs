@@ -232,27 +232,34 @@ fn an_explicit_none_constraint_clears_an_inherited_python_pin() {
 }
 
 #[test]
-fn editing_without_a_configured_editor_is_a_typed_refusal() {
+fn editing_without_a_configured_editor_falls_back_to_vi_and_reports_a_launch_failure() {
+    // v0.4: nothing configured and no env editor resolves the platform default `vi`
+    // (editor.py:30-46). With an empty PATH the launch itself fails, which is a failed
+    // operation (exit 1) that names the command and teaches the config key.
     let sandbox = Sandbox::new();
     sandbox.python("Sample", "print(1)\n");
+    let empty_path = TempDir::new().unwrap();
 
     sandbox
         .command()
+        .env_remove("VISUAL")
+        .env_remove("EDITOR")
+        .env("PATH", empty_path.path())
         .args(["edit", "sample", "--no-input"])
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains(
-            "configure an editor before you use edit",
-        ));
+        .code(1)
+        .stderr(predicate::str::contains("Could not launch the editor (vi)"))
+        .stderr(predicate::str::contains("skit config editor"));
 
     sandbox
         .command()
+        .env_remove("VISUAL")
+        .env_remove("EDITOR")
+        .env("PATH", empty_path.path())
         .args(["add", "--edit", "--name", "Draft"])
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains(
-            "configure an editor before you use --edit",
-        ));
+        .code(1)
+        .stderr(predicate::str::contains("Could not launch the editor (vi)"));
 }
 
 #[test]

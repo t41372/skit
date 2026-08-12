@@ -749,7 +749,6 @@ const CATALOG: &[Translation] = &[
         "已重新命名：{} ({})",
     ),
     row!("Removed: {}", "已删除：{}", "已移除：{}"),
-    row!("Edited: {} ({})", "已编辑：{} ({})", "已編輯：{} ({})"),
     row!("Added runner: {}", "已添加运行器：{}", "已新增執行器：{}"),
     row!(
         "Runner {} added: {}",
@@ -2367,16 +2366,6 @@ const CATALOG: &[Translation] = &[
         "組態區段不是表格：{}",
     ),
     row!(
-        "configure an editor before you use --edit",
-        "使用 --edit 之前请先配置编辑器",
-        "使用 --edit 之前請先設定編輯器",
-    ),
-    row!(
-        "configure an editor before you use edit",
-        "使用 edit 之前请先配置编辑器",
-        "使用 edit 之前請先設定編輯器",
-    ),
-    row!(
         "confirmation is required for {}; pass --yes",
         "{}需要确认；请传入 --yes",
         "{}需要確認；請傳入 --yes",
@@ -2558,11 +2547,6 @@ const CATALOG: &[Translation] = &[
         "entry {} changed while this operation was underway",
         "条目 {} 在此操作进行期间已更改",
         "項目 {} 在此操作進行期間已變更",
-    ),
-    row!(
-        "entry {} does not have an editable source",
-        "条目 {} 没有可编辑的源文件",
-        "項目 {} 沒有可編輯的來源",
     ),
     row!(
         "entry {} has corrupt metadata: {}",
@@ -2926,16 +2910,6 @@ const CATALOG: &[Translation] = &[
         "草稿為空，已保留在 {}",
     ),
     row!(
-        "the editor command has invalid quoting",
-        "编辑器命令的引号无效",
-        "編輯器命令的引號無效",
-    ),
-    row!(
-        "the editor command is empty",
-        "编辑器命令为空",
-        "編輯器命令為空",
-    ),
-    row!(
         "the editor exited with status {}",
         "编辑器以状态 {} 退出",
         "編輯器以狀態 {} 結束",
@@ -3296,6 +3270,37 @@ const CATALOG: &[Translation] = &[
         "uv 二進位檔會被下載並執行，因此 github-release 基礎 URL 必須使用 https://（目前為：{}）。",
     ),
     row!("No such file: {}", "找不到文件：{}", "找不到檔案：{}"),
+    row!("Saved {}.", "已保存 {}。", "已儲存 {}。"),
+    row!(
+        "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
+        "skit 会在运行时自动校对参数差异;可用 skit params {} 查看管理中的参数",
+        "skit 會在執行時自動校對參數差異;可用 skit params {} 檢視管理中的參數",
+    ),
+    row!(
+        "{} has no editable source (programs and command templates run as-is).",
+        "{} 没有可编辑的源码（程序和命令模板按原样运行）。",
+        "{} 沒有可編輯的原始碼（程式與命令模板按原樣執行）。",
+    ),
+    row!(
+        "{}: the referenced source file is gone: {}",
+        "{}:reference 原文件已消失:{}",
+        "{}:reference 原檔已消失:{}",
+    ),
+    row!(
+        "{} has no stored copy to edit.",
+        "{} 没有可编辑的副本。",
+        "{} 沒有可編輯的副本。",
+    ),
+    row!(
+        "Editing the original file (reference mode): {}",
+        "正在编辑原始文件(reference 模式):{}",
+        "正在編輯原始檔案(reference 模式):{}",
+    ),
+    row!(
+        "Could not launch the editor ({}): {}. Set one with: skit config editor <cmd>",
+        "无法启动编辑器（{}）：{}。可用 skit config editor <cmd> 设置。",
+        "無法啟動編輯器（{}）：{}。可用 skit config editor <cmd> 設定。",
+    ),
     row!(
         "{} needs NAME=VALUE",
         "{}需要 NAME=VALUE",
