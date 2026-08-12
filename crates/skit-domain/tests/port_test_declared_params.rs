@@ -38,15 +38,17 @@ fn test_undeclared_placeholders_synthesize_the_historical_field() {
 
 #[test]
 fn test_declared_row_overrides_placeholder_schema_including_secret() {
-    let rows = vec![ParamDecl {
-        delivery: ParameterDelivery::Placeholder,
-        parameter_type: ParameterType::Str,
-        default: Some(ParameterValue::String("creds.json".to_owned())),
-        required: false,
-        secret: false,
-        ..ParamDecl::new("token_file")
-    }
-    .to_meta_map()];
+    let rows = vec![
+        ParamDecl {
+            delivery: ParameterDelivery::Placeholder,
+            parameter_type: ParameterType::Str,
+            default: Some(ParameterValue::String("creds.json".to_owned())),
+            required: false,
+            secret: false,
+            ..ParamDecl::new("token_file")
+        }
+        .to_meta_map(),
+    ];
     let placeholders = vec!["token_file".to_owned(), "host".to_owned()];
     let declarations = declared_for_template(Some(&rows), &placeholders);
     assert_eq!(declarations[0].name, "token_file");
@@ -63,13 +65,15 @@ fn test_declared_row_overrides_placeholder_schema_including_secret() {
 
 #[test]
 fn test_declared_env_param_rides_along_after_placeholders() {
-    let rows = vec![ParamDecl {
-        delivery: ParameterDelivery::Env,
-        parameter_type: ParameterType::Int,
-        default: Some(ParameterValue::Integer(3)),
-        ..ParamDecl::new("RETRIES")
-    }
-    .to_meta_map()];
+    let rows = vec![
+        ParamDecl {
+            delivery: ParameterDelivery::Env,
+            parameter_type: ParameterType::Int,
+            default: Some(ParameterValue::Integer(3)),
+            ..ParamDecl::new("RETRIES")
+        }
+        .to_meta_map(),
+    ];
     let declarations = declared_for_template(Some(&rows), &["file".to_owned()]);
     assert_eq!(
         declarations
@@ -85,12 +89,14 @@ fn test_declared_env_param_rides_along_after_placeholders() {
 
 #[test]
 fn test_declared_flag_row_is_dropped_for_templates() {
-    let rows = vec![ParamDecl {
-        delivery: ParameterDelivery::Flag,
-        flag: "--width".to_owned(),
-        ..ParamDecl::new("width")
-    }
-    .to_meta_map()];
+    let rows = vec![
+        ParamDecl {
+            delivery: ParameterDelivery::Flag,
+            flag: "--width".to_owned(),
+            ..ParamDecl::new("width")
+        }
+        .to_meta_map(),
+    ];
     let declarations = declared_for_template(Some(&rows), &["file".to_owned()]);
     assert_eq!(
         declarations
@@ -103,11 +109,13 @@ fn test_declared_flag_row_is_dropped_for_templates() {
 
 #[test]
 fn test_declared_row_with_wrong_delivery_for_its_placeholder_is_replaced_by_synth() {
-    let rows = vec![ParamDecl {
-        delivery: ParameterDelivery::Env,
-        ..ParamDecl::new("file")
-    }
-    .to_meta_map()];
+    let rows = vec![
+        ParamDecl {
+            delivery: ParameterDelivery::Env,
+            ..ParamDecl::new("file")
+        }
+        .to_meta_map(),
+    ];
     let declarations = declared_for_template(Some(&rows), &["file".to_owned()]);
     assert_eq!(declarations.len(), 1);
     assert_eq!(declarations[0].name, "file");

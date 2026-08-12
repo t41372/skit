@@ -9,7 +9,8 @@ use std::fs;
 
 use assert_cmd::Command;
 use skit_application::{
-    CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _, SourcePermissions,
+    CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _,
+    SourcePermissions,
 };
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;

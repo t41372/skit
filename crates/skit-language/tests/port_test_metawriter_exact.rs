@@ -71,7 +71,10 @@ fn assert_update_keeps_api_key(source: &str, dependency: &str) {
         "fixture managed row did not parse: {source}"
     );
     let updated = write_uv_metadata(source, &[dependency.to_owned()], "").unwrap();
-    assert_eq!(read_uv_metadata(&updated).unwrap().dependencies, [dependency]);
+    assert_eq!(
+        read_uv_metadata(&updated).unwrap().dependencies,
+        [dependency]
+    );
     assert_eq!(
         managed_params("python", &updated)
             .iter()
@@ -311,11 +314,7 @@ fn test_structural_bracket_delta_escaped_quote_in_basic_string() {
 fn test_structural_bracket_delta_literal_string_has_no_escapes() {
     // TOML literal strings do not treat backslash as an escape. The bracket remains inside the
     // string and therefore cannot close the dependency array scanner.
-    let source = hand_edited(concat!(
-        "# dependencies = [\n",
-        "#     'a\\]b',\n",
-        "# ]\n",
-    ));
+    let source = hand_edited(concat!("# dependencies = [\n", "#     'a\\]b',\n", "# ]\n",));
     assert_update_keeps_api_key(&source, "rich");
 }
 
@@ -407,10 +406,13 @@ fn test_write_params_survives_unicode_line_separators_in_prompt() {
         declaration.default = Some(ParameterValue::String("x".to_owned()));
         declaration.prompt = format!("a{separator}b");
 
-        let output =
-            write_managed_params("python", "CITY = 'x'\n", &[declaration]).unwrap();
+        let output = write_managed_params("python", "CITY = 'x'\n", &[declaration]).unwrap();
         let back = managed_params("python", &output);
-        assert_eq!(back.len(), 1, "block lost for separator {separator:?}: {output}");
+        assert_eq!(
+            back.len(),
+            1,
+            "block lost for separator {separator:?}: {output}"
+        );
         assert_eq!(back[0].prompt, format!("a{separator}b"));
     }
 }

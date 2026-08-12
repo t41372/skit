@@ -90,12 +90,14 @@ impl Sandbox {
 
         let meta = fs::read_to_string(self.data.path().join("scripts/x/meta.toml")).unwrap();
         assert!(
-            !meta.lines()
+            !meta
+                .lines()
                 .any(|line| line.trim_start().starts_with("dependencies =")),
             "fixture must keep dependencies block-only: {meta}"
         );
         assert!(
-            !meta.lines()
+            !meta
+                .lines()
                 .any(|line| line.trim_start().starts_with("requires_python =")),
             "fixture must keep the Python constraint block-only: {meta}"
         );
@@ -109,14 +111,7 @@ impl Sandbox {
         // A post-add deps edit is the oracle's meta-carried branch: unlike add-time injection, the
         // stored record owns the pin as well as the synchronized PEP 723 block.
         self.command()
-            .args([
-                "deps",
-                "x",
-                "--dep",
-                "requests",
-                "--python",
-                ">=3.11",
-            ])
+            .args(["deps", "x", "--dep", "requests", "--python", ">=3.11"])
             .assert()
             .success();
         let meta = fs::read_to_string(self.data.path().join("scripts/x/meta.toml")).unwrap();
@@ -249,7 +244,10 @@ fn test_settings_prefills_deps_and_python_from_the_block() {
     assert_eq!(code, 0, "{output}");
     // This is the terminal output of the real Settings screen. Both values must be present even
     // though meta.toml deliberately carries neither axis.
-    assert!(output.contains("requests"), "block-only dependency was not rendered: {output}");
+    assert!(
+        output.contains("requests"),
+        "block-only dependency was not rendered: {output}"
+    );
     assert!(
         output.contains(">=3.11"),
         "block-only Python constraint was not rendered: {output}"
@@ -331,7 +329,8 @@ fn test_settings_clearing_python_unpins_the_block() {
     assert_eq!(code, 0, "{output}");
 
     let source = sandbox.stored_source();
-    let effective = read_uv_metadata(&source).expect("dependency block must survive Settings unpin");
+    let effective =
+        read_uv_metadata(&source).expect("dependency block must survive Settings unpin");
     assert_eq!(effective.dependencies, ["requests"]);
     assert_eq!(effective.requires_python, "");
     assert!(
@@ -341,7 +340,8 @@ fn test_settings_clearing_python_unpins_the_block() {
 
     let meta = fs::read_to_string(sandbox.data.path().join("scripts/x/meta.toml")).unwrap();
     assert!(
-        !meta.lines()
+        !meta
+            .lines()
             .any(|line| line.trim_start().starts_with("requires_python =")),
         "Settings unpin left the meta constraint behind: {meta}"
     );
@@ -350,7 +350,11 @@ fn test_settings_clearing_python_unpins_the_block() {
         .args(["deps", "x", "--json"])
         .output()
         .unwrap();
-    assert!(view.status.success(), "{}", String::from_utf8_lossy(&view.stderr));
+    assert!(
+        view.status.success(),
+        "{}",
+        String::from_utf8_lossy(&view.stderr)
+    );
     let payload: serde_json::Value = serde_json::from_slice(&view.stdout).unwrap();
     assert_eq!(payload["requires_python"], "");
 }

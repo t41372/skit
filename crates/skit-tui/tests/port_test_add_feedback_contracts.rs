@@ -69,7 +69,10 @@ fn test_python_ask_label_names_the_pin_and_enter_records_it() {
     review.set_name("pin-kept");
     let entry = review.create_entry().unwrap();
     let stored = String::from_utf8(entry.payload.unwrap().bytes).unwrap();
-    assert!(stored.contains("requires-python = \">=3.12,<3.13\""), "{stored}");
+    assert!(
+        stored.contains("requires-python = \">=3.12,<3.13\""),
+        "{stored}"
+    );
 }
 
 #[test]

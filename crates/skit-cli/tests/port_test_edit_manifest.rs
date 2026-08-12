@@ -51,10 +51,7 @@ fn tests(source: &str) -> Vec<String> {
 }
 
 fn actual() -> Vec<String> {
-    tests(RECONCILE)
-        .into_iter()
-        .chain(tests(CLI))
-        .collect()
+    tests(RECONCILE).into_iter().chain(tests(CLI)).collect()
 }
 
 #[test]
@@ -67,8 +64,16 @@ fn twelve_reachable_python_edit_contracts_are_executable_once() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(EXECUTABLE.len(), 12);
-    assert_eq!(actual.len(), 12, "unexpected extra or missing edit parity tests");
-    assert_eq!(actual_set.len(), actual.len(), "duplicate names hide a missing edit contract");
+    assert_eq!(
+        actual.len(),
+        12,
+        "unexpected extra or missing edit parity tests"
+    );
+    assert_eq!(
+        actual_set.len(),
+        actual.len(),
+        "duplicate names hide a missing edit contract"
+    );
     assert_eq!(actual_set, expected);
 }
 

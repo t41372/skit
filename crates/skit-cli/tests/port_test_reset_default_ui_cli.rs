@@ -12,7 +12,10 @@ use std::{
 };
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use skit_application::{CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _, SourcePermissions};
+use skit_application::{
+    CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _,
+    SourcePermissions,
+};
 use skit_domain::{
     EntryKind, EntrySettings, StorageMode,
     parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
@@ -125,8 +128,14 @@ fn test_params_default_column_shows_the_sources_live_value() {
 
     assert!(output.status.success(), "{}", combined(&output));
     let text = combined(&output);
-    assert!(text.contains("bonjour"), "live source default missing: {text}");
-    assert!(!text.contains("hello"), "stale managed-block default leaked: {text}");
+    assert!(
+        text.contains("bonjour"),
+        "live source default missing: {text}"
+    );
+    assert!(
+        !text.contains("hello"),
+        "stale managed-block default leaked: {text}"
+    );
 }
 
 #[test]
@@ -138,7 +147,9 @@ fn test_show_json_delivers_empty_true_for_str_const_false_for_int() {
 
     assert!(output.status.success(), "{}", combined(&output));
     let payload: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    let fields = payload["fields"].as_array().expect("show --json fields array");
+    let fields = payload["fields"]
+        .as_array()
+        .expect("show --json fields array");
     let by_key = |key: &str| {
         fields
             .iter()

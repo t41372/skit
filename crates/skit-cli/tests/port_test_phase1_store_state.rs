@@ -12,13 +12,9 @@ use std::{
 
 use skit_application::{
     CreateEntry, EntryMutationRepository as _, EntryRepository as _, LibraryService,
-    SourcePermissions,
-    form_state::FormStateService,
+    SourcePermissions, form_state::FormStateService,
 };
-use skit_domain::{
-    EntryKind, EntrySettings, Slug, StorageMode,
-    parameters::ParamDecl,
-};
+use skit_domain::{EntryKind, EntrySettings, Slug, StorageMode, parameters::ParamDecl};
 use skit_language::read_uv_metadata;
 use skit_store::{FileFormStateStore, FileStore};
 use skit_ui::{KnownEntryKind, ReviewDefaults, ReviewState, SourceSnapshot};

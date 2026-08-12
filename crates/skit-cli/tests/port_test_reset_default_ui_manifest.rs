@@ -5,7 +5,11 @@
 //! Rust equivalent: `collect_run_form` is the same Ratatui alternate-screen frontend, so repeating a
 //! normal TUI hint test would be a weaker stand-in rather than coverage of a second surface.
 
-use std::{collections::{BTreeMap, BTreeSet}, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 use syn::{Attribute, Item};
 
@@ -18,27 +22,64 @@ const TUI: &str = "crates/skit-tui/tests/port_test_reset_default_ui.rs";
 const CLI: &str = "crates/skit-cli/tests/port_test_reset_default_ui_cli.rs";
 
 const EXECUTABLE: &[Mapping] = &[
-    Mapping { python: "test_ctrl_o_from_focused_field_restores_default_over_remembered_value", path: TUI },
-    Mapping { python: "test_reset_field_by_key_restores_text_bool_and_choice_defaults", path: TUI },
-    Mapping { python: "test_reset_chip_mouse_click_restores_the_default", path: TUI },
-    Mapping { python: "test_reset_chip_present_for_default_absent_for_secret_and_no_default", path: TUI },
-    Mapping { python: "test_choice_default_outside_its_choices_gets_no_chip_and_no_ctrl_o", path: TUI },
-    Mapping { python: "test_footer_advertises_ctrl_o_only_when_some_field_is_resettable", path: TUI },
-    Mapping { python: "test_ctrl_o_on_field_without_default_leaves_value_unchanged", path: TUI },
-    Mapping { python: "test_ctrl_o_with_focus_outside_any_field_row_is_a_no_op", path: TUI },
-    Mapping { python: "test_input_binding_field_renders_the_ask_in_terminal_hint", path: TUI },
-    Mapping { python: "test_plain_const_field_renders_no_input_binding_hint", path: TUI },
-    Mapping { python: "test_params_default_column_shows_the_sources_live_value", path: CLI },
-    Mapping { python: "test_show_json_delivers_empty_true_for_str_const_false_for_int", path: CLI },
-    Mapping { python: "test_settings_param_row_shows_the_sources_live_default", path: CLI },
+    Mapping {
+        python: "test_ctrl_o_from_focused_field_restores_default_over_remembered_value",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_reset_field_by_key_restores_text_bool_and_choice_defaults",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_reset_chip_mouse_click_restores_the_default",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_reset_chip_present_for_default_absent_for_secret_and_no_default",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_choice_default_outside_its_choices_gets_no_chip_and_no_ctrl_o",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_footer_advertises_ctrl_o_only_when_some_field_is_resettable",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_ctrl_o_on_field_without_default_leaves_value_unchanged",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_ctrl_o_with_focus_outside_any_field_row_is_a_no_op",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_input_binding_field_renders_the_ask_in_terminal_hint",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_plain_const_field_renders_no_input_binding_hint",
+        path: TUI,
+    },
+    Mapping {
+        python: "test_params_default_column_shows_the_sources_live_value",
+        path: CLI,
+    },
+    Mapping {
+        python: "test_show_json_delivers_empty_true_for_str_const_false_for_int",
+        path: CLI,
+    },
+    Mapping {
+        python: "test_settings_param_row_shows_the_sources_live_default",
+        path: CLI,
+    },
 ];
 
-const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[
-    (
-        "test_promptform_prints_input_binding_hint",
-        "Python has an independent line-oriented promptform.collect fallback for --plain/dumb terminals. Rust collect_run_form still enters the same Ratatui alternate-screen frontend, so there is no second line-form renderer whose hint can be tested without duplicating the ordinary TUI contract.",
-    ),
-];
+const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[(
+    "test_promptform_prints_input_binding_hint",
+    "Python has an independent line-oriented promptform.collect fallback for --plain/dumb terminals. Rust collect_run_form still enters the same Ratatui alternate-screen frontend, so there is no second line-form renderer whose hint can be tested without duplicating the ordinary TUI contract.",
+)];
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
     attributes

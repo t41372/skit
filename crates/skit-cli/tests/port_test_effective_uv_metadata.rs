@@ -109,7 +109,10 @@ fn test_add_dep_then_python_pin_keeps_block_deps_end_to_end() {
     assert_eq!(before_metadata.dependencies, ["requests"]);
     assert_eq!(before_metadata.requires_python, "");
     assert!(
-        !sandbox.meta_text().lines().any(|line| line.trim_start().starts_with("dependencies =")),
+        !sandbox
+            .meta_text()
+            .lines()
+            .any(|line| line.trim_start().starts_with("dependencies =")),
         "add-time Python dependencies must live in the stored copy's PEP 723 block, not meta.toml"
     );
 
@@ -159,7 +162,10 @@ fn test_add_dep_then_python_pin_run_command_carries_both() {
     assert!(flat.contains("--python"), "{flat}");
     assert!(flat.contains(">=3.12"), "{flat}");
     assert!(flat.contains("--script"), "{flat}");
-    assert!(!flat.contains("--with requests"), "block-owned deps must not be duplicated: {flat}");
+    assert!(
+        !flat.contains("--with requests"),
+        "block-owned deps must not be duplicated: {flat}"
+    );
 }
 
 #[test]

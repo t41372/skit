@@ -5,10 +5,17 @@
 //! This file keeps the Python test names and fixture scopes explicit. Red results are parity findings;
 //! do not weaken these assertions to match the current Rust implementation.
 
-use std::{collections::BTreeMap, fs, path::{Path, PathBuf}, panic::{AssertUnwindSafe, catch_unwind}};
+use std::{
+    collections::BTreeMap,
+    fs,
+    panic::{AssertUnwindSafe, catch_unwind},
+    path::{Path, PathBuf},
+};
 
 use skit_domain::parameters::{ParamDecl, ParameterDelivery, ParameterType};
-use skit_language::{detect_candidates, inject_values, managed_params, source_is_valid, write_managed_params};
+use skit_language::{
+    detect_candidates, inject_values, managed_params, source_is_valid, write_managed_params,
+};
 
 fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/corpus")
@@ -36,7 +43,11 @@ fn neutral_corpus() -> Vec<(&'static str, PathBuf)> {
     files(&root, "py")
         .into_iter()
         .map(|path| ("python", path))
-        .chain(files(&root.join("shell"), "sh").into_iter().map(|path| ("shell", path)))
+        .chain(
+            files(&root.join("shell"), "sh")
+                .into_iter()
+                .map(|path| ("shell", path)),
+        )
         .collect()
 }
 
@@ -45,7 +56,11 @@ fn js_ts_corpus() -> Vec<(&'static str, PathBuf)> {
     files(&root.join("js"), "mjs")
         .into_iter()
         .map(|path| ("js", path))
-        .chain(files(&root.join("ts"), "ts").into_iter().map(|path| ("ts", path)))
+        .chain(
+            files(&root.join("ts"), "ts")
+                .into_iter()
+                .map(|path| ("ts", path)),
+        )
         .collect()
 }
 
@@ -99,7 +114,9 @@ fn lines_keepends(text: &str) -> Vec<&str> {
 fn path_id(kind: &str, path: &Path) -> String {
     format!(
         "{kind}:{}",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("<non-utf8>")
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<non-utf8>")
     )
 }
 
@@ -110,7 +127,11 @@ fn test_analyzer_never_raises() {
     for (kind, path) in corpus {
         let text = read_exact(&path);
         let result = catch_unwind(AssertUnwindSafe(|| detect_candidates(kind, &text)));
-        assert!(result.is_ok(), "analyzer raised for {}", path_id(kind, &path));
+        assert!(
+            result.is_ok(),
+            "analyzer raised for {}",
+            path_id(kind, &path)
+        );
     }
 }
 
@@ -119,9 +140,18 @@ fn test_metawriter_byte_fidelity() {
     for (kind, path) in neutral_corpus() {
         let text = read_exact(&path);
         let specs = detect_candidates(kind, &text);
-        let written = write_managed_params(kind, &text, &specs)
-            .unwrap_or_else(|error| panic!("metadata write failed for {}: {error}", path_id(kind, &path)));
-        assert_eq!(managed_params(kind, &written), specs, "{}", path_id(kind, &path));
+        let written = write_managed_params(kind, &text, &specs).unwrap_or_else(|error| {
+            panic!(
+                "metadata write failed for {}: {error}",
+                path_id(kind, &path)
+            )
+        });
+        assert_eq!(
+            managed_params(kind, &written),
+            specs,
+            "{}",
+            path_id(kind, &path)
+        );
 
         let original_lines = lines_keepends(&text);
         let added = lines_keepends(&written)
@@ -144,8 +174,12 @@ fn test_block_roundtrip_preserves_shebang() {
         if specs.is_empty() {
             continue;
         }
-        let written = write_managed_params(kind, &text, &specs)
-            .unwrap_or_else(|error| panic!("metadata write failed for {}: {error}", path_id(kind, &path)));
+        let written = write_managed_params(kind, &text, &specs).unwrap_or_else(|error| {
+            panic!(
+                "metadata write failed for {}: {error}",
+                path_id(kind, &path)
+            )
+        });
         let lines = lines_keepends(&text);
         if lines.first().is_some_and(|line| line.starts_with("#!")) {
             assert_eq!(
@@ -155,8 +189,14 @@ fn test_block_roundtrip_preserves_shebang() {
                 path_id(kind, &path)
             );
             let shebang = written.find("#!").expect("written source lost shebang");
-            let block = written.find("# /// script").expect("written source lost metadata block");
-            assert!(shebang < block, "{} placed metadata before shebang", path_id(kind, &path));
+            let block = written
+                .find("# /// script")
+                .expect("written source lost metadata block");
+            assert!(
+                shebang < block,
+                "{} placed metadata before shebang",
+                path_id(kind, &path)
+            );
         }
         for line in lines {
             if !line.trim_start().starts_with('#') {
@@ -175,8 +215,13 @@ fn test_shim_no_values_is_identity() {
     for path in files(&corpus_root(), "py") {
         let text = read_exact(&path);
         let specs = detect_candidates("python", &text);
-        let out = inject_values("python", &text, &specs, &BTreeMap::new())
-            .unwrap_or_else(|error| panic!("empty Python injection failed for {}: {error}", path.display()));
+        let out =
+            inject_values("python", &text, &specs, &BTreeMap::new()).unwrap_or_else(|error| {
+                panic!(
+                    "empty Python injection failed for {}: {error}",
+                    path.display()
+                )
+            });
         assert_eq!(out.as_bytes(), text.as_bytes(), "{}", path.display());
     }
 }
@@ -189,12 +234,21 @@ fn test_shim_full_injection_compiles() {
         if specs.is_empty() {
             continue;
         }
-        let out = inject_values("python", &text, &specs, &sample_values(&specs))
-            .unwrap_or_else(|error| panic!("Python injection failed for {}: {error}", path.display()));
-        assert!(source_is_valid("python", &out), "injected Python is invalid: {}", path.display());
+        let out = inject_values("python", &text, &specs, &sample_values(&specs)).unwrap_or_else(
+            |error| panic!("Python injection failed for {}: {error}", path.display()),
+        );
+        assert!(
+            source_is_valid("python", &out),
+            "injected Python is invalid: {}",
+            path.display()
+        );
         for line in text.lines() {
             if line.starts_with("# ///") || line.starts_with("# dependencies") {
-                assert!(out.lines().any(|out_line| out_line == line), "{} lost PEP 723 line {line:?}", path.display());
+                assert!(
+                    out.lines().any(|out_line| out_line == line),
+                    "{} lost PEP 723 line {line:?}",
+                    path.display()
+                );
             }
         }
     }
@@ -207,8 +261,12 @@ fn test_shell_inject_no_values_writes_nothing() {
         let specs = detect_candidates("shell", &text);
         // This intentionally includes `19_zsh_dialect.sh`. Python returns without creating a temp
         // copy even though tree-sitter-bash cannot parse that dialect; empty values must be free.
-        let out = inject_values("shell", &text, &specs, &BTreeMap::new())
-            .unwrap_or_else(|error| panic!("empty shell injection failed for {}: {error}", path.display()));
+        let out = inject_values("shell", &text, &specs, &BTreeMap::new()).unwrap_or_else(|error| {
+            panic!(
+                "empty shell injection failed for {}: {error}",
+                path.display()
+            )
+        });
         assert_eq!(out.as_bytes(), text.as_bytes(), "{}", path.display());
     }
 }
@@ -227,16 +285,30 @@ fn test_shell_full_injection_reparses() {
             .cloned()
             .collect::<Vec<_>>();
         let values = sample_values(&specs);
-        let out = inject_values("shell", &text, &specs, &values)
-            .unwrap_or_else(|error| panic!("shell injection failed for {}: {error}", path.display()));
+        let out = inject_values("shell", &text, &specs, &values).unwrap_or_else(|error| {
+            panic!("shell injection failed for {}: {error}", path.display())
+        });
         if inject_specs.is_empty() {
-            assert_eq!(out.as_bytes(), text.as_bytes(), "env-only shell source was rewritten: {}", path.display());
+            assert_eq!(
+                out.as_bytes(),
+                text.as_bytes(),
+                "env-only shell source was rewritten: {}",
+                path.display()
+            );
             continue;
         }
-        assert!(source_is_valid("shell", &out), "injected shell is invalid: {}", path.display());
+        assert!(
+            source_is_valid("shell", &out),
+            "injected shell is invalid: {}",
+            path.display()
+        );
         for line in text.lines() {
             if line.trim_start().starts_with('#') {
-                assert!(out.lines().any(|out_line| out_line == line), "{} lost comment line {line:?}", path.display());
+                assert!(
+                    out.lines().any(|out_line| out_line == line),
+                    "{} lost comment line {line:?}",
+                    path.display()
+                );
             }
         }
     }
@@ -249,7 +321,11 @@ fn test_js_analyzer_never_raises() {
     for (kind, path) in corpus {
         let text = read_exact(&path);
         let result = catch_unwind(AssertUnwindSafe(|| detect_candidates(kind, &text)));
-        assert!(result.is_ok(), "analyzer raised for {}", path_id(kind, &path));
+        assert!(
+            result.is_ok(),
+            "analyzer raised for {}",
+            path_id(kind, &path)
+        );
     }
 }
 
@@ -258,9 +334,18 @@ fn test_js_block_byte_fidelity() {
     for (kind, path) in js_ts_corpus() {
         let text = read_exact(&path);
         let specs = detect_candidates(kind, &text);
-        let written = write_managed_params(kind, &text, &specs)
-            .unwrap_or_else(|error| panic!("metadata write failed for {}: {error}", path_id(kind, &path)));
-        assert_eq!(managed_params(kind, &written), specs, "{}", path_id(kind, &path));
+        let written = write_managed_params(kind, &text, &specs).unwrap_or_else(|error| {
+            panic!(
+                "metadata write failed for {}: {error}",
+                path_id(kind, &path)
+            )
+        });
+        assert_eq!(
+            managed_params(kind, &written),
+            specs,
+            "{}",
+            path_id(kind, &path)
+        );
         let original_lines = lines_keepends(&text);
         let added = lines_keepends(&written)
             .into_iter()
@@ -279,8 +364,12 @@ fn test_js_inject_no_values_is_identity() {
     for (kind, path) in js_ts_corpus() {
         let text = read_exact(&path);
         let specs = detect_candidates(kind, &text);
-        let out = inject_values(kind, &text, &specs, &BTreeMap::new())
-            .unwrap_or_else(|error| panic!("empty JS/TS injection failed for {}: {error}", path_id(kind, &path)));
+        let out = inject_values(kind, &text, &specs, &BTreeMap::new()).unwrap_or_else(|error| {
+            panic!(
+                "empty JS/TS injection failed for {}: {error}",
+                path_id(kind, &path)
+            )
+        });
         assert_eq!(out.as_bytes(), text.as_bytes(), "{}", path_id(kind, &path));
     }
 }
@@ -294,17 +383,37 @@ fn test_js_full_injection_reparses() {
             continue;
         }
         assert!(
-            specs.iter().all(|spec| spec.delivery == ParameterDelivery::Inject),
+            specs
+                .iter()
+                .all(|spec| spec.delivery == ParameterDelivery::Inject),
             "{} unexpectedly exposes a non-rewrite JS delivery channel",
             path_id(kind, &path)
         );
-        let out = inject_values(kind, &text, &specs, &sample_values(&specs))
-            .unwrap_or_else(|error| panic!("JS/TS injection failed for {}: {error}", path_id(kind, &path)));
-        assert_ne!(out.as_bytes(), text.as_bytes(), "{} did not materialize full injection", path_id(kind, &path));
-        assert!(source_is_valid(kind, &out), "injected source is invalid: {}", path_id(kind, &path));
+        let out =
+            inject_values(kind, &text, &specs, &sample_values(&specs)).unwrap_or_else(|error| {
+                panic!(
+                    "JS/TS injection failed for {}: {error}",
+                    path_id(kind, &path)
+                )
+            });
+        assert_ne!(
+            out.as_bytes(),
+            text.as_bytes(),
+            "{} did not materialize full injection",
+            path_id(kind, &path)
+        );
+        assert!(
+            source_is_valid(kind, &out),
+            "injected source is invalid: {}",
+            path_id(kind, &path)
+        );
         for line in text.lines() {
             if line.trim_start().starts_with("//") {
-                assert!(out.lines().any(|out_line| out_line == line), "{} lost comment line {line:?}", path_id(kind, &path));
+                assert!(
+                    out.lines().any(|out_line| out_line == line),
+                    "{} lost comment line {line:?}",
+                    path_id(kind, &path)
+                );
             }
         }
     }

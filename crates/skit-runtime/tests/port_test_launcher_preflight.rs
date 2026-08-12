@@ -10,9 +10,7 @@ use std::path::{Path, PathBuf};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
-use skit_runtime::{
-    LaunchError, LaunchPaths, ProgramProbe, build_launch_preview,
-};
+use skit_runtime::{LaunchError, LaunchPaths, ProgramProbe, build_launch_preview};
 
 #[derive(Debug, Default)]
 struct PreflightProbe {
@@ -55,16 +53,7 @@ fn paths(script: impl Into<PathBuf>) -> LaunchPaths {
 }
 
 fn preview(entry: &Entry, paths: &LaunchPaths, probe: &PreflightProbe) -> Result<(), LaunchError> {
-    build_launch_preview(
-        entry,
-        paths,
-        &Assembly::default(),
-        None,
-        None,
-        None,
-        probe,
-    )
-    .map(drop)
+    build_launch_preview(entry, paths, &Assembly::default(), None, None, None, probe).map(drop)
 }
 
 #[test]
@@ -189,7 +178,10 @@ fn test_preflight_does_not_invoke_uv() {
     )
     .unwrap();
     assert_eq!(plan.program, PathBuf::from("uv"));
-    assert!(plan.args.starts_with(&["run".to_owned(), "--no-project".to_owned()]));
+    assert!(
+        plan.args
+            .starts_with(&["run".to_owned(), "--no-project".to_owned()])
+    );
 }
 
 #[test]

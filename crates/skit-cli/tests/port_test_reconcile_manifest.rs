@@ -42,7 +42,9 @@ const HIGHER: &[&str] = &[
 ];
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 fn missing(path: &Path, names: &[&str]) -> Vec<String> {
@@ -91,8 +93,8 @@ fn higher_layer_reconcile_contracts_are_not_backfilled_with_ignore_stubs() {
         .parent()
         .and_then(Path::parent)
         .unwrap();
-    let source = fs::read_to_string(repo.join("crates/skit-language/tests/port_test_reconcile.rs"))
-        .unwrap();
+    let source =
+        fs::read_to_string(repo.join("crates/skit-language/tests/port_test_reconcile.rs")).unwrap();
     let file = syn::parse_file(&source).unwrap();
     for name in HIGHER {
         assert!(

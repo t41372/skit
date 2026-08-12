@@ -121,7 +121,10 @@ fn shell_tokens(line: &str) -> Vec<String> {
 
 fn command_path(tokens: &[String]) -> Vec<String> {
     assert_eq!(tokens.first().map(String::as_str), Some("skit"));
-    let top = tokens.get(1).expect("skit command has a subcommand").clone();
+    let top = tokens
+        .get(1)
+        .expect("skit command has a subcommand")
+        .clone();
     let mut path = vec![top.clone()];
     if matches!(top.as_str(), "runner" | "preset" | "agent") {
         let nested = tokens
@@ -164,7 +167,11 @@ fn documented_flags(tokens: &[String]) -> Vec<&str> {
             break;
         }
         if token.starts_with("--") {
-            flags.push(token.split_once('=').map_or(token.as_str(), |(flag, _)| flag));
+            flags.push(
+                token
+                    .split_once('=')
+                    .map_or(token.as_str(), |(flag, _)| flag),
+            );
         } else if token.len() == 2 && token.starts_with('-') {
             flags.push(token.as_str());
         }

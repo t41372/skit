@@ -146,12 +146,7 @@ fn installed(destination: &Path) -> PathBuf {
 fn test_skill_text_is_the_bundled_skill() {
     let sandbox = Sandbox::new();
     let destination = sandbox.cwd.join("skills");
-    let output = sandbox.run(&[
-        "agent",
-        "install",
-        "--to",
-        destination.to_str().unwrap(),
-    ]);
+    let output = sandbox.run(&["agent", "install", "--to", destination.to_str().unwrap()]);
     assert!(output.status.success(), "{}", output_text(&output));
 
     let text = fs::read_to_string(installed(&destination)).unwrap();
@@ -162,12 +157,7 @@ fn test_skill_text_is_the_bundled_skill() {
 fn test_cli_install_to_explicit_dir() {
     let sandbox = Sandbox::new();
     let destination = sandbox.cwd.join("anywhere");
-    let output = sandbox.run(&[
-        "agent",
-        "install",
-        "--to",
-        destination.to_str().unwrap(),
-    ]);
+    let output = sandbox.run(&["agent", "install", "--to", destination.to_str().unwrap()]);
 
     assert_eq!(code(&output), 0, "{}", output_text(&output));
     let target = installed(&destination);
@@ -190,12 +180,7 @@ fn test_cli_install_to_a_file_fails_cleanly() {
     let blocker = sandbox.cwd.join("afile");
     fs::write(&blocker, "not a directory").unwrap();
 
-    let output = sandbox.run(&[
-        "agent",
-        "install",
-        "--to",
-        blocker.to_str().unwrap(),
-    ]);
+    let output = sandbox.run(&["agent", "install", "--to", blocker.to_str().unwrap()]);
     let text = output_text(&output);
 
     assert_eq!(code(&output), 1, "{text}");
@@ -239,12 +224,7 @@ fn test_cli_install_named_target_user_scope() {
     let output = sandbox.run(&["agent", "install", "claude"]);
 
     assert_eq!(code(&output), 0, "{}", output_text(&output));
-    assert!(
-        sandbox
-            .home
-            .join(".claude/skills/skit/SKILL.md")
-            .is_file()
-    );
+    assert!(sandbox.home.join(".claude/skills/skit/SKILL.md").is_file());
     assert!(!sandbox.cwd.join(".claude/skills/skit/SKILL.md").exists());
 }
 

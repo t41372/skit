@@ -152,12 +152,8 @@ fn test_cli_declared_warning_codes_render() {
     {
         let sandbox = Sandbox::new();
         sandbox.add_command("placeholder", "echo {other}");
-        let _ = sandbox.run(&[
-            "params", "placeholder", "--add", "x", "--deliver", "x=env",
-        ]);
-        let output = sandbox.run(&[
-            "params", "placeholder", "--deliver", "x=placeholder",
-        ]);
+        let _ = sandbox.run(&["params", "placeholder", "--add", "x", "--deliver", "x=env"]);
+        let output = sandbox.run(&["params", "placeholder", "--deliver", "x=placeholder"]);
         check(
             "not-a-placeholder",
             &output,
@@ -181,11 +177,16 @@ fn test_cli_declared_warning_codes_render() {
         let sandbox = Sandbox::new();
         sandbox.add_exe("baddefault");
         let _ = sandbox.run(&[
-            "params", "baddefault", "--add", "x", "--type", "x=int", "--default", "x=3",
+            "params",
+            "baddefault",
+            "--add",
+            "x",
+            "--type",
+            "x=int",
+            "--default",
+            "x=3",
         ]);
-        let output = sandbox.run(&[
-            "params", "baddefault", "--default", "x=notanint",
-        ]);
+        let output = sandbox.run(&["params", "baddefault", "--default", "x=notanint"]);
         check(
             "bad-default",
             &output,
@@ -196,11 +197,14 @@ fn test_cli_declared_warning_codes_render() {
     {
         let sandbox = Sandbox::new();
         sandbox.add_exe("choice");
-        let _ = sandbox.run(&[
-            "params", "choice", "--add", "x", "--help-text", "x=keep",
-        ]);
+        let _ = sandbox.run(&["params", "choice", "--add", "x", "--help-text", "x=keep"]);
         let output = sandbox.run(&[
-            "params", "choice", "--type", "x=choice", "--help-text", "x=changed",
+            "params",
+            "choice",
+            "--type",
+            "x=choice",
+            "--help-text",
+            "x=changed",
         ]);
         check(
             "choice-without-choices",

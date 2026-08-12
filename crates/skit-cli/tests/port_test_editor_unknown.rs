@@ -155,7 +155,10 @@ fn test_edit_unknown_confirmed_creates() {
     assert_eq!(entry.meta.kind.as_str(), "python");
     let stored = fixture.store().payload_path(&entry).unwrap();
     assert!(fs::read_to_string(stored).unwrap().contains("requests"));
-    assert!(fixture.capture.exists(), "confirmed creation never launched the editor");
+    assert!(
+        fixture.capture.exists(),
+        "confirmed creation never launched the editor"
+    );
 }
 
 #[test]
@@ -165,7 +168,10 @@ fn test_edit_unknown_declined_creates_nothing() {
     let (code, output) = fixture.run_pty("nope", b"n\n");
     assert_eq!(code, 0, "{output}");
     assert!(fixture.store().resolve("nope").is_err());
-    assert!(!fixture.capture.exists(), "declining creation still launched the editor");
+    assert!(
+        !fixture.capture.exists(),
+        "declining creation still launched the editor"
+    );
 }
 
 #[test]
@@ -175,5 +181,8 @@ fn test_edit_unknown_non_interactive_errors() {
     let output = fixture.run_noninteractive("ghost");
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
     assert!(fixture.store().resolve("ghost").is_err());
-    assert!(!fixture.capture.exists(), "non-interactive unknown edit launched the editor");
+    assert!(
+        !fixture.capture.exists(),
+        "non-interactive unknown edit launched the editor"
+    );
 }

@@ -60,20 +60,18 @@ impl Sandbox {
     fn add_python(&self, name: &str, source: &str) -> PathBuf {
         let path = self.source(&format!("{name}.py"), source);
         self.command()
-            .args([
-                "add",
-                path.to_str().unwrap(),
-                "--name",
-                name,
-                "--no-input",
-            ])
+            .args(["add", path.to_str().unwrap(), "--name", name, "--no-input"])
             .assert()
             .success();
         self.stored(name)
     }
 
     fn stored(&self, slug: &str) -> PathBuf {
-        self.data.path().join("scripts").join(slug).join("script.py")
+        self.data
+            .path()
+            .join("scripts")
+            .join(slug)
+            .join("script.py")
     }
 
     fn commit_source_edit(&self, slug: &str, edit: impl FnOnce(String) -> String) {
@@ -169,20 +167,14 @@ fn duplicate_managed_source(include_x_body: bool) -> String {
 #[test]
 fn test_drift_lines_mention_rebind() {
     let sandbox = Sandbox::new();
-    sandbox.add_python(
-        "myscript",
-        "value = input(\"Old label: \")\nprint(value)\n",
-    );
+    sandbox.add_python("myscript", "value = input(\"Old label: \")\nprint(value)\n");
     manage(&sandbox, "myscript", &["input-1"]);
-    sandbox.ok(&[
-        "params",
-        "myscript",
-        "--prompt",
-        "input-1=Old label: ",
-    ]);
+    sandbox.ok(&["params", "myscript", "--prompt", "input-1=Old label: "]);
     let before = sandbox.json(&["params", "myscript", "--json"]);
     assert_eq!(parameter(&before, "input-1")["prompt"], "Old label: ");
-    sandbox.commit_source_edit("myscript", |text| text.replace("Old label: ", "New label: "));
+    sandbox.commit_source_edit("myscript", |text| {
+        text.replace("Old label: ", "New label: ")
+    });
 
     let output = sandbox.ok(&["show", "myscript"]);
     let human = String::from_utf8(output.stdout).unwrap();
@@ -193,20 +185,14 @@ fn test_drift_lines_mention_rebind() {
 #[test]
 fn test_resync_reanchors_rebound_input_order_and_prompt() {
     let sandbox = Sandbox::new();
-    sandbox.add_python(
-        "myscript",
-        "value = input(\"Old label: \")\nprint(value)\n",
-    );
+    sandbox.add_python("myscript", "value = input(\"Old label: \")\nprint(value)\n");
     manage(&sandbox, "myscript", &["input-1"]);
-    sandbox.ok(&[
-        "params",
-        "myscript",
-        "--prompt",
-        "input-1=Old label: ",
-    ]);
+    sandbox.ok(&["params", "myscript", "--prompt", "input-1=Old label: "]);
     let before = sandbox.json(&["params", "myscript", "--json"]);
     assert_eq!(parameter(&before, "input-1")["prompt"], "Old label: ");
-    sandbox.commit_source_edit("myscript", |text| text.replace("Old label: ", "New label: "));
+    sandbox.commit_source_edit("myscript", |text| {
+        text.replace("Old label: ", "New label: ")
+    });
 
     let output = sandbox.ok(&["params", "myscript", "--resync"]);
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -440,7 +426,9 @@ fn test_edit_specs_dedups_duplicate_names_even_when_untouched() {
     let document = sandbox.json(&["params", "duplicate", "--json"]);
     assert_eq!(parameter_names(&document), ["X", "Y"]);
     assert_eq!(parameter(&document, "Y")["secret"], true);
-    let names = parameter_names(&document).into_iter().collect::<BTreeSet<_>>();
+    let names = parameter_names(&document)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     assert_eq!(names, BTreeSet::from(["X".to_owned(), "Y".to_owned()]));
 }
 
@@ -464,7 +452,9 @@ fn test_no_secret_also_clears_the_env_source() {
     sandbox.ok(&["params", "managed", "--no-secret", "API"]);
     let after = sandbox.json(&["params", "managed", "--json"]);
     assert!(
-        !parameter(&after, "API")["secret"].as_bool().unwrap_or(false),
+        !parameter(&after, "API")["secret"]
+            .as_bool()
+            .unwrap_or(false),
         "a public row must not remain secret: {}",
         parameter(&after, "API")
     );

@@ -102,13 +102,7 @@ fn test_add_source_arrows_walk_path_template_name() {
 
     let (terminal, geometry) = draw(&mut session, &state);
     assert_eq!(
-        click_advertised_chip(
-            &mut session,
-            &state,
-            &terminal,
-            &geometry,
-            "Shift+Tab/↑",
-        ),
+        click_advertised_chip(&mut session, &state, &terminal, &geometry, "Shift+Tab/↑",),
         Some(AddScreenEvent::Changed)
     );
     assert_source_focus(&session, AddTextField::SourcePath);
@@ -122,7 +116,11 @@ fn test_add_source_arrows_walk_path_template_name() {
 
     let (_, geometry) = draw(&mut session, &state);
     assert_eq!(
-        session.handle_event(key(KeyCode::BackTab, KeyModifiers::SHIFT), &state, &geometry),
+        session.handle_event(
+            key(KeyCode::BackTab, KeyModifiers::SHIFT),
+            &state,
+            &geometry
+        ),
         Some(AddScreenEvent::Changed)
     );
     assert_source_focus(&session, AddTextField::SourcePath);
@@ -174,13 +172,7 @@ fn test_add_review_boots_on_name_and_arrows_move() {
 
     let (terminal, geometry) = draw(&mut session, &state);
     assert_eq!(
-        click_advertised_chip(
-            &mut session,
-            &state,
-            &terminal,
-            &geometry,
-            "Shift+Tab/↑",
-        ),
+        click_advertised_chip(&mut session, &state, &terminal, &geometry, "Shift+Tab/↑",),
         Some(AddScreenEvent::Changed)
     );
     assert_source_focus(&session, AddTextField::ReviewName);
@@ -194,7 +186,11 @@ fn test_add_review_boots_on_name_and_arrows_move() {
 
     let (_, geometry) = draw(&mut session, &state);
     assert_eq!(
-        session.handle_event(key(KeyCode::BackTab, KeyModifiers::SHIFT), &state, &geometry),
+        session.handle_event(
+            key(KeyCode::BackTab, KeyModifiers::SHIFT),
+            &state,
+            &geometry
+        ),
         Some(AddScreenEvent::Changed)
     );
     assert_source_focus(&session, AddTextField::ReviewName);

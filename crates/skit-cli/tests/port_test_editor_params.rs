@@ -84,7 +84,9 @@ fn test_params_edit_missing_copy_refused() {
         ),
     )
     .unwrap();
-    FileStore::new(roots.data.path()).rebuild_registry().unwrap();
+    FileStore::new(roots.data.path())
+        .rebuild_registry()
+        .unwrap();
     fs::remove_file(directory.join("script.py")).unwrap();
 
     let output = roots
@@ -93,5 +95,9 @@ fn test_params_edit_missing_copy_refused() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert!(combined(&output).contains("no stored copy"), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("no stored copy"),
+        "{}",
+        combined(&output)
+    );
 }

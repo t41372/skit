@@ -3,8 +3,7 @@
 use std::fs;
 
 use skit_application::{
-    CreateEntry, EntryMutationRepository as _,
-    form_state::FormStateRepository as _,
+    CreateEntry, EntryMutationRepository as _, form_state::FormStateRepository as _,
 };
 use skit_domain::{EntryKind, EntrySettings, Slug, StorageMode};
 use skit_i18n::requested_locale;

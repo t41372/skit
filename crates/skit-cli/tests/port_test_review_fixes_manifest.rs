@@ -5,7 +5,11 @@
 //! seams that do not exist in the Rust architecture; they remain explicitly architecture-closed
 //! rather than being impersonated by same-named tests of different behavior.
 
-use std::{collections::{BTreeMap, BTreeSet}, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 use syn::{Attribute, Item};
 
@@ -21,29 +25,98 @@ const S: &str = "crates/skit-store/tests/port_test_review_fixes_store.rs";
 const C: &str = "crates/skit-cli/tests/port_test_review_fixes_cli.rs";
 
 const EXECUTABLE: &[Mapping] = &[
-    Mapping { python: "test_escaped_placeholder_not_substituted", path: R },
-    Mapping { python: "test_escape_unescaped_even_without_params", path: R },
-    Mapping { python: "test_extra_args_quoted_for_posix_shell", path: R },
-    Mapping { python: "test_inject_rejects_non_finite_float", path: L },
-    Mapping { python: "test_inject_accepts_normal_float", path: L },
-    Mapping { python: "test_write_injected_unique_and_private", path: C },
-    Mapping { python: "test_write_params_prompt_with_newline_roundtrips", path: L },
-    Mapping { python: "test_set_dependencies_multiline_array_with_comment", path: L },
-    Mapping { python: "test_is_supported_rejects_junk", path: S },
-    Mapping { python: "test_slugify_all_special_chars_fallback", path: D },
-    Mapping { python: "test_write_params_no_block_no_params", path: L },
-    Mapping { python: "test_parse_block_corrupt_body_returns_none", path: L },
-    Mapping { python: "test_argstate_corrupt_file_fallback", path: S },
-    Mapping { python: "test_normalize_four_char_subtag", path: S },
-    Mapping { python: "test_config_language_corrupt_file", path: S },
-    Mapping { python: "test_set_language_with_existing_corrupt_config", path: S },
-    Mapping { python: "test_slugify_leading_trailing_special", path: D },
-    Mapping { python: "test_inject_annotated_assignment", path: L },
-    Mapping { python: "test_unique_slug_multiple_collisions", path: S },
-    Mapping { python: "test_update_dependencies_reference_mode", path: C },
-    Mapping { python: "test_update_dependencies_exe_entry", path: C },
-    Mapping { python: "test_find_uv_private_bin_exe_variant", path: C },
-    Mapping { python: "test_build_python_only_requires_python", path: R },
+    Mapping {
+        python: "test_escaped_placeholder_not_substituted",
+        path: R,
+    },
+    Mapping {
+        python: "test_escape_unescaped_even_without_params",
+        path: R,
+    },
+    Mapping {
+        python: "test_extra_args_quoted_for_posix_shell",
+        path: R,
+    },
+    Mapping {
+        python: "test_inject_rejects_non_finite_float",
+        path: L,
+    },
+    Mapping {
+        python: "test_inject_accepts_normal_float",
+        path: L,
+    },
+    Mapping {
+        python: "test_write_injected_unique_and_private",
+        path: C,
+    },
+    Mapping {
+        python: "test_write_params_prompt_with_newline_roundtrips",
+        path: L,
+    },
+    Mapping {
+        python: "test_set_dependencies_multiline_array_with_comment",
+        path: L,
+    },
+    Mapping {
+        python: "test_is_supported_rejects_junk",
+        path: S,
+    },
+    Mapping {
+        python: "test_slugify_all_special_chars_fallback",
+        path: D,
+    },
+    Mapping {
+        python: "test_write_params_no_block_no_params",
+        path: L,
+    },
+    Mapping {
+        python: "test_parse_block_corrupt_body_returns_none",
+        path: L,
+    },
+    Mapping {
+        python: "test_argstate_corrupt_file_fallback",
+        path: S,
+    },
+    Mapping {
+        python: "test_normalize_four_char_subtag",
+        path: S,
+    },
+    Mapping {
+        python: "test_config_language_corrupt_file",
+        path: S,
+    },
+    Mapping {
+        python: "test_set_language_with_existing_corrupt_config",
+        path: S,
+    },
+    Mapping {
+        python: "test_slugify_leading_trailing_special",
+        path: D,
+    },
+    Mapping {
+        python: "test_inject_annotated_assignment",
+        path: L,
+    },
+    Mapping {
+        python: "test_unique_slug_multiple_collisions",
+        path: S,
+    },
+    Mapping {
+        python: "test_update_dependencies_reference_mode",
+        path: C,
+    },
+    Mapping {
+        python: "test_update_dependencies_exe_entry",
+        path: C,
+    },
+    Mapping {
+        python: "test_find_uv_private_bin_exe_variant",
+        path: C,
+    },
+    Mapping {
+        python: "test_build_python_only_requires_python",
+        path: R,
+    },
 ];
 
 const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[
@@ -180,7 +253,10 @@ fn architecture_closed_review_fixes_are_not_impersonated_by_weaker_tests() {
         .collect::<BTreeSet<_>>();
 
     for (name, reason) in ARCHITECTURE_CLOSED {
-        assert!(!reason.trim().is_empty(), "{name} needs a concrete architectural reason");
+        assert!(
+            !reason.trim().is_empty(),
+            "{name} needs a concrete architectural reason"
+        );
         assert!(
             !executable_names.contains(*name),
             "{name} is architecture-closed ({reason}); do not add a same-named weaker stand-in"

@@ -63,8 +63,8 @@ fn kitty_keyboard_enable_sequences(output: &[u8]) -> Vec<Vec<u8>> {
     let mut found = Vec::new();
     let mut offset = 0;
     while offset + 3 <= output.len() {
-        let is_enable_prefix = output[offset..].starts_with(b"\x1b[>")
-            || output[offset..].starts_with(b"\x1b[=");
+        let is_enable_prefix =
+            output[offset..].starts_with(b"\x1b[>") || output[offset..].starts_with(b"\x1b[=");
         if !is_enable_prefix {
             offset += 1;
             continue;
@@ -74,10 +74,7 @@ fn kitty_keyboard_enable_sequences(output: &[u8]) -> Vec<Vec<u8>> {
         // the payload shape avoids mistaking unrelated CSI `>` terminal-identification traffic for
         // keyboard enhancement.
         let payload = &output[offset + 3..];
-        let end = payload
-            .iter()
-            .take(32)
-            .position(|byte| *byte == b'u');
+        let end = payload.iter().take(32).position(|byte| *byte == b'u');
         if let Some(end) = end {
             let flags = &payload[..end];
             if !flags.is_empty()
@@ -113,7 +110,9 @@ fn test_kitty_protocol_opt_out_is_effective_before_tui_input_starts() {
     // Pin the exact incident sequence as a readable regression receipt, then reject every numeric
     // kitty push/set variant so changing flags cannot silently reintroduce the same IME failure.
     assert!(
-        !output.windows(b"\x1b[>25u".len()).any(|window| window == b"\x1b[>25u"),
+        !output
+            .windows(b"\x1b[>25u".len())
+            .any(|window| window == b"\x1b[>25u"),
         "the exact Textual/iTerm2 regression sequence was emitted"
     );
     let enables = kitty_keyboard_enable_sequences(&output);

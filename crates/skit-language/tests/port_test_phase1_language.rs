@@ -39,7 +39,10 @@ fn test_suggest_dependencies() {
     let got = external_dependencies_at("python", text, None);
     assert!(got.contains(&"requests".to_owned()), "{got:?}");
     assert!(got.contains(&"rich".to_owned()), "{got:?}");
-    assert!(!got.contains(&"os".to_owned()), "stdlib leaked into dependencies: {got:?}");
+    assert!(
+        !got.contains(&"os".to_owned()),
+        "stdlib leaked into dependencies: {got:?}"
+    );
 }
 
 #[test]

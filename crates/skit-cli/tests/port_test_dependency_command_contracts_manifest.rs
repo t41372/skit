@@ -53,7 +53,15 @@ fn all_twenty_python_dependency_command_contracts_are_executable_once() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(PYTHON_TESTS.len(), 20);
-    assert_eq!(actual.len(), 20, "unexpected extra or missing dependency-command tests");
-    assert_eq!(actual_set.len(), actual.len(), "duplicate names hide a missing contract");
+    assert_eq!(
+        actual.len(),
+        20,
+        "unexpected extra or missing dependency-command tests"
+    );
+    assert_eq!(
+        actual_set.len(),
+        actual.len(),
+        "duplicate names hide a missing contract"
+    );
     assert_eq!(actual_set, expected);
 }

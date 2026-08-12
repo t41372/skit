@@ -179,7 +179,10 @@ fn test_editor_lane_versioned_python_shebang_onboards_as_python() {
     );
 
     assert_eq!(code, 0, "{output}");
-    assert_eq!(fixture.store().resolve("vpy").unwrap().meta.kind.as_str(), "python");
+    assert_eq!(
+        fixture.store().resolve("vpy").unwrap().meta.kind.as_str(),
+        "python"
+    );
 }
 
 #[test]
@@ -202,12 +205,7 @@ fn test_prompt_editor_bogus_runner_refused_before_the_editor() {
 #[test]
 fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
     let fixture = Fixture::new();
-    let (code, output) = fixture.run(
-        &["add", "-e", "-n", "x", "--no-input"],
-        None,
-        true,
-        b"",
-    );
+    let (code, output) = fixture.run(&["add", "-e", "-n", "x", "--no-input"], None, true, b"");
 
     assert_eq!(code, 2, "{output}");
     assert!(output.contains("skit add - -n NAME"), "{output}");
@@ -233,35 +231,24 @@ fn test_prompt_editor_no_input_in_a_terminal_is_refused() {
 fn test_edit_description_flag_wins_over_python_docstring() {
     let fixture = Fixture::new();
     let (code, output) = fixture.run(
-        &[
-            "add",
-            "-e",
-            "-n",
-            "dpy",
-            "--description",
-            "flag wins",
-        ],
+        &["add", "-e", "-n", "dpy", "--description", "flag wins"],
         Some("\"\"\"Docstring one\"\"\"\nprint(1)\n"),
         false,
         b"\n\n\n",
     );
 
     assert_eq!(code, 0, "{output}");
-    assert_eq!(fixture.store().resolve("dpy").unwrap().meta.description, "flag wins");
+    assert_eq!(
+        fixture.store().resolve("dpy").unwrap().meta.description,
+        "flag wins"
+    );
 }
 
 #[test]
 fn test_edit_description_flag_on_non_python_draft_is_stored() {
     let fixture = Fixture::new();
     let (code, output) = fixture.run(
-        &[
-            "add",
-            "-e",
-            "-n",
-            "dsh",
-            "--description",
-            "shell note",
-        ],
+        &["add", "-e", "-n", "dsh", "--description", "shell note"],
         Some("#!/usr/bin/env bash\necho hi\n"),
         false,
         b"",
@@ -287,8 +274,14 @@ fn test_edit_post_editor_refusal_keeps_draft_and_announces_short() {
     assert_eq!(code, 2, "{shown}");
     assert!(shown.contains("python flags"), "{shown}");
     assert!(shown.contains("Your draft was kept at"), "{shown}");
-    assert!(!shown.contains("fix the problem and add it with"), "{shown}");
+    assert!(
+        !shown.contains("fix the problem and add it with"),
+        "{shown}"
+    );
     let draft = fixture.captured_draft();
-    assert!(draft.exists(), "post-editor refusal destroyed the user's only draft");
+    assert!(
+        draft.exists(),
+        "post-editor refusal destroyed the user's only draft"
+    );
     assert!(fixture.store().resolve("d").is_err());
 }

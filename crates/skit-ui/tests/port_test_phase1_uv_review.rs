@@ -30,7 +30,9 @@ fn test_inject_block_roundtrip() {
         },
     );
     let created = review.create_entry().unwrap();
-    let payload = created.payload.expect("copy-mode Python review stores a payload");
+    let payload = created
+        .payload
+        .expect("copy-mode Python review stores a payload");
     let text = String::from_utf8(payload.bytes).unwrap();
 
     assert!(
@@ -59,7 +61,9 @@ fn test_inject_block_roundtrip() {
         },
     );
     let created = protected.create_entry().unwrap();
-    let payload = created.payload.expect("copy-mode Python review stores a payload");
+    let payload = created
+        .payload
+        .expect("copy-mode Python review stores a payload");
 
     assert_eq!(
         payload.bytes,

@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 
 use syn::{Attribute, Item};
 
-const LANGUAGE: &str = include_str!("../../skit-language/tests/port_test_add_validation_contracts.rs");
+const LANGUAGE: &str =
+    include_str!("../../skit-language/tests/port_test_add_validation_contracts.rs");
 const UI: &str = include_str!("../../skit-ui/tests/port_test_add_validation_contracts.rs");
 const CLI: &str = include_str!("port_test_add_validation_contracts.rs");
 const EDITOR: &str = include_str!("port_test_add_validation_editor.rs");
@@ -77,7 +78,15 @@ fn all_thirty_one_python_add_validation_contracts_are_executable_once() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(PYTHON_TESTS.len(), 31);
-    assert_eq!(actual.len(), 31, "unexpected extra or missing add-validation tests");
-    assert_eq!(actual_set.len(), actual.len(), "duplicate names hide a missing contract");
+    assert_eq!(
+        actual.len(),
+        31,
+        "unexpected extra or missing add-validation tests"
+    );
+    assert_eq!(
+        actual_set.len(),
+        actual.len(),
+        "duplicate names hide a missing contract"
+    );
     assert_eq!(actual_set, expected);
 }

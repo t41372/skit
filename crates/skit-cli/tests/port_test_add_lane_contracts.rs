@@ -5,7 +5,11 @@
 //! compiled editor probe make "editor never launched" observable. This file keeps stdin/path/read
 //! lanes on real subprocesses and authoritative store/JSON state.
 
-use std::{fs, path::{Path, PathBuf}, process::Output};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Output,
+};
 
 use assert_cmd::Command;
 use skit_application::EntryRepository as _;
@@ -124,7 +128,11 @@ fn test_selector_collisions_are_refused_one_voice() {
     let path = real.to_str().unwrap();
     let cases = [
         (vec!["add", path, "--cmd", "echo {x}"], "a file path", None),
-        (vec!["add", "-", "--cmd", "echo {x}"], "stdin ('-')", Some("print(1)\n")),
+        (
+            vec!["add", "-", "--cmd", "echo {x}"],
+            "stdin ('-')",
+            Some("print(1)\n"),
+        ),
         (vec!["add", "--edit", path], "--edit", None),
         (vec!["add", "--edit", "-"], "--edit", Some("print(1)\n")),
     ];
@@ -147,7 +155,10 @@ fn test_selector_collisions_are_refused_one_voice() {
             "argv={argv:?}: {shown}"
         );
         assert!(shown.contains(needle), "argv={argv:?}: {shown}");
-        assert!(sandbox.store().scan().unwrap().entries.is_empty(), "argv={argv:?}");
+        assert!(
+            sandbox.store().scan().unwrap().entries.is_empty(),
+            "argv={argv:?}"
+        );
         let drafts = sandbox.data.path().join("drafts");
         assert!(
             !drafts.exists() || fs::read_dir(drafts).unwrap().next().is_none(),
@@ -165,7 +176,10 @@ fn test_stdin_versioned_python_shebang_lands_as_python() {
     );
 
     assert_eq!(output.code, 0, "{}", output.text());
-    assert_eq!(sandbox.store().resolve("v").unwrap().meta.kind.as_str(), "python");
+    assert_eq!(
+        sandbox.store().resolve("v").unwrap().meta.kind.as_str(),
+        "python"
+    );
     let show = sandbox.run(&["show", "v", "--json"]);
     assert_success(&show);
     let value: serde_json::Value = serde_json::from_slice(&show.stdout).unwrap();
@@ -176,9 +190,7 @@ fn test_stdin_versioned_python_shebang_lands_as_python() {
 fn test_stdin_prompt_bogus_runner_refused_before_any_draft() {
     let sandbox = Sandbox::new();
     let output = sandbox.run_stdin(
-        &[
-            "add", "-", "--prompt", "--runner", "bogus", "-n", "p",
-        ],
+        &["add", "-", "--prompt", "--runner", "bogus", "-n", "p"],
         "x {{u}}\n",
     );
     let shown = flat(&output.text());
@@ -212,15 +224,17 @@ fn test_path_add_of_a_drafts_home_file_unlinks_it_on_copy() {
     let sandbox = Sandbox::new();
     let draft = sandbox.draft("skit-new-resumeme.py", b"print('resume')\n");
 
-    let output = add_path(
-        &sandbox,
-        &draft,
-        &["-n", "res", "--no-input"],
-    );
+    let output = add_path(&sandbox, &draft, &["-n", "res", "--no-input"]);
 
     assert_success(&output);
-    assert_eq!(sandbox.store().resolve("res").unwrap().meta.mode, StorageMode::Copy);
-    assert!(!draft.exists(), "successful copy resume left its owned draft behind");
+    assert_eq!(
+        sandbox.store().resolve("res").unwrap().meta.mode,
+        StorageMode::Copy
+    );
+    assert!(
+        !draft.exists(),
+        "successful copy resume left its owned draft behind"
+    );
 }
 
 #[test]
@@ -228,11 +242,7 @@ fn test_path_add_of_a_drafts_home_file_refuses_reference() {
     let sandbox = Sandbox::new();
     let draft = sandbox.draft("skit-new-keepme.py", b"print('keep')\n");
 
-    let output = add_path(
-        &sandbox,
-        &draft,
-        &["-n", "kep", "--ref", "--no-input"],
-    );
+    let output = add_path(&sandbox, &draft, &["-n", "kep", "--ref", "--no-input"]);
     let shown = flat(&text(&output));
 
     assert_eq!(output.status.code(), Some(2), "{shown}");
@@ -250,8 +260,14 @@ fn test_path_add_of_a_normal_file_never_unlinks_the_original() {
     let output = add_path(&sandbox, &source, &["-n", "mine", "--no-input"]);
 
     assert_success(&output);
-    assert_eq!(sandbox.store().resolve("mine").unwrap().meta.mode, StorageMode::Copy);
-    assert!(source.exists(), "copy add moved or deleted the user's original file");
+    assert_eq!(
+        sandbox.store().resolve("mine").unwrap().meta.mode,
+        StorageMode::Copy
+    );
+    assert!(
+        source.exists(),
+        "copy add moved or deleted the user's original file"
+    );
 }
 
 #[test]
@@ -399,15 +415,9 @@ fn test_manage_flip_json_stdout_is_exactly_one_document() {
         "j.sh",
         b"#!/usr/bin/env bash\nCITY=Taipei\nwhile getopts \"n:v\" opt; do :; done\necho $CITY\n",
     );
-    assert_success(&add_path(
-        &sandbox,
-        &source,
-        &["-n", "jflip", "--no-input"],
-    ));
+    assert_success(&add_path(&sandbox, &source, &["-n", "jflip", "--no-input"]));
 
-    let result = sandbox.run(&[
-        "params", "jflip", "--manage", "CITY", "--json",
-    ]);
+    let result = sandbox.run(&["params", "jflip", "--manage", "CITY", "--json"]);
 
     assert_success(&result);
     let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();

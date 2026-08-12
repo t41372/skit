@@ -70,7 +70,7 @@ fn compile_editor(root: &Path) -> PathBuf {
     let source = root.join("editor_probe.rs");
     fs::write(
         &source,
-        r#"
+        r##"
 use std::{env, fs, io::Write as _, path::PathBuf};
 fn main() {
     let target = PathBuf::from(env::args_os().nth(1).expect("editor target"));
@@ -84,7 +84,7 @@ fn main() {
         file.write_all(b"# edited by probe\n").expect("edit target");
     }
 }
-"#,
+"##,
     )
     .unwrap();
     let executable = root.join(editor_probe_name());
@@ -285,15 +285,37 @@ impl TerminalState {
     fn csi(&mut self, params: &str, final_byte: u8) {
         match final_byte {
             b'H' | b'f' => {
-                self.row = Self::param(params, 0, 1).saturating_sub(1).min(self.height.saturating_sub(1));
-                self.col = Self::param(params, 1, 1).saturating_sub(1).min(self.width.saturating_sub(1));
+                self.row = Self::param(params, 0, 1)
+                    .saturating_sub(1)
+                    .min(self.height.saturating_sub(1));
+                self.col = Self::param(params, 1, 1)
+                    .saturating_sub(1)
+                    .min(self.width.saturating_sub(1));
             }
             b'A' => self.row = self.row.saturating_sub(Self::param(params, 0, 1)),
-            b'B' => self.row = self.row.saturating_add(Self::param(params, 0, 1)).min(self.height.saturating_sub(1)),
-            b'C' => self.col = self.col.saturating_add(Self::param(params, 0, 1)).min(self.width.saturating_sub(1)),
+            b'B' => {
+                self.row = self
+                    .row
+                    .saturating_add(Self::param(params, 0, 1))
+                    .min(self.height.saturating_sub(1))
+            }
+            b'C' => {
+                self.col = self
+                    .col
+                    .saturating_add(Self::param(params, 0, 1))
+                    .min(self.width.saturating_sub(1))
+            }
             b'D' => self.col = self.col.saturating_sub(Self::param(params, 0, 1)),
-            b'G' => self.col = Self::param(params, 0, 1).saturating_sub(1).min(self.width.saturating_sub(1)),
-            b'd' => self.row = Self::param(params, 0, 1).saturating_sub(1).min(self.height.saturating_sub(1)),
+            b'G' => {
+                self.col = Self::param(params, 0, 1)
+                    .saturating_sub(1)
+                    .min(self.width.saturating_sub(1))
+            }
+            b'd' => {
+                self.row = Self::param(params, 0, 1)
+                    .saturating_sub(1)
+                    .min(self.height.saturating_sub(1))
+            }
             b'J' => self.erase_display(Self::param(params, 0, 0)),
             b'K' => self.erase_line(Self::param(params, 0, 0)),
             b's' => self.saved = (self.row, self.col),
@@ -360,7 +382,10 @@ impl TerminalState {
                     index += 1;
                 }
                 b'\n' => {
-                    self.row = self.row.saturating_add(1).min(self.height.saturating_sub(1));
+                    self.row = self
+                        .row
+                        .saturating_add(1)
+                        .min(self.height.saturating_sub(1));
                     index += 1;
                 }
                 0x08 => {
@@ -375,7 +400,8 @@ impl TerminalState {
                         let mut decoded = None;
                         for length in 1..=4 {
                             if index + length <= bytes.len()
-                                && let Ok(piece) = std::str::from_utf8(&bytes[index..index + length])
+                                && let Ok(piece) =
+                                    std::str::from_utf8(&bytes[index..index + length])
                                 && let Some(character) = piece.chars().next()
                                 && character.len_utf8() == length
                             {
@@ -486,7 +512,9 @@ fn test_editable_source_command_entry_has_none() {
         .args(["edit", "c", "--no-input"])
         .assert()
         .code(2)
-        .stderr(predicates::str::contains("does not have an editable source"));
+        .stderr(predicates::str::contains(
+            "does not have an editable source",
+        ));
 }
 
 #[test]
@@ -509,13 +537,7 @@ fn test_edit_opens_editor_and_reports() {
     let editor = compile_editor(tools.path());
     let capture = tools.path().join("capture.txt");
 
-    let (code, output) = tui_edit(
-        data.path(),
-        state.path(),
-        config.path(),
-        &editor,
-        &capture,
-    );
+    let (code, output) = tui_edit(data.path(), state.path(), config.path(), &editor, &capture);
     assert_eq!(code, 0, "{output}");
     assert_eq!(
         fs::read_to_string(&capture).unwrap(),
@@ -552,13 +574,7 @@ fn test_edit_command_entry_reports_no_source() {
     let editor = compile_editor(tools.path());
     let capture = tools.path().join("capture.txt");
 
-    let (_code, output) = tui_edit(
-        data.path(),
-        state.path(),
-        config.path(),
-        &editor,
-        &capture,
-    );
+    let (_code, output) = tui_edit(data.path(), state.path(), config.path(), &editor, &capture);
     assert!(!capture.exists(), "the editor ran for a command entry");
     assert!(output.contains("no editable source"), "{output}");
 }
@@ -578,7 +594,10 @@ fn test_edit_invalidates_the_drift_cache() {
     assert_eq!(declarations[0].name, "CITY");
     let clean = write_managed_params("python", base, &declarations).unwrap();
     let drifted = clean.replacen("CITY = 'Taipei'", "CITY = 42", 1);
-    assert_ne!(drifted, clean, "fixture did not create a type/default drift");
+    assert_ne!(
+        drifted, clean,
+        "fixture did not create a type/default drift"
+    );
 
     write_entry(
         data.path(),

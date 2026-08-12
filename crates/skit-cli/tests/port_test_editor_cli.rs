@@ -112,7 +112,11 @@ fn main() {
     fn captured_target(&self) -> PathBuf {
         let lines = fs::read_to_string(&self.capture).unwrap();
         let argv = lines.lines().collect::<Vec<_>>();
-        assert_eq!(argv.len(), 2, "editor must receive only its argv[0] and the source path: {argv:?}");
+        assert_eq!(
+            argv.len(),
+            2,
+            "editor must receive only its argv[0] and the source path: {argv:?}"
+        );
         PathBuf::from(argv[1])
     }
 }
@@ -147,7 +151,11 @@ fn test_edit_opens_copy_source() {
         fixture.data.path().join("scripts/a/script.py"),
         "copy-mode edit must open the stored copy itself"
     );
-    assert!(combined(&output).contains("Saved a"), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("Saved a"),
+        "{}",
+        combined(&output)
+    );
 }
 
 #[test]

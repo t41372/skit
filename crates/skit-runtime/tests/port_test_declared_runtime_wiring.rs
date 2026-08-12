@@ -4,9 +4,7 @@ use std::{collections::BTreeMap, env, fs, path::PathBuf};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug};
-use skit_runtime::{
-    LaunchPaths, LaunchPlan, SystemProbe, build_launch_preview, execute_launch,
-};
+use skit_runtime::{LaunchPaths, LaunchPlan, SystemProbe, build_launch_preview, execute_launch};
 use tempfile::TempDir;
 
 fn command_entry(template: &str) -> Entry {
@@ -52,10 +50,7 @@ fn test_run_entry_env_overlay_wins_last() {
         ],
         env: BTreeMap::from([
             ("SKIT_PARITY_CHILD".to_owned(), "1".to_owned()),
-            (
-                "SKIT_PARITY_OUT".to_owned(),
-                output.display().to_string(),
-            ),
+            ("SKIT_PARITY_OUT".to_owned(), output.display().to_string()),
             ("PATH".to_owned(), "skit-overlay-marker".to_owned()),
         ]),
         cwd: root.path().to_owned(),

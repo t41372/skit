@@ -72,7 +72,11 @@ impl Sandbox {
     }
 
     fn metadata(&self) -> PathBuf {
-        self.data.path().join("scripts").join("binary").join("meta.toml")
+        self.data
+            .path()
+            .join("scripts")
+            .join("binary")
+            .join("meta.toml")
     }
 }
 
@@ -143,7 +147,16 @@ fn test_type_tweak_to_bool_on_env_delivery_keeps_empty_action() {
     let sandbox = Sandbox::new();
     sandbox.add_exe();
     sandbox.ok(&[
-        "params", "binary", "--add", "v", "--deliver", "v=env", "--flag", "v=--v", "--type", "v=bool",
+        "params",
+        "binary",
+        "--add",
+        "v",
+        "--deliver",
+        "v=env",
+        "--flag",
+        "v=--v",
+        "--type",
+        "v=bool",
     ]);
     let document = sandbox.params();
     let v = row(&document, "v");
@@ -172,7 +185,16 @@ fn test_non_type_tweak_on_a_bool_leaves_its_action_alone() {
     let sandbox = Sandbox::new();
     sandbox.add_exe();
     sandbox.ok(&[
-        "params", "binary", "--add", "c", "--flag", "c=--no-c", "--type", "c=bool", "--action", "c=store_false",
+        "params",
+        "binary",
+        "--add",
+        "c",
+        "--flag",
+        "c=--no-c",
+        "--type",
+        "c=bool",
+        "--action",
+        "c=store_false",
     ]);
     sandbox.ok(&["params", "binary", "--default", "c=true"]);
     let document = sandbox.params();
@@ -191,7 +213,10 @@ fn test_non_type_tweak_on_a_str_with_stale_action_clears_it() {
     let metadata = sandbox.metadata();
     let source = fs::read_to_string(&metadata).unwrap();
     let needle = "name = \"a\"\n";
-    assert!(source.contains(needle), "unexpected metadata shape:\n{source}");
+    assert!(
+        source.contains(needle),
+        "unexpected metadata shape:\n{source}"
+    );
     fs::write(
         &metadata,
         source.replacen(needle, "name = \"a\"\naction = \"store_true\"\n", 1),
@@ -220,7 +245,12 @@ fn test_bool_flag_that_is_on_by_default_is_refused_not_stamped() {
     let before = row(&sandbox.params(), "v").clone();
 
     let output = sandbox.ok(&[
-        "params", "binary", "--type", "v=bool", "--default", "v=true",
+        "params",
+        "binary",
+        "--type",
+        "v=bool",
+        "--default",
+        "v=true",
     ]);
     let message = strip_ansi(&format!(
         "{}{}",
@@ -245,7 +275,16 @@ fn test_bool_flag_that_is_off_by_default_still_gets_store_true() {
     let sandbox = Sandbox::new();
     sandbox.add_exe();
     sandbox.ok(&[
-        "params", "binary", "--add", "v", "--flag", "v=--v", "--type", "v=bool", "--default", "v=false",
+        "params",
+        "binary",
+        "--add",
+        "v",
+        "--flag",
+        "v=--v",
+        "--type",
+        "v=bool",
+        "--default",
+        "v=false",
     ]);
     let document = sandbox.params();
     let v = row(&document, "v");

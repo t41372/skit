@@ -81,7 +81,10 @@ fn test_tui_initial_add_review_rejects_invalid_prompt_without_replacement_charac
     let text = rendered(review);
 
     assert!(text.contains("isn't valid UTF-8"), "{text}");
-    assert!(!text.contains('\u{fffd}'), "TUI replacement-decoded the prompt: {text}");
+    assert!(
+        !text.contains('\u{fffd}'),
+        "TUI replacement-decoded the prompt: {text}"
+    );
 }
 
 #[test]
@@ -97,5 +100,8 @@ fn test_tui_review_rescan_and_settings_reject_invalid_prompt_without_replacement
     let text = rendered(review);
 
     assert!(text.contains("isn't valid UTF-8"), "{text}");
-    assert!(!text.contains('\u{fffd}'), "review rescan replacement-decoded the prompt: {text}");
+    assert!(
+        !text.contains('\u{fffd}'),
+        "review rescan replacement-decoded the prompt: {text}"
+    );
 }

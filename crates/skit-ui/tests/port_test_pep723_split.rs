@@ -110,10 +110,7 @@ fn test_name_starting_with_digit_splits() {
 
 #[test]
 fn test_trailing_comma_dropped() {
-    assert_eq!(
-        split_requirements("requests>=2,<3,"),
-        ["requests>=2,<3"]
-    );
+    assert_eq!(split_requirements("requests>=2,<3,"), ["requests>=2,<3"]);
 }
 
 #[test]
@@ -129,10 +126,7 @@ fn test_uppercase_x_in_name_is_ordinary_text() {
 
 #[test]
 fn test_nested_brackets_tracked_by_depth_not_flag() {
-    assert_eq!(
-        split_requirements("a[[x],y], b"),
-        ["a[[x],y]", "b"]
-    );
+    assert_eq!(split_requirements("a[[x],y], b"), ["a[[x],y]", "b"]);
 }
 
 #[test]
@@ -159,11 +153,8 @@ fn test_interactive_deps_answer_keeps_specifier_commas() {
         is_directory: false,
         is_draft: false,
     };
-    let mut review = ReviewState::from_source(
-        source,
-        KnownEntryKind::Python,
-        ReviewDefaults::default(),
-    );
+    let mut review =
+        ReviewState::from_source(source, KnownEntryKind::Python, ReviewDefaults::default());
     review.set_dependencies_text("requests>=2,<3, rich");
 
     let create = review

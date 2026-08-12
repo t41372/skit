@@ -89,14 +89,7 @@ fn test_deps_read_meta_carried_entry_is_unchanged() {
         .command()
         .arg("add")
         .arg(&source)
-        .args([
-            "--name",
-            "x",
-            "--ref",
-            "--dep",
-            "requests",
-            "--no-input",
-        ])
+        .args(["--name", "x", "--ref", "--dep", "requests", "--no-input"])
         .assert()
         .success();
 
@@ -126,7 +119,11 @@ fn test_update_dependencies_npm_none_does_not_sweep_node_modules() {
     .unwrap();
     fs::write(entry.join(".skit-deps"), "v1\nnode\n0000000000000000\n").unwrap();
     fs::create_dir(entry.join("node_modules")).unwrap();
-    fs::write(entry.join("node_modules/sentinel"), "must survive an untouched read\n").unwrap();
+    fs::write(
+        entry.join("node_modules/sentinel"),
+        "must survive an untouched read\n",
+    )
+    .unwrap();
 
     // No --dep and no --clear is the public spelling of the Python `dependencies=None` branch.
     let payload = sandbox.json(&["deps", "j", "--json"]);
@@ -147,9 +144,17 @@ fn test_update_dependencies_npm_clear_does_sweep_node_modules() {
     .unwrap();
     fs::write(entry.join(".skit-deps"), "v1\nnode\n0000000000000000\n").unwrap();
     fs::create_dir(entry.join("node_modules")).unwrap();
-    fs::write(entry.join("node_modules/sentinel"), "must be swept on explicit clear\n").unwrap();
+    fs::write(
+        entry.join("node_modules/sentinel"),
+        "must be swept on explicit clear\n",
+    )
+    .unwrap();
 
-    sandbox.command().args(["deps", "j", "--clear"]).assert().success();
+    sandbox
+        .command()
+        .args(["deps", "j", "--clear"])
+        .assert()
+        .success();
 
     let payload = sandbox.json(&["deps", "j", "--json"]);
     assert_eq!(payload["dependencies"], serde_json::json!([]));

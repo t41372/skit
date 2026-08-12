@@ -212,7 +212,10 @@ fn test_run_entry_real_execution() {
     let output = fixture.run("real", |_| {});
     assert_success(&output);
     let capture = fixture.captured();
-    assert!(capture.contains("ARGS=run\u{1f}--no-project\u{1f}--script\u{1f}"), "{capture}");
+    assert!(
+        capture.contains("ARGS=run\u{1f}--no-project\u{1f}--script\u{1f}"),
+        "{capture}"
+    );
     assert!(capture.contains("CONTENT=print('ok')\\n"), "{capture}");
 }
 
@@ -230,7 +233,10 @@ fn test_find_uv_private_bin_fallback() {
     assert_success(&output);
     let capture = fixture.captured();
     assert!(capture.contains("CONTENT=print('private')\\n"), "{capture}");
-    assert!(private.is_file(), "managed private uv disappeared during launch");
+    assert!(
+        private.is_file(),
+        "managed private uv disappeared during launch"
+    );
 }
 
 #[test]
@@ -314,7 +320,10 @@ fn test_run_entry_keeps_user_index_when_mirror_enabled() {
     });
     assert_success(&output);
     let capture = fixture.captured();
-    assert!(capture.contains("DEFAULT=https://user/own/simple"), "{capture}");
+    assert!(
+        capture.contains("DEFAULT=https://user/own/simple"),
+        "{capture}"
+    );
     assert!(
         capture.contains(
             "PYTHON=https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/"
@@ -337,5 +346,8 @@ fn test_run_entry_succeeds_for_copy_mode_entry_with_deleted_origin() {
     let output = fixture.run("legacy", |_| {});
     assert_success(&output);
     let capture = fixture.captured();
-    assert!(capture.contains("CONTENT=print('stored survives')\\n"), "{capture}");
+    assert!(
+        capture.contains("CONTENT=print('stored survives')\\n"),
+        "{capture}"
+    );
 }

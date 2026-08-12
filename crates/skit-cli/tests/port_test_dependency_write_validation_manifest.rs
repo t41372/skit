@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 
 use syn::{Attribute, Item};
 
-const LANGUAGE: &str = include_str!("../../skit-language/tests/port_test_dependency_write_validation.rs");
+const LANGUAGE: &str =
+    include_str!("../../skit-language/tests/port_test_dependency_write_validation.rs");
 const CLI: &str = include_str!("port_test_dependency_write_validation.rs");
 
 const PYTHON_TESTS: &[&str] = &[
@@ -63,7 +64,15 @@ fn all_twenty_one_python_dependency_write_contracts_are_executable_once() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(PYTHON_TESTS.len(), 21);
-    assert_eq!(actual.len(), 21, "unexpected extra or missing dependency-write tests");
-    assert_eq!(actual_set.len(), actual.len(), "duplicate names hide a missing contract");
+    assert_eq!(
+        actual.len(),
+        21,
+        "unexpected extra or missing dependency-write tests"
+    );
+    assert_eq!(
+        actual_set.len(),
+        actual.len(),
+        "duplicate names hide a missing contract"
+    );
     assert_eq!(actual_set, expected);
 }

@@ -76,8 +76,16 @@ fn all_twenty_one_executable_python_agent_install_contracts_are_present_once() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(EXECUTABLE.len(), 21);
-    assert_eq!(actual.len(), 21, "unexpected extra or missing Agent installer tests");
-    assert_eq!(actual_set.len(), actual.len(), "duplicate test names hide a missing contract");
+    assert_eq!(
+        actual.len(),
+        21,
+        "unexpected extra or missing Agent installer tests"
+    );
+    assert_eq!(
+        actual_set.len(),
+        actual.len(),
+        "duplicate test names hide a missing contract"
+    );
     assert_eq!(actual_set, expected);
     assert!(!actual.iter().any(|name| name == ARCHITECTURE_CLOSED));
 }
@@ -85,13 +93,15 @@ fn all_twenty_one_executable_python_agent_install_contracts_are_present_once() {
 #[test]
 fn the_python_missing_packaged_resource_runtime_case_is_compile_time_closed_in_rust() {
     assert!(
-        PRODUCTION_CLI.contains(
-            "include_bytes!(\"../../../skills/skit/SKILL.md\")"
-        ),
+        PRODUCTION_CLI.contains("include_bytes!(\"../../../skills/skit/SKILL.md\")"),
         "the Rust installer stopped making the bundled skill a compile-time resource"
     );
 
     const SHIPPED: &[u8] = include_bytes!("../../../skills/skit/SKILL.md");
     assert!(SHIPPED.starts_with(b"---\nname: skit\n"));
-    assert!(!actual_tests().iter().any(|name| name == ARCHITECTURE_CLOSED));
+    assert!(
+        !actual_tests()
+            .iter()
+            .any(|name| name == ARCHITECTURE_CLOSED)
+    );
 }

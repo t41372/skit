@@ -10,7 +10,9 @@ use std::{
     process::{Command, Output},
 };
 
-use skit_application::{CreateEntry, EntryMutationRepository as _, EntryRepository as _, LibraryService};
+use skit_application::{
+    CreateEntry, EntryMutationRepository as _, EntryRepository as _, LibraryService,
+};
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
 use tempfile::TempDir;
@@ -165,7 +167,10 @@ fn main() {
         .arg(&output)
         .status()
         .unwrap();
-    assert!(status.success(), "failed to compile staged-source child probe");
+    assert!(
+        status.success(),
+        "failed to compile staged-source child probe"
+    );
     output
 }
 
@@ -223,7 +228,10 @@ fn test_write_injected_unique_and_private() {
         "malformed child capture: {rows:?}"
     );
     let names = parsed.iter().map(|row| row[0]).collect::<Vec<_>>();
-    assert_ne!(names[0], names[1], "two launches reused one injected filename");
+    assert_ne!(
+        names[0], names[1],
+        "two launches reused one injected filename"
+    );
     for name in &names {
         assert!(
             name.starts_with(".injected-"),
@@ -297,7 +305,10 @@ fn test_find_uv_private_bin_exe_variant() {
     let private_uv = private_bin.join("uv.exe");
     compile_private_uv_probe(&private_uv);
     assert!(private_uv.is_file());
-    assert_eq!(private_uv.file_name().and_then(|name| name.to_str()), Some("uv.exe"));
+    assert_eq!(
+        private_uv.file_name().and_then(|name| name.to_str()),
+        Some("uv.exe")
+    );
 
     let empty_path = fixture.tools.path().join("empty-path");
     fs::create_dir_all(&empty_path).unwrap();
@@ -312,5 +323,8 @@ fn test_find_uv_private_bin_exe_variant() {
     assert_success(&output, &["run", "private"]);
 
     let launched = fs::read_to_string(&capture).expect("private uv.exe probe never launched");
-    assert!(launched.ends_with("script.py"), "private uv.exe saw unexpected script path: {launched}");
+    assert!(
+        launched.ends_with("script.py"),
+        "private uv.exe saw unexpected script path: {launched}"
+    );
 }

@@ -99,7 +99,10 @@ fn test_platformdirs_fallback_stays_isolated_when_skit_env_missing() {
         .assert()
         .success();
     let meta = roots.data.join("scripts/hermetic/meta.toml");
-    assert!(meta.is_file(), "data fallback escaped temporary HOME/XDG: {meta:?}");
+    assert!(
+        meta.is_file(),
+        "data fallback escaped temporary HOME/XDG: {meta:?}"
+    );
 
     // State resolver: seed an unmistakable last-run record at the platform fallback and require
     // the public list command to read it. Merely checking that the directory exists is too weak.

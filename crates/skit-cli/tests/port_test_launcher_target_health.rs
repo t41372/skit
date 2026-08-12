@@ -5,7 +5,10 @@
 //! and the user-visible marker must be `⚠ missing: PATH`. This is stronger than a source-string or
 //! boolean-only substitute.
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use ratatui_core::{backend::TestBackend, terminal::Terminal};
 use skit_i18n::Locale;
@@ -128,7 +131,10 @@ impl Fixture {
 
 fn assert_exact_missing(fixture: &Fixture, slug: &str, expected: &Path) {
     let (missing, rendered) = fixture.projection(slug);
-    assert_eq!(missing.as_deref(), Some(expected.display().to_string().as_str()));
+    assert_eq!(
+        missing.as_deref(),
+        Some(expected.display().to_string().as_str())
+    );
     let marker = format!("⚠ missing: {}", expected.display());
     assert!(
         rendered.contains(&marker),
@@ -179,7 +185,14 @@ fn test_target_missing_true_when_python_reference_source_deleted() {
     let fixture = Fixture::new();
     let source = fixture.origin.path().join("ref.py");
     fs::write(&source, "print(1)\n").unwrap();
-    fixture.write_entry("reference", "Reference", "python", "reference", &source, None);
+    fixture.write_entry(
+        "reference",
+        "Reference",
+        "python",
+        "reference",
+        &source,
+        None,
+    );
     fs::remove_file(&source).unwrap();
 
     assert_exact_missing(&fixture, "reference", &source);
@@ -188,9 +201,19 @@ fn test_target_missing_true_when_python_reference_source_deleted() {
 #[test]
 fn test_target_missing_true_when_exe_deleted() {
     let fixture = Fixture::new();
-    let executable = fixture.origin.path().join(if cfg!(windows) { "tool.exe" } else { "tool" });
+    let executable = fixture
+        .origin
+        .path()
+        .join(if cfg!(windows) { "tool.exe" } else { "tool" });
     fs::write(&executable, b"placeholder").unwrap();
-    fixture.write_entry("executable", "Executable", "exe", "reference", &executable, None);
+    fixture.write_entry(
+        "executable",
+        "Executable",
+        "exe",
+        "reference",
+        &executable,
+        None,
+    );
     fs::remove_file(&executable).unwrap();
 
     assert_exact_missing(&fixture, "executable", &executable);

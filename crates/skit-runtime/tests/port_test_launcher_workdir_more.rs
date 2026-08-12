@@ -10,9 +10,7 @@ use std::path::{Path, PathBuf};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, Slug, StorageMode};
-use skit_runtime::{
-    LaunchPaths, ProgramProbe, build_launch_preview, resolve_launch_workdir,
-};
+use skit_runtime::{LaunchPaths, ProgramProbe, build_launch_preview, resolve_launch_workdir};
 
 #[derive(Debug, Default)]
 struct Probe {
@@ -66,8 +64,12 @@ fn test_resolve_workdir_copy_mode_falls_back_when_origin_gone() {
     };
 
     assert_eq!(
-        resolve_launch_workdir(&entry, &paths("/data/scripts/demo/script.py", "/invoke"), &probe)
-            .unwrap(),
+        resolve_launch_workdir(
+            &entry,
+            &paths("/data/scripts/demo/script.py", "/invoke"),
+            &probe
+        )
+        .unwrap(),
         PathBuf::from("/invoke")
     );
 }
@@ -114,7 +116,11 @@ fn test_describe_command_isolates_like_build_command() {
     )
     .unwrap();
 
-    assert!(preview.display.contains("--no-project"), "{}", preview.display);
+    assert!(
+        preview.display.contains("--no-project"),
+        "{}",
+        preview.display
+    );
     assert!(preview.display.contains("--script"), "{}", preview.display);
     assert!(
         preview.display.contains("/data/scripts/demo/script.py"),

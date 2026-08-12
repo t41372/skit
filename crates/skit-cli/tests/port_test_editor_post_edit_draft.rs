@@ -142,14 +142,20 @@ fn test_add_edit_python_post_edit_failure_keeps_the_draft() {
     let fixture = Fixture::new();
     let (code, output) = fixture.run();
 
-    assert_ne!(code, 0, "the losing post-edit create unexpectedly succeeded: {output}");
+    assert_ne!(
+        code, 0,
+        "the losing post-edit create unexpectedly succeeded: {output}"
+    );
     assert!(
         output.contains("Your draft was kept at"),
         "post-edit failure did not tell the user where authored work survived: {output}"
     );
 
     let draft = fixture.draft();
-    assert!(draft.exists(), "post-edit failure deleted the user's authored draft: {draft:?}");
+    assert!(
+        draft.exists(),
+        "post-edit failure deleted the user's authored draft: {draft:?}"
+    );
     assert_eq!(
         fs::read_to_string(&draft).unwrap(),
         "import sys\nprint('drafted')\n",
@@ -164,9 +170,14 @@ fn test_add_edit_python_post_edit_failure_keeps_the_draft() {
     // The other agent's entry is authoritative and must survive untouched. The losing flow must not
     // partially replace it with the Python draft.
     let store = FileStore::new(fixture.data.path());
-    let winner = store.resolve("keptpy").expect("the competing agent's entry disappeared");
+    let winner = store
+        .resolve("keptpy")
+        .expect("the competing agent's entry disappeared");
     assert_eq!(winner.meta.kind.as_str(), "command");
-    assert_eq!(EntrySettings::from_meta(&winner.meta).template, "echo other-agent");
+    assert_eq!(
+        EntrySettings::from_meta(&winner.meta).template,
+        "echo other-agent"
+    );
 
     fs::remove_file(draft).unwrap();
 }

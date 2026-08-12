@@ -8,8 +8,7 @@ use std::collections::BTreeMap;
 
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, RepositoryError,
-    SourcePermissions,
-    form_state::FormStateRepository,
+    SourcePermissions, form_state::FormStateRepository,
 };
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::{FileFormStateStore, FileStore};
@@ -53,7 +52,10 @@ fn test_rename_changes_name_and_keeps_slug_dir_and_state() {
 
     assert_eq!(renamed.meta.name, "new");
     assert_eq!(renamed.slug, entry.slug);
-    assert!(entry_dir.is_dir(), "rename moved or removed the immutable slug directory");
+    assert!(
+        entry_dir.is_dir(),
+        "rename moved or removed the immutable slug directory"
+    );
     assert!(
         !data.join("scripts/new").exists(),
         "display-name rename incorrectly created a new slug directory"
@@ -78,10 +80,7 @@ fn test_rename_updates_resolution_and_listing() {
         store.resolve("Old Name").unwrap_err(),
         RepositoryError::NotFound { .. }
     ));
-    assert_eq!(
-        store.resolve(entry.slug.as_str()).unwrap().meta.name,
-        "new"
-    );
+    assert_eq!(store.resolve(entry.slug.as_str()).unwrap().meta.name, "new");
     assert_eq!(
         store
             .scan()

@@ -62,7 +62,15 @@ fn all_twenty_one_python_add_lane_contracts_are_executable_once() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(PYTHON_TESTS.len(), 21);
-    assert_eq!(actual.len(), 21, "unexpected extra or missing add-lane tests");
-    assert_eq!(actual_set.len(), actual.len(), "duplicate names hide a missing contract");
+    assert_eq!(
+        actual.len(),
+        21,
+        "unexpected extra or missing add-lane tests"
+    );
+    assert_eq!(
+        actual_set.len(),
+        actual.len(),
+        "duplicate names hide a missing contract"
+    );
     assert_eq!(actual_set, expected);
 }

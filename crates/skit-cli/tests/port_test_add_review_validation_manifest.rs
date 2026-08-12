@@ -62,8 +62,16 @@ fn nine_reachable_python_add_review_validation_contracts_are_executable_once() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(EXECUTABLE.len(), 9);
-    assert_eq!(actual.len(), 9, "unexpected extra or missing add-review tests");
-    assert_eq!(actual_set.len(), actual.len(), "duplicate names hide a missing contract");
+    assert_eq!(
+        actual.len(),
+        9,
+        "unexpected extra or missing add-review tests"
+    );
+    assert_eq!(
+        actual_set.len(),
+        actual.len(),
+        "duplicate names hide a missing contract"
+    );
     assert_eq!(actual_set, expected);
     assert!(!actual.iter().any(|name| name == ARCHITECTURE_CLOSED));
 }
@@ -82,14 +90,15 @@ fn fresh_owned_drafts_cannot_reach_a_non_copy_commit_in_rust() {
         is_directory: false,
         is_draft: true,
     };
-    let mut review = ReviewState::from_source(
-        source,
-        KnownEntryKind::Python,
-        ReviewDefaults::default(),
-    );
+    let mut review =
+        ReviewState::from_source(source, KnownEntryKind::Python, ReviewDefaults::default());
 
     review.set_storage(StorageMode::Reference);
     assert_eq!(review.storage(), StorageMode::Copy);
     assert_eq!(review.create_entry().unwrap().mode, StorageMode::Copy);
-    assert!(!actual_tests().iter().any(|name| name == ARCHITECTURE_CLOSED));
+    assert!(
+        !actual_tests()
+            .iter()
+            .any(|name| name == ARCHITECTURE_CLOSED)
+    );
 }

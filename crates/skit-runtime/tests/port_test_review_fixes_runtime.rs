@@ -77,8 +77,8 @@ fn test_escaped_placeholder_not_substituted() {
         ..Assembly::default()
     };
 
-    let plan = build_launch_preview(&entry, &paths(""), &assembly, None, None, None, &PreviewFs)
-        .unwrap();
+    let plan =
+        build_launch_preview(&entry, &paths(""), &assembly, None, None, None, &PreviewFs).unwrap();
 
     assert_eq!(command_string(&plan), "echo {name} X");
 }
@@ -120,8 +120,8 @@ fn test_extra_args_quoted_for_posix_shell() {
         ..Assembly::default()
     };
 
-    let plan = build_launch_preview(&entry, &paths(""), &assembly, None, None, None, &PreviewFs)
-        .unwrap();
+    let plan =
+        build_launch_preview(&entry, &paths(""), &assembly, None, None, None, &PreviewFs).unwrap();
     let command = command_string(&plan);
 
     assert!(command.contains("'$HOME'"), "{command}");

@@ -193,7 +193,10 @@ fn assert_editor_argv(fixture: &EditFixture, expected: &[String]) {
         "editor argv must be the resolved command plus exactly one edited path: {captured:?}"
     );
     assert_eq!(&captured[..expected.len()], expected);
-    assert!(!captured.last().unwrap().is_empty(), "the edited path is empty");
+    assert!(
+        !captured.last().unwrap().is_empty(),
+        "the edited path is empty"
+    );
 }
 
 #[test]
@@ -395,7 +398,11 @@ fn test_resolve_editor_unbalanced_quotes_falls_back_to_raw() {
     let raw_name = "weird \"editor";
     probe(&fixture, raw_name);
 
-    let output = fixture.run(None, Some(OsStr::new(raw_name)), Some(fixture.tools.path().as_os_str()));
+    let output = fixture.run(
+        None,
+        Some(OsStr::new(raw_name)),
+        Some(fixture.tools.path().as_os_str()),
+    );
     assert_success(&output);
     assert_editor_argv(&fixture, &[raw_name.to_owned()]);
 }

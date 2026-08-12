@@ -7,7 +7,11 @@
 //! empty value map must route nothing at all. This does not pretend to test temp-file lifecycle;
 //! lifecycle remains a separate runtime/public-process contract.
 
-use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
 use skit_application::delivery::{PreparedValue, assemble};
 use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
@@ -39,7 +43,9 @@ fn sample(declaration: &ParamDecl) -> String {
 }
 
 fn id(path: &Path) -> &str {
-    path.file_name().and_then(|name| name.to_str()).unwrap_or("<non-utf8>")
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("<non-utf8>")
 }
 
 #[test]
@@ -48,10 +54,26 @@ fn test_shell_inject_no_values_routes_no_env_and_no_rewrite_values() {
         let declarations = detect_candidates("shell", &text(&path));
         let assembly = assemble(&declarations, &BTreeMap::new(), &[])
             .unwrap_or_else(|error| panic!("{} empty assembly failed: {error}", id(&path)));
-        assert!(assembly.env_values.is_empty(), "{} routed env without a value", id(&path));
-        assert!(assembly.inject_values.is_empty(), "{} routed rewrite without a value", id(&path));
-        assert!(assembly.args.is_empty(), "{} routed argv without a value", id(&path));
-        assert!(assembly.command_values.is_empty(), "{} routed placeholders without a value", id(&path));
+        assert!(
+            assembly.env_values.is_empty(),
+            "{} routed env without a value",
+            id(&path)
+        );
+        assert!(
+            assembly.inject_values.is_empty(),
+            "{} routed rewrite without a value",
+            id(&path)
+        );
+        assert!(
+            assembly.args.is_empty(),
+            "{} routed argv without a value",
+            id(&path)
+        );
+        assert!(
+            assembly.command_values.is_empty(),
+            "{} routed placeholders without a value",
+            id(&path)
+        );
     }
 }
 
@@ -92,12 +114,20 @@ fn test_shell_full_injection_routes_envdefaults_only_by_environment() {
             id(&path)
         );
         assert_eq!(
-            assembly.inject_values.keys().cloned().collect::<BTreeSet<_>>(),
+            assembly
+                .inject_values
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
             expected_rewrite,
             "{} source-rewrite delivery drifted",
             id(&path)
         );
-        assert!(assembly.args.is_empty(), "{} unexpectedly routed shell corpus values to argv", id(&path));
+        assert!(
+            assembly.args.is_empty(),
+            "{} unexpectedly routed shell corpus values to argv",
+            id(&path)
+        );
         assert!(
             assembly.command_values.is_empty(),
             "{} unexpectedly routed shell corpus values to placeholders",

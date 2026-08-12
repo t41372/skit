@@ -5,7 +5,11 @@
 //! intake: valid normalized values must reach the stored copy, while invalid values must exit with
 //! usage status before an entry or kept-draft fingerprint exists.
 
-use std::{fs, path::{Path, PathBuf}, process::Output};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Output,
+};
 
 use assert_cmd::Command;
 use skit_application::EntryRepository as _;
@@ -247,13 +251,7 @@ fn test_validate_python_flags_exits_2_on_a_bad_python() {
     let output = add_path(
         &sandbox,
         &source,
-        &[
-            "-n",
-            "badpy",
-            "--python",
-            "not-a-version",
-            "--no-input",
-        ],
+        &["-n", "badpy", "--python", "not-a-version", "--no-input"],
     );
 
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
@@ -266,11 +264,7 @@ fn test_exe_flag_on_a_kept_draft_is_refused_naming_only_exe() {
     let sandbox = Sandbox::new();
     let draft = sandbox.draft("skit-new-prog.py", b"print('run me')\n");
 
-    let output = add_path(
-        &sandbox,
-        &draft,
-        &["-n", "p1", "--exe", "--no-input"],
-    );
+    let output = add_path(&sandbox, &draft, &["-n", "p1", "--exe", "--no-input"]);
     let shown = flat(&combined(&output));
 
     assert_eq!(output.status.code(), Some(2), "{shown}");
@@ -316,7 +310,10 @@ fn test_inferred_exe_on_a_kept_draft_is_refused_and_keeps_it() {
 
     assert_eq!(output.status.code(), Some(2), "{shown}");
     assert!(shown.contains("one of skit's own kept drafts"), "{shown}");
-    assert!(shown.contains("pass --kind <language> to name its language"), "{shown}");
+    assert!(
+        shown.contains("pass --kind <language> to name its language"),
+        "{shown}"
+    );
     assert!(!shown.contains("Drop"), "{shown}");
     assert!(draft.exists());
     assert!(sandbox.store().resolve("b1").is_err());
@@ -327,11 +324,7 @@ fn test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref() {
     let sandbox = Sandbox::new();
     let draft = sandbox.draft("skit-new-linkme.py", b"print('link me')\n");
 
-    let output = add_path(
-        &sandbox,
-        &draft,
-        &["-n", "lk", "--ref", "--no-input"],
-    );
+    let output = add_path(&sandbox, &draft, &["-n", "lk", "--ref", "--no-input"]);
     let shown = flat(&combined(&output));
 
     assert_eq!(output.status.code(), Some(2), "{shown}");
@@ -350,7 +343,10 @@ fn test_a_normal_draft_resume_still_adds_as_a_copy() {
     let output = add_path(&sandbox, &draft, &["-n", "okentry", "--no-input"]);
 
     assert_success(&output);
-    assert_eq!(sandbox.store().resolve("okentry").unwrap().meta.mode, StorageMode::Copy);
+    assert_eq!(
+        sandbox.store().resolve("okentry").unwrap().meta.mode,
+        StorageMode::Copy
+    );
     assert!(!draft.exists());
 }
 
@@ -371,10 +367,7 @@ fn test_stdin_garbage_python_exits_2_and_leaves_the_drafts_dir_empty() {
 #[test]
 fn test_stdin_garbage_dep_exits_2_and_leaves_the_drafts_dir_empty() {
     let sandbox = Sandbox::new();
-    let output = sandbox.run_stdin(
-        &["add", "-", "-n", "y", "--dep", "@@@"],
-        "print(1)\n",
-    );
+    let output = sandbox.run_stdin(&["add", "-", "-n", "y", "--dep", "@@@"], "print(1)\n");
 
     assert_eq!(output.code, 2, "{}", output.text());
     assert!(flat(&output.text()).contains("isn't a package requirement"));
@@ -385,10 +378,7 @@ fn test_stdin_garbage_dep_exits_2_and_leaves_the_drafts_dir_empty() {
 #[test]
 fn test_stdin_dash_python_is_automatic() {
     let sandbox = Sandbox::new();
-    let output = sandbox.run_stdin(
-        &["add", "-", "-n", "auto", "--python", "-"],
-        "print(1)\n",
-    );
+    let output = sandbox.run_stdin(&["add", "-", "-n", "auto", "--python", "-"], "print(1)\n");
 
     assert_eq!(output.code, 0, "{}", output.text());
     assert!(!sandbox.payload_text("auto").contains("requires-python"));
@@ -418,30 +408,28 @@ fn test_prompt_single_extension_draft_resumes_as_prompt_end_to_end() {
         b"#!/usr/bin/env bash\nSummarize {{text}}.\n",
     );
 
-    let output = add_path(
-        &sandbox,
-        &draft,
-        &["-n", "sumone", "--no-input"],
-    );
+    let output = add_path(&sandbox, &draft, &["-n", "sumone", "--no-input"]);
 
     assert_success(&output);
-    assert_eq!(sandbox.store().resolve("sumone").unwrap().meta.kind.as_str(), "prompt");
+    assert_eq!(
+        sandbox
+            .store()
+            .resolve("sumone")
+            .unwrap()
+            .meta
+            .kind
+            .as_str(),
+        "prompt"
+    );
     assert!(!draft.exists());
 }
 
 #[test]
 fn test_nondraft_awk_shebang_refusal_offers_the_exe_escape() {
     let sandbox = Sandbox::new();
-    let source = sandbox.source(
-        "report.awkish",
-        b"#!/usr/bin/awk -f\nBEGIN { print 1 }\n",
-    );
+    let source = sandbox.source("report.awkish", b"#!/usr/bin/awk -f\nBEGIN { print 1 }\n");
 
-    let output = add_path(
-        &sandbox,
-        &source,
-        &["-n", "rep", "--no-input"],
-    );
+    let output = add_path(&sandbox, &source, &["-n", "rep", "--no-input"]);
     let shown = flat(&combined(&output));
 
     assert_eq!(output.status.code(), Some(2), "{shown}");
@@ -457,11 +445,7 @@ fn test_kept_draft_awk_shebang_refusal_offers_only_kind() {
         b"#!/usr/bin/awk -f\nBEGIN { print 1 }\n",
     );
 
-    let output = add_path(
-        &sandbox,
-        &draft,
-        &["-n", "drep", "--no-input"],
-    );
+    let output = add_path(&sandbox, &draft, &["-n", "drep", "--no-input"]);
     let shown = flat(&combined(&output));
 
     assert_eq!(output.status.code(), Some(2), "{shown}");

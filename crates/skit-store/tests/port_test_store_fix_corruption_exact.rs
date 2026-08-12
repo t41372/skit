@@ -40,7 +40,10 @@ fn write_registry_row(root: &TempDir, slug: &str, name: &str) {
 fn diagnostic_for(root: &TempDir, slug: &str) -> skit_application::Diagnostic {
     let store = FileStore::new(root.path());
     let scan = store.scan().unwrap();
-    assert!(scan.entries.is_empty(), "corrupt metadata leaked into healthy entries");
+    assert!(
+        scan.entries.is_empty(),
+        "corrupt metadata leaked into healthy entries"
+    );
     scan.diagnostics
         .into_iter()
         .find(|diagnostic| diagnostic.slug.as_deref() == Some(slug))
@@ -55,7 +58,11 @@ fn test_from_toml_dict_missing_name_raises_scriptmetaerror_not_keyerror() {
 
     let diagnostic = diagnostic_for(&root, "bad");
     assert_eq!(diagnostic.code, DiagnosticCode::CorruptMetadata);
-    assert!(diagnostic.message.contains("name"), "{}", diagnostic.message);
+    assert!(
+        diagnostic.message.contains("name"),
+        "{}",
+        diagnostic.message
+    );
 }
 
 #[test]
@@ -66,7 +73,11 @@ fn test_from_toml_dict_missing_kind_raises_scriptmetaerror_not_keyerror() {
 
     let diagnostic = diagnostic_for(&root, "bad");
     assert_eq!(diagnostic.code, DiagnosticCode::CorruptMetadata);
-    assert!(diagnostic.message.contains("kind"), "{}", diagnostic.message);
+    assert!(
+        diagnostic.message.contains("kind"),
+        "{}",
+        diagnostic.message
+    );
 }
 
 #[test]
@@ -94,7 +105,11 @@ fn test_from_toml_dict_scalar_dependencies_raises_scriptmetaerror_not_typeerror(
 
     let diagnostic = diagnostic_for(&root, "bad");
     assert_eq!(diagnostic.code, DiagnosticCode::CorruptMetadata);
-    assert!(diagnostic.message.contains("dependencies"), "{}", diagnostic.message);
+    assert!(
+        diagnostic.message.contains("dependencies"),
+        "{}",
+        diagnostic.message
+    );
 }
 
 #[test]
@@ -109,7 +124,11 @@ fn test_from_toml_dict_scalar_params_raises_scriptmetaerror_not_typeerror() {
 
     let diagnostic = diagnostic_for(&root, "bad");
     assert_eq!(diagnostic.code, DiagnosticCode::CorruptMetadata);
-    assert!(diagnostic.message.contains("params"), "{}", diagnostic.message);
+    assert!(
+        diagnostic.message.contains("params"),
+        "{}",
+        diagnostic.message
+    );
 }
 
 #[test]
@@ -126,7 +145,9 @@ fn test_doctor_rebuild_reports_scalar_params_instead_of_crashing() {
         "schema = 1\nname = \"good\"\nkind = \"command\"\nmode = \"copy\"\n",
     );
 
-    let report = FileStore::new(root.path()).rebuild_registry_report().unwrap();
+    let report = FileStore::new(root.path())
+        .rebuild_registry_report()
+        .unwrap();
     assert_eq!(report.entry_count, 1);
     assert!(
         report.problems.iter().any(|problem| matches!(
@@ -167,7 +188,10 @@ fn test_from_toml_dict_missing_key_message_is_gettext_wrapped() {
     let zh = diagnostic.localize(Locale::ZhTw);
     assert!(zh.contains("bad"), "{zh}");
     assert!(zh.contains("name"), "{zh}");
-    assert_ne!(zh, diagnostic.message, "corruption message bypassed localization");
+    assert_ne!(
+        zh, diagnostic.message,
+        "corruption message bypassed localization"
+    );
 }
 
 #[test]
@@ -184,5 +208,8 @@ fn test_from_toml_dict_invalid_type_message_is_gettext_wrapped() {
     let zh = diagnostic.localize(Locale::ZhTw);
     assert!(zh.contains("bad"), "{zh}");
     assert!(zh.contains("dependencies"), "{zh}");
-    assert_ne!(zh, diagnostic.message, "invalid-type message bypassed localization");
+    assert_ne!(
+        zh, diagnostic.message,
+        "invalid-type message bypassed localization"
+    );
 }

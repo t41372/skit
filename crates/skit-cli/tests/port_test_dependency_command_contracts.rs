@@ -6,7 +6,11 @@
 //! chokepoint and inspect persisted source/JSON/no-entry consequences rather than pretending
 //! `FileStore` validates package grammar itself.
 
-use std::{fs, path::{Path, PathBuf}, process::Output};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Output,
+};
 
 use assert_cmd::Command;
 use skit_application::{
@@ -133,9 +137,7 @@ fn run_add(sandbox: &Sandbox, source: &Path, tail: &[&str]) -> Output {
 }
 
 fn pin_python(sandbox: &Sandbox, selector: &str) {
-    assert_success(&sandbox.run(&[
-        "deps", selector, "--dep", "requests", "--python", ">=3.11",
-    ]));
+    assert_success(&sandbox.run(&["deps", selector, "--dep", "requests", "--python", ">=3.11"]));
 }
 
 #[test]
@@ -248,9 +250,7 @@ fn test_store_uv_spec_plus_dash_normalizes() {
     let sandbox = Sandbox::new();
     sandbox.create_copy("a", "python", b"print(1)\n");
 
-    let output = sandbox.run(&[
-        "deps", "a", "--dep", "requests", "--python", "none",
-    ]);
+    let output = sandbox.run(&["deps", "a", "--dep", "requests", "--python", "none"]);
 
     assert_success(&output);
     assert_eq!(sandbox.deps_json("a")["requires_python"], "");
@@ -306,13 +306,7 @@ fn test_add_python_belt_rejects_a_bad_python_before_any_entry_exists() {
     let output = run_add(
         &sandbox,
         &source,
-        &[
-            "--name",
-            "belt",
-            "--python",
-            "not-a-version",
-            "--no-input",
-        ],
+        &["--name", "belt", "--python", "not-a-version", "--no-input"],
     );
 
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
@@ -355,11 +349,7 @@ fn test_add_python_belt_with_no_deps_is_unchanged() {
     let sandbox = Sandbox::new();
     let source = sandbox.source("plain.py", b"print(1)\n");
 
-    let output = run_add(
-        &sandbox,
-        &source,
-        &["--name", "plain", "--no-input"],
-    );
+    let output = run_add(&sandbox, &source, &["--name", "plain", "--no-input"]);
 
     assert_success(&output);
     let stored = String::from_utf8(sandbox.payload("plain")).unwrap();
@@ -381,7 +371,10 @@ fn test_deps_python_only_prints_the_constraint_line_not_the_deps_line() {
     let shown = flat(&output);
 
     assert_success(&output);
-    assert!(shown.contains("Python constraint of a updated: >=3.11"), "{shown}");
+    assert!(
+        shown.contains("Python constraint of a updated: >=3.11"),
+        "{shown}"
+    );
     assert!(!shown.contains("Dependencies"), "{shown}");
 }
 
@@ -395,7 +388,10 @@ fn test_deps_python_only_dash_reports_the_dash_placeholder() {
     let shown = flat(&output);
 
     assert_success(&output);
-    assert!(shown.contains("Python constraint of a updated: —"), "{shown}");
+    assert!(
+        shown.contains("Python constraint of a updated: —"),
+        "{shown}"
+    );
     assert!(!shown.contains("Dependencies"), "{shown}");
 }
 
@@ -408,7 +404,10 @@ fn test_deps_dep_only_prints_the_deps_line() {
     let shown = flat(&output);
 
     assert_success(&output);
-    assert!(shown.contains("Dependencies of a updated: requests"), "{shown}");
+    assert!(
+        shown.contains("Dependencies of a updated: requests"),
+        "{shown}"
+    );
     assert!(!shown.contains("Python constraint of"), "{shown}");
 }
 
@@ -417,9 +416,7 @@ fn test_deps_dep_and_python_together_prints_both_axis_lines() {
     let sandbox = Sandbox::new();
     sandbox.create_copy("a", "python", b"print(1)\n");
 
-    let output = sandbox.run(&[
-        "deps", "a", "--dep", "rich", "--python", ">=3.12",
-    ]);
+    let output = sandbox.run(&["deps", "a", "--dep", "rich", "--python", ">=3.12"]);
     let shown = flat(&output);
 
     assert_success(&output);

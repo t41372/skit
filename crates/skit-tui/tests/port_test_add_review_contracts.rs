@@ -18,7 +18,8 @@ use skit_ui::{
 };
 
 const DYN_SH: &[u8] = b"#!/usr/bin/env bash\nOUTDIR=/tmp\nOPTS=\"n:v\"\nwhile getopts \"$OPTS\" o; do :; done\necho $OUTDIR\n";
-const MODELED_SH: &[u8] = b"#!/usr/bin/env bash\nCITY=Taipei\nwhile getopts 'n:v' o; do :; done\necho $CITY\n";
+const MODELED_SH: &[u8] =
+    b"#!/usr/bin/env bash\nCITY=Taipei\nwhile getopts 'n:v' o; do :; done\necho $CITY\n";
 const CONST_PY: &[u8] = b"MESSAGE = 'Hello'\nTIMES = 3\nWIDTH = 40\nprint(MESSAGE)\n";
 
 fn source(path: &str, bytes: &[u8]) -> SourceSnapshot {
@@ -154,7 +155,11 @@ fn test_high_modeled_form_collects_nothing_without_crashing() {
         ReviewDefaults::default(),
     );
     review.set_name("modh");
-    assert!(review.modeled_cli_field_count().is_some_and(|count| count > 0));
+    assert!(
+        review
+            .modeled_cli_field_count()
+            .is_some_and(|count| count > 0)
+    );
     assert!(review.candidates().is_empty());
     let workflow = state(review.clone());
     let (_, geometry) = rendered(&workflow, 120, 38);
@@ -196,7 +201,10 @@ fn test_reference_note_modeled_keeps_wrap_and_short_line() {
     let workflow = state(review.clone());
     let (text, _) = rendered(&workflow, 120, 32);
 
-    assert!(text.contains("skit read this script's own arguments"), "{text}");
+    assert!(
+        text.contains("skit read this script's own arguments"),
+        "{text}"
+    );
     assert!(
         text.contains("Link the original: skit never writes to the file."),
         "{text}"
@@ -224,7 +232,10 @@ fn test_reference_note_unmodeled_folds_and_keeps_old_line() {
             .all(|region| !matches!(region.target, AddControlId::Candidate(_))),
         "reference-mode unmodeled candidates remained interactive"
     );
-    assert!(!text.contains("OUTDIR"), "folded candidate leaked into the rendered panel: {text}");
+    assert!(
+        !text.contains("OUTDIR"),
+        "folded candidate leaked into the rendered panel: {text}"
+    );
 }
 
 #[test]
@@ -248,7 +259,8 @@ fn test_kind_pick_modal_label_switches_on_shebang() {
 
 #[test]
 fn test_review_names_extra_arguments_field_once() {
-    let bytes = b"#!/usr/bin/env bash\nOPTS=\"n:v\"\nwhile getopts \"$OPTS\" o; do :; done\necho \"$@\"\n";
+    let bytes =
+        b"#!/usr/bin/env bash\nOPTS=\"n:v\"\nwhile getopts \"$OPTS\" o; do :; done\necho \"$@\"\n";
     let review = ReviewState::from_source(
         source("dynargv.sh", bytes),
         KnownEntryKind::Shell,
@@ -310,7 +322,10 @@ fn test_rv_python_typed_value_survives_an_edit_rescan() {
     let entry = review.create_entry().unwrap();
     let stored = String::from_utf8(entry.payload.unwrap().bytes).unwrap();
     assert!(stored.contains("requires-python = \">=3.9\""), "{stored}");
-    assert!(!stored.contains(">=3.11,<3.12"), "auto pin overwrote typed value: {stored}");
+    assert!(
+        !stored.contains(">=3.11,<3.12"),
+        "auto pin overwrote typed value: {stored}"
+    );
 }
 
 #[test]
@@ -352,7 +367,10 @@ fn test_short_terminal_scrolls_focused_candidate_into_view() {
             break;
         }
         let event = session.handle_event(key(KeyCode::Tab), &workflow, &geometry);
-        assert!(event.is_some(), "Tab was ignored before reaching the last candidate");
+        assert!(
+            event.is_some(),
+            "Tab was ignored before reaching the last candidate"
+        );
         let (_, next) = draw(&workflow, &mut session, 106, 30);
         geometry = next;
         if let Some(focused) = session.focused()
@@ -365,6 +383,12 @@ fn test_short_terminal_scrolls_focused_candidate_into_view() {
     }
 
     assert_eq!(session.focused(), Some(&last));
-    assert!(hit(&geometry, &last).is_some(), "focused last candidate is outside rendered hits");
-    assert!(geometry.first_visible > 0, "focus reached the last candidate without scrolling");
+    assert!(
+        hit(&geometry, &last).is_some(),
+        "focused last candidate is outside rendered hits"
+    );
+    assert!(
+        geometry.first_visible > 0,
+        "focus reached the last candidate without scrolling"
+    );
 }

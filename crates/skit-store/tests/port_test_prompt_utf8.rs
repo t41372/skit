@@ -54,10 +54,7 @@ fn test_store_accepts_valid_utf8_prompt_byte_exact() {
         .unwrap();
 
     assert_eq!(entry.meta.kind.as_str(), "prompt");
-    assert_eq!(
-        fs::read(store.payload_path(&entry).unwrap()).unwrap(),
-        body
-    );
+    assert_eq!(fs::read(store.payload_path(&entry).unwrap()).unwrap(), body);
 }
 
 #[test]
@@ -121,17 +118,15 @@ fn test_generic_store_api_also_refuses_invalid_prompt_utf8() {
     let service = LibraryService::new(FileStore::new(root.path().join("data")));
 
     let error = service
-        .add(prompt_request(
-            "bad",
-            StorageMode::Copy,
-            &source,
-            invalid,
-        ))
+        .add(prompt_request("bad", StorageMode::Copy, &source, invalid))
         .unwrap_err();
 
     assert!(matches!(error, RepositoryError::InvalidMutation { .. }));
     let message = error.to_string();
     assert!(message.contains("UTF-8"), "{message}");
-    assert!(message.contains("3"), "invalid byte offset was lost: {message}");
+    assert!(
+        message.contains("3"),
+        "invalid byte offset was lost: {message}"
+    );
     assert!(service.list().unwrap().entries.is_empty());
 }

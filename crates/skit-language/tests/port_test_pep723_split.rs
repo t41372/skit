@@ -23,7 +23,8 @@ fn test_block_re_hash_pattern_is_byte_identical_to_the_frozen_literal() {
         "# /// \t\n",
         "print(1)\n",
     );
-    let metadata = read_uv_metadata(source).expect("the frozen historical # block grammar must parse");
+    let metadata =
+        read_uv_metadata(source).expect("the frozen historical # block grammar must parse");
     assert_eq!(metadata.dependencies, ["requests"]);
     assert_eq!(metadata.requires_python, "");
 
@@ -37,7 +38,8 @@ fn test_block_re_hash_pattern_is_byte_identical_to_the_frozen_literal() {
     );
     assert!(rewritten.starts_with("#!/usr/bin/env python\n"));
     assert!(rewritten.ends_with("print(1)\n"));
-    let metadata = read_uv_metadata(&rewritten).expect("rewritten historical block must remain readable");
+    let metadata =
+        read_uv_metadata(&rewritten).expect("rewritten historical block must remain readable");
     assert_eq!(metadata.dependencies, ["requests"]);
     assert_eq!(metadata.requires_python, ">=3.11");
 }
@@ -55,17 +57,30 @@ fn test_block_re_double_slash_pattern_mirrors_the_hash_form() {
         std::slice::from_ref(&declaration),
     )
     .unwrap();
-    assert!(generated.contains("// /// script\n"), "fixture lacks the JS opening marker: {generated}");
-    assert!(generated.contains("\n// ///\n"), "fixture lacks the JS closing marker: {generated}");
+    assert!(
+        generated.contains("// /// script\n"),
+        "fixture lacks the JS opening marker: {generated}"
+    );
+    assert!(
+        generated.contains("\n// ///\n"),
+        "fixture lacks the JS closing marker: {generated}"
+    );
 
     let historical = generated
         .replacen("// /// script\n", "// /// script   \n", 1)
         .replacen("\n// ///\n", "\n// /// \t\n", 1);
-    assert_ne!(historical, generated, "fixture mutation did not exercise marker whitespace");
+    assert_ne!(
+        historical, generated,
+        "fixture mutation did not exercise marker whitespace"
+    );
     assert!(historical.starts_with("#!/usr/bin/env node\n"));
 
     let parsed = managed_params("js", &historical);
-    assert_eq!(parsed.len(), 1, "the historical // block grammar stopped parsing: {historical}");
+    assert_eq!(
+        parsed.len(),
+        1,
+        "the historical // block grammar stopped parsing: {historical}"
+    );
     assert_eq!(parsed[0].name, "X");
 }
 

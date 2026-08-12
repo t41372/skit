@@ -87,7 +87,13 @@ impl Sandbox {
     fn add_ruby(&self, name: &str) {
         let source = self.home.path().join(format!("{name}.rb"));
         fs::write(&source, "#!/usr/bin/env ruby\nputs 'hi'\n").unwrap();
-        self.ok(&["add", source.to_str().unwrap(), "--name", name, "--no-input"]);
+        self.ok(&[
+            "add",
+            source.to_str().unwrap(),
+            "--name",
+            name,
+            "--no-input",
+        ]);
     }
 }
 
@@ -132,14 +138,7 @@ fn test_cli_declared_edit_with_json_emits_the_final_read_view() {
 fn test_cli_env_source_on_non_secret_declared_param_warns() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("prog");
-    sandbox.ok(&[
-        "params",
-        "prog",
-        "--add",
-        "WIDTH",
-        "--deliver",
-        "WIDTH=env",
-    ]);
+    sandbox.ok(&["params", "prog", "--add", "WIDTH", "--deliver", "WIDTH=env"]);
 
     let human = sandbox.output(&["params", "prog", "--env-source", "WIDTH=COLS"]);
     assert!(human.status.success(), "{}", combined(&human));
@@ -149,13 +148,7 @@ fn test_cli_env_source_on_non_secret_declared_param_warns() {
         combined(&human)
     );
 
-    let json = sandbox.output(&[
-        "params",
-        "prog",
-        "--env-source",
-        "WIDTH=COLS",
-        "--json",
-    ]);
+    let json = sandbox.output(&["params", "prog", "--env-source", "WIDTH=COLS", "--json"]);
     assert!(json.status.success(), "{}", combined(&json));
     let document: Value = serde_json::from_slice(&json.stdout).unwrap_or_else(|error| {
         panic!(
@@ -190,7 +183,11 @@ fn test_cli_bad_type_warns_and_skips() {
         "bad type is a Python soft warning, not usage failure:\n{}",
         combined(&output)
     );
-    assert!(combined(&output).contains("unknown type"), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("unknown type"),
+        "{}",
+        combined(&output)
+    );
     let document = sandbox.json_stdout(&["params", "prog", "--json"]);
     assert_eq!(declared(&document, "w")["type"], "str");
 }
@@ -212,9 +209,7 @@ fn test_cli_declared_malformed_value_warns() {
 fn test_cli_rm_declared_param() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("prog");
-    sandbox.ok(&[
-        "params", "prog", "--add", "a", "--add", "b",
-    ]);
+    sandbox.ok(&["params", "prog", "--add", "a", "--add", "b"]);
     sandbox.ok(&["params", "prog", "--rm", "a"]);
     let document = sandbox.json_stdout(&["params", "prog", "--json"]);
     assert_eq!(
@@ -235,11 +230,12 @@ fn test_declared_add_on_interpreted_meta_kind_defaults_to_deliverable_flag() {
     sandbox.ok(&["params", "rb", "--add", "SIZE"]);
     let document = sandbox.json_stdout(&["params", "rb", "--json"]);
     assert_eq!(declared(&document, "SIZE")["delivery"], "flag");
-    let dry = sandbox.ok(&[
-        "run", "rb", "--set", "SIZE=5", "--dry-run", "--no-input",
-    ]);
+    let dry = sandbox.ok(&["run", "rb", "--set", "SIZE=5", "--dry-run", "--no-input"]);
     let text = String::from_utf8_lossy(&dry.stdout);
-    assert!(text.contains("5"), "declared value did not reach dry-run argv:\n{text}");
+    assert!(
+        text.contains("5"),
+        "declared value did not reach dry-run argv:\n{text}"
+    );
 }
 
 #[test]
@@ -279,11 +275,12 @@ fn test_template_add_of_a_real_placeholder_name_still_fills_the_slot() {
     let document = sandbox.json_stdout(&["params", "tpl2", "--json"]);
     assert_eq!(declared(&document, "WHO")["delivery"], "placeholder");
 
-    let dry = sandbox.ok(&[
-        "run", "tpl2", "--set", "WHO=ada", "--dry-run", "--no-input",
-    ]);
+    let dry = sandbox.ok(&["run", "tpl2", "--set", "WHO=ada", "--dry-run", "--no-input"]);
     let text = String::from_utf8_lossy(&dry.stdout);
-    assert!(text.contains("ada"), "placeholder value did not fill the command: {text}");
+    assert!(
+        text.contains("ada"),
+        "placeholder value did not fill the command: {text}"
+    );
 }
 
 #[test]
@@ -291,7 +288,16 @@ fn test_cli_exe_declared_show_json_param_origin() {
     let sandbox = Sandbox::new();
     sandbox.add_exe("prog");
     sandbox.ok(&[
-        "params", "prog", "--add", "w", "--deliver", "w=flag", "--flag", "w=--w", "--type", "w=int",
+        "params",
+        "prog",
+        "--add",
+        "w",
+        "--deliver",
+        "w=flag",
+        "--flag",
+        "w=--w",
+        "--type",
+        "w=int",
     ]);
     let document = sandbox.json_stdout(&["show", "prog", "--json"]);
     assert_eq!(document["param_source"], "declared");

@@ -102,7 +102,11 @@ fn collect_nested_tests(items: &[Item], names: &mut Vec<String>) {
 #[test]
 fn launcher_has_exactly_one_executable_oracle_for_each_of_37_same_named_python_contracts() {
     let expected = SAME_NAMED.iter().copied().collect::<BTreeSet<_>>();
-    assert_eq!(expected.len(), 37, "same-named Python launcher inventory drifted");
+    assert_eq!(
+        expected.len(),
+        37,
+        "same-named Python launcher inventory drifted"
+    );
 
     let mut counts = BTreeMap::<String, usize>::new();
     for source in [
@@ -139,13 +143,20 @@ fn launcher_has_exactly_one_executable_oracle_for_each_of_37_same_named_python_c
 
 #[test]
 fn python_auto_download_contract_maps_to_the_real_injectable_bootstrap_success_oracle() {
-    assert_eq!(AUTO_DOWNLOAD_PYTHON, "test_python_without_uv_auto_downloads");
-    let parsed = syn::parse_file(COMPOSITION_ROOT).expect("run composition root must parse as Rust");
+    assert_eq!(
+        AUTO_DOWNLOAD_PYTHON,
+        "test_python_without_uv_auto_downloads"
+    );
+    let parsed =
+        syn::parse_file(COMPOSITION_ROOT).expect("run composition root must parse as Rust");
     let mut names = Vec::new();
     collect_nested_tests(&parsed.items, &mut names);
 
     assert_eq!(
-        names.iter().filter(|name| name.as_str() == AUTO_DOWNLOAD_RUST).count(),
+        names
+            .iter()
+            .filter(|name| name.as_str() == AUTO_DOWNLOAD_RUST)
+            .count(),
         1,
         "the audited successful-installer bootstrap oracle disappeared or became non-executable"
     );

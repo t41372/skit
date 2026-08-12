@@ -11,11 +11,7 @@ use skit_domain::parameters::{ParameterType, ParameterValue, coerce_default};
 fn test_coerce_default_success() {
     let cases = [
         ("42", ParameterType::Int, ParameterValue::Integer(42)),
-        (
-            "3.5",
-            ParameterType::Float,
-            ParameterValue::Float(3.5),
-        ),
+        ("3.5", ParameterType::Float, ParameterValue::Float(3.5)),
         ("true", ParameterType::Bool, ParameterValue::Bool(true)),
         ("YES", ParameterType::Bool, ParameterValue::Bool(true)),
         ("on", ParameterType::Bool, ParameterValue::Bool(true)),

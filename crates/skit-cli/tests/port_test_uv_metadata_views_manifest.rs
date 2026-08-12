@@ -15,23 +15,57 @@ const TUI: &str = "crates/skit-cli/tests/port_test_uv_metadata_views_tui.rs";
 const RACE: &str = "crates/skit-cli/tests/port_test_uv_metadata_views_race.rs";
 
 const MAPPINGS: &[Mapping] = &[
-    Mapping { python: "test_show_human_block_only_prints_effective_deps_and_constraint", path: CLI, rust: "test_show_human_block_only_prints_effective_deps_and_constraint" },
-    Mapping { python: "test_show_human_meta_carried_deps_unchanged", path: CLI, rust: "test_show_human_meta_carried_deps_unchanged" },
-    Mapping { python: "test_show_human_no_uv_metadata_prints_neither_line", path: CLI, rust: "test_show_human_no_uv_metadata_prints_neither_line" },
-    Mapping { python: "test_detail_pane_block_only_shows_effective_depends_on", path: TUI, rust: "test_detail_pane_block_only_shows_effective_depends_on" },
-    Mapping { python: "test_detail_pane_no_deps_omits_the_depends_on_line", path: TUI, rust: "test_detail_pane_no_deps_omits_the_depends_on_line" },
-    Mapping { python: "test_settings_save_diffs_against_compose_time_baseline_not_a_re_read", path: RACE, rust: "test_settings_save_diffs_against_compose_time_baseline_not_a_re_read" },
+    Mapping {
+        python: "test_show_human_block_only_prints_effective_deps_and_constraint",
+        path: CLI,
+        rust: "test_show_human_block_only_prints_effective_deps_and_constraint",
+    },
+    Mapping {
+        python: "test_show_human_meta_carried_deps_unchanged",
+        path: CLI,
+        rust: "test_show_human_meta_carried_deps_unchanged",
+    },
+    Mapping {
+        python: "test_show_human_no_uv_metadata_prints_neither_line",
+        path: CLI,
+        rust: "test_show_human_no_uv_metadata_prints_neither_line",
+    },
+    Mapping {
+        python: "test_detail_pane_block_only_shows_effective_depends_on",
+        path: TUI,
+        rust: "test_detail_pane_block_only_shows_effective_depends_on",
+    },
+    Mapping {
+        python: "test_detail_pane_no_deps_omits_the_depends_on_line",
+        path: TUI,
+        rust: "test_detail_pane_no_deps_omits_the_depends_on_line",
+    },
+    Mapping {
+        python: "test_settings_save_diffs_against_compose_time_baseline_not_a_re_read",
+        path: RACE,
+        rust: "test_settings_save_diffs_against_compose_time_baseline_not_a_re_read",
+    },
 ];
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 #[test]
 fn every_uv_metadata_view_python_test_has_a_real_rust_test() {
-    assert_eq!(MAPPINGS.len(), 6, "frozen Python UV-view oracle count changed");
     assert_eq!(
-        MAPPINGS.iter().map(|mapping| mapping.python).collect::<BTreeSet<_>>().len(),
+        MAPPINGS.len(),
+        6,
+        "frozen Python UV-view oracle count changed"
+    );
+    assert_eq!(
+        MAPPINGS
+            .iter()
+            .map(|mapping| mapping.python)
+            .collect::<BTreeSet<_>>()
+            .len(),
         6,
         "duplicate Python mappings make UV-view accounting dishonest"
     );

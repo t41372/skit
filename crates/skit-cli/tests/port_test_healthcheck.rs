@@ -5,7 +5,12 @@
 //! sources, and assert the machine contract. No assertion is weakened to "doctor failed" or a
 //! source-string check.
 
-use std::{collections::BTreeSet, fs, path::{Path, PathBuf}, process::{Command, Output}};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+};
 
 use serde_json::{Value, json};
 use skit_application::EntryRepository as _;
@@ -59,10 +64,7 @@ impl Sandbox {
     }
 
     fn add_shell(&self, name: &str) {
-        let source = self.source(
-            &format!("{name}.sh"),
-            "#!/usr/bin/env bash\necho hi\n",
-        );
+        let source = self.source(&format!("{name}.sh"), "#!/usr/bin/env bash\necho hi\n");
         self.add_source(&source, name, &[]);
     }
 
@@ -109,8 +111,9 @@ impl Sandbox {
             "doctor failed before emitting health state: {}",
             combined(&output)
         );
-        serde_json::from_slice(&output.stdout)
-            .unwrap_or_else(|error| panic!("doctor did not emit JSON: {error}\n{}", combined(&output)))
+        serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+            panic!("doctor did not emit JSON: {error}\n{}", combined(&output))
+        })
     }
 
     fn install_runner_fixture(&self) {
@@ -216,18 +219,8 @@ fn test_collect_reports_every_category_and_excludes_double_reports() {
     sandbox.add_python("gone", "print(1)\n");
     fs::remove_file(sandbox.payload("gone")).unwrap();
 
-    sandbox.add_python(
-        "drift_py",
-        "CITY = 'x'\nGONE = 'y'\nprint(CITY)\n",
-    );
-    sandbox.run_ok(&[
-        "params",
-        "drift_py",
-        "--manage",
-        "CITY",
-        "--manage",
-        "GONE",
-    ]);
+    sandbox.add_python("drift_py", "CITY = 'x'\nGONE = 'y'\nprint(CITY)\n");
+    sandbox.run_ok(&["params", "drift_py", "--manage", "CITY", "--manage", "GONE"]);
     let drift_python = sandbox.payload("drift_py");
     let text = fs::read_to_string(&drift_python).unwrap();
     fs::write(&drift_python, text.replace("GONE = 'y'\n", "")).unwrap();
@@ -251,7 +244,10 @@ fn test_collect_reports_every_category_and_excludes_double_reports() {
     sandbox.run_ok(&["params", "blocked_pr", "--runner", "codex"]);
 
     let report = sandbox.doctor(true);
-    assert_eq!(strings(&report["missing"]), BTreeSet::from(["gone".to_owned()]));
+    assert_eq!(
+        strings(&report["missing"]),
+        BTreeSet::from(["gone".to_owned()])
+    );
     assert_eq!(
         strings(&report["drift"]),
         BTreeSet::from(["drift_pr".to_owned(), "drift_py".to_owned()])
@@ -261,7 +257,11 @@ fn test_collect_reports_every_category_and_excludes_double_reports() {
         keys(&report["launch_blocked"]),
         BTreeSet::from(["blocked_pr".to_owned(), "blocked_sh".to_owned()])
     );
-    assert!(report["launch_blocked"]["blocked_sh"].as_str().is_some_and(|value| !value.is_empty()));
+    assert!(
+        report["launch_blocked"]["blocked_sh"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
     assert!(report["launch_blocked"].get("gone").is_none());
     assert!(report["launch_blocked"].get("needs_sh").is_none());
     assert_eq!(report["runner_rows_invalid"], json!(["bad"]));
@@ -281,7 +281,10 @@ fn test_collect_double_report_exclusion_continues_not_breaks() {
     ]);
 
     let report = sandbox.doctor(true);
-    assert!(strings(&report["missing"]).contains("aaa_excluded"), "{report}");
+    assert!(
+        strings(&report["missing"]).contains("aaa_excluded"),
+        "{report}"
+    );
     assert!(
         report["launch_blocked"]
             .as_object()

@@ -23,7 +23,9 @@ fn test_config_editor_roundtrip_and_clear() {
     store.set("editor", "").unwrap();
     assert_eq!(store.get("editor").unwrap(), "");
     assert!(
-        !config_text(&root).lines().any(|line| line.trim_start().starts_with("editor =")),
+        !config_text(&root)
+            .lines()
+            .any(|line| line.trim_start().starts_with("editor =")),
         "clearing editor must remove the key, not persist an empty replacement"
     );
 }
@@ -37,8 +39,14 @@ fn test_save_editor_preserves_other_keys() {
     store.set("editor", "nano").unwrap();
 
     let text = config_text(&root);
-    assert!(text.contains("language = \"zh-TW\""), "unrelated key was lost: {text}");
-    assert!(text.contains("editor = \"nano\""), "editor write missing: {text}");
+    assert!(
+        text.contains("language = \"zh-TW\""),
+        "unrelated key was lost: {text}"
+    );
+    assert!(
+        text.contains("editor = \"nano\""),
+        "editor write missing: {text}"
+    );
 }
 
 #[test]
@@ -58,7 +66,9 @@ fn test_save_editor_clear_when_absent_does_not_raise() {
     store.set("editor", "").unwrap();
     assert_eq!(store.get("editor").unwrap(), "");
     assert!(
-        !config_text(&root).lines().any(|line| line.trim_start().starts_with("editor =")),
+        !config_text(&root)
+            .lines()
+            .any(|line| line.trim_start().starts_with("editor =")),
         "clearing an absent editor must not fabricate an editor key"
     );
 }

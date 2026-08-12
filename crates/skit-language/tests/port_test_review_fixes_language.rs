@@ -42,7 +42,10 @@ fn test_inject_accepts_normal_float() {
     let output = inject_values("python", text, &declarations, &values).unwrap();
 
     assert!(output.contains("RATE = 2.75"), "{output}");
-    assert!(output.contains("print(RATE)"), "unrelated source disappeared: {output}");
+    assert!(
+        output.contains("print(RATE)"),
+        "unrelated source disappeared: {output}"
+    );
 }
 
 #[test]
@@ -73,8 +76,14 @@ fn test_set_dependencies_multiline_array_with_comment() {
     let metadata = read_uv_metadata(&output).expect("rewritten block must remain parseable");
 
     assert_eq!(metadata.dependencies, ["httpx"]);
-    assert!(!output.contains("requests"), "orphaned old array row survived: {output}");
-    assert!(output.contains("print(1)"), "source body disappeared: {output}");
+    assert!(
+        !output.contains("requests"),
+        "orphaned old array row survived: {output}"
+    );
+    assert!(
+        output.contains("print(1)"),
+        "source body disappeared: {output}"
+    );
 }
 
 #[test]

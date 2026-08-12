@@ -65,7 +65,9 @@ fn test_draft_resume_inferred_exe_routes_to_ask_without_program_option() {
 
     assert!(effects.is_empty());
     assert_eq!(workflow.stage(), AddStage::Kind);
-    let picker = workflow.kind_picker().expect("draft executable inference must route to kind ask");
+    let picker = workflow
+        .kind_picker()
+        .expect("draft executable inference must route to kind ask");
     assert!(!picker.offers(KnownEntryKind::Executable));
     assert!(
         picker
@@ -127,9 +129,7 @@ fn test_new_candidate_after_a_real_edit_takes_its_default() {
     );
     review.set_candidate_selected("CITY", false);
 
-    review.rescan(
-        b"CITY = \"Taipei\"\nREGION = \"us-east-1\"\nprint(CITY, REGION)\n".to_vec(),
-    );
+    review.rescan(b"CITY = \"Taipei\"\nREGION = \"us-east-1\"\nprint(CITY, REGION)\n".to_vec());
 
     assert!(!candidate_selected(&review, "CITY"));
     assert!(candidate_selected(&review, "REGION"));
@@ -166,7 +166,10 @@ fn test_review_rejects_a_bad_uv_dep_and_keeps_the_panel_open() {
 
     let effects = workflow.reduce(AddAction::Save);
 
-    assert!(effects.is_empty(), "invalid PEP 508 input reached a repository Commit effect");
+    assert!(
+        effects.is_empty(),
+        "invalid PEP 508 input reached a repository Commit effect"
+    );
     assert_eq!(workflow.stage(), AddStage::Review);
     assert!(matches!(
         workflow.problem(),
@@ -188,7 +191,10 @@ fn test_review_rejects_a_bad_python_constraint_and_keeps_the_panel_open() {
 
     let effects = workflow.reduce(AddAction::Save);
 
-    assert!(effects.is_empty(), "invalid PEP 440 input reached a repository Commit effect");
+    assert!(
+        effects.is_empty(),
+        "invalid PEP 440 input reached a repository Commit effect"
+    );
     assert_eq!(workflow.stage(), AddStage::Review);
     assert!(matches!(
         workflow.problem(),

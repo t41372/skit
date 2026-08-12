@@ -110,7 +110,10 @@ fn main() {
         .arg(&output)
         .status()
         .unwrap();
-    assert!(status.success(), "failed to compile onboarding editor probe");
+    assert!(
+        status.success(),
+        "failed to compile onboarding editor probe"
+    );
     output
 }
 

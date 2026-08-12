@@ -19,14 +19,24 @@ const PYTHON_CONTRACTS: &[&str] = &[
 const RUST_ORACLE: &str = "test_kitty_protocol_opt_out_is_effective_before_tui_input_starts";
 
 fn is_test(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 #[test]
 fn all_3_python_ime_import_guards_collapse_to_the_real_terminal_protocol_oracle() {
-    assert_eq!(PYTHON_CONTRACTS.len(), 3, "frozen Python IME oracle count changed");
     assert_eq!(
-        PYTHON_CONTRACTS.iter().copied().collect::<std::collections::BTreeSet<_>>().len(),
+        PYTHON_CONTRACTS.len(),
+        3,
+        "frozen Python IME oracle count changed"
+    );
+    assert_eq!(
+        PYTHON_CONTRACTS
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
         3,
         "duplicate Python names make IME architecture accounting dishonest"
     );

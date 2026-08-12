@@ -124,7 +124,9 @@ fn test_detail_pane_block_only_shows_effective_depends_on() {
     // stored PEP 723 source block.
     let meta = fs::read_to_string(sandbox.data.path().join("scripts/x/meta.toml")).unwrap();
     assert!(
-        !meta.lines().any(|line| line.trim_start().starts_with("dependencies =")),
+        !meta
+            .lines()
+            .any(|line| line.trim_start().starts_with("dependencies =")),
         "dependency unexpectedly lives in meta.toml"
     );
 

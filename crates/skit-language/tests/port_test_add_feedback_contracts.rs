@@ -16,11 +16,8 @@ fn test_micro_version_pin_unit() {
 
 #[test]
 fn test_resolve_python_metadata_without_script_dir_does_not_filter() {
-    let dependencies = external_dependencies_at(
-        "python",
-        "import helpers\nimport requests\n",
-        None,
-    );
+    let dependencies =
+        external_dependencies_at("python", "import helpers\nimport requests\n", None);
 
     assert_eq!(dependencies, ["helpers", "requests"]);
 }

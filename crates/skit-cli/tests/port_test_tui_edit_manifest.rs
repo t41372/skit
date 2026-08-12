@@ -14,7 +14,9 @@ const EXPECTED: &[&str] = &[
 ];
 
 fn is_test(attributes: &[Attribute]) -> bool {
-    attributes.iter().any(|attribute| attribute.path().is_ident("test"))
+    attributes
+        .iter()
+        .any(|attribute| attribute.path().is_ident("test"))
 }
 
 #[test]
@@ -37,7 +39,10 @@ fn tui_edit_has_exactly_the_6_frozen_python_oracles() {
         .collect::<Vec<_>>();
     assert_eq!(
         actual,
-        EXPECTED.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>(),
+        EXPECTED
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect::<Vec<_>>(),
         "TUI-edit parity target must be exactly the frozen Python test sequence"
     );
 }

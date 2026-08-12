@@ -91,7 +91,10 @@ fn test_ref_on_kept_draft_is_refused_and_keeps_it() {
     assert!(shown.contains("one of skit's own kept drafts"), "{shown}");
     assert!(shown.contains("Drop --ref"), "{shown}");
     assert!(draft.exists(), "refused add consumed the kept draft");
-    assert!(sandbox.store().resolve("linky").is_err(), "refused add created an entry");
+    assert!(
+        sandbox.store().resolve("linky").is_err(),
+        "refused add created an entry"
+    );
 }
 
 #[test]
@@ -102,7 +105,10 @@ fn test_ref_on_a_normal_file_still_works() {
     let output = sandbox.run_path(&source, &["--name", "mine", "--ref", "--no-input"]);
 
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
-    assert_eq!(sandbox.store().resolve("mine").unwrap().meta.mode, StorageMode::Reference);
+    assert_eq!(
+        sandbox.store().resolve("mine").unwrap().meta.mode,
+        StorageMode::Reference
+    );
     assert!(source.exists());
 }
 
@@ -117,7 +123,10 @@ fn test_prompt_draft_with_shebang_body_resumes_as_prompt() {
     let output = sandbox.run_path(&draft, &["--name", "summ", "--no-input"]);
 
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
-    assert_eq!(sandbox.store().resolve("summ").unwrap().meta.kind.as_str(), "prompt");
+    assert_eq!(
+        sandbox.store().resolve("summ").unwrap().meta.kind.as_str(),
+        "prompt"
+    );
     assert!(!draft.exists(), "successful prompt draft was not consumed");
 }
 
@@ -132,17 +141,23 @@ fn test_py_draft_with_shebang_body_still_resumes_as_shell() {
     let output = sandbox.run_path(&draft, &["--name", "shellish", "--no-input"]);
 
     assert_eq!(output.status.code(), Some(0), "{}", text(&output));
-    assert_eq!(sandbox.store().resolve("shellish").unwrap().meta.kind.as_str(), "shell");
+    assert_eq!(
+        sandbox
+            .store()
+            .resolve("shellish")
+            .unwrap()
+            .meta
+            .kind
+            .as_str(),
+        "shell"
+    );
     assert!(!draft.exists(), "successful script draft was not consumed");
 }
 
 #[test]
 fn test_micro_versioned_shebang_lands_in_stored_pep723() {
     let sandbox = Sandbox::new();
-    let source = sandbox.source(
-        "mv.py",
-        b"#!/usr/bin/env python3.12.1\nprint(1)\n",
-    );
+    let source = sandbox.source("mv.py", b"#!/usr/bin/env python3.12.1\nprint(1)\n");
 
     let output = sandbox.run_path(&source, &["--name", "mv", "--no-input"]);
     let shown = flat(&text(&output));
@@ -174,10 +189,7 @@ fn test_shebangless_unknown_uses_the_isnt_a_script_voice() {
 #[test]
 fn test_shebang_unknown_uses_the_names_no_interpreter_voice() {
     let sandbox = Sandbox::new();
-    let source = sandbox.source(
-        "report.tricky",
-        b"#!/usr/bin/awk -f\nBEGIN{print 1}\n",
-    );
+    let source = sandbox.source("report.tricky", b"#!/usr/bin/awk -f\nBEGIN{print 1}\n");
 
     let output = sandbox.run_path(&source, &["--name", "rep", "--no-input"]);
     let shown = flat(&text(&output));
@@ -188,7 +200,10 @@ fn test_shebang_unknown_uses_the_names_no_interpreter_voice() {
         "{shown}"
     );
     assert!(shown.contains("--kind"), "{shown}");
-    assert!(!shown.contains("isn't a script or an executable"), "{shown}");
+    assert!(
+        !shown.contains("isn't a script or an executable"),
+        "{shown}"
+    );
 }
 
 #[test]

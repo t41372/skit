@@ -86,7 +86,13 @@ impl Sandbox {
     fn add_ruby(&self, name: &str) {
         let source = self.home.path().join(format!("{name}.rb"));
         fs::write(&source, "#!/usr/bin/env ruby\nputs 'hi'\n").unwrap();
-        self.ok(&["add", source.to_str().unwrap(), "--name", name, "--no-input"]);
+        self.ok(&[
+            "add",
+            source.to_str().unwrap(),
+            "--name",
+            name,
+            "--no-input",
+        ]);
     }
 
     fn add_python(&self, name: &str, source: &str) {
@@ -96,7 +102,10 @@ impl Sandbox {
     }
 
     fn state_path(&self, slug: &str) -> PathBuf {
-        self.state.path().join("values").join(format!("{slug}.toml"))
+        self.state
+            .path()
+            .join("values")
+            .join(format!("{slug}.toml"))
     }
 
     fn seed_raw_values(&self, slug: &str, pairs: &[(&str, &str)]) {
@@ -376,14 +385,7 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
 fn test_cli_secret_declared_env_purges_prior_plaintext() {
     let sandbox = Sandbox::new();
     sandbox.add_command("prog", "echo hi");
-    sandbox.ok(&[
-        "params",
-        "prog",
-        "--add",
-        "TOKEN",
-        "--deliver",
-        "TOKEN=env",
-    ]);
+    sandbox.ok(&["params", "prog", "--add", "TOKEN", "--deliver", "TOKEN=env"]);
     sandbox.seed_raw_values("prog", &[("TOKEN", "plaintext")]);
     assert_eq!(
         sandbox.json(&["params", "prog", "--json"])["last_values"]["TOKEN"],
@@ -456,14 +458,7 @@ fn test_cli_run_set_env_and_placeholder_dry_run() {
         "--default",
         "RETRIES=3",
     ]);
-    let output = sandbox.ok(&[
-        "run",
-        "dr",
-        "--set",
-        "msg=hello",
-        "--dry-run",
-        "--no-input",
-    ]);
+    let output = sandbox.ok(&["run", "dr", "--set", "msg=hello", "--dry-run", "--no-input"]);
     let text = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     assert!(text.contains("RETRIES=3"), "{text}");
 }
@@ -505,7 +500,10 @@ fn test_cli_exe_show_masks_secret_default_and_last_value() {
 
     let output = sandbox.ok(&["params", "prog"]);
     let text = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert!(text.contains("•••"), "secret rows were not visibly masked:\n{text}");
+    assert!(
+        text.contains("•••"),
+        "secret rows were not visibly masked:\n{text}"
+    );
     assert!(
         !text.contains("Last value: stale") && !text.contains("stale"),
         "legacy plaintext leaked through the human view:\n{text}"
@@ -534,7 +532,10 @@ fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
 
     let output = sandbox.ok(&["params", "lg"]);
     let text = strip_ansi(&String::from_utf8_lossy(&output.stdout));
-    assert!(text.contains("•••"), "secret placeholder was not masked:\n{text}");
+    assert!(
+        text.contains("•••"),
+        "secret placeholder was not masked:\n{text}"
+    );
     assert!(
         !text.contains("Last value: stale") && !text.contains("stale"),
         "legacy placeholder plaintext leaked:\n{text}"
@@ -543,29 +544,18 @@ fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
         !text.contains("Current default: seed") && !text.contains("seed"),
         "secret placeholder default leaked:\n{text}"
     );
-    assert!(text.contains("other"), "undeclared placeholder disappeared:\n{text}");
+    assert!(
+        text.contains("other"),
+        "undeclared placeholder disappeared:\n{text}"
+    );
 }
 
 #[test]
 fn test_declared_add_on_interpreted_kind_delivers_at_run() {
     let sandbox = Sandbox::new();
     sandbox.add_ruby("rb2");
-    sandbox.ok(&[
-        "params",
-        "rb2",
-        "--add",
-        "SIZE",
-        "--flag",
-        "SIZE=--size",
-    ]);
-    let output = sandbox.ok(&[
-        "run",
-        "rb2",
-        "--set",
-        "SIZE=5",
-        "--dry-run",
-        "--no-input",
-    ]);
+    sandbox.ok(&["params", "rb2", "--add", "SIZE", "--flag", "SIZE=--size"]);
+    let output = sandbox.ok(&["run", "rb2", "--set", "SIZE=5", "--dry-run", "--no-input"]);
     let text = strip_ansi(&String::from_utf8_lossy(&output.stdout)).replace('\n', "");
     assert!(text.contains("--size") && text.contains('5'), "{text}");
 }

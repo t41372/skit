@@ -135,7 +135,10 @@ fn test_editor_lane_refuses_bad_python_before_opening_the_editor() {
     let (code, output) = fixture.run(&["--python", "garbage"]);
 
     assert_eq!(code, 2, "{output}");
-    assert!(flat(&output).contains("isn't a Python version constraint"), "{output}");
+    assert!(
+        flat(&output).contains("isn't a Python version constraint"),
+        "{output}"
+    );
     fixture.assert_never_opened();
 }
 
@@ -146,6 +149,9 @@ fn test_editor_lane_refuses_bad_dep_before_opening_the_editor() {
     let (code, output) = fixture.run(&["--dep", "@@@"]);
 
     assert_eq!(code, 2, "{output}");
-    assert!(flat(&output).contains("isn't a package requirement"), "{output}");
+    assert!(
+        flat(&output).contains("isn't a package requirement"),
+        "{output}"
+    );
     fixture.assert_never_opened();
 }

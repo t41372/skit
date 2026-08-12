@@ -175,7 +175,10 @@ fn test_deps_garbage_python_is_refused_and_nothing_changes() {
     let shown = flat(&combined(&output));
 
     assert_eq!(output.status.code(), Some(2), "{shown}");
-    assert!(shown.contains("isn't a Python version constraint"), "{shown}");
+    assert!(
+        shown.contains("isn't a Python version constraint"),
+        "{shown}"
+    );
     assert_eq!(sandbox.stored("a"), before);
     assert_eq!(sandbox.deps_json("a"), before_view);
 }
@@ -195,7 +198,11 @@ fn test_deps_dash_python_clears_meta_and_unpins_the_block() {
     assert_eq!(sandbox.deps_json("a")["requires_python"], "");
     let dry = sandbox.run(&["run", "a", "--dry-run", "--no-input"]);
     assert_success(&dry);
-    assert!(!flat(&combined(&dry)).contains("--python"), "{}", combined(&dry));
+    assert!(
+        !flat(&combined(&dry)).contains("--python"),
+        "{}",
+        combined(&dry)
+    );
 }
 
 #[test]
@@ -219,14 +226,7 @@ fn test_deps_none_python_clears_meta_when_nothing_to_preserve() {
     sandbox.create_copy("a", "python", b"print(1)\n");
     set_uv(&sandbox, "a", "requests", None);
 
-    let output = sandbox.run(&[
-        "deps",
-        "a",
-        "--dep",
-        "requests",
-        "--python",
-        "none",
-    ]);
+    let output = sandbox.run(&["deps", "a", "--dep", "requests", "--python", "none"]);
     assert_success(&output);
 
     let stored = String::from_utf8(sandbox.stored("a")).unwrap();
@@ -239,14 +239,7 @@ fn test_deps_valid_dep_and_python_still_write() {
     let sandbox = Sandbox::new();
     sandbox.create_copy("a", "python", b"print(1)\n");
 
-    let output = sandbox.run(&[
-        "deps",
-        "a",
-        "--dep",
-        "requests>=2,<3",
-        "--python",
-        "~=3.12",
-    ]);
+    let output = sandbox.run(&["deps", "a", "--dep", "requests>=2,<3", "--python", "~=3.12"]);
     assert_success(&output);
 
     let view = sandbox.deps_json("a");
@@ -264,9 +257,7 @@ fn test_deps_refused_write_leaves_needs_untouched() {
     assert_success(&sandbox.run(&["deps", "a", "--need", "jq"]));
     let before = sandbox.stored("a");
 
-    let output = sandbox.run(&[
-        "deps", "a", "--dep", "@@@", "--need", "ffmpeg",
-    ]);
+    let output = sandbox.run(&["deps", "a", "--dep", "@@@", "--need", "ffmpeg"]);
 
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
     assert_eq!(sandbox.deps_json("a")["needs"], serde_json::json!(["jq"]));
@@ -299,7 +290,12 @@ fn test_update_dependencies_uv_invalid_dep_raises_usage_error() {
     assert_eq!(output.status.code(), Some(2), "{shown}");
     assert!(shown.contains("isn't a package requirement"), "{shown}");
     assert_eq!(sandbox.stored("a"), before);
-    assert!(sandbox.deps_json("a")["dependencies"].as_array().unwrap().is_empty());
+    assert!(
+        sandbox.deps_json("a")["dependencies"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -319,7 +315,10 @@ fn test_update_dependencies_uv_invalid_python_raises_usage_error() {
     let shown = flat(&combined(&output));
 
     assert_eq!(output.status.code(), Some(2), "{shown}");
-    assert!(shown.contains("isn't a Python version constraint"), "{shown}");
+    assert!(
+        shown.contains("isn't a Python version constraint"),
+        "{shown}"
+    );
     assert_eq!(sandbox.stored("a"), before);
 }
 
@@ -349,7 +348,12 @@ fn test_update_dependencies_all_whitespace_list_clears_deps() {
     let output = sandbox.run(&["deps", "a", "--dep", "   ", "--dep", "\t"]);
     assert_success(&output);
 
-    assert!(sandbox.deps_json("a")["dependencies"].as_array().unwrap().is_empty());
+    assert!(
+        sandbox.deps_json("a")["dependencies"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     let stored = String::from_utf8(sandbox.stored("a")).unwrap();
     assert!(stored.contains("dependencies = []"), "{stored}");
     assert!(!stored.contains("requests"), "{stored}");
@@ -374,14 +378,7 @@ fn test_update_dependencies_normalizes_dash_python_before_validating() {
     let sandbox = Sandbox::new();
     sandbox.create_copy("a", "python", b"print(1)\n");
 
-    let output = sandbox.run(&[
-        "deps",
-        "a",
-        "--dep",
-        "requests",
-        "--python",
-        "-",
-    ]);
+    let output = sandbox.run(&["deps", "a", "--dep", "requests", "--python", "-"]);
 
     assert_success(&output);
     assert_eq!(sandbox.deps_json("a")["requires_python"], "");
@@ -404,7 +401,12 @@ fn test_no_input_add_of_an_illegally_named_import_writes_no_block() {
     assert_success(&output);
     let stored = String::from_utf8(sandbox.stored("cafe")).unwrap();
     assert!(!stored.contains("# /// script"), "{stored}");
-    assert!(sandbox.deps_json("cafe")["dependencies"].as_array().unwrap().is_empty());
+    assert!(
+        sandbox.deps_json("cafe")["dependencies"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[cfg(unix)]
@@ -427,7 +429,10 @@ fn test_inferred_exe_draft_gets_the_kind_variant() {
 
     assert_eq!(output.status.code(), Some(2), "{shown}");
     assert!(shown.contains("one of skit's own kept drafts"), "{shown}");
-    assert!(shown.contains("pass --kind <language> to name its language"), "{shown}");
+    assert!(
+        shown.contains("pass --kind <language> to name its language"),
+        "{shown}"
+    );
     assert!(!shown.contains("Drop"), "{shown}");
     assert!(draft.exists());
 }
@@ -470,7 +475,10 @@ fn test_shebang_less_unclassifiable_draft_gets_the_classify_variant() {
 
     assert_eq!(output.status.code(), Some(2), "{shown}");
     assert!(shown.contains("kept draft skit can't classify"), "{shown}");
-    assert!(shown.contains("--kind <language> to add it as a script"), "{shown}");
+    assert!(
+        shown.contains("--kind <language> to add it as a script"),
+        "{shown}"
+    );
     assert!(shown.contains("--prompt for an AI-agent prompt"), "{shown}");
     assert!(!shown.contains("--exe"), "{shown}");
     assert!(!shown.contains("--cmd"), "{shown}");
@@ -518,12 +526,7 @@ fn test_ref_on_an_md_draft_is_refused_before_the_prompt_ask() {
     assert!(sandbox.store().resolve("md1").is_err());
 }
 
-fn run_pty_add(
-    sandbox: &Sandbox,
-    source: &Path,
-    args: &[&str],
-    input: &[u8],
-) -> (u32, String) {
+fn run_pty_add(sandbox: &Sandbox, source: &Path, args: &[&str], input: &[u8]) -> (u32, String) {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 30,

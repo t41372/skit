@@ -10,7 +10,10 @@ use skit_language::{UvMetadata, effective_uv_metadata_bytes};
 
 fn metadata(dependencies: &[&str], requires_python: &str) -> UvMetadata {
     UvMetadata {
-        dependencies: dependencies.iter().map(|value| (*value).to_owned()).collect(),
+        dependencies: dependencies
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
         requires_python: requires_python.to_owned(),
     }
 }

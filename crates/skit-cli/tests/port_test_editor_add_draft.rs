@@ -136,7 +136,10 @@ impl DraftFixture {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(!self.capture.exists(), "seeding a command unexpectedly launched the editor");
+        assert!(
+            !self.capture.exists(),
+            "seeding a command unexpectedly launched the editor"
+        );
     }
 }
 
@@ -291,7 +294,10 @@ fn test_add_edit_python_name_taken_refuses_before_the_editor() {
     );
     assert_eq!(code, 1, "{output}");
     assert!(output.contains("already taken"), "{output}");
-    assert!(!fixture.capture.exists(), "name conflict was discovered only after launching editor");
+    assert!(
+        !fixture.capture.exists(),
+        "name conflict was discovered only after launching editor"
+    );
 }
 
 #[test]
@@ -306,7 +312,10 @@ fn test_add_edit_rejects_path() {
         b"",
     );
     assert_eq!(code, 2, "{output}");
-    assert!(!fixture.capture.exists(), "editor launched even though --edit had a source path");
+    assert!(
+        !fixture.capture.exists(),
+        "editor launched even though --edit had a source path"
+    );
 }
 
 #[test]
@@ -318,7 +327,10 @@ fn test_add_edit_non_interactive_errors() {
         Some("print('must never be written')\n"),
     );
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(!fixture.capture.exists(), "non-interactive --edit launched an editor");
+    assert!(
+        !fixture.capture.exists(),
+        "non-interactive --edit launched an editor"
+    );
     assert_no_entry(&fixture, "x");
 }
 
@@ -341,10 +353,16 @@ fn test_add_edit_unregistered_shebang_refused_keeps_draft() {
         b"",
     );
     assert_eq!(code, 2, "{output}");
-    assert!(output.contains("names no interpreter skit knows"), "{output}");
+    assert!(
+        output.contains("names no interpreter skit knows"),
+        "{output}"
+    );
     assert!(output.contains("--kind"), "{output}");
     let draft = fixture.captured_draft();
-    assert!(draft.exists(), "user-authored refused draft was deleted: {draft:?}");
+    assert!(
+        draft.exists(),
+        "user-authored refused draft was deleted: {draft:?}"
+    );
     assert_eq!(draft.parent().unwrap(), fixture.data.path().join("drafts"));
     assert_no_entry(&fixture, "aw");
     fs::remove_file(draft).unwrap();
@@ -358,7 +376,10 @@ fn test_add_edit_untouched_starter_unlinks_the_draft() {
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("Nothing was written"), "{output}");
     let draft = fixture.captured_draft();
-    assert!(!draft.exists(), "untouched starter litter survived: {draft:?}");
+    assert!(
+        !draft.exists(),
+        "untouched starter litter survived: {draft:?}"
+    );
 }
 
 #[test]
@@ -370,19 +391,28 @@ fn test_add_prompt_editor_untouched_starter_unlinks_the_draft() {
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("Nothing was written"), "{output}");
     let draft = fixture.captured_draft();
-    assert!(!draft.exists(), "untouched prompt starter litter survived: {draft:?}");
+    assert!(
+        !draft.exists(),
+        "untouched prompt starter litter survived: {draft:?}"
+    );
 }
 
 #[test]
 fn test_add_edit_prompts_for_name_when_omitted() {
     let fixture = DraftFixture::new();
-    let (code, output) = fixture.run_interactive(
-        &["add", "-e"],
-        Some("print('x')\n"),
-        b"prompted\n",
-    );
+    let (code, output) =
+        fixture.run_interactive(&["add", "-e"], Some("print('x')\n"), b"prompted\n");
     assert_eq!(code, 0, "{output}");
-    assert_eq!(fixture.store().resolve("prompted").unwrap().meta.kind.as_str(), "python");
+    assert_eq!(
+        fixture
+            .store()
+            .resolve("prompted")
+            .unwrap()
+            .meta
+            .kind
+            .as_str(),
+        "python"
+    );
 }
 
 #[test]
@@ -394,13 +424,20 @@ fn test_add_edit_blank_name_errors() {
         b"   \n",
     );
     assert_eq!(code, 2, "{output}");
-    assert!(!fixture.capture.exists(), "blank name was rejected only after launching editor");
+    assert!(
+        !fixture.capture.exists(),
+        "blank name was rejected only after launching editor"
+    );
 }
 
 #[test]
 fn test_add_edit_editor_error_exits_one() {
     let fixture = DraftFixture::new();
-    let missing = fixture.tools.path().join(editor_executable_name()).with_file_name("cannot-launch-editor");
+    let missing = fixture
+        .tools
+        .path()
+        .join(editor_executable_name())
+        .with_file_name("cannot-launch-editor");
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 20,
@@ -438,11 +475,8 @@ fn test_add_edit_name_conflict_exits_one() {
     let fixture = DraftFixture::new();
     fixture.seed_taken_name("dup");
 
-    let (code, output) = fixture.run_interactive(
-        &["add", "-e", "--name", "dup"],
-        Some("print('x')\n"),
-        b"",
-    );
+    let (code, output) =
+        fixture.run_interactive(&["add", "-e", "--name", "dup"], Some("print('x')\n"), b"");
     assert_eq!(code, 1, "{output}");
     assert!(output.contains("dup"), "{output}");
     assert!(output.contains("taken"), "{output}");

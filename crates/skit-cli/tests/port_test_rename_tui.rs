@@ -115,11 +115,7 @@ impl Sandbox {
     }
 }
 
-fn run_tui(
-    sandbox: &Sandbox,
-    after_boot: impl FnOnce(),
-    steps: &[(&[u8], u64)],
-) -> (u32, Vec<u8>) {
+fn run_tui(sandbox: &Sandbox, after_boot: impl FnOnce(), steps: &[(&[u8], u64)]) -> (u32, Vec<u8>) {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 40,
@@ -239,11 +235,7 @@ fn test_settings_hides_manage_checkboxes_for_argparse_script() {
     sandbox.add_python("ap", ARGPARSE_WITH_CONST);
     assert_eq!(sandbox.show_json("ap")["param_source"], "argparse");
 
-    let (code, bytes) = run_tui(
-        &sandbox,
-        || {},
-        &[(b"p", 320), (b"\x1b", 120), (b"q", 120)],
-    );
+    let (code, bytes) = run_tui(&sandbox, || {}, &[(b"p", 320), (b"\x1b", 120), (b"q", 120)]);
 
     assert_eq!(code, 0);
     let output = String::from_utf8_lossy(&bytes);
@@ -269,11 +261,7 @@ fn test_settings_save_keeps_argparse_source() {
     let before = fs::read(&payload).unwrap();
     assert_eq!(sandbox.show_json("ap2")["param_source"], "argparse");
 
-    let (code, _) = run_tui(
-        &sandbox,
-        || {},
-        &[(b"p", 220), (b"\x13", 320), (b"q", 120)],
-    );
+    let (code, _) = run_tui(&sandbox, || {}, &[(b"p", 220), (b"\x13", 320), (b"q", 120)]);
 
     assert_eq!(code, 0);
     assert_eq!(fs::read(&payload).unwrap(), before);

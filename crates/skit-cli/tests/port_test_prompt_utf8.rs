@@ -116,7 +116,10 @@ fn assert_invalid_utf8(text: &str, offset: usize) {
         text.contains(&format!("offset {offset}")) || text.contains(&format!("byte {offset}")),
         "invalid prompt reported the wrong/missing byte offset {offset}: {text}"
     );
-    assert!(!text.contains('\u{fffd}'), "invalid prompt was replacement-decoded: {text}");
+    assert!(
+        !text.contains('\u{fffd}'),
+        "invalid prompt was replacement-decoded: {text}"
+    );
 }
 
 #[test]
@@ -158,7 +161,10 @@ fn test_prompt_snapshot_read_error_is_not_ambiguous() {
 
     assert_ne!(output.status.code(), Some(0), "{text}");
     assert!(text.contains("gone.prompt.md"), "{text}");
-    assert!(!text.contains("UTF-8"), "missing source was misclassified as encoding: {text}");
+    assert!(
+        !text.contains("UTF-8"),
+        "missing source was misclassified as encoding: {text}"
+    );
     assert!(sandbox.store().scan().unwrap().entries.is_empty());
 }
 
@@ -267,7 +273,10 @@ fn test_cli_edit_invalid_prompt_refuses_then_reedit_recovers_without_replacement
     let first_text = combined(&first);
     assert_ne!(first.status.code(), Some(0), "{first_text}");
     assert_invalid_utf8(&first_text, byte_offset(prefix));
-    assert!(!capture.exists(), "invalid prompt reached the editor before strict validation");
+    assert!(
+        !capture.exists(),
+        "invalid prompt reached the editor before strict validation"
+    );
     assert_eq!(fs::read(&payload).unwrap(), invalid);
 
     fs::write(&payload, "repaired {{name}}\n".as_bytes()).unwrap();
@@ -282,7 +291,10 @@ fn test_cli_edit_invalid_prompt_refuses_then_reedit_recovers_without_replacement
         .output()
         .unwrap();
     assert_eq!(second.status.code(), Some(0), "{}", combined(&second));
-    assert_eq!(fs::read(&payload).unwrap(), "edited 你好 {{name}}\n".as_bytes());
+    assert_eq!(
+        fs::read(&payload).unwrap(),
+        "edited 你好 {{name}}\n".as_bytes()
+    );
     assert!(!String::from_utf8_lossy(&fs::read(&payload).unwrap()).contains('\u{fffd}'));
 }
 
@@ -305,13 +317,22 @@ fn test_library_edit_preserves_valid_prompt_utf8_and_refreshes_placeholders() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
-    assert_eq!(fs::read(&payload).unwrap(), "你好 {{city}} café\n".as_bytes());
+    assert_eq!(
+        fs::read(&payload).unwrap(),
+        "你好 {{city}} café\n".as_bytes()
+    );
     let params = sandbox.run(&["params", "edit-good", "--json"]);
     assert_eq!(params.status.code(), Some(0), "{}", combined(&params));
     let value: serde_json::Value = serde_json::from_slice(&params.stdout).unwrap();
     let all = serde_json::to_string(&value).unwrap();
-    assert!(all.contains("city"), "edited placeholder was not refreshed: {all}");
-    assert!(!all.contains("name"), "stale placeholder survived edit: {all}");
+    assert!(
+        all.contains("city"),
+        "edited placeholder was not refreshed: {all}"
+    );
+    assert!(
+        !all.contains("name"),
+        "stale placeholder survived edit: {all}"
+    );
 }
 
 #[test]
@@ -345,7 +366,11 @@ fn test_cli_add_params_run_doctor_share_the_strict_prompt_contract() {
         let output = sandbox.run(&args);
         let text = combined(&output);
         assert_invalid_utf8(&text, offset);
-        assert_eq!(fs::read(&payload).unwrap(), invalid, "surface {args:?} mutated the prompt");
+        assert_eq!(
+            fs::read(&payload).unwrap(),
+            invalid,
+            "surface {args:?} mutated the prompt"
+        );
     }
 }
 
@@ -380,6 +405,9 @@ fn main() {
         .arg(&executable)
         .status()
         .unwrap();
-    assert!(status.success(), "failed to compile prompt UTF-8 editor probe");
+    assert!(
+        status.success(),
+        "failed to compile prompt UTF-8 editor probe"
+    );
     executable
 }

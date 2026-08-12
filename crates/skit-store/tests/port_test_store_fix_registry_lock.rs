@@ -1,14 +1,10 @@
 //! Exact positive serialization pilot for Python `test_registry_lock_serializes_concurrent_holders`.
 
-use std::{
-    fs::OpenOptions,
-    sync::mpsc,
-    thread,
-    time::Duration,
-};
+use std::{fs::OpenOptions, sync::mpsc, thread, time::Duration};
 
 use skit_application::{
-    CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _, SourcePermissions,
+    CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _,
+    SourcePermissions,
 };
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;

@@ -125,16 +125,8 @@ fn test_command_params_fill_and_escape() {
         ..Assembly::default()
     };
 
-    let plan = build_launch_preview(
-        &entry,
-        &paths(""),
-        &assembly,
-        None,
-        None,
-        None,
-        &PreviewFs,
-    )
-    .unwrap();
+    let plan =
+        build_launch_preview(&entry, &paths(""), &assembly, None, None, None, &PreviewFs).unwrap();
 
     assert_eq!(command_text(&plan), "convert a.png to b.jpg keep {braces}");
 }

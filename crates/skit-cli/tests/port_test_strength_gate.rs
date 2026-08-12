@@ -69,7 +69,10 @@ fn reject_fixed_failure_tests(path: &Path, text: &str, offenders: &mut Vec<Strin
         let Item::Fn(function) = item else {
             continue;
         };
-        if !function.attrs.iter().any(|attr| attr.path().is_ident("test"))
+        if !function
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("test"))
             || function.block.stmts.len() != 1
         {
             continue;

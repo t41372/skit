@@ -33,10 +33,7 @@ fn mouse(column: u16, row: u16) -> Event {
     })
 }
 
-fn draw(
-    session: &mut TuiSession,
-    state: &LibraryState,
-) -> (Terminal<TestBackend>, ViewGeometry) {
+fn draw(session: &mut TuiSession, state: &LibraryState) -> (Terminal<TestBackend>, ViewGeometry) {
     let mut terminal = Terminal::new(TestBackend::new(130, 40)).unwrap();
     let mut geometry = ViewGeometry::default();
     terminal
@@ -109,7 +106,9 @@ fn preferences_focus(state: &LibraryState) -> PreferencesControlId {
 #[test]
 fn test_prefs_boots_on_language_and_arrows_move() {
     let mut state = LibraryState::default();
-    state.update(Action::Present(Screen::Preferences(Box::new(preferences()))));
+    state.update(Action::Present(Screen::Preferences(
+        Box::new(preferences()),
+    )));
     let mut session = TuiSession::default();
 
     let (terminal, _) = draw(&mut session, &state);
@@ -149,9 +148,9 @@ fn test_prefs_boots_on_language_and_arrows_move() {
     assert!(
         matches!(
             handling,
-            EventHandling::Action(Action::Preferences(
-                PreferencesAction::SetInteractiveForm(_)
-            )) | EventHandling::Consumed
+            EventHandling::Action(Action::Preferences(PreferencesAction::SetInteractiveForm(
+                _
+            ))) | EventHandling::Consumed
         ),
         "radio Down must be owned by the radio control: {handling:?}"
     );
@@ -162,17 +161,15 @@ fn test_prefs_boots_on_language_and_arrows_move() {
 
     let (terminal, geometry) = draw(&mut session, &state);
     let footer = rendered(terminal.backend().buffer());
-    assert!(footer.contains("Tab/↓"), "missing forward navigation pill:\n{footer}");
+    assert!(
+        footer.contains("Tab/↓"),
+        "missing forward navigation pill:\n{footer}"
+    );
     assert!(
         footer.contains("Shift+Tab/↑"),
         "missing backward navigation pill:\n{footer}"
     );
-    let _ = click_footer_command(
-        &mut session,
-        &mut state,
-        &geometry,
-        UiCommand::FocusNext,
-    );
+    let _ = click_footer_command(&mut session, &mut state, &geometry, UiCommand::FocusNext);
     assert_eq!(preferences_focus(&state), PreferencesControlId::AfterRun);
 
     let (_, geometry) = draw(&mut session, &state);
@@ -263,17 +260,15 @@ fn test_settings_boots_on_name_and_arrows_move() {
 
     let (terminal, geometry) = draw(&mut session, &state);
     let footer = rendered(terminal.backend().buffer());
-    assert!(footer.contains("Tab/↓"), "missing forward navigation pill:\n{footer}");
+    assert!(
+        footer.contains("Tab/↓"),
+        "missing forward navigation pill:\n{footer}"
+    );
     assert!(
         footer.contains("Shift+Tab/↑"),
         "missing backward navigation pill:\n{footer}"
     );
-    let _ = click_footer_command(
-        &mut session,
-        &mut state,
-        &geometry,
-        UiCommand::FocusNext,
-    );
+    let _ = click_footer_command(&mut session, &mut state, &geometry, UiCommand::FocusNext);
     assert_eq!(settings_focus(&state), second);
 
     let (_, geometry) = draw(&mut session, &state);

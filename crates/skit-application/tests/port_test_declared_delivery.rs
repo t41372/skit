@@ -110,12 +110,7 @@ fn test_declared_plan_secret_placeholder_masks_in_command_values() {
     password.delivery = ParameterDelivery::Placeholder;
     password.secret = true;
 
-    let assembly = assemble(
-        &[password],
-        &values(&[("password", "s3cret")]),
-        &[],
-    )
-    .unwrap();
+    let assembly = assemble(&[password], &values(&[("password", "s3cret")]), &[]).unwrap();
 
     assert_eq!(
         assembly.command_values,

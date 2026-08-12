@@ -128,14 +128,7 @@ fn test_settings_save_diffs_against_compose_time_baseline_not_a_re_read() {
     // A different skit process moves both axes underneath the already-open screen.
     sandbox
         .command()
-        .args([
-            "deps",
-            "x",
-            "--dep",
-            "numpy",
-            "--python",
-            ">=3.13",
-        ])
+        .args(["deps", "x", "--dep", "numpy", "--python", ">=3.13"])
         .assert()
         .success();
     let concurrent = read_uv_metadata(&sandbox.stored_source()).expect("concurrent PEP 723 block");
@@ -174,8 +167,7 @@ fn test_settings_save_diffs_against_compose_time_baseline_not_a_re_read() {
         "untouched stale Settings overwrote the concurrent dependency edit"
     );
     assert_eq!(
-        after.requires_python,
-        ">=3.13",
+        after.requires_python, ">=3.13",
         "untouched stale Settings overwrote the concurrent Python constraint"
     );
 }

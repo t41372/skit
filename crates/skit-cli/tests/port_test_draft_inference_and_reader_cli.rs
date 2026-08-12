@@ -11,7 +11,8 @@ use std::{
 };
 
 use skit_application::{
-    CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _, SourcePermissions,
+    CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _,
+    SourcePermissions,
 };
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_form::{OnboardingParseState, onboarding_plan};
@@ -94,7 +95,13 @@ impl Fixture {
     }
 
     fn kind(&self, selector: &str) -> String {
-        self.store().resolve(selector).unwrap().meta.kind.as_str().to_owned()
+        self.store()
+            .resolve(selector)
+            .unwrap()
+            .meta
+            .kind
+            .as_str()
+            .to_owned()
     }
 
     fn seed_unmanaged(&self, name: &str, kind: &str, bytes: &[u8], reference: bool) {
@@ -137,7 +144,10 @@ fn combined(output: &Output) -> String {
 }
 
 fn flat(output: &Output) -> String {
-    combined(output).split_whitespace().collect::<Vec<_>>().join(" ")
+    combined(output)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn assert_success(output: &Output) {
@@ -164,9 +174,7 @@ fn test_python_version_pin_rows() {
         (None, ""),
     ];
     for (program, expected) in rows {
-        let actual = program
-            .and_then(python_version_pin)
-            .unwrap_or_default();
+        let actual = program.and_then(python_version_pin).unwrap_or_default();
         assert_eq!(actual, expected, "program={program:?}");
     }
 }
@@ -179,7 +187,13 @@ fn test_kind_for_draft_shebang_first() {
     let python = fixture.draft("skit-new-c.py", b"print('x')\n");
 
     let shell = fixture.run(
-        &["add", bash.to_str().unwrap(), "-n", "unit-shell", "--no-input"],
+        &[
+            "add",
+            bash.to_str().unwrap(),
+            "-n",
+            "unit-shell",
+            "--no-input",
+        ],
         None,
     );
     assert_success(&shell);
@@ -196,7 +210,13 @@ fn test_kind_for_draft_shebang_first() {
     assert!(fixture.store().resolve("unit-awk").is_err());
 
     let py = fixture.run(
-        &["add", python.to_str().unwrap(), "-n", "unit-python", "--no-input"],
+        &[
+            "add",
+            python.to_str().unwrap(),
+            "-n",
+            "unit-python",
+            "--no-input",
+        ],
         None,
     );
     assert_success(&py);
@@ -224,14 +244,21 @@ fn test_is_draft_needs_both_dir_and_prefix() {
     }
 
     assert!(!owned.exists(), "owned skit- draft was not consumed");
-    assert!(parked.exists(), "unowned file in drafts directory was consumed");
-    assert!(outside.exists(), "skit- prefix outside drafts directory was consumed");
+    assert!(
+        parked.exists(),
+        "unowned file in drafts directory was consumed"
+    );
+    assert!(
+        outside.exists(),
+        "skit- prefix outside drafts directory was consumed"
+    );
 }
 
 #[test]
 fn test_reader_fields_predicate_rows() {
     let docopt = "\"\"\"Usage: x --city=<c>\"\"\"\nimport docopt\nprint(docopt.docopt(__doc__))\n";
-    let modeled = "import argparse\np=argparse.ArgumentParser()\np.add_argument('--n')\np.parse_args()\n";
+    let modeled =
+        "import argparse\np=argparse.ArgumentParser()\np.add_argument('--n')\np.parse_args()\n";
     let getopts2 = "#!/usr/bin/env bash\nwhile getopts \"n:v\" o; do :; done\n";
     let dynamic = "#!/usr/bin/env bash\nOPTS=\"n:v\"\nwhile getopts \"$OPTS\" o; do :; done\n";
 
@@ -307,7 +334,13 @@ fn test_cli_add_parked_user_file_in_drafts_dir_is_not_unlinked() {
     let fixture = Fixture::new();
     let parked = fixture.draft("mytool.sh", b"#!/usr/bin/env bash\necho hi\n");
     let output = fixture.run(
-        &["add", parked.to_str().unwrap(), "-n", "parked", "--no-input"],
+        &[
+            "add",
+            parked.to_str().unwrap(),
+            "-n",
+            "parked",
+            "--no-input",
+        ],
         None,
     );
     assert_success(&output);
@@ -332,7 +365,13 @@ fn test_path_add_python2_extensionless_is_refused() {
     let fixture = Fixture::new();
     let source = fixture.source("legacy", b"#!/usr/bin/env python2\nprint(1)\n");
     let output = fixture.run(
-        &["add", source.to_str().unwrap(), "-n", "legacy", "--no-input"],
+        &[
+            "add",
+            source.to_str().unwrap(),
+            "-n",
+            "legacy",
+            "--no-input",
+        ],
         None,
     );
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
@@ -353,7 +392,11 @@ fn test_stdin_versioned_shebang_pins_requires_python_and_announces() {
         "{}",
         combined(&output)
     );
-    assert!(fixture.stored_text("v").contains("requires-python = \">=3.12,<3.13\""));
+    assert!(
+        fixture
+            .stored_text("v")
+            .contains("requires-python = \">=3.12,<3.13\"")
+    );
 }
 
 #[test]
@@ -373,7 +416,8 @@ fn test_explicit_python_beats_the_shebang_pin_silently() {
 #[test]
 fn test_existing_pep723_block_beats_the_shebang_pin_silently() {
     let fixture = Fixture::new();
-    let body = b"#!/usr/bin/env python3.12\n# /// script\n# requires-python = '>=3.9'\n# ///\nprint(1)\n";
+    let body =
+        b"#!/usr/bin/env python3.12\n# /// script\n# requires-python = '>=3.9'\n# ///\nprint(1)\n";
     let output = fixture.run(&["add", "-", "-n", "vb"], Some(body));
     assert_success(&output);
     assert!(!combined(&output).contains("recording requires-python"));
@@ -392,7 +436,10 @@ fn test_dep_flag_present_still_pins_from_the_shebang() {
     assert_success(&output);
     assert!(flat(&output).contains("recording requires-python >=3.12,<3.13"));
     let text = fixture.stored_text("vd");
-    assert!(text.contains("requires-python = \">=3.12,<3.13\""), "{text}");
+    assert!(
+        text.contains("requires-python = \">=3.12,<3.13\""),
+        "{text}"
+    );
     assert!(text.contains("rich"), "{text}");
 }
 
@@ -406,7 +453,10 @@ fn test_suggested_deps_noninteractive_pins_from_the_shebang() {
     assert_success(&output);
     assert!(flat(&output).contains("recording requires-python >=3.12,<3.13"));
     let text = fixture.stored_text("vs");
-    assert!(text.contains("requires-python = \">=3.12,<3.13\""), "{text}");
+    assert!(
+        text.contains("requires-python = \">=3.12,<3.13\""),
+        "{text}"
+    );
     assert!(text.contains("requests"), "{text}");
 }
 
@@ -428,7 +478,10 @@ fn test_docopt_python_read_view_offers_manage() {
     let plain = fixture.run(&["params", "dc"], None);
     assert_success(&plain);
     let text = flat(&plain);
-    assert!(text.contains("Detected but not yet managed: CITY"), "{text}");
+    assert!(
+        text.contains("Detected but not yet managed: CITY"),
+        "{text}"
+    );
     assert!(text.contains("--manage"), "{text}");
     let json = fixture.run(&["params", "dc", "--json"], None);
     assert_success(&json);
@@ -451,7 +504,11 @@ fn test_dynamic_getopts_read_view_offers_manage() {
     fixture.seed_unmanaged("dyn", "shell", DYNAMIC_SHELL, false);
     let plain = fixture.run(&["params", "dyn"], None);
     assert_success(&plain);
-    assert!(combined(&plain).contains("--manage"), "{}", combined(&plain));
+    assert!(
+        combined(&plain).contains("--manage"),
+        "{}",
+        combined(&plain)
+    );
     let json = fixture.run(&["params", "dyn", "--json"], None);
     assert_success(&json);
     let payload: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
@@ -504,9 +561,15 @@ fn test_reference_constants_read_view_names_unmanaged_with_teaching() {
     let output = fixture.run(&["params", "refc"], None);
     assert_success(&output);
     let text = flat(&output);
-    assert!(text.contains("Detected but not yet managed: OUTDIR"), "{text}");
+    assert!(
+        text.contains("Detected but not yet managed: OUTDIR"),
+        "{text}"
+    );
     assert!(!text.contains("use --manage to manage them"), "{text}");
-    assert!(text.contains("skit never writes the original file"), "{text}");
+    assert!(
+        text.contains("skit never writes the original file"),
+        "{text}"
+    );
     let json = fixture.run(&["params", "refc", "--json"], None);
     assert_success(&json);
     let payload: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
@@ -521,7 +584,14 @@ fn test_reference_reader_add_prints_the_read_notice() {
         b"#!/usr/bin/env bash\nwhile getopts \"n:v\" o; do :; done\n",
     );
     let first = fixture.run(
-        &["add", shell.to_str().unwrap(), "-n", "refadd", "--ref", "--no-input"],
+        &[
+            "add",
+            shell.to_str().unwrap(),
+            "-n",
+            "refadd",
+            "--ref",
+            "--no-input",
+        ],
         None,
     );
     assert_success(&first);
@@ -532,7 +602,14 @@ fn test_reference_reader_add_prints_the_read_notice() {
         b"import argparse\np=argparse.ArgumentParser()\np.add_argument('--n')\np.parse_args()\n",
     );
     let second = fixture.run(
-        &["add", python.to_str().unwrap(), "-n", "refap", "--ref", "--no-input"],
+        &[
+            "add",
+            python.to_str().unwrap(),
+            "-n",
+            "refap",
+            "--ref",
+            "--no-input",
+        ],
         None,
     );
     assert_success(&second);
@@ -547,7 +624,14 @@ fn test_reference_constants_add_prints_the_skip_line() {
         b"#!/usr/bin/env bash\nOUTDIR=/tmp\necho $OUTDIR\n",
     );
     let output = fixture.run(
-        &["add", shell.to_str().unwrap(), "-n", "refcadd", "--ref", "--no-input"],
+        &[
+            "add",
+            shell.to_str().unwrap(),
+            "-n",
+            "refcadd",
+            "--ref",
+            "--no-input",
+        ],
         None,
     );
     assert_success(&output);

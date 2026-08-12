@@ -4,9 +4,7 @@
 //! source reconciliation as `ParsedDocument::reconcile`; these tests pin the same stored/current
 //! distinctions without changing production code when parity fails.
 
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::{ParseOutcome, parse_document};
 
 const SCRIPT: &str = concat!(

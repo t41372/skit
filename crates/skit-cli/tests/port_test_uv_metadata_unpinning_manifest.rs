@@ -15,10 +15,26 @@ const CLI: &str = "crates/skit-cli/tests/port_test_uv_metadata_unpinning.rs";
 const SETTINGS: &str = "crates/skit-cli/tests/port_test_effective_uv_metadata_settings.rs";
 
 const MAPPINGS: &[Mapping] = &[
-    Mapping { python: "test_pin_unpin_repin_block_line_tracks_the_constraint_end_to_end", path: CLI, rust: "test_pin_unpin_repin_block_line_tracks_the_constraint_end_to_end" },
-    Mapping { python: "test_deps_only_edit_preserves_a_pin_that_lives_only_in_the_block", path: CLI, rust: "test_deps_only_edit_preserves_a_pin_that_lives_only_in_the_block" },
-    Mapping { python: "test_deps_only_edit_preserves_a_pin_that_lives_in_meta", path: CLI, rust: "test_deps_only_edit_preserves_a_pin_that_lives_in_meta" },
-    Mapping { python: "test_settings_clearing_python_unpins_the_block", path: SETTINGS, rust: "test_settings_clearing_python_unpins_the_block" },
+    Mapping {
+        python: "test_pin_unpin_repin_block_line_tracks_the_constraint_end_to_end",
+        path: CLI,
+        rust: "test_pin_unpin_repin_block_line_tracks_the_constraint_end_to_end",
+    },
+    Mapping {
+        python: "test_deps_only_edit_preserves_a_pin_that_lives_only_in_the_block",
+        path: CLI,
+        rust: "test_deps_only_edit_preserves_a_pin_that_lives_only_in_the_block",
+    },
+    Mapping {
+        python: "test_deps_only_edit_preserves_a_pin_that_lives_in_meta",
+        path: CLI,
+        rust: "test_deps_only_edit_preserves_a_pin_that_lives_in_meta",
+    },
+    Mapping {
+        python: "test_settings_clearing_python_unpins_the_block",
+        path: SETTINGS,
+        rust: "test_settings_clearing_python_unpins_the_block",
+    },
 ];
 
 fn has_test_attribute(attributes: &[Attribute]) -> bool {
@@ -29,9 +45,17 @@ fn has_test_attribute(attributes: &[Attribute]) -> bool {
 
 #[test]
 fn every_uv_unpinning_python_test_has_a_real_rust_test() {
-    assert_eq!(MAPPINGS.len(), 4, "frozen Python UV-unpinning oracle count changed");
     assert_eq!(
-        MAPPINGS.iter().map(|mapping| mapping.python).collect::<BTreeSet<_>>().len(),
+        MAPPINGS.len(),
+        4,
+        "frozen Python UV-unpinning oracle count changed"
+    );
+    assert_eq!(
+        MAPPINGS
+            .iter()
+            .map(|mapping| mapping.python)
+            .collect::<BTreeSet<_>>()
+            .len(),
         4,
         "duplicate Python mappings make the completeness count dishonest"
     );

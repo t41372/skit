@@ -5,11 +5,8 @@ use skit_language::external_dependencies_at;
 
 #[test]
 fn test_suggest_dependencies_drops_a_name_pep508_refuses() {
-    let suggested = external_dependencies_at(
-        "python",
-        "import café\nimport requests\nprint(1)\n",
-        None,
-    );
+    let suggested =
+        external_dependencies_at("python", "import café\nimport requests\nprint(1)\n", None);
 
     assert_eq!(suggested, ["requests"]);
 }

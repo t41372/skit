@@ -34,10 +34,7 @@ fn two_field_state() -> LibraryState {
     state
 }
 
-fn draw(
-    session: &mut TuiSession,
-    state: &LibraryState,
-) -> (Terminal<TestBackend>, ViewGeometry) {
+fn draw(session: &mut TuiSession, state: &LibraryState) -> (Terminal<TestBackend>, ViewGeometry) {
     let mut terminal = Terminal::new(TestBackend::new(130, 40)).unwrap();
     let mut geometry = ViewGeometry::default();
     terminal
@@ -90,10 +87,22 @@ fn test_run_form_boots_typeable_and_arrows_walk_the_fields() {
         "Run Form must boot on the first typeable field"
     );
     let rendered = text(terminal.backend().buffer());
-    assert!(rendered.contains("Tab"), "forward field navigation is not advertised: {rendered}");
-    assert!(rendered.contains('↓'), "Down-arrow field navigation is not advertised: {rendered}");
-    assert!(rendered.contains("Shift+Tab"), "backward field navigation is not advertised: {rendered}");
-    assert!(rendered.contains('↑'), "Up-arrow field navigation is not advertised: {rendered}");
+    assert!(
+        rendered.contains("Tab"),
+        "forward field navigation is not advertised: {rendered}"
+    );
+    assert!(
+        rendered.contains('↓'),
+        "Down-arrow field navigation is not advertised: {rendered}"
+    );
+    assert!(
+        rendered.contains("Shift+Tab"),
+        "backward field navigation is not advertised: {rendered}"
+    );
+    assert!(
+        rendered.contains('↑'),
+        "Up-arrow field navigation is not advertised: {rendered}"
+    );
 
     assert_eq!(
         apply(
@@ -135,7 +144,9 @@ fn test_run_form_boots_typeable_and_arrows_walk_the_fields() {
         .hits
         .iter()
         .find(|hit| hit.action == HitTarget::Command(UiCommand::FocusPrevious))
-        .unwrap_or_else(|| panic!("Run Form footer did not expose a clickable backward-field chip"));
+        .unwrap_or_else(|| {
+            panic!("Run Form footer did not expose a clickable backward-field chip")
+        });
     assert_eq!(
         apply(&mut session, &mut state, &geometry, click(backward)),
         EventHandling::Action(Action::FocusPrevious)

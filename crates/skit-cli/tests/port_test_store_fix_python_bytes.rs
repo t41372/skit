@@ -130,14 +130,7 @@ fn test_update_dependencies_copy_utf8_syncs_block_and_stays_utf8() {
 
     sandbox
         .command()
-        .args([
-            "deps",
-            "plain",
-            "--dep",
-            "httpx",
-            "--python",
-            ">=3.11",
-        ])
+        .args(["deps", "plain", "--dep", "httpx", "--python", ">=3.11"])
         .assert()
         .success();
 
@@ -166,7 +159,11 @@ fn test_update_dependencies_refuses_when_a_non_utf8_copy_carries_its_own_block()
         .args(["deps", "latin1-block", "--clear"])
         .output()
         .unwrap();
-    assert!(!output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(
+        !output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&output.stdout),
@@ -236,24 +233,23 @@ fn test_deps_edit_on_a_crlf_copy_keeps_one_block_and_its_params() {
 
     sandbox
         .command()
-        .args([
-            "deps",
-            "crlf",
-            "--dep",
-            "rich>=15",
-            "--python",
-            ">=3.12",
-        ])
+        .args(["deps", "crlf", "--dep", "rich>=15", "--python", ">=3.12"])
         .assert()
         .success();
 
     let raw = fs::read(sandbox.stored("crlf")).unwrap();
-    assert_eq!(raw.windows(b"/// script".len()).filter(|w| *w == b"/// script").count(), 1);
+    assert_eq!(
+        raw.windows(b"/// script".len())
+            .filter(|w| *w == b"/// script")
+            .count(),
+        1
+    );
     assert!(raw.windows(2).any(|pair| pair == b"\r\n"));
-    assert!(!raw
-        .windows(1)
-        .enumerate()
-        .any(|(index, byte)| byte == b"\n" && (index == 0 || raw[index - 1] != b'\r')));
+    assert!(
+        !raw.windows(1)
+            .enumerate()
+            .any(|(index, byte)| byte == b"\n" && (index == 0 || raw[index - 1] != b'\r'))
+    );
     let normalized = String::from_utf8(raw).unwrap().replace("\r\n", "\n");
     assert_eq!(
         managed_params("python", &normalized)
@@ -277,11 +273,19 @@ fn test_add_with_deps_does_not_double_block_a_crlf_script() {
     sandbox.add(&source, "crlfadd", &["--dep", "rich"]);
 
     let raw = fs::read(sandbox.stored("crlfadd")).unwrap();
-    assert_eq!(raw.windows(b"/// script".len()).filter(|w| *w == b"/// script").count(), 1);
+    assert_eq!(
+        raw.windows(b"/// script".len())
+            .filter(|w| *w == b"/// script")
+            .count(),
+        1
+    );
     assert!(raw.windows(2).any(|pair| pair == b"\r\n"));
     let normalized = String::from_utf8(raw).unwrap().replace("\r\n", "\n");
     assert!(managed_params("python", &normalized).is_empty());
-    assert_eq!(read_uv_metadata(&normalized).unwrap().dependencies, ["rich"]);
+    assert_eq!(
+        read_uv_metadata(&normalized).unwrap().dependencies,
+        ["rich"]
+    );
 }
 
 #[test]

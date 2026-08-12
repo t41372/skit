@@ -67,10 +67,20 @@ impl Sandbox {
     }
 
     fn assert_stored_pep723_dependencies(&self, slug: &str, expected: &[&str]) {
-        let source = fs::read_to_string(self.data.path().join("scripts").join(slug).join("script.py"))
-            .unwrap();
-        let metadata = read_uv_metadata(&source).expect("stored Python copy must own a PEP 723 block");
-        let expected = expected.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>();
+        let source = fs::read_to_string(
+            self.data
+                .path()
+                .join("scripts")
+                .join(slug)
+                .join("script.py"),
+        )
+        .unwrap();
+        let metadata =
+            read_uv_metadata(&source).expect("stored Python copy must own a PEP 723 block");
+        let expected = expected
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect::<Vec<_>>();
         assert_eq!(metadata.dependencies, expected);
     }
 }
@@ -115,14 +125,7 @@ fn test_deps_dep_flags_carry_specifier_commas() {
 
     sandbox
         .command()
-        .args([
-            "deps",
-            "a",
-            "--dep",
-            "requests>=2,<3",
-            "--dep",
-            "rich",
-        ])
+        .args(["deps", "a", "--dep", "requests>=2,<3", "--dep", "rich"])
         .assert()
         .success();
 

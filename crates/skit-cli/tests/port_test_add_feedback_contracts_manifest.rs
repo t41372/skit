@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 
 use syn::{Attribute, Item};
 
-const LANGUAGE: &str = include_str!("../../skit-language/tests/port_test_add_feedback_contracts.rs");
+const LANGUAGE: &str =
+    include_str!("../../skit-language/tests/port_test_add_feedback_contracts.rs");
 const TUI: &str = include_str!("../../skit-tui/tests/port_test_add_feedback_contracts.rs");
 const CLI: &str = include_str!("port_test_add_feedback_contracts.rs");
 
@@ -59,7 +60,15 @@ fn all_sixteen_python_add_feedback_contracts_are_executable_once() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(PYTHON_TESTS.len(), 16);
-    assert_eq!(actual.len(), 16, "unexpected extra or missing add-feedback tests");
-    assert_eq!(actual_set.len(), actual.len(), "duplicate names hide a missing contract");
+    assert_eq!(
+        actual.len(),
+        16,
+        "unexpected extra or missing add-feedback tests"
+    );
+    assert_eq!(
+        actual_set.len(),
+        actual.len(),
+        "duplicate names hide a missing contract"
+    );
     assert_eq!(actual_set, expected);
 }

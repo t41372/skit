@@ -30,7 +30,10 @@ fn block(dependencies: &[&str], requires_python: &str) -> Vec<u8> {
 
 fn metadata(dependencies: &[&str], requires_python: &str) -> UvMetadata {
     UvMetadata {
-        dependencies: dependencies.iter().map(|value| (*value).to_owned()).collect(),
+        dependencies: dependencies
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
         requires_python: requires_python.to_owned(),
     }
 }
@@ -42,7 +45,10 @@ fn test_update_dependencies_none_none_is_a_full_no_op() {
 
     assert_eq!(plan.effective, metadata(&["requests"], ">=3.11"));
     assert_eq!(plan.stored, UvMetadata::default());
-    assert_eq!(plan.rewritten_source, None, "untouched axes must not rewrite source bytes");
+    assert_eq!(
+        plan.rewritten_source, None,
+        "untouched axes must not rewrite source bytes"
+    );
 }
 
 #[test]
@@ -58,7 +64,9 @@ fn test_update_dependencies_none_python_lands_pin_and_preserves_block_deps() {
 
     assert_eq!(plan.effective, metadata(&["requests"], ">=3.12"));
     assert_eq!(plan.stored, metadata(&[], ">=3.12"));
-    let rewritten = plan.rewritten_source.expect("the pin must be written into the block");
+    let rewritten = plan
+        .rewritten_source
+        .expect("the pin must be written into the block");
     let parsed = read_uv_metadata(std::str::from_utf8(&rewritten).unwrap()).unwrap();
     assert_eq!(parsed, metadata(&["requests"], ">=3.12"));
 }
@@ -87,13 +95,8 @@ fn test_update_dependencies_clear_deps_preserves_the_pin() {
 fn test_update_dependencies_python_only_edit_syncs_block_from_meta_deps() {
     let source = block(&[], "");
     let stored = metadata(&["requests"], "");
-    let plan = plan_uv_metadata_edit(
-        Some(&source),
-        &stored,
-        None,
-        Some(">=3.13".to_owned()),
-    )
-    .unwrap();
+    let plan =
+        plan_uv_metadata_edit(Some(&source), &stored, None, Some(">=3.13".to_owned())).unwrap();
 
     assert_eq!(plan.effective, metadata(&["requests"], ">=3.13"));
     assert_eq!(plan.stored, metadata(&["requests"], ">=3.13"));

@@ -63,8 +63,16 @@ fn all_sixteen_python_prompt_utf8_contracts_are_executable_once() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(PYTHON_TESTS.len(), 16);
-    assert_eq!(actual.len(), 16, "unexpected extra or missing prompt UTF-8 tests");
-    assert_eq!(actual_set.len(), actual.len(), "duplicate names hide a missing contract");
+    assert_eq!(
+        actual.len(),
+        16,
+        "unexpected extra or missing prompt UTF-8 tests"
+    );
+    assert_eq!(
+        actual_set.len(),
+        actual.len(),
+        "duplicate names hide a missing contract"
+    );
     assert_eq!(actual_set, expected);
 }
 

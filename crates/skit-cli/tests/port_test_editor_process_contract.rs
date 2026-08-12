@@ -173,11 +173,20 @@ fn test_open_in_editor_appends_path_and_returns_code() {
         [
             probe.display().to_string(),
             "--wait".to_owned(),
-            fixture.data.path().join("scripts/a/script.py").display().to_string(),
+            fixture
+                .data
+                .path()
+                .join("scripts/a/script.py")
+                .display()
+                .to_string(),
         ],
         "the editor command prefix must be preserved and the edited path appended exactly once"
     );
-    assert!(combined(&output).contains("Saved a"), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("Saved a"),
+        "{}",
+        combined(&output)
+    );
 }
 
 #[test]
@@ -195,9 +204,17 @@ fn test_open_in_editor_returns_nonzero_without_raising() {
         "editor exit 3 was incorrectly promoted to a skit failure: {}",
         combined(&output)
     );
-    assert!(combined(&output).contains("Saved a"), "{}", combined(&output));
+    assert!(
+        combined(&output).contains("Saved a"),
+        "{}",
+        combined(&output)
+    );
     let argv = fixture.argv();
-    assert_eq!(argv.len(), 2, "the non-zero editor must still receive one target: {argv:?}");
+    assert_eq!(
+        argv.len(),
+        2,
+        "the non-zero editor must still receive one target: {argv:?}"
+    );
     assert_eq!(
         PathBuf::from(&argv[1]),
         fixture.data.path().join("scripts/a/script.py")
@@ -214,7 +231,10 @@ fn test_open_in_editor_launch_failure_message_exact() {
     fs::create_dir(&empty_path).unwrap();
 
     let output = fixture.run(None, Some(&empty_path));
-    assert!(!output.status.success(), "a missing editor unexpectedly succeeded");
+    assert!(
+        !output.status.success(),
+        "a missing editor unexpectedly succeeded"
+    );
     let text = combined(&output);
     assert!(
         text.contains("Could not launch the editor (code --wait):"),
@@ -224,6 +244,12 @@ fn test_open_in_editor_launch_failure_message_exact() {
         text.contains("skit config editor <cmd>"),
         "the launch failure lost the Python oracle's recovery instruction: {text}"
     );
-    assert!(!text.contains("XX"), "mutation sentinel leaked into the message: {text}");
-    assert!(!fixture.capture.exists(), "the missing editor somehow executed");
+    assert!(
+        !text.contains("XX"),
+        "mutation sentinel leaked into the message: {text}"
+    );
+    assert!(
+        !fixture.capture.exists(),
+        "the missing editor somehow executed"
+    );
 }

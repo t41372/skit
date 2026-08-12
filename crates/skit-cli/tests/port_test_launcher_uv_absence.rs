@@ -170,7 +170,10 @@ fn test_python_uv_download_failure_raises() {
     let (_fixture, output, contacted, uv_mirror) = run_against_broken_mirror();
     let text = combined(&output);
 
-    assert!(contacted, "the deterministic failing downloader was never called: {text}");
+    assert!(
+        contacted,
+        "the deterministic failing downloader was never called: {text}"
+    );
     assert_eq!(
         output.status.code(),
         Some(125),

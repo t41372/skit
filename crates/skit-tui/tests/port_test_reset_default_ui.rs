@@ -79,11 +79,7 @@ fn text_default(name: &str, default: Option<&str>, secret: bool) -> ParamDecl {
     declaration
 }
 
-fn form(
-    declarations: &[ParamDecl],
-    saved: &[(&str, &str)],
-    runners: &[String],
-) -> RunFormView {
+fn form(declarations: &[ParamDecl], saved: &[(&str, &str)], runners: &[String]) -> RunFormView {
     RunFormView::from_declarations(
         "demo",
         "Demo",
@@ -193,12 +189,7 @@ fn test_reset_chip_mouse_click_restores_the_default() {
     let area = reset_hit(&geometry, field).expect("defaulted field must render a reset chip");
 
     assert_eq!(
-        drive(
-            &mut session,
-            &mut state,
-            &geometry,
-            mouse(area.x, area.y),
-        ),
+        drive(&mut session, &mut state, &geometry, mouse(area.x, area.y),),
         EventHandling::Action(Action::ResetRunField(field))
     );
     assert_eq!(parameter_value(&state, "greeting"), "hello");
@@ -256,11 +247,7 @@ fn test_choice_default_outside_its_choices_gets_no_chip_and_no_ctrl_o() {
 
 #[test]
 fn test_footer_advertises_ctrl_o_only_when_some_field_is_resettable() {
-    let resettable = state_with_form(form(
-        &[text_default("g", Some("h"), false)],
-        &[],
-        &[],
-    ));
+    let resettable = state_with_form(form(&[text_default("g", Some("h"), false)], &[], &[]));
     let none = state_with_form(form(
         &[
             text_default("s", Some("x"), true),

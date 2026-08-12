@@ -4,7 +4,11 @@
 //! the real copy, read-only views must leave its bytes unchanged, reference edits must not touch the
 //! original, and `skit edit` on a command must refuse before a real editor probe can run.
 
-use std::{fs, path::{Path, PathBuf}, process::{Command as ProcessCommand, Output}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command as ProcessCommand, Output},
+};
 
 use assert_cmd::Command;
 use skit_application::{
@@ -23,7 +27,8 @@ const SCRIPT: &[u8] = concat!(
     "RETRIES = 3\n",
     "who = input(\"Name: \")\n",
     "print(CITY, RETRIES, who)\n",
-).as_bytes();
+)
+.as_bytes();
 
 struct Sandbox {
     data: TempDir,
@@ -74,7 +79,12 @@ impl Sandbox {
                 name: name.to_owned(),
                 kind: EntryKind::parse("python").unwrap(),
                 mode: StorageMode::Copy,
-                source: self.home.path().join(format!("{name}.py")).display().to_string(),
+                source: self
+                    .home
+                    .path()
+                    .join(format!("{name}.py"))
+                    .display()
+                    .to_string(),
                 workdir: "invoke".to_owned(),
                 description: String::new(),
                 payload: Some(EntryPayload {
@@ -140,7 +150,10 @@ fn test_add_brings_candidate_under_management() {
 
     let declarations = sandbox.managed("managed-add");
     assert_eq!(
-        declarations.iter().map(|item| item.name.as_str()).collect::<Vec<_>>(),
+        declarations
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
         ["CITY", "RETRIES"]
     );
     assert_eq!(declarations[1].parameter_type, ParameterType::Int);
@@ -237,7 +250,11 @@ fn test_cli_params_view_no_ops() {
     assert_success(&output);
 
     assert!(combined(&output).contains("CITY"), "{}", combined(&output));
-    assert_eq!(fs::read(&path).unwrap(), before, "read-only params view rewrote the source");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "read-only params view rewrote the source"
+    );
     assert_eq!(sandbox.managed("edit-view").len(), 3);
 }
 
@@ -282,7 +299,11 @@ fn test_cli_params_edit_reference_refused() {
     let output = sandbox.run(&["params", "ref", "--resync"]);
 
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert_eq!(fs::read(source).unwrap(), before, "reference source was modified by params --resync");
+    assert_eq!(
+        fs::read(source).unwrap(),
+        before,
+        "reference source was modified by params --resync"
+    );
 }
 
 #[test]
@@ -317,7 +338,10 @@ fn test_cli_edit_command_entry_has_no_source() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert!(!capture.exists(), "command-entry edit launched the editor before refusing");
+    assert!(
+        !capture.exists(),
+        "command-entry edit launched the editor before refusing"
+    );
 }
 
 fn compile_editor_probe(root: &Path, capture: &Path) -> PathBuf {
@@ -332,7 +356,11 @@ fn main() {
 "#,
     )
     .unwrap();
-    let executable = root.join(if cfg!(windows) { "must-not-edit.exe" } else { "must-not-edit" });
+    let executable = root.join(if cfg!(windows) {
+        "must-not-edit.exe"
+    } else {
+        "must-not-edit"
+    });
     let status = ProcessCommand::new("rustc")
         .arg(source)
         .arg("-o")
