@@ -1,8 +1,8 @@
-//! Public-boundary mutation contracts from Python v0.4 `tests/test_flows_mut.py`.
+//! Rust-additive public-boundary form/application/language regression coverage.
 //!
-//! The Python file also tests private `_assemble_flags`, `_injection_values`, `_resolve_secret`,
-//! `_render_default`, and glob helpers. Those are deliberately not recreated here. Each test below
-//! maps an observable contract through Rust's existing public form/application/language surfaces.
+//! These assertions are intentionally NOT counted as ports of Python v0.4 `tests/test_flows_mut.py`:
+//! the frozen Python module does not contain these six contracts. They remain useful strengthening
+//! tests over existing public Rust surfaces, but must not impersonate Python parity coverage.
 
 use std::collections::BTreeMap;
 
@@ -27,7 +27,7 @@ fn values(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 #[test]
-fn test_shell_missing_input_spec_name_is_ordered() {
+fn rust_additive_shell_missing_input_spec_name_is_ordered() {
     let mut later = ParamDecl::new("B");
     later.binding = ParameterBinding::Input;
     later.delivery = ParameterDelivery::Inject;
@@ -45,13 +45,11 @@ fn test_shell_missing_input_spec_name_is_ordered() {
     )
     .unwrap_err();
 
-    // Python sorts missing input bindings by their source order, independent of stored-list order.
-    // Do not weaken this to contains("A") or the second missing binding can disappear silently.
     assert_eq!(error.to_string(), "A, B");
 }
 
 #[test]
-fn test_prompt_interpolation_uses_only_managed_values() {
+fn rust_additive_prompt_interpolation_uses_only_managed_values() {
     let body = "A={{keep}} B={{drop}}";
     let settings = EntrySettings {
         params: vec!["keep".to_owned()],
@@ -68,7 +66,6 @@ fn test_prompt_interpolation_uses_only_managed_values() {
 
     let prepared = BTreeMap::from([
         ("keep".to_owned(), PreparedValue::Scalar("X".to_owned())),
-        // A stale/unmanaged submitted key must not enter the assembly at all.
         ("drop".to_owned(), PreparedValue::Scalar("Y".to_owned())),
     ]);
     let assembly = assemble(&plan.declarations(), &prepared, &[]).unwrap();
@@ -83,7 +80,7 @@ fn test_prompt_interpolation_uses_only_managed_values() {
 }
 
 #[test]
-fn test_plan_for_prompt_no_interpolate_has_no_fields() {
+fn rust_additive_plan_for_prompt_no_interpolate_has_no_fields() {
     let settings = EntrySettings {
         params: vec!["x".to_owned(), "y".to_owned()],
         interpolate: false,
@@ -94,7 +91,7 @@ fn test_plan_for_prompt_no_interpolate_has_no_fields() {
 }
 
 #[test]
-fn test_remembered_values_input_binding_is_never_remembered() {
+fn rust_additive_remembered_values_input_binding_is_never_remembered() {
     let mut declaration = ParamDecl::new("input-1");
     declaration.binding = ParameterBinding::Input;
     declaration.delivery = ParameterDelivery::Inject;
@@ -109,7 +106,7 @@ fn test_remembered_values_input_binding_is_never_remembered() {
 }
 
 #[test]
-fn test_remembered_values_typed_empty_not_remembered() {
+fn rust_additive_remembered_values_typed_empty_not_remembered() {
     let mut declaration = ParamDecl::new("WIDTH");
     declaration.binding = ParameterBinding::Const;
     declaration.delivery = ParameterDelivery::Inject;
@@ -123,7 +120,7 @@ fn test_remembered_values_typed_empty_not_remembered() {
 }
 
 #[test]
-fn test_prefill_ignores_stale_last_used_keys() {
+fn rust_additive_prefill_ignores_stale_last_used_keys() {
     let mut width = ParamDecl::new("WIDTH");
     width.delivery = ParameterDelivery::Flag;
     width.parameter_type = ParameterType::Int;
