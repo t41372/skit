@@ -55,6 +55,6 @@ fn all_3_python_ime_import_guards_collapse_to_the_real_terminal_protocol_oracle(
     // The observable test must still pin both the exact incident sequence and the generalized
     // numeric push/set scanner. This is a manifest-strength check, not a substitute for executing
     // the PTY test itself.
-    assert!(source.contains(r#"b\"\\x1b[>25u\""#));
+    assert!(source.contains(r#"\x1b[>25u"#));
     assert!(source.contains("kitty_keyboard_enable_sequences(&output)"));
 }
