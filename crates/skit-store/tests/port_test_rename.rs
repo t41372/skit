@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, RepositoryError,
     SourcePermissions,
-    form_state::{FormStateRepository, FileFormStateStore as _,},
+    form_state::FormStateRepository,
 };
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::{FileFormStateStore, FileStore};
