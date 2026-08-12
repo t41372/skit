@@ -41,7 +41,7 @@ fn test_set_dependencies_escapes_double_quoted_marker() {
 
 #[test]
 fn test_build_block_escapes_backslash_in_dependency() {
-    let dependency = "pkg; platform_release == \"5.10\\\\test\"".to_owned();
+    let dependency = "pkg; platform_release == \"5.10\\test\"".to_owned();
     let block = write_uv_metadata("", std::slice::from_ref(&dependency), "").unwrap();
     let metadata = read_uv_metadata(&block).expect("generated block must parse");
     assert_eq!(metadata.dependencies, [dependency]);
