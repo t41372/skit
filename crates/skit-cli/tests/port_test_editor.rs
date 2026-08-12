@@ -446,19 +446,91 @@ fn test_resolve_editor_whitespace_visual_falls_through_to_editor() {
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor. Rust config side DOES skip a whitespace editor (configured.trim().is_empty(), cli.rs:3286), but env candidates are not skipped. MUST-FIX: src/skit/editor.py:46."]
 fn test_resolve_editor_whitespace_config_falls_through_to_visual() {
-    // A whitespace-only config editor falls through to $VISUAL.
-    //   config.save_editor("   "); setenv VISUAL="mvim -f"; setenv EDITOR=nano
-    //   assert resolve_editor() == ["mvim", "-f"]
+    // A whitespace-only config editor falls through to $VISUAL, which beats $EDITOR
+    // (`resolve_editor() == ["mvim", "-f"]` shape). Observable: the $VISUAL program is
+    // the one the edit lane must invoke while $EDITOR stays untouched.
+    let sandbox = Sandbox::new();
+    sandbox.add_python("a", "print(1)\n");
+    sandbox
+        .command()
+        .args(["config", "editor", "   "])
+        .output()
+        .unwrap();
+    let visual_sentinel = sandbox.scratch.path().join("visual.launched");
+    let visual = writing_editor(
+        sandbox.scratch.path(),
+        "visual",
+        "import rich\nprint('x')\n",
+        &visual_sentinel,
+    );
+    let editor_sentinel = sandbox.scratch.path().join("editor.launched");
+    let editor = writing_editor(
+        sandbox.scratch.path(),
+        "editor",
+        "print('editor')\n",
+        &editor_sentinel,
+    );
+    let output = sandbox
+        .command()
+        .env("VISUAL", &visual)
+        .env("EDITOR", &editor)
+        .args(["edit", "a"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert!(
+        visual_sentinel.exists(),
+        "a whitespace config editor must fall through to VISUAL"
+    );
+    assert!(!editor_sentinel.exists(), "VISUAL wins over EDITOR");
+    assert!(sandbox.stored_script("a").contains("import rich"));
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor; Rust has no platform default and does not skip whitespace env candidates. MUST-FIX: src/skit/editor.py:46 (all-blank -> platform default)."]
 fn test_resolve_editor_all_whitespace_candidates_use_platform_default() {
-    // Every candidate blank -> the platform default, not a whitespace string handed to shlex.
-    //   config.save_editor("  "); setenv VISUAL=" "; setenv EDITOR=""; sys.platform="linux"
-    //   assert resolve_editor() == ["vi"]
+    // Every candidate blank -> the platform default `vi`, not a whitespace string
+    // handed to shlex (`resolve_editor() == ["vi"]`). Observable: a fake `vi` placed
+    // first on PATH is the program the edit lane must invoke.
+    let sandbox = Sandbox::new();
+    sandbox.add_python("a", "print(1)\n");
+    sandbox
+        .command()
+        .args(["config", "editor", "  "])
+        .output()
+        .unwrap();
+    let sentinel = sandbox.scratch.path().join("vi-default.launched");
+    let bin = sandbox.scratch.path().join("pathbin-default");
+    fs::create_dir_all(&bin).unwrap();
+    let content = sandbox.scratch.path().join("vi-default.content");
+    fs::write(&content, "import rich\nprint('x')\n").unwrap();
+    write_exec(
+        &bin.join("vi"),
+        &format!(
+            "#!/bin/sh\ntouch '{}'\ncat '{}' > \"$1\"\n",
+            sentinel.display(),
+            content.display()
+        ),
+    );
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = sandbox
+        .command()
+        .env("VISUAL", " ")
+        .env("EDITOR", "")
+        .env("PATH", path)
+        .args(["edit", "a"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert!(
+        sentinel.exists(),
+        "all-blank candidates must resolve the platform default vi"
+    );
+    assert!(sandbox.stored_script("a").contains("import rich"));
 }
 
 #[test]
