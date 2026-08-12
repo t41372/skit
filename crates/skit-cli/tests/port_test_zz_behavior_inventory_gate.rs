@@ -98,7 +98,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_rename.py", tests: 10, guard: None },
     Module { python: "test_add_review_validation.py", tests: 10, guard: None },
     Module { python: "test_agent_skill.py", tests: 8, guard: None },
-    Module { python: "test_healthcheck.py", tests: 6, guard: None },
+    Module { python: "test_healthcheck.py", tests: 6, guard: Some("crates/skit-cli/tests/port_test_healthcheck_manifest.rs") },
 
     // Tier 5 — frontend.
     Module { python: "test_prompt_tui.py", tests: 83, guard: None },
