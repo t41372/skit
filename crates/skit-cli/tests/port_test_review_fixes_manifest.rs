@@ -5,7 +5,7 @@
 //! seams that do not exist in the Rust architecture; they remain explicitly architecture-closed
 //! rather than being impersonated by same-named tests of different behavior.
 
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{collections::{BTreeMap, BTreeSet}, fs, path::Path};
 
 use syn::{Attribute, Item};
 
@@ -103,6 +103,16 @@ fn test_names(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
+fn load_targets(repo: &Path) -> BTreeMap<&'static str, BTreeSet<String>> {
+    [L, D, R, S, C]
+        .into_iter()
+        .map(|path| {
+            let source = fs::read_to_string(repo.join(path)).unwrap();
+            (path, test_names(&source))
+        })
+        .collect()
+}
+
 #[test]
 fn every_executable_review_fix_has_exactly_one_rust_oracle() {
     assert_eq!(EXECUTABLE.len(), 21);
@@ -123,22 +133,43 @@ fn every_executable_review_fix_has_exactly_one_rust_oracle() {
         .parent()
         .and_then(Path::parent)
         .unwrap();
-    let mut actual_by_path = std::collections::BTreeMap::new();
-    for path in [L, D, R, S, C] {
-        let source = fs::read_to_string(repo.join(path)).unwrap();
-        actual_by_path.insert(path, test_names(&source));
-    }
+    let actual_by_path = load_targets(repo);
+    let expected = EXECUTABLE
+        .iter()
+        .map(|mapping| mapping.python.to_owned())
+        .collect::<BTreeSet<_>>();
+    let actual_union = actual_by_path
+        .values()
+        .flat_map(|names| names.iter().cloned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual_union, expected,
+        "review-fixes target files contain an unmapped or missing executable test"
+    );
 
-    let mut missing = Vec::new();
+    let mut wrong_target = Vec::new();
+    let mut duplicated = Vec::new();
     for mapping in EXECUTABLE {
         if !actual_by_path[mapping.path].contains(mapping.python) {
-            missing.push(format!("{} -> {}", mapping.python, mapping.path));
+            wrong_target.push(format!("{} -> {}", mapping.python, mapping.path));
+        }
+        let occurrences = actual_by_path
+            .values()
+            .filter(|names| names.contains(mapping.python))
+            .count();
+        if occurrences != 1 {
+            duplicated.push(format!("{} occurs {occurrences} times", mapping.python));
         }
     }
     assert!(
-        missing.is_empty(),
-        "review-fixes executable mappings disappeared:\n{}",
-        missing.join("\n")
+        wrong_target.is_empty(),
+        "review-fixes executable mappings moved to the wrong seam:\n{}",
+        wrong_target.join("\n")
+    );
+    assert!(
+        duplicated.is_empty(),
+        "review-fixes executable mappings are not one-to-one:\n{}",
+        duplicated.join("\n")
     );
 }
 
@@ -148,10 +179,11 @@ fn architecture_closed_review_fixes_are_not_impersonated_by_weaker_tests() {
         .parent()
         .and_then(Path::parent)
         .unwrap();
-    let mut executable_names = BTreeSet::new();
-    for path in [L, D, R, S, C] {
-        executable_names.extend(test_names(&fs::read_to_string(repo.join(path)).unwrap()));
-    }
+    let actual_by_path = load_targets(repo);
+    let executable_names = actual_by_path
+        .values()
+        .flat_map(|names| names.iter().cloned())
+        .collect::<BTreeSet<_>>();
 
     for (name, reason) in ARCHITECTURE_CLOSED {
         assert!(!reason.trim().is_empty(), "{name} needs a concrete architectural reason");
