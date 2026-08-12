@@ -3,7 +3,10 @@
 //! The Python tests called `launcher.build_command`. Rust's public equivalent is the immutable
 //! `LaunchPlan`: these tests inspect its real program/argv, not a helper recreated in the test.
 
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug};
@@ -143,12 +146,19 @@ fn test_build_python_only_requires_python() {
         &PreviewFs,
     )
     .unwrap();
+    let expected = [
+        "run",
+        "--no-project",
+        "--python",
+        ">=3.11",
+        "--script",
+        "script.py",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
 
     assert_eq!(plan.program, PathBuf::from("uv"));
-    assert_eq!(
-        plan.args,
-        ["run", "--no-project", "--python", ">=3.11", "--script", "script.py"]
-            .map(str::to_owned)
-    );
+    assert_eq!(plan.args, expected);
     assert!(!plan.args.iter().any(|arg| arg == "--with"));
 }
