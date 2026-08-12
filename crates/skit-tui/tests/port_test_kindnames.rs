@@ -89,7 +89,7 @@ fn draw_kind_picker(workflow: AddWorkflowState) -> Terminal<TestBackend> {
     let mut state = LibraryState::default();
     state.update(Action::Present(Screen::Add(Box::new(workflow))));
     let mut session = TuiSession::default();
-    let mut terminal = Terminal::new(TestBackend::new(80, 34)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
     terminal
         .draw(|frame| {
             let _ = render_with_session(frame, &state, Locale::En, &mut session);
@@ -98,19 +98,27 @@ fn draw_kind_picker(workflow: AddWorkflowState) -> Terminal<TestBackend> {
     terminal
 }
 
+fn row_text(buffer: &Buffer, row: u16) -> String {
+    let mut text = String::new();
+    for column in 0..buffer.area.width {
+        text.push_str(buffer[(column, row)].symbol());
+    }
+    text
+}
+
 fn row_containing(buffer: &Buffer, needle: &str) -> u16 {
     (0..buffer.area.height)
-        .find(|row| {
-            (0..buffer.area.width)
-                .map(|column| buffer[(column, *row)].symbol())
-                .collect::<String>()
-                .contains(needle)
-        })
+        .find(|row| row_text(buffer, *row).contains(needle))
         .unwrap_or_else(|| panic!("expected rendered kind-choice label: {needle}"))
 }
 
 fn rendered_text(buffer: &Buffer) -> String {
-    buffer.content().iter().map(|cell| cell.symbol()).collect()
+    let mut text = String::new();
+    for row in 0..buffer.area.height {
+        text.push_str(&row_text(buffer, row));
+        text.push('\n');
+    }
+    text
 }
 
 #[test]
