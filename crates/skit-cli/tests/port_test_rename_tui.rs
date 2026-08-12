@@ -8,7 +8,7 @@
 use std::{
     fs,
     io::{Read as _, Write as _},
-    path::{Path, PathBuf},
+    path::PathBuf,
     thread,
     time::Duration,
 };
@@ -26,7 +26,7 @@ use tempfile::TempDir;
 const ARGPARSE_WITH_CONST: &[u8] = b"import argparse\nTIMEOUT = 30\nap = argparse.ArgumentParser()\nap.add_argument('--out', required=True)\nap.parse_args()\n";
 
 struct Sandbox {
-    root: TempDir,
+    _root: TempDir,
     data: PathBuf,
     state: PathBuf,
     config: PathBuf,
@@ -44,7 +44,7 @@ impl Sandbox {
             fs::create_dir_all(path).unwrap();
         }
         Self {
-            root,
+            _root: root,
             data,
             state,
             config,
@@ -140,7 +140,6 @@ fn run_tui(
     command.env("XDG_CONFIG_HOME", sandbox.home.join("xdg-config"));
     command.env("XDG_DATA_HOME", sandbox.home.join("xdg-data"));
     command.env("XDG_STATE_HOME", sandbox.home.join("xdg-state"));
-    command.cwd(&sandbox.home);
 
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
