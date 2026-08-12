@@ -8,7 +8,6 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use assert_cmd::Command;
-use regex::Regex;
 use tempfile::TempDir;
 
 const ROOT_SKILL: &str = include_str!("../../../skills/skit/SKILL.md");
@@ -59,6 +58,16 @@ fn frontmatter(text: &str) -> BTreeMap<String, String> {
             (key.trim().to_owned(), value.trim().to_owned())
         })
         .collect()
+}
+
+fn valid_skill_name(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        })
 }
 
 fn strip_shell_comment(line: &str) -> &str {
@@ -142,6 +151,12 @@ fn help_for(home: &Path, path: &[String]) -> String {
     )
 }
 
+fn help_offers(help: &str, flag: &str) -> bool {
+    help.split_ascii_whitespace()
+        .map(|token| token.trim_end_matches(','))
+        .any(|token| token == flag)
+}
+
 fn documented_flags(tokens: &[String]) -> Vec<&str> {
     let mut flags = Vec::new();
     for token in tokens.iter().skip(1) {
@@ -185,11 +200,20 @@ fn test_frontmatter_satisfies_the_agent_skills_spec() {
     let fm = frontmatter(ROOT_SKILL);
     let name = fm.get("name").expect("name frontmatter");
     let description = fm.get("description").expect("description frontmatter");
-    let name_re = Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$").unwrap();
+    let skill_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills/skit/SKILL.md");
+    let directory_name = skill_path
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .expect("skills/skit directory name is UTF-8");
 
-    assert_eq!(name, "skit");
-    assert_eq!(name, "skit", "frontmatter name must match skills/skit directory");
-    assert!(name_re.is_match(name));
+    assert_eq!(name.as_str(), "skit");
+    assert_eq!(
+        name.as_str(),
+        directory_name,
+        "frontmatter name must match the skill directory"
+    );
+    assert!(valid_skill_name(name));
     assert!(name.len() <= 64);
     assert!((1..=1024).contains(&description.len()));
     if let Some(compatibility) = fm.get("compatibility") {
@@ -218,7 +242,7 @@ fn test_every_command_the_skill_teaches_exists() {
         let help = help_for(root.path(), &path);
         for flag in documented_flags(&tokens) {
             assert!(
-                help.contains(flag),
+                help_offers(&help, flag),
                 "SKILL.md uses unknown flag {flag:?} in {line:?}; help for `skit {}` was:\n{help}",
                 path.join(" ")
             );
@@ -237,7 +261,7 @@ fn test_the_skill_never_mentions_json_free_surfaces_wrongly() {
         let path = command_path(&tokens);
         let help = help_for(root.path(), &path);
         assert!(
-            help.contains("--json"),
+            help_offers(&help, "--json"),
             "--json documented but not offered by `skit {}`: {line}",
             path.join(" ")
         );
