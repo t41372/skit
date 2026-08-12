@@ -1,9 +1,7 @@
 //! Completeness guard for Python `tests/test_entrypoint.py` at `main@206f9ef`.
 //!
-//! Six contracts have executable Rust public-surface equivalents. Four are Python-runtime-only
-//! seams and are deliberately architecture-closed rather than replaced by weaker stand-ins:
-//! import-graph inspection, direct monkeypatching of the dispatcher, observing whether a leading
-//! version flag was claimed by the dispatcher before Typer, and `python -m skit`.
+//! Five contracts have executable Rust public-surface equivalents. Five are Python-runtime-only
+//! seams and are deliberately architecture-closed rather than replaced by weaker stand-ins.
 
 use std::{collections::BTreeSet, fs, path::Path};
 
@@ -15,7 +13,6 @@ const EXECUTABLE: &[&str] = &[
     "test_version_is_plain_text_not_rich_markup",
     "test_a_real_command_still_reaches_the_cli",
     "test_no_arguments_reaches_the_cli",
-    "test_both_version_paths_print_the_identical_line",
     "test_the_console_script_points_at_the_dispatcher",
     "test_a_bad_invocation_still_fails_through_the_dispatcher",
 ];
@@ -28,6 +25,10 @@ const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[
     (
         "test_version_flag_answers_in_process_too",
         "Python monkeypatches sys.argv and skit.cli.app inside one interpreter; Rust entry() consumes the process argv and exposes no injectable argv/CLI callback seam.",
+    ),
+    (
+        "test_both_version_paths_print_the_identical_line",
+        "Python forces the exact same --version argv through two distinct internal paths (the fast dispatcher and the Typer callback) and compares their output. Rust has one Clap version path; changing argv to manufacture a second path would test different behavior.",
     ),
     (
         "test_the_flag_is_claimed_only_as_the_whole_command_line",
@@ -61,8 +62,8 @@ fn test_names(source: &str) -> BTreeSet<String> {
 
 #[test]
 fn every_executable_entrypoint_contract_has_exactly_one_rust_oracle() {
-    assert_eq!(EXECUTABLE.len(), 6);
-    assert_eq!(ARCHITECTURE_CLOSED.len(), 4);
+    assert_eq!(EXECUTABLE.len(), 5);
+    assert_eq!(ARCHITECTURE_CLOSED.len(), 5);
     assert_eq!(EXECUTABLE.len() + ARCHITECTURE_CLOSED.len(), 10);
 
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
