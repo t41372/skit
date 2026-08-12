@@ -40,7 +40,11 @@ impl Sandbox {
         }
         // Bare `skit` is allowed to offer first-run mirror setup. Mark that axis configured so this
         // entrypoint test observes TUI dispatch rather than depending on a network probe.
-        fs::write(config.join("config.toml"), "[mirror]\nenabled = false\n").unwrap();
+        fs::write(
+            config.join("config.toml"),
+            "[mirror]\nenabled = false\n",
+        )
+        .unwrap();
         Self {
             _root: root,
             data,
@@ -105,18 +109,29 @@ fn test_version_is_plain_text_not_rich_markup() {
         assert!(output.status.success(), "{}", combined(&output));
         assert_eq!(output.stdout, version_line().as_bytes());
         assert!(output.stderr.is_empty(), "{}", combined(&output));
-        assert!(!output.stdout.contains(&0x1b), "version output contained ANSI escapes");
+        assert!(
+            !output.stdout.contains(&0x1b),
+            "version output contained ANSI escapes"
+        );
     }
 }
 
 #[test]
 fn test_a_real_command_still_reaches_the_cli() {
     let sandbox = Sandbox::new();
-    let output = sandbox.command().args(["list", "--json"]).output().unwrap();
+    let output = sandbox
+        .command()
+        .args(["list", "--json"])
+        .output()
+        .unwrap();
     assert!(output.status.success(), "{}", combined(&output));
-    assert_ne!(output.stdout, version_line().as_bytes());
-    let _: serde_json::Value = serde_json::from_slice(&output.stdout)
-        .unwrap_or_else(|error| panic!("list --json did not execute the real CLI: {error}; {}", combined(&output)));
+    assert_ne!(output.stdout.as_slice(), version_line().as_bytes());
+    let _: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "list --json did not execute the real CLI: {error}; {}",
+            combined(&output)
+        )
+    });
 }
 
 #[test]
@@ -151,9 +166,16 @@ fn test_no_arguments_reaches_the_cli() {
     drop(writer);
     let transcript = drain.join().unwrap();
 
-    assert_eq!(status.exit_code(), 0, "{}", String::from_utf8_lossy(&transcript));
+    assert_eq!(
+        status.exit_code(),
+        0,
+        "{}",
+        String::from_utf8_lossy(&transcript)
+    );
     assert!(
-        transcript.windows(b"\x1b[?1049h".len()).any(|window| window == b"\x1b[?1049h"),
+        transcript
+            .windows(b"\x1b[?1049h".len())
+            .any(|window| window == b"\x1b[?1049h"),
         "bare skit never entered the TUI alternate screen: {}",
         String::from_utf8_lossy(&transcript)
     );
@@ -201,9 +223,19 @@ fn test_the_console_script_points_at_the_dispatcher() {
         .get("bin")
         .and_then(toml::Value::as_array)
         .expect("the CLI package declares [[bin]]");
-    assert_eq!(bins.len(), 1, "the installed skit command must have one canonical binary entry");
-    assert_eq!(bins[0].get("name").and_then(toml::Value::as_str), Some("skit"));
-    assert_eq!(bins[0].get("path").and_then(toml::Value::as_str), Some("src/main.rs"));
+    assert_eq!(
+        bins.len(),
+        1,
+        "the installed skit command must have one canonical binary entry"
+    );
+    assert_eq!(
+        bins[0].get("name").and_then(toml::Value::as_str),
+        Some("skit")
+    );
+    assert_eq!(
+        bins[0].get("path").and_then(toml::Value::as_str),
+        Some("src/main.rs")
+    );
 
     let source = fs::read_to_string(manifest_dir.join("src/main.rs")).unwrap();
     let syntax = syn::parse_file(&source).unwrap();
@@ -215,15 +247,18 @@ fn test_the_console_script_points_at_the_dispatcher() {
         panic!("main must directly exit with the composition-root entry result");
     };
     assert!(
-        called_path(&exit_call.func).is_some_and(|path| path_is(path, &["std", "process", "exit"])),
+        called_path(&exit_call.func)
+            .is_some_and(|path| path_is(path, &["std", "process", "exit"])),
         "main's only call must be std::process::exit"
     );
-    let [Expr::Call(entry_call)] = exit_call.args.iter().collect::<Vec<_>>().as_slice() else {
+    assert_eq!(exit_call.args.len(), 1);
+    let Expr::Call(entry_call) = exit_call.args.first().unwrap() else {
         panic!("std::process::exit must receive exactly the skit entry call");
     };
     assert!(entry_call.args.is_empty());
     assert!(
-        called_path(&entry_call.func).is_some_and(|path| path_is(path, &["skit_cli", "entry"])),
+        called_path(&entry_call.func)
+            .is_some_and(|path| path_is(path, &["skit_cli", "entry"])),
         "the installed binary must dispatch through skit_cli::entry"
     );
 }
@@ -231,10 +266,21 @@ fn test_the_console_script_points_at_the_dispatcher() {
 #[test]
 fn test_a_bad_invocation_still_fails_through_the_dispatcher() {
     let sandbox = Sandbox::new();
-    for argv in [["--version", "foo"].as_slice(), ["-V", "bar", "baz"].as_slice()] {
+    for argv in [
+        ["--version", "foo"].as_slice(),
+        ["-V", "bar", "baz"].as_slice(),
+    ] {
         let output = sandbox.command().args(argv).output().unwrap();
-        assert!(!output.status.success(), "bad argv unexpectedly succeeded: {argv:?}; {}", combined(&output));
-        assert_ne!(output.stdout, version_line().as_bytes(), "bad argv was swallowed by the version path");
+        assert!(
+            !output.status.success(),
+            "bad argv unexpectedly succeeded: {argv:?}; {}",
+            combined(&output)
+        );
+        assert_ne!(
+            output.stdout.as_slice(),
+            version_line().as_bytes(),
+            "bad argv was swallowed by the version path"
+        );
         assert!(!String::from_utf8_lossy(&output.stdout).starts_with("skit "));
     }
 }
