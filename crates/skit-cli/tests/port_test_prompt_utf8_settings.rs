@@ -88,7 +88,11 @@ fn prompt_utf8_settings_surface_rejects_invalid_bytes_without_replacement_charac
     writer.write_all(b"s").unwrap();
     writer.flush().unwrap();
     thread::sleep(Duration::from_millis(180));
-    writer.write_all(b"\x1bq").unwrap();
+    // Keep Escape and q as separate terminal events: one read containing ESC+q may decode as Alt-q.
+    writer.write_all(b"\x1b").unwrap();
+    writer.flush().unwrap();
+    thread::sleep(Duration::from_millis(90));
+    writer.write_all(b"q").unwrap();
     writer.flush().unwrap();
 
     let status = child.wait().unwrap();
