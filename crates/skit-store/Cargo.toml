@@ -28,6 +28,7 @@ skit-form.workspace = true
 skit-language.workspace = true
 
 [dev-dependencies]
+same-file.workspace = true
 skit-i18n.workspace = true
 tempfile.workspace = true
 
