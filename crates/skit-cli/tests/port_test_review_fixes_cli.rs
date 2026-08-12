@@ -253,3 +253,64 @@ fn test_write_injected_unique_and_private() {
         "unrelated source was lost: {parsed:?}"
     );
 }
+
+#[cfg(windows)]
+fn compile_private_uv_probe(output: &Path) {
+    let source = output.with_extension("rs");
+    fs::write(
+        &source,
+        r#"
+use std::{env, fs, path::PathBuf};
+fn main() {
+    let args = env::args_os().skip(1).map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
+    let script = args.windows(2).find_map(|pair| (pair[0] == "--script").then(|| PathBuf::from(&pair[1]))).expect("--script path");
+    fs::write(env::var_os("SKIT_PRIVATE_UV_CAPTURE").expect("capture"), script.to_string_lossy().as_bytes()).unwrap();
+}
+"#,
+    )
+    .unwrap();
+    let status = Command::new("rustc")
+        .arg(source)
+        .arg("-o")
+        .arg(output)
+        .status()
+        .unwrap();
+    assert!(status.success(), "failed to compile private uv.exe probe");
+}
+
+#[cfg(windows)]
+#[test]
+fn test_find_uv_private_bin_exe_variant() {
+    let fixture = Fixture::new();
+    let source = fixture.home.path().join("private.py");
+    fs::write(&source, b"print('private')\n").unwrap();
+    fixture.ok(&[
+        "add",
+        source.to_str().unwrap(),
+        "--name",
+        "private",
+        "--no-input",
+    ]);
+
+    let private_bin = fixture.data.path().join("bin");
+    fs::create_dir_all(&private_bin).unwrap();
+    let private_uv = private_bin.join("uv.exe");
+    compile_private_uv_probe(&private_uv);
+    assert!(private_uv.is_file());
+    assert_eq!(private_uv.file_name().and_then(|name| name.to_str()), Some("uv.exe"));
+
+    let empty_path = fixture.tools.path().join("empty-path");
+    fs::create_dir_all(&empty_path).unwrap();
+    let capture = fixture.tools.path().join("private-uv.txt");
+    let output = fixture
+        .command()
+        .env("PATH", &empty_path)
+        .env("SKIT_PRIVATE_UV_CAPTURE", &capture)
+        .args(["run", "private", "--no-input"])
+        .output()
+        .unwrap();
+    assert_success(&output, &["run", "private"]);
+
+    let launched = fs::read_to_string(&capture).expect("private uv.exe probe never launched");
+    assert!(launched.ends_with("script.py"), "private uv.exe saw unexpected script path: {launched}");
+}
