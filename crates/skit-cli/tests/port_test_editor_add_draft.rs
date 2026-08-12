@@ -6,8 +6,6 @@
 //! safety properties stronger: we can prove when the editor did or did not launch, which draft path
 //! it received, whether user-authored drafts survived refusals, and what was actually persisted.
 
-#![cfg(unix)]
-
 use std::{
     fs,
     io::{Read as _, Write as _},
@@ -60,7 +58,7 @@ impl DraftFixture {
             .env("SKIT_STATE_DIR", self.state.path())
             .env("SKIT_CONFIG_DIR", self.config.path())
             .env("SKIT_LANG", "en")
-            .env_remove("VISUAL")
+            .env("VISUAL", &self.editor)
             .env("EDITOR", &self.editor)
             .env("SKIT_EDITOR_CAPTURE", &self.capture);
         command
@@ -90,13 +88,12 @@ impl DraftFixture {
             })
             .unwrap();
         let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
-        for arg in args {
-            command.arg(arg);
-        }
+        command.args(args);
         command.env("SKIT_DATA_DIR", self.data.path());
         command.env("SKIT_STATE_DIR", self.state.path());
         command.env("SKIT_CONFIG_DIR", self.config.path());
         command.env("SKIT_LANG", "en");
+        command.env("VISUAL", &self.editor);
         command.env("EDITOR", &self.editor);
         command.env("SKIT_EDITOR_CAPTURE", &self.capture);
         match content {
@@ -160,7 +157,7 @@ fn main() {
 "#,
     )
     .unwrap();
-    let executable = root.join("draft-editor");
+    let executable = root.join(editor_executable_name());
     let status = Command::new("rustc")
         .arg(source)
         .arg("-o")
@@ -169,6 +166,16 @@ fn main() {
         .unwrap();
     assert!(status.success(), "failed to compile draft editor probe");
     executable
+}
+
+#[cfg(windows)]
+fn editor_executable_name() -> &'static str {
+    "draft-editor.exe"
+}
+
+#[cfg(not(windows))]
+fn editor_executable_name() -> &'static str {
+    "draft-editor"
 }
 
 fn assert_no_entry(fixture: &DraftFixture, name: &str) {
@@ -230,7 +237,10 @@ fn test_add_edit_js_shebang_draft_scans_npm_deps() {
     assert_eq!(code, 0, "{output}");
     let entry = fixture.store().resolve("colorized").unwrap();
     assert_eq!(entry.meta.kind.as_str(), "js");
-    assert_eq!(EntrySettings::from_meta(&entry.meta).dependencies, vec!["chalk"]);
+    assert_eq!(
+        EntrySettings::from_meta(&entry.meta).dependencies,
+        vec!["chalk".to_owned()]
+    );
 }
 
 #[test]
@@ -290,11 +300,12 @@ fn test_add_edit_rejects_path() {
     let source = fixture.data.path().join("input.py");
     fs::write(&source, b"print(1)\n").unwrap();
 
-    let output = fixture.run_noninteractive(
+    let (code, output) = fixture.run_interactive(
         &["add", "-e", source.to_str().unwrap()],
         Some("print('must never be written')\n"),
+        b"",
     );
-    assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
+    assert_eq!(code, 2, "{output}");
     assert!(!fixture.capture.exists(), "editor launched even though --edit had a source path");
 }
 
@@ -389,7 +400,7 @@ fn test_add_edit_blank_name_errors() {
 #[test]
 fn test_add_edit_editor_error_exits_one() {
     let fixture = DraftFixture::new();
-    let missing = fixture.tools.path().join("cannot-launch-editor");
+    let missing = fixture.tools.path().join(editor_executable_name()).with_file_name("cannot-launch-editor");
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 20,
@@ -404,6 +415,7 @@ fn test_add_edit_editor_error_exits_one() {
     command.env("SKIT_STATE_DIR", fixture.state.path());
     command.env("SKIT_CONFIG_DIR", fixture.config.path());
     command.env("SKIT_LANG", "en");
+    command.env("VISUAL", &missing);
     command.env("EDITOR", &missing);
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
