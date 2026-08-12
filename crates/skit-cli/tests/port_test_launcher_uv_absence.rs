@@ -11,7 +11,6 @@ use std::{
     fs,
     io::Read as _,
     net::TcpListener,
-    path::{Path, PathBuf},
     process::{Command, Output},
     thread,
     time::{Duration, Instant},
