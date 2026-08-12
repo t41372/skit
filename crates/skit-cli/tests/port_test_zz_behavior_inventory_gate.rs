@@ -374,7 +374,7 @@ const MODULES: &[Module] = &[
     Module {
         python: "test_phase1.py",
         tests: 27,
-        guard: None,
+        guard: Some("crates/skit-cli/tests/port_test_phase1_manifest.rs"),
     },
     Module {
         python: "test_tui_responsive.py",
