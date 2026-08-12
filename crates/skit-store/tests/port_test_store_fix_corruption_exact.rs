@@ -77,10 +77,9 @@ fn test_resolve_corrupt_missing_key_meta_raises_notfounderror_not_keyerror() {
 
     let error = FileStore::new(root.path()).resolve("bad-slug").unwrap_err();
     assert!(
-        matches!(error, RepositoryError::Corrupt { .. } | RepositoryError::NotFound { .. }),
-        "corrupt authoritative meta escaped as the wrong failure class: {error}"
+        matches!(error, RepositoryError::NotFound { .. }),
+        "Python hides corrupt authoritative metadata behind NotFound at resolve: {error}"
     );
-    assert!(!matches!(error, RepositoryError::Io { .. }));
 }
 
 #[test]
@@ -153,8 +152,8 @@ fn test_resolve_scalar_dependencies_meta_raises_notfounderror_not_typeerror() {
         .resolve("bad-type-slug")
         .unwrap_err();
     assert!(
-        matches!(error, RepositoryError::Corrupt { .. } | RepositoryError::NotFound { .. }),
-        "wrong-typed metadata escaped the corruption boundary: {error}"
+        matches!(error, RepositoryError::NotFound { .. }),
+        "Python hides wrong-typed authoritative metadata behind NotFound at resolve: {error}"
     );
 }
 
