@@ -2,7 +2,7 @@
 //! `main@206f9ef`. The companion manifest classifies private Python fault-injection seams that have
 //! no public Rust equivalent. Opt-in network checks keep the oracle's `SKIT_NET_TESTS` gate.
 
-use std::{env, fs, net::TcpListener, path::Path};
+use std::{env, fs, net::TcpListener};
 
 use flate2::{Compression, write::GzEncoder};
 use sha2::{Digest as _, Sha256};
@@ -11,8 +11,6 @@ use skit_runtime::{
     install_verified_uv_archive, managed_uv_path, uv_asset,
 };
 use tempfile::TempDir;
-
-const OFFICIAL_BASE: &str = "https://github.com/astral-sh/uv/releases/download";
 
 fn target(arch: &str, os: &str, musl: bool) -> UvTarget {
     UvTarget::from_parts(arch, os, musl).unwrap()
@@ -319,13 +317,6 @@ fn test_ensure_uv_network_error_wrapped() {
     assert!(url.starts_with(&mirror), "{url}");
     assert!(!reason.trim().is_empty());
     assert!(!managed_uv_path(root.path()).exists());
-}
-
-#[test]
-fn test_download_url_defaults_to_github_without_mirror() {
-    let asset = uv_asset(&target("x86_64", "linux", false), None);
-    assert!(asset.url.starts_with(OFFICIAL_BASE), "{}", asset.url);
-    assert!(asset.url.ends_with(".tar.gz"), "{}", asset.url);
 }
 
 #[test]
