@@ -291,8 +291,12 @@ fn source_helpers_preserve_bytes_names_and_storage_conventions() {
     let snapshot = read_source(&source, false).unwrap();
 
     assert_eq!(snapshot.bytes, b"alpha\r\nbeta\r\n");
-    assert_eq!(source_default_name(&source), "archive");
-    assert_eq!(source_default_name(Path::new("")), "script");
+    assert_eq!(source_default_name(&source, false), "archive");
+    assert_eq!(source_default_name(Path::new(""), false), "script");
+    assert_eq!(
+        source_default_name(Path::new("review.prompt.md"), true),
+        "review"
+    );
     assert_eq!(
         [
             ("python", "script.py"),

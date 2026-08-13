@@ -248,7 +248,7 @@ fn test_add_prompt_read_oserror_is_a_clean_store_error() {}
 fn test_localized_starter_is_minimal_and_never_creates_its_own_field() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md` (no -n): oracle slug 'p' (store.py:571 removesuffix '.prompt'); Rust slug 'p-prompt', so `show p` is 'entry not found'. The 'Managed parameters: target, focus' line itself converges."]
+#[ignore = "FAILING CONTRACT (divergence): the prompt name, fields, and managed-parameter summary converge, but `show --json` returns null for an unset runner instead of the oracle's empty string."]
 fn test_add_prompt_file_no_input_manages_everything() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file(
@@ -585,7 +585,6 @@ fn test_add_prompt_editor_lane_post_edit_failure_keeps_the_draft() {}
 fn test_add_prompt_editor_lane_deleted_draft_is_a_clean_honest_failure() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md --ref` (no -n): oracle slug 'p' (store.py:571 removesuffix '.prompt'); Rust slug 'p-prompt', so `show p` is 'entry not found'."]
 fn test_add_prompt_ref_mode_keeps_original_and_pins_invoke() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"Ref {{x}}\n");
@@ -2140,7 +2139,7 @@ fn test_add_prompt_stdin_lane_reports_store_errors() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md --ref` (no -n): oracle slug 'p' (store.py:571 removesuffix '.prompt'); Rust slug 'p-prompt', so `params p` is 'entry not found'."]
+#[ignore = "FAILING CONTRACT (divergence): the vanished reference body does not prevent a successful parameter view, but Rust prints `Parameter: a` instead of the oracle's managed-record line `a = ...`."]
 fn test_params_view_survives_an_unreadable_reference_body() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
@@ -2184,7 +2183,7 @@ fn test_doctor_skips_a_prompt_whose_body_is_gone() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md` (no -n): oracle slug 'p' (store.py:571 removesuffix '.prompt'); Rust slug 'p-prompt', so `show p` is 'entry not found'."]
+#[ignore = "FAILING CONTRACT (divergence): the prompt metadata has interpolation disabled and no fields, but Rust's add summary omits the oracle's `insertion is off` notice."]
 fn test_add_no_interpolate() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}} {{b}}\n");
@@ -2232,7 +2231,7 @@ fn test_add_no_interpolate_through_stdin_lane() {
 fn test_add_interactive_off_answer_disables_insertion() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md` (no -n): oracle derives slug 'p' via source.stem.removesuffix('.prompt') (store.py:571); Rust keeps 'p.prompt' -> slug 'p-prompt', so `show p` is 'entry not found'."]
+#[ignore = "FAILING CONTRACT (divergence): the flood cap manages no fields, but Rust's add summary omits the oracle's `too many to manage automatically` notice."]
 fn test_add_flood_cap_manages_nothing_and_says_so() {
     let sandbox = Sandbox::new();
     let many = (0..AUTO_MANAGE_LIMIT + 5)

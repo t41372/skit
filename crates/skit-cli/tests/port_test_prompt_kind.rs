@@ -13,9 +13,8 @@
 //! concern that the CLI does not expose (or maps differently), the stub is "absent" with the
 //! concrete blocking fact, not "cross-crate".
 //!
-//! Two assertions the oracle makes remain genuine Rust divergences. Their full bodies stay as
-//! `#[ignore]`d FAILING CONTRACT tests: compound `.prompt.md` name derivation and the exit class
-//! for a missing stored prompt body.
+//! One assertion the oracle makes remains a genuine Rust divergence. Its full body stays as an
+//! `#[ignore]`d FAILING CONTRACT test: the exit class for a missing stored prompt body.
 //!
 //! Concept mapping used throughout:
 //! - Python `analyzer.placeholder_names(text)` -> `placeholder_params("prompt", text)` mapped
@@ -620,7 +619,7 @@ fn test_add_prompt_manages_all_detected_by_default() {
         .args(["add", source.to_str().unwrap(), "--prompt", "--no-input"])
         .assert()
         .success();
-    let entry = sandbox.resolve("p.prompt");
+    let entry = sandbox.resolve("p");
     let settings = EntrySettings::from_meta(&entry.meta);
     assert_eq!(entry.meta.kind.as_str(), "prompt");
     assert_eq!(settings.params, ["a", "b"]);
@@ -663,17 +662,13 @@ fn test_add_prompt_reference_mode_still_pins_invoke_workdir() {
         ])
         .assert()
         .success();
-    let entry = sandbox.resolve("r.prompt");
+    let entry = sandbox.resolve("r");
     assert_eq!(entry.meta.mode, StorageMode::Reference);
     assert_eq!(entry.meta.workdir, "invoke"); // never the prompt file's directory
     assert_eq!(entry.meta.source, source.to_str().unwrap());
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust add strips only the final extension, so \
-            `review.prompt.md` names the entry `review.prompt`; the oracle strips the whole \
-            `.prompt.md` compound suffix to `review` (store.add_prompt name derivation). Verified \
-            against the built binary: meta.name == \"review.prompt\"."]
 fn test_add_prompt_name_strips_double_extension() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_source("review.prompt.md", b"x\n");
@@ -911,7 +906,7 @@ fn test_seeded_pi_warns_and_prefixes_newline_for_parser_ambiguous_prompt() {
         .success();
     let output = sandbox
         .command()
-        .args(["run", "pi.prompt", "--dry-run", "--no-input"])
+        .args(["run", "pi", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     let shown = format!(
@@ -1019,7 +1014,7 @@ fn test_build_resolves_the_pin_when_no_override_is_given() {
         .success();
     let output = sandbox
         .command()
-        .args(["run", "p.prompt", "--set", "a=1", "--dry-run", "--no-input"])
+        .args(["run", "p", "--set", "a=1", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1074,7 +1069,7 @@ fn test_build_with_unconfigured_pin_is_exit_126() {
         .success();
     let output = sandbox
         .command()
-        .args(["run", "c.prompt", "--set", "a=1", "--no-input"])
+        .args(["run", "c", "--set", "a=1", "--no-input"])
         .output()
         .unwrap();
     assert!(!output.status.success());
@@ -1125,7 +1120,7 @@ fn test_build_missing_body_is_exit_127() {
         .assert()
         .success();
     // The stored prompt body is gone; the launch target no longer exists.
-    let entry = sandbox.resolve("miss.prompt");
+    let entry = sandbox.resolve("miss");
     fs::remove_file(
         sandbox
             .store()
@@ -1135,7 +1130,7 @@ fn test_build_missing_body_is_exit_127() {
     .unwrap();
     let output = sandbox
         .command()
-        .args(["run", "miss.prompt", "--set", "a=1", "--no-input"])
+        .args(["run", "miss", "--set", "a=1", "--no-input"])
         .output()
         .unwrap();
     // Oracle: a missing prompt body raises TargetMissingError -> exit 127.
@@ -1191,14 +1186,7 @@ fn test_describe_with_runner_shows_the_real_argv() {
         .success();
     let output = sandbox
         .command()
-        .args([
-            "run",
-            "d.prompt",
-            "--set",
-            "a=•••",
-            "--dry-run",
-            "--no-input",
-        ])
+        .args(["run", "d", "--set", "a=•••", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1234,14 +1222,7 @@ fn test_describe_resolves_a_pinned_multi_token_runner() {
         .success();
     let output = sandbox
         .command()
-        .args([
-            "run",
-            "mt.prompt",
-            "--set",
-            "a=1",
-            "--dry-run",
-            "--no-input",
-        ])
+        .args(["run", "mt", "--set", "a=1", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1316,7 +1297,7 @@ fn test_run_entry_preserves_crlf_bodies_byte_for_byte() {
         .command()
         .args([
             "run",
-            "crlf.prompt",
+            "crlf",
             "--runner",
             "rec",
             "--set",
@@ -1354,7 +1335,7 @@ fn test_run_entry_executes_the_recorder_end_to_end() {
         .current_dir(sandbox.scratch.path())
         .args([
             "run",
-            "inj.prompt",
+            "inj",
             "--runner",
             "rec",
             "--set",
@@ -2064,7 +2045,7 @@ fn test_add_prompt_interpolate_off_scans_and_manages_nothing() {
         ])
         .assert()
         .success();
-    let settings = EntrySettings::from_meta(&sandbox.resolve("off.prompt").meta);
+    let settings = EntrySettings::from_meta(&sandbox.resolve("off").meta);
     assert!(!settings.interpolate);
     assert!(settings.params.is_empty());
 }
@@ -2083,7 +2064,7 @@ fn test_add_prompt_auto_manage_flood_cap() {
         .args(["add", source.to_str().unwrap(), "--prompt", "--no-input"])
         .assert()
         .success();
-    let settings = EntrySettings::from_meta(&sandbox.resolve("many.prompt").meta);
+    let settings = EntrySettings::from_meta(&sandbox.resolve("many").meta);
     assert!(settings.params.is_empty()); // over the cap: nothing auto-managed
     assert!(settings.interpolate);
 
@@ -2132,18 +2113,18 @@ fn test_write_prompt_interpolate_keeps_the_managed_list() {
         .success();
     sandbox
         .command()
-        .args(["params", "keep.prompt", "--no-interpolate"])
+        .args(["params", "keep", "--no-interpolate"])
         .assert()
         .success();
-    let off = EntrySettings::from_meta(&sandbox.resolve("keep.prompt").meta);
+    let off = EntrySettings::from_meta(&sandbox.resolve("keep").meta);
     assert!(!off.interpolate);
     assert_eq!(off.params, ["a"]); // survives for a later switch-on
     sandbox
         .command()
-        .args(["params", "keep.prompt", "--interpolate"])
+        .args(["params", "keep", "--interpolate"])
         .assert()
         .success();
-    assert!(EntrySettings::from_meta(&sandbox.resolve("keep.prompt").meta).interpolate);
+    assert!(EntrySettings::from_meta(&sandbox.resolve("keep").meta).interpolate);
 
     // write_prompt_interpolate on a NON-prompt entry raises the store usage error; through the CLI
     // a command entry refuses --no-interpolate/--interpolate (exit 2).
@@ -2220,7 +2201,7 @@ fn test_build_for_an_insertion_off_prompt_sends_the_body_verbatim() {
         .success();
     let output = sandbox
         .command()
-        .args(["run", "off.prompt", "--dry-run", "--no-input"])
+        .args(["run", "off", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -2264,7 +2245,7 @@ fn test_unmanaged_prompt_placeholders_empty_when_insertion_off() {
         .success();
     let output = sandbox
         .command()
-        .args(["params", "uoff.prompt", "--json"])
+        .args(["params", "uoff", "--json"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -2315,7 +2296,7 @@ fn test_unmanaged_prompt_placeholders_empty_when_body_missing_or_undecodable() {
         .args(["add", source.to_str().unwrap(), "--prompt", "--no-input"])
         .assert()
         .success();
-    let entry = sandbox.resolve("bad.prompt");
+    let entry = sandbox.resolve("bad");
     let stored = sandbox
         .store()
         .entry_dir_path(&entry.slug)
@@ -2323,7 +2304,7 @@ fn test_unmanaged_prompt_placeholders_empty_when_body_missing_or_undecodable() {
     fs::write(&stored, b"\xff\xfe not utf-8 {{a}}").unwrap();
     let undecodable = sandbox
         .command()
-        .args(["params", "bad.prompt", "--json"])
+        .args(["params", "bad", "--json"])
         .output()
         .unwrap();
     if undecodable.status.success() {
@@ -2338,7 +2319,7 @@ fn test_unmanaged_prompt_placeholders_empty_when_body_missing_or_undecodable() {
     fs::remove_file(&stored).unwrap();
     let missing = sandbox
         .command()
-        .args(["params", "bad.prompt", "--json"])
+        .args(["params", "bad", "--json"])
         .output()
         .unwrap();
     if missing.status.success() {

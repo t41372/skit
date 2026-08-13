@@ -2871,7 +2871,6 @@ fn add_with_config(
             snapshot.is_regular,
         )
     };
-    let name = name.unwrap_or_else(|| source_default_name(&source));
     let mut source_text = LosslessSource::from_bytes(&bytes)
         .normalized_text()
         .to_owned();
@@ -2901,6 +2900,7 @@ fn add_with_config(
                 "could not infer the entry kind; pass --kind KIND",
             ))
         })?;
+    let name = name.unwrap_or_else(|| source_default_name(&source, kind == "prompt"));
     let kind =
         EntryKind::parse(kind.to_owned()).map_err(|error| RepositoryError::InvalidMutation {
             reason: error.message(),
@@ -7639,12 +7639,18 @@ fn read_source(path: &Path, allow_non_regular: bool) -> Result<SourceSnapshot, C
     })
 }
 
-fn source_default_name(path: &Path) -> String {
-    path.file_stem()
+fn source_default_name(path: &Path, prompt: bool) -> String {
+    let name = path
+        .file_stem()
         .or_else(|| path.file_name())
         .and_then(|name| name.to_str())
         .unwrap_or("script")
-        .to_owned()
+        .to_owned();
+    if prompt {
+        name.strip_suffix(".prompt").unwrap_or(&name).to_owned()
+    } else {
+        name
+    }
 }
 
 fn source_error(operation: &'static str, path: &Path, source: io::Error) -> CliError {
