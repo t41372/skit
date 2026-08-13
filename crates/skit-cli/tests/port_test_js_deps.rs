@@ -32,10 +32,8 @@
 //!   the argv-free ensure error paths, the mirror axis round-trips, and the `add`/`deps`
 //!   happy paths and the Python-constraint refusal.
 //! - DIVERGENCE (full asserting body, `#[ignore]`d): the faithful oracle assertion
-//!   compiles but fails because the Rust rewrite diverges (BTreeSet scanner ordering,
-//!   the `"name": "skit-private-entry"` manifest key, the installer argv order, the
-//!   `.skit-deps` stamp vs `node_modules/.skit-deps-ok`, the conservative `clear`, the
-//!   presence-based mirror defer, and the reference/`--cmd` refusal wording).
+//!   compiles but fails because the Rust rewrite diverges (the conservative `clear`
+//!   transaction and contracts in other owning crates).
 //! - ABSENT (compiling `#[ignore]` stub, MUST-FIX + Python ref): library seams the Rust
 //!   surface never exposes — `split_requirement(s)`, `require_installer`, `needs_install`,
 //!   `_failure_detail` (the runner discards stderr), `sweep_stale_injected`, a
@@ -224,7 +222,7 @@ fn write_source(dir: &Path, name: &str, body: &str) -> PathBuf {
 // ============================================================================
 
 #[test]
-#[ignore = "ABSENT (library seam): the oracle's public js_deps.split_requirement(req) -> (name, range) has no public Rust equivalent. skit-runtime keeps split_package_spec private and diverges (a trailing '@' or a bare '@scope' errors instead of ranging to '*'). MUST-FIX: expose a split_requirement surface. Python ref src/skit/langs/javascript/deps.py:97-105 (cases chalk, chalk@^5, chalk@5.6.2, chalk@, @scope/pkg, @scope/pkg@>=1,<2, @scope)."]
+#[ignore = "ABSENT (library seam): the oracle's public js_deps.split_requirement(req) -> (name, range) has no public Rust equivalent. skit-runtime now uses the same split rules inside its private manifest builder, but does not expose the tuple surface. MUST-FIX: expose a split_requirement surface. Python ref src/skit/langs/javascript/deps.py:97-105 (cases chalk, chalk@^5, chalk@5.6.2, chalk@, @scope/pkg, @scope/pkg@>=1,<2, @scope)."]
 fn test_split_requirement() {}
 
 #[test]
@@ -302,7 +300,6 @@ fn test_require_installer_missing_raises_126_family() {}
 // ============================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): ensure_installed runs the installer in entry_dir with argv 'install --no-audit --no-fund --ignore-scripts', writes the private manifest (no 'name' key) into entry_dir, and stamps node_modules/.skit-deps-ok. The Rust runner runs in a STAGING dir with argv 'install --ignore-scripts --no-audit --no-fund', writes a manifest carrying '\"name\": \"skit-private-entry\"', and stamps entry_dir/.skit-deps instead. Oracle ref deps.py:353-414, 70-74."]
 fn test_ensure_installed_writes_manifest_runs_installer_and_stamps() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
@@ -330,7 +327,10 @@ fn test_ensure_installed_writes_manifest_runs_installer_and_stamps() {
         std::fs::read_to_string(dir.join("package.json")).unwrap(),
         PY_MANIFEST_CHALK5
     );
-    assert!(dir.join("node_modules").join(".skit-deps-ok").is_file());
+    assert_eq!(
+        std::fs::read_to_string(dir.join("node_modules").join(".skit-deps-ok")).unwrap(),
+        "2f08d78b8e7408bd4c9d0746577cc8aa01b353910216ff3e52df81544fef3338"
+    );
     drop(root);
 }
 
@@ -363,7 +363,6 @@ fn test_ensure_installed_uses_the_runners_own_installer() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a fresh marker short-circuits on the stamp alone; the Rust short-circuit also requires node_modules to be a real directory, which the fake installer never creates, so a second call reinstalls. Oracle ref deps.py:371-379."]
 fn test_ensure_installed_fresh_marker_short_circuits() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
@@ -494,7 +493,6 @@ fn test_ensure_installed_missing_installer_raises_before_touching_the_dir() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a dep-less manifest still stamps node_modules/.skit-deps-ok; the Rust manifest builder REJECTS the oracle's '@5' spec (split_package_spec: an '@scope' with an empty name errors), and the stamp lands at entry_dir/.skit-deps regardless. Oracle ref deps.py:311-319, 413-414."]
 fn test_ensure_installed_stamps_even_when_installer_creates_no_node_modules() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
@@ -1387,7 +1385,6 @@ fn test_i18n_gate_catches_an_unquoted_continuation_line() {}
 fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a tampered (invalid-UTF-8) marker means 'stale — rebuild', and the marker is node_modules/.skit-deps-ok holding a 64-char hex stamp. The Rust stamp is entry_dir/.skit-deps (v1\\n<runtime>\\n<16-hex>\\n), so a corrupt node_modules/.skit-deps-ok is irrelevant and the stamp shape differs. Oracle ref deps.py:28-31, 371-379, test_js_deps.py:1719-1732."]
 fn test_corrupted_marker_triggers_reinstall_not_a_persistent_crash() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
@@ -1676,7 +1673,7 @@ fn test_module_type_for_multi_dot_sources() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): the exact staleness-hash layout manifest_text(['chalk@^5'], module_type='module') requires a module-typed manifest, which the public javascript_dependency_manifest cannot produce (and the Rust manifest additionally carries a '\"name\": \"skit-private-entry\"' key). MUST-FIX: expose a module-typed manifest with the oracle's exact bytes. Python ref deps.py:117-131, test_js_deps.py:1762-1769."]
+#[ignore = "ABSENT (library seam): the exact staleness-hash layout manifest_text(['chalk@^5'], module_type='module') requires a module-typed manifest. The private Rust builder now produces the oracle bytes, but public javascript_dependency_manifest cannot take a module type. MUST-FIX: expose a module-typed manifest. Python ref deps.py:117-131, test_js_deps.py:1762-1769."]
 fn test_manifest_text_exact_layout() {}
 
 #[test]
@@ -1764,7 +1761,7 @@ fn test_failure_detail_drops_every_npm_prefix_noise_shape() {}
 fn test_failure_detail_deno_line_is_reproduced_exactly() {}
 
 #[test]
-#[ignore = "ABSENT (subprocess-contract seam): the installer subprocess runs captured (capture_output=True, check=False) and the marker lands inside the node_modules the installer created. The Rust DependencyCommandRunner runs via Command::status() (no capture_output/check kwargs) and stamps entry_dir/.skit-deps. MUST-FIX only if the captured-subprocess contract is desired. Python ref deps.py:395-414, test_js_deps.py:1897-1915."]
+#[ignore = "ABSENT (subprocess-contract seam): the installer subprocess runs captured (capture_output=True, check=False). The marker now lands inside node_modules as required, but SystemDependencyCommandRunner still uses Command::status() and does not capture output. MUST-FIX: return captured stderr for the failure-detail contracts. Python ref deps.py:395-414, test_js_deps.py:1897-1915."]
 fn test_install_subprocess_contract_and_marker_dir_reuse() {}
 
 #[test]
@@ -1893,7 +1890,7 @@ fn test_ensure_module_manifest_rewrites_only_on_change() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (launch + run composition): a deps-free CommonJS (.cjs/.cts) entry gets a minimal '{private, type: commonjs}' package.json from RunnerLaunch.build so deno doesn't run it as ESM. The Rust build path is not driveable without the run composition, and its manifest would carry the extra 'name' key. Owner: skit-runtime launch. Python ref deps.py:134-155, test_js_deps.py:2310-2322."]
+#[ignore = "CROSS-CRATE (launch + run composition): a deps-free CommonJS (.cjs/.cts) entry gets a minimal '{private, type: commonjs}' package.json from RunnerLaunch.build so deno doesn't run it as ESM. The private Rust builder has the exact manifest, but this integration test cannot intercept the run composition. Owner: skit-runtime launch. Python ref deps.py:134-155, test_js_deps.py:2310-2322."]
 fn test_build_writes_a_module_manifest_for_a_deps_free_module_typed_entry() {}
 
 #[test]

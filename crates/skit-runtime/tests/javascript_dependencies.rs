@@ -43,6 +43,24 @@ struct Runner {
     succeeds: bool,
 }
 
+#[derive(Debug)]
+struct PartialFailureRunner {
+    expected_cwd: PathBuf,
+}
+
+impl DependencyCommandRunner for PartialFailureRunner {
+    fn run(&self, command: &DependencyCommand) -> std::io::Result<bool> {
+        assert_eq!(command.cwd, self.expected_cwd);
+        fs::write(command.cwd.join("package-lock.json"), b"partial lock\n")?;
+        fs::create_dir_all(command.cwd.join("node_modules"))?;
+        fs::write(
+            command.cwd.join("node_modules/partial"),
+            b"partial module\n",
+        )?;
+        Ok(false)
+    }
+}
+
 impl DependencyCommandRunner for Runner {
     fn run(&self, command: &DependencyCommand) -> std::io::Result<bool> {
         self.commands.borrow_mut().push(command.clone());
@@ -63,12 +81,22 @@ fn manifest_is_deterministic_private_and_supports_scoped_version_specs() {
     .unwrap();
     assert_eq!(
         manifest,
-        "{\n  \"name\": \"skit-private-entry\",\n  \"private\": true,\n  \"dependencies\": {\n    \"@scope/tool\": \"2.1.0\",\n    \"chalk\": \"*\",\n    \"zod\": \"^4\"\n  }\n}\n"
+        "{\n  \"private\": true,\n  \"dependencies\": {\n    \"zod\": \"^4\",\n    \"@scope/tool\": \"2.1.0\",\n    \"chalk\": \"*\"\n  }\n}\n"
     );
-    assert!(matches!(
-        javascript_dependency_manifest(&["../local".to_owned()]),
-        Err(DependencyError::InvalidPackage { .. })
-    ));
+    assert!(
+        javascript_dependency_manifest(&["../local".to_owned()])
+            .unwrap()
+            .contains("\"../local\": \"*\"")
+    );
+    assert_eq!(
+        javascript_dependency_manifest(&[
+            "zod@3".to_owned(),
+            "chalk@5".to_owned(),
+            "zod@4".to_owned(),
+        ])
+        .unwrap(),
+        "{\n  \"private\": true,\n  \"dependencies\": {\n    \"zod\": \"4\",\n    \"chalk\": \"5\"\n  }\n}\n"
+    );
 }
 
 #[test]
@@ -102,7 +130,7 @@ fn module_flavor_is_materialized_and_part_of_the_freshness_stamp() {
         &runner,
     )
     .unwrap();
-    let module_stamp = fs::read(root.path().join(".skit-deps")).unwrap();
+    let module_stamp = fs::read(root.path().join("node_modules/.skit-deps-ok")).unwrap();
     assert!(
         fs::read_to_string(root.path().join("package.json"))
             .unwrap()
@@ -121,7 +149,7 @@ fn module_flavor_is_materialized_and_part_of_the_freshness_stamp() {
     .unwrap();
     assert_eq!(runner.commands.borrow().len(), 2);
     assert_ne!(
-        fs::read(root.path().join(".skit-deps")).unwrap(),
+        fs::read(root.path().join("node_modules/.skit-deps-ok")).unwrap(),
         module_stamp
     );
     assert!(
@@ -193,16 +221,9 @@ fn each_runtime_uses_its_own_installer_and_disables_lifecycle_scripts() {
             PathBuf::from(format!("/bin/{installer}"))
         );
         assert_eq!(commands[0].args, expected, "runtime={runtime}");
-        assert_eq!(commands[0].cwd.parent(), Some(root.path()));
-        assert!(
-            commands[0]
-                .cwd
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(".skit-deps.tmp-"))
-        );
+        assert_eq!(commands[0].cwd, root.path());
         assert!(root.path().join("package.json").is_file());
-        assert!(root.path().join(".skit-deps").is_file());
+        assert!(root.path().join("node_modules/.skit-deps-ok").is_file());
     }
 }
 
@@ -253,7 +274,7 @@ fn a_matching_stamp_and_node_modules_skip_install_and_clearing_removes_owned_art
     ensure_javascript_dependencies(root.path(), "node", &[], &probe, &runner).unwrap();
     assert!(!root.path().join("package.json").exists());
     assert!(!root.path().join("node_modules").exists());
-    assert!(!root.path().join(".skit-deps").exists());
+    assert!(!root.path().join("node_modules/.skit-deps-ok").exists());
     assert!(root.path().join("keep.txt").is_file());
 }
 
@@ -272,7 +293,7 @@ fn installer_lookup_and_failure_are_typed_refusals_without_a_success_stamp() {
     .unwrap_err();
     assert!(matches!(missing, DependencyError::InstallerNotFound { .. }));
     assert!(!root.path().join("package.json").exists());
-    assert!(!root.path().join(".skit-deps").exists());
+    assert!(!root.path().join("node_modules/.skit-deps-ok").exists());
 
     let probe = Probe {
         programs: BTreeMap::from([("npm".to_owned(), PathBuf::from("/bin/npm"))]),
@@ -291,9 +312,13 @@ fn a_failed_reinstall_restores_the_last_complete_environment() {
     fs::write(root.path().join("meta.toml"), "name = \"Demo\"\n").unwrap();
     fs::write(root.path().join("package.json"), b"old manifest\n").unwrap();
     fs::write(root.path().join("package-lock.json"), b"old lock\n").unwrap();
-    fs::write(root.path().join(".skit-deps"), b"old stamp\n").unwrap();
     fs::create_dir(root.path().join("node_modules")).unwrap();
     fs::write(root.path().join("node_modules/old"), b"old module\n").unwrap();
+    fs::write(
+        root.path().join("node_modules/.skit-deps-ok"),
+        b"old stamp\n",
+    )
+    .unwrap();
     let probe = Probe {
         programs: BTreeMap::from([("npm".to_owned(), PathBuf::from("/bin/npm"))]),
     };
@@ -317,13 +342,57 @@ fn a_failed_reinstall_restores_the_last_complete_environment() {
         b"old lock\n"
     );
     assert_eq!(
-        fs::read(root.path().join(".skit-deps")).unwrap(),
+        fs::read(root.path().join("node_modules/.skit-deps-ok")).unwrap(),
         b"old stamp\n"
     );
     assert_eq!(
         fs::read(root.path().join("node_modules/old")).unwrap(),
         b"old module\n"
     );
+}
+
+#[test]
+fn an_in_place_installer_failure_removes_partial_output_and_restores_the_old_tree() {
+    let root = TempDir::new().unwrap();
+    fs::write(root.path().join("package.json"), b"old manifest\n").unwrap();
+    fs::write(root.path().join("package-lock.json"), b"old lock\n").unwrap();
+    fs::create_dir(root.path().join("node_modules")).unwrap();
+    fs::write(root.path().join("node_modules/old"), b"old module\n").unwrap();
+    fs::write(root.path().join("node_modules/.skit-deps-ok"), b"old stamp").unwrap();
+    let probe = Probe {
+        programs: BTreeMap::from([("npm".to_owned(), PathBuf::from("/bin/npm"))]),
+    };
+
+    let error = ensure_javascript_dependencies(
+        root.path(),
+        "node",
+        &["chalk@5".to_owned()],
+        &probe,
+        &PartialFailureRunner {
+            expected_cwd: root.path().to_owned(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, DependencyError::InstallFailed { .. }));
+    assert_eq!(
+        fs::read(root.path().join("package.json")).unwrap(),
+        b"old manifest\n"
+    );
+    assert_eq!(
+        fs::read(root.path().join("package-lock.json")).unwrap(),
+        b"old lock\n"
+    );
+    assert_eq!(
+        fs::read(root.path().join("node_modules/old")).unwrap(),
+        b"old module\n"
+    );
+    assert!(!root.path().join("node_modules/partial").exists());
+    assert_eq!(
+        fs::read(root.path().join("node_modules/.skit-deps-ok")).unwrap(),
+        b"old stamp"
+    );
+    assert!(!root.path().join(".skit-deps.backup").exists());
 }
 
 #[test]
@@ -338,6 +407,7 @@ fn a_crash_backup_is_restored_and_staging_leftovers_are_removed() {
     fs::write(backup.join("package.json"), b"stable manifest\n").unwrap();
     fs::create_dir(backup.join("node_modules")).unwrap();
     fs::write(backup.join("node_modules/stable"), b"stable module\n").unwrap();
+    fs::write(backup.join("node_modules/.skit-deps-ok"), b"stable stamp").unwrap();
     fs::create_dir(root.path().join(".skit-deps.tmp-abandoned")).unwrap();
 
     let error = ensure_javascript_dependencies(
@@ -357,6 +427,10 @@ fn a_crash_backup_is_restored_and_staging_leftovers_are_removed() {
     assert_eq!(
         fs::read(root.path().join("node_modules/stable")).unwrap(),
         b"stable module\n"
+    );
+    assert_eq!(
+        fs::read(root.path().join("node_modules/.skit-deps-ok")).unwrap(),
+        b"stable stamp"
     );
     assert!(!root.path().join("package-lock.json").exists());
     assert!(!backup.exists());
@@ -410,7 +484,7 @@ fn a_failed_update_keeps_the_last_complete_dependency_environment() {
     )
     .unwrap();
     let old_manifest = fs::read(root.path().join("package.json")).unwrap();
-    let old_stamp = fs::read(root.path().join(".skit-deps")).unwrap();
+    let old_stamp = fs::read(root.path().join("node_modules/.skit-deps-ok")).unwrap();
 
     let failure = Runner::default();
     assert!(matches!(
@@ -428,7 +502,10 @@ fn a_failed_update_keeps_the_last_complete_dependency_environment() {
         fs::read(root.path().join("package.json")).unwrap(),
         old_manifest
     );
-    assert_eq!(fs::read(root.path().join(".skit-deps")).unwrap(), old_stamp);
+    assert_eq!(
+        fs::read(root.path().join("node_modules/.skit-deps-ok")).unwrap(),
+        old_stamp
+    );
     assert!(root.path().join("node_modules").is_dir());
 }
 
@@ -450,10 +527,7 @@ fn package_and_filesystem_refusals_do_not_escape_the_private_entry() {
     );
     for package in [".hidden", "a..b", "a/b", "@scope", "@/name", "name@"] {
         assert!(
-            matches!(
-                javascript_dependency_manifest(&[package.to_owned()]),
-                Err(DependencyError::InvalidPackage { .. })
-            ),
+            javascript_dependency_manifest(&[package.to_owned()]).is_ok(),
             "package={package:?}",
         );
     }
@@ -494,18 +568,18 @@ fn package_and_filesystem_refusals_do_not_escape_the_private_entry() {
         Err(DependencyError::Io { .. })
     ));
 
-    let unreadable_stamp = root.path().join("unreadable-stamp");
-    fs::create_dir(&unreadable_stamp).unwrap();
-    fs::create_dir(unreadable_stamp.join(".skit-deps")).unwrap();
+    let corrupt_stamp = root.path().join("corrupt-stamp");
+    fs::create_dir_all(corrupt_stamp.join("node_modules")).unwrap();
+    fs::write(corrupt_stamp.join("node_modules/.skit-deps-ok"), [0xff]).unwrap();
     assert!(matches!(
         ensure_javascript_dependencies(
-            &unreadable_stamp,
+            &corrupt_stamp,
             "node",
             &["chalk".to_owned()],
             &probe,
             &Runner::default(),
         ),
-        Err(DependencyError::Io { .. })
+        Err(DependencyError::InstallFailed { .. })
     ));
 }
 
@@ -734,6 +808,48 @@ fn an_entry_path_that_is_a_symlink_is_refused_before_any_write() {
 
     assert!(error.to_string().contains("not a directory"));
     assert!(!real.join("package.json").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_installer_cannot_make_the_success_marker_escape_through_a_node_modules_symlink() {
+    use std::os::unix::fs::symlink;
+
+    #[derive(Debug)]
+    struct SymlinkRunner {
+        target: PathBuf,
+    }
+
+    impl DependencyCommandRunner for SymlinkRunner {
+        fn run(&self, command: &DependencyCommand) -> std::io::Result<bool> {
+            symlink(&self.target, command.cwd.join("node_modules"))?;
+            Ok(true)
+        }
+    }
+
+    let root = TempDir::new().unwrap();
+    let outside = root.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    let entry = root.path().join("entry");
+    fs::create_dir(&entry).unwrap();
+    let error = ensure_javascript_dependencies(
+        &entry,
+        "node",
+        &["chalk".to_owned()],
+        &Probe {
+            programs: BTreeMap::from([("npm".to_owned(), PathBuf::from("/bin/npm"))]),
+        },
+        &SymlinkRunner {
+            target: outside.clone(),
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, DependencyError::Io { .. }));
+    assert!(!outside.join(".skit-deps-ok").exists());
+    assert!(!entry.join("package.json").exists());
+    assert!(!entry.join("node_modules").exists());
+    assert!(!entry.join(".skit-deps.backup").exists());
 }
 
 #[cfg(unix)]
