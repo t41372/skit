@@ -94,7 +94,7 @@ fn has_test_attribute(attributes: &[Attribute]) -> bool {
         .any(|attribute| attribute.path().is_ident("test"))
 }
 
-fn parity_test_names(source: &str) -> BTreeSet<String> {
+fn parity_test_names(source: &str) -> Vec<String> {
     syn::parse_file(source)
         .unwrap()
         .items
@@ -109,6 +109,16 @@ fn parity_test_names(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
+fn all_parity_test_names(repo: &Path) -> Vec<String> {
+    TARGETS
+        .iter()
+        .flat_map(|target| {
+            let source = fs::read_to_string(repo.join(target)).unwrap();
+            parity_test_names(&source)
+        })
+        .collect()
+}
+
 #[test]
 fn every_executable_i18n_contract_has_exactly_one_rust_oracle() {
     assert_eq!(EXECUTABLE.len(), 28);
@@ -119,13 +129,18 @@ fn every_executable_i18n_contract_has_exactly_one_rust_oracle() {
         .parent()
         .and_then(Path::parent)
         .expect("skit-cli lives under <repo>/crates/skit-cli");
-    let actual = TARGETS
-        .iter()
-        .flat_map(|target| {
-            let source = fs::read_to_string(repo.join(target)).unwrap();
-            parity_test_names(&source)
-        })
-        .collect::<BTreeSet<_>>();
+    let names = all_parity_test_names(repo);
+    assert_eq!(
+        names.len(),
+        EXECUTABLE.len(),
+        "an i18n Python oracle was duplicated or an unexpected parity test was added: {names:#?}"
+    );
+    let actual = names.iter().cloned().collect::<BTreeSet<_>>();
+    assert_eq!(
+        actual.len(),
+        names.len(),
+        "two Rust targets claim the same i18n Python oracle: {names:#?}"
+    );
     let expected = EXECUTABLE
         .iter()
         .map(|name| (*name).to_owned())
@@ -140,12 +155,8 @@ fn python_only_i18n_contracts_are_not_impersonated() {
         .parent()
         .and_then(Path::parent)
         .expect("skit-cli lives under <repo>/crates/skit-cli");
-    let actual = TARGETS
-        .iter()
-        .flat_map(|target| {
-            let source = fs::read_to_string(repo.join(target)).unwrap();
-            parity_test_names(&source)
-        })
+    let actual = all_parity_test_names(repo)
+        .into_iter()
         .collect::<BTreeSet<_>>();
 
     for (name, reason) in ARCHITECTURE_CLOSED {
