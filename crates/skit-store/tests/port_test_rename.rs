@@ -104,8 +104,7 @@ fn test_rename_conflict_is_a_clean_error() {
 
     assert!(matches!(
         error,
-        RepositoryError::Conflict { ref name, ref slug }
-            if name == "alpha" && slug == alpha.slug.as_str()
+        RepositoryError::RenameConflict { ref name } if name == "alpha"
     ));
     assert_eq!(store.resolve("beta").unwrap().meta.name, "beta");
     assert_eq!(store.resolve("alpha").unwrap().slug, alpha.slug);
