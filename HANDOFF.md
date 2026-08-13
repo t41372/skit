@@ -13,7 +13,7 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 35 fix commits landed, 95 FAILING CONTRACTs closed
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 36 fix commits landed, 95 FAILING CONTRACTs closed
 (93 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
 The last fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Five
 reviewed PR #44 waves added 85 executable parity tests plus 8 completeness-manifest tests.
@@ -138,6 +138,7 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `157f9b7` | bare add pipe lanes: exact three-language v0.4 advice names only stdin/prompt/template lanes that work without a terminal | 2 |
 | `c2187b7` | editor add lane: exact three-language `--edit --no-input` refusal explains the conflict and gives the working stdin spelling | 1 |
 | `affa5b2` | add Python pins: exact three-language note announces only shebang-derived `requires-python`; explicit and PEP 723 pins stay silent | 4 |
+| `c2ec8b6` | PowerShell defaults: preserve runtime scalar literal types independently from the static-type fallback; unknown types remain degraded | 1 PR #44 active-red + additive matrix |
 
 PR #44 is actively continuing and reached `2941a65` at the last integrated checkpoint: 59/84
 behavior modules and 1156/3018 Python contracts accounted. Its merge ancestry and complete test snapshot are
@@ -172,7 +173,7 @@ un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81
 ## 5. REMAINING work — 191 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `affa5b2`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `51494e0`.
 
 - **47 port_test_prompt_cli.rs + 9 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571

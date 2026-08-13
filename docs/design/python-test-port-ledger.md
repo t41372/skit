@@ -49,7 +49,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs | done (53) · 34 → Tier 3/4 |
 | test_shell_getopts.py | 11 | crates/skit-language/tests/port_test_shell_getopts.rs | done (9) · 2 cross-crate (plan/assemble) · no gap |
 | test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs | done (44) · 18 white-box scanner, 2 CLI |
-| test_powershell.py | 35 | crates/skit-language/tests/port_test_powershell.rs | done (17) · A+B fixed · C bool kept · 18 deferred |
+| test_powershell.py | 35 | language + form + application ports + CLI manifest | done (20 executable / 15 architecture-closed) · global exact-name uniqueness enforced `51494e0` · A+B+runtime-scalar defaults fixed · C `[bool]` native checkbox kept |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
 | test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (64) · 88 architecture/cross-crate/absent · all 27 implementation divergences fixed through `219a136` · exact manifest/order/parser, root-cwd install, SHA-256 node_modules marker, fresh short-circuit, resolve-before-touch, persistent lock, and transactional rollback all covered · 6 verifier-caught defects fixed |
@@ -189,13 +189,13 @@ Two follow-ups (tracked, not yet a gap fix):
   JS/TS supports an inline `// /// script\n dependencies = [...]` block; if it does and Rust cannot
   round-trip it, that is a real JS PEP-723 gap.
 
-### test_powershell.py → port_test_powershell.rs (17 done · gaps A+B fixed · C kept · 18 deferred)
+### test_powershell.py → language/form/application ports (20 executable · 15 architecture-closed)
 
-35 ported / 17 passed / 18 `#[ignore]`. The oracle's PowerShell reader spawns `pwsh` and reads its
-JSON; the Rust reader is a static tree-sitter rewrite (no subprocess). The 18 deferred are that
-architecture boundary: the subprocess plumbing, JSON-envelope robustness, and executable discovery
-tests have no static analog (the reader spawns nothing), plus 3 flows/store Tier-4 tests. The static
-reader surfaced 3 field-output gaps, all now resolved:
+The global manifest enforces 35 frozen names: 17 language semantics, 2 form-plan contracts, and 1
+application delivery contract are executable; 15 subprocess/JSON-envelope/discovery seams are
+architecture-closed. It scans all three owning crates and rejects duplicates, missing names,
+unexpected names, and active/closed overlap. The static reader surfaced the following field-output
+gaps, all now resolved or recorded:
 
 - **A (fixed): the static reader omitted `.PARAMETER` comment-based help.** The oracle reads it via
   pwsh `GetHelpContent`. Added `comment_help` to `powershell.rs`: it parses each `.PARAMETER <name>`
@@ -207,6 +207,10 @@ reader surfaced 3 field-output gaps, all now resolved:
   and `$true/$false/$null` and arrays/hashtables/operator-expressions of readable constants are
   readable; a command, subexpression, or other variable is dynamic and still degrades. Verified the
   dynamic cases (`(Get-Date)`, `$x`, `@{a=(Get-Date)}`) still degrade — no over-correction.
+- **Runtime scalar defaults (fixed):** default value decoding now follows the AST literal's runtime
+  shape independently from the declaration's static-type fallback. An unknown static type remains
+  degraded, but readable integer, float, Boolean, and string defaults keep their scalar types;
+  null, arrays, hash literals, and dynamic expressions do not invent a scalar default.
 - **C (kept as a deliberate superset improvement, reversible):** the oracle's `_STATIC_TYPES` map
   omits `System.Boolean`, so it degrades `[bool]` to free text; the Rust reader maps `[bool]` to a
   native `ParameterType::Bool` checkbox, consistent with bool in every other language. Kept as an
