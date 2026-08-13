@@ -14,7 +14,7 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 ## 0. One-line status
 
 **Port COMPLETE. Impl-fix pass WELL UNDERWAY: 38 fix commits landed, 99 FAILING CONTRACTs closed
-(96 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
+(97 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
 The last fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Five
 reviewed PR #44 waves added 95 executable parity tests plus 8 completeness-manifest tests.
 187 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps and responsive
@@ -177,7 +177,7 @@ un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81
 ## 5. REMAINING work — 187 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `45516b3`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `059e24b`.
 
 - **44 port_test_prompt_cli.rs + 3 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
