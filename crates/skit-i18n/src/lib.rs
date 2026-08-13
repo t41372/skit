@@ -298,9 +298,14 @@ const CATALOG: &[Translation] = &[
     ),
     row!("backup", "备份", "備份"),
     row!(
-        "skit could not parse {}. skit backed up the file to {} before this change. Recover missing settings from the backup.",
-        "skit 无法解析 {}。skit 在更改前将文件备份到 {}。请从备份中恢复缺失的设置。",
-        "skit 無法解析 {}。skit 在變更前將檔案備份到 {}。請從備份中復原缺少的設定。",
+        "{} is corrupt and could not be parsed. It has been backed up to {} before this change; recover any lost settings from that file.",
+        "{} 已损坏而无法解析。更改前已备份至 {};请从该文件恢复任何丢失的设置。",
+        "{} 已損毀而無法解析。變更前已備份至 {};請從該檔案復原任何遺失的設定。",
+    ),
+    row!(
+        "{} is corrupt and could not be parsed, and it could not be backed up either; the settings it contained will be lost when this change is saved.",
+        "{} 已损坏而无法解析,且无法备份;保存此更改后,其中的设置将会丢失。",
+        "{} 已損毀而無法解析,且無法備份;儲存此變更後,其中的設定將會遺失。",
     ),
     row!("commit", "提交", "提交"),
     row!("reuse", "重新使用", "重新使用"),

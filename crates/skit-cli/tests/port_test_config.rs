@@ -777,7 +777,14 @@ fn test_save_editor_backs_up_corrupt_config_instead_of_wiping_it() {
     // oracle's stderr notice).
     let recovery = recovery.expect("a corrupt file yields a recovery record");
     assert_eq!(recovery.path.file_name().unwrap(), "config.toml");
-    assert_eq!(recovery.backup_path.file_name().unwrap(), "config.toml.bak");
+    assert_eq!(
+        recovery
+            .backup_path
+            .as_deref()
+            .and_then(|path| path.file_name())
+            .unwrap(),
+        "config.toml.bak"
+    );
 }
 
 #[test]
@@ -793,20 +800,18 @@ fn test_save_mirror_backs_up_corrupt_config_instead_of_wiping_it() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): when the corrupt config cannot be backed up, the oracle \
-    still proceeds with the save and only warns (config.py:152-160, save_editor lands 'vim'); the Rust \
-    update_with_recovery propagates the backup error via `.transpose()?` BEFORE atomic_write_bytes \
-    (skit-store/src/config.rs:814-822), so the whole save aborts and the change is lost."]
 fn test_save_editor_warns_when_corrupt_config_cannot_even_be_backed_up() {
     // Double failure (corrupt file + backup itself fails): the save must still not crash, and must
-    // still land the change. A directory at config.toml.bak makes the backup refuse (the Rust
-    // analogue of monkeypatching shutil.copy2 to raise).
+    // still land the change. A directory at the nested copy target makes the backup refuse.
     let (dir, store) = fixture();
-    fs::create_dir(dir.path().join("config.toml.bak")).unwrap();
+    let backup = dir.path().join("config.toml.bak");
+    let blocker = backup.join("config.toml");
+    fs::create_dir_all(&blocker).unwrap();
+    fs::write(blocker.join("owned"), "keep").unwrap();
     write_config(&dir, "this is = = not valid toml");
     store.set("editor", "vim").unwrap();
     assert_eq!(store.get("editor").unwrap(), "vim");
-    assert!(!dir.path().join("config.toml.bak").is_file()); // no real backup was written
+    assert_eq!(fs::read_to_string(blocker.join("owned")).unwrap(), "keep");
 }
 
 #[test]

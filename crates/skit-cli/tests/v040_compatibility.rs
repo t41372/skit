@@ -654,7 +654,7 @@ fn config_repairs_corrupt_toml_only_after_an_exact_backup() {
     assert_eq!(
         stderr.trim(),
         format!(
-            "skit could not parse {}. skit backed up the file to {} before this change. Recover missing settings from the backup.",
+            "{} is corrupt and could not be parsed. It has been backed up to {} before this change; recover any lost settings from that file.",
             path.display(),
             sandbox.config.path().join("config.toml.bak").display(),
         )

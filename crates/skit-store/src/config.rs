@@ -70,8 +70,8 @@ pub struct MirrorSettings {
 pub struct ConfigRecovery {
     /// Malformed file that the write replaced.
     pub path: PathBuf,
-    /// Byte-exact backup that preserves the malformed file.
-    pub backup_path: PathBuf,
+    /// Location of the byte-exact backup, or `None` when the backup failed.
+    pub backup_path: Option<PathBuf>,
 }
 
 /// One configured prompt runner.
@@ -823,14 +823,10 @@ impl FileConfigStore {
             .map_err(|reason| ConfigError::Encode { reason })?
             .into_bytes()
         };
-        let recovery = loaded
-            .malformed
-            .then(|| preserve_corrupt_backup(&path, &loaded.original))
-            .transpose()?
-            .map(|backup_path| ConfigRecovery {
-                path: path.clone(),
-                backup_path,
-            });
+        let recovery = loaded.malformed.then(|| ConfigRecovery {
+            path: path.clone(),
+            backup_path: preserve_corrupt_backup(&path, &loaded.original).ok(),
+        });
         atomic_write_bytes(&path, &encoded).map_err(|error| io_error("write", &path, error))?;
         Ok((result, recovery))
     }
@@ -838,6 +834,7 @@ impl FileConfigStore {
 
 fn normalize_setting(key: &str, value: &str) -> Result<String, ConfigError> {
     match key {
+        "lang" if value.is_empty() => Ok(String::new()),
         "lang" if value.trim().eq_ignore_ascii_case("auto") => Ok(String::new()),
         "lang" => normalize_supported_language(value).ok_or_else(|| {
             ConfigError::Usage(
@@ -1518,22 +1515,34 @@ fn preserve_corrupt_backup(path: &Path, original: &[u8]) -> Result<PathBuf, Conf
             .and_then(|name| name.to_str())
             .unwrap_or("config.toml")
     ));
-    if backup.exists() && !backup.is_file() {
+    let backup_is_directory = fs::symlink_metadata(&backup)
+        .map(|metadata| metadata.file_type().is_dir())
+        .unwrap_or(false);
+    let target = if backup_is_directory {
+        backup.join(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("config.toml"),
+        )
+    } else {
+        backup.clone()
+    };
+    if target.exists() && !target.is_file() {
         return Err(io_error(
             "backup",
-            &backup,
+            &target,
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "the backup path is not a regular file",
             ),
         ));
     }
-    let saved = if !backup.exists() {
-        atomic_write_bytes(&backup, original)
-            .map_err(|error| io_error("backup", &backup, error))?;
-        backup
+    let saved = if !target.exists() {
+        atomic_write_bytes(&target, original)
+            .map_err(|error| io_error("backup", &target, error))?;
+        target
     } else {
-        replace_existing_backup(&backup, original, atomic_write_bytes, |previous, target| {
+        replace_existing_backup(&target, original, atomic_write_bytes, |previous, target| {
             fs::rename(previous, target)
         })?
     };
@@ -1541,7 +1550,7 @@ fn preserve_corrupt_backup(path: &Path, original: &[u8]) -> Result<PathBuf, Conf
         .map_err(|error| io_error("backup", path, error))?
         .permissions();
     fs::set_permissions(&saved, permissions).map_err(|error| io_error("backup", &saved, error))?;
-    Ok(saved)
+    Ok(backup)
 }
 
 fn replace_existing_backup(

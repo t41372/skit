@@ -4409,11 +4409,18 @@ fn config_in(
     match (key, value) {
         (Some(key), Some(value)) => {
             if let Some(recovery) = store.set_with_recovery(key, value)? {
-                humanerrln!(
-                    "skit could not parse {}. skit backed up the file to {} before this change. Recover missing settings from the backup.",
-                    recovery.path.display(),
-                    recovery.backup_path.display(),
-                );
+                if let Some(backup_path) = recovery.backup_path {
+                    humanerrln!(
+                        "{} is corrupt and could not be parsed. It has been backed up to {} before this change; recover any lost settings from that file.",
+                        recovery.path.display(),
+                        backup_path.display(),
+                    );
+                } else {
+                    humanerrln!(
+                        "{} is corrupt and could not be parsed, and it could not be backed up either; the settings it contained will be lost when this change is saved.",
+                        recovery.path.display(),
+                    );
+                }
             }
             // A URL-storing axis write under a paused master must say so: the write must
             // neither silently do nothing nor silently resurrect the other axes. The

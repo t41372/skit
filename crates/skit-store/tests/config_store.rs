@@ -108,6 +108,15 @@ fn language_values_keep_the_v040_supported_families_and_canonical_spelling() {
         .unwrap();
     assert!(!document.contains_key("language"));
     assert_eq!(store.get("lang").unwrap(), "");
+
+    store.set("lang", "zh-CN").unwrap();
+    store.set("lang", "").unwrap();
+    let document = fs::read_to_string(&path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!document.contains_key("language"));
+    assert_eq!(store.get("lang").unwrap(), "");
 }
 
 #[test]
@@ -320,7 +329,7 @@ fn the_first_write_after_malformed_toml_preserves_an_exact_backup_then_repairs()
 
     assert_eq!(fs::read(&backup).unwrap(), corrupt);
     assert_eq!(recovery.path, path);
-    assert_eq!(recovery.backup_path, backup);
+    assert_eq!(recovery.backup_path.as_deref(), Some(backup.as_path()));
     assert_eq!(store.get("editor").unwrap(), "vim");
     assert_eq!(store.get("lang").unwrap(), "");
 }
@@ -368,7 +377,30 @@ fn non_utf8_toml_is_also_a_read_only_default_and_a_byte_exact_recoverable_write(
 }
 
 #[test]
-fn a_failed_corrupt_backup_rolls_back_without_replacing_the_original() {
+fn a_failed_corrupt_backup_still_applies_the_v040_update() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let backup = root.path().join("config.toml.bak");
+    let corrupt = b"this = [is not valid";
+    fs::write(&path, corrupt).unwrap();
+    fs::create_dir(&backup).unwrap();
+    let blocker = backup.join("config.toml");
+    fs::create_dir(&blocker).unwrap();
+    fs::write(blocker.join("owned"), "keep").unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    let recovery = store
+        .set_with_recovery("editor", "vim")
+        .unwrap()
+        .expect("a malformed write reports recovery even when its backup fails");
+
+    assert_eq!(recovery.backup_path, None);
+    assert_eq!(store.get("editor").unwrap(), "vim");
+    assert_eq!(fs::read_to_string(blocker.join("owned")).unwrap(), "keep");
+}
+
+#[test]
+fn a_backup_directory_preserves_the_corrupt_config_inside_it() {
     let root = TempDir::new().unwrap();
     let path = root.path().join("config.toml");
     let backup = root.path().join("config.toml.bak");
@@ -378,11 +410,42 @@ fn a_failed_corrupt_backup_rolls_back_without_replacing_the_original() {
     fs::write(backup.join("owned"), "keep").unwrap();
     let store = FileConfigStore::new(root.path());
 
-    let error = store.set("editor", "vim").unwrap_err();
+    let recovery = store
+        .set_with_recovery("editor", "vim")
+        .unwrap()
+        .expect("a malformed write must report its backup");
 
-    assert!(matches!(error, ConfigError::Io { .. }));
-    assert_eq!(fs::read(&path).unwrap(), corrupt);
+    assert_eq!(recovery.backup_path.as_deref(), Some(backup.as_path()));
+    assert_eq!(fs::read(backup.join("config.toml")).unwrap(), corrupt);
     assert_eq!(fs::read_to_string(backup.join("owned")).unwrap(), "keep");
+    assert_eq!(store.get("editor").unwrap(), "vim");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_backup_directory_symlink_never_writes_outside_the_config_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = TempDir::new().unwrap();
+    let config = root.path().join("config");
+    let outside = root.path().join("outside");
+    fs::create_dir(&config).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("owned"), "keep").unwrap();
+    let path = config.join("config.toml");
+    fs::write(&path, "this = [is not valid").unwrap();
+    symlink(&outside, config.join("config.toml.bak")).unwrap();
+    let store = FileConfigStore::new(&config);
+
+    let recovery = store
+        .set_with_recovery("editor", "vim")
+        .unwrap()
+        .expect("a malformed write must report recovery");
+
+    assert_eq!(recovery.backup_path, None);
+    assert_eq!(store.get("editor").unwrap(), "vim");
+    assert_eq!(fs::read_to_string(outside.join("owned")).unwrap(), "keep");
+    assert!(!outside.join("config.toml").exists());
 }
 
 #[test]
