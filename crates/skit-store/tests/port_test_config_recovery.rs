@@ -3,7 +3,7 @@ use skit_store::FileConfigStore;
 use tempfile::TempDir;
 
 #[test]
-fn test_save_editor_backs_up_corrupt_config_instead_of_wiping_it() {
+fn rust_additive_save_editor_recovery_object_preserves_corrupt_bytes() {
     let root = TempDir::new().unwrap();
     let corrupt = "language = \"zh-CN\"\n[mirror]\nenabled = true\npypi = \"https://saved.example/simple\"\nthis is = = not valid toml";
     fs::write(root.path().join("config.toml"), corrupt).unwrap();
