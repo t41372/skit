@@ -15,8 +15,8 @@ use ratatui_crossterm::crossterm::event::{
 };
 use skit_i18n::{Locale, format_text};
 use skit_ui::{
-    Action, CommandContext, FormField, FormView, LibraryState, ModalState, Screen, UiBinding,
-    UiCommand, UiKey, UiModifiers, command_specs,
+    Action, CommandContext, FormField, FormView, InputMode, LibraryState, ModalState, Screen,
+    UiBinding, UiCommand, UiKey, UiModifiers, command_specs,
 };
 
 pub use screens::add::{
@@ -163,6 +163,12 @@ fn header_height(state: &LibraryState, terminal_height: u16) -> u16 {
         )
     {
         0
+    } else if state.modal().is_none()
+        && matches!(state.screen(), Screen::Library)
+        && state.input_mode() == InputMode::Search
+        && layout::is_short(terminal_height)
+    {
+        1
     } else {
         3
     }

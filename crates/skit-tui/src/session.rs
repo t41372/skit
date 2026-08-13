@@ -578,14 +578,12 @@ impl TuiSession {
             None => match state.screen() {
                 Screen::Library if state.input_mode() == InputMode::Search => {
                     self.search.sync(state.query());
-                    render_line_input(
-                        frame,
-                        area,
-                        &self.search.input,
-                        false,
-                        true,
-                        &text(locale, "Search"),
-                    );
+                    let label = text(locale, "Search");
+                    if area.height < 3 {
+                        render_flat_search_input(frame, area, &self.search.input, &label);
+                    } else {
+                        render_line_input(frame, area, &self.search.input, false, true, &label);
+                    }
                     self.clicks.register(area, SessionHit::SearchInput);
                     return;
                 }
@@ -2496,6 +2494,40 @@ pub(crate) fn render_line_input(
         frame.set_cursor_position((
             inner.x.saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
             inner.y,
+        ));
+    }
+}
+
+fn render_flat_search_input(frame: &mut Frame, area: Rect, state: &LineInput, label: &str) {
+    let content = Rect::new(
+        area.x.saturating_add(1),
+        area.y,
+        area.width.saturating_sub(2),
+        area.height.min(1),
+    );
+    let width = usize::from(content.width.max(1));
+    let scroll = state.visual_scroll(width);
+    let shown = if state.value().is_empty() {
+        label.to_owned()
+    } else {
+        state.value().to_owned()
+    };
+    frame.render_widget(
+        Paragraph::new(shown)
+            .style(Style::default().fg(Color::White))
+            .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
+        content,
+    );
+    if content.width > 0 && content.height > 0 {
+        let x = state
+            .visual_cursor()
+            .saturating_sub(scroll)
+            .min(width.saturating_sub(1));
+        frame.set_cursor_position((
+            content
+                .x
+                .saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
+            content.y,
         ));
     }
 }

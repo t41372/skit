@@ -9,6 +9,16 @@ pub(crate) struct ViewAreas {
     pub(crate) footer: Rect,
 }
 
+/// Report whether the terminal is below the normal-width tier.
+pub(crate) const fn is_narrow(width: u16) -> bool {
+    width < 80
+}
+
+/// Report whether the terminal is below the normal-height tier.
+pub(crate) const fn is_short(height: u16) -> bool {
+    height < 16
+}
+
 /// Split the terminal with an explicit header budget.
 ///
 /// A screen that already titles itself takes no header. Version 0.4 gives the run form the whole
