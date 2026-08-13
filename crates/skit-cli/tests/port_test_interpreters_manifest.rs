@@ -5,15 +5,20 @@
 //! seam; it is never replaced by a weaker same-named assertion. `rust_additive_*` tests strengthen
 //! coverage but never count toward the 74 frozen Python tests.
 
-use std::{collections::{BTreeMap, BTreeSet}, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
 use syn::{Attribute, Item};
 
-const SOURCES: &[&str] = &[
-    "crates/skit-runtime/tests/port_test_interpreters_runtime.rs",
-    "crates/skit-runtime/tests/port_test_interpreters_needs.rs",
-    "crates/skit-language/tests/port_test_interpreters_shebang.rs",
-    "crates/skit-cli/tests/port_test_interpreters_needs.rs",
+const TEST_DIRS: &[&str] = &[
+    "crates/skit-domain/tests",
+    "crates/skit-language/tests",
+    "crates/skit-runtime/tests",
+    "crates/skit-store/tests",
+    "crates/skit-cli/tests",
 ];
 
 const PYTHON_TESTS: &[&str] = &[
@@ -93,9 +98,6 @@ const PYTHON_TESTS: &[&str] = &[
     "test_e2e_run_reference_mode_shell",
 ];
 
-// These Python assertions pin private helper or strategy-class seams that do not exist in the Rust
-// architecture. Their observable effects remain covered by public launch/inference tests; inventing
-// a test-only helper with the old name would be weaker and dishonest.
 const ARCHITECTURE_CLOSED: &[&str] = &[
     "test_which_seam_is_the_real_shutil_which",
     "test_interpreter_launch_target_is_script_path",
@@ -109,23 +111,40 @@ fn has_test_attribute(attributes: &[Attribute]) -> bool {
     attributes.iter().any(|attribute| attribute.path().is_ident("test"))
 }
 
+fn interpreter_sources(repo: &Path) -> Vec<PathBuf> {
+    let mut sources = Vec::new();
+    for relative in TEST_DIRS {
+        let directory = repo.join(relative);
+        let Ok(entries) = fs::read_dir(&directory) else { continue };
+        for entry in entries {
+            let entry = entry.unwrap_or_else(|error| panic!("could not read an entry under {}: {error}", directory.display()));
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
+            if name.starts_with("port_test_interpreters")
+                && name.ends_with(".rs")
+                && name != "port_test_interpreters_manifest.rs"
+            {
+                sources.push(path);
+            }
+        }
+    }
+    sources.sort();
+    assert!(!sources.is_empty(), "no interpreter port sources were discovered");
+    sources
+}
+
 fn executable_test_names(repo: &Path) -> BTreeMap<String, usize> {
     let mut names = BTreeMap::<String, usize>::new();
-    for relative in SOURCES {
-        let path = repo.join(relative);
+    for path in interpreter_sources(repo) {
         let source = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()));
         let file = syn::parse_file(&source)
             .unwrap_or_else(|error| panic!("could not parse {}: {error}", path.display()));
         for item in file.items {
             let Item::Fn(function) = item else { continue };
-            if !has_test_attribute(&function.attrs) {
-                continue;
-            }
+            if !has_test_attribute(&function.attrs) { continue; }
             let name = function.sig.ident.to_string();
-            if name.starts_with("rust_additive_") {
-                continue;
-            }
+            if name.starts_with("rust_additive_") { continue; }
             *names.entry(name).or_default() += 1;
         }
     }
@@ -135,18 +154,11 @@ fn executable_test_names(repo: &Path) -> BTreeMap<String, usize> {
 #[test]
 fn frozen_interpreters_python_inventory_is_exact() {
     assert_eq!(PYTHON_TESTS.len(), 74, "the frozen interpreter denominator changed");
-    assert_eq!(
-        PYTHON_TESTS.iter().copied().collect::<BTreeSet<_>>().len(),
-        74,
-        "duplicate Python names make interpreter accounting dishonest"
-    );
+    assert_eq!(PYTHON_TESTS.iter().copied().collect::<BTreeSet<_>>().len(), 74, "duplicate Python names make interpreter accounting dishonest");
     let python = PYTHON_TESTS.iter().copied().collect::<BTreeSet<_>>();
     let closed = ARCHITECTURE_CLOSED.iter().copied().collect::<BTreeSet<_>>();
     assert_eq!(closed.len(), ARCHITECTURE_CLOSED.len(), "duplicate closed contracts");
-    assert!(
-        closed.is_subset(&python),
-        "architecture-closed names must come from the frozen Python inventory"
-    );
+    assert!(closed.is_subset(&python), "architecture-closed names must come from the frozen Python inventory");
 }
 
 #[test]
@@ -156,15 +168,8 @@ fn every_interpreters_contract_is_exact_or_explicitly_architecture_closed() {
         .and_then(Path::parent)
         .expect("skit-cli lives under <repo>/crates/skit-cli");
     let counts = executable_test_names(repo);
-    let duplicates = counts
-        .iter()
-        .filter_map(|(name, count)| (*count > 1).then_some(format!("{name} x{count}")))
-        .collect::<Vec<_>>();
-    assert!(
-        duplicates.is_empty(),
-        "duplicate exact-name interpreter mappings are not allowed:\n{}",
-        duplicates.join("\n")
-    );
+    let duplicates = counts.iter().filter_map(|(name, count)| (*count > 1).then_some(format!("{name} x{count}"))).collect::<Vec<_>>();
+    assert!(duplicates.is_empty(), "duplicate exact-name interpreter mappings are not allowed:\n{}", duplicates.join("\n"));
 
     let python = PYTHON_TESTS.iter().copied().collect::<BTreeSet<_>>();
     let closed = ARCHITECTURE_CLOSED.iter().copied().collect::<BTreeSet<_>>();
@@ -172,27 +177,10 @@ fn every_interpreters_contract_is_exact_or_explicitly_architecture_closed() {
     let actual = counts.keys().map(String::as_str).collect::<BTreeSet<_>>();
 
     let unexpected = actual.difference(&python).copied().collect::<Vec<_>>();
-    assert!(
-        unexpected.is_empty(),
-        "parity-shaped `test_*` names without a frozen Python oracle must be renamed `rust_additive_*`:\n{}",
-        unexpected.join("\n")
-    );
+    assert!(unexpected.is_empty(), "parity-shaped `test_*` names without a frozen Python oracle must be renamed `rust_additive_*`:\n{}", unexpected.join("\n"));
 
-    let missing = expected_executable
-        .difference(&actual)
-        .copied()
-        .collect::<Vec<_>>();
+    let missing = expected_executable.difference(&actual).copied().collect::<Vec<_>>();
     let closed_but_executable = closed.intersection(&actual).copied().collect::<Vec<_>>();
-    assert!(
-        closed_but_executable.is_empty(),
-        "a contract cannot be both executable and architecture-closed:\n{}",
-        closed_but_executable.join("\n")
-    );
-    assert!(
-        missing.is_empty(),
-        "tests/test_interpreters.py is not fully ported: {}/{} executable contracts present; missing:\n{}",
-        expected_executable.len() - missing.len(),
-        expected_executable.len(),
-        missing.join("\n")
-    );
+    assert!(closed_but_executable.is_empty(), "a contract cannot be both executable and architecture-closed:\n{}", closed_but_executable.join("\n"));
+    assert!(missing.is_empty(), "tests/test_interpreters.py is not fully ported: {}/{} executable contracts present; missing:\n{}", expected_executable.len() - missing.len(), expected_executable.len(), missing.join("\n"));
 }
