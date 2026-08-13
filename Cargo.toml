@@ -66,8 +66,9 @@ tree-sitter-javascript = "0.25.0"
 tree-sitter-powershell = "0.26.4"
 tree-sitter-python = "0.25.0"
 tree-sitter-typescript = "0.23.2"
-uuid = { version = "1.24.0", features = ["serde", "v4"] }
+unicode-ident = "1.0.24"
 unicode-width = "0.2.2"
+uuid = { version = "1.24.0", features = ["serde", "v4"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 walkdir = "2.5.0"
 which = "8.0.5"

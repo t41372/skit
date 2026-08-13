@@ -755,7 +755,6 @@ fn test_run_prompt_runner_flag_threads_through() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust prompt analyzer does not detect a unicode placeholder name — `{{目标}}` yields empty fields, so `--set 目标=…` fails 'unknown parameter in --set: 目标'. Ties to task #14 (prompt analyzer defects)."]
 fn test_run_prompt_unicode_placeholder_threads_through_set() {
     let sandbox = Sandbox::new();
     sandbox.added("审查 {{目标}}\n", "p");

@@ -324,6 +324,33 @@ fn placeholder_detection_preserves_order_and_secret_heuristics() {
 }
 
 #[test]
+fn prompt_identifiers_use_unicode_xid_while_command_identifiers_stay_ascii() {
+    let decomposed = "e\u{301}";
+    let prompt = placeholder_params(
+        "prompt",
+        &format!("{{{{任务}}}} {{{{café}}}} {{{{{decomposed}}}}} {{{{9bad}}}} {{{{💥}}}}"),
+    );
+    assert_eq!(
+        prompt
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["任务", "café", decomposed]
+    );
+    assert!(placeholder_params("command", "{任务} {café} {e\u{301}}").is_empty());
+
+    let rendered = render_prompt_body(
+        &format!("任务={{{{任务}}}} name={{{{{decomposed}}}}}"),
+        &BTreeMap::from([
+            ("任务".to_owned(), "完成".to_owned()),
+            (decomposed.to_owned(), "accent".to_owned()),
+        ]),
+        true,
+    );
+    assert_eq!(rendered, "任务=完成 name=accent");
+}
+
+#[test]
 fn injection_rewrites_only_selected_python_shell_and_javascript_bindings() {
     let mut python_const = ParamDecl::new("WIDTH");
     python_const.binding = ParameterBinding::Const;

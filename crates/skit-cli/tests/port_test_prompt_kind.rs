@@ -29,10 +29,9 @@
 //! Concept mapping used throughout:
 //! - Python `analyzer.placeholder_names(text)` -> `placeholder_params("prompt", text)` mapped
 //!   to `.name` (the Rust analyzer returns synthesized `ParamDecl`s; `names(text)` collects
-//!   their names).  The Rust body scanner (`scan_placeholders`) is ASCII-only, lacks the
-//!   reserved-`prompt` exclusion, and lacks the brace-adjacency guard — the three known
-//!   analyzer defects (shared task #14), so the unicode / reserved / triple-stache tests are
-//!   FAILING CONTRACT (divergence).
+//!   their names). The Rust body scanner uses Unicode XID rules for prompt names and keeps the
+//!   command template's identifier rules ASCII-only. It still lacks the reserved-`prompt`
+//!   exclusion and the brace-adjacency guard, so those tests remain FAILING CONTRACTs.
 //! - Python `render.render_body(text, values, managed)` -> `render_prompt_body(text, values,
 //!   interpolate=true)`.  The Rust renderer takes NO managed list and never raises on a
 //!   missing managed value (that refusal moved to skit-application validation).
@@ -354,13 +353,9 @@ fn test_placeholder_names_reserved_name_excluded() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust valid_identifier is ASCII-only \
-            (skit-language/src/lib.rs:959), so unicode identifiers are rejected; the oracle uses \
-            Python str.isidentifier() (analyzer.py:31). Shared task #14. Oracle expects \
-            [\"任务\", \"café\", \"é\"]."]
 fn test_placeholder_names_accept_unicode_identifiers_and_reject_non_names() {
-    let text = "{{任务}} {{café}} {{é}} {{not-a-name}} {{💥}} {{}}";
-    assert_eq!(names(text), ["任务", "café", "é"]);
+    let text = "{{任务}} {{café}} {{e\u{301}}} {{not-a-name}} {{💥}} {{}}";
+    assert_eq!(names(text), ["任务", "café", "e\u{301}"]);
 }
 
 #[test]
@@ -387,6 +382,7 @@ fn test_prompt_grammar_is_independent_of_command_templates() {
         .map(|declaration| declaration.name)
         .collect();
     assert_eq!(command, ["name"]);
+    assert!(placeholder_params("command", "{任务} {café}").is_empty());
 }
 
 // ===========================================================================
@@ -426,10 +422,6 @@ fn test_corpus_crlf_preserved_verbatim() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the ASCII-only valid_identifier rejects the CJK \
-            managed name `目標檔案`, so neither detection nor render sees it (shared task #14, \
-            unicode identifiers). Oracle expects names == [\"目標檔案\", \"focus\"] and \
-            `審查 src/主程式.py` in the render."]
 fn test_corpus_cjk_emoji_no_trailing_newline() {
     let raw = corpus_bytes("03_cjk_emoji.prompt.md");
     assert!(!raw.ends_with(b"\n"), "deliberate: no trailing newline");

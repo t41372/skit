@@ -869,8 +869,8 @@ pub fn detect_candidates(kind: &str, text: &str) -> Vec<ParamDecl> {
 #[must_use]
 pub fn placeholder_params(kind: &str, text: &str) -> Vec<ParamDecl> {
     let names = match kind {
-        "command" => scan_placeholders(text, false),
-        "prompt" => scan_placeholders(text, true),
+        "command" => scan_placeholders(text, false, valid_command_identifier),
+        "prompt" => scan_placeholders(text, true, valid_prompt_identifier),
         _ => Vec::new(),
     };
     names
@@ -906,7 +906,7 @@ pub fn render_prompt_body(
         };
         let end = start + relative_end;
         let name = &text[start..end];
-        if valid_identifier(name)
+        if valid_prompt_identifier(name)
             && let Some(value) = values.get(name)
         {
             output.push_str(&text[copied_until..index]);
@@ -919,7 +919,7 @@ pub fn render_prompt_body(
     output
 }
 
-fn scan_placeholders(text: &str, doubled: bool) -> Vec<String> {
+fn scan_placeholders(text: &str, doubled: bool, valid_identifier: fn(&str) -> bool) -> Vec<String> {
     let bytes = text.as_bytes();
     let mut output = Vec::new();
     let mut seen = BTreeSet::new();
@@ -952,7 +952,15 @@ fn scan_placeholders(text: &str, doubled: bool) -> Vec<String> {
     output
 }
 
-fn valid_identifier(value: &str) -> bool {
+fn valid_prompt_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || unicode_ident::is_xid_start(first))
+        && chars.all(unicode_ident::is_xid_continue)
+}
+
+fn valid_command_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     chars
         .next()
@@ -1515,7 +1523,7 @@ mod private_tests {
     #[test]
     fn source_helpers_preserve_placeholder_literal_style() {
         assert_eq!(
-            scan_placeholders("{{escaped}} {open", false),
+            scan_placeholders("{{escaped}} {open", false, valid_command_identifier),
             Vec::<String>::new()
         );
     }

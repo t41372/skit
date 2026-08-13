@@ -279,6 +279,7 @@ fn test_valid_utf8_crlf_cjk_and_emoji_stays_byte_exact_in_store_and_argv() {
         "-n",
         "exact",
         "--prompt",
+        "--no-interpolate",
         "--no-input",
         "--runner",
         "agent",
