@@ -114,10 +114,10 @@ pub(crate) enum RunError {
     Dependencies(#[from] DependencyError),
     #[error(transparent)]
     Uv(#[from] UvBootstrapError),
-    #[error("--set needs NAME=VALUE; got {value:?}")]
-    InvalidSet { value: String },
-    #[error("unknown parameter in --set: {name}")]
-    UnknownSet { name: String },
+    #[error("Malformed --set (expected NAME=VALUE): {items}")]
+    InvalidSet { items: String },
+    #[error("Unknown parameter for --set: {names}. This entry's parameters: {valid}")]
+    UnknownSet { names: String, valid: String },
     #[error("preset {name:?} does not exist")]
     PresetNotFound { name: String },
     #[error("{name} has no form fields, so there's nothing to save.")]
@@ -163,10 +163,14 @@ impl Localize for RunError {
             Self::Dependencies(error) => error.message(),
             Self::Uv(error) => error.message(),
             Self::Config(error) => error.message(),
-            Self::InvalidSet { value } => {
-                Message::new("--set needs NAME=VALUE; got {}").quoted(value)
+            Self::InvalidSet { items } => {
+                Message::new("Malformed --set (expected NAME=VALUE): {}").with(items)
             }
-            Self::UnknownSet { name } => Message::new("unknown parameter in --set: {}").with(name),
+            Self::UnknownSet { names, valid } => {
+                Message::new("Unknown parameter for --set: {}. This entry's parameters: {}")
+                    .with(names)
+                    .with(valid)
+            }
             Self::PresetNotFound { name } => Message::new("preset {} does not exist").quoted(name),
             Self::PresetWithoutFields { name } => {
                 Message::new("{} has no form fields, so there's nothing to save.").with(name)
@@ -594,7 +598,7 @@ fn prompt_sends_secret(entry: &Entry, declarations: &[ParamDecl], assembly: &Ass
         })
 }
 
-fn apply_sets(
+pub(crate) fn apply_sets(
     declarations: &[skit_domain::parameters::ParamDecl],
     sets: &[String],
     values: &mut BTreeMap<String, String>,
@@ -603,23 +607,41 @@ fn apply_sets(
         .iter()
         .map(|item| item.name.as_str())
         .collect::<BTreeSet<_>>();
+    let mut pairs = Vec::with_capacity(sets.len());
+    let mut malformed = Vec::new();
     for item in sets {
-        let Some((name, value)) = item.split_once('=') else {
-            return Err(RunError::InvalidSet {
-                value: item.clone(),
-            });
-        };
-        let name = name.trim();
-        if name.is_empty() {
-            return Err(RunError::InvalidSet {
-                value: item.clone(),
-            });
+        match item.split_once('=') {
+            Some((name, value)) if !name.trim().is_empty() => {
+                pairs.push((name.trim(), value));
+            }
+            _ => malformed.push(item.clone()),
         }
-        if !names.contains(name) {
-            return Err(RunError::UnknownSet {
-                name: name.to_owned(),
-            });
-        }
+    }
+    if !malformed.is_empty() {
+        return Err(RunError::InvalidSet {
+            items: malformed.join(", "),
+        });
+    }
+    let unknown = pairs
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !names.contains(name))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        let valid = names.into_iter().collect::<Vec<_>>().join(", ");
+        return Err(RunError::UnknownSet {
+            names: unknown.join(", "),
+            valid: if valid.is_empty() {
+                "—".to_owned()
+            } else {
+                valid
+            },
+        });
+    }
+    for (name, value) in pairs {
         values.insert(name.to_owned(), value.to_owned());
     }
     Ok(())
@@ -1094,13 +1116,14 @@ mod tests {
             ),
             (
                 RunError::InvalidSet {
-                    value: "bad".to_owned(),
+                    items: "bad".to_owned(),
                 },
                 2,
             ),
             (
                 RunError::UnknownSet {
-                    name: "bad".to_owned(),
+                    names: "bad".to_owned(),
+                    valid: "good".to_owned(),
                 },
                 2,
             ),
@@ -1149,6 +1172,32 @@ mod tests {
         assert_eq!(values["name"], "value=tail");
         apply_sets(&declarations, &[" name = padded".to_owned()], &mut values).unwrap();
         assert_eq!(values["name"], " padded");
+
+        let unchanged = values.clone();
+        let malformed = apply_sets(
+            &declarations,
+            &["name=changed".to_owned(), "broken".to_owned()],
+            &mut values,
+        )
+        .unwrap_err();
+        let RunError::InvalidSet { items: malformed } = malformed else {
+            panic!("expected malformed --set values");
+        };
+        assert_eq!(malformed, "broken");
+        assert_eq!(values, unchanged);
+
+        let unknown = apply_sets(
+            &declarations,
+            &["z=1".to_owned(), "a=2".to_owned(), "z=3".to_owned()],
+            &mut values,
+        )
+        .unwrap_err();
+        let RunError::UnknownSet { names, valid } = unknown else {
+            panic!("expected unknown --set names");
+        };
+        assert_eq!(names, "a, z");
+        assert_eq!(valid, "name");
+        assert_eq!(values, unchanged);
     }
 
     #[test]
@@ -1619,15 +1668,16 @@ mod localization_tests {
         );
         assert_localized(
             &RunError::InvalidSet {
-                value: "novalue".to_owned(),
+                items: "novalue".to_owned(),
             },
             &["novalue"],
         );
         assert_localized(
             &RunError::UnknownSet {
-                name: "target".to_owned(),
+                names: "target".to_owned(),
+                valid: "output".to_owned(),
             },
-            &["target"],
+            &["target", "output"],
         );
         assert_localized(
             &RunError::PresetNotFound {

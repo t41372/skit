@@ -2220,9 +2220,9 @@ const CATALOG: &[Translation] = &[
         "--row 必須是非負索引或「container」。",
     ),
     row!(
-        "--set needs NAME=VALUE; got {}",
-        "--set 需要 NAME=VALUE；收到 {}",
-        "--set 需要 NAME=VALUE；收到 {}",
+        "Malformed --set (expected NAME=VALUE): {}",
+        "--set 格式错误(应为 NAME=VALUE):{}",
+        "--set 格式錯誤(應為 NAME=VALUE):{}",
     ),
     row!(
         "--template only applies to command entries",
@@ -2989,9 +2989,9 @@ const CATALOG: &[Translation] = &[
         "未知的參數傳遞方式：{}",
     ),
     row!(
-        "unknown parameter in --set: {}",
-        "--set 中的参数未知：{}",
-        "--set 中的參數未知：{}",
+        "Unknown parameter for --set: {}. This entry's parameters: {}",
+        "--set 指定了未知参数：{}。此条目的参数：{}",
+        "--set 指定了未知參數：{}。此條目的參數：{}",
     ),
     row!(
         "unknown parameter type: {}",

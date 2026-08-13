@@ -517,7 +517,6 @@ fn test_set_token_values_expand_at_assembly() {
 // --------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle prints `Malformed --set (expected NAME=VALUE): NOVALUE, =v` (all bad items joined). Rust `apply_sets` (run/command.rs) stops at the first bad item and prints `--set needs NAME=VALUE; got \"NOVALUE\"` — no join. Exit code 2 matches."]
 fn test_set_malformed_exits_2_with_exact_message() {
     let root = sandbox();
     build_trip(&root);
@@ -576,7 +575,6 @@ fn test_set_key_is_stripped() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle prints `Unknown parameter for --set: ALSO, NOPE. This entry's parameters: CITY, TIMES` (all unknowns sorted + valid names listed). Rust `apply_sets` (run/command.rs) stops at the first unknown, sorts nothing, lists nothing: `unknown parameter in --set: NOPE`. Exit code 2 matches."]
 fn test_set_unknown_name_exits_2_and_lists_valid() {
     let root = sandbox();
     build_trip(&root);
@@ -599,7 +597,6 @@ fn test_set_unknown_name_exits_2_and_lists_valid() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle prints `Unknown parameter for --set: X. This entry's parameters: —` (a dash for a field-less entry). Rust `apply_sets` (run/command.rs) prints `unknown parameter in --set: X` with no valid-names clause. Exit code 2 matches."]
 fn test_set_on_entry_without_fields_lists_a_dash() {
     let root = sandbox();
     let exe = root.path().join("tool");

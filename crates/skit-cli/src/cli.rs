@@ -84,7 +84,7 @@ use skit_ui::{
 use thiserror::Error;
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::run::{RunArgs, RunError};
+use crate::run::{RunArgs, RunError, apply_sets};
 
 macro_rules! humanln {
     ($message:literal $(, $value:expr)* $(,)?) => {
@@ -1699,32 +1699,8 @@ fn run_fixed_values(
     declarations: &[ParamDecl],
     assignments: &[String],
 ) -> Result<BTreeMap<String, String>, CliError> {
-    let names = declarations
-        .iter()
-        .map(|declaration| declaration.name.as_str())
-        .collect::<BTreeSet<_>>();
     let mut values = BTreeMap::new();
-    for assignment in assignments {
-        let Some((name, value)) = assignment.split_once('=') else {
-            return Err(RunError::InvalidSet {
-                value: assignment.clone(),
-            }
-            .into());
-        };
-        if name.is_empty() {
-            return Err(RunError::InvalidSet {
-                value: assignment.clone(),
-            }
-            .into());
-        }
-        if !names.contains(name) {
-            return Err(RunError::UnknownSet {
-                name: name.to_owned(),
-            }
-            .into());
-        }
-        values.insert(name.to_owned(), value.to_owned());
-    }
+    apply_sets(declarations, assignments, &mut values)?;
     Ok(values)
 }
 
