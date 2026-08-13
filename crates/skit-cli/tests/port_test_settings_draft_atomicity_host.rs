@@ -365,9 +365,11 @@ fn test_settings_npm_deps_are_not_pep508_validated() {
 #[test]
 fn test_settings_name_conflict_is_refused_before_npm_clear() {
     let sandbox = Sandbox::new();
+    // The Library is activity-ordered. Create the conflict first so `js-original`, the entry this
+    // test edits, is the newest selected row when the real TUI opens.
+    sandbox.add_taken_name();
     sandbox.add_js("js-original");
     sandbox.set_js_deps_without_install("js-original", &["chalk"]);
-    sandbox.add_taken_name();
     let entry = sandbox.store().resolve("js-original").unwrap();
     let entry_dir = sandbox.data.path().join("scripts").join(entry.slug.as_str());
     fs::write(entry_dir.join(".skit-deps"), "owned stamp").unwrap();
@@ -389,7 +391,10 @@ fn test_settings_name_conflict_is_refused_before_npm_clear() {
     assert!(output.contains("already taken"), "name conflict was not surfaced: {output}");
     let after = sandbox.store().resolve("js-original").unwrap();
     assert_eq!(after.meta.name, "js-original");
-    assert_eq!(EntrySettings::from_meta(&after.meta).dependencies, ["chalk"]);
+    assert_eq!(
+        EntrySettings::from_meta(&after.meta).dependencies,
+        vec!["chalk".to_owned()]
+    );
     assert!(entry_dir.join(".skit-deps").is_file(), "name precheck already cleared stamp");
     assert!(entry_dir.join("package.json").is_file(), "name precheck already cleared manifest");
     assert!(
@@ -442,7 +447,10 @@ fn test_resumed_draft_through_the_tui_add_lane_is_consumed() {
         panic!("accepted TUI review did not emit one commit");
     };
     sandbox.store().create((**entry).clone()).unwrap();
-    assert_eq!(sandbox.store().resolve("consumed").unwrap().meta.mode, skit_domain::StorageMode::Copy);
+    assert_eq!(
+        sandbox.store().resolve("consumed").unwrap().meta.mode,
+        skit_domain::StorageMode::Copy
+    );
     let request = *request;
     let followups = workflow.reduce(AddAction::CommitFinished {
         request,
