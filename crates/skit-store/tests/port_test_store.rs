@@ -451,11 +451,6 @@ fn test_human_size_units_and_thresholds() {}
 // infer_kind — skit-language, not the store.
 // ===========================================================================
 
-#[ignore = "UNMAPPED -> skit-language. infer_kind lives in skit-language (used by skit-ui::add and \
-            skit-cli); it is not a store function."]
-#[test]
-fn test_infer_kind_python_and_forced_exe() {}
-
 #[ignore = "UNMAPPED -> skit-language. infer_kind is skit-language, not a store function."]
 #[test]
 fn test_infer_kind_windows_uses_pathext_not_execute_bit() {}
