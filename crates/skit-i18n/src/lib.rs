@@ -2753,6 +2753,11 @@ const CATALOG: &[Translation] = &[
         "需要提示詞內容",
     ),
     row!(
+        "prompt body doesn't exist: {}",
+        "提示词正文不存在：{}",
+        "提示詞內容不存在：{}",
+    ),
+    row!(
         "prompt runner already exists: {}",
         "提示词运行器已存在：{}",
         "提示詞執行器已存在：{}",

@@ -128,6 +128,8 @@ pub(crate) enum RunError {
         #[source]
         source: io::Error,
     },
+    #[error("prompt body doesn't exist: {path}")]
+    PromptBodyMissing { path: String },
     #[error("{path} is not valid UTF-8")]
     Encoding { path: String },
     #[error("could not write staged source {path}: {source}")]
@@ -178,6 +180,9 @@ impl Localize for RunError {
             Self::Read { path, source } => Message::new("could not read {}: {}")
                 .with(path)
                 .with(source),
+            Self::PromptBodyMissing { path } => {
+                Message::new("prompt body doesn't exist: {}").with(path)
+            }
             Self::Encoding { path } => Message::new("{} is not valid UTF-8").with(path),
             Self::Stage { path, source } => Message::new("could not write staged source {}: {}")
                 .with(path)
@@ -215,6 +220,7 @@ impl RunError {
             | Self::RawUnsupported { .. }
             | Self::RawConflict => 2,
             Self::Launch(error) => error.exit_code(),
+            Self::PromptBodyMissing { .. } => 127,
             Self::Dependencies(DependencyError::InstallerNotFound { .. })
             | Self::Dependencies(DependencyError::InstallFailed { .. })
             | Self::Dependencies(DependencyError::Io { .. })
@@ -384,7 +390,7 @@ pub(crate) fn run_with_roots(
     let script = if entry.meta.kind.as_str() == "command" {
         PathBuf::new()
     } else {
-        data_store.payload_path(&entry)?
+        launch_payload_path(data_store, &entry)?
     };
     let prompt_body = (entry.meta.kind.as_str() == "prompt")
         .then(|| render_prompt_body(&source, &assembly.command_values, settings.interpolate));
@@ -474,7 +480,7 @@ pub(crate) fn run_with_roots(
     } else if let Some(path) = prepared.as_ref().and_then(|launch| launch.payload_path()) {
         path.to_path_buf()
     } else {
-        data_store.payload_path(&entry)?
+        launch_payload_path(data_store, &entry)?
     };
     let prompt_body = if entry.meta.kind.as_str() == "prompt" {
         Some(render_prompt_body(
@@ -685,8 +691,19 @@ fn source_snapshot(
         "command" => Ok((settings.template.clone(), None)),
         "exe" => Ok((String::new(), None)),
         "prompt" => {
-            let path = store.payload_path(entry)?;
-            let bytes = read_bytes(&path)?;
+            let path = launch_payload_path(store, entry)?;
+            let bytes = fs::read(&path).map_err(|source| {
+                if source.kind() == io::ErrorKind::NotFound {
+                    RunError::PromptBodyMissing {
+                        path: path.display().to_string(),
+                    }
+                } else {
+                    RunError::Read {
+                        path: path.display().to_string(),
+                        source,
+                    }
+                }
+            })?;
             let hash = content_hash(&bytes);
             let text = String::from_utf8(bytes).map_err(|_| RunError::Encoding {
                 path: path.display().to_string(),
@@ -706,6 +723,24 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>, RunError> {
     fs::read(path).map_err(|source| RunError::Read {
         path: path.display().to_string(),
         source,
+    })
+}
+
+fn launch_payload_path(store: &FileStore, entry: &Entry) -> Result<PathBuf, RunError> {
+    store.payload_path(entry).map_err(|error| match &error {
+        RepositoryError::InvalidMutation { reason }
+            if entry.meta.kind.as_str() == "prompt"
+                && reason.template() == "copy entry has no stored payload" =>
+        {
+            RunError::PromptBodyMissing {
+                path: store
+                    .entry_dir_path(&entry.slug)
+                    .join("prompt.md")
+                    .display()
+                    .to_string(),
+            }
+        }
+        _ => RunError::Repository(error),
     })
 }
 
@@ -730,7 +765,7 @@ fn stage_injected_source(
     )?;
     let entry_dir = store.entry_dir_path(&entry.slug);
     sweep_staged_sources(&entry_dir);
-    let original = store.payload_path(entry)?;
+    let original = launch_payload_path(store, entry)?;
     let suffix = original
         .extension()
         .and_then(|value| value.to_str())
@@ -1109,6 +1144,12 @@ mod tests {
                     name: "runtime".to_owned(),
                 }),
                 126,
+            ),
+            (
+                RunError::PromptBodyMissing {
+                    path: "/data/prompt.md".to_owned(),
+                },
+                127,
             ),
             (
                 RunError::Inputs(RunInputError::ExtraToken(TokenError::MissingEnvironment {
@@ -1700,6 +1741,12 @@ mod localization_tests {
                 source: io_failure(),
             },
             &["/data/demo.py", "permission denied"],
+        );
+        assert_localized(
+            &RunError::PromptBodyMissing {
+                path: "/data/prompt.md".to_owned(),
+            },
+            &["/data/prompt.md"],
         );
         assert_localized(
             &RunError::Encoding {

@@ -904,7 +904,6 @@ fn test_run_prompt_dry_run_prints_the_resolved_argv() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle exits 127 'doesn't exist' when the prompt body was deleted; Rust cannot resolve the entry and exits 2 'invalid entry mutation: copy entry has no stored payload'."]
 fn test_run_prompt_dry_run_missing_body_is_127_before_output() {
     let sandbox = Sandbox::new();
     sandbox.added_pin("Say it\n", "p", "claude");

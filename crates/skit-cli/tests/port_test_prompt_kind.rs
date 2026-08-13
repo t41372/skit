@@ -13,8 +13,7 @@
 //! concern that the CLI does not expose (or maps differently), the stub is "absent" with the
 //! concrete blocking fact, not "cross-crate".
 //!
-//! One assertion the oracle makes remains a genuine Rust divergence. Its full body stays as an
-//! `#[ignore]`d FAILING CONTRACT test: the exit class for a missing stored prompt body.
+//! The compound prompt suffix and missing stored-body assertions run as REAL contracts.
 //!
 //! Concept mapping used throughout:
 //! - Python `analyzer.placeholder_names(text)` -> `placeholder_params("prompt", text)` mapped
@@ -1098,12 +1097,6 @@ fn test_build_missing_binary_is_exit_126() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle maps a missing prompt body to exit 127 \
-            (TargetMissingError, test_prompt_kind.py:630). Verified against the built binary: after \
-            the stored prompt.md is deleted the run pipeline fails entry resolution with 'invalid \
-            entry mutation: copy entry has no stored payload' and exits 2, so a missing prompt body \
-            is classified differently. The restored body fails at the exit-code assertion (2, not \
-            127)."]
 fn test_build_missing_body_is_exit_127() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_source("miss.prompt.md", b"Do {{a}}\n");
@@ -1248,7 +1241,7 @@ fn test_describe_with_no_pin_and_no_runner_never_reads_config() {}
 #[test]
 #[ignore = "UNMAPPED (absent): describe degrading to a literal {{prompt}} stub when the body is \
             missing or values are absent has no CLI path — with a missing body the run pipeline \
-            errors ('no stored payload', see test_build_missing_body_is_exit_127) instead of \
+            exits 127 (see test_build_missing_body_is_exit_127) instead of \
             printing a degraded describe line. Oracle: test_prompt_kind.py:709."]
 fn test_describe_degrades_on_missing_body_and_missing_values() {}
 
