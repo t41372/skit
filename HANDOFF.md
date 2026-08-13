@@ -15,8 +15,8 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 **Port COMPLETE. Impl-fix pass WELL UNDERWAY: 15 fix commits landed, 52 FAILING CONTRACTs closed
 (50 un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added. The last
-fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Two reviewed PR #44
-waves added 77 executable contracts plus 6 completeness manifests.
+fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Four reviewed PR #44
+waves added 82 executable contracts plus 6 completeness manifests.
 234 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: continue js_deps (20),
 or pick an add-lane cluster.** The user chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
@@ -119,8 +119,9 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 
 PR #44 is paused at `6c5a408`. Its merge ancestry and complete test snapshot are preserved on
 `integration/pr44-20260812`. The integration workspace passes `cargo test --locked --workspace
---all-targets --all-features --no-run`. Two reviewed green waves are on this branch: parser mutation
-contracts (`184726d`) and argstate filesystem contracts (`40b6087`).
+--all-targets --all-features --no-run`. Four reviewed green waves are on this branch: parser mutation
+contracts (`184726d`), argstate filesystem contracts (`40b6087`), atomic state contracts
+(`817f14c`), and two non-duplicate boolean parameter-edit guards (`7fcc177`).
 
 Two policy items keep their oracle-matching defaults (user did not object): the store self-heal
 reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to implement). Reversible.
