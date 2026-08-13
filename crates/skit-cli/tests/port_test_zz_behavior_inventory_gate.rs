@@ -89,7 +89,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_path_tui.py", tests: 61, guard: None },
     Module { python: "test_phase1.py", tests: 27, guard: Some("crates/skit-cli/tests/port_test_phase1_manifest.rs") },
     Module { python: "test_tui_responsive.py", tests: 19, guard: Some("crates/skit-cli/tests/port_test_tui_responsive_manifest.rs") },
-    Module { python: "test_settings_and_draft_review_atomicity.py", tests: 16, guard: None },
+    Module { python: "test_settings_and_draft_review_atomicity.py", tests: 16, guard: Some("crates/skit-cli/tests/port_test_settings_draft_atomicity_manifest.rs") },
     Module { python: "test_draft_and_reader_tui.py", tests: 16, guard: Some("crates/skit-cli/tests/port_test_draft_and_reader_tui_manifest.rs") },
     Module { python: "test_reset_default_ui.py", tests: 14, guard: Some("crates/skit-cli/tests/port_test_reset_default_ui_manifest.rs") },
     Module { python: "test_tui_edit.py", tests: 6, guard: Some("crates/skit-cli/tests/port_test_tui_edit_manifest.rs") },
