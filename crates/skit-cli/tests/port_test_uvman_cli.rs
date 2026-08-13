@@ -180,9 +180,16 @@ fn dead_base() -> String {
     format!("http://{address}")
 }
 
+fn dead_https_base() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    format!("https://{address}")
+}
+
 fn run_consent_case(answer: &str, expected_consent: bool) {
     let sandbox = Sandbox::new();
-    let mirror = dead_base();
+    let mirror = dead_https_base();
     sandbox.write_mirror(true, Some(&mirror), None);
     let input = format!("{answer}\r");
     let (code, transcript) = sandbox.run_pty(input.as_bytes());
@@ -215,7 +222,7 @@ fn run_consent_case(answer: &str, expected_consent: bool) {
 #[test]
 fn test_consent_non_interactive_auto_yes() {
     let sandbox = Sandbox::new();
-    let mirror = dead_base();
+    let mirror = dead_https_base();
     sandbox.write_mirror(true, Some(&mirror), None);
     let output = sandbox.run_non_tty();
     let stderr = String::from_utf8(output.stderr).unwrap();
@@ -286,7 +293,7 @@ fn rust_additive_consent_whitespace_n_is_no() {
 #[test]
 fn test_consent_eof_is_yes() {
     let sandbox = Sandbox::new();
-    let mirror = dead_base();
+    let mirror = dead_https_base();
     sandbox.write_mirror(true, Some(&mirror), None);
     // Ctrl+D on an empty canonical PTY line is the terminal EOF that Python's input() raises as
     // EOFError. Version 0.4 treats it as consent rather than hanging or declining.
@@ -301,7 +308,7 @@ fn test_consent_eof_is_yes() {
 #[test]
 fn test_declined_raises_with_guidance() {
     let sandbox = Sandbox::new();
-    let mirror = dead_base();
+    let mirror = dead_https_base();
     sandbox.write_mirror(true, Some(&mirror), None);
     let (code, transcript) = sandbox.run_pty(b"n\r");
 
@@ -315,7 +322,7 @@ fn test_declined_raises_with_guidance() {
 #[test]
 fn test_download_url_uses_configured_mirror() {
     let sandbox = Sandbox::new();
-    let mirror = dead_base();
+    let mirror = dead_https_base();
     sandbox.write_mirror(true, Some(&mirror), None);
     let output = sandbox.run_non_tty();
     let stderr = String::from_utf8(output.stderr).unwrap();
