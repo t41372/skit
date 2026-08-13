@@ -6,15 +6,15 @@
 
 use std::{fs, path::PathBuf};
 
-use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+use ratatui_core::{backend::TestBackend, buffer::Buffer, layout::Rect, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use skit_application::SourcePermissions;
 use skit_i18n::Locale;
 use skit_tui::{
-    AddControlId, AddScreenGeometry, AddScreenSession, EventHandling, TuiSession, ViewGeometry,
-    render_add, render_with_session,
+    AddControlId, AddScreenGeometry, AddScreenSession, AddTextField, EventHandling, TuiSession,
+    ViewGeometry, render_add, render_with_session,
 };
 use skit_ui::{
     Action, AddAction, AddEffect, AddStage, AddWorkflowState, DraftSummary, Effect, KnownEntryKind,
@@ -44,6 +44,17 @@ fn review(path: &str, bytes: &[u8], kind: KnownEntryKind) -> ReviewState {
     ReviewState::from_source(snapshot(path, bytes, false), kind, ReviewDefaults::default())
 }
 
+fn rendered(buffer: &Buffer) -> String {
+    (0..buffer.area.height)
+        .map(|row| {
+            (0..buffer.area.width)
+                .map(|column| buffer[(column, row)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render_review(workflow: &AddWorkflowState) -> (String, AddScreenGeometry) {
     let mut session = AddScreenSession::default();
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
@@ -60,7 +71,7 @@ fn has_add_hit(geometry: &AddScreenGeometry, target: &AddControlId) -> bool {
     geometry.hits.iter().any(|hit| &hit.target == target)
 }
 
-fn region_text(buffer: &Buffer, area: ratatui_core::layout::Rect) -> String {
+fn region_text(buffer: &Buffer, area: Rect) -> String {
     let mut output = String::new();
     for row in area.y..area.y.saturating_add(area.height).min(buffer.area.height) {
         for column in area.x..area.x.saturating_add(area.width).min(buffer.area.width) {
@@ -68,17 +79,6 @@ fn region_text(buffer: &Buffer, area: ratatui_core::layout::Rect) -> String {
         }
     }
     output
-}
-
-fn rendered(buffer: &Buffer) -> String {
-    (0..buffer.area.height)
-        .map(|row| {
-            (0..buffer.area.width)
-                .map(|column| buffer[(column, row)].symbol())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn position(buffer: &Buffer, needle: &str) -> (u16, u16) {
@@ -149,16 +149,15 @@ fn draft_state(paths: &[(PathBuf, u64)]) -> LibraryState {
     state
 }
 
-fn select_draft_by_click(
-    session: &mut TuiSession,
-    state: &mut LibraryState,
-    filename: &str,
-) {
+fn select_draft_by_click(session: &mut TuiSession, state: &mut LibraryState, filename: &str) {
     let (terminal, geometry) = draw_full(session, state);
     let (x, y) = position(terminal.backend().buffer(), filename);
     let (handling, effect) = drive(session, state, &geometry, mouse(x, y));
     assert!(
-        matches!(handling, EventHandling::Action(Action::Add(AddAction::SelectDraft(_)))),
+        matches!(
+            &handling,
+            EventHandling::Action(Action::Add(AddAction::SelectDraft(_)))
+        ),
         "clicking the draft did not select it: {handling:?}"
     );
     assert_eq!(effect, Effect::None);
@@ -184,7 +183,10 @@ fn test_review_versioned_shebang_shows_and_stores_pin() {
     let (text, geometry) = render_review(&workflow);
     assert!(text.contains(">=3.12,<3.13"), "derived pin is not visible:\n{text}");
     assert!(
-        has_add_hit(&geometry, &AddControlId::Text(skit_tui::AddTextField::PythonConstraint)),
+        has_add_hit(
+            &geometry,
+            &AddControlId::Text(AddTextField::PythonConstraint)
+        ),
         "derived pin is not in an editable Python-constraint control"
     );
 
@@ -199,12 +201,11 @@ fn test_review_versioned_shebang_shows_and_stores_pin() {
 
 #[test]
 fn test_review_pin_follows_a_shebang_edit_on_rescan() {
-    let review = review(
+    let mut workflow = AddWorkflowState::from_review(review(
         "v.py",
         b"#!/usr/bin/env python3.12\nprint('hi')\n",
         KnownEntryKind::Python,
-    );
-    let mut workflow = AddWorkflowState::from_review(review);
+    ));
     assert_eq!(workflow.review().unwrap().requires_python(), ">=3.12,<3.13");
 
     let effects = workflow.reduce(AddAction::EditSource);
@@ -246,8 +247,7 @@ fn test_review_explicit_python_is_not_overwritten_by_the_shebang() {
         },
     );
     assert_eq!(review.requires_python(), ">=3.9");
-    let workflow = AddWorkflowState::from_review(review);
-    let (text, _) = render_review(&workflow);
+    let (text, _) = render_review(&AddWorkflowState::from_review(review));
     assert!(text.contains(">=3.9"), "explicit pin is not prefilled:\n{text}");
     assert!(!text.contains(">=3.12,<3.13"), "shebang overwrote the explicit pin:\n{text}");
 }
@@ -256,9 +256,7 @@ fn test_review_explicit_python_is_not_overwritten_by_the_shebang() {
 fn test_review_dynamic_optstring_keeps_ticks_and_space_chip() {
     let review = review("dyn.sh", DYN_SH, KnownEntryKind::Shell);
     assert_eq!(review.modeled_cli_field_count(), None);
-    let workflow = AddWorkflowState::from_review(review);
-    let (text, geometry) = render_review(&workflow);
-
+    let (text, geometry) = render_review(&AddWorkflowState::from_review(review));
     assert!(text.contains("parses its own arguments"), "{text}");
     assert!(
         has_add_hit(&geometry, &AddControlId::Candidate("OUTDIR".to_owned())),
@@ -275,15 +273,13 @@ fn test_review_dynamic_optstring_keeps_ticks_and_space_chip() {
 fn test_review_modeled_getopts_suppresses_ticks_and_space_chip() {
     let review = review("mod.sh", MODELED_SH, KnownEntryKind::Shell);
     assert_eq!(review.modeled_cli_field_count(), Some(2));
-    let workflow = AddWorkflowState::from_review(review);
-    let (text, geometry) = render_review(&workflow);
-
+    let (text, geometry) = render_review(&AddWorkflowState::from_review(review));
     assert!(text.contains("skit read this script's own arguments"), "{text}");
     assert!(
         geometry
             .hits
             .iter()
-            .all(|hit| !matches!(hit.target, AddControlId::Candidate(_))),
+            .all(|hit| !matches!(&hit.target, AddControlId::Candidate(_))),
         "modeled getopts still offers manage-a-constant checkboxes"
     );
     assert!(
@@ -336,7 +332,10 @@ fn test_ctrl_d_deletes_the_highlighted_draft_after_confirm() {
         key(KeyCode::Char('d'), KeyModifiers::CONTROL),
     );
     assert!(
-        matches!(handling, EventHandling::Action(Action::Add(AddAction::DeleteSelectedDraft))),
+        matches!(
+            &handling,
+            EventHandling::Action(Action::Add(AddAction::DeleteSelectedDraft))
+        ),
         "Ctrl+D did not request draft confirmation: {handling:?}"
     );
     assert_eq!(effect, Effect::None);
@@ -350,7 +349,7 @@ fn test_ctrl_d_deletes_the_highlighted_draft_after_confirm() {
         key(KeyCode::Char('y'), KeyModifiers::NONE),
     );
     assert!(
-        matches!(handling, EventHandling::Action(_)),
+        matches!(&handling, EventHandling::Action(_)),
         "the Python v0.4 confirmation key `y` was not accepted: {handling:?}"
     );
     let Effect::Add(effects) = effect else {
@@ -362,13 +361,12 @@ fn test_ctrl_d_deletes_the_highlighted_draft_after_confirm() {
     assert_eq!(path, &doomed);
     fs::remove_file(path).unwrap();
     let request = *request;
-    assert!(
-        state
-            .update(Action::Add(AddAction::DraftDeleted {
-                request,
-                result: Ok(()),
-            }))
-            == Effect::None
+    assert_eq!(
+        state.update(Action::Add(AddAction::DraftDeleted {
+            request,
+            result: Ok(()),
+        })),
+        Effect::None
     );
 
     assert!(!doomed.exists());
@@ -410,7 +408,7 @@ fn test_ctrl_d_confirm_esc_keeps_the_draft() {
         &geometry,
         key(KeyCode::Esc, KeyModifiers::NONE),
     );
-    assert!(matches!(handling, EventHandling::Action(_)), "{handling:?}");
+    assert!(matches!(&handling, EventHandling::Action(_)), "{handling:?}");
     assert_eq!(effect, Effect::None);
     assert_eq!(state.add_workflow().unwrap().stage(), AddStage::Source);
     assert!(draft.exists());
@@ -433,7 +431,7 @@ fn test_ctrl_d_while_editing_a_field_is_the_inputs_delete_right() {
             &geometry,
             key(KeyCode::Char(character), KeyModifiers::NONE),
         );
-        assert!(matches!(handling, EventHandling::Action(_)), "{handling:?}");
+        assert!(matches!(&handling, EventHandling::Action(_)), "{handling:?}");
     }
     assert_eq!(state.add_workflow().unwrap().source().path, "abc");
 
