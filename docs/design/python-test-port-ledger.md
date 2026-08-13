@@ -95,7 +95,7 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (82/58) · 2 weakenings being fixed (whitespace-constraint stored-value, reused-arg markup isolation) |
+| test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (83/57) · reused-argument notice now escapes user markup while matching v0.4 `0b8bf2d` · remaining mixed add/file voices |
 | test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (63/87) · **stdin store-error 'taken' FIXED 592d236** · **edit drift hint FIXED 1cac4a4** · runner trim/pick persistence fixed `2c1f6ef` · Unicode `--set` fixed `07dfbce` · add-time unknown-runner voice fixed `3d43a40` · remaining prompt-CLI divergences include name keeps .prompt, stdin defaults, deleted-body run exit, and runner recovery messages |
 | test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | in fix · Unicode XID placeholder scan/render fixed `07dfbce` while command identifiers remain ASCII · brace-adjacent/triple-stache and reserved `prompt` grammar fixed `45516b3` · blank raw runner rows remain inspectable but invalid `059e24b` · 3 divergences remain |
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | done (61) · **human-display layer FIXED 3bb4fbf** (sentinels, padded list, `k = v`, paused notice, choice-naming errors) · 14 cross-crate wizard/first-run |
@@ -106,7 +106,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_params_edit.py | 41 | crates/skit-domain/tests/port_test_params_edit.rs | done (3) · 36 ABSENT: edit_declared (pure warn-and-continue batch editor + 9 warning codes) missing, CLI is fail-fast (#16) · 2 as_param_type |
 | test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | done (18) · **PEP 440/508 wording ×4 FIXED c5e84ea/8cf75fe** · explicit `--python` normalization fixed `f8f80f5` · 11 divergences (drafts-boundary guard absent #15, editor-validates-after-open, kind_for_draft missing) + 2 absent (interactive re-ask) · 1 weakening fixed |
 | test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
-| test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | in fix (16) · exact raw/set/preset conflict guidance fixed `0996295` · field-less save-preset refusal fixed `796a5d1` · 7 divergences + 4 cross-crate |
+| test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | in fix (18) · exact raw/set/preset conflict guidance fixed `0996295` · field-less save-preset refusal fixed `796a5d1` · `--set` names trim without changing values `18ec1a0` · implicit saved-tail notice fixed `0b8bf2d` · 5 divergences + 4 cross-crate |
 | test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (21) · **read-view voices ×4 FIXED 8633128** · shebang-derived Python pin note ×3 fixed `affa5b2` · 3 divergences (draft not unlinked, kind_for_draft absent) ties #15 · 3 cross-crate/absent |
 | test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | done (17) · 5 deferred |
 | test_dependency_write_validation.py | 21 | crates/skit-cli/tests/port_test_dependency_write_validation.rs | done (16) · **PEP wording ×4 FIXED c5e84ea** · 5 divergence/cross-crate |
