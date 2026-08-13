@@ -458,10 +458,6 @@ fn test_infer_kind_python_and_forced_exe() {}
 
 #[ignore = "UNMAPPED -> skit-language. infer_kind is skit-language, not a store function."]
 #[test]
-fn test_infer_kind_posix_uses_execute_bit() {}
-
-#[ignore = "UNMAPPED -> skit-language. infer_kind is skit-language, not a store function."]
-#[test]
 fn test_infer_kind_windows_uses_pathext_not_execute_bit() {}
 
 #[ignore = "UNMAPPED -> skit-language. infer_kind is skit-language, not a store function."]
@@ -475,35 +471,6 @@ fn test_infer_kind_windows_falls_back_to_default_pathext() {}
 // ===========================================================================
 // extract_comment_description — skit-language::description, not the store.
 // ===========================================================================
-
-#[ignore = "UNMAPPED -> skit-language. extract_comment_description is skit-language::description; \
-            not a store function."]
-#[test]
-fn test_extract_comment_description_first_comment_line_wins() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_skips_shebang_and_blank_lines() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_skips_metadata_fence() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_empty_comment_line_continues() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_code_first_is_empty() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_only_shebang_is_empty() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_lua_double_dash_prefix() {}
 
 // ===========================================================================
 // add_script — the generic Tier-0 add orchestration (skit-ui/cli + skit-language).
@@ -1355,13 +1322,6 @@ fn test_an_index_whose_entries_key_is_not_a_table_reads_empty() {
             private _repair_rows seam the public `list` has no way to reproduce."]
 #[test]
 fn test_repair_skips_a_meta_that_broke_or_went_unrepresentable_meanwhile() {}
-
-#[ignore = "UNMAPPED -> launcher/library_surface. launcher.target_missing for a hand-edited \
-            copy-mode exe is the launch-target projection (library_surface::launch_target keys exe \
-            off SOURCE regardless of mode); resolve() (store) returns mode=copy correctly. Off the \
-            store surface."]
-#[test]
-fn test_a_copy_mode_exe_meta_still_reports_its_gone_binary() {}
 
 // ===========================================================================
 // Every meta write keeps its own index row fresh (the pure store contract).
