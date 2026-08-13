@@ -321,7 +321,6 @@ fn test_set_saves_preset_with_dry_run_without_running() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Python-exact sentence `<name> has no form fields, so there's nothing to save.` EXISTS in the Rust catalog (skit-i18n/src/lib.rs:869) but the run path uses `RunError::PresetWithoutFields` (skit-i18n line 718) instead, printing `cannot save a preset because the entry has no form fields`. One-line fix: route the run refusal through the line-869 message. Exit code 2 and 'nothing saved/ran' both converge."]
 fn test_save_preset_on_field_less_entry_refused_saves_nothing() {
     // A field-less entry has nothing to put in a preset — `--save-preset` is refused with the
     // same sentence `skit preset save` uses, and nothing is saved OR run. The exit code is

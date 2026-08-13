@@ -120,8 +120,8 @@ pub(crate) enum RunError {
     UnknownSet { name: String },
     #[error("preset {name:?} does not exist")]
     PresetNotFound { name: String },
-    #[error("cannot save a preset because the entry has no form fields")]
-    PresetWithoutFields,
+    #[error("{name} has no form fields, so there's nothing to save.")]
+    PresetWithoutFields { name: String },
     #[error("could not read {path}: {source}")]
     Read {
         path: String,
@@ -168,8 +168,8 @@ impl Localize for RunError {
             }
             Self::UnknownSet { name } => Message::new("unknown parameter in --set: {}").with(name),
             Self::PresetNotFound { name } => Message::new("preset {} does not exist").quoted(name),
-            Self::PresetWithoutFields => {
-                Message::new("cannot save a preset because the entry has no form fields")
+            Self::PresetWithoutFields { name } => {
+                Message::new("{} has no form fields, so there's nothing to save.").with(name)
             }
             Self::Read { path, source } => Message::new("could not read {}: {}")
                 .with(path)
@@ -206,7 +206,7 @@ impl RunError {
             Self::InvalidSet { .. }
             | Self::UnknownSet { .. }
             | Self::PresetNotFound { .. }
-            | Self::PresetWithoutFields
+            | Self::PresetWithoutFields { .. }
             | Self::RunnerUnsupported
             | Self::RawUnsupported { .. }
             | Self::RawConflict => 2,
@@ -281,7 +281,9 @@ pub(crate) fn run_with_roots(
         form_params(entry.meta.kind.as_str(), &source, &settings)
     };
     if args.save_preset.is_some() && declarations.is_empty() {
-        return Err(RunError::PresetWithoutFields);
+        return Err(RunError::PresetWithoutFields {
+            name: entry.meta.name.clone(),
+        });
     }
     let preset = match args.preset.as_deref() {
         Some(name) => Some(
@@ -1619,7 +1621,12 @@ mod localization_tests {
             },
             &["nightly"],
         );
-        assert_localized(&RunError::PresetWithoutFields, &[]);
+        assert_localized(
+            &RunError::PresetWithoutFields {
+                name: "No args".to_owned(),
+            },
+            &["No args"],
+        );
         assert_localized(
             &RunError::Read {
                 path: "/data/demo.py".to_owned(),

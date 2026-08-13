@@ -1620,7 +1620,10 @@ fn interactive_run_form(
     let saved =
         FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
     if args.save_preset.is_some() && declarations.is_empty() {
-        return Err(RunError::PresetWithoutFields.into());
+        return Err(RunError::PresetWithoutFields {
+            name: entry.meta.name.clone(),
+        }
+        .into());
     }
     let preset = match args.preset.as_deref() {
         Some(name) => Some(
