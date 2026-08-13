@@ -643,10 +643,6 @@ fn test_mirror_env_does_not_defer_on_uv_index() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle defers only on a TRUTHY user value (config.py:470 \
-    `not any(base_env.get(v) ...)`), so an empty UV_INDEX_URL='' still injects; the Rust \
-    mirror_environment defers on key PRESENCE (skit-store/src/config.rs:467-469 `base.contains_key`), \
-    so an empty value wrongly suppresses the mirror."]
 fn test_mirror_env_injects_when_index_env_blank() {
     // An empty-string user var means "unset": it must NOT suppress the mirror.
     let (_dir, store) = fixture();
@@ -657,10 +653,6 @@ fn test_mirror_env_injects_when_index_env_blank() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle defers only on a TRUTHY user value (config.py:472 \
-    `not base_env.get(_PYTHON_MIRROR_ENV)`), so an empty UV_PYTHON_INSTALL_MIRROR='' still injects; the \
-    Rust mirror_environment defers on key PRESENCE (skit-store/src/config.rs:472 `base.contains_key`), \
-    so an empty value wrongly suppresses the mirror."]
 fn test_mirror_env_injects_when_python_mirror_blank() {
     let (_dir, store) = fixture();
     save_full_mirror(&store);

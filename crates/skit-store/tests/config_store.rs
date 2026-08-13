@@ -546,6 +546,40 @@ fn mirror_environment_is_a_child_only_overlay_and_defers_to_user_choices() {
 }
 
 #[test]
+fn mirror_environment_treats_empty_values_as_unset_but_keeps_nonempty_precedence() {
+    let root = TempDir::new().unwrap();
+    let store = FileConfigStore::new(root.path());
+    store.set("mirror.pypi", "tsinghua").unwrap();
+    store.set("mirror.github", "nju").unwrap();
+    store.set("mirror.npm", "npmmirror").unwrap();
+
+    let empty = BTreeMap::from([
+        ("UV_DEFAULT_INDEX".to_owned(), String::new()),
+        ("UV_INDEX_URL".to_owned(), String::new()),
+        ("UV_PYTHON_INSTALL_MIRROR".to_owned(), String::new()),
+        ("NPM_CONFIG_REGISTRY".to_owned(), String::new()),
+        ("npm_config_registry".to_owned(), String::new()),
+    ]);
+    let overlay = store.mirror_environment(&empty).unwrap();
+    assert!(overlay.contains_key("UV_DEFAULT_INDEX"));
+    assert!(overlay.contains_key("UV_PYTHON_INSTALL_MIRROR"));
+    assert!(overlay.contains_key("NPM_CONFIG_REGISTRY"));
+
+    let mixed = BTreeMap::from([
+        ("UV_DEFAULT_INDEX".to_owned(), String::new()),
+        ("UV_INDEX_URL".to_owned(), "https://user.example".to_owned()),
+        ("NPM_CONFIG_REGISTRY".to_owned(), String::new()),
+        (
+            "npm_config_registry".to_owned(),
+            "https://user.example".to_owned(),
+        ),
+    ]);
+    let overlay = store.mirror_environment(&mixed).unwrap();
+    assert!(!overlay.contains_key("UV_DEFAULT_INDEX"));
+    assert!(!overlay.contains_key("NPM_CONFIG_REGISTRY"));
+}
+
+#[test]
 fn mirror_updates_keep_unknown_configuration_fields() {
     let root = TempDir::new().unwrap();
     fs::write(

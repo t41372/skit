@@ -477,18 +477,16 @@ impl FileConfigStore {
         if !mirror.enabled {
             return Ok(output);
         }
-        if !mirror.pypi.is_empty()
-            && !base.contains_key("UV_DEFAULT_INDEX")
-            && !base.contains_key("UV_INDEX_URL")
-        {
+        let has_value = |key| base.get(key).is_some_and(|value| !value.is_empty());
+        if !mirror.pypi.is_empty() && !has_value("UV_DEFAULT_INDEX") && !has_value("UV_INDEX_URL") {
             output.insert("UV_DEFAULT_INDEX".to_owned(), mirror.pypi);
         }
-        if !mirror.python_install.is_empty() && !base.contains_key("UV_PYTHON_INSTALL_MIRROR") {
+        if !mirror.python_install.is_empty() && !has_value("UV_PYTHON_INSTALL_MIRROR") {
             output.insert("UV_PYTHON_INSTALL_MIRROR".to_owned(), mirror.python_install);
         }
         if !mirror.npm.is_empty()
-            && !base.contains_key("NPM_CONFIG_REGISTRY")
-            && !base.contains_key("npm_config_registry")
+            && !has_value("NPM_CONFIG_REGISTRY")
+            && !has_value("npm_config_registry")
         {
             output.insert("NPM_CONFIG_REGISTRY".to_owned(), mirror.npm);
         }

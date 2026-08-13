@@ -983,7 +983,6 @@ fn test_mirror_npm_round_trips_through_save_and_load() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): mirror_env defers to the user ONLY on a truthy env value, so an empty NPM_CONFIG_REGISTRY='' means 'unset' and the mirror still applies. mirror_environment defers on KEY PRESENCE, so an empty value suppresses the mirror. Oracle ref config.py:457-489, test_js_deps.py:942-949."]
 fn test_mirror_env_sets_npm_registry_and_defers_to_the_user() {
     let dir = TempDir::new().unwrap();
     let store = FileConfigStore::new(dir.path());
