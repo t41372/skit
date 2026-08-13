@@ -12,11 +12,11 @@ fn full() -> (TempDir, FileConfigStore) {
 }
 
 #[test]
-fn test_full_mirror_saves_all_four_vectors(){let (_r,s)=full();let m=s.mirror().unwrap();assert!(m.enabled);assert_eq!(m.pypi,"https://pypi.tuna.tsinghua.edu.cn/simple");assert_eq!(m.python_install,"https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/");assert_eq!(m.uv_binary,"https://mirror.nju.edu.cn/github-release/astral-sh/uv");assert_eq!(m.npm,"https://registry.npmmirror.com");}
+fn rust_additive_full_mirror_persistence_values(){let (_r,s)=full();let m=s.mirror().unwrap();assert!(m.enabled);assert_eq!(m.pypi,"https://pypi.tuna.tsinghua.edu.cn/simple");assert_eq!(m.python_install,"https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/");assert_eq!(m.uv_binary,"https://mirror.nju.edu.cn/github-release/astral-sh/uv");assert_eq!(m.npm,"https://registry.npmmirror.com");}
 #[test]
 fn rust_additive_mirror_preset_display_values(){let (_r,s)=full();let v=s.settings().unwrap();assert_eq!(v["mirror.pypi"],"tsinghua");assert_eq!(v["mirror.github"],"nju");assert_eq!(v["mirror.npm"],"npmmirror");}
 #[test]
-fn test_axis_choice_readers_are_blind_to_the_master_switch(){let (_r,s)=full();s.set("mirror","off").unwrap();let v=s.settings().unwrap();assert_eq!(v["mirror.pypi"],"tsinghua");assert_eq!(v["mirror.github"],"nju");assert_eq!(v["mirror.npm"],"npmmirror");}
+fn test_axis_choice_readers_are_blind_to_the_master_switch(){let r=TempDir::new().unwrap();let s=FileConfigStore::new(r.path());s.set_many(&BTreeMap::from([("mirror.pypi".into(),"ustc".into()),("mirror.github".into(),"nju".into()),("mirror.npm".into(),"npmmirror".into())])).unwrap();s.set("mirror","off").unwrap();let v=s.settings().unwrap();assert_eq!(v["mirror.pypi"],"ustc");assert_eq!(v["mirror.github"],"nju");assert_eq!(v["mirror.npm"],"npmmirror");}
 #[test]
 fn test_update_mirror_axes_fresh_url_auto_enables(){let r=TempDir::new().unwrap();let s=FileConfigStore::new(r.path());s.set("mirror.pypi","tsinghua").unwrap();let m=s.mirror().unwrap();assert!(m.enabled);assert_eq!(m.pypi,"https://pypi.tuna.tsinghua.edu.cn/simple");}
 #[test]
