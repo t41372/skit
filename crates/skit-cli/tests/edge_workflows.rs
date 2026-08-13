@@ -844,7 +844,14 @@ fn run_pipeline_materializes_javascript_and_preserves_trusted_command_semantics(
         .env("PATH", tools.path())
         .args(["run", "unsupported-runtime", "--no-input"])
         .assert()
-        .code(125);
+        .success();
+    assert!(
+        sandbox
+            .data
+            .path()
+            .join("scripts/unsupported-runtime/node_modules")
+            .is_dir()
+    );
 
     let reference = sandbox.source("reference.js", b"console.log('ref');\n");
     sandbox.ok(&["add", &reference, "--ref", "--name", "Reference JS"]);
