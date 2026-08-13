@@ -1058,7 +1058,7 @@ fn add_command(
         }
         if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return Err(CliError::Usage(Message::new(
-                "add needs a source path, standard input as `-`, --edit, --prompt, or --cmd",
+                "Provide a source path — or pipe the text in (skit add - -n NAME; add --prompt for an AI-agent prompt), or register a command template with --cmd.",
             )));
         }
         refuse_bare_add_flags(&options)?;

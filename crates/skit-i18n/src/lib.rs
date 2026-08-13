@@ -2329,9 +2329,9 @@ const CATALOG: &[Translation] = &[
         "add 需要來源路徑或 --cmd COMMAND",
     ),
     row!(
-        "add needs a source path, standard input as `-`, --edit, --prompt, or --cmd",
-        "add 需要源文件路径、作为 `-` 的标准输入、--edit、--prompt 或 --cmd",
-        "add 需要來源路徑、作為 `-` 的標準輸入、--edit、--prompt 或 --cmd",
+        "Provide a source path — or pipe the text in (skit add - -n NAME; add --prompt for an AI-agent prompt), or register a command template with --cmd.",
+        "请提供来源路径——或把文本管道进来（skit add - -n NAME；AI-agent 提示词再加 --prompt），或用 --cmd 登记一条命令模板。",
+        "請提供來源路徑——或把文字管線進來（skit add - -n NAME；AI-agent 提示詞再加 --prompt），或用 --cmd 登記一條命令模板。",
     ),
     row!(
         "choice parameter {} has no choices",
