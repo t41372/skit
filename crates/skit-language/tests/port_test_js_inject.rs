@@ -197,10 +197,7 @@ fn test_same_name_nonliteral_declaration_is_not_a_target() {
 }
 
 #[test]
-fn test_ts_temp_copy_has_ts_suffix() {
-    // PORTED AS BYTE ASSERTION: the injector-observable half is the ts const rewrite. The Python
-    // `result.path.suffix == ".ts"` is the temp-copy filename (Tier 3/4, store/CLI); skit-language
-    // only produces the bytes.
+fn rust_additive_ts_injection_rewrites_the_typed_const() {
     let out = inject_lang("ts", "const N: number = 5;\n", &[("N", "7")]).unwrap();
     assert!(out.contains("const N: number = 7;"));
 }
@@ -332,14 +329,6 @@ fn test_gate_node_survives_a_spawn_failure() {}
 #[ignore = "UNMAPPED: a `node --check` rejection must remove the written temp copy from disk -> Tier 3/4 (skit-runtime interpreter gate + temp-copy cleanup). skit-language writes no temp copy."]
 fn test_gate2_failure_removes_the_temp_copy() {}
 
-// ---------------------------------------------------------------- secret handling
-
-#[test]
-#[ignore = "MUST-VERIFY (secret handling): the injected copy's 0600 mode is a store/runtime property (the temp copy is written by the CLI tier) -> Tier 3/4. The const str single-quoting/JSON-literal form is covered by test_string_injects_a_json_dumps_literal."]
-fn test_injected_copy_is_0600() {
-    // Python asserts result.path.stat() mode & 0o777 == 0o600.
-}
-
 // ---------------------------------------------------------------- execution (runner-gated)
 
 #[test]
@@ -374,10 +363,6 @@ fn test_execute_runs_a_js_entry_offline_plan() {}
 #[test]
 #[ignore = "UNMAPPED: flows.execute maps a drifted js const to FAIL_DRIFT with the `--resync` hint -> Tier 4 (skit-cli/flows). The injector's drift refusal is covered by test_missing_target_is_drift_not_value_error."]
 fn test_execute_maps_a_drifted_js_definition_to_drift() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit run --set WIDTH=abc --no-input` returns the FAIL_BAD_VALUE exit code before launch -> Tier 4 (skit-cli). The typed refusal is covered by test_bad_int_value_raises_value_error."]
-fn test_execute_refuses_a_bad_value_before_launch() {}
 
 #[test]
 #[ignore = "UNMAPPED: a syntax-gate failure must map to FAIL_DRIFT WITHOUT a `--resync` hint and never launch -> Tier 4 (skit-cli/flows); Python also monkeypatches inject.escape_string to force the corruption and spies on launcher.run_entry."]
