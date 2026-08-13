@@ -1,4 +1,8 @@
 //! Required-command preflight ports from Python `tests/test_interpreters.py` at `main@206f9ef`.
+//!
+//! Python exposes a `missing_needs()` helper in addition to the launch preflight. Rust funnels the
+//! public launch contract through `build_launch_plan`; helper-only accounting stays in the companion
+//! completeness manifest instead of being replaced with a weaker same-named stand-in.
 
 use std::{collections::BTreeMap, path::PathBuf};
 
@@ -63,31 +67,37 @@ fn paths() -> LaunchPaths {
 }
 
 #[test]
-fn test_preflight_missing_needs() {
+fn test_preflight_needs_lists_only_missing() {
     let error = build_launch_plan(
-        &entry(&["ffmpeg"]),
+        &entry(&["jq", "ffmpeg"]),
         &paths(),
         &Assembly::default(),
         None,
         None,
-        &Probe::with_programs(&["bash"]),
+        &Probe::with_programs(&["bash", "jq"]),
     )
     .unwrap_err();
     assert!(
         matches!(&error, LaunchError::MissingNeed { name } if name == "ffmpeg"),
         "missing declared command was not the launch refusal: {error:?}"
     );
+    let message = error.to_string();
+    assert!(message.contains("ffmpeg"), "missing requirement was not named: {message}");
+    assert!(
+        !message.contains("jq"),
+        "a satisfied requirement leaked into the missing-needs diagnostic: {message}"
+    );
 }
 
 #[test]
-fn test_preflight_all_needs_present() {
+fn rust_additive_preflight_all_needs_present() {
     let plan = build_launch_plan(
-        &entry(&["ffmpeg"]),
+        &entry(&["jq", "ffmpeg"]),
         &paths(),
         &Assembly::default(),
         None,
         None,
-        &Probe::with_programs(&["bash", "ffmpeg"]),
+        &Probe::with_programs(&["bash", "jq", "ffmpeg"]),
     )
     .unwrap();
     assert_eq!(plan.program, PathBuf::from("/bin/bash"));
