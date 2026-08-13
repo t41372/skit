@@ -52,7 +52,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_powershell.py | 35 | crates/skit-language/tests/port_test_powershell.rs | done (17) · A+B fixed · C bool kept · 18 deferred |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
-| test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (60) · 115 cross-crate/absent · 4 divergences (full manifest/staging cwd/stamp path) · input-order/empty-requirement fixed `54bf6c6` · mirror empty-value fixed `c3e02b8` · reference implicit scan fixed `6aedb9b` · installer argv/fallback fixed `05e8b9d` · reference refusal voices fixed `dc770fc` · transactional artifact cleanup and aged injected sweep fixed `cc0ead1` · minimal dependency-free module manifests fixed `d7575c5` · add flag refusal voices fixed `a9e1452` · 6 verifier-caught defects fixed |
+| test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (64) · 88 architecture/cross-crate/absent · all 27 implementation divergences fixed through `219a136` · exact manifest/order/parser, root-cwd install, SHA-256 node_modules marker, fresh short-circuit, resolve-before-touch, persistent lock, and transactional rollback all covered · 6 verifier-caught defects fixed |
 | test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (18) launch/invoke half · **bun run + JS refusal FIXED 19e5ab8** · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
@@ -130,7 +130,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_prompt_tui.py | 83 | crates/skit-tui/tests/port_test_prompt_tui.rs | done (49) · **Library title FIXED 5574ff1** (工具库/庫) · 26 cross-crate run routing · Ctrl+O/Ctrl+E divergences in fix pass |
 | test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs | in fix (28/33) · 1 empty-needle weakening being fixed · 2 private-render drops |
 | test_phase1.py | 27 | crates/skit-cli/tests/port_test_phase1.rs | done (27) · no gap |
-| test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs | in fix (10/9) · 4 render-model narrowings being tightened/noted |
+| test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs + manifest | in fix (13 executable green / 4 production gaps) · full replacement `459765a` · visibility-aware detail pin fixed `462aa9e` · Search/Preferences/modal viewport clusters in progress · 2 Textual-only architecture-closed |
 | test_settings_and_draft_review_atomicity.py | 16 | crates/skit-ui/tests/port_test_settings_and_draft_review_atomicity.rs | in fix (8/8) · settings-save npm-clear-first atomic-refusal ABSENT from Rust (mislabel being corrected) |
 | test_draft_and_reader_tui.py | 16 | crates/skit-tui/tests/port_test_draft_and_reader_tui.rs | done (14) · 2 deferred |
 | test_reset_default_ui.py | 14 | crates/skit-tui/tests/port_test_reset_default_ui.rs | in fix (10/4) · const-field help weakening + param-row live-default fixture being fixed |
