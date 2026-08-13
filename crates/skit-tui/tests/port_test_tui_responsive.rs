@@ -113,10 +113,15 @@ fn text(buffer: &Buffer) -> String {
 }
 
 fn position(buffer: &Buffer, needle: &str) -> Option<(usize, usize)> {
+    let exact = match needle {
+        "Library" => "╭ Library",
+        "Detail pane" => "╭ Detail pane",
+        other => other,
+    };
     lines(buffer)
         .into_iter()
         .enumerate()
-        .find_map(|(y, line)| line.find(needle).map(|x| (y, x)))
+        .find_map(|(y, line)| line.find(exact).map(|x| (y, x)))
 }
 
 fn command_hit(geometry: &ViewGeometry, command: UiCommand) -> Option<Rect> {
