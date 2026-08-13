@@ -132,7 +132,12 @@ impl Sandbox {
         let entry = store.resolve(name).unwrap();
         let payload = store.payload_path(&entry).unwrap();
         let bytes = fs::read(payload).unwrap();
-        effective_uv_metadata_bytes(&bytes).unwrap()
+        let settings = EntrySettings::from_meta(&entry.meta);
+        let stored = UvMetadata {
+            dependencies: settings.dependencies,
+            requires_python: settings.requires_python,
+        };
+        effective_uv_metadata_bytes(Some(&bytes), &stored)
     }
 
     fn js_dependencies(&self, name: &str) -> Vec<String> {
@@ -321,7 +326,7 @@ fn test_settings_dash_python_saves_as_automatic() {
 
     let metadata = sandbox.python_uv_metadata("autoset");
     assert_eq!(metadata.requires_python, "");
-    assert_eq!(metadata.dependencies, ["requests"]);
+    assert_eq!(metadata.dependencies, vec!["requests".to_owned()]);
 }
 
 #[test]
@@ -341,7 +346,7 @@ fn test_settings_valid_deps_and_python_save_normally() {
     let _ = sandbox.run_settings(&inputs);
 
     let metadata = sandbox.python_uv_metadata("okset");
-    assert_eq!(metadata.dependencies, ["requests>=2,<3"]);
+    assert_eq!(metadata.dependencies, vec!["requests>=2,<3".to_owned()]);
     assert_eq!(metadata.requires_python, "~=3.12");
 }
 
@@ -357,7 +362,10 @@ fn test_settings_npm_deps_are_not_pep508_validated() {
     save(&mut inputs);
     let _ = sandbox.run_settings(&inputs);
 
-    assert_eq!(sandbox.js_dependencies("jsset"), ["@scope/thing"]);
+    assert_eq!(
+        sandbox.js_dependencies("jsset"),
+        vec!["@scope/thing".to_owned()]
+    );
 }
 
 #[test]
