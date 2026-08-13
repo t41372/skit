@@ -28,7 +28,8 @@
 //! (`_json`) is the exception: the whole of STDOUT must parse as exactly one JSON document.
 //!
 //! Buckets:
-//! - REAL asserting `#[test]` (API EXISTS, behavior reachable black-box).
+//! - REAL asserting `#[test]` (API EXISTS, behavior reachable black-box), including typed-value
+//!   refusal when an explicit value and an extra argument tail are both present.
 //! - FAILING CONTRACT (divergence): the full asserting body is kept intact and `#[ignore]`d with
 //!   the observed-vs-oracle evidence; deleting the `#[ignore]` after the impl is fixed turns it
 //!   green. Never softened to match Rust output.
@@ -1094,7 +1095,6 @@ fn test_prompt_extra_agent_args_do_not_fill_required_placeholders() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 125 matches. Oracle says 'whole number'; Rust says 'parameter \"count\" has invalid Int value \"nope\"' (same tier as port_test_run_set.rs)."]
 fn test_extra_argv_does_not_hide_a_filled_flag_type_error() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_file(

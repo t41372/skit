@@ -35,7 +35,8 @@
 //! Buckets:
 //! - REAL asserting `#[test]` (API EXISTS, behavior converges): the bulk — add/list/remove/run/
 //!   preset/params/deps/doctor/config lanes, and every markup case that Rust renders as literal
-//!   text (Rust has no Rich markup layer, so "escaping" reduces to "the datum is printed").
+//!   text (Rust has no Rich markup layer, so "escaping" reduces to "the datum is printed"), plus
+//!   typed-value validation before launch.
 //! - FAILING CONTRACT (divergence): the Rust message/exit differs from the oracle's. The full
 //!   asserting body is kept and `#[ignore]`d with the exact oracle-vs-Rust evidence; deleting the
 //!   `#[ignore]` line after the impl is fixed turns it green.
@@ -892,7 +893,6 @@ fn test_run_shim_error() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a value that can't coerce to its declared type is caught at form validation and mapped to exit 125, and the message NAMES the human type — the oracle asserts \"not-a-number\" AND \"whole number\" appear, and \"resync\" does NOT. Rust exits 125 and echoes \"not-a-number\" (both converge), and omits \"resync\" (converges), but its message is `parameter \"RETRIES\" has invalid Int value \"not-a-number\"` — the human phrase \"whole number\" never appears. Only the type-wording assertion diverges."]
 fn test_run_bad_typed_value_caught_at_validation() {
     let root = sandbox();
     inject_shell(

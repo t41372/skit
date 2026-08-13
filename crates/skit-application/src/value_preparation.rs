@@ -24,7 +24,11 @@ pub enum ValuePreparationError {
         label: String,
     },
     /// A scalar or one member of a multi-value field failed strict typed coercion.
-    #[error("parameter {name:?} has invalid {parameter_type:?} value {value:?}")]
+    #[error(
+        "{name} needs {} — you typed {}.",
+        invalid_type_label(*parameter_type),
+        quoted_form_value(value)
+    )]
     InvalidType {
         /// Stable field key.
         name: String,
@@ -53,10 +57,10 @@ impl Localize for ValuePreparationError {
                 name,
                 value,
                 parameter_type,
-            } => Message::new("parameter {} has invalid {} value {}")
-                .quoted(name)
-                .with(format!("{parameter_type:?}"))
-                .quoted(value),
+            } => Message::new("{} needs {} — you typed {}.")
+                .with(name)
+                .nested(Message::term(invalid_type_label(*parameter_type)))
+                .with(quoted_form_value(value)),
             Self::InvalidChoice {
                 name,
                 value,
@@ -183,6 +187,25 @@ fn validate_type(declaration: &ParamDecl, value: &str) -> Result<(), ValuePrepar
 
 fn split_multi(value: &str) -> Vec<String> {
     shlex::split(value).unwrap_or_else(|| vec![value.to_owned()])
+}
+
+fn invalid_type_label(parameter_type: ParameterType) -> &'static str {
+    match parameter_type {
+        ParameterType::Int => "a whole number",
+        ParameterType::Float => "a number",
+        ParameterType::Bool => "on or off",
+        ParameterType::Str | ParameterType::Choice | ParameterType::Path => "text",
+    }
+}
+
+fn quoted_form_value(value: &str) -> String {
+    format!(
+        "'{}'",
+        value
+            .chars()
+            .flat_map(char::escape_default)
+            .collect::<String>()
+    )
 }
 
 fn label(declaration: &ParamDecl) -> &str {

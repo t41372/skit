@@ -47,7 +47,8 @@
 //! Buckets:
 //! - REAL asserting `#[test]` (API EXISTS, behavior converges): the injection, command,
 //!   argparse-preview, deferred-preset, dry-run-preset, launch-refusal, prompt-argv-limit,
-//!   token-expansion, embedded-equals, empty-required, and SIGINT-persist cases.
+//!   token-expansion, embedded-equals, typed-value refusal, empty-required, and SIGINT-persist
+//!   cases.
 //! - FAILING CONTRACT (divergence): the message/format cases. The Rust `run` error strings
 //!   differ from the oracle's, and `apply_sets` (`run/command.rs`) stops at the first bad item,
 //!   does not strip the key, does not sort, and lists no valid names. Each keeps its full
@@ -711,7 +712,6 @@ fn test_raw_never_replays_last_extra_args() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the upfront --set validation message diverges. Oracle uses the FORM message `TIMES needs a whole number — you typed 'abc'.` (flows.validate_value). Rust validates at assembly (`value_preparation.rs`) and prints `parameter \"TIMES\" has invalid Int value \"abc\"`. Exit code 125 matches."]
 fn test_set_bad_typed_value_exits_125() {
     let root = sandbox();
     build_trip(&root);

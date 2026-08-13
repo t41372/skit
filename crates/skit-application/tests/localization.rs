@@ -232,3 +232,26 @@ fn every_run_input_error_localizes_and_keeps_its_values() {
         assert_localized(&error, &[]);
     }
 }
+
+#[test]
+fn typed_value_errors_use_the_form_voice_in_every_locale() {
+    let message = ValuePreparationError::InvalidType {
+        name: "count".to_owned(),
+        value: "many".to_owned(),
+        parameter_type: ParameterType::Int,
+    }
+    .message();
+
+    assert_eq!(
+        message.localize(Locale::En),
+        "count needs a whole number — you typed 'many'."
+    );
+    assert_eq!(
+        message.localize(Locale::ZhCn),
+        "count 需要一个整数——你输入的是 'many'。"
+    );
+    assert_eq!(
+        message.localize(Locale::ZhTw),
+        "count 需要一個整數——你輸入的是 'many'。"
+    );
+}
