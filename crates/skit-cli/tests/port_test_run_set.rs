@@ -459,7 +459,6 @@ fn test_save_preset_dry_run_validation_failure_writes_nothing() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a --dry-run on an INJECT-delivered secret shows no mask. The Rust dry-run path (run/command.rs:537-543) prints only `plan.display` (the command line `bash …/script.sh`) and returns BEFORE `transparency_messages`, so the oracle's `→ inject: KEY=•••` line — the only place the mask would appear for an injected const — is never emitted. The secret is also never shown (that assertion converges); the divergence is the missing `•••`. NOTE: the second claim (KEY never on disk) was verified to CONVERGE by a separate probe — the injected secret is absent from both `[values]` and `[last_run.values]` after a real run."]
 fn test_set_secret_never_persisted_and_masked_in_dry_run() {
     // A secret --set value is masked in dry-run output and never persisted to disk.
     let root = sandbox();
@@ -484,6 +483,21 @@ fn test_set_secret_never_persisted_and_masked_in_dry_run() {
         .success()
         .stdout(predicate::str::contains("s3cret-value").not())
         .stdout(predicate::str::contains("•••"));
+    assert!(state_text(&root, "api").is_none(), "dry run wrote state");
+    let entry_dir = root.path().join("data/scripts/api");
+    assert!(
+        !fs::read_to_string(entry_dir.join("script.sh"))
+            .unwrap()
+            .contains("s3cret-value"),
+        "dry run changed the stored source"
+    );
+    assert!(
+        fs::read_dir(&entry_dir)
+            .unwrap()
+            .flatten()
+            .all(|item| !item.file_name().to_string_lossy().starts_with(".run-")),
+        "dry run wrote a staged source"
+    );
     skit(&root)
         .args(["run", "api", "--set", "KEY=s3cret-value", "--no-input"])
         .assert()

@@ -12,7 +12,7 @@ use clap::Args;
 use clap_complete::ArgValueCandidates;
 use skit_application::{
     LibraryService, RepositoryError, RepositoryOperation,
-    delivery::{Assembly, transparency_messages},
+    delivery::{Assembly, injection_transparency_messages, transparency_messages},
     form_state::{FormStateService, StateWriteError, prefill},
     prompt_selection::PromptSelectionService,
     run_inputs::{RunInputError, assemble_run_inputs},
@@ -560,6 +560,9 @@ pub(crate) fn run_with_roots(
     if args.dry_run {
         if let Some(name) = args.save_preset.as_deref() {
             state.save_preset(&entry.slug, name, &declarations, &raw_values)?;
+        }
+        for message in injection_transparency_messages(&assembly) {
+            println!("{}", message.localize(crate::cli::active_locale()));
         }
         println!("{}", plan.display);
         return Ok(0);
