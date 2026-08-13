@@ -2453,6 +2453,11 @@ const CATALOG: &[Translation] = &[
         "管道文本的 #! 指定了 skit 不认识的解释器——请传入 --kind <language> 进行选择。",
         "管線文字的 #! 指定了 skit 不認識的直譯器——請傳入 --kind <language> 進行選擇。",
     ),
+    row!(
+        "The #! line pins a python version — recording requires-python {} (change it with --python).",
+        "#! 行指定了 python 版本——记录 requires-python {}（可用 --python 更改）。",
+        "#! 行指定了 python 版本——記錄 requires-python {}（可用 --python 更改）。",
+    ),
     row!("could not normalize {}", "无法规范化 {}", "無法正規化 {}",),
     row!(
         "could not read {}: {}",

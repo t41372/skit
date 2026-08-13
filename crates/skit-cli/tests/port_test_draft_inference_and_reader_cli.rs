@@ -29,20 +29,16 @@
 //!   Python `""` result maps to Rust `None` (`unwrap_or_default()` in the row loop). The oracle's
 //!   `(None, "")` row has no analogue in the typed `&str` signature and is recorded in a comment.
 //!
-//! Bucket disposition (27 oracle defs; 14 pass, 13 `#[ignore]`):
-//! - 14 PASS asserting tests: `python_version_pin` rows, `cli_params` reader rows, the
+//! Bucket disposition (27 oracle defs; 21 pass, 6 `#[ignore]`):
+//! - 21 PASS asserting tests: `python_version_pin` rows, `cli_params` reader rows, the
 //!   bash-shebang-.py-outside-drafts / parked-file lanes, both python2 refusals, both
-//!   silently-beats pin overrides, both no-flip-note manages, both reference-add voices, and the
-//!   singular/plural field-count notices.
-//! - 10 FAILING CONTRACT (divergence) tests: full asserting bodies kept intact behind `#[ignore]`;
+//!   silently-beats pin overrides, all three shebang-pin announcement paths, both no-flip-note
+//!   manages, both reference-add voices, and the singular/plural field-count notices.
+//! - 3 FAILING CONTRACT (divergence) tests: full asserting bodies kept intact behind `#[ignore]`;
 //!   every label was verified against the built binary. The recurring shapes are: no shebang-first
 //!   / no consume-on-success unlink on the plain path lane (Rust classifies a `.py` draft by its
 //!   extension and never unlinks — ties to pending task #15, same diagnosis as the sibling
-//!   `port_test_add_lane_contracts.rs`); no `_note_python_pin` announce line (the pin lands in the
-//!   stored copy, but the "recording requires-python …" note never prints); and the params read
-//!   view printing "Unmanaged candidates: …" / listing reader fields instead of the oracle's
-//!   "Detected but not yet managed … --manage" / "has no managed parameters." (also matching the
-//!   sibling).
+//!   `port_test_add_lane_contracts.rs`).
 //! - 2 cross-crate stubs: `is_draft` and `_onboard_script_params` are crate-private helpers in
 //!   `skit-cli` (`is_owned_draft` cli.rs:5803, the analyzerless guard in `_onboard_script_params`
 //!   cli.py:603), unreachable from an integration test. `is_owned_draft` DOES implement both halves
@@ -400,7 +396,6 @@ fn test_path_add_python2_extensionless_is_refused() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the pin lands in the stored copy correctly (`requires-python = \">=3.12,<3.13\"`), but the `_note_python_pin` announce line (cli.py:288-299, 'recording requires-python …') never prints in Rust — the shebang-derived pin is recorded with no consent trail. Verified against the built binary."]
 fn test_stdin_versioned_shebang_pins_requires_python_and_announces() {
     // python3.12 with no --python and no PEP 723 block records requires-python ">=3.12,<3.13" into
     // the STORED copy's PEP 723 block, and says so on a path with no ask.
@@ -466,7 +461,6 @@ fn test_existing_pep723_block_beats_the_shebang_pin_silently() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the pin and the dependency both land in the stored block (`requires-python = \">=3.12,<3.13\"` alongside `rich`), but the `_note_python_pin` announce line (cli.py:288-299) never prints on the explicit-deps branch either. Verified against the built binary."]
 fn test_dep_flag_present_still_pins_from_the_shebang() {
     // --dep given but --python NOT: the shebang pin still rides in on the explicit-deps branch
     // (announced) and lands alongside the dependency in the stored block.
@@ -489,7 +483,6 @@ fn test_dep_flag_present_still_pins_from_the_shebang() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the suggested dependency is accepted non-interactively and the pin lands in the stored block (both `requests` and `requires-python = \">=3.12,<3.13\"`), but the `_note_python_pin` announce line (cli.py:288-299) never prints. Verified against the built binary."]
 fn test_suggested_deps_noninteractive_pins_from_the_shebang() {
     // A script whose imports SUGGEST a dependency, piped in (non-interactive): skit accepts the
     // suggestions as-is AND records + announces the shebang pin on that path.

@@ -2948,10 +2948,15 @@ fn add_with_config(
             .flatten();
         dependencies = external_dependencies_at(&kind_name, &source_text, source_dir);
     }
-    if !requires_python_explicit && !has_own_uv_metadata {
-        requires_python = shebang
+    let derived_python_pin = if !requires_python_explicit && !has_own_uv_metadata {
+        shebang
             .and_then(shebang_program)
-            .and_then(python_version_pin);
+            .and_then(python_version_pin)
+    } else {
+        None
+    };
+    if let Some(pin) = &derived_python_pin {
+        requires_python = Some(pin.clone());
     }
     let supports_dependencies = matches!(kind_name.as_str(), "python" | "js" | "ts");
     if dependencies_explicit && !supports_dependencies {
@@ -2997,6 +3002,12 @@ fn add_with_config(
     } else {
         StorageMode::Copy
     };
+    if let Some(pin) = &derived_python_pin {
+        humanln!(
+            "The #! line pins a python version — recording requires-python {} (change it with --python).",
+            pin
+        );
+    }
     let interpreter = shebang
         .and_then(shebang_program)
         .filter(|_| {
