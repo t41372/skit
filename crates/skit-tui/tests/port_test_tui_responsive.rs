@@ -124,6 +124,23 @@ fn position(buffer: &Buffer, needle: &str) -> Option<(usize, usize)> {
         .find_map(|(y, line)| line.find(exact).map(|x| (y, x)))
 }
 
+fn position_after(buffer: &Buffer, anchor: &str, needle: &str) -> Option<(usize, usize)> {
+    let rows = lines(buffer);
+    let anchor_y = rows.iter().position(|row| row.contains(anchor))?;
+    rows.into_iter()
+        .enumerate()
+        .skip(anchor_y)
+        .find_map(|(y, line)| line.find(needle).map(|x| (y, x)))
+}
+
+fn rows_with(buffer: &Buffer, needle: &str) -> Vec<usize> {
+    lines(buffer)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(y, line)| line.contains(needle).then_some(y))
+        .collect()
+}
+
 fn command_hit(geometry: &ViewGeometry, command: UiCommand) -> Option<Rect> {
     geometry.hits.iter().find_map(|hit| {
         (hit.action == HitTarget::Command(command)).then_some(hit.rect)
@@ -453,12 +470,27 @@ fn test_short_tier_caps_visible_lines_but_keeps_chips_scroll_reachable() {
 
 #[test]
 fn test_prefs_mirror_rows_are_horizontal_until_narrow_and_sentences_always_stack() {
-    let pairs = [
-        (PreferencesControlId::PypiChoice, "tsinghua", "aliyun"),
-        (PreferencesControlId::GithubChoice, "nju", "custom"),
-        (PreferencesControlId::NpmChoice, "npmmirror", "custom"),
+    let rows = [
+        (
+            PreferencesControlId::PypiChoice,
+            "PyPI index (Python packages)",
+            "tsinghua",
+            "aliyun",
+        ),
+        (
+            PreferencesControlId::GithubChoice,
+            "GitHub releases (Python builds, the uv binary)",
+            "nju",
+            "custom",
+        ),
+        (
+            PreferencesControlId::NpmChoice,
+            "npm registry (JS/TS packages)",
+            "npmmirror",
+            "custom",
+        ),
     ];
-    for (control, first, second) in pairs {
+    for (control, anchor, first, second) in rows {
         for (width, should_stack) in [(120, false), (60, true)] {
             let mut state = LibraryState::default();
             let mut view = preferences();
@@ -466,8 +498,8 @@ fn test_prefs_mirror_rows_are_horizontal_until_narrow_and_sentences_always_stack
             state.update(Action::Present(Screen::Preferences(Box::new(view))));
             let mut session = TuiSession::default();
             let (terminal, _) = draw(&mut session, &state, width, 40);
-            let first_y = position(terminal.backend().buffer(), first).unwrap().0;
-            let second_y = position(terminal.backend().buffer(), second).unwrap().0;
+            let first_y = position_after(terminal.backend().buffer(), anchor, first).unwrap().0;
+            let second_y = position_after(terminal.backend().buffer(), anchor, second).unwrap().0;
             assert_eq!(first_y < second_y, should_stack, "{control:?} width={width}");
         }
     }
@@ -510,10 +542,9 @@ fn test_confirm_remove_shrinks_for_a_long_name_on_a_narrow_screen() {
     let mut session = TuiSession::default();
     let (terminal, _) = draw(&mut session, &state, 40, 20);
     let rows = lines(terminal.backend().buffer());
-    let top = rows
-        .iter()
-        .position(|row| row.contains("Confirm removal"))
-        .expect("confirmation title is visible");
+    let titles = rows_with(terminal.backend().buffer(), "Confirm removal");
+    assert!(titles.len() >= 2, "header rendered but popup title is missing: {rows:#?}");
+    let top = *titles.last().unwrap();
     assert!(rows[top].contains('┐') || rows[top].contains('╮'));
     let bottom = rows
         .iter()
@@ -558,7 +589,10 @@ fn test_env_picker_fits_input_and_esc_chip_across_the_tiers() {
 
     let mut session = TuiSession::default();
     let (terminal, geometry) = draw(&mut session, &state, 70, 20);
-    assert!(text(terminal.backend().buffer()).contains("Environment variable"));
+    assert!(
+        rows_with(terminal.backend().buffer(), "Environment variable").len() >= 2,
+        "environment header rendered but picker popup is missing"
+    );
     assert!(command_hit(&geometry, UiCommand::CloseModal).is_some());
 
     let (terminal, geometry) = draw(&mut session, &state, 70, 10);
