@@ -110,7 +110,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (18) · **read-view voices ×4 FIXED 8633128** · 6 divergences (draft not unlinked, kind_for_draft absent, pin-announce missing) ties #15 · 3 cross-crate/absent |
 | test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | done (17) · 5 deferred |
 | test_dependency_write_validation.py | 21 | crates/skit-cli/tests/port_test_dependency_write_validation.rs | done (16) · **PEP wording ×4 FIXED c5e84ea** · 5 divergence/cross-crate |
-| test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | done (14) · **read-view voices ×2 FIXED 8633128** · add-time unknown-runner early refusals fixed `3d43a40` · 7 divergences |
+| test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | done (15) · **read-view voices ×2 FIXED 8633128** · add-time unknown-runner early refusals fixed `3d43a40` · exact editor/no-input pipe advice fixed `c2187b7` · 6 divergences |
 | test_dependency_command_contracts.py | 20 | crates/skit-cli/tests/port_test_dependency_command_contracts.rs | done (5) · 15 divergence/cross-crate |
 | test_params_model.py | 19 | crates/skit-domain/tests/port_test_params_model.rs | done (18) · 1 deferred · no gap |
 | test_show.py | 17 | crates/skit-cli/tests/port_test_show.rs | done (16) · 1 deferred |
