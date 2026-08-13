@@ -400,18 +400,6 @@ fn test_find_none_on_windows_without_powershell() {}
 
 // ---------------------------------------------------------------- flag assembly + plan
 
-#[test]
-#[ignore = "UNMAPPED: `flows.FormPlan`/`flows.assemble` build `-Name value` argv and fire a bare `[switch]`. Argv assembly from a form plan lives in skit-application/flows, above skit-language -> Tier 4. The reader half (single-dash PascalCase `flag = -Name`) is covered by test_string_param_with_default_and_help and test_switch_is_a_store_true_flag."]
-fn test_single_dash_flags_assemble() {}
-
-#[test]
-#[ignore = "UNMAPPED: `store.add_script` + `flows.plan_for_entry` assert plan.source=='argparse' and plan.fields[0].flag=='-City' -> Tier 4 (skit-cli/flows/store). The reader half (a `param([string]$City = 'Taipei')` block yields a static City field with flag `-City`) is covered by the type-matrix tests."]
-fn test_plan_reads_powershell_param_block() {}
-
-#[test]
-#[ignore = "UNMAPPED: `store.add_script` + `flows.plan_for_entry` assert plan.source=='none' when the reader finds no surface -> Tier 4 (skit-cli/flows/store). The reader half (no param block -> Absent surface) is covered by test_no_param_block_returns_none."]
-fn test_plan_none_when_reader_finds_no_surface() {}
-
 // ---------------------------------------------------------------- real pwsh (skip-gated in Python)
 
 #[test]
