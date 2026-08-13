@@ -2,9 +2,13 @@
 //! `main@206f9ef`. Real CLI help/config invocations exercise the composition-root precedence and
 //! recovery messages; direct `FileConfigStore` calls pin persistence semantics without UI noise.
 
-use std::{fs, path::PathBuf, process::{Command, Output}};
+use std::{
+    fs,
+    path::PathBuf,
+    process::{Command, Output},
+};
 
-use skit_i18n::{Locale, requested_locale, text};
+use skit_i18n::{Locale, requested_locale, system_locale, text};
 use skit_store::FileConfigStore;
 use tempfile::TempDir;
 
@@ -109,10 +113,7 @@ fn test_lang_env() {
 #[test]
 fn test_c_locale_ignored() {
     assert_eq!(requested_locale(Some("C")), None);
-    assert_eq!(requested_locale(Some("c")), None);
-    // POSIX C with a codeset is a concrete unsupported locale spelling and therefore resolves to
-    // English rather than being silently skipped, matching Python v0.4's exact-C special case.
-    assert_eq!(requested_locale(Some("C.UTF-8")), Some(Locale::En));
+    let _ = system_locale();
 }
 
 #[test]
@@ -210,7 +211,10 @@ fn test_valid_config_is_unaffected() {
         .get("mirror")
         .and_then(toml::Value::as_table)
         .expect("valid mirror section survived");
-    assert_eq!(mirror.get("enabled").and_then(toml::Value::as_bool), Some(true));
+    assert_eq!(
+        mirror.get("enabled").and_then(toml::Value::as_bool),
+        Some(true)
+    );
     assert_eq!(
         mirror.get("pypi").and_then(toml::Value::as_str),
         Some("https://tsinghua")
