@@ -181,6 +181,9 @@ fn javascript_dependency_manifest_for_module(
 ) -> Result<String, DependencyError> {
     let mut rows = BTreeMap::new();
     for dependency in dependencies {
+        if dependency.trim().is_empty() {
+            continue;
+        }
         let (name, version) = split_package_spec(dependency)?;
         rows.insert(name, version);
     }
@@ -191,6 +194,10 @@ fn javascript_dependency_manifest_for_module(
             serde_json::to_string(module_type.as_manifest_value())
                 .expect("a module type is valid JSON")
         ));
+    }
+    if rows.is_empty() {
+        output.push_str("  \"dependencies\": {}\n}\n");
+        return Ok(output);
     }
     output.push_str("  \"dependencies\": {\n");
     for (index, (name, version)) in rows.iter().enumerate() {

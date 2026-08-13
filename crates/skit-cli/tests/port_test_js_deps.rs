@@ -228,7 +228,6 @@ fn write_source(dir: &Path, name: &str, body: &str) -> PathBuf {
 fn test_split_requirement() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): manifest_text skips a stray empty requirement and ranges a bare name to '*'; javascript_dependency_manifest ERRORS on an empty spec (split_package_spec rejects the empty name), so the '' entry aborts the whole call. Oracle ref deps.py:117-131."]
 fn test_manifest_text_is_deterministic_and_private() {
     // The manifest is the staleness-hash input, so it must be deterministic and private.
     let text = javascript_dependency_manifest(&deps(&["chalk@^5", " zod ", ""])).unwrap();
@@ -243,7 +242,6 @@ fn test_manifest_text_is_deterministic_and_private() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): manifest_text records an empty '{}' dependencies map for an all-empty requirement list; javascript_dependency_manifest returns Err(InvalidPackage) on the first '' spec. Oracle ref deps.py:101-104."]
 fn test_manifest_text_skips_an_empty_requirement() {
     // A stray empty string (a doubled comma survivor) records nothing, not a garbage key.
     let text = javascript_dependency_manifest(&deps(&["", "  "])).unwrap();
@@ -521,7 +519,6 @@ fn test_ensure_installed_stamps_even_when_installer_creates_no_node_modules() {
 // ============================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): external_imports reports first-appearance order [chalk, zod, commander, execa, rimraf]; external_dependencies collects into a BTreeSet, so it returns sorted [chalk, commander, execa, rimraf, zod]. Oracle ref analyzer.py:309-326."]
 fn test_external_imports_covers_all_import_forms() {
     let text = concat!(
         "import chalk from \"chalk\";\n",
@@ -564,7 +561,6 @@ fn test_external_imports_rejects_malformed_scoped_specifiers() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): deep imports map to the package root in first-appearance order [lodash, @aws-sdk/client-s3, @a/b]; the BTreeSet scanner sorts, and '@' sorts before letters, so it returns [@a/b, @aws-sdk/client-s3, lodash]. Oracle ref analyzer.py:351-367."]
 fn test_external_imports_maps_deep_imports_to_the_package_root() {
     let text = concat!(
         "import fp from \"lodash/fp\";\n",
@@ -590,7 +586,6 @@ fn test_external_imports_skips_unreadable_specifiers() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the TS grammar yields [type-fest, @trpc/server] in first-appearance order; the BTreeSet scanner sorts to [@trpc/server, type-fest]. Oracle ref analyzer.py:385-387."]
 fn test_external_imports_reads_typescript_under_the_ts_grammar() {
     let text = "import type { X } from \"type-fest\";\nimport { t } from \"@trpc/server\";\n";
     assert_eq!(
@@ -1050,7 +1045,6 @@ fn test_load_mirror_type_hardens_a_hand_edited_npm_value() {
 fn test_split_requirements_keeps_scoped_packages_apart() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): accepting a scanned scoped suggestion records the scanner's first-appearance order [chalk, @aws-sdk/client-s3]; the BTreeSet scanner behind `add` sorts to [@aws-sdk/client-s3, chalk]. Oracle ref test_js_deps.py:982-1000."]
 fn test_interactive_accept_of_a_scoped_suggestion_round_trips() {
     let sandbox = Sandbox::new();
     let source_dir = TempDir::new().unwrap();

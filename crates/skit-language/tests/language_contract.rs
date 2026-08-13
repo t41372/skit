@@ -406,7 +406,7 @@ const chalk = require("chalk");
 "#;
     assert_eq!(
         external_dependencies("js", js),
-        ["@scope/pkg", "chalk", "react"]
+        ["react", "@scope/pkg", "chalk"]
     );
 }
 

@@ -304,7 +304,7 @@ const c = require("https://example.test/mod.js");
 "#;
     assert_eq!(
         external_dependencies("ts", source),
-        ["@scope/pkg", "exported", "side-effect"]
+        ["side-effect", "exported", "@scope/pkg"]
     );
     assert!(external_dependencies("shell", "echo ok").is_empty());
     assert!(normalize_shell_default("if then\n", "NAME").is_err());
@@ -351,10 +351,10 @@ import "#internal";
     assert_eq!(
         external_dependencies("js", javascript),
         [
-            "@scope/package-two",
-            "package-four",
             "package-one",
+            "@scope/package-two",
             "package-three",
+            "package-four",
         ]
     );
 }

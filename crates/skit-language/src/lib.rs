@@ -1343,15 +1343,17 @@ const PYTHON_STDLIB: &[&str] = &[
 ];
 
 fn javascript_dependencies(tree: &tree_sitter::Tree, text: &str) -> Vec<String> {
-    let mut output = BTreeSet::new();
+    let mut output = Vec::new();
+    let mut seen = BTreeSet::new();
     walk_tree(tree.root_node(), &mut |node| {
         if let Some(specifier) = javascript_import_source(node, text)
             && let Some(package) = package_name(&specifier)
+            && seen.insert(package.clone())
         {
-            output.insert(package);
+            output.push(package);
         }
     });
-    output.into_iter().collect()
+    output
 }
 
 fn javascript_import_source(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {

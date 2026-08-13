@@ -452,7 +452,12 @@ impl DependencyCommandRunner for ErrorRunner {
 
 #[test]
 fn package_and_filesystem_refusals_do_not_escape_the_private_entry() {
-    for package in ["", ".hidden", "a..b", "a/b", "@scope", "@/name", "name@"] {
+    assert!(
+        javascript_dependency_manifest(&[String::new()])
+            .unwrap()
+            .contains("\"dependencies\": {}")
+    );
+    for package in [".hidden", "a..b", "a/b", "@scope", "@/name", "name@"] {
         assert!(
             matches!(
                 javascript_dependency_manifest(&[package.to_owned()]),
