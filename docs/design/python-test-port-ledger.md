@@ -89,15 +89,15 @@ adjudicated · counts are Python `def test_` counts.
 | test_launcher.py | 38 | crates/skit-runtime/tests/port_test_launcher.rs | done (17) · 21 cross-crate |
 | test_launcher_fix.py | 12 | crates/skit-runtime/tests/port_test_launcher_fix.rs | done (11) · 1 cfg-gated Windows quoting · no gap (3 promotions stronger than oracle) |
 | test_shim.py | 38 | crates/skit-language/tests/port_test_shim.rs | done (33) · 5 cross-crate (write_injected → skit-cli) · SECRET-CRASH-SAFETY divergence flagged |
-| test_entrypoint.py | 10 | crates/skit-cli/tests/port_test_entrypoint.rs | done (9) · eager --install-completion divergence · 1 unmapped (python -m) |
+| test_entrypoint.py | 10 | crates/skit-cli/tests/port_test_entrypoint.rs | done (10) · eager completion/version precedence fixed `6189684` · 1 unmapped (`python -m`) |
 
 ### Tier 4 — CLI contracts (`skit-cli`)
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (84/56) · reused-argument notice now escapes user markup while matching v0.4 `0b8bf2d` · typed run values use the form voice `33d9a4a` · remaining mixed add/file voices |
-| test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (64/86) · **stdin store-error 'taken' FIXED 592d236** · **edit drift hint FIXED 1cac4a4** · runner trim/pick persistence fixed `2c1f6ef` · Unicode `--set` fixed `07dfbce` · add-time unknown-runner voice fixed `3d43a40` · typed value voice fixed `33d9a4a` · remaining prompt-CLI divergences include name keeps .prompt, stdin defaults, deleted-body run exit, and runner recovery messages |
-| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | in fix · Unicode XID placeholder scan/render fixed `07dfbce` while command identifiers remain ASCII · brace-adjacent/triple-stache and reserved `prompt` grammar fixed `45516b3` · blank raw runner rows remain inspectable but invalid `059e24b` · malformed container recovery voice fixed `7bc5c5a` · 2 divergences remain |
+| test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (66/84) · **stdin store-error 'taken' FIXED 592d236** · **edit drift hint FIXED 1cac4a4** · runner trim/pick persistence fixed `2c1f6ef` · Unicode `--set` fixed `07dfbce` · add-time unknown-runner voice fixed `3d43a40` · typed value voice fixed `33d9a4a` · compound `.prompt.md` naming fixed `19cc2ff` · missing prompt body exit fixed `0f1fdd9` · remaining divergences include stdin defaults and runner recovery messages |
+| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | implementation parity (72) · Unicode XID placeholder scan/render fixed `07dfbce` while command identifiers remain ASCII · brace-adjacent/triple-stache and reserved `prompt` grammar fixed `45516b3` · blank raw runner rows remain inspectable but invalid `059e24b` · malformed container recovery voice fixed `7bc5c5a` · compound naming fixed `19cc2ff` · missing-body classification fixed `0f1fdd9` · 43 architecture/cross-crate closures |
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | done (61) · **human-display layer FIXED 3bb4fbf** (sentinels, padded list, `k = v`, paused notice, choice-naming errors) · 14 cross-crate wizard/first-run |
 | test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs | done (19) · bare pipe/no-input lane advice fixed `157f9b7` · 11 divergences · 38 cross-crate/absent (interactive add lane) |
 | test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs | done (57) · blank index/install mirror values fixed in `c3e02b8` · 6 deferred |
