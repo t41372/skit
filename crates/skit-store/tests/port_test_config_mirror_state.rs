@@ -14,7 +14,7 @@ fn full() -> (TempDir, FileConfigStore) {
 #[test]
 fn test_full_mirror_saves_all_four_vectors(){let (_r,s)=full();let m=s.mirror().unwrap();assert!(m.enabled);assert_eq!(m.pypi,"https://pypi.tuna.tsinghua.edu.cn/simple");assert_eq!(m.python_install,"https://mirror.nju.edu.cn/github-release/astral-sh/python-build-standalone/");assert_eq!(m.uv_binary,"https://mirror.nju.edu.cn/github-release/astral-sh/uv");assert_eq!(m.npm,"https://registry.npmmirror.com");}
 #[test]
-fn test_axis_choice_readers(){let (_r,s)=full();let v=s.settings().unwrap();assert_eq!(v["mirror.pypi"],"tsinghua");assert_eq!(v["mirror.github"],"nju");assert_eq!(v["mirror.npm"],"npmmirror");}
+fn rust_additive_mirror_preset_display_values(){let (_r,s)=full();let v=s.settings().unwrap();assert_eq!(v["mirror.pypi"],"tsinghua");assert_eq!(v["mirror.github"],"nju");assert_eq!(v["mirror.npm"],"npmmirror");}
 #[test]
 fn test_axis_choice_readers_are_blind_to_the_master_switch(){let (_r,s)=full();s.set("mirror","off").unwrap();let v=s.settings().unwrap();assert_eq!(v["mirror.pypi"],"tsinghua");assert_eq!(v["mirror.github"],"nju");assert_eq!(v["mirror.npm"],"npmmirror");}
 #[test]
