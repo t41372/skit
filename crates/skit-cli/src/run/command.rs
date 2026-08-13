@@ -144,7 +144,7 @@ pub(crate) enum RunError {
     RunnerUnsupported,
     #[error("--raw does not apply to {kind} entries because placeholders are part of the artifact")]
     RawUnsupported { kind: String },
-    #[error("--raw cannot be combined with --set, --preset, or --save-preset")]
+    #[error("--raw runs the script as-is; --set, --preset, and --save-preset do not apply.")]
     RawConflict,
     #[error(transparent)]
     Config(#[from] ConfigError),
@@ -189,9 +189,9 @@ impl Localize for RunError {
                 "--raw does not apply to {} entries because placeholders are part of the artifact",
             )
             .with(kind),
-            Self::RawConflict => {
-                Message::new("--raw cannot be combined with --set, --preset, or --save-preset")
-            }
+            Self::RawConflict => Message::new(
+                "--raw runs the script as-is; --set, --preset, and --save-preset do not apply.",
+            ),
             Self::ConfigDirectoryUnavailable => Message::new(
                 "could not determine the platform configuration directory; set SKIT_CONFIG_DIR",
             ),

@@ -632,7 +632,6 @@ fn test_set_on_entry_without_fields_lists_a_dash() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle refuses --raw + --set with `--raw runs the script as-is; --set, --preset, and --save-preset do not apply.`. Rust (run/command.rs RawConflict) prints `--raw cannot be combined with --set, --preset, or --save-preset`. Exit code 2 matches."]
 fn test_set_with_raw_is_a_usage_conflict() {
     let root = sandbox();
     build_trip(&root);
@@ -646,7 +645,6 @@ fn test_set_with_raw_is_a_usage_conflict() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): same RAW_CONFLICT message divergence as test_set_with_raw_is_a_usage_conflict, for --raw + --preset. Exit code 2 matches."]
 fn test_preset_with_raw_is_a_usage_conflict() {
     let root = sandbox();
     build_trip(&root);
@@ -663,7 +661,6 @@ fn test_preset_with_raw_is_a_usage_conflict() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): same RAW_CONFLICT message divergence as test_set_with_raw_is_a_usage_conflict, for --raw + --save-preset. Exit code 2 matches, and (convergent) no empty preset is persisted."]
 fn test_save_preset_with_raw_is_a_usage_conflict() {
     let root = sandbox();
     build_trip(&root);

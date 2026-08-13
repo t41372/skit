@@ -2188,9 +2188,9 @@ const CATALOG: &[Translation] = &[
         "--normalize 必須作為單獨的 params 操作執行",
     ),
     row!(
-        "--raw cannot be combined with --set, --preset, or --save-preset",
-        "--raw 不能与 --set、--preset 或 --save-preset 一起使用",
-        "--raw 不能與 --set、--preset 或 --save-preset 一起使用",
+        "--raw runs the script as-is; --set, --preset, and --save-preset do not apply.",
+        "--raw 会原样运行脚本;--set、--preset、--save-preset 都不适用。",
+        "--raw 會原樣執行腳本;--set、--preset、--save-preset 都不適用。",
     ),
     row!(
         "--raw does not apply to {} entries because placeholders are part of the artifact",
