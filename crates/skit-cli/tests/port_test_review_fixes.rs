@@ -417,9 +417,13 @@ fn test_is_supported_rejects_junk() {
     for tag in ["zh-TW", "zh_TW.UTF-8", "en-US", "x-pseudo"] {
         assert!(store.set("lang", tag).is_ok(), "{tag}");
     }
-    for tag in ["ent", "english", "fr", ""] {
+    for tag in ["ent", "english", "fr"] {
         assert!(store.set("lang", tag).is_err(), "{tag}");
     }
+    assert!(
+        store.set("lang", "").is_ok(),
+        "an exact empty value clears the setting"
+    );
 }
 
 // ==================================================================================
