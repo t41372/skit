@@ -13,11 +13,11 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 25 fix commits landed, 76 FAILING CONTRACTs closed
-(74 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 26 fix commits landed, 79 FAILING CONTRACTs closed
+(77 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
 The last fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Five
 reviewed PR #44 waves added 85 executable parity tests plus 8 completeness-manifest tests.
-210 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: continue js_deps (7),
+207 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: finish js_deps (4),
 or pick an add-lane cluster.** The user chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
 
@@ -127,6 +127,7 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `f1dc3c7` | i18n replacement: unique reachable English keys and oracle Library wording in both Chinese catalogs | replacement/fix |
 | `7e53da4` | config recovery: exact empty language clear; Python-compatible backup-directory copy; recoverable backup failure continues with exact three-language warning | replacement/fix |
 | `07dfbce` | prompt placeholders: Unicode XID scan/render with byte-preserved decomposed names; command template identifiers remain ASCII | 3 |
+| `a9e1452` | add flag refusals: exact v0.4 shell/command `--dep` and stdin `--ref` voices with EN/zh-CN/zh-TW end-to-end coverage | 3 |
 
 PR #44 is actively continuing and reached `3d437a1` at the last checkpoint: 57/84 behavior modules
 and 1116/3018 Python contracts accounted. Its merge ancestry and complete test snapshot are
@@ -146,7 +147,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
 # => 2887 passed / 0 failed / 1134 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 210
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 207
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -158,10 +159,10 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 210 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 207 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `07dfbce`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `cd196c9`.
 
 - **47 port_test_prompt_cli.rs + 9 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
@@ -174,13 +175,13 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   offer is NOT); params human read view for prompts (placeholder table via `_show_command_params`);
   **genuine internal bug: add lane trims `--runner " claude "`, run lane does not — make
   consistent**. Oracle: cli.py prompt lanes, store.py:571, langs/prompt/*.
-- **7 port_test_js_deps.rs — JS dependency materialization.** First-seen scanner order and empty
+- **4 port_test_js_deps.rs — JS dependency materialization.** First-seen scanner order and empty
   requirements are fixed in `54bf6c6`; mirror empty-value precedence is fixed in `c3e02b8`;
   reference implicit scanning, installer argv/fallback, and refusal voices are fixed in
   `6aedb9b`, `05e8b9d`, and `dc770fc`. Transactional explicit cleanup and the aged legacy injected
   sweep are fixed in `cc0ead1`; minimal dependency-free module manifests are fixed in `d7575c5`.
-  Remaining work is full manifest/stamp/install shape plus three add-lane refusal voices. Oracle:
-  langs/javascript/deps.py.
+  Add-lane refusal voices are fixed in `a9e1452`. Remaining work is the coherent full
+  manifest/stamp/install shape. Oracle: langs/javascript/deps.py.
 - **17 port_test_cli.rs — mixed add/File-not-found voices.** "File not found" phrase (oracle
   `_require_exists`/`_require_file`, cli.py:420-428) vs Rust "could not resolve ...os error 2";
   plus add-lane overlaps (see add-lane cluster).
