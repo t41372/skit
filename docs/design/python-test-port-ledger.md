@@ -107,14 +107,14 @@ adjudicated · counts are Python `def test_` counts.
 | test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | done (18) · **PEP 440/508 wording ×4 FIXED c5e84ea/8cf75fe** · explicit `--python` normalization fixed `f8f80f5` · 11 divergences (drafts-boundary guard absent #15, editor-validates-after-open, kind_for_draft missing) + 2 absent (interactive re-ask) · 1 weakening fixed |
 | test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
 | test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | done (12) · 15 cross-crate/divergence |
-| test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (18) · **read-view voices ×4 FIXED 8633128** · 6 divergences (draft not unlinked, kind_for_draft absent, pin-announce missing) ties #15 · 3 cross-crate/absent |
+| test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (21) · **read-view voices ×4 FIXED 8633128** · shebang-derived Python pin note ×3 fixed `affa5b2` · 3 divergences (draft not unlinked, kind_for_draft absent) ties #15 · 3 cross-crate/absent |
 | test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | done (17) · 5 deferred |
 | test_dependency_write_validation.py | 21 | crates/skit-cli/tests/port_test_dependency_write_validation.rs | done (16) · **PEP wording ×4 FIXED c5e84ea** · 5 divergence/cross-crate |
 | test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | done (15) · **read-view voices ×2 FIXED 8633128** · add-time unknown-runner early refusals fixed `3d43a40` · exact editor/no-input pipe advice fixed `c2187b7` · 6 divergences |
 | test_dependency_command_contracts.py | 20 | crates/skit-cli/tests/port_test_dependency_command_contracts.rs | done (5) · 15 divergence/cross-crate |
 | test_params_model.py | 19 | crates/skit-domain/tests/port_test_params_model.rs | done (18) · 1 deferred · no gap |
 | test_show.py | 17 | crates/skit-cli/tests/port_test_show.rs | done (16) · 1 deferred |
-| test_add_feedback_contracts.py | 16 | crates/skit-cli/tests/port_test_add_feedback_contracts.rs | in fix (5/11) · add-lane cluster (#15, deduped vs siblings) · 1 tautology weakening being fixed |
+| test_add_feedback_contracts.py | 16 | crates/skit-cli/tests/port_test_add_feedback_contracts.rs | in fix (6/10) · shebang-derived Python pin note fixed `affa5b2` · add-lane cluster (#15, deduped vs siblings) · 1 tautology weakening being fixed |
 | test_edit.py | 14 | crates/skit-cli/tests/port_test_edit.rs | done (3) · 8 ABSENT: reconcile.edit_specs inlined private in cli.rs (MUST-FIX expose) · 3 exit-code divergences |
 | test_presets.py | 12 | crates/skit-store/tests/port_test_presets.rs | done (12) · no gap |
 | test_add_review_contracts.py | 12 | crates/skit-tui/tests/port_test_add_review_contracts.rs | in fix (12/0) · async Textual add-review (skit-tui reducer) · 2 weakenings being fixed (wrap-display proxy, scroll containment) |
