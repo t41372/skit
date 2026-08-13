@@ -52,7 +52,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_powershell.py | 35 | crates/skit-language/tests/port_test_powershell.rs | done (17) · A+B fixed · C bool kept · 18 deferred |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
-| test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (36) · 115 cross-crate/absent · 27 divergences (manifest name-key, installer argv, staging cwd, stamp path, sweep) · 6 verifier-caught defects fixed |
+| test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (42) · 115 cross-crate/absent · 21 divergences (manifest name-key, installer argv, staging cwd, stamp path, sweep) · input-order and empty-requirement contracts fixed in `54bf6c6` · 6 verifier-caught defects fixed |
 | test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (18) launch/invoke half · **bun run + JS refusal FIXED 19e5ab8** · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
