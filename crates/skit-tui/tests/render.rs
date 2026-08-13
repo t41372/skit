@@ -312,7 +312,13 @@ fn every_library_footer_command_has_a_positive_keyboard_mapping() {
         (KeyCode::Char('D'), KeyModifiers::SHIFT, Action::OpenHealth),
         (KeyCode::Char('h'), KeyModifiers::NONE, Action::OpenHealth),
         (KeyCode::Char('?'), KeyModifiers::SHIFT, Action::OpenHelp),
-        (KeyCode::Tab, KeyModifiers::NONE, Action::ToggleDetail),
+        (
+            KeyCode::Tab,
+            KeyModifiers::NONE,
+            Action::ToggleDetail {
+                currently_visible: false,
+            },
+        ),
         (KeyCode::Char('R'), KeyModifiers::SHIFT, Action::OpenRunners),
         (KeyCode::Char('r'), KeyModifiers::CONTROL, Action::Reload),
     ];
@@ -461,6 +467,7 @@ fn mouse_wheel_rows_and_footer_hits_map_to_frontend_neutral_actions() {
     let geometry = ViewGeometry {
         rows: Rect::new(2, 3, 30, 4),
         first_visible: 5,
+        detail_pane_visible: false,
         hits: vec![
             HitRegion {
                 rect: Rect::new(0, 10, 5, 1),
@@ -870,7 +877,9 @@ fn help_and_detail_are_real_serializable_ui_surfaces() {
     );
 
     view.update(Action::Back);
-    view.update(Action::ToggleDetail);
+    view.update(Action::ToggleDetail {
+        currently_visible: true,
+    });
     let mut hidden = Terminal::new(TestBackend::new(100, 24)).unwrap();
     hidden
         .draw(|frame| {
@@ -885,7 +894,9 @@ fn help_and_detail_are_real_serializable_ui_surfaces() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(!hidden_text.contains("╭ Detail pane"));
-    view.update(Action::ToggleDetail);
+    view.update(Action::ToggleDetail {
+        currently_visible: false,
+    });
     let mut shown = Terminal::new(TestBackend::new(100, 24)).unwrap();
     shown
         .draw(|frame| {
@@ -1039,7 +1050,12 @@ fn every_library_footer_action_has_the_expected_mouse_mapping() {
         (UiCommand::Health, Action::OpenHealth),
         (UiCommand::Runners, Action::OpenRunners),
         (UiCommand::Search, Action::BeginSearch),
-        (UiCommand::ToggleDetail, Action::ToggleDetail),
+        (
+            UiCommand::ToggleDetail,
+            Action::ToggleDetail {
+                currently_visible: true,
+            },
+        ),
         (UiCommand::Help, Action::OpenHelp),
         (UiCommand::Reload, Action::Reload),
         (UiCommand::Quit, Action::Quit),

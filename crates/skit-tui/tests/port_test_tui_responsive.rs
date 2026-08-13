@@ -316,7 +316,9 @@ fn test_narrow_short_hides_detail_and_tab_pin_survives_resizes() {
     assert!(position(terminal.backend().buffer(), "Detail pane").is_none());
     assert_eq!(
         drive(&mut session, &mut state, &geometry, key(KeyCode::Tab)),
-        EventHandling::Action(Action::ToggleDetail)
+        EventHandling::Action(Action::ToggleDetail {
+            currently_visible: false,
+        })
     );
     for (width, height) in [(70, 12), (120, 12), (70, 12)] {
         let (terminal, _) = draw(&mut session, &state, width, height);
@@ -420,7 +422,9 @@ fn test_footer_wraps_between_pills_and_wrapped_chips_stay_clickable() {
     assert!(detail.y > search.y, "Tab pill did not wrap after Search");
     assert_eq!(
         drive(&mut session, &mut state, &geometry, click(detail)),
-        EventHandling::Action(Action::ToggleDetail)
+        EventHandling::Action(Action::ToggleDetail {
+            currently_visible: true,
+        })
     );
     let (terminal, geometry) = draw(&mut session, &state, 44, 24);
     assert!(position(terminal.backend().buffer(), "Detail pane").is_none());

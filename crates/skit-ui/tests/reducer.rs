@@ -375,9 +375,13 @@ fn workflow_modal_and_detail_state_are_explicit_and_serializable() {
     assert_eq!(state.modal(), Some(&ModalState::Help));
     assert_eq!(state.screen(), &Screen::Library);
 
-    state.update(Action::ToggleDetail);
+    state.update(Action::ToggleDetail {
+        currently_visible: true,
+    });
     assert_eq!(state.detail_pane_mode(), DetailPaneMode::PinnedClosed);
-    state.update(Action::ToggleDetail);
+    state.update(Action::ToggleDetail {
+        currently_visible: false,
+    });
     assert_eq!(state.detail_pane_mode(), DetailPaneMode::PinnedOpen);
 
     let encoded = serde_json::to_string(&state).unwrap();
@@ -413,6 +417,11 @@ fn one_command_registry_defines_library_search_and_modal_surfaces() {
             "missing browse command {command:?}"
         );
     }
+    assert_eq!(
+        UiCommand::ToggleDetail.direct_action(),
+        None,
+        "the detail command needs rendered visibility"
+    );
     assert_eq!(
         search
             .iter()
@@ -1052,10 +1061,10 @@ fn every_advertised_settings_key_reaches_the_reducer() {
 
     // The nav pair walks the same stops the model defines.
     let first = state.settings_view().unwrap().focused().to_owned();
-    state.update(UiCommand::FocusNext.action());
+    state.update(UiCommand::FocusNext.direct_action().unwrap());
     let second = state.settings_view().unwrap().focused().to_owned();
     assert_ne!(first, second);
-    state.update(UiCommand::FocusPrevious.action());
+    state.update(UiCommand::FocusPrevious.direct_action().unwrap());
     assert_eq!(state.settings_view().unwrap().focused(), first);
 
     // Close with an edit asks before dropping the work.
@@ -1064,14 +1073,14 @@ fn every_advertised_settings_key_reaches_the_reducer() {
         value: FieldValue::text("Summarize a document"),
     }));
     assert_eq!(
-        state.update(UiCommand::CloseSettings.action()),
+        state.update(UiCommand::CloseSettings.direct_action().unwrap()),
         Effect::None
     );
     assert_eq!(state.modal(), Some(&ModalState::ConfirmDiscardChanges));
 
     // Save travels as one complete transaction for the whole screen.
     assert!(matches!(
-        state.update(UiCommand::SaveSettings.action()),
+        state.update(UiCommand::SaveSettings.direct_action().unwrap()),
         Effect::Submit {
             purpose: FormPurpose::Settings,
             selector: Some(ref selector),
@@ -1105,7 +1114,7 @@ fn the_resync_chord_reaches_a_control_and_the_save_carries_it() {
     assert!(state.command_enabled(UiCommand::ResyncSettings));
 
     assert_eq!(
-        state.update(UiCommand::ResyncSettings.action()),
+        state.update(UiCommand::ResyncSettings.direct_action().unwrap()),
         Effect::None
     );
     let view = state.settings_view().unwrap();
@@ -1117,15 +1126,19 @@ fn the_resync_chord_reaches_a_control_and_the_save_carries_it() {
     // The keyboard follows the chord, so the next arrow key acts where the user is looking.
     assert_eq!(view.focused(), RESYNC_KEY);
 
-    let Effect::Submit { values, .. } = state.update(UiCommand::SaveSettings.action()) else {
+    let Effect::Submit { values, .. } =
+        state.update(UiCommand::SaveSettings.direct_action().unwrap())
+    else {
         panic!("the save must reach the host");
     };
     assert_eq!(values.get(RESYNC_KEY), Some(&FieldValue::boolean(true)));
 
     // It is a control, so it is reversible: pressing the chord again takes the request back.
-    state.update(UiCommand::ResyncSettings.action());
+    state.update(UiCommand::ResyncSettings.direct_action().unwrap());
     assert!(!state.settings_view().unwrap().is_dirty());
-    let Effect::Submit { values, .. } = state.update(UiCommand::SaveSettings.action()) else {
+    let Effect::Submit { values, .. } =
+        state.update(UiCommand::SaveSettings.direct_action().unwrap())
+    else {
         panic!("the save must reach the host");
     };
     assert!(!values.contains_key(RESYNC_KEY));
@@ -1151,7 +1164,7 @@ fn a_refused_settings_save_explains_itself_and_travels_no_further() {
     }));
 
     assert_eq!(
-        state.update(UiCommand::SaveSettings.action()),
+        state.update(UiCommand::SaveSettings.direct_action().unwrap()),
         Effect::None,
         "a refused save must not reach the host"
     );
@@ -1163,7 +1176,7 @@ fn a_refused_settings_save_explains_itself_and_travels_no_further() {
         value: FieldValue::text("Tool"),
     }));
     assert!(matches!(
-        state.update(UiCommand::SaveSettings.action()),
+        state.update(UiCommand::SaveSettings.direct_action().unwrap()),
         Effect::Submit {
             purpose: FormPurpose::Settings,
             ..

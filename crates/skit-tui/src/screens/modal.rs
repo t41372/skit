@@ -189,6 +189,7 @@ impl HelpScreenSession {
             rows: self.viewport,
             first_visible: self.scroll.scroll_offset(),
             hits: Vec::new(),
+            detail_pane_visible: false,
         }
     }
 
@@ -279,6 +280,7 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
     ViewGeometry {
         rows: inner,
         first_visible: 0,
+        detail_pane_visible: false,
         hits: vec![
             HitRegion {
                 rect: discard_region.area,

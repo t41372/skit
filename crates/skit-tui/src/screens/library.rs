@@ -165,6 +165,7 @@ impl LibraryScreenSession {
             rows,
             first_visible: table_state.offset(),
             hits: Vec::new(),
+            detail_pane_visible: show_detail,
         }
     }
 

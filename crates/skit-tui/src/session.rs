@@ -39,7 +39,7 @@ use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandl
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
-    HitRegion, HitTarget, ViewGeometry,
+    HitRegion, HitTarget, ViewGeometry, command_action,
     footer::FooterSession,
     map_event, run_field_command_action,
     screens::add::{AddScreenEvent, AddScreenGeometry, AddScreenSession, render_add},
@@ -668,6 +668,7 @@ impl TuiSession {
             rows: inner,
             first_visible: self.form.scroll.scroll_offset(),
             hits,
+            detail_pane_visible: false,
         }
     }
 
@@ -779,6 +780,7 @@ impl TuiSession {
             rows: content,
             first_visible: self.run.scroll.scroll_offset(),
             hits,
+            detail_pane_visible: false,
         }
     }
 
@@ -794,6 +796,7 @@ impl TuiSession {
             rows: area,
             first_visible: 0,
             hits: Vec::new(),
+            detail_pane_visible: false,
         }
     }
 
@@ -809,6 +812,7 @@ impl TuiSession {
             rows: self.settings_geometry.body,
             first_visible: self.settings_geometry.first_visible,
             hits: Vec::new(),
+            detail_pane_visible: false,
         }
     }
 
@@ -826,6 +830,7 @@ impl TuiSession {
                     rows: geometry.rows,
                     first_visible: 0,
                     hits: Vec::new(),
+                    detail_pane_visible: false,
                 }
             }
             Some(AddOverlay::Prompt { session, geometry }) => {
@@ -834,6 +839,7 @@ impl TuiSession {
                     rows: geometry.rows,
                     first_visible: 0,
                     hits: Vec::new(),
+                    detail_pane_visible: false,
                 }
             }
             None => {
@@ -842,6 +848,7 @@ impl TuiSession {
                     rows: self.add_geometry.body,
                     first_visible: self.add_geometry.first_visible,
                     hits: Vec::new(),
+                    detail_pane_visible: false,
                 }
             }
         }
@@ -859,6 +866,7 @@ impl TuiSession {
             rows: area,
             first_visible: 0,
             hits: Vec::new(),
+            detail_pane_visible: false,
         }
     }
 
@@ -874,6 +882,7 @@ impl TuiSession {
             rows: area,
             first_visible: 0,
             hits: Vec::new(),
+            detail_pane_visible: false,
         }
     }
 
@@ -1386,7 +1395,7 @@ impl TuiSession {
         match hit {
             SessionHit::SearchInput => EventHandling::Action(Action::BeginSearch),
             SessionHit::Target(HitTarget::Command(command)) => {
-                EventHandling::Action(command.action())
+                EventHandling::Action(command_action(command, geometry))
             }
             SessionHit::Target(HitTarget::RunFieldCommand { field, command }) => {
                 EventHandling::Action(run_field_command_action(field, command))
@@ -1543,7 +1552,7 @@ impl TuiSession {
         match hit {
             SessionHit::SearchInput => EventHandling::Action(Action::BeginSearch),
             SessionHit::Target(HitTarget::Command(command)) => {
-                EventHandling::Action(command.action())
+                EventHandling::Action(command_action(command, geometry))
             }
             SessionHit::Target(HitTarget::RunFieldCommand { field, command }) => {
                 EventHandling::Action(run_field_command_action(field, command))

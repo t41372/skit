@@ -307,10 +307,13 @@ pub enum UiCommand {
 }
 
 impl UiCommand {
-    /// Convert this command identity to a frontend-neutral reducer action.
+    /// Convert a context-free command identity to a frontend-neutral reducer action.
+    ///
+    /// Contextual commands return `None`. The frontend must attach the rendered
+    /// state before it sends those commands to the reducer.
     #[must_use]
-    pub const fn action(self) -> Action {
-        match self {
+    pub const fn direct_action(self) -> Option<Action> {
+        Some(match self {
             Self::Run => Action::OpenRun,
             Self::Rerun => Action::Rerun,
             Self::Add => Action::OpenAdd,
@@ -324,7 +327,7 @@ impl UiCommand {
             Self::Runners => Action::OpenRunners,
             Self::Search => Action::BeginSearch,
             Self::LeaveSearch => Action::FinishSearch,
-            Self::ToggleDetail => Action::ToggleDetail,
+            Self::ToggleDetail => return None,
             Self::Help => Action::OpenHelp,
             Self::Reload => Action::Reload,
             Self::Quit => Action::Quit,
@@ -354,7 +357,7 @@ impl UiCommand {
             Self::Back | Self::CloseModal => Action::Back,
             Self::DiscardChanges => Action::DiscardChanges,
             Self::KeepEditing => Action::KeepEditing,
-        }
+        })
     }
 }
 
@@ -1427,8 +1430,11 @@ pub enum Action {
     AskRemove,
     /// Show the command help overlay.
     OpenHelp,
-    /// Toggle and pin the detail pane.
-    ToggleDetail,
+    /// Toggle and pin the detail pane from its current rendered visibility.
+    ToggleDetail {
+        /// Whether the pane is visible when the user toggles it.
+        currently_visible: bool,
+    },
     /// Move focus to the next form field.
     FocusNext,
     /// Move focus to the preceding form field.
@@ -1837,12 +1843,11 @@ impl LibraryState {
                 self.modal = Some(ModalState::Help);
                 self.input_mode = InputMode::Browse;
             }
-            Action::ToggleDetail => {
-                self.detail_pane = match self.detail_pane {
-                    DetailPaneMode::Automatic | DetailPaneMode::PinnedOpen => {
-                        DetailPaneMode::PinnedClosed
-                    }
-                    DetailPaneMode::PinnedClosed => DetailPaneMode::PinnedOpen,
+            Action::ToggleDetail { currently_visible } => {
+                self.detail_pane = if currently_visible {
+                    DetailPaneMode::PinnedClosed
+                } else {
+                    DetailPaneMode::PinnedOpen
                 };
             }
             Action::FocusNext => self.move_form_focus(1),

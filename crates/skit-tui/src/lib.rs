@@ -70,6 +70,8 @@ pub struct ViewGeometry {
     pub first_visible: usize,
     /// Clickable footer chips.
     pub hits: Vec<HitRegion>,
+    /// Whether the Library detail pane was visible in this rendered frame.
+    pub detail_pane_visible: bool,
 }
 
 /// Draw the library browser and return its mouse hit map.
@@ -202,7 +204,7 @@ pub(crate) fn form_title(locale: Locale, form: &FormView) -> String {
 #[must_use]
 pub fn map_event(event: Event, state: &LibraryState, geometry: &ViewGeometry) -> Option<Action> {
     match event {
-        Event::Key(key) if key.kind != KeyEventKind::Release => map_key(key, state),
+        Event::Key(key) if key.kind != KeyEventKind::Release => map_key(key, state, geometry),
         Event::Mouse(mouse) => map_mouse(mouse, state, geometry),
         Event::FocusGained
         | Event::FocusLost
@@ -212,7 +214,7 @@ pub fn map_event(event: Event, state: &LibraryState, geometry: &ViewGeometry) ->
     }
 }
 
-fn map_key(key: KeyEvent, state: &LibraryState) -> Option<Action> {
+fn map_key(key: KeyEvent, state: &LibraryState, geometry: &ViewGeometry) -> Option<Action> {
     let context = state.command_context();
     if context == CommandContext::Form
         && key.code == KeyCode::Enter
@@ -239,7 +241,7 @@ fn map_key(key: KeyEvent, state: &LibraryState) -> Option<Action> {
         ) {
             return None;
         }
-        return Some(spec.command.action());
+        return Some(command_action(spec.command, geometry));
     }
     None
 }
@@ -301,7 +303,7 @@ fn map_mouse(mouse: MouseEvent, state: &LibraryState, geometry: &ViewGeometry) -
                 .find(|hit| contains(hit.rect, mouse.column, mouse.row))
             {
                 return Some(match hit.action {
-                    HitTarget::Command(command) => command.action(),
+                    HitTarget::Command(command) => command_action(command, geometry),
                     HitTarget::RunFieldCommand { field, command } => {
                         run_field_command_action(field, command)
                     }
@@ -329,12 +331,26 @@ fn map_mouse(mouse: MouseEvent, state: &LibraryState, geometry: &ViewGeometry) -
     }
 }
 
-const fn run_field_command_action(field: usize, command: UiCommand) -> Action {
+pub(crate) fn command_action(command: UiCommand, geometry: &ViewGeometry) -> Action {
+    if matches!(command, UiCommand::ToggleDetail) {
+        Action::ToggleDetail {
+            currently_visible: geometry.detail_pane_visible,
+        }
+    } else {
+        command
+            .direct_action()
+            .expect("only detail commands need rendered state")
+    }
+}
+
+fn run_field_command_action(field: usize, command: UiCommand) -> Action {
     match command {
         UiCommand::BrowsePath => Action::OpenRunFilePicker(field),
         UiCommand::InsertValue => Action::OpenRunTokenMenuFor(field),
         UiCommand::ResetDefault => Action::ResetRunField(field),
-        _ => command.action(),
+        _ => command
+            .direct_action()
+            .expect("detail commands are not run-field commands"),
     }
 }
 
