@@ -879,6 +879,8 @@ pub fn placeholder_params(kind: &str, text: &str) -> Vec<ParamDecl> {
         .collect()
 }
 
+const RESERVED_PROMPT_PLACEHOLDER: &str = "prompt";
+
 /// Replace managed prompt placeholders in one pass over the original text.
 #[must_use]
 pub fn render_prompt_body(
@@ -895,16 +897,10 @@ pub fn render_prompt_body(
     let mut copied_until = 0;
     let mut index = 0;
     while index < bytes.len() {
-        if !bytes[index..].starts_with(b"{{") {
+        let Some((start, end)) = prompt_placeholder_bounds(text, index) else {
             index = index.saturating_add(1);
             continue;
-        }
-        let start = index + 2;
-        let Some(relative_end) = bytes[start..].windows(2).position(|window| window == b"}}")
-        else {
-            break;
         };
-        let end = start + relative_end;
         let name = &text[start..end];
         if valid_prompt_identifier(name)
             && let Some(value) = values.get(name)
@@ -931,6 +927,18 @@ fn scan_placeholders(text: &str, doubled: bool, valid_identifier: fn(&str) -> bo
             index = index.saturating_add(1);
             continue;
         }
+        if doubled {
+            let Some((start, end)) = prompt_placeholder_bounds(text, index) else {
+                index = index.saturating_add(1);
+                continue;
+            };
+            let name = &text[start..end];
+            if valid_identifier(name) && seen.insert(name.to_owned()) {
+                output.push(name.to_owned());
+            }
+            index = end.saturating_add(close.len());
+            continue;
+        }
         if !doubled && bytes[index..].starts_with(b"{{") {
             index = index.saturating_add(2);
             continue;
@@ -952,7 +960,30 @@ fn scan_placeholders(text: &str, doubled: bool, valid_identifier: fn(&str) -> bo
     output
 }
 
+fn prompt_placeholder_bounds(text: &str, index: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    if !bytes.get(index..)?.starts_with(b"{{")
+        || index
+            .checked_sub(1)
+            .is_some_and(|before| bytes[before] == b'{')
+    {
+        return None;
+    }
+    let start = index + 2;
+    let relative_end = bytes[start..]
+        .windows(2)
+        .position(|window| window == b"}}")?;
+    let end = start + relative_end;
+    (!bytes[start..end].contains(&b'{')
+        && !bytes[start..end].contains(&b'}')
+        && bytes.get(end + 2) != Some(&b'}'))
+    .then_some((start, end))
+}
+
 fn valid_prompt_identifier(value: &str) -> bool {
+    if value == RESERVED_PROMPT_PLACEHOLDER {
+        return false;
+    }
     let mut chars = value.chars();
     chars
         .next()

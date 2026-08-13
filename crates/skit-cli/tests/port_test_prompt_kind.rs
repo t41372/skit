@@ -30,8 +30,8 @@
 //! - Python `analyzer.placeholder_names(text)` -> `placeholder_params("prompt", text)` mapped
 //!   to `.name` (the Rust analyzer returns synthesized `ParamDecl`s; `names(text)` collects
 //!   their names). The Rust body scanner uses Unicode XID rules for prompt names and keeps the
-//!   command template's identifier rules ASCII-only. It still lacks the reserved-`prompt`
-//!   exclusion and the brace-adjacency guard, so those tests remain FAILING CONTRACTs.
+//!   command template's identifier rules ASCII-only. It excludes the reserved `prompt` name and
+//!   brace-adjacent tokens with the same grammar the prompt renderer uses.
 //! - Python `render.render_body(text, values, managed)` -> `render_prompt_body(text, values,
 //!   interpolate=true)`.  The Rust renderer takes NO managed list and never raises on a
 //!   missing managed value (that refusal moved to skit-application validation).
@@ -335,19 +335,12 @@ fn test_placeholder_names_single_braces_are_never_candidates() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust body scanner (scan_placeholders in \
-            skit-language/src/lib.rs) has no brace-adjacency guard, so a Handlebars triple-stache \
-            `{{y}}}` yields the candidate \"y\"; the oracle's TOKEN_RE `(?<!\\{)…(?!\\})` excludes it \
-            (analyzer.py:34). Shared task #14 (prompt analyzer defects). Oracle expects []."]
 fn test_placeholder_names_brace_adjacent_is_not_a_candidate() {
     // A Handlebars triple-stache (and any brace-hugging shape) is someone else's syntax.
     assert!(names("{{{raw}}} and {{{x}} and {{y}}}").is_empty());
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): scan_placeholders has no reserved-`prompt` exclusion, \
-            so a literal `{{prompt}}` becomes a candidate; the oracle drops it \
-            (analyzer.py:44 RESERVED_NAME). Shared task #14. Oracle expects [\"real\"]."]
 fn test_placeholder_names_reserved_name_excluded() {
     assert_eq!(names("{{prompt}} {{real}}"), ["real"]);
 }
@@ -438,9 +431,6 @@ fn test_corpus_cjk_emoji_no_trailing_newline() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): scan_placeholders lacks the reserved-`prompt` \
-            exclusion, so a literal `{{prompt}}` in the body becomes a candidate (shared task #14). \
-            Oracle expects names == [\"real\"]."]
 fn test_corpus_reserved_prompt_stays_verbatim() {
     let text = String::from_utf8(corpus_bytes("05_reserved.prompt.md")).unwrap();
     assert_eq!(names(&text), ["real"]);

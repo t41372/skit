@@ -70,6 +70,29 @@ fn prompt_render_is_one_pass_over_the_original_text() {
 }
 
 #[test]
+fn prompt_render_keeps_reserved_and_brace_adjacent_tokens_byte_exact() {
+    let values = BTreeMap::from([
+        ("prompt".to_owned(), "must-not-land".to_owned()),
+        ("raw".to_owned(), "must-not-land".to_owned()),
+        ("y".to_owned(), "must-not-land".to_owned()),
+        ("real".to_owned(), "R".to_owned()),
+    ]);
+    let body = "{{{raw}}} and {{y}}} keep {{prompt}}; replace {{real}} and {{outer {{real}}";
+
+    assert_eq!(
+        render_prompt_body(body, &values, true),
+        "{{{raw}}} and {{y}}} keep {{prompt}}; replace R and {{outer R"
+    );
+    assert_eq!(
+        placeholder_params("prompt", "{{outer {{real}}")
+            .into_iter()
+            .map(|parameter| parameter.name)
+            .collect::<Vec<_>>(),
+        ["real"]
+    );
+}
+
+#[test]
 fn managed_block_round_trips_python_shell_and_javascript_comment_dialects() {
     for (kind, source) in [
         ("python", "#!/usr/bin/env python3\nprint('ok')\n"),
