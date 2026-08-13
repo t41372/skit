@@ -815,21 +815,26 @@ fn test_add_js_without_external_imports_records_nothing() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a reference-mode add asks no deps question and records none (exit 0). The Rust add scans and tries to record the import even under --ref, so it REFUSES a reference source that imports a package (exit 2, 'reference entries do not take managed dependencies'). Oracle ref cli add reference lane, test_js_deps.py:659-663."]
 fn test_add_js_reference_mode_asks_no_deps_question() {
-    let sandbox = Sandbox::new();
-    let source_dir = TempDir::new().unwrap();
-    let source = write_source(source_dir.path(), "t.mjs", "import chalk from \"chalk\";\n");
-    let assert = sandbox
-        .skit()
-        .arg("add")
-        .arg(&source)
-        .args(["--ref", "--no-input"])
-        .assert();
-    let output = assert.get_output();
-    assert_eq!(output.status.code(), Some(0));
-    let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
-    assert!(combine(view.get_output()).contains("\"dependencies\":[]"));
+    for extension in ["mjs", "ts"] {
+        let sandbox = Sandbox::new();
+        let source_dir = TempDir::new().unwrap();
+        let source = write_source(
+            source_dir.path(),
+            &format!("t.{extension}"),
+            "import chalk from \"chalk\";\n",
+        );
+        let assert = sandbox
+            .skit()
+            .arg("add")
+            .arg(&source)
+            .args(["--ref", "--no-input"])
+            .assert();
+        let output = assert.get_output();
+        assert_eq!(output.status.code(), Some(0));
+        let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+        assert!(combine(view.get_output()).contains("\"dependencies\":[]"));
+    }
 }
 
 #[test]

@@ -437,8 +437,16 @@ fn add_dependency_and_parameter_refusals_leave_no_partial_entry() {
     );
 
     let javascript = sandbox.source("tool.js", b"import 'chalk';\n");
-    sandbox.code(&["add", &javascript, "--ref"], 2);
-    assert!(!sandbox.data.path().join("scripts/tool").exists());
+    sandbox.ok(&["add", &javascript, "--ref"]);
+    assert_eq!(
+        sandbox.json(&["deps", "tool", "--json"])["dependencies"],
+        serde_json::json!([])
+    );
+    assert_eq!(fs::read(&javascript).unwrap(), b"import 'chalk';\n");
+
+    let explicit = sandbox.source("explicit.js", b"console.log('ok');\n");
+    sandbox.code(&["add", &explicit, "--ref", "--dep", "chalk"], 2);
+    assert!(!sandbox.data.path().join("scripts/explicit").exists());
 }
 
 #[test]

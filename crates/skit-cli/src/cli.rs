@@ -2913,7 +2913,12 @@ fn add_with_config(
     let uv_metadata = (kind_name == "python")
         .then(|| read_uv_metadata(&source_text))
         .flatten();
-    if !dependencies_explicit && !has_own_uv_metadata && dependencies.is_empty() {
+    let reference_javascript = reference && matches!(kind_name.as_str(), "js" | "ts");
+    if !reference_javascript
+        && !dependencies_explicit
+        && !has_own_uv_metadata
+        && dependencies.is_empty()
+    {
         let source_dir = (!source_record.is_empty())
             .then(|| source.parent())
             .flatten();
