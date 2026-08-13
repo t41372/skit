@@ -253,7 +253,6 @@ fn test_manifest_text_skips_an_empty_requirement() {
 // ============================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): clean() unconditionally removes package.json, every lockfile, and node_modules; clear_javascript_dependencies only acts when a skit stamp or a skit-generated manifest is present, so a hand-written package.json='{}' plus lockfiles and node_modules SURVIVE. Oracle ref deps.py:182-218."]
 fn test_clean_removes_manifest_lockfiles_and_node_modules() {
     let (root, dir) = entry_dir();
     for name in [
@@ -1129,13 +1128,34 @@ fn test_clean_rmtree_failure_is_loud() {}
 fn test_update_dependencies_surfaces_clean_failure_as_store_error() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a deps --clear must not strand a secret-bearing '.injected-*' leftover, so clean() sweeps them. clear_javascript_dependencies never sweeps '.injected-*' (and, with no skit stamp/manifest present, does nothing at all), so the stranded copy survives. Oracle ref deps.py:182-188, 164-179, test_js_deps.py:1209-1216."]
 fn test_clean_sweeps_aged_injected_leftovers() {
     let (root, dir) = entry_dir();
     let stranded = dir.join(".injected-crash.js");
     std::fs::write(&stranded, "secret").unwrap();
+    let stranded_file = std::fs::File::options()
+        .write(true)
+        .open(&stranded)
+        .unwrap();
+    stranded_file
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(std::time::SystemTime::UNIX_EPOCH)
+                .set_modified(std::time::SystemTime::UNIX_EPOCH),
+        )
+        .unwrap();
     clear_javascript_dependencies(&dir).unwrap();
     assert!(!stranded.exists());
+    drop(root);
+}
+
+#[test]
+fn test_clean_keeps_fresh_injected_leftovers() {
+    // The age gate protects an injected copy that a concurrent run can still use.
+    let (root, dir) = entry_dir();
+    let live = dir.join(".injected-live.js");
+    std::fs::write(&live, "live secret").unwrap();
+    clear_javascript_dependencies(&dir).unwrap();
+    assert!(live.exists());
     drop(root);
 }
 
@@ -1417,7 +1437,6 @@ fn test_needs_install_true_when_the_declared_deps_changed() {}
 fn test_preflight_skips_the_installer_when_the_marker_is_already_fresh() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): clean() unlinks a symlinked node_modules but keeps the target's contents. clear_javascript_dependencies is conservative (no skit stamp/manifest present -> it does nothing), so the symlinked node_modules survives. Oracle ref deps.py:202-213, test_js_deps.py:2037-2043."]
 fn test_clean_unlinks_a_symlinked_node_modules_but_keeps_the_target() {
     let (root, dir) = entry_dir();
     let target = dir.join("shared");
@@ -1460,7 +1479,6 @@ fn test_add_js_empty_dep_records_nothing() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle deps-clear sweeps node_modules (test_js_deps.py:2109); Rust's conservative clear leaves a stray node_modules when there is no skit stamp / generated_manifest (javascript_deps.rs:311)"]
 fn test_deps_command_empty_dep_clears_and_sweeps() {
     // An empty --dep clears the list (not recorded as [""]) and sweeps the materialized env.
     let sandbox = Sandbox::new();

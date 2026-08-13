@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, SystemTime},
 };
 
 use skit_i18n::{Localize, Message};
@@ -18,6 +19,7 @@ const STAMP_NAME: &str = ".skit-deps";
 const BACKUP_NAME: &str = ".skit-deps.backup";
 const BACKUP_INDEX: &str = ".items";
 const STAGE_PREFIX: &str = ".skit-deps.tmp-";
+const STALE_INJECTED_AGE: Duration = Duration::from_secs(60 * 60);
 const OWNED_FILES: &[&str] = &[
     "package.json",
     "package-lock.json",
@@ -305,7 +307,7 @@ where
     commit_dependency_stage(entry_dir, &staged.path)
 }
 
-/// Remove only support artifacts that skit owns for one entry.
+/// Remove JavaScript dependency artifacts from one private entry directory.
 pub fn clear_javascript_dependencies(entry_dir: &Path) -> Result<(), DependencyError> {
     let _lock = dependency_lock(entry_dir)?;
     require_entry_directory(entry_dir)?;
@@ -315,12 +317,35 @@ pub fn clear_javascript_dependencies(entry_dir: &Path) -> Result<(), DependencyE
 }
 
 fn clear_javascript_dependencies_unlocked(entry_dir: &Path) -> Result<(), DependencyError> {
-    if entry_dir.join(STAMP_NAME).exists() || generated_manifest(entry_dir)? {
-        validate_dependency_item_shapes(entry_dir)?;
+    sweep_stale_injected_at(entry_dir, SystemTime::now());
+    validate_dependency_item_shapes(entry_dir)?;
+    if dependency_items().any(|name| path_exists(&entry_dir.join(name))) {
         let staged = TemporaryDependencyDirectory::new(entry_dir)?;
         commit_dependency_stage(entry_dir, &staged.path)?;
     }
     Ok(())
+}
+
+fn sweep_stale_injected_at(entry_dir: &Path, now: SystemTime) {
+    let Some(cutoff) = now.checked_sub(STALE_INJECTED_AGE) else {
+        return;
+    };
+    let Ok(items) = fs::read_dir(entry_dir) else {
+        return;
+    };
+    for item in items.flatten() {
+        let path = item.path();
+        let is_injected = item
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(".injected-"));
+        let is_stale = fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified < cutoff);
+        if is_injected && is_stale {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn validate_dependency_item_shapes(entry_dir: &Path) -> Result<(), DependencyError> {
@@ -741,16 +766,6 @@ fn valid_package_name(name: &str) -> bool {
         }
 }
 
-fn generated_manifest(entry_dir: &Path) -> Result<bool, DependencyError> {
-    Ok(
-        read_optional(&entry_dir.join("package.json"))?.is_some_and(|bytes| {
-            bytes
-                .windows(b"skit-private-entry".len())
-                .any(|window| window == b"skit-private-entry")
-        }),
-    )
-}
-
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, DependencyError> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -803,6 +818,38 @@ mod transaction_tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn injected_sweep_uses_a_strict_one_hour_cutoff() {
+        let root = TempDir::new().unwrap();
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(2 * 60 * 60))
+            .unwrap();
+        let cutoff = now.checked_sub(STALE_INJECTED_AGE).unwrap();
+        let old = cutoff.checked_sub(Duration::from_secs(1)).unwrap();
+        let write_at = |name: &str, modified: SystemTime| {
+            let path = root.path().join(name);
+            fs::write(&path, "value").unwrap();
+            File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+            path
+        };
+        let stale = write_at(".injected-stale.js", old);
+        let edge = write_at(".injected-edge.js", cutoff);
+        let fresh = write_at(".injected-fresh.js", now);
+        let unrelated = write_at("keep.txt", old);
+
+        sweep_stale_injected_at(root.path(), now);
+
+        assert!(!stale.exists());
+        assert!(edge.exists());
+        assert!(fresh.exists());
+        assert!(unrelated.exists());
+    }
 
     #[cfg(unix)]
     #[test]

@@ -511,11 +511,13 @@ fn package_and_filesystem_refusals_do_not_escape_the_private_entry() {
 }
 
 #[test]
-fn public_clear_removes_generated_artifacts_and_preserves_foreign_manifests() {
+fn public_clear_removes_dependency_artifacts_and_preserves_entry_files() {
     let root = TempDir::new().unwrap();
+    fs::write(root.path().join("keep.txt"), "keep").unwrap();
     fs::write(root.path().join("package.json"), "{\"name\":\"user\"}\n").unwrap();
     clear_javascript_dependencies(root.path()).unwrap();
-    assert!(root.path().join("package.json").is_file());
+    assert!(!root.path().join("package.json").exists());
+    assert!(root.path().join("keep.txt").is_file());
 
     fs::write(
         root.path().join("package.json"),
@@ -658,7 +660,7 @@ fn a_backup_index_that_names_a_missing_item_is_refused() {
 }
 
 #[test]
-fn a_backup_without_an_index_restores_the_items_it_holds() {
+fn a_backup_without_an_index_recovers_before_clear() {
     let root = TempDir::new().unwrap();
     let backup = crash_backup(root.path());
     fs::write(backup.join("package.json"), b"saved manifest\n").unwrap();
@@ -666,10 +668,7 @@ fn a_backup_without_an_index_restores_the_items_it_holds() {
 
     clear_javascript_dependencies(root.path()).unwrap();
 
-    assert_eq!(
-        fs::read(root.path().join("package.json")).unwrap(),
-        b"saved manifest\n"
-    );
+    assert!(!root.path().join("package.json").exists());
     assert!(!root.path().join(".skit-deps.backup").exists());
 }
 
