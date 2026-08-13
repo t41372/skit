@@ -2339,11 +2339,6 @@ const CATALOG: &[Translation] = &[
         "選項參數 {} 沒有可用選項",
     ),
     row!(
-        "command entries do not take package dependencies",
-        "命令条目不接受软件包依赖项",
-        "命令項目不接受套件相依性",
-    ),
-    row!(
         "command template needs a value for {}",
         "命令模板需要 {} 的值",
         "命令範本需要 {} 的值",
@@ -2858,9 +2853,9 @@ const CATALOG: &[Translation] = &[
         "項目類型 {} 不支援來源操作",
     ),
     row!(
-        "standard input cannot be a referenced entry",
-        "标准输入不能用作引用条目",
-        "標準輸入不能用作參照項目",
+        "--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",
+        "--ref 在这里无法应用——stdin 会撰写一份全新副本，而 --ref/--exe 需要现成的文件(未添加任何内容)。",
+        "--ref 在這裡無法套用——stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案(未加入任何內容)。",
     ),
     row!(
         "stored filename must be one safe path component",
@@ -3046,9 +3041,9 @@ const CATALOG: &[Translation] = &[
         "{} 不接受套件相依性；只有 --need 適用",
     ),
     row!(
-        "{} entries do not take package dependencies",
-        "{} 条目不接受软件包依赖项",
-        "{} 項目不接受套件相依性",
+        "{} entries don't take package dependencies — drop --dep.",
+        "{} 条目不接受依赖包——去掉 --dep。",
+        "{} 條目不接受依賴套件——拿掉 --dep。",
     ),
     row!(
         "{} is not a valid {} default",

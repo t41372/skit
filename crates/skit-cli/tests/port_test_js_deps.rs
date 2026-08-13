@@ -1236,7 +1236,6 @@ fn test_store_clear_goes_through_the_locked_entry_point() {}
 fn test_settings_save_survives_a_failed_deps_clear() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `skit add` refuses unusable flags on a shell entry loudly (exit 2). The --python case says 'Python constraint' (Rust agrees), but the --dep case must say \"don't take package dependencies\" and Rust says 'shell entries do not take package dependencies' (no apostrophe form). One parametrize case diverges, so the whole port is held. Oracle ref test_js_deps.py:1458-1471."]
 fn test_add_shell_refuses_unusable_flags_loudly() {
     for (args, fragment) in [
         (["--dep", "requests"], "don't take package dependencies"),
@@ -1261,7 +1260,6 @@ fn test_add_shell_refuses_unusable_flags_loudly() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a --cmd template add refuses --dep with either \"don't take package dependencies\" or \"--dep can't apply here\" (exit 2). Rust says 'command entries do not take package dependencies', matching neither substring. Oracle ref test_js_deps.py:1474-1485."]
 fn test_add_cmd_refuses_dep_flag_loudly() {
     let sandbox = Sandbox::new();
     let assert = sandbox
@@ -1329,7 +1327,6 @@ fn test_add_stdin_honors_explicit_dep_and_python_flags() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `add - --ref` is refused loudly (exit 2) with 'existing file' or '--ref can't apply here'. Verify the Rust wording matches one of those; if not, this is the divergence the port records. Oracle ref test_js_deps.py:1521-1527."]
 fn test_add_stdin_refuses_ref_loudly() {
     let sandbox = Sandbox::new();
     let assert = sandbox

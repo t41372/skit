@@ -42,6 +42,56 @@ fn human_errors_use_the_requested_simplified_chinese_catalog() {
 }
 
 #[test]
+fn add_flag_refusals_use_the_v040_catalog_in_every_locale() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("refusal.sh");
+    fs::write(&source, "#!/bin/sh\nprintf ok\n").unwrap();
+    let command = |locale: &str| {
+        let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+        command
+            .env("SKIT_DATA_DIR", data.path())
+            .env("SKIT_STATE_DIR", state.path())
+            .env("SKIT_CONFIG_DIR", config.path())
+            .env("SKIT_LANG", locale);
+        command
+    };
+
+    for (locale, dependency_refusal, stdin_refusal) in [
+        (
+            "en",
+            "shell entries don't take package dependencies — drop --dep.",
+            "--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",
+        ),
+        (
+            "zh-CN",
+            "shell 条目不接受依赖包——去掉 --dep。",
+            "--ref 在这里无法应用——stdin 会撰写一份全新副本，而 --ref/--exe 需要现成的文件(未添加任何内容)。",
+        ),
+        (
+            "zh-TW",
+            "shell 條目不接受依賴套件——拿掉 --dep。",
+            "--ref 在這裡無法套用——stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案(未加入任何內容)。",
+        ),
+    ] {
+        command(locale)
+            .arg("add")
+            .arg(&source)
+            .args(["--dep", "requests", "--no-input"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(dependency_refusal));
+        command(locale)
+            .args(["add", "-", "--name", "clip", "--ref"])
+            .write_stdin("print('hi')\n")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(stdin_refusal));
+    }
+}
+
+#[test]
 fn clap_errors_translate_framework_text_without_rewriting_user_arguments() {
     let data = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();

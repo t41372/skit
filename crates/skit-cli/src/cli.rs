@@ -2809,9 +2809,10 @@ fn add_with_config(
             )));
         }
         if dependencies_explicit || requires_python.is_some() {
-            return Err(CliError::Usage(Message::new(
-                "command entries do not take package dependencies",
-            )));
+            return Err(CliError::Usage(
+                Message::new("{} entries don't take package dependencies — drop --dep.")
+                    .with("command"),
+            ));
         }
         let kind = EntryKind::parse("command".to_owned()).expect("command kind is valid");
         let name = name.ok_or_else(|| {
@@ -2845,7 +2846,7 @@ fn add_with_config(
     };
     if reference && input == Path::new("-") {
         return Err(CliError::Usage(Message::new(
-            "standard input cannot be a referenced entry",
+            "--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",
         )));
     }
     if input == Path::new("-") && (executable || kind.as_deref().is_some_and(|kind| kind == "exe"))
@@ -2943,7 +2944,8 @@ fn add_with_config(
     let supports_dependencies = matches!(kind_name.as_str(), "python" | "js" | "ts");
     if dependencies_explicit && !supports_dependencies {
         return Err(CliError::Usage(
-            Message::new("{} entries do not take package dependencies").with(kind_name),
+            Message::new("{} entries don't take package dependencies — drop --dep.")
+                .with(kind_name),
         ));
     }
     if requires_python.is_some() && kind_name != "python" {
