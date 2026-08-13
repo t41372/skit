@@ -96,8 +96,8 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (82/58) · 2 weakenings being fixed (whitespace-constraint stored-value, reused-arg markup isolation) |
-| test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (60/90) · **stdin store-error 'taken' FIXED 592d236** · **edit drift hint FIXED 1cac4a4** · ~8 prompt-CLI divergences (name keeps .prompt, stdin defaults, {{目标}} undetected #14, deleted-body run exit, runner recovery msgs) + add/run --runner trim INCONSISTENCY |
-| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | in fix (65/50) · 4 undisclosed partial ports + gutted 127 stub being fixed |
+| test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (61/89) · **stdin store-error 'taken' FIXED 592d236** · **edit drift hint FIXED 1cac4a4** · runner trim/pick persistence fixed `2c1f6ef` · Unicode `--set` fixed `07dfbce` · remaining prompt-CLI divergences include name keeps .prompt, stdin defaults, deleted-body run exit, and runner recovery messages |
+| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | in fix · Unicode XID placeholder scan/render fixed `07dfbce` while command identifiers remain ASCII · remaining partial/stub review continues |
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | done (61) · **human-display layer FIXED 3bb4fbf** (sentinels, padded list, `k = v`, paused notice, choice-naming errors) · 14 cross-crate wizard/first-run |
 | test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs | done (17) · 51 cross-crate/absent (interactive add lane) |
 | test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs | done (57) · blank index/install mirror values fixed in `c3e02b8` · 6 deferred |
@@ -142,9 +142,9 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_i18n.py | 38 | crates/skit-i18n/tests/port_test_i18n.rs | done (28) · architecture-mapped (compiled catalog) · **3 divergences FIXED 5574ff1** (zh-MY/zh-XX→ZhCn negotiation, Library term 工具库/庫; #9 done) · 3 absent (Babel/ngettext) · 7 cross-crate |
+| test_i18n.py | 38 | crates/skit-i18n/tests/port_test_i18n.rs + skit-cli config/manifest | done · 28 executable + 10 Babel/gettext/Python-runtime architecture-closed · 6 additive row tests · replacement and catalog/config fixes `f1dc3c7`/`7e53da4`/`5d3c303` |
 | test_prompt_utf8.py | 16 | crates/skit-cli/tests/port_test_prompt_utf8.rs | done (3) · 16 cross-crate (runtime UTF-8 path) |
-| test_packaging.py | 7 | crates/skit-cli/tests/port_test_packaging.rs | done (3) · 4 release-gate (Maturin wheel/PyPI) |
+| test_packaging.py | 7 | crates/skit-cli/tests/port_test_packaging.rs + manifest | done · 3 executable + 4 Python-runtime architecture-closed · TOML 1.1 harness fixed in `606c716` |
 | test_benchmarks_tooling.py | 156 | N/A (adapt) — Rust skit-benchmarks crate is a native reimplementation with 92 #[test]s (budget/dataset/parsers/pipeline_plan/suites); the Python benchmarks/__main__ CLI does not port 1:1. Dev tooling, gate-enforced via benchmarks/check.sh + cargo bench | done (N/A) |
 | test_mutation_gate.py | 4 | N/A — Rust uses cargo-mutants (Phase 3 gate); the Python scripts/check_mutation_stats.py has no Rust analog | done (N/A) |
 | test_hermeticity.py | 1 | crates/skit-cli/tests/port_test_hermeticity.rs | done (1) · no gap |

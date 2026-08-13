@@ -13,11 +13,11 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 22 fix commits landed, 72 FAILING CONTRACTs closed
-(70 un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added. The last
-fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Four reviewed PR #44
-waves added 82 executable contracts plus 6 completeness manifests.
-214 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: continue js_deps (7),
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 25 fix commits landed, 76 FAILING CONTRACTs closed
+(74 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
+The last fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Five
+reviewed PR #44 waves added 85 executable parity tests plus 8 completeness-manifest tests.
+210 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: continue js_deps (7),
 or pick an add-lane cluster.** The user chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
 
@@ -124,13 +124,18 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `cc0ead1` | JS deps cleanup: transactionally clear manifest/lock/node_modules without an ownership heuristic; sweep legacy `.injected-*` only when older than one hour; preserve fresh/cutoff files and symlink targets | 4 |
 | `d7575c5` | dependency-free JS/TS modules: exact minimal private/type manifest, same bytes do not rewrite, invalid/different bytes replace transactionally, no installer or stamp | 3 |
 | `2c1f6ef` | prompt runner picks: trim explicit override, remember only successful actual picks, preserve last state for unknown/default/pinned lanes across plain and enhanced forms | 1 |
+| `f1dc3c7` | i18n replacement: unique reachable English keys and oracle Library wording in both Chinese catalogs | replacement/fix |
+| `7e53da4` | config recovery: exact empty language clear; Python-compatible backup-directory copy; recoverable backup failure continues with exact three-language warning | replacement/fix |
+| `07dfbce` | prompt placeholders: Unicode XID scan/render with byte-preserved decomposed names; command template identifiers remain ASCII | 3 |
 
-PR #44 can resume from `6c5a408`; its remote head was still unchanged at the last check. Its merge
-ancestry and complete test snapshot are preserved on
-`integration/pr44-20260812`. The integration workspace passes `cargo test --locked --workspace
---all-targets --all-features --no-run`. Four reviewed green waves are on this branch: parser mutation
+PR #44 is actively continuing and reached `3d437a1` at the last checkpoint: 57/84 behavior modules
+and 1116/3018 Python contracts accounted. Its merge ancestry and complete test snapshot are
+preserved on `integration/pr44-20260812` at merge `0320efd`. The integration workspace passes
+`cargo test --locked --workspace --all-targets --all-features --no-run`. Reviewed green waves on
+this branch include parser mutation
 contracts (`184726d`), argstate filesystem contracts (`40b6087`), atomic state contracts
-(`817f14c`), and two non-duplicate boolean parameter-edit guards (`7fcc177`).
+(`817f14c`), two non-duplicate boolean parameter-edit guards (`7fcc177`), and packaging distribution
+contracts (`606c716`). The i18n replacement is green after production fixes (`f1dc3c7`..`5d3c303`).
 
 Two policy items keep their oracle-matching defaults (user did not object): the store self-heal
 reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to implement). Reversible.
@@ -141,7 +146,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
 # => 2887 passed / 0 failed / 1134 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 214
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 210
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -153,10 +158,10 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 214 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 210 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `2c1f6ef`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `07dfbce`.
 
 - **47 port_test_prompt_cli.rs + 9 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
