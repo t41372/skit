@@ -727,6 +727,35 @@ fn tui_run_forms_preserve_saved_values_but_never_prefill_secrets() {
 }
 
 #[test]
+fn interactive_runner_value_tracks_selection_separately_from_the_default() {
+    let mut args = RunArgs {
+        selector: "prompt".to_owned(),
+        values: Vec::new(),
+        preset: None,
+        save_preset: None,
+        runner: None,
+        runner_was_picked: false,
+        dry_run: false,
+        no_input: false,
+        plain: false,
+        raw: false,
+        forget_args: false,
+        extra_args: Vec::new(),
+    };
+    let baseline = BTreeMap::new();
+    let mut values =
+        SubmittedValues::from([("_skit_runner".to_owned(), FieldValue::text("codex"))]);
+
+    apply_interactive_run_values(&mut args, &values, &baseline).unwrap();
+    assert_eq!(args.runner.as_deref(), Some("codex"));
+    assert!(!args.runner_was_picked);
+
+    values.insert("_skit_runner_picked".to_owned(), FieldValue::boolean(true));
+    apply_interactive_run_values(&mut args, &values, &baseline).unwrap();
+    assert!(args.runner_was_picked);
+}
+
+#[test]
 fn tui_add_opens_the_typed_workflow_with_owned_drafts_and_runner_history() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");

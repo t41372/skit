@@ -190,6 +190,47 @@ fn run_focus_uses_the_complete_control_order() {
 }
 
 #[test]
+fn runner_picker_marks_selection_events_without_marking_its_default() {
+    let view = RunFormView::from_declarations(
+        "prompt",
+        "Prompt",
+        &[ParamDecl::new("topic")],
+        &BTreeMap::new(),
+        &["codex".to_owned(), "claude".to_owned()],
+        "codex",
+        &BTreeMap::new(),
+        "",
+    );
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Run(Box::new(view))));
+
+    let Effect::Submit { values, .. } = state.update(Action::Submit) else {
+        panic!("run form did not submit");
+    };
+    assert!(!values.contains_key("_skit_runner_picked"));
+
+    state.update(Action::SelectFieldOption {
+        field: 0,
+        value: "claude".to_owned(),
+    });
+    state.update(Action::SelectFieldOption {
+        field: 0,
+        value: "codex".to_owned(),
+    });
+    let Effect::Submit { values, .. } = state.update(Action::Submit) else {
+        panic!("run form did not submit");
+    };
+    assert_eq!(
+        values.get("_skit_runner_picked"),
+        Some(&FieldValue::boolean(true))
+    );
+    assert_eq!(
+        values.get("_skit_runner").map(FieldValue::as_text),
+        Some("codex".to_owned())
+    );
+}
+
+#[test]
 fn run_focus_starts_on_the_first_typeable_control_in_every_shape() {
     let with_pickers = RunFormView::from_declarations(
         "demo",

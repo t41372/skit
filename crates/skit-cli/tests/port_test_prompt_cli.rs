@@ -718,7 +718,6 @@ fn test_run_no_input_is_provably_unaffected_by_last_picked_state() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust does not trim --runner. Oracle accepts '--runner \" claude \"' (trimmed to 'claude') and runs (exit 0); Rust looks up ' claude ' verbatim, misses, exits 126 'prompt runner \" claude \" is not configured'."]
 fn test_run_prompt_runner_flag_threads_through() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");

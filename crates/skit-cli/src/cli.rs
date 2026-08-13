@@ -1543,6 +1543,7 @@ fn run_entry(
     store: &FileStore,
     mut args: RunArgs,
 ) -> Result<i32, CliError> {
+    args.runner_was_picked = args.runner.is_some();
     if args.no_input || args.raw || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return crate::run::run(service, store, args).map_err(Into::into);
     }
@@ -1578,6 +1579,7 @@ fn run_entry(
         .ok_or(CliError::Aborted)?
     };
     apply_interactive_run_values(&mut args, &values, &forms.baseline)?;
+    args.runner_was_picked |= use_plain && values.contains_key("_skit_runner");
     args.no_input = true;
     crate::run::run(service, store, args).map_err(Into::into)
 }
@@ -1725,6 +1727,9 @@ fn apply_interactive_run_values(
     }
     if values.contains_key("_skit_runner") {
         args.runner = tui_nonempty_owned(values, "_skit_runner");
+    }
+    if values.contains_key("_skit_runner_picked") {
+        args.runner_was_picked |= tui_flag(values, "_skit_runner_picked")?;
     }
     if values.contains_key("_skit_dry_run") {
         args.dry_run = tui_flag(values, "_skit_dry_run")?;
@@ -6136,6 +6141,7 @@ fn tui_rerun(
             preset: None,
             save_preset: None,
             runner: None,
+            runner_was_picked: false,
             dry_run: false,
             no_input: true,
             plain: true,
@@ -7228,6 +7234,7 @@ fn tui_submit_run(
             preset: tui_nonempty_owned(values, "_skit_preset"),
             save_preset: tui_nonempty_owned(values, "_skit_save_preset"),
             runner: tui_nonempty_owned(values, "_skit_runner"),
+            runner_was_picked: tui_flag(values, "_skit_runner_picked")?,
             dry_run: tui_flag(values, "_skit_dry_run")?,
             no_input: true,
             plain: true,

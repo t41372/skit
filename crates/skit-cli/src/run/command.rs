@@ -14,6 +14,7 @@ use skit_application::{
     LibraryService, RepositoryError, RepositoryOperation,
     delivery::{Assembly, transparency_messages},
     form_state::{FormStateService, StateWriteError, prefill},
+    prompt_selection::PromptSelectionService,
     run_inputs::{RunInputError, assemble_run_inputs},
     tokens::TokenContext,
 };
@@ -32,7 +33,8 @@ use skit_runtime::{
     resolve_javascript_runtime,
 };
 use skit_store::{
-    ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FileStore, content_hash,
+    ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
+    FileStore, content_hash,
 };
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
@@ -65,6 +67,10 @@ pub(crate) struct RunArgs {
     /// Select a prompt runner for this run.
     #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
     pub(crate) runner: Option<String>,
+
+    /// Whether the runner value came from a user selection rather than a form default.
+    #[arg(skip)]
+    pub(crate) runner_was_picked: bool,
 
     /// Print the masked launch command and do not start a child.
     #[arg(long)]
@@ -328,13 +334,13 @@ pub(crate) fn run_with_roots(
         )?
     };
 
-    let runner_name = args
-        .runner
-        .as_deref()
-        .or_else(|| (!settings.runner.is_empty()).then_some(settings.runner.as_str()));
-    let runner = runner_name
-        .map(|name| configured_runner(&config, name))
-        .transpose()?;
+    let runner = resolve_runner(
+        &config,
+        state_dir,
+        args.runner.as_deref(),
+        &settings.runner,
+        args.runner_was_picked,
+    )?;
     if !args.dry_run
         && matches!(entry.meta.kind.as_str(), "js" | "ts")
         && entry.meta.mode == skit_domain::StorageMode::Reference
@@ -843,6 +849,25 @@ fn configured_runner(config: &FileConfigStore, name: &str) -> Result<PromptRunne
     })
 }
 
+fn resolve_runner(
+    config: &FileConfigStore,
+    state_dir: &Path,
+    runner_override: Option<&str>,
+    runner_pin: &str,
+    runner_was_picked: bool,
+) -> Result<Option<PromptRunner>, RunError> {
+    let picked = runner_override.map(str::trim);
+    let name = picked.or_else(|| (!runner_pin.is_empty()).then_some(runner_pin));
+    let runner = name
+        .map(|name| configured_runner(config, name))
+        .transpose()?;
+    if let Some(name) = picked.filter(|_| runner_was_picked) {
+        PromptSelectionService::new(FilePromptSelectionStore::new(state_dir))
+            .remember_runner(name)?;
+    }
+    Ok(runner)
+}
+
 pub(crate) fn token_context() -> TokenContext {
     let utc = OffsetDateTime::now_utc();
     let local = UtcOffset::current_local_offset().map_or(utc, |offset| utc.to_offset(offset));
@@ -1288,6 +1313,33 @@ mod tests {
             configured_runner(&config_store, "missing").unwrap_err(),
             RunError::RunnerNotFound { .. }
         ));
+
+        let state_dir = root.path().join("state");
+        let selection = PromptSelectionService::new(FilePromptSelectionStore::new(&state_dir));
+        let defaulted = resolve_runner(&config_store, &state_dir, Some("local"), "", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(defaulted.name, "local");
+        assert_eq!(selection.last_runner(), "");
+
+        let picked = resolve_runner(&config_store, &state_dir, Some(" local "), "", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked.name, "local");
+        assert_eq!(selection.last_runner(), "local");
+
+        selection.remember_runner("prior").unwrap();
+        assert!(matches!(
+            resolve_runner(&config_store, &state_dir, Some(" missing "), "", true),
+            Err(RunError::RunnerNotFound { .. })
+        ));
+        assert_eq!(selection.last_runner(), "prior");
+
+        let pinned = resolve_runner(&config_store, &state_dir, None, "local", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pinned.name, "local");
+        assert_eq!(selection.last_runner(), "prior");
     }
 
     #[test]
