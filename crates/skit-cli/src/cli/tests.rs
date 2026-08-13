@@ -618,7 +618,9 @@ fn adapter_only_error_paths_do_not_require_process_global_configuration() {
     assert!(
         runner_error
             .to_string()
-            .contains("prompt runner \"missing\" is not configured"),
+            .contains(
+                "Unknown runner: missing. Configured runners: claude, codex, opencode, amp, antigravity, copilot, cursor, pi"
+            ),
         "{runner_error}"
     );
     let valid_store = FileStore::new(root.path().join("valid-data"));

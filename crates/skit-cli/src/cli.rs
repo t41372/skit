@@ -1447,12 +1447,24 @@ fn validate_prompt_runner_in(config: &FileConfigStore, name: Option<&str>) -> Re
     if name.is_empty() {
         return Ok(());
     }
-    let exists = config.runners()?.iter().any(|runner| runner.name == name);
+    let runners = config.runners()?;
+    let exists = runners.iter().any(|runner| runner.name == name);
     if exists {
         Ok(())
     } else {
+        let configured = runners
+            .iter()
+            .map(|runner| runner.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         Err(CliError::Usage(
-            Message::new("prompt runner {} is not configured").quoted(name),
+            Message::new("Unknown runner: {}. Configured runners: {}")
+                .with(name)
+                .with(if configured.is_empty() {
+                    "—".to_owned()
+                } else {
+                    configured
+                }),
         ))
     }
 }

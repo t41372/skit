@@ -713,7 +713,7 @@ fn adding_a_prompt_refuses_a_runner_that_is_not_configured() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "prompt runner \"nosuch\" is not configured",
+            "Unknown runner: nosuch. Configured runners: claude, codex, opencode, amp, antigravity, copilot, cursor, pi",
         ));
     assert!(!sandbox.data.path().join("scripts/review").exists());
 

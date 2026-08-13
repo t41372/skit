@@ -361,7 +361,6 @@ fn test_add_prompt_runner_flag_non_interactive() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches. Oracle prints 'Unknown runner'; Rust prints 'prompt runner \"ghost\" is not configured'."]
 fn test_add_prompt_unknown_runner_flag_is_usage_error() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
