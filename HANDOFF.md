@@ -13,11 +13,11 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 14 fix commits landed, 49 FAILING CONTRACTs closed
-(47 un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added. The last
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 15 fix commits landed, 52 FAILING CONTRACTs closed
+(50 un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added. The last
 fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Two reviewed PR #44
 waves added 77 executable contracts plus 6 completeness manifests.
-237 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: continue js_deps (21),
+234 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: continue js_deps (20),
 or pick an add-lane cluster.** The user chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
 
@@ -115,6 +115,7 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `1cac4a4` | editor resolution total (config > $VISUAL > $EDITOR > vi/notepad, blank falls through, unbalanced-quote → raw argv[0]); edit-lane voices ("Saved X." + drift hint, reference-gone guard BEFORE launch, "no editable source ... run as-is" exit 1, "Could not launch the editor (...)" exit 1, editor rc IGNORED on edit lane) | 6 |
 | `c1964dc` | promoted 2 now-observable editor stubs (whitespace-config→VISUAL, all-blank→vi via PATH shim) | — |
 | `54bf6c6` | JavaScript dependency inputs: preserve first-seen import order; skip empty requirements; correct three sibling assertions that pinned sorted output | 6 |
+| `c3e02b8` | mirror environment truthiness: empty npm, Python index, and Python install values are unset; any nonempty alias still defers | 3 |
 
 PR #44 is paused at `6c5a408`. Its merge ancestry and complete test snapshot are preserved on
 `integration/pr44-20260812`. The integration workspace passes `cargo test --locked --workspace
@@ -130,7 +131,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
 # => 2887 passed / 0 failed / 1134 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 237
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 234
 ```
 
 The full-workspace benchmark target now has a reproducible pre-existing failure in
@@ -138,10 +139,10 @@ The full-workspace benchmark target now has a reproducible pre-existing failure 
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 237 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 234 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `81c99e7`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `c3e02b8`.
 
 - **47 port_test_prompt_cli.rs + 9 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
@@ -154,8 +155,9 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   offer is NOT); params human read view for prompts (placeholder table via `_show_command_params`);
   **genuine internal bug: add lane trims `--runner " claude "`, run lane does not — make
   consistent**. Oracle: cli.py prompt lanes, store.py:571, langs/prompt/*.
-- **21 port_test_js_deps.rs — JS dependency materialization.** First-seen scanner order and empty
-  requirements are fixed in `54bf6c6`. Remaining work includes the data-safety `deps`-clear
+- **20 port_test_js_deps.rs — JS dependency materialization.** First-seen scanner order and empty
+  requirements are fixed in `54bf6c6`; mirror empty-value precedence is fixed in `c3e02b8`.
+  Remaining work includes the data-safety `deps`-clear
   node_modules sweep (§ data-safety below). Oracle: langs/javascript/deps.py.
 - **17 port_test_cli.rs — mixed add/File-not-found voices.** "File not found" phrase (oracle
   `_require_exists`/`_require_file`, cli.py:420-428) vs Rust "could not resolve ...os error 2";
