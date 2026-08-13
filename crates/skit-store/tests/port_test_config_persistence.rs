@@ -21,7 +21,7 @@ fn test_save_mirror_preserves_other_keys() {
 }
 
 #[test]
-fn test_load_config_tolerates_corrupt_toml() {
+fn rust_additive_corrupt_config_reads_as_supported_defaults() {
     let root=TempDir::new().unwrap(); fs::write(root.path().join("config.toml"),"this is = = not [valid toml").unwrap();
     let store=FileConfigStore::new(root.path());
     assert_eq!(store.mirror().unwrap(),MirrorSettings::default());
