@@ -1032,7 +1032,7 @@ fn add_command(
     let no_input = options.no_input;
     if edit && no_input {
         return Err(CliError::Usage(Message::new(
-            "--edit needs an editor; use standard input as `skit add - --name NAME`",
+            "--edit opens your editor, which --no-input forbids — pipe the script in instead: skit add - -n NAME",
         )));
     }
     if edit {

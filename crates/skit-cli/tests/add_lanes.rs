@@ -213,7 +213,9 @@ fn edit_and_no_input_are_an_explicit_usage_conflict() {
         .args(["add", "--edit", "--name", "Draft", "--no-input"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("standard input"));
+        .stderr(predicate::eq(
+            "--edit opens your editor, which --no-input forbids — pipe the script in instead: skit add - -n NAME\n",
+        ));
 }
 
 #[cfg(unix)]

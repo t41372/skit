@@ -344,7 +344,6 @@ fn test_prompt_editor_bogus_runner_refused_before_the_editor() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the no_input-before-editor ORDERING holds (cli.rs:1033 fires first — exit 2, editor stays shut), but the pipe spelling is 'skit add - --name NAME' where the oracle points at 'skit add - -n NAME' (src/skit/cli.py:770). Verified against the built binary."]
 fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
     // --edit opens an editor — interaction — so --no-input can't keep the never-prompt
     // promise: it is refused up front, pointing at the stdin spelling. (The oracle forces
@@ -361,10 +360,9 @@ fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(
-        combined(&output).contains("skit add - -n NAME"),
-        "{}",
-        combined(&output)
+    assert_eq!(
+        flat(&output),
+        "--edit opens your editor, which --no-input forbids — pipe the script in instead: skit add - -n NAME"
     ); // the pipe spelling
     assert!(!marker.exists());
 }

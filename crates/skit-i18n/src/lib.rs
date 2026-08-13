@@ -2163,9 +2163,9 @@ const CATALOG: &[Translation] = &[
         "在已設定的編輯器中編寫新來源，然後新增",
     ),
     row!(
-        "--edit needs an editor; use standard input as `skit add - --name NAME`",
-        "--edit 需要一个编辑器；请使用标准输入，如 `skit add - --name NAME`",
-        "--edit 需要一個編輯器；請使用標準輸入，如 `skit add - --name NAME`",
+        "--edit opens your editor, which --no-input forbids — pipe the script in instead: skit add - -n NAME",
+        "--edit 会打开你的编辑器，而 --no-input 禁止这么做——请改用管道把脚本传进来：skit add - -n NAME",
+        "--edit 會開啟你的編輯器，而 --no-input 禁止這麼做——請改用管道把腳本傳進來：skit add - -n NAME",
     ),
     row!(
         "--interpolate only applies to prompt entries",
