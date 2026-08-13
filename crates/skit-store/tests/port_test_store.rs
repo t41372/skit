@@ -83,6 +83,15 @@ fn python_copy(name: &str, bytes: &[u8], description: &str) -> CreateEntry {
     }
 }
 
+/// A prepared copy-mode prompt `CreateEntry` (the store slice of `store.add_prompt`).
+fn prompt_copy(name: &str, bytes: &[u8], description: &str) -> CreateEntry {
+    let mut request = python_copy(name, bytes, description);
+    request.kind = EntryKind::parse("prompt").unwrap();
+    request.source = format!("/original/{name}.prompt.md");
+    request.payload.as_mut().unwrap().stored_name = Some("prompt.md".to_owned());
+    request
+}
+
 /// A prepared reference-mode Python `CreateEntry` (the store slice of `add_python(mode=reference)`).
 fn python_reference(name: &str, source: &str) -> CreateEntry {
     CreateEntry {
@@ -1399,14 +1408,15 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
     // registry.toml is unchanged across the read) and still reflects what the mutation changed.
     // Proven by binding the row's cache proof to the new meta bytes and by byte-comparing
     // registry.toml across the listing. (v0.4's mutation set
-    // maps to the store's identity-gated setters: describe and update_settings; the prompt-managed
-    // and dependency-injection variants live above the store.)
-    type Mutation = (&'static str, fn(&FileStore, &Entry) -> Entry, bool);
-    let mutations: [Mutation; 5] = [
+    // maps to the store's identity-gated setters: describe and update_settings; dependency
+    // injection lives above the store.)
+    type Mutation = (&'static str, fn(&FileStore, &Entry) -> Entry, bool, bool);
+    let mutations: [Mutation; 6] = [
         (
             "update_description",
             |store, entry| store.describe(entry, "the new text").unwrap(),
             true,
+            false,
         ),
         (
             "update_needs",
@@ -1422,6 +1432,7 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
                     )
                     .unwrap()
             },
+            false,
             false,
         ),
         (
@@ -1439,6 +1450,7 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
                     .unwrap()
             },
             false,
+            false,
         ),
         (
             "write_workdir",
@@ -1447,6 +1459,7 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
                     .update_settings(entry, &EntrySettings::default(), "store")
                     .unwrap()
             },
+            false,
             false,
         ),
         (
@@ -1464,17 +1477,46 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
                     .unwrap()
             },
             false,
+            false,
+        ),
+        (
+            "write_prompt_managed",
+            |store, entry| {
+                store
+                    .update_settings(
+                        entry,
+                        &EntrySettings {
+                            params: vec!["topic".to_owned()],
+                            ..EntrySettings::default()
+                        },
+                        "invoke",
+                    )
+                    .unwrap()
+            },
+            false,
+            true,
         ),
     ];
 
-    for (label, mutate, changes_description) in mutations {
+    for (label, mutate, changes_description, uses_prompt) in mutations {
         let root = TempDir::new().unwrap();
         let store = FileStore::new(root.path());
         let entry = store
-            .create(python_copy("subject", b"print(1)\n", "the old text"))
+            .create(if uses_prompt {
+                prompt_copy("subject", b"Summarize {{topic}}\n", "the old text")
+            } else {
+                python_copy("subject", b"print(1)\n", "the old text")
+            })
             .unwrap();
 
-        mutate(&store, &entry);
+        let updated = mutate(&store, &entry);
+        if uses_prompt {
+            assert_eq!(
+                EntrySettings::from_meta(&updated.meta).params,
+                ["topic"],
+                "{label}: the prompt mutation did not persist"
+            );
+        }
         let slug = entry.slug.as_str();
 
         // Re-projected: the row carries a fresh cache proof bound to the new meta bytes.
