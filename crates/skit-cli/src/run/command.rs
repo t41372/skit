@@ -316,6 +316,17 @@ pub(crate) fn run_with_roots(
     } else {
         (saved.extra_args.clone(), saved.extra_args_raw, None)
     };
+    if !args.raw && args.extra_args.is_empty() && !args.forget_args && !saved.extra_args.is_empty()
+    {
+        eprintln!(
+            "{}",
+            skit_i18n::format_text(
+                crate::cli::active_locale(),
+                "Reusing your last arguments: {}",
+                &[&extra_args.join(" ")],
+            )
+        );
+    }
 
     let context = token_context();
     let glob = FileGlobExpander::new(&context.cwd);

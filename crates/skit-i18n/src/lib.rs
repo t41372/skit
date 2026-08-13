@@ -873,6 +873,11 @@ const CATALOG: &[Translation] = &[
         "{} 沒有表單欄位，沒有東西可存。",
     ),
     row!(
+        "Reusing your last arguments: {}",
+        "沿用上次的参数:{}",
+        "沿用上次的參數:{}",
+    ),
+    row!(
         "{} has no remembered values yet — run it once first.",
         "{} 还没有记住的值——先运行一次。",
         "{} 還沒有記住的值——先執行一次。",

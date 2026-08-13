@@ -683,7 +683,6 @@ fn test_save_preset_with_raw_is_a_usage_conflict() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the `Reusing your last arguments: …` stderr notice is ABSENT in Rust. `run/command.rs` reuses `saved.extra_args` silently (no such msgid in the i18n catalog). The reuse behavior itself converges; only the notice is missing."]
 fn test_raw_never_replays_last_extra_args() {
     let root = sandbox();
     // `printf '%s\n' "$@"` makes the replayed tail visible on stdout.

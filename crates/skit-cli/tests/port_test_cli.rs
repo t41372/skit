@@ -1790,7 +1790,6 @@ fn test_edit_params_malformed_prompt_escapes_markup() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle stubs launcher.run_entry (run_entry_spy), so the script never runs and the ONLY source of the reused arg is skit's OWN reused-arguments notice `Reusing your last arguments: [red]arg[/red]`, printed to STDERR (err_console, cli.py:3150-3157). Rust reuses saved.extra_args SILENTLY (run/command.rs:309; no such msgid in the i18n catalog): the reused arg surfaces only on the STDOUT command-preview line (`→ bash script.sh '[red]arg[/red]'`), never on stderr where the notice belongs. Same divergence recorded by the sibling port_test_run_set.rs test_raw_never_replays_last_extra_args. Verified against the built binary."]
 fn test_run_reusing_last_arguments_escapes_markup() {
     // The oracle stubs run_entry, so ONLY skit's own reused-arguments notice can carry the markup,
     // and that notice is a STDERR line (err_console, cli.py:3153-3156). Use a body that does NOT
