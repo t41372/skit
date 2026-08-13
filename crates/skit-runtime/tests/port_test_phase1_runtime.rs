@@ -160,7 +160,7 @@ fn test_command_missing_values_raises() {
 #[test]
 fn test_uv_download_url_shape() {
     let linux = UvTarget::from_parts("x86_64", "linux", false).unwrap();
-    let linux_asset = uv_asset(&linux, None);
+    let linux_asset = uv_asset(&linux, None).unwrap();
     assert!(
         linux_asset
             .url
@@ -174,7 +174,7 @@ fn test_uv_download_url_shape() {
     );
 
     let windows = UvTarget::from_parts("x86_64", "windows", false).unwrap();
-    let windows_asset = uv_asset(&windows, None);
+    let windows_asset = uv_asset(&windows, None).unwrap();
     assert!(windows_asset.url.ends_with("uv-x86_64-pc-windows-msvc.zip"));
     assert_eq!(windows_asset.executable_name, "uv.exe");
 }
