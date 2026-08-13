@@ -1,6 +1,9 @@
 //! CLI/store required-command ports from Python `tests/test_interpreters.py` at `main@206f9ef`.
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use assert_cmd::Command;
 use skit_application::{
@@ -136,7 +139,10 @@ fn test_deps_need_sets_the_list() {
         .args(["deps", "p", "--need", "ffmpeg", "--need", "jq"])
         .assert()
         .success();
-    assert_eq!(sandbox.needs("p"), vec!["ffmpeg".to_owned(), "jq".to_owned()]);
+    assert_eq!(
+        sandbox.needs("p"),
+        vec!["ffmpeg".to_owned(), "jq".to_owned()]
+    );
 }
 
 #[test]
@@ -158,7 +164,7 @@ fn test_deps_clear_needs() {
 }
 
 #[test]
-fn test_deps_need_rejects_blank() {
+fn rust_additive_deps_need_rejects_blank() {
     let sandbox = Sandbox::new();
     sandbox.add_python("p");
     let output = sandbox
@@ -168,11 +174,14 @@ fn test_deps_need_rejects_blank() {
         .unwrap();
     let text = combined(&output);
     assert_eq!(output.status.code(), Some(2), "{text}");
-    assert!(sandbox.needs("p").is_empty(), "blank --need mutated metadata");
+    assert!(
+        sandbox.needs("p").is_empty(),
+        "blank --need mutated metadata"
+    );
 }
 
 #[test]
-fn test_run_preflight_missing_needs_does_not_spawn() {
+fn test_run_entry_needs_raises_before_spawn() {
     let sandbox = Sandbox::new();
     sandbox.create_exe_with_need("prog", MISSING);
     let output = sandbox
@@ -182,7 +191,10 @@ fn test_run_preflight_missing_needs_does_not_spawn() {
         .unwrap();
     let text = combined(&output);
     assert_eq!(output.status.code(), Some(126), "{text}");
-    assert!(text.contains(MISSING), "missing command was not named: {text}");
+    assert!(
+        text.contains(MISSING),
+        "missing command was not named: {text}"
+    );
     assert!(
         !String::from_utf8_lossy(&output.stdout)
             .contains(&format!("skit {}", env!("CARGO_PKG_VERSION"))),
@@ -196,12 +208,18 @@ fn test_doctor_flags_missing_needs() {
     sandbox.create_exe_with_need("needful", MISSING);
     let output = sandbox.command().arg("doctor").output().unwrap();
     let text = combined(&output);
-    assert!(text.contains("needful"), "doctor omitted the affected entry: {text}");
-    assert!(text.contains(MISSING), "doctor omitted the missing required command: {text}");
+    assert!(
+        text.contains("needful"),
+        "doctor omitted the affected entry: {text}"
+    );
+    assert!(
+        text.contains(MISSING),
+        "doctor omitted the missing required command: {text}"
+    );
 }
 
 #[test]
-fn test_cli_add_need_option_records_needs() {
+fn rust_additive_cli_add_need_option_records_needs() {
     let sandbox = Sandbox::new();
     let source = sandbox.home.path().join("needful.sh");
     fs::write(&source, "#!/bin/sh\necho hi\n").unwrap();
