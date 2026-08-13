@@ -1296,10 +1296,8 @@ fn runner_row(
     let raw_name = table
         .and_then(|row| row.get("name"))
         .and_then(Value::as_str);
-    let name = raw_name
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned);
+    let name = raw_name.map(str::trim).map(str::to_owned);
+    let valid_name = name.as_ref().filter(|name| !name.is_empty());
     let argv = table
         .and_then(|row| row.get("argv"))
         .and_then(Value::as_array)
@@ -1312,25 +1310,25 @@ fn runner_row(
         });
     let mut issue = if table.is_none() {
         Some(PromptRunnerIssue::RowNotTable)
-    } else if name.is_none() {
+    } else if valid_name.is_none() {
         Some(PromptRunnerIssue::Name)
     } else if argv.is_none() {
         Some(PromptRunnerIssue::ArgvType)
     } else {
         validate_runner(&PromptRunner {
-            name: name.clone().expect("the name was checked"),
+            name: valid_name.expect("the name was checked").clone(),
             argv: argv.clone().expect("argv was checked"),
         })
         .err()
     };
     if issue.is_none() {
-        let normalized = name.as_ref().expect("a valid row has a name");
+        let normalized = valid_name.expect("a valid row has a name");
         if !seen.insert(normalized.clone()) {
             issue = Some(PromptRunnerIssue::Duplicate);
         }
     }
     let descriptor = if issue == Some(PromptRunnerIssue::Duplicate) {
-        name.clone().expect("a duplicate row has a name")
+        valid_name.expect("a duplicate row has a name").clone()
     } else {
         raw_name
             .filter(|name| !name.trim().is_empty())

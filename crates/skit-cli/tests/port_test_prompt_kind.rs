@@ -13,13 +13,10 @@
 //! concern that the CLI does not expose (or maps differently), the stub is "absent" with the
 //! concrete blocking fact, not "cross-crate".
 //!
-//! Two assertions the oracle makes are genuine Rust divergences. This port earlier SOFTENED them
-//! to keep the tests green; the exact oracle assertions are now restored and both tests are
-//! FAILING CONTRACT (divergence), `#[ignore]`d with the full body — remove the ignore once the
-//! impl converges and they go green:
-//! - `test_malformed_runner_rows_are_skipped_and_reported`: the oracle keeps a blank runner name
-//!   as the exact `""` (test_prompt_kind.py:1024); the Rust `runner_row` normalizes an empty name
-//!   to `None` (skit-store/src/config.rs:1233-1236). The restored `rows[2].name == Some("")` fails.
+//! One assertion the oracle makes is a genuine Rust divergence. This port earlier SOFTENED it to
+//! keep the test green; the exact oracle assertion is now restored and the test is a FAILING
+//! CONTRACT (divergence), `#[ignore]`d with the full body — remove the ignore once the impl
+//! converges and it goes green:
 //! - `test_runner_container_rows_have_localized_human_recovery_reason`: the machine reason TOKEN
 //!   matches exactly (`prompt-section-not-table` / `runners-not-list`), but the localized English
 //!   wording is "is not a table" / "is not a list" (skit-store/src/config.rs:160-165), not the
@@ -1524,9 +1521,6 @@ fn test_hand_authored_rows_without_marker_count_as_seeded() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle keeps a blank runner name as the exact `\"\"` \
-            (test_prompt_kind.py:1024); the Rust `runner_row` normalizes an empty name to `None` \
-            (skit-store/src/config.rs:1233-1236). The restored `rows[2].name == Some(\"\")` fails."]
 fn test_malformed_runner_rows_are_skipped_and_reported() {
     let dir = TempDir::new().unwrap();
     let config = FileConfigStore::new(dir.path());
@@ -1547,8 +1541,8 @@ fn test_malformed_runner_rows_are_skipped_and_reported() {
     );
     assert_eq!(runner_names(&config), ["good"]);
     let rows = config.runner_rows().unwrap();
-    // The oracle keeps a blank runner name as the exact empty string (the invalid name does not
-    // hide the usable argv). Rust normalizes an empty name to None, so this assertion diverges.
+    // The raw row keeps a blank runner name as the exact empty string. The invalid name does not
+    // hide the usable argv or enter the valid runner list.
     assert_eq!(rows[2].name.as_deref(), Some(""));
     assert_eq!(
         rows[2].argv.as_deref(),

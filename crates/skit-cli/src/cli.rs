@@ -4539,9 +4539,10 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                     let output = rows
                         .into_iter()
                         .map(|row| {
+                            let name = row.name.filter(|name| !name.is_empty());
                             serde_json::json!({
                                 "row": row.index,
-                                "name": row.name,
+                                "name": name,
                                 "argv": row.argv,
                                 "reason": row.reason,
                                 "descriptor": row.descriptor,
@@ -4574,6 +4575,7 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                             let name = row
                                 .name
                                 .clone()
+                                .filter(|name| !name.is_empty())
                                 .unwrap_or_else(|| row.localized_descriptor(locale));
                             let command = row
                                 .argv
@@ -6740,16 +6742,20 @@ fn tui_runner_rows(
         .iter()
         .zip(&identities)
         .map(|(row, identity)| {
-            let key_identities = row.name.as_ref().map_or_else(Vec::new, |name| {
+            let name = row.name.clone().filter(|name| !name.is_empty());
+            let key_identities = name.as_ref().map_or_else(Vec::new, |name| {
                 rows.iter()
                     .zip(&identities)
-                    .filter(|(candidate, _)| candidate.name.as_ref() == Some(name))
+                    .filter(|(candidate, _)| {
+                        candidate.name.as_deref().filter(|value| !value.is_empty())
+                            == Some(name.as_str())
+                    })
                     .map(|(_, identity)| identity.clone())
                     .collect()
             });
             RunnerRow {
                 identity: identity.clone(),
-                name: row.name.clone(),
+                name: name.clone(),
                 argv: row.argv.clone(),
                 reason: row.reason.clone(),
                 descriptor: row.localized_descriptor(active_locale()),
@@ -6757,6 +6763,7 @@ fn tui_runner_rows(
                 pinned_count: row
                     .name
                     .as_ref()
+                    .filter(|name| !name.is_empty())
                     .and_then(|name| pinned.get(name))
                     .copied()
                     .unwrap_or(0),

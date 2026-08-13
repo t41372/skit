@@ -789,6 +789,31 @@ runners = [
 }
 
 #[test]
+fn blank_runner_name_stays_visible_in_the_raw_row_but_not_the_valid_runner_list() {
+    let root = TempDir::new().unwrap();
+    fs::write(
+        root.path().join("config.toml"),
+        concat!(
+            "[prompt]\n",
+            "runners_seeded = true\n",
+            "runners = [{ name = \"\", argv = [\"agent\", \"{{prompt}}\"] }]\n",
+        ),
+    )
+    .unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert!(store.runners().unwrap().is_empty());
+    let row = store.runner_rows().unwrap().pop().unwrap();
+    assert_eq!(row.name.as_deref(), Some(""));
+    assert_eq!(row.reason.as_deref(), Some("name"));
+    assert_eq!(
+        row.argv.as_deref(),
+        Some(["agent".to_owned(), "{{prompt}}".to_owned()].as_slice())
+    );
+    assert!(row.descriptor.starts_with('{'), "{}", row.descriptor);
+}
+
+#[test]
 fn every_scalar_setting_and_mirror_environment_precedence_is_explicit() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
