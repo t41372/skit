@@ -2960,7 +2960,7 @@ fn add_with_config(
         && (dependencies_explicit || !dependencies.is_empty())
     {
         return Err(CliError::Usage(Message::new(
-            "reference entries do not take managed dependencies",
+            "Reference-mode entries take no managed dependencies — they run from their own project. Add it as a copy, or drop --dep.",
         )));
     }
     if runner.is_some() && kind_name != "prompt" {
@@ -3479,9 +3479,12 @@ fn deps(
             .as_ref()
             .is_some_and(|items| !items.is_empty())
     {
-        return Err(CliError::Usage(Message::new(
-            "managed dependencies require copy storage",
-        )));
+        return Err(CliError::Usage(
+            Message::new(
+                "{} is a reference-mode entry: it runs from its own project, which already provides its packages. Dependency management applies to copies.",
+            )
+            .with(&held.meta.name),
+        ));
     }
     let python_copy = kind == "python" && held.meta.mode == StorageMode::Copy;
     let source = python_copy

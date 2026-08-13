@@ -2780,9 +2780,14 @@ const CATALOG: &[Translation] = &[
         "參照項目在其原始路徑上編輯",
     ),
     row!(
-        "reference entries do not take managed dependencies",
-        "引用条目不接受受管依赖项",
-        "參照項目不接受受管相依套件",
+        "Reference-mode entries take no managed dependencies — they run from their own project. Add it as a copy, or drop --dep.",
+        "reference 模式条目不受理依赖管理——它从自己的项目运行。以复制模式加入，或去掉 --dep。",
+        "reference 模式條目不受理依賴管理——它從自己的專案執行。以複製模式加入，或拿掉 --dep。",
+    ),
+    row!(
+        "{} is a reference-mode entry: it runs from its own project, which already provides its packages. Dependency management applies to copies.",
+        "{} 是 reference 模式条目：它从自己的项目运行，包由该项目提供。依赖管理仅适用于复制进库的条目。",
+        "{} 是 reference 模式條目：它從自己的專案執行，套件由該專案提供。依賴管理僅適用於複製進庫的條目。",
     ),
     row!(
         "required command was not found: {}",

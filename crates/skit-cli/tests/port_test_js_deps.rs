@@ -678,7 +678,6 @@ fn test_update_dependencies_js_copy_records_meta_without_touching_the_script() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a reference-mode JS deps write is a usage refusal (exit 2) whose message names 'reference-mode'. Rust worded it 'reference entries do not take managed dependencies', so the 'reference-mode' substring is absent. Oracle ref store.update_dependencies, test_js_deps.py:597-602."]
 fn test_update_dependencies_js_reference_is_refused() {
     let sandbox = Sandbox::new();
     let source_dir = TempDir::new().unwrap();
@@ -906,7 +905,6 @@ fn test_deps_command_python_flag_on_js_is_refused() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a --dep on a reference JS entry is a usage refusal (exit 2) naming 'reference-mode'; Rust worded it 'reference entries do not take managed dependencies'. Oracle ref test_js_deps.py:759-763."]
 fn test_deps_command_dep_on_js_reference_is_refused() {
     let sandbox = Sandbox::new();
     let source_dir = TempDir::new().unwrap();
@@ -1142,7 +1140,6 @@ fn test_clean_sweeps_aged_injected_leftovers() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a reference add with --dep is refused loudly (exit 2) naming 'Reference-mode', and nothing is added. Rust worded it 'reference entries do not take managed dependencies'. Oracle ref test_js_deps.py:1219-1224."]
 fn test_add_js_ref_with_dep_is_refused_loudly() {
     let sandbox = Sandbox::new();
     let source_dir = TempDir::new().unwrap();
