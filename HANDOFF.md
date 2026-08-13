@@ -13,11 +13,11 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 32 fix commits landed, 88 FAILING CONTRACTs closed
-(86 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 33 fix commits landed, 90 FAILING CONTRACTs closed
+(88 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
 The last fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Five
 reviewed PR #44 waves added 85 executable parity tests plus 8 completeness-manifest tests.
-198 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps and responsive
+196 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
 chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
@@ -135,6 +135,7 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `061d29c` | responsive Search: short terminals use a one-row borderless input without losing filtering or cursor behavior | 1 active-red test |
 | `9238165` | responsive Preferences: narrow mirror choices stack while wide choices remain horizontal | 1 active-red test |
 | `3d43a40` | add-time prompt runner validation: exact unknown-runner voice lists configured runners before draft/editor/entry writes | 3 |
+| `157f9b7` | bare add pipe lanes: exact three-language v0.4 advice names only stdin/prompt/template lanes that work without a terminal | 2 |
 
 PR #44 is actively continuing and reached `2941a65` at the last integrated checkpoint: 59/84
 behavior modules and 1156/3018 Python contracts accounted. Its merge ancestry and complete test snapshot are
@@ -154,7 +155,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
 # => 2887 passed / 0 failed / 1134 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 198
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 196
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -166,10 +167,10 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 198 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 196 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `3d43a40`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `157f9b7`.
 
 - **47 port_test_prompt_cli.rs + 9 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
