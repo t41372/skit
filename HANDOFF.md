@@ -13,11 +13,11 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 19 fix commits landed, 64 FAILING CONTRACTs closed
-(62 un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added. The last
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 20 fix commits landed, 68 FAILING CONTRACTs closed
+(66 un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added. The last
 fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Four reviewed PR #44
 waves added 82 executable contracts plus 6 completeness manifests.
-222 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: continue js_deps (14),
+218 FAILING CONTRACT attributes remain (§5 has the per-file map). Next: continue js_deps (10),
 or pick an add-lane cluster.** The user chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
 
@@ -121,6 +121,7 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `dc770fc` | reference-mode dependency refusals: distinct oracle add/deps voices with exact EN/zh-CN/zh-TW rows | 3 |
 | `f8f80f5` | add `--python` normalization: trim explicit values; case-insensitive `-`/`none` remain explicit automatic constraints | 2 |
 | `8cf75fe` | enabled four composition-root PEP refusal contracts that `c5e84ea` had already restored; removed stale divergence notes | 4 |
+| `cc0ead1` | JS deps cleanup: transactionally clear manifest/lock/node_modules without an ownership heuristic; sweep legacy `.injected-*` only when older than one hour; preserve fresh/cutoff files and symlink targets | 4 |
 
 PR #44 can resume from `6c5a408`; its remote head was still unchanged at the last check. Its merge
 ancestry and complete test snapshot are preserved on
@@ -138,7 +139,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
 # => 2887 passed / 0 failed / 1134 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 222
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 218
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -150,10 +151,10 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 222 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 218 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `08046bd`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `cc0ead1`.
 
 - **47 port_test_prompt_cli.rs + 9 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
@@ -166,12 +167,12 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   offer is NOT); params human read view for prompts (placeholder table via `_show_command_params`);
   **genuine internal bug: add lane trims `--runner " claude "`, run lane does not — make
   consistent**. Oracle: cli.py prompt lanes, store.py:571, langs/prompt/*.
-- **14 port_test_js_deps.rs — JS dependency materialization.** First-seen scanner order and empty
+- **10 port_test_js_deps.rs — JS dependency materialization.** First-seen scanner order and empty
   requirements are fixed in `54bf6c6`; mirror empty-value precedence is fixed in `c3e02b8`;
   reference implicit scanning, installer argv/fallback, and refusal voices are fixed in
-  `6aedb9b`, `05e8b9d`, and `dc770fc`.
-  Remaining work includes the data-safety `deps`-clear
-  node_modules sweep (§ data-safety below). Oracle: langs/javascript/deps.py.
+  `6aedb9b`, `05e8b9d`, and `dc770fc`. Transactional explicit cleanup and the aged legacy injected
+  sweep are fixed in `cc0ead1`. Remaining work is manifest/stamp/install shape plus three add-lane
+  refusal voices. Oracle: langs/javascript/deps.py.
 - **17 port_test_cli.rs — mixed add/File-not-found voices.** "File not found" phrase (oracle
   `_require_exists`/`_require_file`, cli.py:420-428) vs Rust "could not resolve ...os error 2";
   plus add-lane overlaps (see add-lane cluster).
