@@ -76,7 +76,7 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_store.py | 78 | crates/skit-store/tests/port_test_store.rs | in progress (34) · S2 corrupt-index backup + A2 read-path self-heal translated (c04395c) · full port ongoing |
+| test_store.py | 78 | crates/skit-store/tests/port_test_store.rs + crates/skit-language/tests/port_test_store_inference.rs + crates/skit-runtime/tests/port_test_store_exe_target.rs | in progress · store owner 34 active · 9 inference + 1 executable-target contracts moved from placeholders to their owning crates (`85f84b7`) · S2 corrupt-index backup + A2 read-path self-heal translated (c04395c) · full port ongoing |
 | test_store_fix.py | 38 | crates/skit-store/tests/port_test_store.rs | partial · repair/widening ports landed with A2 · remainder todo |
 | test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs | done (16) · temp-leak fixed · A1 retry seam + tests landed · S2/A2 gaps resolved (c04395c) · 16 deferred (crash-injection/Windows) |
 
@@ -97,7 +97,7 @@ adjudicated · counts are Python `def test_` counts.
 | --- | --- | --- | --- |
 | test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (82/58) · 2 weakenings being fixed (whitespace-constraint stored-value, reused-arg markup isolation) |
 | test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (63/87) · **stdin store-error 'taken' FIXED 592d236** · **edit drift hint FIXED 1cac4a4** · runner trim/pick persistence fixed `2c1f6ef` · Unicode `--set` fixed `07dfbce` · add-time unknown-runner voice fixed `3d43a40` · remaining prompt-CLI divergences include name keeps .prompt, stdin defaults, deleted-body run exit, and runner recovery messages |
-| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | in fix · Unicode XID placeholder scan/render fixed `07dfbce` while command identifiers remain ASCII · brace-adjacent/triple-stache and reserved `prompt` grammar fixed `45516b3` · 4 divergences remain |
+| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | in fix · Unicode XID placeholder scan/render fixed `07dfbce` while command identifiers remain ASCII · brace-adjacent/triple-stache and reserved `prompt` grammar fixed `45516b3` · blank raw runner rows remain inspectable but invalid `059e24b` · 3 divergences remain |
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | done (61) · **human-display layer FIXED 3bb4fbf** (sentinels, padded list, `k = v`, paused notice, choice-naming errors) · 14 cross-crate wizard/first-run |
 | test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs | done (19) · bare pipe/no-input lane advice fixed `157f9b7` · 11 divergences · 38 cross-crate/absent (interactive add lane) |
 | test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs | done (57) · blank index/install mirror values fixed in `c3e02b8` · 6 deferred |

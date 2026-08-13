@@ -13,11 +13,11 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 37 fix commits landed, 98 FAILING CONTRACTs closed
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 38 fix commits landed, 99 FAILING CONTRACTs closed
 (96 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
 The last fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Five
-reviewed PR #44 waves added 85 executable parity tests plus 8 completeness-manifest tests.
-188 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps and responsive
+reviewed PR #44 waves added 95 executable parity tests plus 8 completeness-manifest tests.
+187 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
 chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
@@ -140,10 +140,13 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `affa5b2` | add Python pins: exact three-language note announces only shebang-derived `requires-python`; explicit and PEP 723 pins stay silent | 4 |
 | `c2ec8b6` | PowerShell defaults: preserve runtime scalar literal types independently from the static-type fallback; unknown types remain degraded | 1 PR #44 active-red + additive matrix |
 | `45516b3` | prompt token grammar: scanner and renderer exclude brace-adjacent/triple-stache tokens and reserved `prompt` names | 3 |
+| `059e24b` | prompt runner diagnostics: preserve a blank raw runner name for inspection while valid runners and frontend identities still exclude it | 1 |
 
-PR #44 is actively continuing and reached `2941a65` at the last integrated checkpoint: 59/84
-behavior modules and 1156/3018 Python contracts accounted. Its merge ancestry and complete test snapshot are
-preserved on `integration/pr44-20260812` at merge `0320efd`. The integration workspace passes
+PR #44 is actively continuing. The last corrected integrated accounting is 64/84 behavior modules
+and 1318/3018 Python contracts. Its merge ancestry and complete test snapshot are preserved on
+`integration/pr44-20260812` at corrected tip `17e9ab0`; do not use the earlier `0b36bf7` result,
+which inherited an upstream denominator error (60 instead of 78 `test_store.py` functions and
+3000 instead of 3018 total contracts). The integration workspace passes
 `cargo test --locked --workspace --all-targets --all-features --no-run`. Reviewed green waves on
 this branch include parser mutation
 contracts (`184726d`), argstate filesystem contracts (`40b6087`), atomic state contracts
@@ -159,7 +162,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
 # => 2887 passed / 0 failed / 1134 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 188
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 187
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -171,12 +174,12 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 188 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 187 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
 the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `45516b3`.
 
-- **44 port_test_prompt_cli.rs + 4 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
+- **44 port_test_prompt_cli.rs + 3 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
   removesuffix); stdin `add -` no name → defaults 'stdin'; stdin whitespace body accepted; `{{目标}}`
   unicode placeholders undetected → empty fields (**the #14 analyzer defect** — likely in
