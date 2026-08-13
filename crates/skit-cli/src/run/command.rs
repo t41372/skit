@@ -598,6 +598,7 @@ fn apply_sets(
                 value: item.clone(),
             });
         };
+        let name = name.trim();
         if name.is_empty() {
             return Err(RunError::InvalidSet {
                 value: item.clone(),
@@ -1135,6 +1136,8 @@ mod tests {
         assert!(apply_sets(&declarations, &["other=x".to_owned()], &mut values).is_err());
         apply_sets(&declarations, &["name=value=tail".to_owned()], &mut values).unwrap();
         assert_eq!(values["name"], "value=tail");
+        apply_sets(&declarations, &[" name = padded".to_owned()], &mut values).unwrap();
+        assert_eq!(values["name"], " padded");
     }
 
     #[test]

@@ -564,7 +564,6 @@ fn test_set_value_may_contain_equals_signs() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle strips the --set key (` CITY ` -> `CITY`) and succeeds. Rust `apply_sets` (run/command.rs) does not strip: it looks up ` CITY ` verbatim, misses, and exits 2 `unknown parameter in --set:  CITY `."]
 fn test_set_key_is_stripped() {
     let root = sandbox();
     build_trip(&root);
