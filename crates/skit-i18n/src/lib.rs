@@ -422,6 +422,11 @@ const CATALOG: &[Translation] = &[
         "工具庫：{}（{} 個項目 · {}）",
     ),
     row!(
+        "(shown in the Library — you can write one line)",
+        "（显示在工具库中——可以自己写一句）",
+        "（顯示在工具庫中——可以自己寫一句）",
+    ),
+    row!(
         "Index rebuilt: {} entry",
         "索引已重建：{} 个条目",
         "索引已重建：{} 個項目"
@@ -535,7 +540,6 @@ const CATALOG: &[Translation] = &[
         "执行器命令只接受 {{prompt}} 槽位——单大括号是字面文字,其他 {{占位符}} 不支持。",
         "執行器命令只接受 {{prompt}} 槽位——單大括號是字面文字,其他 {{佔位符}} 不支援。",
     ),
-    row!("A name is required.", "必须提供名称。", "必須提供名稱。"),
     row!(
         "The command must be a list of text arguments.",
         "命令必须是文本参数列表。",
@@ -1013,12 +1017,6 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Path to the file", "文件路径", "檔案路徑"),
     row!("Name in skit", "skit 中的名称", "skit 中的名稱"),
-    row!("A name is required.", "必须提供名称。", "必須提供名稱。"),
-    row!(
-        "The name {} is already taken — pick another name.",
-        "名称 {} 已被使用——请选择其他名称。",
-        "名稱 {} 已被使用——請選擇其他名稱。",
-    ),
     row!(
         "Cancelled — nothing was added.",
         "已取消——未添加任何条目。",
@@ -2316,11 +2314,6 @@ const CATALOG: &[Translation] = &[
         "{}:meta.toml 損毀({}),已略過",
     ),
     row!(
-        "{}: the referenced source file is gone: {}",
-        "{}:reference 原文件已消失:{}",
-        "{}:reference 原檔已消失:{}",
-    ),
-    row!(
         "a prompt runner needs a name and command",
         "提示词运行器需要名称和命令",
         "提示詞執行器需要名稱與命令",
@@ -3477,7 +3470,6 @@ const CATALOG: &[Translation] = &[
     row!("finished", "完成", "完成"),
     row!("failed (code {})", "失败（代码 {}）", "失敗（代碼 {}）"),
     row!("Not run yet", "还没运行过", "還沒執行過"),
-    row!("⚠ missing: {}", "⚠ 缺失:{}", "⚠ 遺失:{}"),
     row!(
         "The script changed — skit checks the form against it before every run.",
         "脚本改过了——每次运行前 skit 会自动核对表单。",
