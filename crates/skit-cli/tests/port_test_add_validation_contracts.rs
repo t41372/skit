@@ -197,9 +197,6 @@ fn test_validate_python_flags_passes_valid_and_normalizes_the_constraint() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle normalizes '-'/'none' case-insensitively \
-(cli.py:280 `cleaned.lower() in (\"-\", \"none\")`); Rust matches case-sensitively \
-(cli.rs:2928 `matches!(value.trim(), \"-\" | \"none\")`), so '  NONE  ' is validated and exits 2."]
 fn test_validate_python_flags_normalizes_dash_and_none_to_empty() {
     // Oracle: _validate_python_flags(None, "-") == "" and "none" == "" and "  NONE  " == "".
     for (value, name) in [
@@ -237,9 +234,6 @@ fn test_validate_python_flags_returns_none_when_no_python_given() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle _validate_python_flags(None, \"   \") == \"\" \
-(blank normalizes to automatic, cli.py:279-281); Rust keeps the blank and validates it \
-(cli.rs:2927-2948 trims only for the '-'/'none' check, filters only the empty string)."]
 fn test_validate_python_flags_treats_an_empty_python_as_empty() {
     // Oracle: _validate_python_flags(None, "   ") == "" (a blank constraint means automatic).
     let sandbox = Sandbox::new();

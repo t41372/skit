@@ -2786,6 +2786,12 @@ fn add_with_config(
         .filter(|item| !item.is_empty())
         .collect::<Vec<_>>();
     let requires_python_explicit = requires_python.is_some();
+    if let Some(value) = &mut requires_python {
+        *value = value.trim().to_owned();
+        if value == "-" || value.eq_ignore_ascii_case("none") {
+            value.clear();
+        }
+    }
     if prompt {
         validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
     }
@@ -2928,11 +2934,6 @@ fn add_with_config(
         requires_python = shebang
             .and_then(shebang_program)
             .and_then(python_version_pin);
-    }
-    if let Some(value) = &requires_python
-        && matches!(value.trim(), "-" | "none")
-    {
-        requires_python = None;
     }
     let supports_dependencies = matches!(kind_name.as_str(), "python" | "js" | "ts");
     if dependencies_explicit && !supports_dependencies {
