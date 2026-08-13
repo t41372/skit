@@ -13,11 +13,11 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 43 fix commits landed, 109 FAILING CONTRACTs closed
-(107 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 44 fix commits landed, 112 FAILING CONTRACTs closed
+(110 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
 The last fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Five
-reviewed PR #44 waves added 96 executable parity tests plus 8 completeness-manifest tests.
-177 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps and responsive
+reviewed PR #44 waves added 99 executable parity tests plus 8 completeness-manifest tests.
+174 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
 chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
@@ -146,6 +146,7 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `18ec1a0` | run `--set`: trim only the parameter name while preserving the value bytes after the first equals sign | 1 |
 | `0b8bf2d` | reused run arguments: emit the exact three-language notice only for an implicit non-raw replay | 2 |
 | `27bbb4b` | run `--set` validation: report all malformed and unknown names, list valid names or `—`, and mutate values only after complete validation | 3 |
+| `33d9a4a` | typed run values: reuse the exact form-validation voice across run, prompt, and extra-argument paths | 3 |
 
 PR #44 is actively continuing. The last corrected integrated accounting is 64/84 behavior modules
 and 1318/3018 Python contracts. Its merge ancestry and complete test snapshot are preserved on
@@ -167,7 +168,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
 # => 2887 passed / 0 failed / 1134 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 177
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 174
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -179,12 +180,12 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 177 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 174 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `27bbb4b`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `33d9a4a`.
 
-- **44 port_test_prompt_cli.rs + 3 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
+- **43 port_test_prompt_cli.rs + 3 port_test_prompt_kind.rs + 9 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
   removesuffix); stdin `add -` no name → defaults 'stdin'; stdin whitespace body accepted; `{{目标}}`
   unicode placeholders undetected → empty fields (**the #14 analyzer defect** — likely in
@@ -204,7 +205,7 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   fixed in `219a136`; the 88 remaining ignores in that file are classified architecture,
   cross-crate, private-helper, or absent-public-seam ports rather than `FAILING CONTRACT` markers.
   Oracle: langs/javascript/deps.py.
-- **16 port_test_cli.rs — mixed add/File-not-found voices.** "File not found" phrase (oracle
+- **15 port_test_cli.rs — mixed add/File-not-found voices.** "File not found" phrase (oracle
   `_require_exists`/`_require_file`, cli.py:420-428) vs Rust "could not resolve ...os error 2";
   plus add-lane overlaps (see add-lane cluster).
 - **16 port_test_add_validation_contracts.rs + 9 port_test_add_lane_contracts.rs + 6
@@ -229,7 +230,7 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   non-editable kind) vs Rust's blanket Usage 2; `[[parameters]]` unknown-key preservation
   (models.py:112-113 pass-through vs typed `to_meta_map` dropping unmodeled keys,
   parameters.rs:340-349).
-- **2 port_test_run_set.rs** — run --set lane divergences.
+- **1 port_test_run_set.rs** — dry-run injection transparency/secret masking.
 - **6 port_test_config.rs** — config store-level leftovers (distinct from the DONE config_cmd).
 - **Data-safety (in js_deps + elsewhere):** shim writes the plaintext-secret injected copy to
   `entry_dir` unconditionally; oracle stages OS-temp-first (rewrite.py:176-180) so a crash never
