@@ -204,7 +204,7 @@ fn rust_additive_pinned_sha256_matches_aarch64_windows() {
 fn test_triple_unsupported_arch_raises() {
     let error = UvTarget::from_parts("mips", "linux", false).unwrap_err();
     assert!(
-        matches!(error, UvBootstrapError::UnsupportedPlatform { .. }),
+        matches!(&error, UvBootstrapError::UnsupportedPlatform { .. }),
         "unexpected error: {error:?}"
     );
     assert!(error.to_string().to_lowercase().contains("unsupported"));
@@ -295,7 +295,7 @@ fn test_extract_uv_no_exe_in_archive_raises() {
 
     let error = install_verified_uv_archive(&archive, &asset, root.path()).unwrap_err();
     assert!(
-        matches!(error, UvBootstrapError::Archive { .. }),
+        matches!(&error, UvBootstrapError::Archive { .. }),
         "unexpected error: {error:?}"
     );
     assert!(error.to_string().contains("uv"), "{error}");
@@ -340,7 +340,7 @@ fn test_checksum_mismatch_raises_checksum_error_not_generic() {
     let root = TempDir::new().unwrap();
 
     let error = install_verified_uv_archive(&archive, &asset, root.path()).unwrap_err();
-    assert!(matches!(error, UvBootstrapError::Checksum));
+    assert!(matches!(&error, UvBootstrapError::Checksum));
     let message = error.to_string();
     assert!(message.to_lowercase().contains("checksum"), "{message}");
     assert!(
