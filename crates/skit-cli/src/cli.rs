@@ -718,10 +718,6 @@ fn preset_candidates_from(state_dir: &Path) -> Vec<CompletionCandidate> {
 }
 
 fn execute(cli: Cli) -> Result<i32, CliError> {
-    if cli.version {
-        println!("skit {}", env!("CARGO_PKG_VERSION"));
-        return Ok(0);
-    }
     if cli.show_completion {
         write_completion(detect_shell()?, &mut io::stdout());
         return Ok(0);
@@ -736,6 +732,10 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
         let mut output = File::create(&path)?;
         write_completion(shell, &mut output);
         humanln!("Installed completion: {}", path.display());
+        return Ok(0);
+    }
+    if cli.version {
+        println!("skit {}", env!("CARGO_PKG_VERSION"));
         return Ok(0);
     }
     let data_dir = resolve_data_dir(cli.data_dir)?;
