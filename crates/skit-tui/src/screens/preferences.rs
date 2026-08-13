@@ -660,6 +660,7 @@ impl PreferencesWidgetSession {
                 buttons,
                 ..
             } => {
+                let stacked = radio_options_stack(control.id, area.width);
                 let mut y = area.y;
                 if !label.is_empty() {
                     frame.render_widget(
@@ -674,7 +675,7 @@ impl PreferencesWidgetSession {
                     let wanted = u16::try_from(option_label.width().saturating_add(2))
                         .unwrap_or(u16::MAX)
                         .min(area.width.max(1));
-                    if x > area.x && x.saturating_add(wanted) > area.right() {
+                    if x > area.x && (stacked || x.saturating_add(wanted) > area.right()) {
                         x = area.x;
                         y = y.saturating_add(1);
                     }
@@ -1022,9 +1023,26 @@ fn control_height(control: &PreferencesControl, locale: Locale, width: u16) -> u
             3
         }
         PreferencesControlKind::Choice(choice) => usize::from(!control.label.is_empty())
-            .saturating_add(radio_rows(&choice.options, locale, width).max(1)),
+            .saturating_add(
+                if radio_options_stack(control.id, width) {
+                    choice.options.len()
+                } else {
+                    radio_rows(&choice.options, locale, width)
+                }
+                .max(1),
+            ),
         PreferencesControlKind::Button => 1,
     }
+}
+
+fn radio_options_stack(id: PreferencesControlId, width: u16) -> bool {
+    !matches!(
+        id,
+        PreferencesControlId::MirrorMaster
+            | PreferencesControlId::PypiChoice
+            | PreferencesControlId::GithubChoice
+            | PreferencesControlId::NpmChoice
+    ) || crate::layout::is_narrow(width)
 }
 
 fn radio_rows(options: &[PreferencesOption], locale: Locale, width: u16) -> usize {
