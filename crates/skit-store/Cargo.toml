@@ -29,6 +29,7 @@ skit-language.workspace = true
 
 [dev-dependencies]
 skit-i18n.workspace = true
+syn.workspace = true
 tempfile.workspace = true
 
 [lints]

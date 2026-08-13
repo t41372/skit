@@ -2787,6 +2787,7 @@ dependencies = [
  "skit-form",
  "skit-i18n",
  "skit-language",
+ "syn 2.0.119",
  "tempfile",
  "thiserror 2.0.20",
  "time",
