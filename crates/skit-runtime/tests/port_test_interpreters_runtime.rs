@@ -1,21 +1,34 @@
 //! Runtime-resolution ports from Python `tests/test_interpreters.py` at `main@206f9ef`.
 //!
-//! Exact Python test names keep the frozen contract count. `rust_additive_*` cases split pytest
-//! parameter rows so one early failure cannot hide later language/runtime rows.
+//! Exact Python test names keep the frozen contract count. `rust_additive_*` cases split multi-case
+//! assertions so one early failure cannot hide later interpreter/runtime paths.
 
 use std::{collections::BTreeMap, path::PathBuf};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug};
 use skit_runtime::{
-    LaunchError, LaunchPaths, ProgramProbe, build_launch_plan, resolve_javascript_runtime,
+    LaunchError, LaunchPaths, ProgramProbe, build_launch_plan, build_launch_preview,
+    resolve_javascript_runtime,
 };
 
-#[derive(Debug, Default)]
+const SCRIPT: &str = "/data/scripts/demo/payload";
+
+#[derive(Debug)]
 struct Probe {
     programs: BTreeMap<String, PathBuf>,
-    files: Vec<PathBuf>,
-    dirs: Vec<PathBuf>,
+    script_present: bool,
+    panic_on_program_lookup: bool,
+}
+
+impl Default for Probe {
+    fn default() -> Self {
+        Self {
+            programs: BTreeMap::new(),
+            script_present: true,
+            panic_on_program_lookup: false,
+        }
+    }
 }
 
 impl Probe {
@@ -23,28 +36,38 @@ impl Probe {
         Self {
             programs: names
                 .iter()
-                .map(|name| ((*name).to_owned(), PathBuf::from(format!("/bin/{name}"))))
+                .map(|name| ((*name).to_owned(), PathBuf::from(format!("/usr/bin/{name}"))))
                 .collect(),
-            files: vec![PathBuf::from("/data/scripts/demo/payload")],
-            dirs: vec![
-                PathBuf::from("/invoke"),
-                PathBuf::from("/data/scripts/demo"),
-            ],
+            ..Self::default()
         }
+    }
+
+    fn without_script(mut self) -> Self {
+        self.script_present = false;
+        self
+    }
+
+    fn panic_on_program_lookup(mut self) -> Self {
+        self.panic_on_program_lookup = true;
+        self
     }
 }
 
 impl ProgramProbe for Probe {
     fn find_program(&self, name: &str) -> Option<PathBuf> {
+        assert!(
+            !self.panic_on_program_lookup,
+            "program lookup happened before the contract allowed it: {name}"
+        );
         self.programs.get(name).cloned()
     }
 
     fn is_file(&self, path: &std::path::Path) -> bool {
-        self.files.iter().any(|item| item == path)
+        self.script_present && path == std::path::Path::new(SCRIPT)
     }
 
     fn is_dir(&self, path: &std::path::Path) -> bool {
-        self.dirs.iter().any(|item| item == path)
+        matches!(path.to_str(), Some("/invoke" | "/data/scripts/demo"))
     }
 
     fn is_executable(&self, path: &std::path::Path) -> bool {
@@ -68,167 +91,288 @@ fn entry(kind: &str, interpreter: &str) -> Entry {
 
 fn paths() -> LaunchPaths {
     LaunchPaths {
-        script: PathBuf::from("/data/scripts/demo/payload"),
+        script: PathBuf::from(SCRIPT),
         entry_dir: PathBuf::from("/data/scripts/demo"),
         invoke_cwd: PathBuf::from("/invoke"),
     }
 }
 
-fn plan(kind: &str, interpreter: &str, programs: &[&str]) -> Result<PathBuf, LaunchError> {
-    build_launch_plan(
-        &entry(kind, interpreter),
+fn assembly(args: &[&str]) -> Assembly {
+    Assembly {
+        args: args.iter().map(|value| (*value).to_owned()).collect(),
+        masked_args: args.iter().map(|value| (*value).to_owned()).collect(),
+        ..Assembly::default()
+    }
+}
+
+fn assert_runner(available: &[&str], expected: &str) {
+    let plan = build_launch_plan(
+        &entry("js", ""),
         &paths(),
         &Assembly::default(),
         None,
         None,
-        &Probe::with_programs(programs),
+        &Probe::with_programs(available),
     )
-    .map(|plan| plan.program)
-}
-
-fn assert_default(kind: &str, expected: &str) {
-    let program = plan(kind, "", &[expected]).unwrap();
-    assert_eq!(program, PathBuf::from(format!("/bin/{expected}")));
-}
-
-fn assert_js_fallback(available: &[&str], expected: &str) {
-    let settings = EntrySettings::default();
-    let runtime = resolve_javascript_runtime(&settings, &Probe::with_programs(available)).unwrap();
-    assert_eq!(runtime, expected);
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from(format!("/usr/bin/{expected}")));
 }
 
 #[test]
-fn test_interpreter_override_is_used() {
-    let program = plan("shell", "custom-shell", &["custom-shell"]).unwrap();
-    assert_eq!(program, PathBuf::from("/bin/custom-shell"));
+fn test_resolve_interpreter_found_on_path() {
+    let plan = build_launch_plan(
+        &entry("shell", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::with_programs(&["bash"]),
+    )
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from("/usr/bin/bash"));
+}
+
+#[cfg(not(windows))]
+#[test]
+fn test_resolve_interpreter_missing_posix_names_the_interpreter() {
+    let error = build_launch_plan(
+        &entry("shell", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(&error, LaunchError::ProgramNotFound { name } if name == "bash"));
+    let message = error.to_string();
+    assert!(message.contains("bash"), "{message}");
+    assert!(!message.contains("Git for Windows"), "{message}");
 }
 
 #[test]
-fn test_missing_override_errors() {
-    let error = plan("shell", "custom-shell", &[]).unwrap_err();
-    assert!(
-        matches!(
-            &error,
-            LaunchError::ProgramNotFound { name } if name == "custom-shell"
-        ),
-        "override failure resolved as the wrong launch error: {error:?}"
+fn test_interpreter_launch_builds_argv() {
+    let plan = build_launch_plan(
+        &entry("shell", ""),
+        &paths(),
+        &assembly(&["--fast"]),
+        None,
+        None,
+        &Probe::with_programs(&["bash"]),
+    )
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from("/usr/bin/bash"));
+    assert_eq!(plan.args, vec![SCRIPT.to_owned(), "--fast".to_owned()]);
+}
+
+#[test]
+fn test_interpreter_launch_meta_interpreter_beats_default() {
+    let plan = build_launch_plan(
+        &entry("shell", "zsh"),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::with_programs(&["bash", "zsh"]),
+    )
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from("/usr/bin/zsh"));
+}
+
+#[test]
+fn test_interpreter_launch_prefix_placement() {
+    let plan = build_launch_plan(
+        &entry("powershell", ""),
+        &paths(),
+        &assembly(&["arg1"]),
+        None,
+        None,
+        &Probe::with_programs(&["pwsh"]),
+    )
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from("/usr/bin/pwsh"));
+    assert_eq!(
+        plan.args,
+        vec!["-File".to_owned(), SCRIPT.to_owned(), "arg1".to_owned()]
     );
 }
 
 #[test]
-fn test_default_interpreter_resolution() {
-    for (kind, expected) in [
-        ("shell", "bash"),
-        ("fish", "fish"),
-        ("powershell", "pwsh"),
-        ("ruby", "ruby"),
-        ("perl", "perl"),
-        ("lua", "lua"),
-        ("r", "Rscript"),
-    ] {
-        assert_default(kind, expected);
-    }
+fn test_interpreter_launch_describe_is_side_effect_free() {
+    let preview = build_launch_preview(
+        &entry("shell", ""),
+        &paths(),
+        &assembly(&["--flag"]),
+        None,
+        None,
+        None,
+        &Probe::default().panic_on_program_lookup(),
+    )
+    .unwrap();
+    assert_eq!(preview.program, PathBuf::from("bash"));
+    assert_eq!(preview.args, vec![SCRIPT.to_owned(), "--flag".to_owned()]);
+    assert!(preview.display.contains("bash"), "{}", preview.display);
+    assert!(preview.display.contains(SCRIPT), "{}", preview.display);
 }
 
 #[test]
-fn rust_additive_default_interpreter_shell() {
-    assert_default("shell", "bash");
+fn test_interpreter_launch_preflight_missing_interpreter() {
+    let error = build_launch_plan(
+        &entry("shell", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(&error, LaunchError::ProgramNotFound { name } if name == "bash"));
 }
 
 #[test]
-fn rust_additive_default_interpreter_fish() {
-    assert_default("fish", "fish");
+fn test_interpreter_launch_preflight_ok() {
+    let plan = build_launch_plan(
+        &entry("shell", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::with_programs(&["bash"]),
+    )
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from("/usr/bin/bash"));
 }
 
 #[test]
-fn rust_additive_default_interpreter_powershell() {
-    assert_default("powershell", "pwsh");
+fn test_interpreter_launch_missing_script_raises_before_resolution() {
+    let error = build_launch_plan(
+        &entry("shell", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::default()
+            .without_script()
+            .panic_on_program_lookup(),
+    )
+    .unwrap_err();
+    assert!(matches!(&error, LaunchError::TargetMissing { .. }));
 }
 
 #[test]
-fn rust_additive_default_interpreter_ruby() {
-    assert_default("ruby", "ruby");
+fn test_runner_detection_order_prefers_deno() {
+    assert_runner(&["node", "bun", "deno"], "deno");
 }
 
 #[test]
-fn rust_additive_default_interpreter_perl() {
-    assert_default("perl", "perl");
+fn test_runner_falls_to_bun_then_node() {
+    assert_runner(&["bun", "node"], "bun");
+    assert_runner(&["node"], "node");
 }
 
 #[test]
-fn rust_additive_default_interpreter_lua() {
-    assert_default("lua", "lua");
+fn rust_additive_runner_falls_to_bun_before_node() {
+    assert_runner(&["bun", "node"], "bun");
 }
 
 #[test]
-fn rust_additive_default_interpreter_r() {
-    assert_default("r", "Rscript");
+fn rust_additive_runner_falls_to_node_when_bun_missing() {
+    assert_runner(&["node"], "node");
 }
 
 #[test]
-fn test_python_always_resolves_uv() {
-    let program = plan("python", "", &["uv"]).unwrap();
-    assert_eq!(program, PathBuf::from("/bin/uv"));
+fn test_runner_meta_interpreter_override() {
+    let plan = build_launch_plan(
+        &entry("js", "node"),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::with_programs(&["deno", "node"]),
+    )
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from("/usr/bin/node"));
 }
 
 #[test]
-fn test_js_runner_pinned() {
-    let settings = EntrySettings {
-        interpreter: "bun".to_owned(),
-        ..EntrySettings::default()
-    };
-    let runtime =
-        resolve_javascript_runtime(&settings, &Probe::with_programs(&["bun", "node"])).unwrap();
-    assert_eq!(runtime, "bun");
-}
-
-#[test]
-fn test_js_runner_fallback_order() {
-    for (available, expected) in [
-        (&["deno", "bun", "node"][..], "deno"),
-        (&["bun", "node"][..], "bun"),
-        (&["node"][..], "node"),
-    ] {
-        assert_js_fallback(available, expected);
-    }
-}
-
-#[test]
-fn rust_additive_js_runner_fallback_deno_first() {
-    assert_js_fallback(&["deno", "bun", "node"], "deno");
-}
-
-#[test]
-fn rust_additive_js_runner_fallback_bun_before_node() {
-    assert_js_fallback(&["bun", "node"], "bun");
-}
-
-#[test]
-fn rust_additive_js_runner_fallback_node_only() {
-    assert_js_fallback(&["node"], "node");
-}
-
-#[test]
-fn test_js_runner_missing_errors() {
+fn test_runner_none_installed_names_candidates_and_config_key() {
     let error = resolve_javascript_runtime(&EntrySettings::default(), &Probe::default()).unwrap_err();
-    assert!(matches!(&error, LaunchError::ProgramNotFound { .. }));
-    // v0.4 gives this user-facing diagnosis. Keep it even if the current Rust wording is red.
-    assert!(
-        error.to_string().contains("No JavaScript runtime"),
-        "missing-runtime wording drifted from v0.4: {error}"
-    );
+    let message = error.to_string();
+    assert!(message.contains("No JavaScript runtime found"), "{message}");
+    assert!(message.contains("deno, bun, node"), "{message}");
+    assert!(message.contains("config js.runner"), "{message}");
 }
 
 #[test]
-fn test_js_runner_entry_pin_missing_does_not_fall_back() {
-    let settings = EntrySettings {
-        interpreter: "deno".to_owned(),
-        ..EntrySettings::default()
-    };
-    let error =
-        resolve_javascript_runtime(&settings, &Probe::with_programs(&["node"])).unwrap_err();
-    assert!(
-        matches!(&error, LaunchError::ProgramNotFound { name } if name == "deno"),
-        "missing entry pin silently fell back: {error:?}"
-    );
+fn test_runner_describe_uses_preferred_name_without_path_lookup() {
+    let preview = build_launch_preview(
+        &entry("js", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        None,
+        &Probe::default().panic_on_program_lookup(),
+    )
+    .unwrap();
+    assert_eq!(preview.program, PathBuf::from("deno"));
+    assert!(preview.display.contains("deno"), "{}", preview.display);
+    assert!(preview.display.contains(SCRIPT), "{}", preview.display);
+}
+
+#[test]
+fn test_runner_preflight_checks_script_and_runner() {
+    let missing_script = build_launch_plan(
+        &entry("js", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::default()
+            .without_script()
+            .panic_on_program_lookup(),
+    )
+    .unwrap_err();
+    assert!(matches!(&missing_script, LaunchError::TargetMissing { .. }));
+
+    let missing_runner = build_launch_plan(
+        &entry("js", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(&missing_runner, LaunchError::ProgramNotFound { .. }));
+}
+
+#[test]
+fn rust_additive_runner_preflight_checks_script_first() {
+    let error = build_launch_plan(
+        &entry("js", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::default()
+            .without_script()
+            .panic_on_program_lookup(),
+    )
+    .unwrap_err();
+    assert!(matches!(&error, LaunchError::TargetMissing { .. }));
+}
+
+#[test]
+fn rust_additive_runner_preflight_checks_runtime_after_script() {
+    let error = build_launch_plan(
+        &entry("js", ""),
+        &paths(),
+        &Assembly::default(),
+        None,
+        None,
+        &Probe::default(),
+    )
+    .unwrap_err();
+    assert!(matches!(&error, LaunchError::ProgramNotFound { .. }));
 }
