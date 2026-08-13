@@ -167,7 +167,7 @@ pub struct AddScreenSession {
     scroll: ScrollableContentState,
     viewport: Rect,
     visible_height: usize,
-    row_starts: BTreeMap<AddControlId, usize>,
+    row_spans: BTreeMap<AddControlId, (usize, usize)>,
 }
 
 impl AddScreenSession {
@@ -188,7 +188,7 @@ impl AddScreenSession {
         self.focus.clear();
         self.inputs.clear();
         self.checks.clear();
-        self.row_starts.clear();
+        self.row_spans.clear();
         match state.stage() {
             AddStage::Source => {
                 let source = state.source();
@@ -642,19 +642,20 @@ impl AddScreenSession {
         let Some(id) = self.focus.current() else {
             return;
         };
-        let Some(row) = self.row_starts.get(id).copied() else {
+        let Some((row_start, row_height)) = self.row_spans.get(id).copied() else {
             return;
         };
-        if row < self.scroll.scroll_offset() {
-            self.scroll.set_scroll_offset(row);
-        } else if row
-            >= self
+        let row_end = row_start.saturating_add(row_height);
+        if row_start < self.scroll.scroll_offset() {
+            self.scroll.set_scroll_offset(row_start);
+        } else if row_end
+            > self
                 .scroll
                 .scroll_offset()
                 .saturating_add(self.visible_height)
         {
             self.scroll
-                .set_scroll_offset(row.saturating_sub(self.visible_height.saturating_sub(1)));
+                .set_scroll_offset(row_end.saturating_sub(self.visible_height));
         }
     }
 }
@@ -703,11 +704,13 @@ pub fn render_add(
         .set_lines(vec![String::new(); total_height.max(1)]);
     session.viewport = body;
     session.visible_height = usize::from(body.height).max(1);
-    session.row_starts.clear();
+    session.row_spans.clear();
     let mut logical = 0;
     for row in &rows {
         if let Some(id) = row.id() {
-            session.row_starts.insert(id.clone(), logical);
+            session
+                .row_spans
+                .insert(id.clone(), (logical, row.height()));
         }
         logical = logical.saturating_add(row.height());
     }

@@ -98,7 +98,11 @@ pub fn render_with_session(
     session.begin_render(state);
     let footer_height =
         footer::required_height(frame.area().width, frame.area().height, state, locale);
-    let areas = layout::split_with_header(frame.area(), footer_height, header_height(state));
+    let areas = layout::split_with_header(
+        frame.area(),
+        footer_height,
+        header_height(state, frame.area().height),
+    );
 
     if areas.header.height > 0 {
         session.render_header(frame, areas.header, state, locale);
@@ -141,9 +145,17 @@ pub fn render_with_session(
 /// A screen that titles its own panel gets the whole body (`src/skit/tui_form.py:606-611`,
 /// `src/skit/tui_settings.py:869-871`). Drawing the header above it prints the same title twice and
 /// spends three rows saying so — on entry settings that was three of the rows the parameter section
-/// needed to be on screen at all. A modal keeps the header because that is where its own title
-/// lives.
-fn header_height(state: &LibraryState) -> u16 {
+/// needed to be on screen at all. Most modals keep the header. The compact environment picker owns
+/// its title and uses those rows for its input.
+fn header_height(state: &LibraryState, terminal_height: u16) -> u16 {
+    // The environment picker owns a titled panel. On short and tiny terminals,
+    // omit the duplicate global title so its bordered input and the global
+    // Cancel chip both fit. This matches the short-tier modal chrome budget.
+    if terminal_height < 16
+        && matches!(state.modal(), Some(ModalState::RunEnvironmentPicker { .. }))
+    {
+        return 0;
+    }
     if state.modal().is_none()
         && matches!(
             state.screen(),
