@@ -53,7 +53,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_store_fix.py", tests: 38, guard: Some("crates/skit-cli/tests/port_test_store_fix_manifest.rs") },
     Module { python: "test_atomic.py", tests: 32, guard: None },
     Module { python: "test_flows.py", tests: 102, guard: None },
-    Module { python: "test_uvman.py", tests: 36, guard: None },
+    Module { python: "test_uvman.py", tests: 36, guard: Some("crates/skit-cli/tests/port_test_uvman_manifest.rs") },
     Module { python: "test_launcher.py", tests: 38, guard: Some("crates/skit-cli/tests/port_test_launcher_manifest.rs") },
     Module { python: "test_launcher_fix.py", tests: 12, guard: Some("crates/skit-cli/tests/port_test_launcher_fix_manifest.rs") },
     Module { python: "test_shim.py", tests: 38, guard: None },
@@ -99,7 +99,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_prompt_utf8.py", tests: 16, guard: Some("crates/skit-cli/tests/port_test_prompt_utf8_manifest.rs") },
     Module { python: "test_packaging.py", tests: 7, guard: Some("crates/skit-cli/tests/port_test_packaging_manifest.rs") },
     Module { python: "test_benchmarks_tooling.py", tests: 156, guard: None },
-    Module { python: "test_mutation_gate.py", tests: 4, guard: None },
+    Module { python: "test_mutation_gate.py", tests: 4, guard: Some("crates/skit-cli/tests/port_test_mutation_gate_manifest.rs") },
     Module { python: "test_hermeticity.py", tests: 1, guard: Some(SMALL) },
 ];
 
