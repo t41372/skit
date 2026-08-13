@@ -317,7 +317,7 @@ fn test_double_quotes_nested_in_backticks_are_refused_not_guessed() {
         &values(&[("v", "$(printf PWNED)")]),
     )
     .unwrap_err();
-    assert!(matches!(error, LaunchError::UnsafeTemplatePlaceholder { .. }));
+    assert!(matches!(&error, LaunchError::UnsafeTemplatePlaceholder { .. }));
     assert_eq!(
         error.to_string(),
         "Can't safely fill in a value inside double quotes nested in a `…` command substitution — the shell strips one layer of escaping there. Rewrite that part of the template with $(…) instead of backticks."
@@ -332,6 +332,7 @@ fn rust_additive_uppercase_placeholder_is_substituted() {
     );
 }
 
+#[cfg(not(windows))]
 #[test]
 fn rust_additive_replacement_text_is_not_reparsed_as_another_placeholder() {
     assert_eq!(
