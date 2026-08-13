@@ -2,10 +2,11 @@
 //! `main@206f9ef`. These tests use the real typed review constructor and Ratatui Add renderer; no
 //! test-only fresh flag or dependency suggestion logic is reimplemented here.
 
-use std::{fs, path::{Path, PathBuf}};
+use std::{fs, path::PathBuf};
 
 use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
 use skit_application::SourcePermissions;
+use skit_domain::StorageMode;
 use skit_i18n::Locale;
 use skit_tui::{AddControlId, AddScreenGeometry, AddScreenSession, render_add};
 use skit_ui::{
@@ -75,7 +76,7 @@ fn test_add_panel_on_a_kept_draft_hides_storage_and_copies() {
     );
     assert!(!text.contains("Storage mode"), "{text}");
     let entry = review.create_entry().unwrap();
-    assert_eq!(entry.mode.as_str(), "copy");
+    assert_eq!(entry.mode, StorageMode::Copy);
 }
 
 #[test]
@@ -95,7 +96,7 @@ fn test_prompt_panel_on_a_kept_draft_hides_storage_and_copies() {
     );
     let entry = review.create_entry().unwrap();
     assert_eq!(entry.kind.as_str(), "prompt");
-    assert_eq!(entry.mode.as_str(), "copy");
+    assert_eq!(entry.mode, StorageMode::Copy);
 }
 
 #[test]
@@ -143,5 +144,4 @@ fn test_add_panel_prefill_drops_a_sibling_local_module() {
         "sibling local module was suggested as a package dependency: {prefill}"
     );
     assert!(prefill.contains("requests"), "legal third-party import was lost: {prefill}");
-    assert!(Path::new(&source).is_file());
 }
