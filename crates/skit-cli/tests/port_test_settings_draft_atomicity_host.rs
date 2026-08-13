@@ -16,6 +16,7 @@ use skit_application::{
     EntryMutationRepository as _, EntryRepository as _, SourcePermissions,
 };
 use skit_domain::EntrySettings;
+use skit_language::{UvMetadata, effective_uv_metadata_bytes};
 use skit_store::FileStore;
 use skit_ui::{
     AddAction, AddEffect, AddStage, AddWorkflowState, DEPENDENCIES_KEY, DependencyFlavor,
@@ -126,19 +127,17 @@ impl Sandbox {
             .success();
     }
 
-    fn dependency_json(&self, name: &str) -> serde_json::Value {
-        let output = self
-            .command()
-            .args(["deps", name, "--json"])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "deps --json failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        serde_json::from_slice(&output.stdout).unwrap()
+    fn python_uv_metadata(&self, name: &str) -> UvMetadata {
+        let store = self.store();
+        let entry = store.resolve(name).unwrap();
+        let payload = store.payload_path(&entry).unwrap();
+        let bytes = fs::read(payload).unwrap();
+        effective_uv_metadata_bytes(&bytes).unwrap()
+    }
+
+    fn js_dependencies(&self, name: &str) -> Vec<String> {
+        let entry = self.store().resolve(name).unwrap();
+        EntrySettings::from_meta(&entry.meta).dependencies
     }
 
     fn run_settings(&self, inputs: &[Vec<u8>]) -> String {
@@ -320,9 +319,9 @@ fn test_settings_dash_python_saves_as_automatic() {
     save(&mut inputs);
     let _ = sandbox.run_settings(&inputs);
 
-    let payload = sandbox.dependency_json("autoset");
-    assert_eq!(payload["requires_python"], "");
-    assert_eq!(payload["dependencies"], serde_json::json!(["requests"]));
+    let metadata = sandbox.python_uv_metadata("autoset");
+    assert_eq!(metadata.requires_python, "");
+    assert_eq!(metadata.dependencies, ["requests"]);
 }
 
 #[test]
@@ -341,9 +340,9 @@ fn test_settings_valid_deps_and_python_save_normally() {
     save(&mut inputs);
     let _ = sandbox.run_settings(&inputs);
 
-    let payload = sandbox.dependency_json("okset");
-    assert_eq!(payload["dependencies"], serde_json::json!(["requests>=2,<3"]));
-    assert_eq!(payload["requires_python"], "~=3.12");
+    let metadata = sandbox.python_uv_metadata("okset");
+    assert_eq!(metadata.dependencies, ["requests>=2,<3"]);
+    assert_eq!(metadata.requires_python, "~=3.12");
 }
 
 #[test]
@@ -358,8 +357,7 @@ fn test_settings_npm_deps_are_not_pep508_validated() {
     save(&mut inputs);
     let _ = sandbox.run_settings(&inputs);
 
-    let payload = sandbox.dependency_json("jsset");
-    assert_eq!(payload["dependencies"], serde_json::json!(["@scope/thing"]));
+    assert_eq!(sandbox.js_dependencies("jsset"), ["@scope/thing"]);
 }
 
 #[test]
@@ -391,10 +389,7 @@ fn test_settings_name_conflict_is_refused_before_npm_clear() {
     assert!(output.contains("already taken"), "name conflict was not surfaced: {output}");
     let after = sandbox.store().resolve("js-original").unwrap();
     assert_eq!(after.meta.name, "js-original");
-    assert_eq!(
-        EntrySettings::from_meta(&after.meta).dependencies,
-        vec!["chalk".to_owned()]
-    );
+    assert_eq!(sandbox.js_dependencies("js-original"), vec!["chalk".to_owned()]);
     assert!(entry_dir.join(".skit-deps").is_file(), "name precheck already cleared stamp");
     assert!(entry_dir.join("package.json").is_file(), "name precheck already cleared manifest");
     assert!(
