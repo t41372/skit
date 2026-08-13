@@ -13,12 +13,12 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 28 fix commits landed, 85 FAILING CONTRACTs closed
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 31 fix commits landed, 85 FAILING CONTRACTs closed
 (83 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
 The last fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Five
 reviewed PR #44 waves added 85 executable parity tests plus 8 completeness-manifest tests.
-201 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps implementation
-divergences are closed; next finish responsive (4) and continue prompt/add clusters.** The user
+201 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps and responsive
+implementation divergences are closed; next continue prompt/add clusters.** The user
 chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
 
@@ -131,6 +131,9 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `a9e1452` | add flag refusals: exact v0.4 shell/command `--dep` and stdin `--ref` voices with EN/zh-CN/zh-TW end-to-end coverage | 3 |
 | `462aa9e` | responsive detail pin: Tab/key/mouse actions carry actual rendered visibility; reducer pins the requested open/closed state across tiers and resizes | 2 |
 | `219a136` | JS install artifacts: exact manifest/order/parser, real entry cwd, node_modules SHA-256 marker, fresh/resolve ordering, persistent-lock backup transaction and rollback | 4 |
+| `ef7c1ef` | responsive compact controls: short env picker keeps its input visible; focused Add fields scroll their full control span into view | 2 active-red tests |
+| `061d29c` | responsive Search: short terminals use a one-row borderless input without losing filtering or cursor behavior | 1 active-red test |
+| `9238165` | responsive Preferences: narrow mirror choices stack while wide choices remain horizontal | 1 active-red test |
 
 PR #44 is actively continuing and reached `2941a65` at the last integrated checkpoint: 59/84
 behavior modules and 1156/3018 Python contracts accounted. Its merge ancestry and complete test snapshot are

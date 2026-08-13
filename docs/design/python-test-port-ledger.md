@@ -130,7 +130,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_prompt_tui.py | 83 | crates/skit-tui/tests/port_test_prompt_tui.rs | done (49) · **Library title FIXED 5574ff1** (工具库/庫) · 26 cross-crate run routing · Ctrl+O/Ctrl+E divergences in fix pass |
 | test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs | in fix (28/33) · 1 empty-needle weakening being fixed · 2 private-render drops |
 | test_phase1.py | 27 | crates/skit-cli/tests/port_test_phase1.rs | done (27) · no gap |
-| test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs + manifest | in fix (13 executable green / 4 production gaps) · full replacement `459765a` · visibility-aware detail pin fixed `462aa9e` · Search/Preferences/modal viewport clusters in progress · 2 Textual-only architecture-closed |
+| test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs + manifest | done (17 executable) · full replacement `459765a` · detail pin `462aa9e` · compact modal controls `ef7c1ef` · short Search `061d29c` · narrow Preferences `9238165` · 2 Textual-only architecture-closed |
 | test_settings_and_draft_review_atomicity.py | 16 | crates/skit-ui/tests/port_test_settings_and_draft_review_atomicity.rs | in fix (8/8) · settings-save npm-clear-first atomic-refusal ABSENT from Rust (mislabel being corrected) |
 | test_draft_and_reader_tui.py | 16 | crates/skit-tui/tests/port_test_draft_and_reader_tui.rs | done (14) · 2 deferred |
 | test_reset_default_ui.py | 14 | crates/skit-tui/tests/port_test_reset_default_ui.rs | in fix (10/4) · const-field help weakening + param-row live-default fixture being fixed |
