@@ -27,7 +27,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_shell_inject.py", tests: 87, guard: None },
     Module { python: "test_shell_getopts.py", tests: 11, guard: Some("crates/skit-cli/tests/port_test_shell_getopts_manifest.rs") },
     Module { python: "test_fish.py", tests: 64, guard: None },
-    Module { python: "test_powershell.py", tests: 35, guard: None },
+    Module { python: "test_powershell.py", tests: 35, guard: Some("crates/skit-cli/tests/port_test_powershell_manifest.rs") },
     Module { python: "test_js_analyzer.py", tests: 67, guard: None },
     Module { python: "test_js_inject.py", tests: 37, guard: None },
     Module { python: "test_js_deps.py", tests: 151, guard: None },
