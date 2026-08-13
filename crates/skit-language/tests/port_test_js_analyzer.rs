@@ -294,6 +294,36 @@ fn test_exotic_number_literals_are_float_with_source_text_default() {
 }
 
 #[test]
+fn rust_additive_js_hex_literal_keeps_source_text() {
+    let candidate = &by_name("const H = 0xFF;\n")["H"];
+    assert_eq!(candidate.declaration.parameter_type, ParameterType::Float);
+    assert_eq!(
+        candidate.declaration.default,
+        Some(ParameterValue::String("0xFF".to_owned()))
+    );
+}
+
+#[test]
+fn rust_additive_js_exponent_literal_keeps_source_text() {
+    let candidate = &by_name("const E = 1e3;\n")["E"];
+    assert_eq!(candidate.declaration.parameter_type, ParameterType::Float);
+    assert_eq!(
+        candidate.declaration.default,
+        Some(ParameterValue::String("1e3".to_owned()))
+    );
+}
+
+#[test]
+fn rust_additive_js_bigint_literal_keeps_source_text() {
+    let candidate = &by_name("const G = 100n;\n")["G"];
+    assert_eq!(candidate.declaration.parameter_type, ParameterType::Float);
+    assert_eq!(
+        candidate.declaration.default,
+        Some(ParameterValue::String("100n".to_owned()))
+    );
+}
+
+#[test]
 fn test_simple_decimal_float() {
     let all = cands("const R = 3.25;\n");
     assert_eq!(all.len(), 1);

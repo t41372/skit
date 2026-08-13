@@ -191,6 +191,26 @@ fn test_float_and_string_defaults() {
 }
 
 #[test]
+fn rust_additive_float_default() {
+    let map = cands("set -q RATE; or set RATE 2.5\n");
+    assert_eq!(map["RATE"].declaration.parameter_type, ParameterType::Float);
+    assert_eq!(
+        map["RATE"].declaration.default,
+        Some(ParameterValue::Float(2.5))
+    );
+}
+
+#[test]
+fn rust_additive_string_default() {
+    let map = cands("set -q REGION; or set REGION us-east-1\n");
+    assert_eq!(map["REGION"].declaration.parameter_type, ParameterType::Str);
+    assert_eq!(
+        map["REGION"].declaration.default,
+        Some(ParameterValue::String("us-east-1".to_owned()))
+    );
+}
+
+#[test]
 fn test_guarded_set_may_carry_scope_flags() {
     // `or set -gx NAME v` still preserves an inherited value (the `or` only fires when unset).
     let map = cands("set -q LOG; or set -gx LOG /var/log\n");
@@ -280,6 +300,39 @@ fn test_idiom_inside_every_block_kind_is_ignored() {
     }
 }
 
+fn assert_block_ignored(opener: &str) {
+    let source = format!("{opener}\n  set -q P; or set P 1\nend\n");
+    assert!(
+        cands(&source).is_empty(),
+        "Fish env-default inside {opener:?} escaped its block"
+    );
+}
+
+#[test]
+fn rust_additive_fish_if_block_is_ignored() {
+    assert_block_ignored("if true");
+}
+
+#[test]
+fn rust_additive_fish_while_block_is_ignored() {
+    assert_block_ignored("while true");
+}
+
+#[test]
+fn rust_additive_fish_for_block_is_ignored() {
+    assert_block_ignored("for x in 1");
+}
+
+#[test]
+fn rust_additive_fish_begin_block_is_ignored() {
+    assert_block_ignored("begin");
+}
+
+#[test]
+fn rust_additive_fish_switch_block_is_ignored() {
+    assert_block_ignored("switch $x");
+}
+
 #[test]
 fn test_toplevel_after_a_closed_block_is_detected() {
     let map = cands("function f\n  echo hi\nend\nset -q P; or set P 1\n");
@@ -328,6 +381,29 @@ fn test_self_location_hints() {
             .analysis()
             .uses_self_location
     );
+    assert!(!parsed("echo hi\n").analysis().uses_self_location);
+}
+
+#[test]
+fn rust_additive_fish_status_dirname_is_self_location() {
+    assert!(
+        parsed("set d (status dirname)\n")
+            .analysis()
+            .uses_self_location
+    );
+}
+
+#[test]
+fn rust_additive_fish_status_filename_is_self_location() {
+    assert!(
+        parsed("set f (status filename)\n")
+            .analysis()
+            .uses_self_location
+    );
+}
+
+#[test]
+fn rust_additive_plain_fish_has_no_self_location_hint() {
     assert!(!parsed("echo hi\n").analysis().uses_self_location);
 }
 
@@ -461,6 +537,31 @@ fn test_argparse_value_suffixes() {
     assert!(fields["file"].repeat);
     assert!(fields["glob"].repeat);
     assert!(!fields["name"].repeat);
+}
+
+#[test]
+fn rust_additive_fish_required_value_is_scalar() {
+    assert!(!fields_by_name("argparse 'n/name=' -- $argv\n")["name"].multiple);
+}
+
+#[test]
+fn rust_additive_fish_optional_value_is_string() {
+    assert_eq!(
+        fields_by_name("argparse 'r/retries=?' -- $argv\n")["retries"].parameter_type,
+        ParameterType::Str
+    );
+}
+
+#[test]
+fn rust_additive_fish_plus_value_repeats() {
+    let fields = fields_by_name("argparse 'f/file=+' -- $argv\n");
+    assert!(fields["file"].multiple && fields["file"].repeat);
+}
+
+#[test]
+fn rust_additive_fish_star_value_repeats() {
+    let fields = fields_by_name("argparse 'g/glob=*' -- $argv\n");
+    assert!(fields["glob"].multiple && fields["glob"].repeat);
 }
 
 #[test]
@@ -614,35 +715,69 @@ fn test_registry_capabilities() {
 
 // ---------------------------------------------------------------- corpus sweep
 
+fn assert_corpus_roundtrip(name: &str, text: &str) {
+    // Every emitted candidate is an env-default (v1 scope); the block writer round-trips them.
+    let analysis = parsed(text).analysis(); // fish is total — never a syntax error
+    assert!(
+        analysis
+            .candidates
+            .iter()
+            .all(|candidate| candidate.declaration.binding == ParameterBinding::EnvDefault),
+        "{name}"
+    );
+    let specs = analysis
+        .candidates
+        .iter()
+        .map(|candidate| candidate.declaration.clone())
+        .collect::<Vec<_>>();
+    let written = write_managed_params("fish", text, &specs).expect("write_managed_params");
+    let read_back = managed_params("fish", &written)
+        .into_iter()
+        .map(|declaration| declaration.name)
+        .collect::<BTreeSet<_>>();
+    let names = analysis
+        .candidates
+        .iter()
+        .map(|candidate| candidate.declaration.name.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(read_back, names, "{name}");
+}
+
 #[test]
 fn test_corpus_analyze_is_total_and_reads_back() {
-    // Every emitted candidate is an env-default (v1 scope); the block writer round-trips them.
     for (name, text) in FISH_CORPUS {
-        let analysis = parsed(text).analysis(); // fish is total — never a syntax error
-        assert!(
-            analysis
-                .candidates
-                .iter()
-                .all(|candidate| candidate.declaration.binding == ParameterBinding::EnvDefault),
-            "{name}"
-        );
-        let specs = analysis
-            .candidates
-            .iter()
-            .map(|candidate| candidate.declaration.clone())
-            .collect::<Vec<_>>();
-        let written = write_managed_params("fish", text, &specs).expect("write_managed_params");
-        let read_back = managed_params("fish", &written)
-            .into_iter()
-            .map(|declaration| declaration.name)
-            .collect::<BTreeSet<_>>();
-        let names = analysis
-            .candidates
-            .iter()
-            .map(|candidate| candidate.declaration.name.clone())
-            .collect::<BTreeSet<_>>();
-        assert_eq!(read_back, names, "{name}");
+        assert_corpus_roundtrip(name, text);
     }
+}
+
+#[test]
+fn rust_additive_fish_corpus_01_roundtrips() {
+    assert_corpus_roundtrip(FISH_CORPUS[0].0, FISH_CORPUS[0].1);
+}
+
+#[test]
+fn rust_additive_fish_corpus_02_roundtrips() {
+    assert_corpus_roundtrip(FISH_CORPUS[1].0, FISH_CORPUS[1].1);
+}
+
+#[test]
+fn rust_additive_fish_corpus_03_roundtrips() {
+    assert_corpus_roundtrip(FISH_CORPUS[2].0, FISH_CORPUS[2].1);
+}
+
+#[test]
+fn rust_additive_fish_corpus_04_roundtrips() {
+    assert_corpus_roundtrip(FISH_CORPUS[3].0, FISH_CORPUS[3].1);
+}
+
+#[test]
+fn rust_additive_fish_corpus_05_roundtrips() {
+    assert_corpus_roundtrip(FISH_CORPUS[4].0, FISH_CORPUS[4].1);
+}
+
+#[test]
+fn rust_additive_fish_corpus_06_roundtrips() {
+    assert_corpus_roundtrip(FISH_CORPUS[5].0, FISH_CORPUS[5].1);
 }
 
 #[test]
