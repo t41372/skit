@@ -214,6 +214,14 @@ fn javascript_dependency_manifest_for_module(
     Ok(output)
 }
 
+fn javascript_module_manifest(module_type: JavaScriptModuleType) -> String {
+    format!(
+        "{{\n  \"private\": true,\n  \"type\": {}\n}}\n",
+        serde_json::to_string(module_type.as_manifest_value())
+            .expect("a module type is valid JSON")
+    )
+}
+
 /// Make the entry's private dependency tree match its declared packages.
 pub fn ensure_javascript_dependencies<P, R>(
     entry_dir: &Path,
@@ -278,8 +286,11 @@ where
     require_entry_directory(entry_dir)?;
     recover_dependency_backup(entry_dir)?;
     remove_staging_leftovers(entry_dir)?;
-    if dependencies.is_empty() && module_type.is_none() {
-        return clear_javascript_dependencies_unlocked(entry_dir);
+    if dependencies.is_empty() {
+        return module_type.map_or_else(
+            || clear_javascript_dependencies_unlocked(entry_dir),
+            |module_type| ensure_module_manifest_unlocked(entry_dir, module_type),
+        );
     }
     let manifest = javascript_dependency_manifest_for_module(dependencies, module_type)?;
     let stamp = format!("v1\n{runtime}\n{:016x}\n", stable_hash(manifest.as_bytes()));
@@ -304,6 +315,20 @@ where
         }
     }
     atomic_write(&staged.path.join(STAMP_NAME), stamp.as_bytes())?;
+    commit_dependency_stage(entry_dir, &staged.path)
+}
+
+fn ensure_module_manifest_unlocked(
+    entry_dir: &Path,
+    module_type: JavaScriptModuleType,
+) -> Result<(), DependencyError> {
+    let manifest = javascript_module_manifest(module_type);
+    let target = entry_dir.join("package.json");
+    if read_optional(&target)?.as_deref() == Some(manifest.as_bytes()) {
+        return Ok(());
+    }
+    let staged = TemporaryDependencyDirectory::new(entry_dir)?;
+    atomic_write(&staged.path.join("package.json"), manifest.as_bytes())?;
     commit_dependency_stage(entry_dir, &staged.path)
 }
 

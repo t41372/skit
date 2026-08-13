@@ -132,7 +132,7 @@ fn module_flavor_is_materialized_and_part_of_the_freshness_stamp() {
 }
 
 #[test]
-fn a_dependency_free_legacy_module_keeps_an_explicit_module_manifest() {
+fn a_dependency_free_module_keeps_only_an_explicit_module_manifest() {
     let root = TempDir::new().unwrap();
     ensure_javascript_dependencies_for_module(
         root.path(),
@@ -145,12 +145,11 @@ fn a_dependency_free_legacy_module_keeps_an_explicit_module_manifest() {
     )
     .unwrap();
 
-    assert!(
-        fs::read_to_string(root.path().join("package.json"))
-            .unwrap()
-            .contains("\"type\": \"module\"")
+    assert_eq!(
+        fs::read_to_string(root.path().join("package.json")).unwrap(),
+        "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n"
     );
-    assert!(root.path().join(".skit-deps").is_file());
+    assert!(!root.path().join(".skit-deps").exists());
     assert!(!root.path().join("node_modules").exists());
 }
 

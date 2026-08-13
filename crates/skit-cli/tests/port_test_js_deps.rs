@@ -1791,7 +1791,6 @@ fn test_failure_detail_survives_invalid_utf8_bytes() {}
 // ============================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): ensure_module_manifest writes exactly {'private': true, 'type': 'commonjs'}. The Rust deps-free module manifest (ensure_..._for_module with empty deps + a module type) adds a '\"name\": \"skit-private-entry\"' key and an empty '\"dependencies\": {}' map. Oracle ref deps.py:134-155, test_js_deps.py:2279-2282."]
 fn test_ensure_module_manifest_writes_the_type() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
@@ -1834,7 +1833,6 @@ fn test_ensure_module_manifest_flavorless_writes_nothing() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): ensure_module_manifest rewrites ONLY on change ({'private': true, 'type': <flavor>}); the Rust deps-free module manifest carries the extra 'name' and 'dependencies' keys, and the 'no rewrite on same' clause needs a write-count seam the Rust surface lacks. Oracle ref deps.py:134-155, test_js_deps.py:2290-2307."]
 fn test_ensure_module_manifest_rewrites_only_on_change() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
@@ -1852,6 +1850,32 @@ fn test_ensure_module_manifest_rewrites_only_on_change() {
     assert_eq!(
         std::fs::read_to_string(dir.join("package.json")).unwrap(),
         "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n"
+    );
+    let package = dir.join("package.json");
+    let package_file = std::fs::File::options().write(true).open(&package).unwrap();
+    package_file
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(std::time::SystemTime::UNIX_EPOCH)
+                .set_modified(std::time::SystemTime::UNIX_EPOCH),
+        )
+        .unwrap();
+    drop(package_file);
+    let unchanged_time = package.metadata().unwrap().modified().unwrap();
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &[],
+        Some(JavaScriptModuleType::Module),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(
+        package.metadata().unwrap().modified().unwrap(),
+        unchanged_time,
+        "an identical module manifest must not be rewritten"
     );
     ensure_javascript_dependencies_for_module(
         &dir,
@@ -1880,7 +1904,6 @@ fn test_build_writes_a_module_manifest_for_a_deps_free_module_typed_entry() {}
 fn test_build_writes_no_manifest_for_a_flavorless_deps_free_entry() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an externally-corrupted (non-UTF-8) package.json is rewritten to {'private': true, 'type': 'module'}, not crashed. The Rust deps-free module manifest rewrites but carries the extra 'name' and 'dependencies' keys. Oracle ref deps.py:147-155, test_js_deps.py:2334-2343."]
 fn test_ensure_module_manifest_rewrites_a_non_utf8_package_json() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
