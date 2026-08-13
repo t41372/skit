@@ -6,9 +6,8 @@
 //!
 //! Concept mapping used throughout:
 //! - Python `pep723.requires_python_error(v)` -> `skit_language::validate_pep440_specifiers(v)`
-//!   (`None` for valid <-> `Ok(())`; an invalid value <-> `Err(PythonMetadataError)`). The Rust
-//!   typed error carries a DIFFERENT message ("invalid PEP 440 version constraint ..."), so the
-//!   message-exactness tests are divergences (see the file doc's bucket list).
+//!   (`None` for valid <-> `Ok(())`; an invalid value <-> `Err(PythonMetadataError)`) with the
+//!   oracle's localized refusal copy.
 //! - Python `pep723.requirement_error(v)` -> `skit_language::validate_pep508_requirement(v)`.
 //! - Python `cli._validate_python_flags(deps, python)` has NO public Rust function. The `skit add -`
 //!   (stdin) lane runs the same validate-then-normalize contract inside `add_with_config`
@@ -23,11 +22,10 @@
 //! - Python `cli._create_python_in_editor(...)` -> the `skit add --edit` lane (`add_draft`).
 //!
 //! Bucket disposition (31 Python defs -> 31 `#[test]`):
-//! - PASSING contract tests: sections 1 (valid + bare-version), 2 (most flag cases), 5 (dash/valid
-//!   python), 6 (prompt + extensionless kind).
+//! - PASSING contract tests: sections 1 and 2; section 5's stdin validation, dash, and valid-python
+//!   cases; and section 6's prompt and extensionless-kind cases.
 //! - DIVERGENCE (`#[ignore = "FAILING CONTRACT (divergence): ..."]`, full asserting body kept): the
-//!   validator message text (1, 5); the case-sensitive `-`/`none` normalization and blank `--python`
-//!   (2); the entire drafts boundary refusal, which is not implemented in the CLI add path (4);
+//!   entire drafts boundary refusal, which is not implemented in the CLI add path (4);
 //!   validate-before-editor (5 editor lane); the draft shebang-outranks-script-suffix rule and
 //!   draft-consume-on-success (6); the unknown-shebang refusal copy (7).
 //! - ABSENT gap stubs (`kind="absent"`): the interactive deps/python re-ask loop (3).
@@ -474,9 +472,6 @@ fn test_a_normal_draft_resume_still_adds_as_a_copy() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 holds and the drafts dir stays empty, but the \
-refusal reads 'invalid PEP 440 version constraint ...' not the oracle's 'isn't a Python version \
-constraint' (skit-language/src/lib.rs:194)."]
 fn test_stdin_garbage_python_exits_2_and_leaves_the_drafts_dir_empty() {
     let sandbox = Sandbox::new();
     let (code, out) = run(
@@ -491,9 +486,6 @@ fn test_stdin_garbage_python_exits_2_and_leaves_the_drafts_dir_empty() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 holds and the drafts dir stays empty, but the \
-refusal reads 'invalid PEP 508 requirement ...' not the oracle's 'isn't a package requirement' \
-(skit-language/src/lib.rs:189)."]
 fn test_stdin_garbage_dep_exits_2_and_leaves_the_drafts_dir_empty() {
     let sandbox = Sandbox::new();
     let (code, out) = run(

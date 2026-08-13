@@ -39,12 +39,10 @@
 //! Buckets (recorded per test in the structured result):
 //! - REAL asserting `#[test]` (API exists, behavior agrees): the unpin/preserve/clear/valid deps
 //!   writes, the deps-before-needs abort order, the npm-skip, the whitespace strip-and-drop, the
-//!   `-`/`none` normalization, and the suggest filter + no-block add.
-//! - DIVERGENCE (full asserting body, `#[ignore]`d): the refusal COPY differs. The Rust validator
-//!   says `invalid PEP 508 requirement "@@@": …` / `invalid PEP 440 version constraint …`
-//!   (skit-language lib.rs:123-127), not the oracle's `… isn't a package requirement …` /
-//!   `… isn't a Python version constraint …`. The refusal fires at exit 2 either way; only the
-//!   wording diverges, so fixing the copy alone turns each green.
+//!   `-`/`none` normalization, the oracle PEP 440/508 refusal copy, and the suggest filter +
+//!   no-block add.
+//! - DIVERGENCE (full asserting body, `#[ignore]`d): an unclassifiable file outside the drafts
+//!   directory gets the generic `pass --kind KIND` refusal instead of the complete oracle escape.
 //! - ABSENT / GAP (full asserting body, `#[ignore]`d, MUST-FIX): the drafts guard and the
 //!   draft-aware "can't classify" variant (Python cli.py:1894-1933, cli.py:2053-2066) are not
 //!   built in `add_with_config`, so a draft added as exe/ref SUCCEEDS instead of being refused,

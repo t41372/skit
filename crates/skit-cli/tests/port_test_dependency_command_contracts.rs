@@ -28,11 +28,11 @@
 //! Buckets (recorded per test in the structured result):
 //! - REAL asserting `#[test]` (API exists, behavior agrees): the uv-flavor '-'/'none'
 //!   normalization (6, 8), the deps-only npm edit (10), and the add_python belt's
-//!   strip-and-drop + no-deps transparency (13, 14). 5 tests.
+//!   validation, strip-and-drop, and no-deps transparency (11–14). 7 tests.
 //! - FAILING CONTRACT (divergence) — full oracle-faithful body, `#[ignore]`d because the
 //!   Rust behavior diverges (verified against the built binary): the wholly-unimplemented
 //!   drafts-boundary guard (1, 2), the js `--python` refusal wording (3, 4, 5, 7, 9), the
-//!   add_python belt wording (11, 12), and the deps confirmation-line shape (15–19). 14 tests.
+//!   deps confirmation-line shape (15–19). 12 tests.
 //! - CROSS-CRATE — compiling `#[ignore]` stub naming the owning tier: the language
 //!   `registry.spec_for(...).deps_flavor` premise, which the Rust rewrite disperses (20). 1 test.
 
@@ -342,7 +342,6 @@ fn test_store_npm_spec_plus_none_deps_edit_is_not_refused() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the belt refuses before any entry exists (exit 2, nothing created — the `skit deps belt --json` follow-up exits 1), but Rust prints 'invalid PEP 508 requirement \"@@@\": …' where the oracle says '@@@ isn't a package requirement (…)'  (pep723.py:180-194). Verified against the built binary."]
 fn test_add_python_belt_rejects_a_bad_dep_before_any_entry_exists() {
     // A direct store.add_python with an unparseable dependency raises at the belt — BEFORE the
     // source is read or a meta/entry dir is built, so no half-made entry is registered.
@@ -365,7 +364,6 @@ fn test_add_python_belt_rejects_a_bad_dep_before_any_entry_exists() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the belt refuses before any entry exists (exit 2, nothing created), but Rust prints 'invalid PEP 440 version constraint \"not-a-version\": …' where the oracle says 'not-a-version isn't a Python version constraint (…)' (pep723.py:162-177). Verified against the built binary."]
 fn test_add_python_belt_rejects_a_bad_python_before_any_entry_exists() {
     // The constraint half of the belt: an unparseable requires-python is refused the same way.
     let sandbox = Sandbox::new();
