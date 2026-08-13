@@ -1,4 +1,4 @@
-//! Language-owned ports from Python v0.4 `tests/test_store.py`.
+//! Language-owned ports and Rust-additive inference checks adjacent to Python v0.4 `tests/test_store.py`.
 
 use std::path::Path;
 
@@ -45,12 +45,9 @@ fn test_extract_comment_description_lua_double_dash_prefix() {
 }
 
 #[test]
-fn test_infer_kind_python_and_forced_exe() {
+fn rust_additive_python_extension_inference_precedes_executable_bit() {
     assert_eq!(infer_kind(Path::new("a.py"), None, false), Some("python"));
     assert_eq!(infer_kind(Path::new("B.PY"), None, false), Some("python"));
-    // Python's `force_exe=True` is now a caller-side override. The underlying inference must still
-    // report Python even when the file is executable; otherwise callers cannot distinguish infer
-    // from an explicit --exe override.
     assert_eq!(infer_kind(Path::new("a.py"), None, true), Some("python"));
 }
 
