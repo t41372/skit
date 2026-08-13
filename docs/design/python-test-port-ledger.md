@@ -76,7 +76,7 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_store.py | 78 | crates/skit-store/tests/port_test_store.rs + crates/skit-language/tests/port_test_store_inference.rs + crates/skit-runtime/tests/port_test_store_exe_target.rs | in progress · store owner 34 active · 9 inference + 1 executable-target contracts moved from placeholders to their owning crates (`85f84b7`) · S2 corrupt-index backup + A2 read-path self-heal translated (c04395c) · full port ongoing |
+| test_store.py | 78 | crates/skit-store/tests/port_test_store.rs + owning language/runtime/CLI targets | in progress · store owner 34 active · 9 inference + 1 executable-target contracts moved from placeholders to their owning crates (`85f84b7`) · forced `--exe` inference moved to CLI (`769089a`) · S2 corrupt-index backup + A2 read-path self-heal translated (c04395c) · full port ongoing |
 | test_store_fix.py | 38 | crates/skit-store/tests/port_test_store.rs | partial · repair/widening ports landed with A2 · remainder todo |
 | test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs | done (16) · temp-leak fixed · A1 retry seam + tests landed · S2/A2 gaps resolved (c04395c) · 16 deferred (crash-injection/Windows) |
 
@@ -106,7 +106,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_params_edit.py | 41 | crates/skit-domain/tests/port_test_params_edit.rs | done (3) · 36 ABSENT: edit_declared (pure warn-and-continue batch editor + 9 warning codes) missing, CLI is fail-fast (#16) · 2 as_param_type |
 | test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | done (18) · **PEP 440/508 wording ×4 FIXED c5e84ea/8cf75fe** · explicit `--python` normalization fixed `f8f80f5` · 11 divergences (drafts-boundary guard absent #15, editor-validates-after-open, kind_for_draft missing) + 2 absent (interactive re-ask) · 1 weakening fixed |
 | test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
-| test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | done (12) · 15 cross-crate/divergence |
+| test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | in fix (15) · exact raw/set/preset conflict guidance fixed `0996295` · 8 divergences + 4 cross-crate |
 | test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (21) · **read-view voices ×4 FIXED 8633128** · shebang-derived Python pin note ×3 fixed `affa5b2` · 3 divergences (draft not unlinked, kind_for_draft absent) ties #15 · 3 cross-crate/absent |
 | test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | done (17) · 5 deferred |
 | test_dependency_write_validation.py | 21 | crates/skit-cli/tests/port_test_dependency_write_validation.rs | done (16) · **PEP wording ×4 FIXED c5e84ea** · 5 divergence/cross-crate |
