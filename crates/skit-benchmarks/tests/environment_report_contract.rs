@@ -132,11 +132,12 @@ fn process_timeout_terminates_the_complete_descendant_tree() {
     let root = TempDir::new().unwrap();
     let marker = root.path().join("orphan-ran");
     let started = Instant::now();
+    // Use one descendant to hold the capture pipe. Use another to record a containment failure.
     let timeout = run(&ProcessSpec {
         argv: vec![
             "/bin/sh".to_owned(),
             "-c".to_owned(),
-            "(sleep 0.25; printf orphan > \"$MARKER\") & wait".to_owned(),
+            "(sleep 3) & (sleep 0.25; printf orphan > \"$MARKER\") & wait".to_owned(),
         ],
         cwd: root.path().to_path_buf(),
         env: BTreeMap::from([
@@ -146,10 +147,14 @@ fn process_timeout_terminates_the_complete_descendant_tree() {
         timeout: Duration::from_millis(20),
         check: true,
     });
-    assert!(matches!(timeout, Err(ProcessError::Timeout { .. })));
+    let elapsed = started.elapsed();
     assert!(
-        started.elapsed() < Duration::from_millis(200),
-        "timeout waited for a descendant that inherited a capture pipe"
+        matches!(timeout, Err(ProcessError::Timeout { .. })),
+        "expected the process tree to time out, got {timeout:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "process timeout returned after {elapsed:?}; a descendant kept the capture pipe open"
     );
 
     thread::sleep(Duration::from_millis(400));
