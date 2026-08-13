@@ -336,7 +336,6 @@ fn test_ensure_installed_writes_manifest_runs_installer_and_stamps() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): each runner's own installer argv differs. Oracle bun='install --ignore-scripts', deno='install'; Rust bun='install --ignore-scripts --production', deno='install --node-modules-dir=auto --prod'. Oracle ref deps.py:70-74."]
 fn test_ensure_installed_uses_the_runners_own_installer() {
     for (runner_name, tail) in [
         ("bun", vec!["install", "--ignore-scripts"]),
@@ -1673,7 +1672,6 @@ fn test_manifest_text_exact_layout() {}
 fn test_sweep_keeps_a_file_exactly_at_the_cutoff() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an unknown runner falls back to npm's argv; the Rust dependency_command REJECTS an unknown runtime with UnsupportedRuntime instead of falling back. Oracle ref deps.py:77, 224, 331, test_js_deps.py:1786-1793."]
 fn test_ensure_installed_unknown_runner_falls_back_to_npm_argv() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };

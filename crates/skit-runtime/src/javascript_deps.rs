@@ -384,21 +384,14 @@ fn dependency_command<P: ProgramProbe>(
     let (installer, args) = match runtime {
         "node" => (
             "npm",
-            ["install", "--ignore-scripts", "--no-audit", "--no-fund"].as_slice(),
+            ["install", "--no-audit", "--no-fund", "--ignore-scripts"].as_slice(),
         ),
-        "bun" => (
-            "bun",
-            ["install", "--ignore-scripts", "--production"].as_slice(),
+        "bun" => ("bun", ["install", "--ignore-scripts"].as_slice()),
+        "deno" => ("deno", ["install"].as_slice()),
+        _ => (
+            "npm",
+            ["install", "--no-audit", "--no-fund", "--ignore-scripts"].as_slice(),
         ),
-        "deno" => (
-            "deno",
-            ["install", "--node-modules-dir=auto", "--prod"].as_slice(),
-        ),
-        _ => {
-            return Err(DependencyError::UnsupportedRuntime {
-                runtime: runtime.to_owned(),
-            });
-        }
     };
     let program =
         probe

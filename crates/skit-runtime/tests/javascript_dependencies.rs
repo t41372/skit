@@ -160,18 +160,10 @@ fn each_runtime_uses_its_own_installer_and_disables_lifecycle_scripts() {
         (
             "node",
             "npm",
-            vec!["install", "--ignore-scripts", "--no-audit", "--no-fund"],
+            vec!["install", "--no-audit", "--no-fund", "--ignore-scripts"],
         ),
-        (
-            "bun",
-            "bun",
-            vec!["install", "--ignore-scripts", "--production"],
-        ),
-        (
-            "deno",
-            "deno",
-            vec!["install", "--node-modules-dir=auto", "--prod"],
-        ),
+        ("bun", "bun", vec!["install", "--ignore-scripts"]),
+        ("deno", "deno", vec!["install"]),
     ];
 
     for (runtime, installer, expected) in cases {
@@ -476,7 +468,7 @@ fn package_and_filesystem_refusals_do_not_escape_the_private_entry() {
             &Probe::default(),
             &Runner::default(),
         ),
-        Err(DependencyError::UnsupportedRuntime { .. })
+        Err(DependencyError::InstallerNotFound { name }) if name == "npm"
     ));
     let probe = Probe {
         programs: BTreeMap::from([("npm".to_owned(), PathBuf::from("/bin/npm"))]),
