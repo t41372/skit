@@ -75,7 +75,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_dependency_write_validation.py", tests: 21, guard: Some("crates/skit-cli/tests/port_test_dependency_write_validation_manifest.rs") },
     Module { python: "test_add_lane_contracts.py", tests: 21, guard: Some("crates/skit-cli/tests/port_test_add_lane_contracts_manifest.rs") },
     Module { python: "test_dependency_command_contracts.py", tests: 20, guard: Some("crates/skit-cli/tests/port_test_dependency_command_contracts_manifest.rs") },
-    Module { python: "test_params_model.py", tests: 19, guard: Some("crates/skit-cli/tests/port_test_param_model_manifest.rs") },
+    Module { python: "test_params_model.py", tests: 19, guard: Some("crates/skit-cli/tests/port_test_params_model_manifest.rs") },
     Module { python: "test_show.py", tests: 17, guard: Some("crates/skit-cli/tests/port_test_show_manifest.rs") },
     Module { python: "test_add_feedback_contracts.py", tests: 16, guard: Some("crates/skit-cli/tests/port_test_add_feedback_contracts_manifest.rs") },
     Module { python: "test_edit.py", tests: 14, guard: Some("crates/skit-cli/tests/port_test_edit_manifest.rs") },
