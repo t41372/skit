@@ -13,15 +13,9 @@
 //! concern that the CLI does not expose (or maps differently), the stub is "absent" with the
 //! concrete blocking fact, not "cross-crate".
 //!
-//! One assertion the oracle makes is a genuine Rust divergence. This port earlier SOFTENED it to
-//! keep the test green; the exact oracle assertion is now restored and the test is a FAILING
-//! CONTRACT (divergence), `#[ignore]`d with the full body — remove the ignore once the impl
-//! converges and it goes green:
-//! - `test_runner_container_rows_have_localized_human_recovery_reason`: the machine reason TOKEN
-//!   matches exactly (`prompt-section-not-table` / `runners-not-list`), but the localized English
-//!   wording is "is not a table" / "is not a list" (skit-store/src/config.rs:160-165), not the
-//!   oracle's contraction "isn't a table" / "isn't a list" (test_prompt_kind.py:1062-1067). The
-//!   restored exact-needle assertion fails.
+//! Two assertions the oracle makes remain genuine Rust divergences. Their full bodies stay as
+//! `#[ignore]`d FAILING CONTRACT tests: compound `.prompt.md` name derivation and the exit class
+//! for a missing stored prompt body.
 //!
 //! Concept mapping used throughout:
 //! - Python `analyzer.placeholder_names(text)` -> `placeholder_params("prompt", text)` mapped
@@ -1595,11 +1589,6 @@ fn test_runners_section_of_wrong_type_degrades() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the machine reason TOKEN matches exactly, but the \
-            localized English wording is \"is not a table\" / \"is not a list\" \
-            (skit-store/src/config.rs:160-165), not the oracle's contraction \"isn't a table\" / \
-            \"isn't a list\" (test_prompt_kind.py:1062-1067). The restored exact-needle assertion \
-            fails."]
 fn test_runner_container_rows_have_localized_human_recovery_reason() {
     use skit_i18n::Locale;
     let dir = TempDir::new().unwrap();
@@ -1618,8 +1607,7 @@ fn test_runner_container_rows_have_localized_human_recovery_reason() {
     ] {
         write_config(&config, document);
         let row = config.runner_rows().unwrap().remove(0);
-        // The machine reason token is the stable contract and matches exactly; the oracle's exact
-        // human needle is restored below and diverges from the Rust "is not a …" wording.
+        // The machine reason token stays stable while the human reason follows the locale.
         assert_eq!(row.reason.as_deref(), Some(reason));
         assert!(
             row.localized_reason(Locale::En).unwrap().contains(needle),

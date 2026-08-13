@@ -172,10 +172,10 @@ impl PromptRunnerIssue {
     fn message(self) -> Message {
         match self {
             Self::PromptSectionNotTable => {
-                Message::new("the prompt value is not a table; repair it before runner management")
+                Message::new("the prompt value isn't a table; repair it before runner management")
             }
             Self::RunnersNotList => Message::new(
-                "the prompt.runners value is not a list; repair it before runner management",
+                "the prompt.runners value isn't a list; repair it before runner management",
             ),
             Self::Empty => Message::new("a prompt runner command needs nonempty arguments"),
             Self::PromptSlotCount => Message::new(
