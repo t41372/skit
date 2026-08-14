@@ -1,4 +1,4 @@
-# skit Rust rewrite — session handoff (2026-08-12)
+# skit Rust rewrite — session handoff (2026-08-14)
 
 **Read this first, then `docs/design/python-test-port-ledger.md` (the authoritative per-module
 record + fix-list).** This file is SELF-CONTAINED: it does not depend on any `.claude` memory (that
@@ -13,13 +13,13 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 81 fix commits landed, 187 FAILING CONTRACTs closed
-(183 removed, translated, or un-ignored + 4 re-labeled architecture closures), 2 stubs promoted,
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 86 fix commits landed, 193 FAILING CONTRACTs closed
+(189 removed, translated, or un-ignored + 4 re-labeled architecture closures), 2 stubs promoted,
 2 owed white-box units added. The last fully green recorded baseline was workspace
-3175 pass / 0 fail / 953 ignored. Reviewed
+3182 pass / 0 fail / 947 ignored. Reviewed
 PR #44 waves continue to add executable parity owners and completeness checks after duplicate and
 test-quality review.
-99 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+93 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -103,7 +103,7 @@ copying Python's reviewed behavior. When in doubt, read `skit-oracle/src/skit/*.
 Pre-session (previous agents): store data-safety (`2aebe6f`,`c04395c`), 13 port waves, i18n Library
 term + zh negotiation (`5574ff1`), review-lane Ctrl+O/Ctrl+E (`22b9773`).
 
-This session (2026-08-11/12), in order — each closed the named contracts:
+This session (2026-08-11 through 2026-08-14), in order — each closed the named contracts:
 
 | Commit | What | Contracts |
 |---|---|---|
@@ -189,6 +189,11 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `7555a0e` | editor draft classification: unknown shebangs refuse with exact recovery-before-kept order, preserve the draft, and do not create an entry | 1 |
 | `98b6bc8` | file picker navigation: PageUp/PageDown share Home/End semantics without closing or unfiltering the modal | 1 |
 | `b8cd947` | Python match captures: count single-segment `case NAME:` bindings without treating qualified value patterns as captures | 1 |
+| `add3c47` | params resync: refuse a source operation when a copy entry has no stored payload, before any metadata or state write | 1 |
+| `39f9bd0` | run passthrough: let only explicit current extra arguments satisfy an empty required flag; remembered arguments still validate | 1 |
+| `a5710d9` | moved the config axis-display exact contract from the raw store projection to its executable private CLI owner | 1 translated stale-green |
+| `669abd1` | human params output: mask present secret defaults and last values while JSON and missing values keep their machine meaning | 2 |
+| `06b4c99` | doctor entry counts: exact singular/plural taxonomy and oracle zh-CN/zh-TW translations; JSON stays numeric | 1 |
 
 PR #44 is actively continuing. The last corrected integrated accounting is 64/84 behavior modules
 and 1318/3018 Python contracts. Its merge ancestry and complete test snapshot are preserved on
@@ -217,8 +222,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3175 passed / 0 failed / 953 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 99
+# => 3182 passed / 0 failed / 947 ignored
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 93
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -230,15 +235,15 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 99 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 93 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `b8cd947`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `06b4c99`.
 
-- **17 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
+- **16 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Remaining work is the params human read/manage view, post-edit placeholder
   reconciliation and flood preview, runner row/remove recovery copy, prompt-only option conflicts,
-  doctor/help taxonomy copy, and the unset-runner JSON representation. Prompt naming, stdin
+  help taxonomy copy, and the unset-runner JSON representation. Prompt naming, stdin
   boundaries, Unicode/token grammar, missing bodies, runner resolution, and UTF-8 paths are green.
   Oracle: cli.py prompt lanes, store.py:571, langs/prompt/*.
 - **0 port_test_js_deps.rs implementation divergences — JS dependency materialization.** First-seen scanner order and empty
@@ -250,10 +255,11 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   fixed in `219a136`; the 88 remaining ignores in that file are classified architecture,
   cross-crate, private-helper, or absent-public-seam ports rather than `FAILING CONTRACT` markers.
   Oracle: langs/javascript/deps.py.
-- **5 port_test_cli.rs — mixed add, run, params, and edit voices.** Missing add-source paths now use the oracle's
+- **4 port_test_cli.rs — mixed add, run, params, and edit voices.** Missing add-source paths now use the oracle's
   localized `File not found` preflight (`22016c2`), and typed directory sources use the exact
   `Not a file` diagnostic (`4fc1659`), and unreadable files use the localized read failure
-  (`de754cf`); the remaining items overlap the add-lane and general CLI clusters.
+  (`de754cf`). Explicit passthrough arguments now satisfy only blank required flags (`39f9bd0`);
+  the remaining items overlap the add-lane and general CLI clusters.
 - **9 port_test_add_validation_contracts.rs + 5 port_test_add_lane_contracts.rs + 3
   port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 11
   port_test_add_no_source.rs + ~7 of port_test_editor.rs (the `-e` lane) — the add-lane cluster
@@ -269,7 +275,7 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
 - **7 port_test_dependency_command_contracts.rs** — draft-boundary refusals and per-axis update
   confirmations. Two ignored store-named JS-constraint cases are architecture-closed semantic
   duplicates of the stronger now-green CLI owners.
-- **13 port_test_declared_params.rs + 2 port_test_edit.rs + 2 of port_test_editor.rs (params
+- **11 port_test_declared_params.rs + 2 port_test_edit.rs + 1 of port_test_editor.rs (params
   resync) + port_test_params_edit.rs (36 tests currently ABSENT-stubbed) — the params/edit cluster
   (#16), reimplementation-scale, LAST.** `edit_declared` (params.py:352-472): pure warn-and-continue
   batch editor returning `DeclEditResult{decls, warnings}` with 9 closed warning codes, reverting a
@@ -280,7 +286,8 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   parameters.rs:340-349).
 - **0 port_test_run_set.rs implementation divergences.** Its 23 executable contracts are green;
   the 4 remaining ignores are interactive/cross-crate seam classifications.
-- **3 port_test_config.rs** — config store-level leftovers (distinct from the DONE config_cmd).
+- **2 port_test_config.rs** — low-level bash-path persistence differs from the validated CLI write
+  door. The axis-display contract now runs against its correct private CLI owner (`a5710d9`).
 - **Data-safety (in js_deps + elsewhere):** shim writes the plaintext-secret injected copy to
   `entry_dir` unconditionally; oracle stages OS-temp-first (rewrite.py:176-180) so a crash never
   persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
