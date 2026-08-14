@@ -34,7 +34,8 @@
 //! - FAILING CONTRACT (divergence): the full asserting body is kept intact and `#[ignore]`d with
 //!   the OBSERVED-vs-oracle evidence; deleting the `#[ignore]` after the impl is fixed turns it
 //!   green. Never softened to match Rust output. The Rust rewrite does NOT enforce the oracle's
-//!   single strict boundary uniformly on the remaining launch, health, params, and edit surfaces.
+//!   single strict boundary uniformly on the remaining launch, health, params, and TUI edit
+//!   surfaces.
 //! - UNMAPPED (cross-crate): a Python-private store seam (`store._add_entry`, `store.add_script`,
 //!   the `Path.open`/mid-add TOCTOU monkeypatches) or a Textual screen — not reachable from a
 //!   non-tty binary without a forbidden dependency edit. Compiling `#[ignore]` stub naming the
@@ -528,7 +529,6 @@ fn test_changed_prompt_is_launch_blocked_and_health_reports_the_same_error() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle `skit edit` on an editor that writes invalid bytes REFUSES (exit 1, 'offset 7', no 'Saved'), keeps the authored bytes for a corrective edit, and a repairing re-edit prints 'Saved'. Rust `edit` does NOT validate prompt UTF-8: it ACCEPTS the invalid bytes (exit 0, 'Edited: clip (clip)'), and the repair path prints 'Edited', never 'Saved'. Copy-mode source stays untouched (matches)."]
 fn test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them_copy() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_file("cli-copy.prompt.md", b"Review {{target}}\n");
@@ -578,7 +578,6 @@ fn test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them_
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the reference-mode twin. Oracle `skit edit` refuses invalid bytes (exit 1, 'offset 7', no 'Saved') and a repair prints 'Saved'. Rust `edit` accepts the invalid bytes (exit 0, 'Edited'), never validating prompt UTF-8, and never prints 'Saved'."]
 fn test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them_reference() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_file("cli-reference.prompt.md", b"Review {{target}}\n");

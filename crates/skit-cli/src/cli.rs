@@ -3411,6 +3411,12 @@ fn edit_with_config(
             source.display()
         );
         launch_editor(&argv, &source)?;
+        if held.meta.kind.as_str() == "prompt" {
+            // Keep the editor's bytes in place when validation fails. The next edit is the
+            // recovery path.
+            let edited = fs::read(&source).map_err(|error| source_error("read", &source, error))?;
+            validate_prompt_utf8(&edited, &source.display().to_string())?;
+        }
         report_saved_edit(&held);
         return Ok(());
     }
@@ -3431,8 +3437,13 @@ fn edit_with_config(
     launch_editor(&argv, &staged)?;
     let edited = fs::read(&staged).map_err(|error| source_error("read", &staged, error))?;
     if edited != original {
+        // Commit the editor's bytes before prompt validation. This preserves the user's work and
+        // updates the source hash, so the next edit can repair an invalid prompt.
         let claimed = service.claim_identity(&held)?;
         service.commit_copy_edit(&claimed, &edited, &held.meta.source_hash)?;
+    }
+    if held.meta.kind.as_str() == "prompt" {
+        validate_prompt_utf8(&edited, &target.display().to_string())?;
     }
     report_saved_edit(&held);
     Ok(())
