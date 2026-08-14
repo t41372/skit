@@ -1704,7 +1704,6 @@ fn test_config_set_unknown_mirror_escapes_markup() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `skit edit <name>` must print a report naming the entry (oracle echoes the name so it renders literally). Rust's edit opens the editor and prints NO name-bearing summary on success (verified with EDITOR=true: exit 0, empty stdout), so `[blue]a[/blue]` never appears. Owning ref src/skit/cli.py edit report."]
 fn test_edit_reports_escape_markup_in_name() {
     let root = sandbox();
     let path = write_src(&root, "a.py", "print(1)\n");
@@ -1720,7 +1719,6 @@ fn test_edit_reports_escape_markup_in_name() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): editing a reference entry must report the source PATH (oracle echoes it, so a markup path renders literally). Rust's edit prints no path-bearing summary on success (verified EDITOR=true: exit 0, empty stdout), so `[red]weird[bold]` never appears. Owning ref src/skit/cli.py edit report."]
 fn test_edit_reference_mode_escapes_markup_in_name_and_path() {
     let root = sandbox();
     let script = root.path().join("[red]weird[bold]").join("job.py");
@@ -1736,7 +1734,6 @@ fn test_edit_reference_mode_escapes_markup_in_name_and_path() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): editing a reference whose SOURCE is gone must fail with exit 1 and name the missing path (oracle checks existence before opening). Rust does not guard the reference source: `edit refjob` after the source is deleted opens the editor on the missing path and exits 0 with no path echoed (verified). Both exit code (1 vs 0) and the path echo diverge. Owning ref src/skit/cli.py edit existence guard."]
 fn test_edit_missing_reference_source_escapes_markup_in_path() {
     let root = sandbox();
     let script = root.path().join("[red]weird[bold]").join("job.py");

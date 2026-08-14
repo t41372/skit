@@ -334,7 +334,6 @@ fn test_cli_params_edit_reference_refused() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle edit refuses a non-editable kind with exit 1 (src/skit/cli.py:2703-2708); Rust edit_with_config returns CliError::Usage -> exit 2 (verified)."]
 fn test_cli_edit_command_entry_has_no_source() {
     // `skit edit` on a non-editable (command) entry must refuse before ever launching an editor.
     let sandbox = Sandbox::new();
