@@ -27,7 +27,7 @@ use skit_ui::{
     KnownEntryKind, PROMPT_LIST_PREVIEW_LIMIT, PathOutputPolicy, PathPickerState,
     PathSelectionMode, PickerPurpose, ReviewLane,
 };
-use tui_input::{Input as LineInput, backend::crossterm::EventHandler as _};
+use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
@@ -361,15 +361,15 @@ impl AddScreenSession {
             return None;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            // Ctrl+E belongs to a focused text Input as its end-of-line motion (the
-            // oracle's Ctrl+A rule); it opens $EDITOR only when no Input owns focus.
-            // So while a review text field is focused, do not consume Ctrl+E here —
-            // let it fall through to the Input below, which maps it to end-of-line.
             let text_focused = matches!(self.focus.current(), Some(AddControlId::Text(_)));
-            if !(text_focused
-                && key.code == KeyCode::Char('e')
-                && state.stage() == AddStage::Review)
-            {
+            // Editing keys belong to the focused mature Input. Ctrl+E moves to the end in a
+            // review field. Ctrl+D deletes the next character in a source field.
+            let input_owns_key = text_focused
+                && matches!(
+                    (key.code, state.stage()),
+                    (KeyCode::Char('e'), AddStage::Review) | (KeyCode::Char('d'), AddStage::Source)
+                );
+            if !input_owns_key {
                 return match (key.code, state.stage()) {
                     (KeyCode::Char('n'), AddStage::Source) => Some(AddScreenEvent::Action(
                         AddAction::NewDraft(DraftKind::Script),
@@ -440,6 +440,13 @@ impl AddScreenSession {
                     return Some(AddScreenEvent::Action(AddAction::Continue));
                 }
                 let input = self.inputs.get_mut(&field)?;
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('d')
+                    && state.stage() == AddStage::Source
+                {
+                    let _ = input.handle(InputRequest::DeleteNextChar);
+                    return Some(AddScreenEvent::Action(text_action(field, input.value())));
+                }
                 if input.handle_event(&Event::Key(key)).is_some() {
                     return Some(AddScreenEvent::Action(text_action(field, input.value())));
                 }
