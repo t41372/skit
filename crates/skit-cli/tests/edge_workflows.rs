@@ -735,11 +735,17 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
 fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["config", "editor", "true"]);
-    sandbox.code(&["add", "--edit", "--name", "Empty"], 2);
+    let untouched = sandbox.ok(&["add", "--edit", "--name", "Empty"]);
+    assert!(
+        String::from_utf8_lossy(&untouched)
+            .contains("Nothing was written, so no script was added.")
+    );
     assert!(
         fs::read_dir(sandbox.data.path().join("drafts"))
             .unwrap()
-            .any(|item| item.unwrap().path().is_file())
+            .next()
+            .is_none(),
+        "an untouched draft is litter, not recoverable work"
     );
 
     sandbox.ok(&["config", "editor", "false"]);

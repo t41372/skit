@@ -1455,9 +1455,13 @@ fn add_draft(
     fs::write(&draft, [])?;
     open_editor(&draft)?;
     if fs::metadata(&draft)?.len() == 0 {
-        return Err(CliError::Usage(
-            Message::new("the draft is empty and was kept at {}").with(draft.display()),
-        ));
+        remove_owned_draft(service.repository().data_dir(), &draft)?;
+        if prompt {
+            humanln!("Nothing was written, so no prompt was added.");
+        } else {
+            humanln!("Nothing was written, so no script was added.");
+        }
+        return Ok(());
     }
     if !prompt {
         let text =

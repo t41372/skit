@@ -1104,19 +1104,27 @@ fn test_add_edit_non_interactive_errors() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an untouched draft makes Rust error 'the draft is empty and was kept at …' with exit 2 (cli.rs:1416-1419); the oracle exits 0 with 'Nothing was written, so nothing was added.' and adds nothing. Verified against the built binary."]
 fn test_add_edit_empty_content_adds_nothing() {
     // Leaving the starter unchanged -> exit 0, "Nothing was written", nothing added.
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .command()
-        .env("EDITOR", "/bin/true")
-        .args(["add", "-e", "--name", "ghost"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert!(combined(&output).contains("Nothing was written"));
+    let sentinel = sandbox.scratch.path().join("empty.launched");
+    let editor = touch_only_editor(sandbox.scratch.path(), "empty", &sentinel);
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "ghost"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("Nothing was written, so no script was added."),
+        "{output}"
+    );
+    assert!(sentinel.exists(), "the editor must open");
     assert!(!sandbox.resolvable("ghost"));
+    assert!(sandbox.draft_files().is_empty(), "{output}");
 }
 
 #[test]
@@ -1161,19 +1169,27 @@ fn test_add_edit_unregistered_shebang_refused_keeps_draft() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the untouched starter is KEPT (Rust errors 'the draft is empty and was kept at …', exit 2) rather than unlinked and reported as 'Nothing was written' with exit 0. Verified against the built binary."]
 fn test_add_edit_untouched_starter_unlinks_the_draft() {
     // The untouched-starter cancel is pure litter -> unlink it; the temp is gone after "Nothing was
     // written".
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .command()
-        .env("EDITOR", "/bin/true")
-        .args(["add", "-e", "--name", "ghost"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert!(combined(&output).contains("Nothing was written"));
+    let sentinel = sandbox.scratch.path().join("untouched.launched");
+    let editor = touch_only_editor(sandbox.scratch.path(), "untouched", &sentinel);
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "ghost"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("Nothing was written, so no script was added."),
+        "{output}"
+    );
+    assert!(sentinel.exists(), "the editor must open");
+    assert!(!sandbox.resolvable("ghost"));
     assert!(
         sandbox.draft_files().is_empty(),
         "the litter was cleaned up"
@@ -1181,19 +1197,27 @@ fn test_add_edit_untouched_starter_unlinks_the_draft() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): this non-tty harness takes the prompt stdin lane and now correctly refuses its empty pipe with exit 1 ('Nothing arrived on stdin'); the oracle forces the interactive editor lane, unlinks its untouched starter, reports 'Nothing was written', and exits 0. A black-box non-tty test cannot drive that editor-only observable."]
 fn test_add_prompt_editor_untouched_starter_unlinks_the_draft() {
     // Same for the prompt editor lane: an untouched starter is unlinked, not left behind.
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .command()
-        .env("EDITOR", "/bin/true")
-        .args(["add", "--prompt", "--name", "ghostp"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert!(combined(&output).contains("Nothing was written"));
+    let sentinel = sandbox.scratch.path().join("prompt-untouched.launched");
+    let editor = touch_only_editor(sandbox.scratch.path(), "prompt-untouched", &sentinel);
+    let (code, output) = run_pty(
+        &["add", "--prompt", "--name", "ghostp"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("Nothing was written, so no prompt was added."),
+        "{output}"
+    );
+    assert!(sentinel.exists(), "the editor must open");
     assert!(!sandbox.resolvable("ghostp"));
+    assert!(sandbox.draft_files().is_empty(), "{output}");
 }
 
 #[test]

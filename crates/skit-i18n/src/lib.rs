@@ -1045,6 +1045,16 @@ const CATALOG: &[Translation] = &[
     ),
     row!("# New prompt", "# 新提示词", "# 新提示詞"),
     row!(
+        "Nothing was written, so no prompt was added.",
+        "没有写入任何内容，因此没有添加提示词。",
+        "沒有寫入任何內容，因此沒有加入提示詞。",
+    ),
+    row!(
+        "Nothing was written, so no script was added.",
+        "没有写入任何内容,因此没有加入脚本。",
+        "沒有寫入任何內容,因此沒有加入腳本。",
+    ),
+    row!(
         "Nothing was written, so nothing was added.",
         "没有写入任何内容，因此没有添加任何条目。",
         "未寫入任何內容，因此未新增任何項目。",
@@ -2989,11 +2999,6 @@ const CATALOG: &[Translation] = &[
         "No pinned checksum for platform {}; refusing to run an unverified uv.",
         "没有为平台 {} 预置校验和,拒绝运行未经校验的 uv。",
         "沒有為平台 {} 預置校驗碼,拒絕執行未經校驗的 uv。",
-    ),
-    row!(
-        "the draft is empty and was kept at {}",
-        "草稿为空，已保留在 {}",
-        "草稿為空，已保留在 {}",
     ),
     row!(
         "the editor exited with status {}",
