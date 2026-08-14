@@ -47,7 +47,7 @@ fn test_add_unknown_directory_plain_confirm_call_contract() {
         "{shown}"
     );
     assert!(
-        shown.contains("[Y/n]") || shown.contains("[y/N]") || shown.contains("[Y/n]:"),
+        shown.contains("[Y/n]"),
         "the frozen default-yes confirmation affordance disappeared: {shown}"
     );
 }
