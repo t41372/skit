@@ -5368,8 +5368,13 @@ fn agent(command: AgentCommand) -> Result<(), CliError> {
                 }
             };
             let path = FileAgentSkillStore
-                .install(&skills_dir, include_bytes!("../../../skills/skit/SKILL.md"))?;
-            humanln!("Installed Agent Skill: {}", path.display());
+                .install(&skills_dir, include_bytes!("../../../skills/skit/SKILL.md"))
+                .map_err(|error| {
+                    CliError::Failure(
+                        Message::new("Could not write the skill there: {}").nested(error.message()),
+                    )
+                })?;
+            humanln!("Installed the skit Agent Skill: {}", path.display());
         }
     }
     Ok(())

@@ -1129,11 +1129,6 @@ const CATALOG: &[Translation] = &[
     ),
     row!("WARN {}", "警告 {}", "警告 {}"),
     row!(
-        "Installed Agent Skill: {}",
-        "已安装 Agent Skill：{}",
-        "已安裝 Agent Skill：{}",
-    ),
-    row!(
         "Agent directories on this machine:",
         "此计算机上的 Agent 目录：",
         "此電腦上的 Agent 目錄：",
@@ -3313,6 +3308,11 @@ const CATALOG: &[Translation] = &[
         "Could not launch the editor ({}): {}. Set one with: skit config editor <cmd>",
         "无法启动编辑器（{}）：{}。可用 skit config editor <cmd> 设置。",
         "無法啟動編輯器（{}）：{}。可用 skit config editor <cmd> 設定。",
+    ),
+    row!(
+        "Could not write the skill there: {}",
+        "无法将 Skill 写入该位置：{}",
+        "無法將 Skill 寫入該位置：{}",
     ),
     row!(
         "{} needs NAME=VALUE",
