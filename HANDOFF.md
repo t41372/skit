@@ -13,12 +13,12 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 73 fix commits landed, 175 FAILING CONTRACTs closed
-(173 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
-The last fully green recorded baseline was workspace 3163 pass / 0 fail / 963 ignored. Reviewed
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 76 fix commits landed, 181 FAILING CONTRACTs closed
+(177 removed/un-ignored + 4 re-labeled architecture closures), 2 stubs promoted, 2 owed white-box
+units added. The last fully green recorded baseline was workspace 3169 pass / 0 fail / 959 ignored. Reviewed
 PR #44 waves continue to add executable parity owners and completeness checks after duplicate and
 test-quality review.
-111 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+105 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -179,6 +179,10 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `ceece3b` | JavaScript Python-constraint refusals: exact shared add/deps voice for dash, none, and empty spellings without changing validation order or writes | 3 |
 | `ea4389c` | add-editor name conflicts: explicit names are rejected through the PTY before editor or draft side effects; the final atomic conflict gate remains | 1 |
 | `0335ed1` | secret parameter transitions: report the sorted names of purged plaintext values in human mode while JSON remains a single machine document | 2 |
+| `ea80ec4` | add-editor explicit flags: reject malformed Python constraints and dependencies before editor or draft side effects | 2 |
+| `0e6d826` | doctor malformed-runner recovery: exact three-language repair command, stable multi-row order, and pure JSON output | 1 |
+| `ab901c4` | reclassified two duplicate Python store-boundary names as architecture closures; kept their ignored bodies and stronger CLI owners | — (2 re-labeled) |
+| `f0dfcff` | runner removal targets: callback-level exactly-one validation, negative-row handling, pre-write refusal, and semantically equivalent zsh completion | 1 |
 
 PR #44 is actively continuing. The last corrected integrated accounting is 64/84 behavior modules
 and 1318/3018 Python contracts. Its merge ancestry and complete test snapshot are preserved on
@@ -207,8 +211,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3163 passed / 0 failed / 963 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 111
+# => 3169 passed / 0 failed / 959 ignored
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 105
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -220,12 +224,12 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 111 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 105 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `0335ed1`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `f0dfcff`.
 
-- **19 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
+- **17 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Remaining work is the params human read/manage view, post-edit placeholder
   reconciliation and flood preview, runner row/remove recovery copy, prompt-only option conflicts,
   doctor/help taxonomy copy, and the unset-runner JSON representation. Prompt naming, stdin
@@ -244,7 +248,7 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   localized `File not found` preflight (`22016c2`), and typed directory sources use the exact
   `Not a file` diagnostic (`4fc1659`), and unreadable files use the localized read failure
   (`de754cf`); the remaining items overlap the add-lane and general CLI clusters.
-- **11 port_test_add_validation_contracts.rs + 5 port_test_add_lane_contracts.rs + 3
+- **9 port_test_add_validation_contracts.rs + 5 port_test_add_lane_contracts.rs + 3
   port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 11
   port_test_add_no_source.rs + ~8 of port_test_editor.rs (the `-e` lane) — the add-lane cluster
   (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
@@ -256,8 +260,9 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   re-ask loop (cli.py:224-261); `-e` lane name prompt/interactivity gate; untouched-draft exit 0
   "Nothing was added" + unlink vs Rust's exit-2 keep; awk-shebang → ask, not python-fallback;
   interactive name collection, and untouched-draft handling. Explicit edit-create decline is green.
-- **9 port_test_dependency_command_contracts.rs** — draft-boundary refusals and per-axis update
-  confirmations. Two ignored store-named JS-constraint cases duplicate the now-green CLI owners.
+- **7 port_test_dependency_command_contracts.rs** — draft-boundary refusals and per-axis update
+  confirmations. Two ignored store-named JS-constraint cases are architecture-closed semantic
+  duplicates of the stronger now-green CLI owners.
 - **13 port_test_declared_params.rs + 2 port_test_edit.rs + 2 of port_test_editor.rs (params
   resync) + port_test_params_edit.rs (36 tests currently ABSENT-stubbed) — the params/edit cluster
   (#16), reimplementation-scale, LAST.** `edit_declared` (params.py:352-472): pure warn-and-continue
