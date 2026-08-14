@@ -673,6 +673,70 @@ fn adapter_only_error_paths_do_not_require_process_global_configuration() {
 }
 
 #[test]
+fn test_axis_display_helpers_exact() {
+    let displayed = |store: &FileConfigStore, key: &str| {
+        let raw = store.get(key).unwrap();
+        config_display_value(store, key, &raw).unwrap()
+    };
+
+    let full_dir = TempDir::new().unwrap();
+    let full = FileConfigStore::new(full_dir.path());
+    full.set_many(&BTreeMap::from([
+        ("mirror.pypi".to_owned(), "tsinghua".to_owned()),
+        ("mirror.github".to_owned(), "nju".to_owned()),
+        ("mirror.npm".to_owned(), "npmmirror".to_owned()),
+    ]))
+    .unwrap();
+    assert_eq!(displayed(&full, "mirror.pypi"), "tsinghua");
+    assert_eq!(displayed(&full, "mirror.github"), "nju");
+    assert_eq!(displayed(&full, "mirror.npm"), "npmmirror");
+
+    let custom_dir = TempDir::new().unwrap();
+    fs::write(
+        custom_dir.path().join("config.toml"),
+        concat!(
+            "[mirror]\n",
+            "enabled = true\n",
+            "pypi = \"https://my/simple\"\n",
+            "python_install = \"https://my/py/\"\n",
+            "uv_binary = \"https://my/uv\"\n",
+            "npm = \"https://my/npm\"\n",
+        ),
+    )
+    .unwrap();
+    let custom = FileConfigStore::new(custom_dir.path());
+    assert_eq!(displayed(&custom, "mirror.pypi"), "https://my/simple");
+    assert_eq!(custom.get("mirror.github").unwrap(), "custom");
+    assert_eq!(
+        displayed(&custom, "mirror.github"),
+        "https://my/py/ + https://my/uv"
+    );
+    assert_eq!(displayed(&custom, "mirror.npm"), "https://my/npm");
+
+    for (source, expected) in [
+        (
+            "[mirror]\npython_install = \"https://my/py/\"\n",
+            "https://my/py/ + off",
+        ),
+        (
+            "[mirror]\nuv_binary = \"https://my/uv\"\n",
+            "off + https://my/uv",
+        ),
+    ] {
+        let half_dir = TempDir::new().unwrap();
+        fs::write(half_dir.path().join("config.toml"), source).unwrap();
+        let half = FileConfigStore::new(half_dir.path());
+        assert_eq!(displayed(&half, "mirror.github"), expected);
+    }
+
+    let off_dir = TempDir::new().unwrap();
+    let off = FileConfigStore::new(off_dir.path());
+    assert_eq!(displayed(&off, "mirror.pypi"), "off");
+    assert_eq!(displayed(&off, "mirror.github"), "off");
+    assert_eq!(displayed(&off, "mirror.npm"), "off");
+}
+
+#[test]
 fn tui_run_forms_preserve_saved_values_but_never_prefill_secrets() {
     let mut entry = Entry {
         slug: Slug::parse("alpha").unwrap(),
