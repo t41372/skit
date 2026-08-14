@@ -34,7 +34,7 @@
 //! - FAILING CONTRACT (divergence): the full asserting body is kept intact and `#[ignore]`d with
 //!   the OBSERVED-vs-oracle evidence; deleting the `#[ignore]` after the impl is fixed turns it
 //!   green. Never softened to match Rust output. The Rust rewrite does NOT enforce the oracle's
-//!   single strict boundary uniformly — this is the pending "add-lane refusals" work.
+//!   single strict boundary uniformly on the remaining launch, health, params, and edit surfaces.
 //! - UNMAPPED (cross-crate): a Python-private store seam (`store._add_entry`, `store.add_script`,
 //!   the `Path.open`/mid-add TOCTOU monkeypatches) or a Textual screen — not reachable from a
 //!   non-tty binary without a forbidden dependency edit. Compiling `#[ignore]` stub naming the
@@ -216,7 +216,6 @@ fn replacing_editor(dir: &Path, name: &str, bytes: &[u8]) -> PathBuf {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle `store.add_prompt(bad, mode='copy')` raises StoreError with the SOURCE path + 'offset 27' and writes NOTHING (list stays empty, no scripts dir). Rust `add --prompt` prints 'offset 27' and exit 1, but reports the STORED path '<data>/scripts/bad-prompt/prompt.md' (not the source) AND leaves a half-committed entry 'bad.prompt' registered — the copy landed before the strict decode."]
 fn test_store_rejects_invalid_prompt_before_any_entry_write_copy() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_file("bad.prompt.md", INVALID_PROMPT);
@@ -237,7 +236,6 @@ fn test_store_rejects_invalid_prompt_before_any_entry_write_copy() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle `store.add_prompt(bad, mode='reference')` raises StoreError with the source path + 'offset 27' and writes NOTHING. Rust `add --prompt --ref` prints the source path + 'offset 27' (exit 1) but still leaves a half-committed entry 'bad.prompt' registered — the refusal is not atomic."]
 fn test_store_rejects_invalid_prompt_before_any_entry_write_reference() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_file("bad.prompt.md", INVALID_PROMPT);
@@ -384,7 +382,6 @@ fn test_store_generic_script_api_refuses_prompt_onboarding_bypass() {}
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle `add - --kind prompt` on invalid stdin refuses BEFORE any draft/entry — output names '<stdin>' + 'offset 7', exit 1, list empty. Rust prints 'offset 7' (exit 1) but names the STORED path '<data>/scripts/bad-pipe/prompt.md' (never '<stdin>') AND registers a half-committed 'bad-pipe' entry. No draft is left (matches). No traceback (Rust has none)."]
 fn test_invalid_utf8_prompt_stdin_fails_before_allocating_a_draft() {
     let sandbox = Sandbox::new();
     let offset = offset_of(INVALID_STDIN, 0xff);
@@ -417,7 +414,6 @@ fn test_invalid_utf8_prompt_stdin_fails_before_allocating_a_draft() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's in-process CliRunner twin of the stdin decode boundary — same '<stdin>' + 'offset 7', exit 1, empty store, no draft. Rust has no separate in-process Click boundary, so this maps to the same binary observable as the subprocess test and diverges the same way (names the stored path, registers a half-committed entry)."]
 fn test_invalid_utf8_prompt_stdin_cli_boundary_maps_decode_error_to_clean_exit() {
     let sandbox = Sandbox::new();
     let offset = offset_of(INVALID_STDIN, 0xff);
@@ -664,7 +660,7 @@ fn test_tui_review_rescan_and_settings_handle_new_invalid_bytes() {}
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): one oracle def sweeping five surfaces; the passing halves (show/show --json exit 1 with 'offset 7', no U+FFFD) are real signal for the fix. Divergences: (1) `add` on the invalid file refuses with 'offset 27' but names the STORED path (not the source) and half-commits an entry (oracle: source path, empty store); (2) `params --json` exits 0 reading the declared params (oracle: exit 1, 'offset 7'); (3) `run --runner codex` exits 125 with the offset-less 'is not valid UTF-8' (oracle: 'offset 7'); (4) `doctor --json` `launch_blocked` is empty (oracle: contains 'offset 7')."]
+#[ignore = "FAILING CONTRACT (divergence): one oracle def sweeping five surfaces; add and show/show --json now converge (source path/offset, no half-commit or U+FFFD). Remaining divergences: (1) `params --json` exits 0 reading the declared params (oracle: exit 1, 'offset 7'); (2) `run --runner codex` exits 125 with the offset-less 'is not valid UTF-8' (oracle: 'offset 7'); (3) `doctor --json` `launch_blocked` is empty (oracle: contains 'offset 7')."]
 fn test_cli_add_params_run_and_doctor_refuse_corrupt_prompt_cleanly() {
     let sandbox = Sandbox::new();
     let bad = sandbox.write_file("bad.prompt.md", INVALID_PROMPT);

@@ -2471,6 +2471,17 @@ fn show_source_text(store: &FileStore, entry: &Entry) -> Result<String, CliError
     }
 }
 
+fn validate_prompt_utf8(bytes: &[u8], path: &str) -> Result<(), CliError> {
+    let Err(error) = std::str::from_utf8(bytes) else {
+        return Ok(());
+    };
+    Err(CliError::Failure(
+        Message::new("Prompt {} isn't valid UTF-8 (invalid byte at offset {}).")
+            .with(path)
+            .with(error.valid_up_to()),
+    ))
+}
+
 fn nonempty(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
@@ -2906,6 +2917,9 @@ fn add_with_config(
             reason: error.message(),
         })?;
     let kind_name = kind.as_str().to_owned();
+    if kind_name == "prompt" && !from_stdin {
+        validate_prompt_utf8(&bytes, &source.display().to_string())?;
+    }
     let description = description.unwrap_or_else(|| suggest_description(&kind_name, &bytes));
     if no_interpolate && kind_name != "prompt" {
         return Err(CliError::Usage(Message::new(
@@ -2974,6 +2988,9 @@ fn add_with_config(
     }
     if kind_name == "prompt" {
         validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
+        if from_stdin {
+            validate_prompt_utf8(&bytes, "<stdin>")?;
+        }
     }
     let stored_name = payload_stored_name(&kind, &source);
     let mode = if reference || kind_name == "exe" {
