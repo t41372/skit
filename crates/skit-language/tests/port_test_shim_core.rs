@@ -14,7 +14,7 @@ use skit_domain::parameters::{
 };
 use skit_language::{LanguageError, inject_values};
 
-const SCRIPT: &str = r#"""Docstring stays."""
+const SCRIPT: &str = r#""""Docstring stays."""
 # /// script
 # dependencies = ["requests"]
 # ///
