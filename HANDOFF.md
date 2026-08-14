@@ -13,11 +13,11 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 61 fix commits landed, 149 FAILING CONTRACTs closed
-(147 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
-The last fully green recorded baseline was workspace 2887 pass / 0 fail / 1134 ignored. Five
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 62 fix commits landed, 152 FAILING CONTRACTs closed
+(150 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
+The last fully green recorded baseline was workspace 2890 pass / 0 fail / 1131 ignored. Five
 reviewed PR #44 waves added 99 executable parity tests plus 8 completeness-manifest tests.
-137 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+134 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -166,14 +166,18 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `53bdb1c` | prompt stdin boundary: require an explicit name and a nonblank decoded body before draft/store writes | 2 |
 | `e64407a` | runner command validation: exact four-way argv reason voices while preserving typed pre-write rejection | 1 |
 | `eeed834` | prompt params policy: operation-failure exits and exact runner/interpolation recovery, including the cleared-pin read voice | 4 |
+| `22016c2` | add source preflight: exact localized File-not-found diagnostics before prompt confirmation, kind selection, or writes | 3 |
 
 PR #44 is actively continuing. The last corrected integrated accounting is 64/84 behavior modules
 and 1318/3018 Python contracts. Its merge ancestry and complete test snapshot are preserved on
-`integration/pr44-20260812` at corrected tip `cdae0a9` (PR pin `af05498`); do not use the earlier `0b36bf7` result,
+`integration/pr44-20260812` at corrected tip `6f1da7f` (PR pin `0c8c88d`); do not use the earlier `0b36bf7` result,
 which inherited an upstream denominator error (60 instead of 78 `test_store.py` functions and
 3000 instead of 3018 total contracts). The integration workspace passes
-`cargo test --locked --workspace --all-targets --all-features --no-run`. Reviewed green waves on
-this branch include parser mutation
+`cargo test --locked --workspace --all-targets --all-features --no-run`. The pinned PR tree's new
+3008 denominator is blocked; integration retains the frozen 3018 count. Its JS-inject manifest is
+also red (22 actual vs 25 expected), and the new manifests can hide exact-name duplicates, so no
+raw batch from this increment belongs on the green branch. Reviewed green waves on this branch
+include parser mutation
 contracts (`184726d`), argstate filesystem contracts (`40b6087`), atomic state contracts
 (`817f14c`), two non-duplicate boolean parameter-edit guards (`7fcc177`), and packaging distribution
 contracts (`606c716`). The i18n replacement is green after production fixes (`f1dc3c7`..`5d3c303`).
@@ -186,8 +190,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 2887 passed / 0 failed / 1134 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 137
+# => 2890 passed / 0 failed / 1131 ignored
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 134
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -199,12 +203,12 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 137 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 134 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `eeed834`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `22016c2`.
 
-- **22 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
+- **21 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
   removesuffix); stdin `add -` no name → defaults 'stdin'; stdin whitespace body accepted; `{{目标}}`
   unicode placeholders undetected → empty fields (**the #14 analyzer defect** — likely in
@@ -224,9 +228,9 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   fixed in `219a136`; the 88 remaining ignores in that file are classified architecture,
   cross-crate, private-helper, or absent-public-seam ports rather than `FAILING CONTRACT` markers.
   Oracle: langs/javascript/deps.py.
-- **15 port_test_cli.rs — mixed add/File-not-found voices.** "File not found" phrase (oracle
-  `_require_exists`/`_require_file`, cli.py:420-428) vs Rust "could not resolve ...os error 2";
-  plus add-lane overlaps (see add-lane cluster).
+- **13 port_test_cli.rs — mixed add voices.** Missing add-source paths now use the oracle's
+  localized `File not found` preflight (`22016c2`); the remaining items overlap the add-lane and
+  general CLI clusters.
 - **16 port_test_add_validation_contracts.rs + 9 port_test_add_lane_contracts.rs + 6
   port_test_add_feedback_contracts.rs + 6 port_test_draft_inference_and_reader_cli.rs + 13
   port_test_add_no_source.rs + ~8 of port_test_editor.rs (the `-e` lane) — the add-lane cluster
