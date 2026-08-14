@@ -12,7 +12,7 @@ fn install_gate_bash(sandbox: &Sandbox, stderr: Option<&str>) {
 
     let path = sandbox.bin_path().join("bash");
     let diagnostic = stderr
-        .map(|message| format!("printf '%s\\n' '{}' >&2\n", message.replace('\\'', "'\\''")))
+        .map(|message| format!("printf '%s\\n' '{message}' >&2\n"))
         .unwrap_or_default();
     let script = format!(
         "#!/bin/sh\nif [ \"$1\" = \"-n\" ]; then\n{diagnostic}  exit 1\nfi\nif [ -n \"${{SKIT_TEST_MARKER:-}}\" ]; then : > \"$SKIT_TEST_MARKER\"; fi\nexit 0\n"
@@ -29,7 +29,7 @@ fn test_interpreter_gate_refuses_what_the_offline_gate_missed() {
     let sandbox = Sandbox::new();
     sandbox.create_managed_entry("gate2", "#!/usr/bin/env bash\nTITLE=hello\n");
 
-    // Prove the parser-backed/offline layer accepts the exact injected text first.  Gate 2 is a
+    // Prove the parser-backed/offline layer accepts the exact injected text first. Gate 2 is a
     // separate authority: the real configured shell may still reject syntax the offline parser
     // considers acceptable.
     let source = "#!/usr/bin/env bash\nTITLE=hello\n";
