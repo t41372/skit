@@ -2,7 +2,7 @@
 //!
 //! The frozen Python suite has 175 test modules. Seventy-two mutation modules and nineteen coverage
 //! fillers are toolchain-instrumentation work (cargo-mutants / llvm-cov), not line-for-line behavior
-//! ports. The remaining **84 behavior/contract modules contain 3,008 `def test_` functions** and are
+//! ports. The remaining **84 behavior/contract modules contain 3,018 `def test_` functions** and are
 //! the granular migration surface this branch must account for before it is merge-ready.
 //!
 //! A module is marked accounted here only after it owns an audited executable completeness guard.
@@ -24,7 +24,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_callmatch.py", tests: 9, guard: Some(SMALL) },
     Module { python: "test_reconcile.py", tests: 27, guard: Some("crates/skit-cli/tests/port_test_reconcile_manifest.rs") },
     Module { python: "test_shell_analyzer.py", tests: 92, guard: Some("crates/skit-cli/tests/port_test_shell_analyzer_manifest.rs") },
-    Module { python: "test_shell_inject.py", tests: 77, guard: None },
+    Module { python: "test_shell_inject.py", tests: 87, guard: None },
     Module { python: "test_shell_getopts.py", tests: 11, guard: Some("crates/skit-cli/tests/port_test_shell_getopts_manifest.rs") },
     Module { python: "test_fish.py", tests: 64, guard: Some("crates/skit-cli/tests/port_test_fish_manifest.rs") },
     Module { python: "test_powershell.py", tests: 35, guard: Some("crates/skit-cli/tests/port_test_powershell_manifest.rs") },
@@ -115,7 +115,7 @@ fn frozen_behavior_inventory_shape_is_exact() {
     assert_eq!(MODULES.len(), 84, "the frozen behavior-module inventory changed");
     assert_eq!(MODULES.iter().map(|module| module.python).collect::<BTreeSet<_>>().len(), 84, "duplicate module names make behavior accounting dishonest");
     assert!(MODULES.iter().all(|module| module.tests > 0), "zero-count modules do not belong in the behavior inventory");
-    assert_eq!(MODULES.iter().map(|module| module.tests).sum::<usize>(), 3_008, "the frozen behavior test-function denominator changed");
+    assert_eq!(MODULES.iter().map(|module| module.tests).sum::<usize>(), 3_018, "the frozen behavior test-function denominator changed");
 }
 #[test]
 fn every_behavior_module_has_an_audited_executable_completeness_guard() {
@@ -132,5 +132,5 @@ fn every_behavior_module_has_an_audited_executable_completeness_guard() {
         }
     }
     assert!(broken_guards.is_empty(), "an accounted behavior module lost its executable completeness guard:\n{}", broken_guards.join("\n"));
-    assert!(missing.is_empty(), concat!("Python behavior parity is not merge-ready: {accounted_modules}/84 modules and ", "{accounted_tests}/3008 test functions have audited executable completeness guards. ", "Missing accounting:\n{}"), missing.join("\n"));
+    assert!(missing.is_empty(), concat!("Python behavior parity is not merge-ready: {accounted_modules}/84 modules and ", "{accounted_tests}/3018 test functions have audited executable completeness guards. ", "Missing accounting:\n{}"), missing.join("\n"));
 }
