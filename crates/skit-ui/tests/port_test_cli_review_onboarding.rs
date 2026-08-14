@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use skit_application::SourcePermissions;
+use skit_domain::parameters::ParameterValue;
 use skit_form::onboarding_plan;
 use skit_ui::{KnownEntryKind, ReviewDefaults, ReviewState, SourceSnapshot};
 
@@ -123,8 +124,8 @@ fn test_paramspec_from_candidate_roundtrip() {
     let candidate = plan.candidates.first().expect("CITY candidate");
     assert_eq!(candidate.declaration.name, "CITY");
     assert_eq!(
-        candidate.declaration.default.as_ref().map(ToString::to_string).as_deref(),
-        Some("Taipei"),
+        candidate.declaration.default,
+        Some(ParameterValue::String("Taipei".to_owned())),
         "the frontend-neutral declaration must preserve the analyzer candidate rather than re-invent it"
     );
 }
