@@ -2,13 +2,10 @@ use skit_ui::{PathOutputPolicy, PathPickerState, PathSelectionMode, PickerPurpos
 
 #[test]
 fn test_value_for_is_relative_inside_the_root_and_posix_everywhere() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let root = temp.path().join("root");
-    std::fs::create_dir_all(root.join("sub")).expect("subdir");
+    let base = std::env::temp_dir().join(format!("skit-path-output-{}", std::process::id()));
+    let root = base.join("root");
     let inner = root.join("sub/inner.txt");
-    std::fs::write(&inner, b"x").expect("inner");
-    let outside = temp.path().join("other.txt");
-    std::fs::write(&outside, b"x").expect("outside");
+    let outside = base.join("other.txt");
 
     let picker = PathPickerState::new(
         PickerPurpose::Argument,
