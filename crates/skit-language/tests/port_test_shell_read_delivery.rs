@@ -1,8 +1,9 @@
-//! Public-API ports of Python v0.4 shell `read` delivery-safety contracts.
+//! Public-API strengthening for shell `read` delivery-safety contracts.
 //!
 //! Detecting an interactive read is only half the contract: accepted form values must still reach
 //! the shell byte-for-byte. Values that a normal `read` would split, trim, or shift are rejected
-//! before launch rather than silently changing what the script receives.
+//! before launch rather than silently changing what the script receives. These names are explicitly
+//! Rust-additive; frozen Python exact names live in `port_test_shell_inject_core.rs`.
 
 use std::collections::BTreeMap;
 
@@ -31,7 +32,7 @@ fn values(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 #[test]
-fn test_empty_earlier_read_value_with_later_filled_value_is_gap_error() {
+fn rust_additive_empty_earlier_read_value_with_later_filled_value_is_gap_error() {
     let source = "read FIRST LAST\nprintf '%s|%s\\n' \"$FIRST\" \"$LAST\"\n";
     let declarations = declarations(source);
     assert_eq!(declarations.len(), 2);
@@ -51,7 +52,7 @@ fn test_empty_earlier_read_value_with_later_filled_value_is_gap_error() {
 }
 
 #[test]
-fn test_line_break_in_read_value_is_rejected() {
+fn rust_additive_line_break_in_read_value_is_rejected() {
     let source = "read NAME\necho \"$NAME\"\n";
     let declarations = declarations(source);
     let error = inject_values(
@@ -68,7 +69,7 @@ fn test_line_break_in_read_value_is_rejected() {
 }
 
 #[test]
-fn test_nonfinal_read_value_cannot_contain_default_ifs_spaces_or_tabs() {
+fn rust_additive_nonfinal_read_value_cannot_contain_default_ifs_spaces_or_tabs() {
     let source = "read FIRST LAST\necho \"$FIRST:$LAST\"\n";
     let declarations = declarations(source);
     for bad in ["two words", "two\twords"] {
@@ -88,7 +89,7 @@ fn test_nonfinal_read_value_cannot_contain_default_ifs_spaces_or_tabs() {
 }
 
 #[test]
-fn test_final_read_value_may_contain_internal_spaces() {
+fn rust_additive_final_read_value_may_contain_internal_spaces() {
     let source = "read FIRST LAST\necho \"$FIRST:$LAST\"\n";
     let declarations = declarations(source);
     let output = inject_values(
@@ -102,7 +103,7 @@ fn test_final_read_value_may_contain_internal_spaces() {
 }
 
 #[test]
-fn test_final_read_value_cannot_have_edge_spaces_or_tabs() {
+fn rust_additive_final_read_value_cannot_have_edge_spaces_or_tabs() {
     let source = "read FIRST LAST\necho \"$FIRST:$LAST\"\n";
     let declarations = declarations(source);
     for bad in [" leading", "trailing ", "\tleading", "trailing\t"] {
@@ -122,7 +123,7 @@ fn test_final_read_value_cannot_have_edge_spaces_or_tabs() {
 }
 
 #[test]
-fn test_single_read_value_with_internal_spaces_is_allowed_but_edge_space_is_not() {
+fn rust_additive_single_read_value_with_internal_spaces_is_allowed_but_edge_space_is_not() {
     let source = "read NAME\necho \"$NAME\"\n";
     let declarations = declarations(source);
     assert!(
