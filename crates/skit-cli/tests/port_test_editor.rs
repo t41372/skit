@@ -806,19 +806,22 @@ fn test_edit_unknown_confirmed_creates() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): declining the create offer exits 130 (CliError::Aborted) — the oracle returns a clean exit 0 on a decline (nothing created either way). Verified against the built binary via PTY."]
 fn test_edit_unknown_declined_creates_nothing() {
     // Declining -> clean exit 0 and nothing created.
     let sandbox = Sandbox::new();
+    let sentinel = sandbox.scratch.path().join("declined.launched");
+    let editor = touch_only_editor(sandbox.scratch.path(), "declined", &sentinel);
     let (code, _out) = run_pty(
         &["edit", "nope"],
         sandbox.data.path(),
         sandbox.state.path(),
         sandbox.config.path(),
-        None,
+        Some(&editor),
         &[b"n\n"],
     );
     assert_eq!(code, 0);
+    assert!(!sentinel.exists());
+    assert!(!sandbox.data.path().join("scripts/nope").exists());
     assert!(!sandbox.resolvable("nope"));
 }
 

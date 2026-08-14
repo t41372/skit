@@ -3435,7 +3435,7 @@ fn edit_with_config(
                 &[&selector],
             );
             if !prompt_confirmation(&question, true)? {
-                return Err(CliError::Aborted);
+                return Ok(());
             }
             return add_command(
                 service,

@@ -784,6 +784,14 @@ fn terminal_authoring_and_confirmation_paths_need_no_hidden_cli_knowledge() {
         config.path(),
         &[b"n\n"],
     );
+    assert_eq!(code, 0, "{output}");
+    let (code, output) = run_plain_in_pty(
+        &["edit", "End of Input"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\x04"],
+    );
     assert_eq!(code, 130, "{output}");
     let (code, output) = run_plain_in_pty(
         &["edit", "New Script"],
