@@ -289,14 +289,14 @@ fn test_list_filtered_dir_sorts_before_an_earlier_file_within_a_rank() {
 #[test]
 fn test_list_filtered_tiebreak_is_case_insensitive() {
     let temp = tempfile::tempdir().expect("tempdir");
-    fs::write(temp.path().join("_z.txt"), b"x").expect("underscore");
-    fs::write(temp.path().join("a.txt"), b"x").expect("a");
-    let picker = session(temp.path());
-    let names = visible_names(&picker)
-        .into_iter()
-        .filter(|name| name != "..")
-        .collect::<Vec<_>>();
-    assert_eq!(names, vec!["_z.txt", "a.txt"]);
+    // Force the public filtered-order path instead of trusting filesystem enumeration order. If
+    // the tie-break compares original case, "xa.txt" incorrectly sorts before "x_Z.txt" because
+    // ASCII 'Z' precedes lowercase 'a'; case-folded sorting correctly keeps x_Z before xa.
+    fs::write(temp.path().join("x_Z.txt"), b"x").expect("mixed case");
+    fs::write(temp.path().join("xa.txt"), b"x").expect("a");
+    let mut picker = session(temp.path());
+    type_text(&mut picker, "x");
+    assert_eq!(visible_names(&picker), vec!["x_Z.txt", "xa.txt"]);
 }
 
 #[test]
