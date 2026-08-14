@@ -26,7 +26,7 @@ use skit_domain::parameters::{
 };
 use skit_language::{
     ParseOutcome, ParsedDocument, ReconcileReport, SemanticAnalysis, SemanticCandidate,
-    parse_document,
+    inject_values_for_interpreter, parse_document,
 };
 
 fn parsed(source: &str) -> ParsedDocument {
@@ -914,22 +914,159 @@ fn test_params_resync_reports_drift_after_edit() {
 }
 
 #[test]
-#[ignore = "UNMAPPED: white-box parity of analyzer input-candidate count vs injector inject._root/injectable_reads/inject._read_sites; the injector's read-site enumeration is private and not reachable from a skit-language integration test (the analyzer half is public, the injector half is not)"]
 fn test_analyzer_and_injector_share_one_read_enumeration() {
-    // The invariant: the analyzer (numbering candidates) and the injector (numbering rewrite sites)
-    // must agree on WHICH reads count and in what order. Python cross-checks
-    // len(input candidates) == sum(varnames of injectable_reads) == len(inject._read_sites). Only
-    // the first term is publicly observable in skit-language.
-    let _ = reconcile;
+    struct Case {
+        source: &'static str,
+        expected_calls: &'static [&'static str],
+        unchanged_reads: &'static [&'static str],
+    }
+
+    let cases = [
+        Case {
+            source: "read -n 3 CODE\nread NAME\n",
+            expected_calls: &["_skit_read 0 'site-0' 0 '' NAME"],
+            unchanged_reads: &["read -n 3 CODE"],
+        },
+        Case {
+            source: "IFS=: read A B\nread NAME\n",
+            expected_calls: &["_skit_read 0 'site-0' 0 '' NAME"],
+            unchanged_reads: &["IFS=: read A B"],
+        },
+        Case {
+            source: "read P\nread Q\nread R\n",
+            expected_calls: &[
+                "_skit_read 0 'site-0' 0 '' P",
+                "_skit_read 1 'site-1' 0 '' Q",
+                "_skit_read 2 'site-2' 0 '' R",
+            ],
+            unchanged_reads: &[],
+        },
+        Case {
+            source: "cmd | while read x; do :; done\nread TOP\n",
+            expected_calls: &["_skit_read 0 'site-0' 0 '' TOP"],
+            unchanged_reads: &["cmd | while read x; do :; done"],
+        },
+    ];
+
+    for case in cases {
+        let declarations = reads(case.source)
+            .into_iter()
+            .map(|candidate| candidate.declaration)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declarations
+                .iter()
+                .map(|declaration| (declaration.name.clone(), declaration.order))
+                .collect::<Vec<_>>(),
+            (0..case.expected_calls.len())
+                .map(|order| (format!("input-{}", order + 1), order as i64))
+                .collect::<Vec<_>>(),
+            "analyzer enumeration for {:?}",
+            case.source
+        );
+
+        let values = declarations
+            .iter()
+            .map(|declaration| {
+                (
+                    declaration.name.clone(),
+                    format!("site-{}", declaration.order),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let rewritten = inject_values_for_interpreter(
+            "shell",
+            case.source,
+            &declarations,
+            &values,
+            Some("bash"),
+        )
+        .unwrap();
+        let calls = rewritten
+            .lines()
+            .filter(|line| line.starts_with("_skit_read "))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            calls, case.expected_calls,
+            "injector sites for {:?}",
+            case.source
+        );
+        for unchanged in case.unchanged_reads {
+            assert!(
+                rewritten.lines().any(|line| line == *unchanged),
+                "excluded read changed in {:?}: {rewritten}",
+                case.source
+            );
+        }
+        assert!(
+            matches!(parse_document("shell", &rewritten), ParseOutcome::Parsed(_)),
+            "rewritten source must parse: {rewritten}"
+        );
+    }
 }
 
 #[test]
-#[ignore = "UNMAPPED: white-box `_read_flags`/ReadShape `.raw`/`.reframing`; raw is not carried on the public candidate (it only affects injection escaping), and the reframing->exclusion consequence is already covered publicly by test_reframing_reads_are_excluded_from_candidacy (which includes `read -n3 X`)"]
 fn test_read_flags_do_not_read_letters_from_an_attached_value() {
-    // Python: `-pSure?` must not set .raw from the 'r' in "Sure?"; `-pEnter`/`-idefault` must not set
-    // .reframing from the 'n'/'d' in the attached TEXT; a real `-r`/`-n3` still registers. Only the
-    // `-n3` reframing->exclusion is publicly observable via candidates.
-    let _ = reconcile;
+    let cases = [
+        (
+            "read -pSure? X\n",
+            "Sure?",
+            "_skit_read 0 'a\\\\b' 0 'Sure?' -pSure? X",
+        ),
+        (
+            "read -pEnter X\n",
+            "Enter",
+            "_skit_read 0 'a\\\\b' 0 'Enter' -pEnter X",
+        ),
+        (
+            "read -idefault X\n",
+            "",
+            "_skit_read 0 'a\\\\b' 0 '' -idefault X",
+        ),
+    ];
+
+    for (source, expected_prompt, expected_call) in cases {
+        let candidates = reads(source);
+        let [candidate] = candidates.as_slice() else {
+            panic!("attached value must keep one input candidate: {source:?}");
+        };
+        assert_eq!(candidate.declaration.name, "input-1", "{source:?}");
+        assert_eq!(candidate.declaration.order, 0, "{source:?}");
+        assert_eq!(candidate.declaration.prompt, expected_prompt, "{source:?}");
+
+        let declarations = [candidate.declaration.clone()];
+        let rewritten = inject_values_for_interpreter(
+            "shell",
+            source,
+            &declarations,
+            &BTreeMap::from([("input-1".to_owned(), "a\\b".to_owned())]),
+            Some("bash"),
+        )
+        .unwrap();
+        let calls = rewritten
+            .lines()
+            .filter(|line| line.starts_with("_skit_read "))
+            .collect::<Vec<_>>();
+        assert_eq!(calls, [expected_call], "{source:?}");
+    }
+
+    let raw_candidates = reads("read -r X\n");
+    let [raw_candidate] = raw_candidates.as_slice() else {
+        panic!("a real raw flag must keep one input candidate");
+    };
+    let rewritten = inject_values_for_interpreter(
+        "shell",
+        "read -r X\n",
+        std::slice::from_ref(&raw_candidate.declaration),
+        &BTreeMap::from([("input-1".to_owned(), "a\\b".to_owned())]),
+        Some("bash"),
+    )
+    .unwrap();
+    let calls = rewritten
+        .lines()
+        .filter(|line| line.starts_with("_skit_read "))
+        .collect::<Vec<_>>();
+    assert_eq!(calls, ["_skit_read 0 'a\\b' 0 '' -r X"]);
 }
 
 #[test]
