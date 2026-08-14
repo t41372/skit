@@ -335,8 +335,8 @@ runners = [
         .args(["--name", "Missing"])
         .assert()
         .code(1)
-        .stderr(predicate::str::contains("无法解析"))
-        .stderr(predicate::str::contains("无法resolve").not());
+        .stderr(predicate::str::contains("找不到文件"))
+        .stderr(predicate::str::contains("File not found").not());
     let meta_path = data.path().join("scripts/future/meta.toml");
     let meta = fs::read_to_string(&meta_path).unwrap();
     let meta = meta.replace("kind = \"shell\"", "kind = \"future-kind\"");

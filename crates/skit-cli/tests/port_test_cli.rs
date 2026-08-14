@@ -370,7 +370,6 @@ fn test_add_exe_no_input_never_asks() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a missing path with --exe must error before any identity ask, with exit 1 + \"File not found\" (oracle _require_exists, cli.py:428). Rust exits 1 but with \"could not resolve <path>: No such file or directory (os error 2)\" (add read-path resolution) — no \"File not found\" phrase. Exit code 1 converges; the ordering claim (no ask fires) is moot in the non-tty harness."]
 fn test_add_exe_missing_path_errors_before_any_ask() {
     let root = sandbox();
     let missing = root.path().join("ghost.bin");
@@ -422,7 +421,6 @@ fn test_add_name_conflict_errors() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a missing path must yield a clean exit 1 + \"File not found\" (oracle _require_file, cli.py:420), not a traceback. Rust exits 1 but with \"could not resolve <path>: No such file or directory (os error 2)\" — no \"File not found\" phrase. Exit code 1 converges."]
 fn test_add_missing_path_clean_error_not_traceback() {
     let root = sandbox();
     let missing = root.path().join("typo").join("path.py");

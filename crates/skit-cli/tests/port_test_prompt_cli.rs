@@ -424,7 +424,6 @@ fn test_add_bare_md_no_input_requires_explicit_prompt() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 1 matches. Oracle prints 'File not found:'; Rust prints the raw 'could not resolve <path>: No such file or directory (os error 2)'."]
 fn test_missing_bare_md_is_refused_before_the_prompt_confirmation() {
     // Black-box: a path that does not exist is refused before any kind question at all.
     let sandbox = Sandbox::new();

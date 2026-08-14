@@ -2895,8 +2895,7 @@ fn add_with_config(
         )
     } else {
         let expanded = expand_user_path(input);
-        let source = fs::canonicalize(&expanded)
-            .map_err(|error| source_error("resolve", &expanded, error))?;
+        let source = resolve_add_source(&expanded)?;
         let snapshot = read_source(&source, explicit_executable)?;
         let source_record = source.display().to_string();
         (
@@ -5999,8 +5998,7 @@ fn tui_add_effect(
 
 fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, CliError> {
     let expanded = expand_user_path(input);
-    let path =
-        fs::canonicalize(&expanded).map_err(|error| source_error("resolve", &expanded, error))?;
+    let path = resolve_add_source(&expanded)?;
     let metadata = fs::metadata(&path).map_err(|error| source_error("inspect", &path, error))?;
     let is_directory = metadata.is_dir();
     let (bytes, permissions, is_regular) = if metadata.is_file() {
@@ -7778,6 +7776,16 @@ fn source_error(operation: &'static str, path: &Path, source: io::Error) -> CliE
         path: path.display().to_string(),
         source,
     }
+}
+
+fn resolve_add_source(path: &Path) -> Result<PathBuf, CliError> {
+    fs::canonicalize(path).map_err(|error| {
+        if error.kind() == io::ErrorKind::NotFound {
+            CliError::Failure(Message::new("File not found: {}").with(path.display()))
+        } else {
+            source_error("resolve", path, error)
+        }
+    })
 }
 
 #[cfg(unix)]

@@ -2540,6 +2540,7 @@ const CATALOG: &[Translation] = &[
         "無法{} {} 處的狀態資料：{}",
     ),
     row!("could not {} {}: {}", "无法{} {}：{}", "無法{} {}：{}",),
+    row!("File not found: {}", "找不到文件：{}", "找不到檔案：{}",),
     row!(
         "custom working directory must be absolute: {}",
         "自定义工作目录必须是绝对路径：{}",
