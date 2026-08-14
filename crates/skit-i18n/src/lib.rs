@@ -790,6 +790,16 @@ const CATALOG: &[Translation] = &[
         "尚未設定 Agent。請執行以下命令新增：skit runner add mycli -- mycli run {{prompt}}",
     ),
     row!(
+        "No runner selected for {}. Pass --runner NAME, or pin one with: skit params {} --runner NAME",
+        "{} 尚未选择执行器。请带上 --runner NAME,或固定一个:skit params {} --runner NAME",
+        "{} 尚未選擇執行器。請帶上 --runner NAME,或釘選一個:skit params {} --runner NAME",
+    ),
+    row!(
+        "The runner {} isn't configured (known: {}). Manage runners with: skit runner list",
+        "执行器 {} 未配置(已知:{})。管理执行器:skit runner list",
+        "執行器 {} 未設定(已知:{})。管理執行器:skit runner list",
+    ),
+    row!(
         "The built-in amp preset uses amp -x and runs the prompt once; it does not open an interactive session.",
         "内置 amp 预设使用 amp -x，只运行一次提示词，不会打开交互式会话。",
         "內建 amp 預設使用 amp -x，只執行一次提示詞，不會開啟互動式工作階段。",

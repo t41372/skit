@@ -696,7 +696,6 @@ fn test_empty_library_does_not_claim_it_only_accepts_scripts() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 126 matches. Oracle says 'No runner selected'; Rust says 'prompt runner is required'."]
 fn test_run_prompt_no_input_without_pin_is_126() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -706,7 +705,6 @@ fn test_run_prompt_no_input_without_pin_is_126() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 126 matches. Oracle says 'No runner selected'; Rust says 'prompt runner is required'."]
 fn test_run_no_input_is_provably_unaffected_by_last_picked_state() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -809,7 +807,6 @@ fn test_run_prompt_pin_resolves_without_touching_last_picked() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 126 matches and 'ghost' is named, but Rust does not list the AVAILABLE runner names (no 'claude') — it prints only 'prompt runner \"ghost\" is not configured'."]
 fn test_run_prompt_unknown_runner_is_126_listing_names() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -841,7 +838,6 @@ fn test_run_prompt_pinned_but_removed_runner_is_126() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 126 matches, but with an empty runner list Rust still prints 'prompt runner is required' instead of the oracle's 'No agents are configured' + the copyable 'skit runner add mycli -- mycli run {{prompt}}' recovery."]
 fn test_run_unpinned_prompt_with_empty_runner_list_teaches_a_copyable_recovery() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");

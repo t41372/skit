@@ -1074,7 +1074,7 @@ fn test_build_with_unconfigured_pin_is_exit_126() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("mine") && stderr.contains("not configured"),
+        stderr.contains("mine") && stderr.contains("isn't configured"),
         "{stderr}"
     );
 }

@@ -143,8 +143,18 @@ pub(crate) enum RunError {
     },
     #[error("could not determine the platform state directory; set SKIT_STATE_DIR")]
     StateDirectoryUnavailable,
-    #[error("prompt runner {name:?} is not configured")]
-    RunnerNotFound { name: String },
+    #[error(
+        "The runner {name} isn't configured (known: {known}). Manage runners with: skit runner list"
+    )]
+    RunnerNotFound { name: String, known: String },
+    #[error(
+        "No agents are configured. Add one with: skit runner add mycli -- mycli run {{{{prompt}}}}"
+    )]
+    NoRunnersConfigured,
+    #[error(
+        "No runner selected for {name}. Pass --runner NAME, or pin one with: skit params {name} --runner NAME"
+    )]
+    RunnerRequired { name: String },
     #[error("--runner only applies to prompt entries.")]
     RunnerUnsupported,
     #[error("--raw does not apply to {kind} entries because placeholders are part of the artifact")]
@@ -193,9 +203,19 @@ impl Localize for RunError {
             Self::StateDirectoryUnavailable => {
                 Message::new("could not determine the platform state directory; set SKIT_STATE_DIR")
             }
-            Self::RunnerNotFound { name } => {
-                Message::new("prompt runner {} is not configured").quoted(name)
-            }
+            Self::RunnerNotFound { name, known } => Message::new(
+                "The runner {} isn't configured (known: {}). Manage runners with: skit runner list",
+            )
+            .with(name)
+            .with(known),
+            Self::NoRunnersConfigured => Message::new(
+                "No agents are configured. Add one with: skit runner add mycli -- mycli run {{prompt}}",
+            ),
+            Self::RunnerRequired { name } => Message::new(
+                "No runner selected for {}. Pass --runner NAME, or pin one with: skit params {} --runner NAME",
+            )
+            .with(name)
+            .with(name),
             Self::RunnerUnsupported => Message::new("--runner only applies to prompt entries."),
             Self::RawUnsupported { kind } => Message::new(
                 "--raw does not apply to {} entries because placeholders are part of the artifact",
@@ -232,7 +252,9 @@ impl RunError {
             // (`src/skit/langs/launch.py:57-63`), and a launch failure exits 125
             // (`src/skit/flows.py:868`).
             Self::Uv(_) => 125,
-            Self::RunnerNotFound { .. } => 126,
+            Self::RunnerNotFound { .. }
+            | Self::NoRunnersConfigured
+            | Self::RunnerRequired { .. } => 126,
             Self::State(_)
             | Self::Inputs(_)
             | Self::Language(_)
@@ -367,6 +389,14 @@ pub(crate) fn run_with_roots(
         &settings.runner,
         args.runner_was_picked,
     )?;
+    if entry.meta.kind.as_str() == "prompt" && runner.is_none() {
+        if config.runners()?.is_empty() {
+            return Err(RunError::NoRunnersConfigured);
+        }
+        return Err(RunError::RunnerRequired {
+            name: entry.meta.name.clone(),
+        });
+    }
     if !args.dry_run
         && matches!(entry.meta.kind.as_str(), "js" | "ts")
         && entry.meta.mode == skit_domain::StorageMode::Reference
@@ -911,12 +941,22 @@ impl Drop for StagedSource {
 }
 
 fn configured_runner(config: &FileConfigStore, name: &str) -> Result<PromptRunner, RunError> {
-    let runner = config
-        .runners()?
+    let runners = config.runners()?;
+    let known = runners
+        .iter()
+        .map(|runner| runner.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let runner = runners
         .into_iter()
         .find(|runner| runner.name == name)
         .ok_or_else(|| RunError::RunnerNotFound {
             name: name.to_owned(),
+            known: if known.is_empty() {
+                "—".to_owned()
+            } else {
+                known
+            },
         })?;
     Ok(PromptRunner {
         name: runner.name,
@@ -1198,6 +1238,14 @@ mod tests {
             (
                 RunError::RunnerNotFound {
                     name: "agent".to_owned(),
+                    known: "claude, codex".to_owned(),
+                },
+                126,
+            ),
+            (RunError::NoRunnersConfigured, 126),
+            (
+                RunError::RunnerRequired {
+                    name: "Review".to_owned(),
                 },
                 126,
             ),
@@ -1767,8 +1815,16 @@ mod localization_tests {
         assert_localized(
             &RunError::RunnerNotFound {
                 name: "claude".to_owned(),
+                known: "codex, amp".to_owned(),
             },
-            &["claude"],
+            &["claude", "codex, amp"],
+        );
+        assert_localized(&RunError::NoRunnersConfigured, &[]);
+        assert_localized(
+            &RunError::RunnerRequired {
+                name: "Review".to_owned(),
+            },
+            &["Review"],
         );
         assert_localized(
             &RunError::RawUnsupported {
