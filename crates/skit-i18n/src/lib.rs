@@ -2876,9 +2876,9 @@ const CATALOG: &[Translation] = &[
         "請將來源、結構、啟動、執行器與插值變更作為單獨的 params 操作執行",
     ),
     row!(
-        "runner remove needs a name or --row INDEX",
-        "runner remove 需要名称或 --row INDEX",
-        "runner remove 需要名稱或 --row INDEX",
+        "Pass exactly one runner name or --row INDEX.",
+        "请只传一个执行器名称或 --row INDEX。",
+        "請只傳一個執行器名稱或 --row INDEX。",
     ),
     row!(
         "runtime {} cannot manage JavaScript dependencies",

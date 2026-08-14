@@ -1811,7 +1811,6 @@ fn test_runner_remove_blank_name_is_usage_error_before_seeding() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches and nothing is written, but the sentences differ — oracle 'exactly one' / 'non-negative index'; Rust 'runner remove needs a name or --row INDEX' etc."]
 fn test_runner_remove_rejects_ambiguous_or_invalid_targets_before_writing() {
     let cases: [(&[&str], &str); 4] = [
         (&[], "exactly one"),

@@ -413,7 +413,7 @@ fn runner_rows_list_their_status_and_removal_needs_a_target() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "runner remove needs a name or --row INDEX",
+            "Pass exactly one runner name or --row INDEX.",
         ));
 
     fs::write(

@@ -570,7 +570,7 @@ enum RunnerCommand {
         #[arg(add = ArgValueCandidates::new(runner_candidates))]
         name: Option<String>,
         /// Remove one malformed raw row by its zero-based index or `container`.
-        #[arg(long, conflicts_with = "name")]
+        #[arg(long, allow_negative_numbers = true)]
         row: Option<String>,
         /// Confirm removal.
         #[arg(long, short = 'y')]
@@ -4832,7 +4832,7 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                 }
                 _ => {
                     return Err(CliError::Usage(Message::new(
-                        "runner remove needs a name or --row INDEX",
+                        "Pass exactly one runner name or --row INDEX.",
                     )));
                 }
             };

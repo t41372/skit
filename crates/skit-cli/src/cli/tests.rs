@@ -220,6 +220,24 @@ fn completion_adapters_follow_each_latest_main_degradation_contract() {
 }
 
 #[test]
+fn runner_remove_zsh_completion_keeps_both_target_specs_without_an_empty_conflict_group() {
+    let mut output = Vec::new();
+    write_completion(Shell::Zsh, &mut output);
+    let output = String::from_utf8(output).unwrap();
+    let row_spec = concat!(
+        "'--row=[Remove one malformed raw row by its zero-based index or ",
+        "\\`container\\`]:ROW:_default' \\\n"
+    );
+
+    assert!(output.contains(row_spec), "{output}");
+    assert!(!output.contains(&format!("(){}", row_spec)), "{output}");
+    assert!(
+        output.contains("'::name -- Stable runner name:_default' \\\n"),
+        "{output}"
+    );
+}
+
+#[test]
 fn destructive_and_create_prompts_have_explicit_automation_paths() {
     assert!(user_confirmed("y", false));
     assert!(user_confirmed("YES", false));
