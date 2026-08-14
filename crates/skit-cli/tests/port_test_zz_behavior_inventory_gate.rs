@@ -24,7 +24,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_callmatch.py", tests: 9, guard: Some(SMALL) },
     Module { python: "test_reconcile.py", tests: 27, guard: Some("crates/skit-cli/tests/port_test_reconcile_manifest.rs") },
     Module { python: "test_shell_analyzer.py", tests: 92, guard: Some("crates/skit-cli/tests/port_test_shell_analyzer_manifest.rs") },
-    Module { python: "test_shell_inject.py", tests: 87, guard: None },
+    Module { python: "test_shell_inject.py", tests: 87, guard: Some("crates/skit-cli/tests/port_test_shell_inject_manifest.rs") },
     Module { python: "test_shell_getopts.py", tests: 11, guard: Some("crates/skit-cli/tests/port_test_shell_getopts_manifest.rs") },
     Module { python: "test_fish.py", tests: 64, guard: Some("crates/skit-cli/tests/port_test_fish_manifest.rs") },
     Module { python: "test_powershell.py", tests: 35, guard: Some("crates/skit-cli/tests/port_test_powershell_manifest.rs") },
