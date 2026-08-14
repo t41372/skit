@@ -292,3 +292,50 @@ fn test_edit_post_editor_refusal_keeps_draft_and_announces_short() {
     assert!(draft.exists(), "post-editor refusal destroyed the user's only draft");
     assert!(fixture.store().resolve("d").is_err());
 }
+
+#[test]
+fn test_add_edit_refuses_ref_loudly() {
+    let fixture = Fixture::new();
+    let (code, output) = fixture.run(
+        &["add", "--edit", "--name", "n", "--ref"],
+        None,
+        true,
+        b"",
+    );
+    let shown = flat(&output);
+    assert_eq!(code, 2, "{shown}");
+    assert!(
+        shown.contains("existing file") || shown.contains("--ref can't apply here"),
+        "{shown}"
+    );
+    fixture.assert_editor_not_called();
+    assert!(fixture.store().resolve("n").is_err());
+}
+
+#[test]
+fn test_add_edit_honors_explicit_dep_and_python_flags() {
+    let fixture = Fixture::new();
+    let (code, output) = fixture.run(
+        &[
+            "add",
+            "--edit",
+            "--name",
+            "n",
+            "--description",
+            "made in editor",
+            "--dep",
+            "rich",
+            "--python",
+            ">=3.12",
+        ],
+        Some("print(\"made in editor\")\n"),
+        false,
+        b"\n\n\n",
+    );
+    assert_eq!(code, 0, "{output}");
+    let store = fixture.store();
+    let entry = store.resolve("n").unwrap();
+    let copy_text = fs::read_to_string(store.payload_path(&entry).unwrap()).unwrap();
+    assert!(copy_text.contains("\"rich\""), "{copy_text}");
+    assert!(copy_text.contains("requires-python = \">=3.12\""), "{copy_text}");
+}
