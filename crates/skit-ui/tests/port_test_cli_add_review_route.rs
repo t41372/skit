@@ -28,7 +28,7 @@ fn test_add_interactive_tui_form_opens_review_panel() {
     assert_eq!(review.name(), "hint", "the CLI --name flag must arrive as a panel prefill");
     assert_eq!(review.storage(), StorageMode::Reference, "--ref must select reference storage in the panel");
     let create = review.create_entry().expect("the hosted review must produce the same atomic create request");
-    assert_eq!(create.display_name, "hint");
-    assert_eq!(create.settings.mode, StorageMode::Reference);
+    assert_eq!(create.name, "hint");
+    assert_eq!(create.mode, StorageMode::Reference);
     assert!(create.payload.is_none(), "reference review must not smuggle a copied payload into the commit");
 }
