@@ -43,6 +43,10 @@ impl Sandbox {
         self.bin.path()
     }
 
+    pub fn write_config(&self, contents: &str) {
+        fs::write(self.config.path().join("config.toml"), contents).unwrap();
+    }
+
     pub fn command(&self) -> Command {
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
         let inherited = env::var_os("PATH").unwrap_or_default();
