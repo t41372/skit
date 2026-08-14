@@ -4302,6 +4302,13 @@ fn write_params(
     declarations: &[ParamDecl],
     json: bool,
 ) -> Result<(), CliError> {
+    if !json && entry.meta.kind.as_str() == "prompt" && !settings.interpolate {
+        humanln!(
+            "Variable insertion is off — the body travels to the agent exactly as written. Turn it on with: skit params {} --interpolate",
+            entry.meta.name
+        );
+        return Ok(());
+    }
     if json {
         let rows = declarations
             .iter()

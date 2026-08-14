@@ -2333,7 +2333,6 @@ fn test_add_interactive_flood_defaults_to_none_and_caps_the_listing() {}
 fn test_add_interactive_explicit_all_beats_the_flood_cap() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the --json and re-manage halves converge, but the human params view says 'Interpolation: off', never the oracle's 'Variable insertion is off'."]
 fn test_params_interpolate_off_and_on() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -2341,6 +2340,9 @@ fn test_params_interpolate_off_and_on() {
     assert_eq!(sandbox.json(&["show", "p", "--json"])["interpolate"], false);
     let view = sandbox.ok(&["params", "p"]);
     assert!(view.contains("Variable insertion is off"), "{view}");
+    assert!(!view.contains("Parameter:"), "{view}");
+    assert!(!view.contains("Prompt runner:"), "{view}");
+    assert!(!view.contains("Interpolation: off"), "{view}");
     let payload = sandbox.json(&["params", "p", "--json"]);
     assert_eq!(payload["interpolate"], false);
     assert_eq!(payload["unmanaged"], serde_json::json!([])); // no scanning while off
