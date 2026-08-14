@@ -336,7 +336,6 @@ fn test_micro_versioned_shebang_lands_in_stored_pep723() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the exit code holds (2), but the message differs — Rust emits the generic 'could not infer the entry kind; pass --kind KIND' (cli.rs:2896-2899) where the oracle emits '%(file)s isn't a script or an executable — pass --kind <language> …' (src/skit/cli.py:2067-2070). The 'isn't a script or an executable' voice is absent from Rust. Ties to pending task #15. Verified against the built binary."]
 fn test_shebangless_unknown_uses_the_isnt_a_script_voice() {
     // A shebang-LESS unknown file keeps the original 'isn't a script or an executable' message
     // (the registered-shebang complement has its own test).

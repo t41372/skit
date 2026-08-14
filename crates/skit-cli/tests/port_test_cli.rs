@@ -289,7 +289,6 @@ fn test_add_python_reference_skips_onboarding() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's non-py refusal leads with the extensionless escape hatch — \"...isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt ..., --exe ..., or --cmd ...\" (cli.py:2069). Rust's add() exits 2 with the terser \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896); the phrase \"pass --kind <language> for an extensionless script\" never appears. Exit code 2 converges. Ties to pending task #15."]
 fn test_add_rejects_non_py() {
     let root = sandbox();
     let path = write_src(&root, "notes.txt", "data");
@@ -1524,7 +1523,6 @@ fn test_add_deps_summary_escapes_markup() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the not-a-script refusal must echo the offending filename (oracle interpolates `escape(resolved.name)`, cli.py:2069), so `[red]evil[bold].txt` renders literally. Rust's add() refusal is filename-free — \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896) — so the filename never appears. Exit code 2 converges. Ties to pending task #15."]
 fn test_add_not_py_file_warning_escapes_markup_in_filename() {
     let root = sandbox();
     let path = write_src(&root, "[red]evil[bold].txt", "hi");

@@ -2953,8 +2953,6 @@ fn add_with_config(
         && inferred.is_none()
         && !from_stdin
         && shebang.is_none()
-        && no_input
-        && source.extension().and_then(|extension| extension.to_str()) == Some("md")
         && !is_owned_draft(service.repository().data_dir(), &source)
     {
         let file = source.file_name().unwrap_or(source.as_os_str());

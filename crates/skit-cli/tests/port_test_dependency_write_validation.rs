@@ -40,9 +40,7 @@
 //! - REAL asserting `#[test]` (API exists, behavior agrees): the unpin/preserve/clear/valid deps
 //!   writes, the deps-before-needs abort order, the npm-skip, the whitespace strip-and-drop, the
 //!   `-`/`none` normalization, the oracle PEP 440/508 refusal copy, and the suggest filter +
-//!   no-block add.
-//! - DIVERGENCE (full asserting body, `#[ignore]`d): an unclassifiable file outside the drafts
-//!   directory gets the generic `pass --kind KIND` refusal instead of the complete oracle escape.
+//!   no-block add, plus the complete escape for an unclassifiable file outside the drafts directory.
 //! - ABSENT / GAP (full asserting body, `#[ignore]`d, MUST-FIX): the drafts guard and the
 //!   draft-aware "can't classify" variant (Python cli.py:1894-1933, cli.py:2053-2066) are not
 //!   built in `add_with_config`, so a draft added as exe/ref SUCCEEDS instead of being refused,
@@ -487,10 +485,6 @@ fn test_shebang_less_unclassifiable_draft_gets_the_classify_variant() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the SAME unclassifiable file OUTSIDE drafts/ IS refused \
-(exit 2), but with the generic `could not infer the entry kind; pass --kind KIND` (cli.rs:2896), \
-not the full escape naming --exe/--cmd. The `kept draft` negative already holds. Fixing the copy \
-alone turns this green. Python ref test_dependency_write_validation.py:327-338."]
 fn test_same_unclassifiable_file_outside_drafts_gets_the_full_escape() {
     // The SAME shebang-less weird-extension file OUTSIDE drafts/ is not a draft, so it keeps the
     // full escape message naming --exe and --cmd (which an on-disk file can take).
