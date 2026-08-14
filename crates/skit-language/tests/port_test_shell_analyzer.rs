@@ -1074,12 +1074,24 @@ fn test_read_cluster_keeps_scanning_past_an_unknown_flag_letter() {
     // `-er`: 'e' (readline edit, no value) is unknown to the value-flag set, so the scan continues
     // to 'r', which registers raw. The value still delivers as a normal read varname.
     //
-    // Ported via public output: the Python test's own public assertion
-    // (`shell.analyze("read -er X\n").candidates[0].name == "input-1"`) is the observable contract.
-    // The white-box `.raw is True` / `.varnames == ["X"]` checks map to this single input candidate
-    // (`.raw` itself is not carried on the public candidate).
+    // The candidate proves that scanning reaches the variable. The injected read line proves that
+    // scanning also reaches `r`: raw reads keep one backslash, while cooked reads double it.
     let all = cands("read -er X\n");
     assert_eq!(all.len(), 1);
     assert_eq!(all[0].declaration.name, "input-1");
     assert_eq!(all[0].declaration.binding, ParameterBinding::Input);
+
+    let rewritten = inject_values_for_interpreter(
+        "shell",
+        "read -er X\n",
+        std::slice::from_ref(&all[0].declaration),
+        &BTreeMap::from([("input-1".to_owned(), "a\\b".to_owned())]),
+        Some("bash"),
+    )
+    .unwrap();
+    let calls = rewritten
+        .lines()
+        .filter(|line| line.starts_with("_skit_read "))
+        .collect::<Vec<_>>();
+    assert_eq!(calls, ["_skit_read 0 'a\\b' 0 '' -er X"]);
 }
