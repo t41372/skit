@@ -13,11 +13,12 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 62 fix commits landed, 152 FAILING CONTRACTs closed
-(150 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
-The last fully green recorded baseline was workspace 2890 pass / 0 fail / 1131 ignored. Five
-reviewed PR #44 waves added 99 executable parity tests plus 8 completeness-manifest tests.
-134 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 65 fix commits landed, 157 FAILING CONTRACTs closed
+(155 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
+The last fully green recorded baseline was workspace 3143 pass / 0 fail / 983 ignored. Reviewed
+PR #44 waves continue to add executable parity owners and completeness checks after duplicate and
+test-quality review.
+129 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -167,6 +168,9 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `e64407a` | runner command validation: exact four-way argv reason voices while preserving typed pre-write rejection | 1 |
 | `eeed834` | prompt params policy: operation-failure exits and exact runner/interpolation recovery, including the cleared-pin read voice | 4 |
 | `22016c2` | add source preflight: exact localized File-not-found diagnostics before prompt confirmation, kind selection, or writes | 3 |
+| `c134c80` | add path classification: unknown shebangs name the interpreter gap and offer explicit kind or executable recovery | 2 |
+| `4fc1659` | typed add sources: reject directories with exact localized Not-a-file diagnostics while preserving explicit executable handling | 2 |
+| `de754cf` | unreadable add sources: exact localized read failure before any store write, without changing missing or directory classification | 1 |
 
 PR #44 is actively continuing. The last corrected integrated accounting is 64/84 behavior modules
 and 1318/3018 Python contracts. Its merge ancestry and complete test snapshot are preserved on
@@ -180,7 +184,9 @@ raw batch from this increment belongs on the green branch. Reviewed green waves 
 include parser mutation
 contracts (`184726d`), argstate filesystem contracts (`40b6087`), atomic state contracts
 (`817f14c`), two non-duplicate boolean parameter-edit guards (`7fcc177`), and packaging distribution
-contracts (`606c716`). The i18n replacement is green after production fixes (`f1dc3c7`..`5d3c303`).
+contracts (`606c716`). A single non-duplicate Fish managed-env delivery owner was extracted from the
+latest red manifest wave (`c592560`). The i18n replacement is green after production fixes
+(`f1dc3c7`..`5d3c303`).
 
 Two policy items keep their oracle-matching defaults (user did not object): the store self-heal
 reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to implement). Reversible.
@@ -190,8 +196,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 2890 passed / 0 failed / 1131 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 134
+# => 3143 passed / 0 failed / 983 ignored
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 129
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -203,12 +209,12 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 134 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 129 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `22016c2`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `de754cf`.
 
-- **21 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
+- **20 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
   removesuffix); stdin `add -` no name → defaults 'stdin'; stdin whitespace body accepted; `{{目标}}`
   unicode placeholders undetected → empty fields (**the #14 analyzer defect** — likely in
@@ -228,11 +234,12 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   fixed in `219a136`; the 88 remaining ignores in that file are classified architecture,
   cross-crate, private-helper, or absent-public-seam ports rather than `FAILING CONTRACT` markers.
   Oracle: langs/javascript/deps.py.
-- **13 port_test_cli.rs — mixed add voices.** Missing add-source paths now use the oracle's
-  localized `File not found` preflight (`22016c2`); the remaining items overlap the add-lane and
-  general CLI clusters.
-- **16 port_test_add_validation_contracts.rs + 9 port_test_add_lane_contracts.rs + 6
-  port_test_add_feedback_contracts.rs + 6 port_test_draft_inference_and_reader_cli.rs + 13
+- **11 port_test_cli.rs — mixed add voices.** Missing add-source paths now use the oracle's
+  localized `File not found` preflight (`22016c2`), and typed directory sources use the exact
+  `Not a file` diagnostic (`4fc1659`), and unreadable files use the localized read failure
+  (`de754cf`); the remaining items overlap the add-lane and general CLI clusters.
+- **11 port_test_add_validation_contracts.rs + 6 port_test_add_lane_contracts.rs + 4
+  port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 11
   port_test_add_no_source.rs + ~8 of port_test_editor.rs (the `-e` lane) — the add-lane cluster
   (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
   cli.py:1894-1933); resumed draft not consumed on success (cli.py:258-266); editor lane must
