@@ -1,6 +1,8 @@
-//! Rust-additive coverage for Python normalization contracts whose structured batch/refusal-code
-//! result has no one-to-one Rust API.  These tests preserve the behavioral refusal matrix rather
-//! than relabeling a weaker projection with a frozen Python exact name.
+//! Rust-additive normalization coverage plus the exact frozen no-values injection contract.
+//!
+//! Python's structured batch/refusal-code result has no one-to-one Rust API, so those normalization
+//! projections stay explicitly `rust_additive_*`. The empty-value-map contract does have an exact
+//! public Rust projection: the injector must return the original source byte-for-byte.
 
 use skit_language::{LanguageError, ParseOutcome, normalize_shell_default, parse_document};
 
@@ -85,7 +87,7 @@ fn rust_additive_normalize_mixed_names_preserves_success_and_independent_refusal
 }
 
 #[test]
-fn rust_additive_empty_injection_value_map_is_byte_identical() {
+fn test_no_values_writes_nothing_at_all() {
     use std::collections::BTreeMap;
     use skit_language::inject_values;
 
