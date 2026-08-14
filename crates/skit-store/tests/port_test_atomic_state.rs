@@ -1,8 +1,8 @@
-//! Public-surface ports of atomic persistence consequences from
-//! `origin/main@206f9ef:tests/test_atomic.py`.
+//! Public-surface atomic-persistence strengthening around Python v0.4 `tests/test_atomic.py`.
 //!
-//! Private syscall-spy tests are intentionally not recreated by exposing Rust internals. These
-//! cases assert the same externally observable filesystem guarantees through `FileFormStateStore`.
+//! These are useful Rust-only consequence tests, but their names are not frozen Python test names.
+//! Keep the assertions unchanged and label them `rust_additive_*` so they cannot masquerade as
+//! line-for-line migration accounting.
 
 use std::fs;
 
@@ -16,7 +16,7 @@ fn slug(value: &str) -> Slug {
 }
 
 #[test]
-fn test_atomic_write_replace_failure_removes_its_temporary_file() {
+fn rust_additive_atomic_write_replace_failure_removes_its_temporary_file() {
     let root = TempDir::new().unwrap();
     let store = FileFormStateStore::new(root.path());
     let slug = slug("replace-fails");
@@ -41,7 +41,7 @@ fn test_atomic_write_replace_failure_removes_its_temporary_file() {
 }
 
 #[test]
-fn test_failed_atomic_write_releases_the_per_slug_lock_for_the_next_update() {
+fn rust_additive_failed_atomic_write_releases_the_per_slug_lock_for_the_next_update() {
     let root = TempDir::new().unwrap();
     let store = FileFormStateStore::new(root.path());
     let slug = slug("retry-after-failure");
@@ -72,7 +72,7 @@ fn test_failed_atomic_write_releases_the_per_slug_lock_for_the_next_update() {
 
 #[cfg(unix)]
 #[test]
-fn test_atomic_write_preserves_existing_state_file_mode() {
+fn rust_additive_atomic_write_preserves_existing_state_file_mode() {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     let root = TempDir::new().unwrap();
