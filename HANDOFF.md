@@ -13,13 +13,13 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 86 fix commits landed, 193 FAILING CONTRACTs closed
-(189 removed, translated, or un-ignored + 4 re-labeled architecture closures), 2 stubs promoted,
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 92 fix commits landed, 202 FAILING CONTRACTs closed
+(198 removed, translated, or un-ignored + 4 re-labeled architecture closures), 2 stubs promoted,
 2 owed white-box units added. The last fully green recorded baseline was workspace
-3182 pass / 0 fail / 947 ignored. Reviewed
+3194 pass / 0 fail / 938 ignored. Reviewed
 PR #44 waves continue to add executable parity owners and completeness checks after duplicate and
 test-quality review.
-93 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+84 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -194,16 +194,26 @@ This session (2026-08-11 through 2026-08-14), in order — each closed the named
 | `a5710d9` | moved the config axis-display exact contract from the raw store projection to its executable private CLI owner | 1 translated stale-green |
 | `669abd1` | human params output: mask present secret defaults and last values while JSON and missing values keep their machine meaning | 2 |
 | `06b4c99` | doctor entry counts: exact singular/plural taxonomy and oracle zh-CN/zh-TW translations; JSON stays numeric | 1 |
+| `52ef759` | prompt params read view: disabled insertion returns the exact localized recovery notice before candidate or item rendering | 1 |
+| `0fd6d85` | picked-path glob spelling: match Python `glob.escape` for `[`, keep Replace literal, and prove downstream re-glob selects only the picked file | 1 |
+| `4a8aa74` | prompt params schema edits: refuse all metadata-schema operations while insertion is off, before body reads or writes | 1 |
+| `3d9c8ba` | declared env sources: warn and preserve bytes for public values; apply same-batch secret transitions before the trimmed env source | 1 |
+| `7f7be0d` | untouched editor drafts: safely unlink owned empty script/prompt drafts and report the exact typed success notice | 3 |
+| `4746c36` | params source management: classify reference and command no-copy refusals as operation failures before any source, metadata, or state write | 2 |
 
-PR #44 is actively continuing. The last corrected integrated accounting is 64/84 behavior modules
-and 1318/3018 Python contracts. Its merge ancestry and complete test snapshot are preserved on
-`integration/pr44-20260812` at corrected tip `6f1da7f` (PR pin `0c8c88d`); do not use the earlier `0b36bf7` result,
+PR #44 is paused at a fixed reviewed checkpoint. Its merge ancestry and complete test snapshot are
+preserved on `integration/pr44-20260812` at tip `a6e0513` (PR pin `38260ff`); do not use the earlier
+`0b36bf7` result,
 which inherited an upstream denominator error (60 instead of 78 `test_store.py` functions and
 3000 instead of 3018 total contracts). The integration workspace passes
 `cargo test --locked --workspace --all-targets --all-features --no-run`. The pinned PR tree's new
-3008 denominator is blocked; integration retains the frozen 3018 count. Its JS-inject manifest is
-also red (22 actual vs 25 expected), and the new manifests can hide exact-name duplicates, so no
-raw batch from this increment belongs on the green branch. Reviewed green waves on this branch
+3008 denominator is blocked; integration retains the frozen 3018 count. The complete accounting
+gate remains deliberately red at 68/84 modules and 1526/3018 contracts, with 16 missing modules and
+no broken guards. The latest PR increment still cannot land raw: its Store manifest collapses 82
+owner occurrences into 70 names and hides 12 duplicates; two Atomic lock contracts use the same
+witness and lack separate production seams; two Shim names are strict semantic duplicates; and the
+two JavaScript gate contracts require a real `node --check` production gate and ordering fix on the
+current branch. Reviewed green waves on this branch
 include parser mutation
 contracts (`184726d`), argstate filesystem contracts (`40b6087`), atomic state contracts
 (`817f14c`), two non-duplicate boolean parameter-edit guards (`7fcc177`), and packaging distribution
@@ -222,8 +232,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3182 passed / 0 failed / 947 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 93
+# => 3194 passed / 0 failed / 938 ignored
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 84
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -235,12 +245,12 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 93 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 84 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `06b4c99`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `4746c36`.
 
-- **16 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
+- **14 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Remaining work is the params human read/manage view, post-edit placeholder
   reconciliation and flood preview, runner row/remove recovery copy, prompt-only option conflicts,
   help taxonomy copy, and the unset-runner JSON representation. Prompt naming, stdin
@@ -262,26 +272,24 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   the remaining items overlap the add-lane and general CLI clusters.
 - **9 port_test_add_validation_contracts.rs + 5 port_test_add_lane_contracts.rs + 3
   port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 11
-  port_test_add_no_source.rs + ~7 of port_test_editor.rs (the `-e` lane) — the add-lane cluster
+  port_test_add_no_source.rs + 4 port_test_editor.rs (the `-e` lane) — the add-lane cluster
   (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
-  cli.py:1894-1933); resumed draft not consumed on success (cli.py:258-266); editor lane must
-  validate BEFORE opening $EDITOR (cli.py:309-329); `kind_for_draft` shebang-first classifier
+  cli.py:1894-1933); resumed draft not consumed on success (cli.py:258-266); `kind_for_draft` shebang-first classifier
   (registry.py:442-473 — a `.py` draft with a bash shebang stores kind=shell); `--python -/none/blank`
   normalization (case-insensitive, blank→auto, cli.py:279-281); unknown-kind refusal voices
   ("isn't a script..." / "names no interpreter..." — cli.py:2040-2070); interactive deps/python
-  re-ask loop (cli.py:224-261); `-e` lane name prompt/interactivity gate; untouched-draft exit 0
-  "Nothing was added" + unlink vs Rust's exit-2 keep; awk-shebang → ask, not python-fallback;
-  interactive name collection, and untouched-draft handling. Explicit edit-create decline is green.
+  re-ask loop (cli.py:224-261); `-e` lane name prompt/interactivity gate; awk-shebang → ask, not
+  python-fallback; and interactive name collection. Explicit edit-create decline, explicit flag
+  preflight, and untouched script/prompt draft cleanup are green.
 - **7 port_test_dependency_command_contracts.rs** — draft-boundary refusals and per-axis update
   confirmations. Two ignored store-named JS-constraint cases are architecture-closed semantic
   duplicates of the stronger now-green CLI owners.
-- **11 port_test_declared_params.rs + 2 port_test_edit.rs + 1 of port_test_editor.rs (params
+- **10 port_test_declared_params.rs + 1 port_test_edit.rs + 0 of port_test_editor.rs (params
   resync) + port_test_params_edit.rs (36 tests currently ABSENT-stubbed) — the params/edit cluster
   (#16), reimplementation-scale, LAST.** `edit_declared` (params.py:352-472): pure warn-and-continue
   batch editor returning `DeclEditResult{decls, warnings}` with 9 closed warning codes, reverting a
   bad row but keeping the batch (Rust fail-fast-aborts, cli.rs:3762-3973 region); expose
-  `reconcile.edit_specs`; exits: warn+0 (bad --type/--prompt), refuse 1 (--resync on reference,
-  non-editable kind) vs Rust's blanket Usage 2; `[[parameters]]` unknown-key preservation
+  `reconcile.edit_specs`; exits: warn+0 (bad --type/--prompt); `[[parameters]]` unknown-key preservation
   (models.py:112-113 pass-through vs typed `to_meta_map` dropping unmodeled keys,
   parameters.rs:340-349).
 - **0 port_test_run_set.rs implementation divergences.** Its 23 executable contracts are green;
@@ -293,7 +301,7 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
   region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
   `deps`-clear must sweep node_modules.
-- **TUI: 4 path_tui + 4 tui_nav + 1 draft_and_reader_tui + 1 reset_default_ui.**
+- **TUI: 3 path_tui + 4 tui_nav + 1 draft_and_reader_tui + 1 reset_default_ui.**
 - **Small:** 1 show and 1 flows.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
