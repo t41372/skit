@@ -3978,6 +3978,16 @@ fn params(
             "--interpreter only applies to interpreted entries",
         )));
     }
+    let mut settings = EntrySettings::from_meta(&held.meta);
+    if kind == "prompt" && !settings.interpolate && has_metadata_schema_operation {
+        return Err(CliError::Failure(
+            Message::new(
+                "Variable insertion is off for {} — turn it on first with: skit params {} --interpolate",
+            )
+            .with(&held.meta.name)
+            .with(&held.meta.name),
+        ));
+    }
     let prompt = kind == "prompt";
     let mut held = held;
     let original_source = if prompt {
@@ -4002,7 +4012,6 @@ fn params(
         }
         source.ok().flatten().unwrap_or_default()
     };
-    let mut settings = EntrySettings::from_meta(&held.meta);
     let (mut source, prepared_managed) = prepare_source_management(
         held.meta.kind.as_str(),
         held.meta.mode,

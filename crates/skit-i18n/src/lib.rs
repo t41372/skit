@@ -743,6 +743,11 @@ const CATALOG: &[Translation] = &[
     row!("Description: {}", "说明：{}", "說明：{}"),
     row!("Managed parameters: {}", "受管参数：{}", "受管參數：{}",),
     row!(
+        "Variable insertion is off for {} — turn it on first with: skit params {} --interpolate",
+        "{} 的变量插入已关闭——请先开启:skit params {} --interpolate",
+        "{} 的變量插入已關閉——請先開啟:skit params {} --interpolate",
+    ),
+    row!(
         "Variable insertion is off — the body travels to the agent exactly as written. Turn it on with: skit params {} --interpolate",
         "变量插入已关闭——正文会原封不动送达 agent。开启:skit params {} --interpolate",
         "變量插入已關閉——內文會原封不動送達 agent。開啟:skit params {} --interpolate",

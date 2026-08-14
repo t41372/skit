@@ -2483,11 +2483,13 @@ fn test_run_insertion_off_prompt_rejects_set_and_sends_verbatim() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust has no insertion-off gate on schema edits — with interpolation off, `params --add b` is processed (and errors 'parameter already exists: b') instead of the oracle's exit-1 refusal 'Variable insertion is off'."]
 fn test_params_schema_edits_refused_while_insertion_is_off() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}} {{b}}\n", "p");
     sandbox.ok(&["params", "p", "--no-interpolate"]);
+    let meta_before = sandbox.meta("p");
+    let body_before = sandbox.body_bytes("p");
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
     for flags in [
         vec!["--add", "b"],
         vec!["--rm", "a"],
@@ -2500,6 +2502,17 @@ fn test_params_schema_edits_refused_while_insertion_is_off() {
         assert!(
             combined.contains("Variable insertion is off"),
             "{flags:?}: {combined}"
+        );
+        assert_eq!(sandbox.meta("p"), meta_before, "{flags:?}: metadata write");
+        assert_eq!(
+            sandbox.body_bytes("p"),
+            body_before,
+            "{flags:?}: body write"
+        );
+        assert_eq!(
+            fs::read_dir(sandbox.state.path()).unwrap().count(),
+            0,
+            "{flags:?}: state write"
         );
     }
     sandbox.ok(&["params", "p", "--interpolate"]);
