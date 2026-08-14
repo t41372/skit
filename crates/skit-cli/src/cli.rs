@@ -53,7 +53,7 @@ use skit_i18n::{
     render as localize, requested_locale, system_locale, text,
 };
 use skit_language::{
-    LosslessSource, UvMetadata, UvMetadataEditError, cli_params, detect_candidates,
+    LosslessSource, UvMetadata, UvMetadataEditError, cli_params, decode_prompt, detect_candidates,
     effective_uv_metadata_bytes, external_dependencies_at, has_uv_metadata_block_bytes, infer_kind,
     managed_params, normalize_shell_default, placeholder_params, plan_uv_metadata_edit,
     python_version_pin, read_uv_metadata, shebang_program, suggest_description,
@@ -2457,29 +2457,18 @@ fn show_source_text(store: &FileStore, entry: &Entry) -> Result<String, CliError
     let Ok(bytes) = fs::read(&path) else {
         return Ok(String::new());
     };
-    match String::from_utf8(bytes) {
-        Ok(source) => Ok(source),
-        Err(error) if entry.meta.kind.as_str() == "prompt" => {
-            let offset = error.utf8_error().valid_up_to();
-            Err(CliError::Failure(
-                Message::new("Prompt {} isn't valid UTF-8 (invalid byte at offset {}).")
-                    .with(path.display())
-                    .with(offset),
-            ))
-        }
-        Err(error) => Ok(String::from_utf8_lossy(error.as_bytes()).into_owned()),
+    if entry.meta.kind.as_str() == "prompt" {
+        return decode_prompt(&bytes, path.display().to_string())
+            .map(str::to_owned)
+            .map_err(|error| CliError::Failure(error.message()));
     }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn validate_prompt_utf8(bytes: &[u8], path: &str) -> Result<(), CliError> {
-    let Err(error) = std::str::from_utf8(bytes) else {
-        return Ok(());
-    };
-    Err(CliError::Failure(
-        Message::new("Prompt {} isn't valid UTF-8 (invalid byte at offset {}).")
-            .with(path)
-            .with(error.valid_up_to()),
-    ))
+    decode_prompt(bytes, path.to_owned())
+        .map(|_| ())
+        .map_err(|error| CliError::Failure(error.message()))
 }
 
 fn nonempty(value: &str) -> Option<&str> {
@@ -3840,10 +3829,15 @@ fn params(
             "--interpreter only applies to interpreted entries",
         )));
     }
+    let prompt = kind == "prompt";
     let mut held = held;
-    let original_source = source_path(store, &held)
-        .and_then(|path| fs::read_to_string(path).ok())
-        .unwrap_or_default();
+    let original_source = if prompt {
+        show_source_text(store, &held)?
+    } else {
+        source_path(store, &held)
+            .and_then(|path| fs::read_to_string(path).ok())
+            .unwrap_or_default()
+    };
     let mut settings = EntrySettings::from_meta(&held.meta);
     let (mut source, prepared_managed) = prepare_source_management(
         held.meta.kind.as_str(),
@@ -5210,12 +5204,31 @@ fn doctor_entry_drifted(store: &FileStore, entry: &Entry) -> bool {
         .is_empty()
 }
 
+#[cfg(test)]
 fn doctor_launch_block<P: ProgramProbe>(
     entry: &Entry,
     settings: &EntrySettings,
     config: &FileConfigStore,
     probe: &P,
 ) -> Result<Option<Message>, CliError> {
+    doctor_launch_block_with_store(None, entry, settings, config, probe)
+}
+
+fn doctor_launch_block_with_store<P: ProgramProbe>(
+    store: Option<&FileStore>,
+    entry: &Entry,
+    settings: &EntrySettings,
+    config: &FileConfigStore,
+    probe: &P,
+) -> Result<Option<Message>, CliError> {
+    if let Some(store) = store
+        && entry.meta.kind.as_str() == "prompt"
+        && let Some(path) = source_path(store, entry)
+        && let Ok(bytes) = fs::read(&path)
+        && let Err(error) = decode_prompt(&bytes, path.display().to_string())
+    {
+        return Ok(Some(error.message()));
+    }
     if !matches!(entry.meta.workdir.as_str(), "invoke" | "store" | "origin") {
         let path = Path::new(&entry.meta.workdir);
         if !path.is_absolute() {
@@ -6620,7 +6633,13 @@ impl<'a> CliHealthInspector<'a> {
                 });
             } else if known_entry_kind(entry.meta.kind.as_str())
                 && !entry_missing(self.store, entry)
-                && let Some(reason) = doctor_launch_block(entry, &settings, &config, &probe)?
+                && let Some(reason) = doctor_launch_block_with_store(
+                    Some(self.store),
+                    entry,
+                    &settings,
+                    &config,
+                    &probe,
+                )?
             {
                 launch_blocked.push(HealthIssue {
                     slug: entry.slug.as_str().to_owned(),

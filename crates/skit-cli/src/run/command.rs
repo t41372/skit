@@ -24,7 +24,10 @@ use skit_domain::{
 };
 use skit_form::form_params;
 use skit_i18n::{Localize, Message};
-use skit_language::{LanguageError, inject_values_for_interpreter, render_prompt_body};
+use skit_language::{
+    LanguageError, PromptEncodingError, decode_prompt, inject_values_for_interpreter,
+    render_prompt_body,
+};
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
     SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, UvDownloadConsent,
@@ -130,8 +133,8 @@ pub(crate) enum RunError {
     },
     #[error("prompt body doesn't exist: {path}")]
     PromptBodyMissing { path: String },
-    #[error("{path} is not valid UTF-8")]
-    Encoding { path: String },
+    #[error(transparent)]
+    Encoding(#[from] PromptEncodingError),
     #[error("could not write staged source {path}: {source}")]
     Stage {
         path: String,
@@ -183,7 +186,7 @@ impl Localize for RunError {
             Self::PromptBodyMissing { path } => {
                 Message::new("prompt body doesn't exist: {}").with(path)
             }
-            Self::Encoding { path } => Message::new("{} is not valid UTF-8").with(path),
+            Self::Encoding(error) => error.message(),
             Self::Stage { path, source } => Message::new("could not write staged source {}: {}")
                 .with(path)
                 .with(source),
@@ -234,7 +237,7 @@ impl RunError {
             | Self::Inputs(_)
             | Self::Language(_)
             | Self::Read { .. }
-            | Self::Encoding { .. }
+            | Self::Encoding(_)
             | Self::Stage { .. }
             | Self::StateDirectoryUnavailable
             | Self::Config(_)
@@ -705,9 +708,7 @@ fn source_snapshot(
                 }
             })?;
             let hash = content_hash(&bytes);
-            let text = String::from_utf8(bytes).map_err(|_| RunError::Encoding {
-                path: path.display().to_string(),
-            })?;
+            let text = decode_prompt(&bytes, path.display().to_string())?.to_owned();
             Ok((text, Some(hash)))
         }
         _ => {
@@ -1347,7 +1348,7 @@ mod tests {
         shell.meta.kind = EntryKind::parse("prompt").unwrap();
         assert!(matches!(
             source_text(&store, &shell, &EntrySettings::default()),
-            Err(RunError::Encoding { .. })
+            Err(RunError::Encoding(_))
         ));
         assert!(matches!(
             read_bytes(&directory.join("missing")),
@@ -1392,7 +1393,7 @@ mod tests {
         fs::write(prompt_dir.join("prompt.md"), [0xff]).unwrap();
         assert!(matches!(
             source_text(&store, &prompt, &EntrySettings::default()).unwrap_err(),
-            RunError::Encoding { .. }
+            RunError::Encoding(_)
         ));
 
         let generic = entry("shell", "bash");
@@ -1749,10 +1750,11 @@ mod localization_tests {
             &["/data/prompt.md"],
         );
         assert_localized(
-            &RunError::Encoding {
-                path: "/data/demo.py".to_owned(),
-            },
-            &["/data/demo.py"],
+            &RunError::Encoding(
+                skit_language::decode_prompt(&[0xff], "/data/demo.py")
+                    .expect_err("fixture must be invalid"),
+            ),
+            &["/data/demo.py", "0"],
         );
         assert_localized(
             &RunError::Stage {
