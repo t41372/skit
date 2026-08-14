@@ -31,7 +31,8 @@
 //! - ABSENT gap stubs (`kind="absent"`): the interactive deps/python re-ask loop (3).
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
 use skit_i18n::{Locale, Localize};
 use skit_language::{validate_pep440_specifiers, validate_pep508_requirement};
@@ -83,6 +84,41 @@ fn run(sandbox: &Sandbox, args: &[&str], stdin: Option<&str>) -> (Option<i32>, S
         String::from_utf8_lossy(&output.stderr)
     );
     (output.status.code(), flat(&combined))
+}
+
+/// Run an editor flow with terminal-backed stdin and stdout, as the oracle does.
+#[cfg(unix)]
+fn run_pty(sandbox: &Sandbox, args: &[&str], editor: &Path) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_LANG", "en");
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("EDITOR", editor);
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    });
+    let status = child.wait().unwrap();
+    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    (status.exit_code(), flat(&output))
 }
 
 /// Python `_draft`: write a body into `<SKIT_DATA_DIR>/drafts/<name>` (the real drafts home).
@@ -526,46 +562,42 @@ fn test_stdin_valid_python_lands_in_the_stored_block() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the editor lane validates AFTER the editor opens — \
-add_draft (cli.rs:1399-1440) opens the editor, then add validates, and keeps the draft on failure, \
-so the editor DID run and a draft WAS materialized (oracle cli.py:309-319 validates first)."]
 fn test_editor_lane_refuses_bad_python_before_opening_the_editor() {
     // The editor lane validates BEFORE the editor opens (the name-conflict precedent): a bad
     // --python is refused and open_in_editor is never called (no authoring session cost).
     let sandbox = Sandbox::new();
-    let marker = with_sentinel_editor(&sandbox);
-    let (code, out) = run(
+    let (editor, marker) = with_sentinel_editor(&sandbox);
+    let (code, out) = run_pty(
         &sandbox,
         &["add", "--edit", "-n", "edX", "--python", "garbage"],
-        None,
+        &editor,
     );
-    assert_eq!(code, Some(2), "{out}");
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("isn't a Python version constraint"), "{out}");
     assert!(!marker.exists(), "the editor never opened"); // opened == []
     assert!(drafts_dir_is_empty(&sandbox)); // no draft was materialized
 }
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the editor lane validates AFTER the editor opens — \
-add_draft (cli.rs:1399-1440) opens the editor, then add validates, so a bad --dep does not refuse \
-before the editor runs (oracle cli.py:322-329 validates first)."]
 fn test_editor_lane_refuses_bad_dep_before_opening_the_editor() {
     let sandbox = Sandbox::new();
-    let marker = with_sentinel_editor(&sandbox);
-    let (code, out) = run(
+    let (editor, marker) = with_sentinel_editor(&sandbox);
+    let (code, out) = run_pty(
         &sandbox,
         &["add", "--edit", "-n", "edY", "--dep", "@@@"],
-        None,
+        &editor,
     );
-    assert_eq!(code, Some(2), "{out}");
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("isn't a package requirement"), "{out}");
     assert!(!marker.exists(), "the editor never opened");
+    assert!(drafts_dir_is_empty(&sandbox));
 }
 
 /// Configure a fake editor that (a) touches a marker so a run is observable and (b) writes valid
-/// python so a materialized draft is non-empty. Returns the marker path. The oracle asserts the
-/// editor NEVER runs, so the marker must stay absent for the test to pass.
+/// python so a materialized draft is non-empty. The oracle asserts the marker stays absent.
 #[cfg(unix)]
-fn with_sentinel_editor(sandbox: &Sandbox) -> PathBuf {
+fn with_sentinel_editor(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt as _;
     let marker = sandbox.config.path().join("editor-ran");
     let editor = sandbox.config.path().join("editor.sh");
@@ -585,7 +617,7 @@ fn with_sentinel_editor(sandbox: &Sandbox) -> PathBuf {
         format!("editor = {:?}\n", editor.display().to_string()),
     )
     .unwrap();
-    marker
+    (editor, marker)
 }
 
 // ==========================================================================

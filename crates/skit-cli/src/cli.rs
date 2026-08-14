@@ -1024,6 +1024,29 @@ fn mirror_url_is_acceptable(value: &str, https_only: bool) -> bool {
     scheme && !value.chars().any(char::is_whitespace) && !value.contains('\u{00b7}')
 }
 
+fn validate_explicit_python_flags(options: &AddOptions) -> Result<(), CliError> {
+    if options.dependencies_explicit {
+        for requirement in options
+            .dependencies
+            .iter()
+            .map(|item| item.trim())
+            .filter(|item| !item.is_empty())
+        {
+            validate_pep508_requirement(requirement)
+                .map_err(|error| CliError::Usage(error.message()))?;
+        }
+    }
+    if let Some(version) = options
+        .requires_python
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "-" && !value.eq_ignore_ascii_case("none"))
+    {
+        validate_pep440_specifiers(version).map_err(|error| CliError::Usage(error.message()))?;
+    }
+    Ok(())
+}
+
 fn add_command(
     service: &LibraryService<FileStore>,
     mut options: AddOptions,
@@ -1053,6 +1076,7 @@ fn add_command(
                 Err(error) => return Err(error.into()),
             }
         }
+        validate_explicit_python_flags(&options)?;
         return add_draft(service, options, false);
     }
     if options.source.is_none() && options.command_template.is_none() {
