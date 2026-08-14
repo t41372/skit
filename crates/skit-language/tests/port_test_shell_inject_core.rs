@@ -63,7 +63,7 @@ fn const_decl(name: &str, parameter_type: ParameterType) -> ParamDecl {
     declaration
 }
 
-fn input_decl(name: &str, order: usize, prompt: &str, secret: bool) -> ParamDecl {
+fn input_decl(name: &str, order: i64, prompt: &str, secret: bool) -> ParamDecl {
     let mut declaration = ParamDecl::new(name);
     declaration.binding = ParameterBinding::Input;
     declaration.delivery = ParameterDelivery::Inject;
