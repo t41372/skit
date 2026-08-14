@@ -135,6 +135,7 @@ impl Sandbox {
         fs::write(
             &path,
             r#"#!/bin/sh
+if [ "$1" = "-n" ]; then exit 0; fi
 printf 'SHELL_PATH=%s\n' "$1"
 printf 'SHELL_MODE=%s\n' "${MODE-}"
 printf 'SHELL_GREETING=%s\n' "${GREETING-}"
