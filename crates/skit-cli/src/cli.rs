@@ -3036,7 +3036,7 @@ fn add_with_config(
     }
     if requires_python.is_some() && kind_name != "python" {
         return Err(CliError::Usage(
-            Message::new("a Python constraint does not apply to {} entries").with(kind_name),
+            Message::new("A Python constraint doesn't apply to {} scripts.").with(kind_name),
         ));
     }
     if kind_name == "python" {
@@ -3596,7 +3596,7 @@ fn deps(
     }
     if args.requires_python.is_some() && kind != "python" {
         return Err(CliError::Usage(
-            Message::new("a Python constraint does not apply to {} entries").with(kind),
+            Message::new("A Python constraint doesn't apply to {} scripts.").with(kind),
         ));
     }
     if package_change

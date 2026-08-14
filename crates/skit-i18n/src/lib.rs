@@ -2285,9 +2285,9 @@ const CATALOG: &[Translation] = &[
         "Python 版本限制僅適用於 Python 項目",
     ),
     row!(
-        "a Python constraint does not apply to {} entries",
-        "Python 版本约束不适用于 {} 条目",
-        "Python 版本限制不適用於 {} 項目",
+        "A Python constraint doesn't apply to {} scripts.",
+        "Python 约束不适用于 {} 脚本。",
+        "Python 約束不適用於 {} 腳本。",
     ),
     row!(
         "a command template cannot be empty",

@@ -26,13 +26,13 @@
 //! - Python `drafts_dir()` -> `<SKIT_DATA_DIR>/drafts`.
 //!
 //! Buckets (recorded per test in the structured result):
-//! - REAL asserting `#[test]` (API exists, behavior agrees): the uv-flavor '-'/'none'
-//!   normalization (6, 8), the deps-only npm edit (10), and the add_python belt's
-//!   validation, strip-and-drop, and no-deps transparency (11–14). 7 tests.
+//! - REAL asserting `#[test]` (API exists, behavior agrees): the npm refusal spellings (3–5),
+//!   the uv-flavor '-'/'none' normalization (6, 8), the deps-only npm edit (10), and the
+//!   add_python belt's validation, strip-and-drop, and no-deps transparency (11–14). 10 tests.
 //! - FAILING CONTRACT (divergence) — full oracle-faithful body, `#[ignore]`d because the
 //!   Rust behavior diverges (verified against the built binary): the wholly-unimplemented
-//!   drafts-boundary guard (1, 2), the js `--python` refusal wording (3, 4, 5, 7, 9), the
-//!   deps confirmation-line shape (15–19). 12 tests.
+//!   drafts-boundary guard (1, 2), the duplicate store-mapped js `--python` refusal cases (7, 9),
+//!   and the deps confirmation-line shape (15–19). 9 tests.
 //! - CROSS-CRATE — compiling `#[ignore]` stub naming the owning tier: the language
 //!   `registry.spec_for(...).deps_flavor` premise, which the Rust rewrite disperses (20). 1 test.
 
@@ -191,7 +191,6 @@ fn test_kind_exe_alone_names_only_kind_exe() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 holds, but the message reads 'a Python constraint does not apply to js entries' where the oracle says 'A Python constraint doesn't apply to js scripts.' (store.py:1255-1263). Verified against the built binary."]
 fn test_js_deps_python_dash_is_refused_as_inapplicable() {
     // `skit deps <js> --python -` is REFUSED (exit 2, "doesn't apply"), NOT silently accepted:
     // normalizing '-' to "" first would make a kind-inapplicable flag succeed for some spellings
@@ -208,7 +207,6 @@ fn test_js_deps_python_dash_is_refused_as_inapplicable() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 holds, but the message reads 'a Python constraint does not apply to js entries' where the oracle says 'A Python constraint doesn't apply to js scripts.' (store.py:1255-1263). Verified against the built binary."]
 fn test_js_deps_python_none_is_refused_as_inapplicable() {
     // The other automatic token behaves identically: '-' and 'none' are NOT special-cased
     // into acceptance on an npm entry.
@@ -224,7 +222,6 @@ fn test_js_deps_python_none_is_refused_as_inapplicable() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 and the untouched state both hold, but the message reads 'a Python constraint does not apply to js entries' where the oracle says 'A Python constraint doesn't apply to js scripts.' (store.py:1255-1263). Verified against the built binary."]
 fn test_js_deps_python_empty_string_is_refused_as_inapplicable() {
     // The missing spelling: `--python ''` (empty) is a spelling too, and is REFUSED identically
     // to '-'/'none'/a real constraint (exit 2, "doesn't apply") — nothing is written. The npm
