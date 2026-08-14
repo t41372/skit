@@ -2174,7 +2174,6 @@ fn test_doctor_skips_a_prompt_whose_body_is_gone() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the prompt metadata has interpolation disabled and no fields, but Rust's add summary omits the oracle's `insertion is off` notice."]
 fn test_add_no_interpolate() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}} {{b}}\n");
@@ -2222,7 +2221,6 @@ fn test_add_no_interpolate_through_stdin_lane() {
 fn test_add_interactive_off_answer_disables_insertion() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the flood cap manages no fields, but Rust's add summary omits the oracle's `too many to manage automatically` notice."]
 fn test_add_flood_cap_manages_nothing_and_says_so() {
     let sandbox = Sandbox::new();
     let many = (0..AUTO_MANAGE_LIMIT + 5)

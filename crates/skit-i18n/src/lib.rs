@@ -733,6 +733,16 @@ const CATALOG: &[Translation] = &[
     row!("Description: {}", "说明：{}", "說明：{}"),
     row!("Managed parameters: {}", "受管参数：{}", "受管參數：{}",),
     row!(
+        "Variable insertion is off — the body travels to the agent exactly as written (turn it on with: skit params {} --interpolate)",
+        "变量插入已关闭——正文将按原样发送给代理（可使用以下命令开启：skit params {} --interpolate）",
+        "變數插入已關閉——內容將依原樣傳送給代理（可使用以下命令開啟：skit params {} --interpolate）",
+    ),
+    row!(
+        "Detected {} placeholders — too many to manage automatically, so none were. Manage the ones you need with: skit params {} --add NAME, or turn insertion off with --no-interpolate.",
+        "检测到 {} 个占位符——数量过多，无法自动管理，因此未管理任何占位符。可使用 skit params {} --add NAME 管理所需占位符，或使用 --no-interpolate 关闭变量插入。",
+        "偵測到 {} 個預留位置——數量過多，無法自動管理，因此未管理任何預留位置。可使用 skit params {} --add NAME 管理所需預留位置，或使用 --no-interpolate 關閉變數插入。",
+    ),
+    row!(
         "Detected parameters: {} (the run form asks for them; your last values are remembered)",
         "检测到的参数：{}（运行表单会询问这些参数，并记住你上次输入的值）",
         "偵測到的參數：{}（執行表單會詢問這些參數，並記住你上次輸入的值）",

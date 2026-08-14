@@ -74,12 +74,12 @@ use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
     Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor, DraftKind,
     DraftSummary, Effect as UiEffect, FieldValue, FormField, FormPurpose, FormView, HealthAction,
-    HealthView, HostRequest, LibraryState, PRESET_PREFIX, PreferencesAction, PreferencesEffect,
-    PreferencesView, ReviewDefaults, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
-    RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity,
-    RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen, SettingsInputs,
-    SettingsSectionId, SettingsView, SourceSnapshot as AddSourceSnapshot, SubmittedValues,
-    TypedValue,
+    HealthView, HostRequest, LibraryState, PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT,
+    PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext,
+    RunFormOptions, RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView,
+    RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest,
+    RunnerSaveTarget, Screen, SettingsInputs, SettingsSectionId, SettingsView,
+    SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
 };
 use thiserror::Error;
 use unicode_width::UnicodeWidthStr as _;
@@ -3087,6 +3087,8 @@ fn add_with_config(
 fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
     let settings = effective_settings(store, entry);
     let source = show_source_text(store, entry)?;
+    let prompt_placeholders =
+        (entry.meta.kind.as_str() == "prompt").then(|| placeholder_params("prompt", &source).len());
     let declarations = match entry.meta.kind.as_str() {
         "command" | "prompt" => {
             form_plan(entry.meta.kind.as_str(), &source, &settings).declarations()
@@ -3151,6 +3153,20 @@ fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
                 "Managed parameters: {}",
                 &[&managed.join(", ")],
             )
+        );
+    }
+    if prompt_placeholders.is_some() && !settings.interpolate {
+        humanln!(
+            "Variable insertion is off — the body travels to the agent exactly as written (turn it on with: skit params {} --interpolate)",
+            entry.meta.name
+        );
+    } else if prompt_placeholders.is_some_and(|count| count > PROMPT_AUTO_MANAGE_LIMIT)
+        && managed.is_empty()
+    {
+        humanln!(
+            "Detected {} placeholders — too many to manage automatically, so none were. Manage the ones you need with: skit params {} --add NAME, or turn insertion off with --no-interpolate.",
+            prompt_placeholders.unwrap_or_default(),
+            entry.meta.name
         );
     }
     println!(
