@@ -58,6 +58,46 @@ fn signature(text: &str) -> BTreeMap<String, usize> {
 }
 
 #[test]
+fn test_placeholder_parity_flags_a_swapped_named_placeholder() {
+    assert_ne!(
+        signature("needs %(error)s"),
+        signature("需要 %(detail)s"),
+        "a translated named placeholder that would raise KeyError at runtime passed the parity gate"
+    );
+}
+
+#[test]
+fn test_placeholder_parity_flags_a_positional_count_mismatch() {
+    assert_ne!(
+        signature("a %s b"),
+        signature("just a"),
+        "dropping a positional placeholder passed the parity gate"
+    );
+}
+
+#[test]
+fn test_placeholder_parity_flags_a_positional_conversion_type_swap() {
+    assert_ne!(
+        signature("Hi %s"),
+        signature("你好 %d"),
+        "a %s→%d conversion swap passed the parity gate even though formatting can change from success to TypeError"
+    );
+}
+
+#[test]
+fn test_placeholder_parity_accepts_matching_named_and_plural_forms() {
+    assert_eq!(signature("keep %(name)s"), signature("保留 %(name)s"));
+    assert_eq!(
+        signature("%(n)d file %s"),
+        signature("%(n)d 個檔 %s")
+    );
+    assert_eq!(
+        signature("%(n)d files %s"),
+        signature("%(n)d 個檔 %s")
+    );
+}
+
+#[test]
 fn test_placeholder_parity_passes_the_shipped_catalogs() {
     let rows = catalog();
     assert!(!rows.is_empty());
