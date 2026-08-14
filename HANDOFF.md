@@ -13,12 +13,12 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 68 fix commits landed, 164 FAILING CONTRACTs closed
-(162 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
-The last fully green recorded baseline was workspace 3152 pass / 0 fail / 974 ignored. Reviewed
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 73 fix commits landed, 175 FAILING CONTRACTs closed
+(173 removed/un-ignored + 2 re-labeled white-box), 2 stubs promoted, 2 owed white-box units added.
+The last fully green recorded baseline was workspace 3163 pass / 0 fail / 963 ignored. Reviewed
 PR #44 waves continue to add executable parity owners and completeness checks after duplicate and
 test-quality review.
-122 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+111 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -174,6 +174,11 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `5d0d888` | enabled four complete editor contracts that `1cac4a4` had already restored; removed stale divergence markers | 4 |
 | `62a7df8` | post-editor Python flags: exact draft-kind refusal while retaining the short kept-draft notice and no-write behavior | 2 |
 | `c6d14ec` | bare Markdown add: non-interactive recovery names the prompt lane without changing the generic shebangless cases | 1 |
+| `7c4cb53` | generic shebangless path recovery: exact basename-based script/program guidance while preserving stdin, shebang, explicit-kind, and kept-draft lanes | 4 |
+| `7c3d615` | edit unknown entry: an explicit interactive decline exits cleanly without launching the editor or writing an entry; EOF remains abort | 1 |
+| `ceece3b` | JavaScript Python-constraint refusals: exact shared add/deps voice for dash, none, and empty spellings without changing validation order or writes | 3 |
+| `ea4389c` | add-editor name conflicts: explicit names are rejected through the PTY before editor or draft side effects; the final atomic conflict gate remains | 1 |
+| `0335ed1` | secret parameter transitions: report the sorted names of purged plaintext values in human mode while JSON remains a single machine document | 2 |
 
 PR #44 is actively continuing. The last corrected integrated accounting is 64/84 behavior modules
 and 1318/3018 Python contracts. Its merge ancestry and complete test snapshot are preserved on
@@ -190,7 +195,9 @@ contracts (`184726d`), argstate filesystem contracts (`40b6087`), atomic state c
 contracts (`606c716`). A single non-duplicate Fish managed-env delivery owner was extracted from the
 latest red manifest wave (`c592560`). Two shell-analyzer stubs now have strong public contracts for
 read enumeration and attached flag values (`952394e`), without importing the duplicate split files
-or manifests. The i18n replacement is green after production fixes (`f1dc3c7`..`5d3c303`).
+or manifests. The existing unknown-flag owner also proves that `read -er` preserves the known raw
+flag in the injected command (`cdf89ac`). The i18n replacement is green after production fixes
+(`f1dc3c7`..`5d3c303`).
 
 Two policy items keep their oracle-matching defaults (user did not object): the store self-heal
 reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to implement). Reversible.
@@ -200,8 +207,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3152 passed / 0 failed / 974 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 122
+# => 3163 passed / 0 failed / 963 ignored
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 111
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -213,22 +220,17 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 122 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 111 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `c6d14ec`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `0335ed1`.
 
 - **19 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
-  prompt cluster (#14).** Add name derivation keeps `.prompt` (`p.prompt.md`→slug `p`, store.py:571
-  removesuffix); stdin `add -` no name → defaults 'stdin'; stdin whitespace body accepted; `{{目标}}`
-  unicode placeholders undetected → empty fields (**the #14 analyzer defect** — likely in
-  skit-language's prompt placeholder scan, check `\w`-class vs oracle regex); deleted prompt body →
-  run exits 2 "invalid entry mutation" not 127; exit-126 unknown-runner must list configured names;
-  empty-runner-list run needs "No agents configured" + recovery; `_reconcile_prompt_after_edit`
-  (the edit-lane prompt half — the generic drift hint is DONE `1cac4a4`, the prompt reconcile
-  offer is NOT); params human read view for prompts (placeholder table via `_show_command_params`);
-  **genuine internal bug: add lane trims `--runner " claude "`, run lane does not — make
-  consistent**. Oracle: cli.py prompt lanes, store.py:571, langs/prompt/*.
+  prompt cluster (#14).** Remaining work is the params human read/manage view, post-edit placeholder
+  reconciliation and flood preview, runner row/remove recovery copy, prompt-only option conflicts,
+  doctor/help taxonomy copy, and the unset-runner JSON representation. Prompt naming, stdin
+  boundaries, Unicode/token grammar, missing bodies, runner resolution, and UTF-8 paths are green.
+  Oracle: cli.py prompt lanes, store.py:571, langs/prompt/*.
 - **0 port_test_js_deps.rs implementation divergences — JS dependency materialization.** First-seen scanner order and empty
   requirements are fixed in `54bf6c6`; mirror empty-value precedence is fixed in `c3e02b8`;
   reference implicit scanning, installer argv/fallback, and refusal voices are fixed in
@@ -238,11 +240,11 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   fixed in `219a136`; the 88 remaining ignores in that file are classified architecture,
   cross-crate, private-helper, or absent-public-seam ports rather than `FAILING CONTRACT` markers.
   Oracle: langs/javascript/deps.py.
-- **8 port_test_cli.rs — mixed add voices.** Missing add-source paths now use the oracle's
+- **5 port_test_cli.rs — mixed add, run, params, and edit voices.** Missing add-source paths now use the oracle's
   localized `File not found` preflight (`22016c2`), and typed directory sources use the exact
   `Not a file` diagnostic (`4fc1659`), and unreadable files use the localized read failure
   (`de754cf`); the remaining items overlap the add-lane and general CLI clusters.
-- **11 port_test_add_validation_contracts.rs + 5 port_test_add_lane_contracts.rs + 4
+- **11 port_test_add_validation_contracts.rs + 5 port_test_add_lane_contracts.rs + 3
   port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 11
   port_test_add_no_source.rs + ~8 of port_test_editor.rs (the `-e` lane) — the add-lane cluster
   (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
@@ -253,9 +255,10 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   ("isn't a script..." / "names no interpreter..." — cli.py:2040-2070); interactive deps/python
   re-ask loop (cli.py:224-261); `-e` lane name prompt/interactivity gate; untouched-draft exit 0
   "Nothing was added" + unlink vs Rust's exit-2 keep; awk-shebang → ask, not python-fallback;
-  `_offer_create_in_editor` decline = clean exit 0 (Rust: 130 Aborted).
-- **14 port_test_dependency_command_contracts.rs** — deps belt refusals before entry existence etc.
-- **14 port_test_declared_params.rs + 3 port_test_edit.rs + 2 of port_test_editor.rs (params
+  interactive name collection, and untouched-draft handling. Explicit edit-create decline is green.
+- **9 port_test_dependency_command_contracts.rs** — draft-boundary refusals and per-axis update
+  confirmations. Two ignored store-named JS-constraint cases duplicate the now-green CLI owners.
+- **13 port_test_declared_params.rs + 2 port_test_edit.rs + 2 of port_test_editor.rs (params
   resync) + port_test_params_edit.rs (36 tests currently ABSENT-stubbed) — the params/edit cluster
   (#16), reimplementation-scale, LAST.** `edit_declared` (params.py:352-472): pure warn-and-continue
   batch editor returning `DeclEditResult{decls, warnings}` with 9 closed warning codes, reverting a
@@ -266,15 +269,14 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   parameters.rs:340-349).
 - **0 port_test_run_set.rs implementation divergences.** Its 23 executable contracts are green;
   the 4 remaining ignores are interactive/cross-crate seam classifications.
-- **6 port_test_config.rs** — config store-level leftovers (distinct from the DONE config_cmd).
+- **3 port_test_config.rs** — config store-level leftovers (distinct from the DONE config_cmd).
 - **Data-safety (in js_deps + elsewhere):** shim writes the plaintext-secret injected copy to
   `entry_dir` unconditionally; oracle stages OS-temp-first (rewrite.py:176-180) so a crash never
   persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
   region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
   `deps`-clear must sweep node_modules.
-- **TUI: 5 path_tui + 4 tui_nav + 2 tui_responsive + 2 draft_and_reader_tui + 1 reset_default_ui.**
+- **TUI: 5 path_tui + 4 tui_nav + 2 draft_and_reader_tui + 1 reset_default_ui.**
 - **Small:** 2 default_semantics_review_fixes, 1 default_name_resolution, 1 show,
-  1 dependency_write_validation (unclassifiable-file-outside-drafts, ties add-lane),
   1 flows.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
