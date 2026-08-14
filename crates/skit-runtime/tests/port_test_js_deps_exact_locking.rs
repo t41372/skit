@@ -1,7 +1,6 @@
 //! Exact locking/lifecycle ports from Python v0.4 `tests/test_js_deps.py`.
 
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::mpsc,
