@@ -1981,7 +1981,6 @@ fn test_runner_remove_container_repairs_only_targeted_prompt_value() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the doctor --json half converges (drift contains 'p', runner_rows_invalid == ['broken']) and the human line names 'broken'; but the oracle's recovery line 'Inspect and repair with: skit runner list --all' is absent from Rust's human doctor (it prints 'WARN malformed prompt runners: broken')."]
 fn test_doctor_reports_prompt_drift_and_bad_runner_rows() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}}\n", "p");
@@ -1989,7 +1988,18 @@ fn test_doctor_reports_prompt_drift_and_bad_runner_rows() {
     sandbox.set_config(
         "[prompt]\nrunners_seeded = true\n[[prompt.runners]]\nname = \"broken\"\nargv = [\"x\"]\n",
     );
-    let payload = sandbox.json(&["doctor", "--json"]);
+    let json_output = sandbox
+        .command()
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(json_output.status.success());
+    assert!(
+        json_output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&json_output.stdout).unwrap();
     assert!(
         payload["drift"]
             .as_array()
@@ -2006,7 +2016,9 @@ fn test_doctor_reports_prompt_drift_and_bad_runner_rows() {
     assert!(human.contains("broken"), "{human}");
     let flat = human.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        flat.contains("Inspect and repair with: skit runner list --all"),
+        flat.contains(
+            "Ignored malformed runner row(s) in config: broken. Inspect and repair with: skit runner list --all"
+        ),
         "{human}"
     );
 }
@@ -2018,6 +2030,49 @@ fn test_doctor_healthy_prompt_reports_no_drift() {
     let payload = sandbox.json(&["doctor", "--json"]);
     assert_eq!(payload["drift"], serde_json::json!([]));
     assert_eq!(payload["runner_rows_invalid"], serde_json::json!([]));
+    let human = sandbox.ok(&["doctor"]);
+    assert!(!human.contains("Ignored malformed runner row"), "{human}");
+    assert!(!human.contains("skit runner list --all"), "{human}");
+}
+
+#[test]
+fn test_doctor_malformed_runner_recovery_localizes_and_preserves_row_order() {
+    let sandbox = Sandbox::new();
+    sandbox.set_config(
+        "[prompt]\nrunners_seeded = true\n[[prompt.runners]]\nname = \"zebra\"\nargv = [\"x\"]\n[[prompt.runners]]\nname = \"alpha\"\nargv = [\"y\"]\n",
+    );
+    let payload = sandbox.json(&["doctor", "--json"]);
+    assert_eq!(
+        payload["runner_rows_invalid"],
+        serde_json::json!(["zebra", "alpha"])
+    );
+
+    for (locale, expected) in [
+        (
+            "en",
+            "Ignored malformed runner row(s) in config: zebra, alpha. Inspect and repair with: skit runner list --all",
+        ),
+        (
+            "zh-CN",
+            "已忽略配置中格式错误的执行器行：zebra, alpha。检查并修复：skit runner list --all",
+        ),
+        (
+            "zh-TW",
+            "已忽略設定中格式錯誤的執行器列：zebra, alpha。檢查並修復：skit runner list --all",
+        ),
+    ] {
+        let output = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .arg("doctor")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{locale}");
+        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+        let flat = combined.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains(expected), "{locale}: {combined}");
+    }
 }
 
 // ==========================================================================

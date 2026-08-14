@@ -361,7 +361,7 @@ fn doctor_human_report_exposes_each_repair_axis() {
         "form definitions are out of sync",
         "missing external commands",
         "a run would refuse to start",
-        "malformed prompt runners",
+        "Ignored malformed runner row(s) in config: bad. Inspect and repair with: skit runner list --all",
     ] {
         assert!(
             output.contains(text),

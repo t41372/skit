@@ -5324,7 +5324,13 @@ fn doctor(
             humanln!("WARN {}: a run would refuse to start: {}", name, reason);
         }
         if !bad_runners.is_empty() {
-            humanln!("WARN malformed prompt runners: {}", bad_runners.join(", "));
+            let rows = bad_runners.join(", ");
+            let recovery = format_text(
+                active_locale(),
+                "Ignored malformed runner row(s) in config: {}. Inspect and repair with: skit runner list --all",
+                &[&rows],
+            );
+            humanln!("WARN {}", recovery);
         }
         for diagnostic in rebuild_diagnostics {
             humanln!("WARN {}", diagnostic);

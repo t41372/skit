@@ -1163,9 +1163,9 @@ const CATALOG: &[Translation] = &[
         "警告 {}：執行將無法啟動：{}",
     ),
     row!(
-        "WARN malformed prompt runners: {}",
-        "警告 提示词运行器格式错误：{}",
-        "警告 提示詞執行器格式錯誤：{}",
+        "Ignored malformed runner row(s) in config: {}. Inspect and repair with: skit runner list --all",
+        "已忽略配置中格式错误的执行器行：{}。检查并修复：skit runner list --all",
+        "已忽略設定中格式錯誤的執行器列：{}。檢查並修復：skit runner list --all",
     ),
     row!("WARN {}", "警告 {}", "警告 {}"),
     row!(
