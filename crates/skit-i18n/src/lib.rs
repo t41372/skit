@@ -800,6 +800,16 @@ const CATALOG: &[Translation] = &[
         "尚未設定 Agent。請執行以下命令新增：skit runner add mycli -- mycli run {{prompt}}",
     ),
     row!(
+        "Reading the script from stdin needs an explicit --name.",
+        "从 stdin 读脚本必须用 --name 指定名称。",
+        "從 stdin 讀腳本必須用 --name 指定名稱。",
+    ),
+    row!(
+        "Nothing arrived on stdin, so there is nothing to add.",
+        "stdin 没有收到任何内容，没有东西可添加。",
+        "stdin 沒有收到任何內容，沒有東西可加入。",
+    ),
+    row!(
         "No runner selected for {}. Pass --runner NAME, or pin one with: skit params {} --runner NAME",
         "{} 尚未选择执行器。请带上 --runner NAME,或固定一个:skit params {} --runner NAME",
         "{} 尚未選擇執行器。請帶上 --runner NAME,或釘選一個:skit params {} --runner NAME",

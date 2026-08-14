@@ -1040,15 +1040,15 @@ fn add_command(
     }
     if options.source.is_none() && options.command_template.is_none() {
         if options.prompt {
+            if !io::stdin().is_terminal() {
+                options.source = Some(PathBuf::from("-"));
+                return add(service, options);
+            }
             let config_dir = resolve_config_dir()?;
             validate_prompt_runner_in(
                 &FileConfigStore::new(config_dir),
                 options.runner.as_deref(),
             )?;
-            if !io::stdin().is_terminal() {
-                options.source = Some(PathBuf::from("-"));
-                return add(service, options);
-            }
             if no_input {
                 return Err(CliError::Usage(Message::new(
                     "a prompt body is required; pipe it to `skit add - --prompt --name NAME`",
@@ -2788,6 +2788,13 @@ fn add_with_config(
             value.clear();
         }
     }
+    let prompt_from_stdin =
+        source.as_deref() == Some(Path::new("-")) && (prompt || kind.as_deref() == Some("prompt"));
+    if prompt_from_stdin && name.as_deref().is_none_or(|value| value.trim().is_empty()) {
+        return Err(CliError::Usage(Message::new(
+            "Reading the script from stdin needs an explicit --name.",
+        )));
+    }
     if prompt {
         validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
     }
@@ -2906,8 +2913,23 @@ fn add_with_config(
             reason: error.message(),
         })?;
     let kind_name = kind.as_str().to_owned();
-    if kind_name == "prompt" && !from_stdin {
-        validate_prompt_utf8(&bytes, &source.display().to_string())?;
+    if kind_name == "prompt" {
+        let source_label = if from_stdin {
+            "<stdin>".to_owned()
+        } else {
+            source.display().to_string()
+        };
+        validate_prompt_utf8(&bytes, &source_label)?;
+        if from_stdin
+            && std::str::from_utf8(&bytes)
+                .expect("the prompt body passed strict UTF-8 validation")
+                .trim()
+                .is_empty()
+        {
+            return Err(CliError::Failure(Message::new(
+                "Nothing arrived on stdin, so there is nothing to add.",
+            )));
+        }
     }
     let description = description.unwrap_or_else(|| suggest_description(&kind_name, &bytes));
     if no_interpolate && kind_name != "prompt" {
@@ -2977,9 +2999,6 @@ fn add_with_config(
     }
     if kind_name == "prompt" {
         validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
-        if from_stdin {
-            validate_prompt_utf8(&bytes, "<stdin>")?;
-        }
     }
     let stored_name = payload_stored_name(&kind, &source);
     let mode = if reference || kind_name == "exe" {

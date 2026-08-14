@@ -455,7 +455,6 @@ fn test_add_bare_md_interactive_ask_yes_and_no() {}
 fn test_add_bare_md_confirm_no_falls_through_to_kind_ask_and_honors_pick() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle exit 2 requiring '--name' for a stdin prompt with no name; Rust instead ADDS an entry named 'stdin' (exit 0, 'Added: stdin (copy mode)') rather than refusing."]
 fn test_add_prompt_from_stdin_needs_a_name() {
     let sandbox = Sandbox::new();
     let output = sandbox
@@ -468,6 +467,13 @@ fn test_add_prompt_from_stdin_needs_a_name() {
     combined.push_str(&String::from_utf8_lossy(&output.stderr));
     assert_eq!(output.status.code(), Some(2), "{combined}");
     assert!(combined.contains("--name"), "{combined}");
+    assert!(
+        sandbox
+            .json(&["list", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -527,7 +533,6 @@ fn test_add_kind_prompt_from_stdin_uses_the_prompt_contract() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle exit 1 'Nothing arrived on stdin' for a whitespace-only stdin body; Rust ADDS the entry (exit 0, 'Added: e (copy mode)') instead of refusing an empty body."]
 fn test_add_prompt_from_stdin_empty_body() {
     let sandbox = Sandbox::new();
     let output = sandbox
@@ -540,6 +545,13 @@ fn test_add_prompt_from_stdin_empty_body() {
     combined.push_str(&String::from_utf8_lossy(&output.stderr));
     assert_eq!(output.status.code(), Some(1), "{combined}");
     assert!(combined.contains("Nothing arrived on stdin"), "{combined}");
+    assert!(
+        sandbox
+            .json(&["list", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

@@ -1164,7 +1164,7 @@ fn test_add_edit_untouched_starter_unlinks_the_draft() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): headless `add --prompt` reads the body from stdin (empty here) and ADDS an empty prompt entry with exit 0 (cli.rs:1048-1050); the prompt-editor lane (which unlinks an untouched starter and reports 'Nothing was written') is only reached on a tty. Verified against the built binary."]
+#[ignore = "FAILING CONTRACT (divergence): this non-tty harness takes the prompt stdin lane and now correctly refuses its empty pipe with exit 1 ('Nothing arrived on stdin'); the oracle forces the interactive editor lane, unlinks its untouched starter, reports 'Nothing was written', and exits 0. A black-box non-tty test cannot drive that editor-only observable."]
 fn test_add_prompt_editor_untouched_starter_unlinks_the_draft() {
     // Same for the prompt editor lane: an untouched starter is unlinked, not left behind.
     let sandbox = Sandbox::new();
