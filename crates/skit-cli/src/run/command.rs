@@ -365,6 +365,22 @@ pub(crate) fn run_with_roots(
 
     let context = token_context();
     let glob = FileGlobExpander::new(&context.cwd);
+    let explicit_arg_declarations = (!args.extra_args.is_empty()).then(|| {
+        declarations
+            .iter()
+            .filter(|declaration| {
+                declaration.delivery != ParameterDelivery::Flag
+                    || !declaration.required
+                    || raw_values
+                        .get(&declaration.name)
+                        .is_some_and(|value| !value.trim().is_empty())
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    let assembly_declarations = explicit_arg_declarations
+        .as_deref()
+        .unwrap_or(&declarations);
     let assembly = if args.raw {
         skit_application::delivery::Assembly {
             args: extra_args.clone(),
@@ -373,7 +389,7 @@ pub(crate) fn run_with_roots(
         }
     } else {
         assemble_run_inputs(
-            &declarations,
+            assembly_declarations,
             &raw_values,
             &extra_args,
             expand_extra,

@@ -759,7 +759,6 @@ fn test_run_python_with_params_injects() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): passthrough args after `--` are the manual escape and must bypass an unfilled required argparse FIELD (the script's own parser takes over) — oracle exit 0, extra == [-o, x.png]. Rust still runs field validation and refuses with exit 125 + \"output is required.\" even with `-- -o x.png` present, so the passthrough never reaches the script. Owning ref src/skit/cli.py run(): extra_args disables required-field validation."]
 fn test_run_extra_args_bypass_required_field_validation() {
     let root = sandbox();
     let path = write_src(&root, "ar.py", ARGPARSE_REQUIRED);
@@ -799,6 +798,28 @@ fn test_run_required_field_missing_without_extra_args_exits_125() {
         run(skit(&root)
             .env("PATH", "")
             .args(["run", "ar2", "--no-input", "--dry-run"]));
+    assert_eq!(code, 125, "{out}");
+    assert!(out.contains("output"), "{out}");
+}
+
+#[test]
+fn test_run_remembered_extra_args_do_not_bypass_required_field_validation() {
+    let root = sandbox();
+    let path = write_src(&root, "ar3.py", ARGPARSE_REQUIRED);
+    run(skit(&root).arg("add").arg(&path).args([
+        "--name",
+        "ar3",
+        "--kind",
+        "python",
+        "--no-input",
+    ]));
+    seed_state(&root, "ar3", "extra_args = [\"-o\", \"x.png\"]\n");
+
+    let (code, out) =
+        run(skit(&root)
+            .env("PATH", "")
+            .args(["run", "ar3", "--no-input", "--dry-run"]));
+
     assert_eq!(code, 125, "{out}");
     assert!(out.contains("output"), "{out}");
 }
