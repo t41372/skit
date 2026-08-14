@@ -1352,6 +1352,9 @@ impl TuiSession {
         {
             return EventHandling::Consumed;
         }
+        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+            return EventHandling::Ignored;
+        }
 
         for index in 0..self.run.controls.len() {
             let WidgetControl::Choice {
@@ -1542,6 +1545,9 @@ impl TuiSession {
         .is_some()
         {
             return EventHandling::Consumed;
+        }
+        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+            return EventHandling::Ignored;
         }
         let Some(hit) = self.clicks.handle_click(mouse.column, mouse.row).cloned() else {
             let _ = geometry;

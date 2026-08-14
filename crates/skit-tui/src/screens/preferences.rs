@@ -231,6 +231,9 @@ impl PreferencesWidgetSession {
             {
                 return PreferencesEventHandling::Consumed;
             }
+            if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+                return PreferencesEventHandling::Ignored;
+            }
             if let Some(handling) = self.handle_select_mouse(mouse) {
                 return handling;
             }
@@ -1447,6 +1450,48 @@ mod tests {
             PreferencesEventHandling::Action(PreferencesAction::SetInteractiveForm(
                 InteractiveFormChoice::Plain,
             ))
+        );
+    }
+
+    #[test]
+    fn preference_hits_require_a_mouse_button_press() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 120, 44, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::ManageAgents)
+            .expect("visible Manage agents button");
+
+        for kind in [
+            MouseEventKind::Moved,
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+        ] {
+            assert_eq!(
+                session.handle_event(
+                    Event::Mouse(MouseEvent {
+                        kind,
+                        column: area.x,
+                        row: area.y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    &view,
+                ),
+                PreferencesEventHandling::Ignored,
+                "a preference hit must ignore {kind:?}"
+            );
+        }
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
         );
     }
 
