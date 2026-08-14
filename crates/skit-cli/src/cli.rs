@@ -1463,11 +1463,19 @@ fn add_draft(
         let text =
             fs::read_to_string(&draft).map_err(|error| source_error("read", &draft, error))?;
         let shebang = text.lines().next().filter(|line| line.starts_with("#!"));
-        options.kind = Some(
-            infer_kind(&draft, shebang, false)
-                .unwrap_or("python")
-                .to_owned(),
-        );
+        options.kind = Some(match infer_kind(&draft, shebang, false) {
+            Some(kind) => kind.to_owned(),
+            None if shebang.is_some() => {
+                return Err(CliError::Usage(
+                    Message::new(
+                        "The draft's #! names no interpreter skit knows — add it with: skit add {} --kind <language>\nYour draft was kept at {}",
+                    )
+                    .with(draft.display())
+                    .with(draft.display()),
+                ));
+            }
+            None => "python".to_owned(),
+        });
     }
     options.source = Some(draft.clone());
     options.prompt = prompt;

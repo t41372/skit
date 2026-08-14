@@ -1120,7 +1120,6 @@ fn test_add_edit_empty_content_adds_nothing() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an unregistered shebang (awk) is inferred as python (infer_kind fallback, cli.rs:1425-1429) and ADDED as a copy with exit 0; the oracle refuses (exit 2, 'names no interpreter skit knows', --kind escape), keeps the draft under data_dir/drafts/, and fabricates nothing. Verified against the built binary."]
 fn test_add_edit_unregistered_shebang_refused_keeps_draft() {
     // An unregistered-interpreter shebang can't be honored: refuse (exit 2), keep the draft, add
     // nothing — never fabricate a python entry.
@@ -1132,17 +1131,32 @@ fn test_add_edit_unregistered_shebang_refused_keeps_draft() {
         "#!/usr/bin/awk -f\nBEGIN { print 1 }\n",
         &sentinel,
     );
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "aw"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    let text = combined(&output);
-    assert!(text.contains("names no interpreter skit knows"));
-    assert!(text.contains("--kind")); // the escape hatch
-    assert!(!sandbox.draft_files().is_empty()); // the draft survived
+    let (code, text) = run_pty(
+        &["add", "-e", "--name", "aw"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 2, "{text}");
+    let usage = text
+        .find("The draft's #! names no interpreter skit knows")
+        .expect("the editor-draft usage voice");
+    let kept = text
+        .find("Your draft was kept at")
+        .expect("the short kept-draft notice");
+    assert!(usage < kept, "usage must precede the kept notice: {text}");
+    assert!(text.contains("skit add ") && text.contains(" --kind <language>"));
+    assert!(!text.contains("--exe")); // editor drafts never use the regular-path escape
+    assert_eq!(text.matches("Your draft was kept at").count(), 1, "{text}");
+    assert!(sentinel.exists(), "the editor authored the rejected draft");
+    let drafts = sandbox.draft_files();
+    assert_eq!(drafts.len(), 1, "the draft survived: {text}");
+    assert_eq!(
+        drafts[0].parent(),
+        Some(sandbox.data.path().join("drafts").as_path())
+    );
     assert!(!sandbox.resolvable("aw")); // nothing fabricated
 }
 

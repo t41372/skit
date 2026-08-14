@@ -1028,6 +1028,11 @@ const CATALOG: &[Translation] = &[
         "草稿已保留在 {}",
         "草稿已保留在 {}",
     ),
+    row!(
+        "The draft's #! names no interpreter skit knows — add it with: skit add {} --kind <language>\nYour draft was kept at {}",
+        "草稿的 #! 指定了 skit 不认识的解释器——请用以下命令添加:skit add {} --kind <语言>\n你的草稿保留在 {}",
+        "草稿的 #! 指定了 skit 不認識的直譯器——請用以下指令加入:skit add {} --kind <語言>\n你的草稿保留在 {}",
+    ),
     row!("# New prompt", "# 新提示词", "# 新提示詞"),
     row!(
         "Nothing was written, so nothing was added.",
