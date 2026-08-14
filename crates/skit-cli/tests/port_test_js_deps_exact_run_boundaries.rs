@@ -2,7 +2,7 @@
 #![cfg(unix)]
 
 use std::{
-    fs,
+    env, fs,
     fs::FileTimes,
     path::{Path, PathBuf},
     time::SystemTime,
@@ -54,6 +54,9 @@ impl Sandbox {
     }
 
     fn command(&self) -> Command {
+        let inherited = env::var_os("PATH").unwrap_or_default();
+        let mut paths = vec![self.bin.path().to_path_buf()];
+        paths.extend(env::split_paths(&inherited));
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
         command
             .env("SKIT_DATA_DIR", self.data.path())
@@ -65,7 +68,7 @@ impl Sandbox {
             .env("XDG_CONFIG_HOME", self.home.path().join("xdg-config"))
             .env("XDG_DATA_HOME", self.home.path().join("xdg-data"))
             .env("XDG_STATE_HOME", self.home.path().join("xdg-state"))
-            .env("PATH", self.bin.path())
+            .env("PATH", env::join_paths(paths).unwrap())
             .current_dir(self.home.path());
         command
     }
