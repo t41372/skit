@@ -1,6 +1,5 @@
 //! Path insertion rules shared by terminal and future graphical frontends.
 
-use glob::Pattern;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -54,7 +53,7 @@ pub fn insert_picked_path_for_dialect(
         return Ok(picked.to_owned());
     }
 
-    let literal = Pattern::escape(picked);
+    let literal = escape_glob_metacharacters(picked);
     let piece = match (mode, dialect) {
         (RunPathInsertMode::Shlex, _) | (RunPathInsertMode::Arguments, ArgumentDialect::Posix) => {
             shlex::try_quote(&literal)
@@ -72,6 +71,20 @@ pub fn insert_picked_path_for_dialect(
     } else {
         format!("{existing} {piece}")
     })
+}
+
+fn escape_glob_metacharacters(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(character, '*' | '?' | '[') {
+            escaped.push('[');
+            escaped.push(character);
+            escaped.push(']');
+        } else {
+            escaped.push(character);
+        }
+    }
+    escaped
 }
 
 const fn current_argument_dialect() -> ArgumentDialect {

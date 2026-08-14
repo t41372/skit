@@ -44,8 +44,7 @@
 //!   `skit-cli` (`cli.rs` builds `RunPathContext`); the cursor-position token insert is owned
 //!   by skit-tui's interactive `TuiSession` cursor layer (not the reducer surface here).
 //! - DIVERGENCE (full body, `#[ignore = "FAILING CONTRACT (divergence): …"]`): the mouse-only
-//!   use-this-directory affordance (no keyboard route), absent PageUp/PageDown steering, the
-//!   "(use this directory)" label, and the glob-escape byte spelling (`glob` escapes `]` too).
+//!   use-this-directory affordance (no keyboard route) and the "(use this directory)" label.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -884,7 +883,6 @@ fn test_insert_picked_shapes() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the `glob` crate escapes `]` as `[]]` too, so insert_picked_path yields '\\'data[[]1[]].csv\\'' where Python's glob.escape (which leaves `]` literal) yields '\\'data[[]1].csv\\''. Benign — both suppress globbing and re-glob to the one literal file — but the exact bytes differ (path_insertion.rs:57 Pattern::escape vs glob.escape). Oracle: test_path_tui.py:852-873."]
 fn test_insert_picked_escapes_glob_metacharacters() {
     assert_eq!(
         insert_picked_path_for_dialect(

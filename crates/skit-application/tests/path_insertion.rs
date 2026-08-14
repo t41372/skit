@@ -38,6 +38,38 @@ fn a_single_value_is_replaced_and_parsed_values_append_one_literal_piece() {
 }
 
 #[test]
+fn glob_metacharacters_use_the_same_spelling_in_each_argument_dialect() {
+    let picked = "data[1]*?.csv";
+    let expected = "data[[]1][*][?].csv";
+
+    assert_eq!(
+        insert_picked_path_for_dialect(
+            "old",
+            picked,
+            RunPathInsertMode::Replace,
+            ArgumentDialect::Posix,
+        )
+        .unwrap(),
+        picked
+    );
+
+    for mode in [RunPathInsertMode::Shlex, RunPathInsertMode::Arguments] {
+        let encoded =
+            insert_picked_path_for_dialect("", picked, mode, ArgumentDialect::Posix).unwrap();
+        assert_eq!(shlex::split(&encoded).unwrap(), [expected]);
+    }
+
+    let encoded = insert_picked_path_for_dialect(
+        "",
+        picked,
+        RunPathInsertMode::Arguments,
+        ArgumentDialect::Windows,
+    )
+    .unwrap();
+    assert_eq!(split_windows_argument(&encoded), expected);
+}
+
+#[test]
 fn windows_argument_text_round_trips_quotes_spaces_and_trailing_backslashes() {
     for picked in [
         "plain.txt",
