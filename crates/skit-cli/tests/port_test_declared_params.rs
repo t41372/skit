@@ -1038,7 +1038,6 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): flipping a param to --secret must announce \"Removed previously stored plaintext\" when it purges a prior plaintext value (src/skit/cli.py). The Rust product DOES purge the plaintext (the values file loses TOKEN) but prints no such line — the message is absent from skit-i18n."]
 fn test_cli_secret_declared_env_purges_prior_plaintext() {
     let workspace = lib();
     workspace.add_exe("prog");

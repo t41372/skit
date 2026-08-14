@@ -128,6 +128,23 @@ fn formatted_messages_translate_the_template_without_translating_user_values() {
 }
 
 #[test]
+fn secret_purge_notice_matches_the_oracle_in_every_locale() {
+    let template = "Removed previously stored plaintext value(s) for now-secret parameter(s): {}";
+    assert_eq!(
+        format_text(Locale::En, template, &[&"A, B"]),
+        "Removed previously stored plaintext value(s) for now-secret parameter(s): A, B"
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&"A, B"]),
+        "已移除下列刚设为机密的参数先前以明文存储的值:A, B"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&"A, B"]),
+        "已移除下列剛設為機密的參數先前以明文儲存的值:A, B"
+    );
+}
+
+#[test]
 fn add_onboarding_controls_and_source_facts_are_fully_localized() {
     assert_eq!(
         text(

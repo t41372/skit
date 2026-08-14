@@ -1445,6 +1445,11 @@ const CATALOG: &[Translation] = &[
         "環境變數來源：{}",
     ),
     row!("Secret: yes", "敏感值：是", "敏感值：是"),
+    row!(
+        "Removed previously stored plaintext value(s) for now-secret parameter(s): {}",
+        "已移除下列刚设为机密的参数先前以明文存储的值:{}",
+        "已移除下列剛設為機密的參數先前以明文儲存的值:{}",
+    ),
     row!("yes", "是", "是"),
     row!("no", "否", "否"),
     row!("on", "开启", "開啟"),

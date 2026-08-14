@@ -4214,7 +4214,8 @@ fn params(
         }
         if !args.secret.is_empty() {
             let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
-            state.purge_secrets(&held.slug, &declarations)?;
+            let purged = state.purge_secrets(&held.slug, &declarations)?;
+            report_purged_secrets(purged, args.json);
         }
     } else if changed {
         settings.parameters = declarations.clone();
@@ -4229,10 +4230,22 @@ fn params(
         held = service.update_settings(&claimed, &settings, &workdir)?;
         if !args.secret.is_empty() {
             let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
-            state.purge_secrets(&held.slug, &declarations)?;
+            let purged = state.purge_secrets(&held.slug, &declarations)?;
+            report_purged_secrets(purged, args.json);
         }
     }
     write_params(&held, &source, &settings, &declarations, args.json)
+}
+
+fn report_purged_secrets(purged: BTreeSet<String>, json: bool) {
+    if json || purged.is_empty() {
+        return;
+    }
+    let names = purged.into_iter().collect::<Vec<_>>().join(", ");
+    humanln!(
+        "Removed previously stored plaintext value(s) for now-secret parameter(s): {}",
+        names
+    );
 }
 
 fn write_params(

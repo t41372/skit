@@ -1086,7 +1086,6 @@ fn test_params_python_table_with_secret() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): marking a param secret must PURGE its already-stored plaintext AND announce it — the oracle asserts exit 0, the plaintext gone from state+disk, the now-empty preset dropped, and the line \"Removed previously stored plaintext value(s) for now-secret parameter(s): API_KEY\" (cli.py:4562). Rust purges correctly (verified: the plaintext leaves state and the emptied preset drops) but prints NO such confirmation line, so only the announcement assertion diverges. One-line fix: emit the removed-plaintext notice."]
 fn test_params_secret_purges_stored_last_value_and_presets() {
     let root = sandbox();
     let block = "# /// script\n# [tool.skit]\n# schema = 1\n#\n# [[tool.skit.params]]\n# name = \"API_KEY\"\n# binding = \"const\"\n# type = \"str\"\n# default = \"x\"\n# ///\nAPI_KEY = \"x\"\nprint(API_KEY)\n";
@@ -1119,6 +1118,85 @@ fn test_params_secret_purges_stored_last_value_and_presets() {
         let bytes = fs::read_to_string(entry.unwrap().path()).unwrap();
         assert!(!bytes.contains("plaintext-secret-123"), "{bytes}");
     }
+}
+
+#[test]
+fn test_params_secret_purge_message_sorts_multiple_names() {
+    let root = sandbox();
+    let block = r#"# /// script
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "A"
+# binding = "const"
+# type = "str"
+#
+# [[tool.skit.params]]
+# name = "B"
+# binding = "const"
+# type = "str"
+# ///
+A = "x"
+B = "y"
+print(A, B)
+"#;
+    let path = write_src(&root, "sorted.py", block);
+    run(skit(&root).arg("add").arg(&path).args([
+        "--name",
+        "sorted",
+        "--kind",
+        "python",
+        "--no-input",
+    ]));
+    seed_state(&root, "sorted", "[values]\nA = \"first\"\nB = \"second\"\n");
+
+    let (code, out) = run(skit(&root).args(["params", "sorted", "--secret", "B", "--secret", "A"]));
+
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        flat(&out).contains(
+            "Removed previously stored plaintext value(s) for now-secret parameter(s): A, B"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn test_params_secret_purge_json_stays_one_document() {
+    let root = sandbox();
+    run(skit(&root).args(["add", "--cmd", "echo hi", "--name", "json-secret"]));
+    let (code, out) = run(skit(&root).args([
+        "params",
+        "json-secret",
+        "--add",
+        "TOKEN",
+        "--deliver",
+        "TOKEN=env",
+    ]));
+    assert_eq!(code, 0, "{out}");
+    seed_state(&root, "json-secret", "[values]\nTOKEN = \"plaintext\"\n");
+
+    let output = skit(&root)
+        .args(["params", "json-secret", "--secret", "TOKEN", "--json"])
+        .output()
+        .expect("skit runs");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "stdout is not one JSON document: {error}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+    assert_eq!(payload["parameters"][0]["secret"], true);
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("Removed previously stored plaintext")
+    );
 }
 
 #[test]
