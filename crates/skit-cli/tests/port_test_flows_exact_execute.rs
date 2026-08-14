@@ -155,7 +155,8 @@ fn test_execute_cleans_injected_file_after_launcher_raises() {
     let text = output_text(&output);
     assert_ne!(output.status.code(), Some(0), "broken launcher unexpectedly ran: {text}");
     assert!(sandbox.staged_files("raise").is_empty(), "injected source leaked after spawn failure: {text}");
-    let entry = entry_dir(&sandbox.payload_path("raise")).to_path_buf();
+    let payload = sandbox.payload_path("raise");
+    let entry = entry_dir(&payload).to_path_buf();
     let leaked = fs::read_dir(entry)
         .unwrap()
         .filter_map(Result::ok)
