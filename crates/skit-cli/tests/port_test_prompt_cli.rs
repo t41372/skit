@@ -2064,7 +2064,6 @@ fn test_complete_runner_names() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 1 matches. Oracle prints 'Not a file' for a directory .prompt.md; Rust prints the raw OS error 'could not read <path>: Is a directory (os error 21)'."]
 fn test_add_prompt_unreadable_file_is_a_store_error() {
     let sandbox = Sandbox::new();
     let trap = sandbox.data.path().join("dir.prompt.md");

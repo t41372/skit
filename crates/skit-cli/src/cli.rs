@@ -2896,7 +2896,9 @@ fn add_with_config(
     } else {
         let expanded = expand_user_path(input);
         let source = resolve_add_source(&expanded)?;
-        let snapshot = read_source(&source, explicit_executable)?;
+        let require_regular = !explicit_executable
+            && (prompt || kind.is_some() || infer_kind(&source, None, false).is_some());
+        let snapshot = read_source(&source, explicit_executable, require_regular)?;
         let source_record = source.display().to_string();
         (
             source,
@@ -7742,8 +7744,17 @@ struct SourceSnapshot {
     is_regular: bool,
 }
 
-fn read_source(path: &Path, allow_non_regular: bool) -> Result<SourceSnapshot, CliError> {
+fn read_source(
+    path: &Path,
+    allow_non_regular: bool,
+    require_regular: bool,
+) -> Result<SourceSnapshot, CliError> {
     let metadata = fs::metadata(path).map_err(|error| source_error("inspect", path, error))?;
+    if require_regular && !metadata.is_file() {
+        return Err(CliError::Failure(
+            Message::new("Not a file: {}").with(path.display()),
+        ));
+    }
     if allow_non_regular && !metadata.is_file() {
         return Ok(SourceSnapshot {
             bytes: Vec::new(),

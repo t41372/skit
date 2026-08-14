@@ -430,7 +430,6 @@ fn test_add_missing_path_clean_error_not_traceback() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a directory whose NAME claims a kind (adir.py) is a typo, so the oracle reports exit 1 + \"Not a file\" and NEVER offers --exe (cli.py:422). Rust exits 1 but with \"could not read <dir>: Is a directory (os error 21)\" — a directory is treated as an unreadable file, so \"Not a file\" never appears (though --exe is correctly withheld). Exit code 1 converges."]
 fn test_add_directory_path_clean_error_not_traceback() {
     let root = sandbox();
     let dir = root.path().join("adir.py");

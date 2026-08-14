@@ -288,7 +288,7 @@ fn source_helpers_preserve_bytes_names_and_storage_conventions() {
     let source = root.path().join("archive.custom");
     fs::write(&source, b"alpha\r\nbeta\r\n").unwrap();
 
-    let snapshot = read_source(&source, false).unwrap();
+    let snapshot = read_source(&source, false, false).unwrap();
 
     assert_eq!(snapshot.bytes, b"alpha\r\nbeta\r\n");
     assert_eq!(source_default_name(&source, false), "archive");
@@ -333,7 +333,7 @@ fn source_helpers_preserve_bytes_names_and_storage_conventions() {
     assert!(snapshot.permissions.unix_mode.is_none());
 
     let missing = root.path().join("missing");
-    let error = read_source(&missing, false).unwrap_err();
+    let error = read_source(&missing, false, false).unwrap_err();
     assert!(matches!(
         error,
         CliError::Source {
