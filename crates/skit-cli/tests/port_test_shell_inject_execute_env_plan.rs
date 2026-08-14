@@ -9,6 +9,7 @@ struct Probe {
     programs: BTreeMap<String, PathBuf>,
     files: Vec<PathBuf>,
     dirs: Vec<PathBuf>,
+    executable: Vec<PathBuf>,
 }
 
 impl ProgramProbe for Probe {
@@ -20,6 +21,9 @@ impl ProgramProbe for Probe {
     }
     fn is_dir(&self, path: &Path) -> bool {
         self.dirs.iter().any(|item| item == path)
+    }
+    fn is_executable(&self, path: &Path) -> bool {
+        self.executable.iter().any(|item| item == path)
     }
 }
 
@@ -42,6 +46,7 @@ fn test_execute_env_delivery_writes_no_temp_copy() {
         programs: BTreeMap::from([("bash".to_owned(), PathBuf::from("/bin/bash"))]),
         files: vec![script.clone()],
         dirs: vec![entry_dir, invoke],
+        executable: Vec::new(),
     };
     let assembly = Assembly {
         env_values: BTreeMap::from([("MODE".to_owned(), "manual".to_owned())]),
