@@ -2,7 +2,7 @@
 #![cfg(unix)]
 
 use std::{
-    env, fs,
+    fs,
     fs::FileTimes,
     path::{Path, PathBuf},
     time::SystemTime,
