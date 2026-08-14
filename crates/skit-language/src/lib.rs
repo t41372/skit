@@ -6,11 +6,13 @@
 #![forbid(unsafe_code)]
 
 mod description;
+mod prompt_text;
 mod semantic;
 mod source_text;
 mod uv_edit;
 
 pub use description::suggest_description;
+pub use prompt_text::{PromptEncodingError, decode_prompt};
 pub use semantic::{
     BindingIdentity, CliSurface, DegradationReason, DynamicCliSurface, ParseFailure, ParseOutcome,
     ParsedDocument, ReconcilePair, ReconcileReport, SemanticAnalysis, SemanticCandidate,
@@ -120,11 +122,11 @@ pub enum LanguageError {
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum PythonMetadataError {
     /// A package requirement does not use the PEP 508 grammar.
-    #[error("invalid PEP 508 requirement {value:?}: {reason}")]
-    InvalidRequirement { value: String, reason: String },
+    #[error("{value} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").")]
+    InvalidRequirement { value: String },
     /// A Python version constraint does not use the PEP 440 grammar.
-    #[error("invalid PEP 440 version constraint {value:?}: {reason}")]
-    InvalidVersionConstraint { value: String, reason: String },
+    #[error("{value} isn't a Python version constraint (e.g. \">=3.11\" or \">=3.12,<3.13\").")]
+    InvalidVersionConstraint { value: String },
 }
 
 impl Localize for LanguageError {
@@ -186,16 +188,14 @@ impl Localize for ShellInputError {
 impl Localize for PythonMetadataError {
     fn message(&self) -> Message {
         match self {
-            Self::InvalidRequirement { value, reason } => {
-                Message::new("invalid PEP 508 requirement {}: {}")
-                    .quoted(value)
-                    .with(reason)
-            }
-            Self::InvalidVersionConstraint { value, reason } => {
-                Message::new("invalid PEP 440 version constraint {}: {}")
-                    .quoted(value)
-                    .with(reason)
-            }
+            Self::InvalidRequirement { value } => Message::new(
+                "{} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").",
+            )
+            .with(value),
+            Self::InvalidVersionConstraint { value } => Message::new(
+                "{} isn't a Python version constraint (e.g. \">=3.11\" or \">=3.12,<3.13\").",
+            )
+            .with(value),
         }
     }
 }
@@ -319,20 +319,18 @@ fn basename(value: &str) -> &str {
 pub fn validate_pep508_requirement(value: &str) -> Result<(), PythonMetadataError> {
     Requirement::<VerbatimUrl>::from_str(value)
         .map(|_| ())
-        .map_err(|error| PythonMetadataError::InvalidRequirement {
+        .map_err(|_| PythonMetadataError::InvalidRequirement {
             value: value.to_owned(),
-            reason: error.to_string(),
         })
 }
 
 /// Validate one PEP 440 version-specifier list.
 pub fn validate_pep440_specifiers(value: &str) -> Result<(), PythonMetadataError> {
-    VersionSpecifiers::from_str(value)
-        .map(|_| ())
-        .map_err(|error| PythonMetadataError::InvalidVersionConstraint {
+    VersionSpecifiers::from_str(value).map(|_| ()).map_err(|_| {
+        PythonMetadataError::InvalidVersionConstraint {
             value: value.to_owned(),
-            reason: error.to_string(),
-        })
+        }
+    })
 }
 
 /// Read managed parameter declarations from the inline metadata block.
@@ -873,8 +871,8 @@ pub fn detect_candidates(kind: &str, text: &str) -> Vec<ParamDecl> {
 #[must_use]
 pub fn placeholder_params(kind: &str, text: &str) -> Vec<ParamDecl> {
     let names = match kind {
-        "command" => scan_placeholders(text, false),
-        "prompt" => scan_placeholders(text, true),
+        "command" => scan_placeholders(text, false, valid_command_identifier),
+        "prompt" => scan_placeholders(text, true, valid_prompt_identifier),
         _ => Vec::new(),
     };
     names
@@ -882,6 +880,8 @@ pub fn placeholder_params(kind: &str, text: &str) -> Vec<ParamDecl> {
         .map(|name| synthesized_placeholder(&name))
         .collect()
 }
+
+const RESERVED_PROMPT_PLACEHOLDER: &str = "prompt";
 
 /// Replace managed prompt placeholders in one pass over the original text.
 #[must_use]
@@ -899,18 +899,12 @@ pub fn render_prompt_body(
     let mut copied_until = 0;
     let mut index = 0;
     while index < bytes.len() {
-        if !bytes[index..].starts_with(b"{{") {
+        let Some((start, end)) = prompt_placeholder_bounds(text, index) else {
             index = index.saturating_add(1);
             continue;
-        }
-        let start = index + 2;
-        let Some(relative_end) = bytes[start..].windows(2).position(|window| window == b"}}")
-        else {
-            break;
         };
-        let end = start + relative_end;
         let name = &text[start..end];
-        if valid_identifier(name)
+        if valid_prompt_identifier(name)
             && let Some(value) = values.get(name)
         {
             output.push_str(&text[copied_until..index]);
@@ -923,7 +917,7 @@ pub fn render_prompt_body(
     output
 }
 
-fn scan_placeholders(text: &str, doubled: bool) -> Vec<String> {
+fn scan_placeholders(text: &str, doubled: bool, valid_identifier: fn(&str) -> bool) -> Vec<String> {
     let bytes = text.as_bytes();
     let mut output = Vec::new();
     let mut seen = BTreeSet::new();
@@ -933,6 +927,18 @@ fn scan_placeholders(text: &str, doubled: bool) -> Vec<String> {
         let close: &[u8] = if doubled { b"}}" } else { b"}" };
         if !bytes[index..].starts_with(open) {
             index = index.saturating_add(1);
+            continue;
+        }
+        if doubled {
+            let Some((start, end)) = prompt_placeholder_bounds(text, index) else {
+                index = index.saturating_add(1);
+                continue;
+            };
+            let name = &text[start..end];
+            if valid_identifier(name) && seen.insert(name.to_owned()) {
+                output.push(name.to_owned());
+            }
+            index = end.saturating_add(close.len());
             continue;
         }
         if !doubled && bytes[index..].starts_with(b"{{") {
@@ -956,7 +962,38 @@ fn scan_placeholders(text: &str, doubled: bool) -> Vec<String> {
     output
 }
 
-fn valid_identifier(value: &str) -> bool {
+fn prompt_placeholder_bounds(text: &str, index: usize) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    if !bytes.get(index..)?.starts_with(b"{{")
+        || index
+            .checked_sub(1)
+            .is_some_and(|before| bytes[before] == b'{')
+    {
+        return None;
+    }
+    let start = index + 2;
+    let relative_end = bytes[start..]
+        .windows(2)
+        .position(|window| window == b"}}")?;
+    let end = start + relative_end;
+    (!bytes[start..end].contains(&b'{')
+        && !bytes[start..end].contains(&b'}')
+        && bytes.get(end + 2) != Some(&b'}'))
+    .then_some((start, end))
+}
+
+fn valid_prompt_identifier(value: &str) -> bool {
+    if value == RESERVED_PROMPT_PLACEHOLDER {
+        return false;
+    }
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || unicode_ident::is_xid_start(first))
+        && chars.all(unicode_ident::is_xid_continue)
+}
+
+fn valid_command_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     chars
         .next()
@@ -1347,15 +1384,17 @@ const PYTHON_STDLIB: &[&str] = &[
 ];
 
 fn javascript_dependencies(tree: &tree_sitter::Tree, text: &str) -> Vec<String> {
-    let mut output = BTreeSet::new();
+    let mut output = Vec::new();
+    let mut seen = BTreeSet::new();
     walk_tree(tree.root_node(), &mut |node| {
         if let Some(specifier) = javascript_import_source(node, text)
             && let Some(package) = package_name(&specifier)
+            && seen.insert(package.clone())
         {
-            output.insert(package);
+            output.push(package);
         }
     });
-    output.into_iter().collect()
+    output
 }
 
 fn javascript_import_source(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
@@ -1517,7 +1556,7 @@ mod private_tests {
     #[test]
     fn source_helpers_preserve_placeholder_literal_style() {
         assert_eq!(
-            scan_placeholders("{{escaped}} {open", false),
+            scan_placeholders("{{escaped}} {open", false, valid_command_identifier),
             Vec::<String>::new()
         );
     }

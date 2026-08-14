@@ -23,6 +23,17 @@ fn relative_patterns_match_against_the_configured_cwd_and_return_relative_paths(
 }
 
 #[test]
+fn an_escaped_bracket_pattern_matches_only_the_literal_file() {
+    let root = TempDir::new().unwrap();
+    fs::write(root.path().join("data1.csv"), b"").unwrap();
+    fs::write(root.path().join("data2.csv"), b"").unwrap();
+    fs::write(root.path().join("data[1].csv"), b"").unwrap();
+    let glob = FileGlobExpander::new(root.path());
+
+    assert_eq!(glob.expand_piece("data[[]1].csv"), ["data[1].csv"]);
+}
+
+#[test]
 fn recursive_patterns_are_sorted_and_keep_platform_native_relative_spelling() {
     let root = TempDir::new().unwrap();
     fs::create_dir_all(root.path().join("nested/deeper")).unwrap();

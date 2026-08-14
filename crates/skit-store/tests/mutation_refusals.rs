@@ -83,7 +83,7 @@ fn same_slug_renames_succeed_while_name_conflicts_and_blank_names_refuse() {
     let second = store.claim_identity(&second).unwrap();
     assert!(matches!(
         store.rename(&second, "New display name").unwrap_err(),
-        RepositoryError::Conflict { .. }
+        RepositoryError::RenameConflict { .. }
     ));
     assert!(matches!(
         store.rename(&second, "   ").unwrap_err(),
@@ -116,7 +116,7 @@ fn another_entry_slug_is_also_a_reserved_display_name() {
 
     assert!(matches!(
         store.rename(&beta, alpha.slug.as_str()).unwrap_err(),
-        RepositoryError::Conflict { slug, .. } if slug == alpha.slug.as_str()
+        RepositoryError::RenameConflict { name } if name == alpha.slug.as_str()
     ));
     let renamed = store.rename(&alpha, "alpha-name").unwrap();
     assert_eq!(renamed.meta.name, "alpha-name");

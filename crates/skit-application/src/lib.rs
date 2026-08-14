@@ -158,13 +158,17 @@ pub enum RepositoryError {
         /// Deterministic candidate slug list.
         candidates: Vec<String>,
     },
-    /// A create or rename would collide with an existing entry.
-    #[error("entry {name:?} already exists at slug {slug:?}")]
+    /// A create would collide with an existing entry's display name.
+    #[error("The name {name} is already taken — pick another name.")]
     Conflict {
         /// Requested display name.
         name: String,
-        /// Conflicting stable address.
-        slug: String,
+    },
+    /// A rename would collide with an existing entry's display name.
+    #[error("The name {name} is already taken.")]
+    RenameConflict {
+        /// Requested display name.
+        name: String,
     },
     /// A requested mutation could not satisfy the storage contract.
     #[error("invalid entry mutation: {reason}")]
@@ -238,7 +242,10 @@ impl RepositoryError {
             (RepositoryOperation::Launch, Self::NotFound { .. }) => ExitClass::NotFound,
             (
                 RepositoryOperation::Launch,
-                Self::Ambiguous { .. } | Self::Conflict { .. } | Self::InvalidMutation { .. },
+                Self::Ambiguous { .. }
+                | Self::Conflict { .. }
+                | Self::RenameConflict { .. }
+                | Self::InvalidMutation { .. },
             ) => ExitClass::Usage,
             (
                 RepositoryOperation::Launch,
@@ -264,9 +271,12 @@ impl Localize for RepositoryError {
                     .quoted(query)
                     .with(format!("{candidates:?}"))
             }
-            Self::Conflict { name, slug } => Message::new("entry {} already exists at slug {}")
-                .quoted(name)
-                .quoted(slug),
+            Self::Conflict { name } => {
+                Message::new("The name {} is already taken — pick another name.").with(name)
+            }
+            Self::RenameConflict { name } => {
+                Message::new("The name {} is already taken.").with(name)
+            }
             Self::InvalidMutation { reason } => {
                 Message::new("invalid entry mutation: {}").nested(reason.clone())
             }

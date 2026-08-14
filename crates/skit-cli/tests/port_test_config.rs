@@ -34,22 +34,24 @@
 //! - `config.github_release_urls(base)` -> `store.set("mirror.github", base)` then `store.mirror()`.
 //! - `config.pypi_choice` / `github_choice` / `npm_choice` -> `PreferencesDraft.{pypi,github,npm}`
 //!   (`MirrorChoice::Off` / `Custom` / `Preset(name)`); `github_base` -> `PreferencesDraft.github_url`.
-//! - `config.pypi_display` / `npm_display` -> `store.settings()["mirror.pypi" / "mirror.npm"]`.
+//! - `config.pypi_display` / `npm_display` -> `store.settings()["mirror.pypi" / "mirror.npm"]`;
+//!   `config.github_display` -> the private `skit-cli::config_display_value`. Its exact contract
+//!   runs as `cli::tests::test_axis_display_helpers_exact`, where the private owner is visible.
 //! - `config.looks_blocked(timeout=0.01)` -> `network_looks_blocked(&probe)` with a scripted
 //!   `NetworkProbe` (the fixed `REACHABILITY_TIMEOUT` replaces the timeout argument).
 //!
 //! Buckets:
-//! - Bucket 1 (API EXISTS, asserting): the bulk below.
-//! - Bucket 2 (DIVERGENCE, full body kept, `#[ignore]`): six tests where Rust genuinely differs —
-//!   `mirror_environment` defers on key PRESENCE not truthiness (an empty user value still
-//!   suppresses); the store `set` requires an EXISTING bash file where the oracle's low-level
-//!   `save_bash_path` does not (the oracle's CLI layer validates identically, cli.py:5454-5463, so
-//!   this is a module-layer difference, not a lost gate); a backup failure ABORTS the save instead
-//!   of proceeding; and `github_display` never emits the `" + "` underivable-pair form.
+//! - Bucket 1 (API EXISTS, asserting): 59 tests — 58 below and the private CLI unit named above.
+//! - Bucket 2 (DIVERGENCE, full body kept, `#[ignore]`): two tests. The store `set` requires an
+//!   EXISTING bash file where the oracle's low-level `save_bash_path` does not. The oracle's CLI
+//!   layer validates identically (cli.py:5454-5463), so this is a module-layer difference, not a
+//!   lost gate.
 //! - Bucket 3 (CROSS-CRATE, `#[ignore]` stub): `axes_summary` and `mirrors_line` — the composed
 //!   axes string + "Mirrors:" line are built in the private `CliHealthInspector::collect()`
 //!   (cli.rs:6445) and rendered by skit-tui (management.rs:1236-1279); no public function on this
-//!   dependency surface returns the composed string. The per-axis tokens are still covered here.
+//!   dependency surface returns the composed string.
+//!
+//! Accounting: all 63 oracle tests are 59 REAL + 2 divergence + 2 architecture closure.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -371,52 +373,8 @@ fn test_axis_choice_readers_are_blind_to_the_master_switch() {
     assert_eq!(draft.npm, MirrorChoice::Preset("npmmirror".to_owned()));
 }
 
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's github_display joins an underivable/half-set \
-    pair as 'https://my/py/ + https://my/uv' / 'https://my/py/ + off' (config.py:362-372); the Rust \
-    github_display (skit-store/src/config.rs:1082-1100) returns 'custom' for every underivable pair \
-    and never emits the ' + ' form."]
-fn test_axis_display_helpers_exact() {
-    let (_dfull, full) = fixture();
-    save_full_mirror(&full);
-    let s = full.settings().unwrap();
-    assert_eq!(s["mirror.pypi"], "tsinghua");
-    assert_eq!(s["mirror.github"], "nju");
-    assert_eq!(s["mirror.npm"], "npmmirror");
-
-    let (_dcustom, custom) = fixture();
-    write_config(
-        &_dcustom,
-        "[mirror]\nenabled = true\npypi = \"https://my/simple\"\n\
-         python_install = \"https://my/py/\"\nuv_binary = \"https://my/uv\"\nnpm = \"https://my/npm\"\n",
-    );
-    let s = custom.settings().unwrap();
-    assert_eq!(s["mirror.pypi"], "https://my/simple");
-    // An underivable, hand-edited github pair joins with " + " — never the " · " axes_summary
-    // separator, which must stay unambiguous.
-    assert_eq!(s["mirror.github"], "https://my/py/ + https://my/uv");
-    assert_eq!(s["mirror.npm"], "https://my/npm");
-
-    // A half-set github pair shows the live half and marks the blank half off.
-    let (_dpy, py_only) = fixture();
-    write_config(&_dpy, "[mirror]\npython_install = \"https://my/py/\"\n");
-    assert_eq!(
-        py_only.settings().unwrap()["mirror.github"],
-        "https://my/py/ + off"
-    );
-    let (_duv, uv_only) = fixture();
-    write_config(&_duv, "[mirror]\nuv_binary = \"https://my/uv\"\n");
-    assert_eq!(
-        uv_only.settings().unwrap()["mirror.github"],
-        "off + https://my/uv"
-    );
-
-    let (_doff, off) = fixture();
-    let s = off.settings().unwrap();
-    assert_eq!(s["mirror.pypi"], "off");
-    assert_eq!(s["mirror.github"], "off");
-    assert_eq!(s["mirror.npm"], "off");
-}
+// MIGRATION LEDGER: `test_axis_display_helpers_exact` runs in `cli::tests`. That child module can
+// call the private human-display owner without changing the store's raw `mirror.github` contract.
 
 #[test]
 #[ignore = "CROSS-CRATE (skit-cli private + skit-tui): axes_summary joins the per-axis display \
@@ -424,7 +382,7 @@ fn test_axis_display_helpers_exact() {
     CliHealthInspector::collect() (crates/skit-cli/src/cli.rs:6445) and the skit-tui management \
     screen (crates/skit-tui/src/screens/management.rs:1236-1279 already pins these exact strings); \
     no public function on this dependency surface returns the composed string. The per-axis tokens \
-    ARE covered by test_axis_display_helpers_exact via settings()."]
+    are covered by cli::tests::test_axis_display_helpers_exact through config_display_value."]
 fn test_axes_summary_exact_strings() {
     // Python: axes_summary(full_mirror()) == "pypi=tsinghua · github=nju · npm=npmmirror";
     //   axes_summary(MirrorConfig()) == "off";
@@ -643,10 +601,6 @@ fn test_mirror_env_does_not_defer_on_uv_index() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle defers only on a TRUTHY user value (config.py:470 \
-    `not any(base_env.get(v) ...)`), so an empty UV_INDEX_URL='' still injects; the Rust \
-    mirror_environment defers on key PRESENCE (skit-store/src/config.rs:467-469 `base.contains_key`), \
-    so an empty value wrongly suppresses the mirror."]
 fn test_mirror_env_injects_when_index_env_blank() {
     // An empty-string user var means "unset": it must NOT suppress the mirror.
     let (_dir, store) = fixture();
@@ -657,10 +611,6 @@ fn test_mirror_env_injects_when_index_env_blank() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle defers only on a TRUTHY user value (config.py:472 \
-    `not base_env.get(_PYTHON_MIRROR_ENV)`), so an empty UV_PYTHON_INSTALL_MIRROR='' still injects; the \
-    Rust mirror_environment defers on key PRESENCE (skit-store/src/config.rs:472 `base.contains_key`), \
-    so an empty value wrongly suppresses the mirror."]
 fn test_mirror_env_injects_when_python_mirror_blank() {
     let (_dir, store) = fixture();
     save_full_mirror(&store);
@@ -785,7 +735,14 @@ fn test_save_editor_backs_up_corrupt_config_instead_of_wiping_it() {
     // oracle's stderr notice).
     let recovery = recovery.expect("a corrupt file yields a recovery record");
     assert_eq!(recovery.path.file_name().unwrap(), "config.toml");
-    assert_eq!(recovery.backup_path.file_name().unwrap(), "config.toml.bak");
+    assert_eq!(
+        recovery
+            .backup_path
+            .as_deref()
+            .and_then(|path| path.file_name())
+            .unwrap(),
+        "config.toml.bak"
+    );
 }
 
 #[test]
@@ -801,20 +758,18 @@ fn test_save_mirror_backs_up_corrupt_config_instead_of_wiping_it() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): when the corrupt config cannot be backed up, the oracle \
-    still proceeds with the save and only warns (config.py:152-160, save_editor lands 'vim'); the Rust \
-    update_with_recovery propagates the backup error via `.transpose()?` BEFORE atomic_write_bytes \
-    (skit-store/src/config.rs:814-822), so the whole save aborts and the change is lost."]
 fn test_save_editor_warns_when_corrupt_config_cannot_even_be_backed_up() {
     // Double failure (corrupt file + backup itself fails): the save must still not crash, and must
-    // still land the change. A directory at config.toml.bak makes the backup refuse (the Rust
-    // analogue of monkeypatching shutil.copy2 to raise).
+    // still land the change. A directory at the nested copy target makes the backup refuse.
     let (dir, store) = fixture();
-    fs::create_dir(dir.path().join("config.toml.bak")).unwrap();
+    let backup = dir.path().join("config.toml.bak");
+    let blocker = backup.join("config.toml");
+    fs::create_dir_all(&blocker).unwrap();
+    fs::write(blocker.join("owned"), "keep").unwrap();
     write_config(&dir, "this is = = not valid toml");
     store.set("editor", "vim").unwrap();
     assert_eq!(store.get("editor").unwrap(), "vim");
-    assert!(!dir.path().join("config.toml.bak").is_file()); // no real backup was written
+    assert_eq!(fs::read_to_string(blocker.join("owned")).unwrap(), "keep");
 }
 
 #[test]

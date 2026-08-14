@@ -104,9 +104,7 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
             // a degrade; a genuinely dynamic expression (a variable, a command, a subexpression)
             // degrades the field. Oracle: cli_reader.py `_apply_default` degrades only when
             // `defaultReadable` is false.
-            if let Some(value) =
-                static_default(text(document, default_node), declaration.parameter_type)
-            {
+            if let Some(value) = static_scalar_default(document, default_node) {
                 declaration.default = Some(value);
             } else if !readable_default(document, default_node) {
                 declaration.degraded = true;
@@ -115,7 +113,7 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
         } else if let Some(default) = recovered_default(document, variable) {
             // An error-recovered bare default has no expression node to classify; keep the
             // established text-based scalar read and its degrade-on-failure fallback.
-            if let Some(value) = static_default(&default, declaration.parameter_type) {
+            if let Some(value) = recovered_scalar_default(&default) {
                 declaration.default = Some(value);
             } else {
                 declaration.degraded = true;
@@ -217,35 +215,81 @@ fn apply_attributes(
     }
 }
 
-fn static_default(raw: &str, parameter_type: ParameterType) -> Option<ParameterValue> {
+fn static_scalar_default(
+    document: &ParsedDocument,
+    default_node: tree_sitter::Node<'_>,
+) -> Option<ParameterValue> {
+    let expression = named_children(default_node).into_iter().next()?;
+    scalar_literal(document, expression)
+}
+
+fn scalar_literal(
+    document: &ParsedDocument,
+    node: tree_sitter::Node<'_>,
+) -> Option<ParameterValue> {
+    if let Some(value) = scalar_literal_text(text(document, node)) {
+        return Some(value);
+    }
+    if matches!(node.kind(), "array_expression" | "hash_literal_expression") {
+        return None;
+    }
+    let children = named_children(node);
+    let [child] = children.as_slice() else {
+        return None;
+    };
+    scalar_literal(document, *child)
+}
+
+fn scalar_literal_text(raw: &str) -> Option<ParameterValue> {
+    let raw = raw.trim();
+    if let Some(value) = powershell_string(raw) {
+        return Some(ParameterValue::String(value));
+    }
+    match raw.to_ascii_lowercase().as_str() {
+        "$true" => return Some(ParameterValue::Bool(true)),
+        "$false" => return Some(ParameterValue::Bool(false)),
+        _ => {}
+    }
+    if let Some(value) = powershell_integer(raw) {
+        return Some(ParameterValue::Integer(value));
+    }
+    raw.parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .map(ParameterValue::Float)
+}
+
+fn powershell_integer(raw: &str) -> Option<i64> {
+    let (sign, unsigned) = if let Some(unsigned) = raw.strip_prefix('-') {
+        (-1_i64, unsigned)
+    } else {
+        (1, raw.strip_prefix('+').unwrap_or(raw))
+    };
+    let value = if let Some(hex) = unsigned
+        .strip_prefix("0x")
+        .or_else(|| unsigned.strip_prefix("0X"))
+    {
+        i64::from_str_radix(hex, 16).ok()?
+    } else {
+        unsigned.parse::<i64>().ok()?
+    };
+    value.checked_mul(sign)
+}
+
+fn recovered_scalar_default(raw: &str) -> Option<ParameterValue> {
     let raw = raw
         .trim()
         .strip_prefix('=')
         .unwrap_or_else(|| raw.trim())
         .trim();
-    match parameter_type {
-        ParameterType::Int => raw.parse::<i64>().ok().map(ParameterValue::Integer),
-        ParameterType::Float => raw
-            .parse::<f64>()
-            .ok()
-            .filter(|value| value.is_finite())
-            .map(ParameterValue::Float),
-        ParameterType::Bool => match raw.to_ascii_lowercase().as_str() {
-            "$true" => Some(ParameterValue::Bool(true)),
-            "$false" => Some(ParameterValue::Bool(false)),
-            _ => None,
-        },
-        ParameterType::Str | ParameterType::Choice | ParameterType::Path => powershell_string(raw)
-            .or_else(|| {
-                raw.chars()
-                    .all(|character| {
-                        character.is_alphanumeric()
-                            || matches!(character, '_' | '-' | '.' | '/' | '\\')
-                    })
-                    .then(|| raw.to_owned())
-            })
-            .map(ParameterValue::String),
+    if let Some(value) = scalar_literal_text(raw) {
+        return Some(value);
     }
+    raw.chars()
+        .all(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '-' | '.' | '/' | '\\')
+        })
+        .then(|| ParameterValue::String(raw.to_owned()))
 }
 
 fn recovered_default(document: &ParsedDocument, variable: tree_sitter::Node<'_>) -> Option<String> {

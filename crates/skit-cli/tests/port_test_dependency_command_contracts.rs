@@ -26,15 +26,16 @@
 //! - Python `drafts_dir()` -> `<SKIT_DATA_DIR>/drafts`.
 //!
 //! Buckets (recorded per test in the structured result):
-//! - REAL asserting `#[test]` (API exists, behavior agrees): the uv-flavor '-'/'none'
-//!   normalization (6, 8), the deps-only npm edit (10), and the add_python belt's
-//!   strip-and-drop + no-deps transparency (13, 14). 5 tests.
+//! - REAL asserting `#[test]` (API exists, behavior agrees): the npm refusal spellings (3–5),
+//!   the uv-flavor '-'/'none' normalization (6, 8), the deps-only npm edit (10), and the
+//!   add_python belt's validation, strip-and-drop, and no-deps transparency (11–14). 10 tests.
 //! - FAILING CONTRACT (divergence) — full oracle-faithful body, `#[ignore]`d because the
 //!   Rust behavior diverges (verified against the built binary): the wholly-unimplemented
-//!   drafts-boundary guard (1, 2), the js `--python` refusal wording (3, 4, 5, 7, 9), the
-//!   add_python belt wording (11, 12), and the deps confirmation-line shape (15–19). 14 tests.
-//! - CROSS-CRATE — compiling `#[ignore]` stub naming the owning tier: the language
-//!   `registry.spec_for(...).deps_flavor` premise, which the Rust rewrite disperses (20). 1 test.
+//!   drafts-boundary guard (1, 2) and the deps confirmation-line shape (15–19). 7 tests.
+//! - CLOSURE — 3 ignored exact names: the Python public-store refusal cases (7, 9) have no
+//!   equivalent Rust public store seam, and their closest CLI mappings duplicate stronger
+//!   executable owners; the language `registry.spec_for(...).deps_flavor` premise (20) is a
+//!   cross-crate compiling stub because the Rust rewrite disperses that surface.
 
 use std::path::PathBuf;
 
@@ -191,7 +192,6 @@ fn test_kind_exe_alone_names_only_kind_exe() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 holds, but the message reads 'a Python constraint does not apply to js entries' where the oracle says 'A Python constraint doesn't apply to js scripts.' (store.py:1255-1263). Verified against the built binary."]
 fn test_js_deps_python_dash_is_refused_as_inapplicable() {
     // `skit deps <js> --python -` is REFUSED (exit 2, "doesn't apply"), NOT silently accepted:
     // normalizing '-' to "" first would make a kind-inapplicable flag succeed for some spellings
@@ -208,7 +208,6 @@ fn test_js_deps_python_dash_is_refused_as_inapplicable() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 holds, but the message reads 'a Python constraint does not apply to js entries' where the oracle says 'A Python constraint doesn't apply to js scripts.' (store.py:1255-1263). Verified against the built binary."]
 fn test_js_deps_python_none_is_refused_as_inapplicable() {
     // The other automatic token behaves identically: '-' and 'none' are NOT special-cased
     // into acceptance on an npm entry.
@@ -224,7 +223,6 @@ fn test_js_deps_python_none_is_refused_as_inapplicable() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 and the untouched state both hold, but the message reads 'a Python constraint does not apply to js entries' where the oracle says 'A Python constraint doesn't apply to js scripts.' (store.py:1255-1263). Verified against the built binary."]
 fn test_js_deps_python_empty_string_is_refused_as_inapplicable() {
     // The missing spelling: `--python ''` (empty) is a spelling too, and is REFUSED identically
     // to '-'/'none'/a real constraint (exit 2, "doesn't apply") — nothing is written. The npm
@@ -272,7 +270,7 @@ fn test_python_deps_python_dash_is_still_automatic() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the store chokepoint refuses (exit 2), but through the composition root Rust prints 'a Python constraint does not apply to js entries' — the substring 'doesn't apply' the oracle's StoreUsageError carries is absent (store.py:1255-1263). Verified against the built binary."]
+#[ignore = "ARCHITECTURE-CLOSED / SEMANTIC DUPLICATE: the Python oracle calls public store.update_dependencies and observes StoreUsageError, but Rust has no public store dependency-update seam. This closest Rust body drives the CLI and is strictly duplicated by the stronger executable owner test_js_deps_python_dash_is_refused_as_inapplicable, which pins the exact message. Keep this exact name as a closure; do not count it as REAL."]
 fn test_store_npm_spec_plus_dash_reaches_the_npm_refusal() {
     // The store unit: an npm-flavor entry + '-' is NOT normalized before the npm branch, so it
     // reaches the 'doesn't apply' refusal (StoreUsageError) instead of a silent accept.
@@ -305,7 +303,7 @@ fn test_store_uv_spec_plus_dash_normalizes() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the store chokepoint refuses the empty spelling (exit 2), but Rust prints 'a Python constraint does not apply to js entries' — the substring 'doesn't apply' is absent (store.py:1255-1263). Verified against the built binary."]
+#[ignore = "ARCHITECTURE-CLOSED / SEMANTIC DUPLICATE: the Python oracle calls public store.update_dependencies and observes StoreUsageError, but Rust has no public store dependency-update seam. This closest Rust body drives the CLI and is strictly duplicated by the stronger executable owner test_js_deps_python_empty_string_is_refused_as_inapplicable, which pins the exact message and unchanged state. Keep this exact name as a closure; do not count it as REAL."]
 fn test_store_npm_spec_plus_empty_string_reaches_the_npm_refusal() {
     // The empty branch of the npm predicate `requires_python is not None`: `""` (not None) is a
     // Python constraint spelling and raises StoreUsageError on an npm entry — the branch that used
@@ -342,7 +340,6 @@ fn test_store_npm_spec_plus_none_deps_edit_is_not_refused() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the belt refuses before any entry exists (exit 2, nothing created — the `skit deps belt --json` follow-up exits 1), but Rust prints 'invalid PEP 508 requirement \"@@@\": …' where the oracle says '@@@ isn't a package requirement (…)'  (pep723.py:180-194). Verified against the built binary."]
 fn test_add_python_belt_rejects_a_bad_dep_before_any_entry_exists() {
     // A direct store.add_python with an unparseable dependency raises at the belt — BEFORE the
     // source is read or a meta/entry dir is built, so no half-made entry is registered.
@@ -365,7 +362,6 @@ fn test_add_python_belt_rejects_a_bad_dep_before_any_entry_exists() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the belt refuses before any entry exists (exit 2, nothing created), but Rust prints 'invalid PEP 440 version constraint \"not-a-version\": …' where the oracle says 'not-a-version isn't a Python version constraint (…)' (pep723.py:162-177). Verified against the built binary."]
 fn test_add_python_belt_rejects_a_bad_python_before_any_entry_exists() {
     // The constraint half of the belt: an unparseable requires-python is refused the same way.
     let sandbox = Sandbox::new();

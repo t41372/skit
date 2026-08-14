@@ -2,7 +2,7 @@
 
 use skit_i18n::{Locale, Localize, Message};
 use skit_language::{
-    LanguageError, PythonMetadataError, ShellInputError, validate_pep440_specifiers,
+    LanguageError, PythonMetadataError, ShellInputError, decode_prompt, validate_pep440_specifiers,
     validate_pep508_requirement,
 };
 
@@ -19,6 +19,17 @@ fn assert_localized(error: &(impl Localize + std::fmt::Display), values: &[&str]
             assert!(text.contains(value), "{text} lost the value {value}");
         }
     }
+}
+
+#[test]
+fn prompt_decode_is_strict_typed_and_localized() {
+    let valid = "審查\r\n".as_bytes();
+    assert_eq!(decode_prompt(valid, "prompt.md").unwrap().as_bytes(), valid);
+
+    let error = decode_prompt(b"ok\xc3(\n", "prompt.md").unwrap_err();
+    assert_eq!(error.path, "prompt.md");
+    assert_eq!(error.offset, 2);
+    assert_localized(&error, &["prompt.md", "2"]);
 }
 
 #[test]
@@ -91,7 +102,7 @@ fn package_metadata_errors_localize_and_keep_the_value_verbatim() {
         requirement
             .message()
             .localize(Locale::ZhCn)
-            .contains("不是有效的 PEP 508 依赖描述")
+            .contains("不是软件包依赖")
     );
 
     let constraint = validate_pep440_specifiers("not a version").unwrap_err();
@@ -100,7 +111,7 @@ fn package_metadata_errors_localize_and_keep_the_value_verbatim() {
         constraint
             .message()
             .localize(Locale::ZhTw)
-            .contains("不是有效的 PEP 440 版本限制")
+            .contains("不是 Python 版本約束")
     );
 
     assert!(matches!(

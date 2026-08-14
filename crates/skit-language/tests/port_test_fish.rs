@@ -672,9 +672,5 @@ fn test_corpus_expected_detections() {
 // ---------------------------------------------------------------- env-default e2e
 
 #[test]
-#[ignore = "UNMAPPED: `skit params <name> --manage` (CliRunner) + store.add_script + flows.plan_for_entry/assemble asserting plan.source=='inject', field.source=='env', asm.env_values -> Tier 4 (skit-cli/flows/store). The `#`-block write half is covered by test_corpus_analyze_is_total_and_reads_back; the env-delivery binding by test_reconcile_ok_then_drift."]
-fn test_manage_then_plan_and_assemble_env_delivery() {}
-
-#[test]
 #[ignore = "UNMAPPED: spawns the real `fish` on the stored copy and asserts the env overlay beats the script's default on stdout (skipif fish is not installed) -> Tier 3/4 (skit run / process spawn). skit-language produces no run; the env-default detection is covered by test_oneline_idiom_int."]
 fn test_env_overlay_overrides_default_in_real_fish() {}

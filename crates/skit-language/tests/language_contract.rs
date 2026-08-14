@@ -70,6 +70,29 @@ fn prompt_render_is_one_pass_over_the_original_text() {
 }
 
 #[test]
+fn prompt_render_keeps_reserved_and_brace_adjacent_tokens_byte_exact() {
+    let values = BTreeMap::from([
+        ("prompt".to_owned(), "must-not-land".to_owned()),
+        ("raw".to_owned(), "must-not-land".to_owned()),
+        ("y".to_owned(), "must-not-land".to_owned()),
+        ("real".to_owned(), "R".to_owned()),
+    ]);
+    let body = "{{{raw}}} and {{y}}} keep {{prompt}}; replace {{real}} and {{outer {{real}}";
+
+    assert_eq!(
+        render_prompt_body(body, &values, true),
+        "{{{raw}}} and {{y}}} keep {{prompt}}; replace R and {{outer R"
+    );
+    assert_eq!(
+        placeholder_params("prompt", "{{outer {{real}}")
+            .into_iter()
+            .map(|parameter| parameter.name)
+            .collect::<Vec<_>>(),
+        ["real"]
+    );
+}
+
+#[test]
 fn managed_block_round_trips_python_shell_and_javascript_comment_dialects() {
     for (kind, source) in [
         ("python", "#!/usr/bin/env python3\nprint('ok')\n"),
@@ -324,6 +347,33 @@ fn placeholder_detection_preserves_order_and_secret_heuristics() {
 }
 
 #[test]
+fn prompt_identifiers_use_unicode_xid_while_command_identifiers_stay_ascii() {
+    let decomposed = "e\u{301}";
+    let prompt = placeholder_params(
+        "prompt",
+        &format!("{{{{任务}}}} {{{{café}}}} {{{{{decomposed}}}}} {{{{9bad}}}} {{{{💥}}}}"),
+    );
+    assert_eq!(
+        prompt
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["任务", "café", decomposed]
+    );
+    assert!(placeholder_params("command", "{任务} {café} {e\u{301}}").is_empty());
+
+    let rendered = render_prompt_body(
+        &format!("任务={{{{任务}}}} name={{{{{decomposed}}}}}"),
+        &BTreeMap::from([
+            ("任务".to_owned(), "完成".to_owned()),
+            (decomposed.to_owned(), "accent".to_owned()),
+        ]),
+        true,
+    );
+    assert_eq!(rendered, "任务=完成 name=accent");
+}
+
+#[test]
 fn injection_rewrites_only_selected_python_shell_and_javascript_bindings() {
     let mut python_const = ParamDecl::new("WIDTH");
     python_const.binding = ParameterBinding::Const;
@@ -406,7 +456,7 @@ const chalk = require("chalk");
 "#;
     assert_eq!(
         external_dependencies("js", js),
-        ["@scope/pkg", "chalk", "react"]
+        ["react", "@scope/pkg", "chalk"]
     );
 }
 

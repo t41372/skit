@@ -633,15 +633,12 @@ impl FileStore {
         excluded: Option<&Slug>,
         registry: &Registry,
     ) -> Result<(), RepositoryError> {
-        if let Some(slug) = registry.name_owner(name, excluded) {
-            return Err(RepositoryError::Conflict {
-                name: name.to_owned(),
-                slug,
-            });
+        if registry.name_owner(name, excluded).is_some() {
+            return Err(name_conflict(name, excluded.is_some()));
         }
         for existing in self.scan_entries()? {
             if existing.meta.name == name && excluded != Some(&existing.slug) {
-                return Err(conflict(name, &existing.slug));
+                return Err(name_conflict(name, excluded.is_some()));
             }
         }
         Ok(())
@@ -968,10 +965,18 @@ fn sweep_staging(staging_root: &Path) -> Result<(), RepositoryError> {
     Ok(())
 }
 
-fn conflict(name: &str, slug: &Slug) -> RepositoryError {
-    RepositoryError::Conflict {
-        name: name.to_owned(),
-        slug: slug.as_str().to_owned(),
+/// The add voice advises picking another name; the rename voice states the fact.
+/// Version 0.4 raises NameConflictError (store.py:812-816) for a create and
+/// StoreError (store.py:1449-1452) for a rename, with these exact texts.
+fn name_conflict(name: &str, renaming: bool) -> RepositoryError {
+    if renaming {
+        RepositoryError::RenameConflict {
+            name: name.to_owned(),
+        }
+    } else {
+        RepositoryError::Conflict {
+            name: name.to_owned(),
+        }
     }
 }
 

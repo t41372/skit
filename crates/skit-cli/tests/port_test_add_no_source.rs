@@ -30,16 +30,16 @@
 //!   exe -> 11, prompt -> 12.
 //!
 //! Bucket disposition (68 Python defs -> 68 `#[test]`, names preserved):
-//! - 17 REAL asserting tests that PASS: 1 pipe test (`--cmd` secret note) + 16 pty tests (the
-//!   orphan-flag refusals, the refusal-advice matrix, the plain menu's four command/path/cancel
-//!   lanes, the tui source-step cancel, and the exact plain-menu lines).
-//! - 13 FAILING CONTRACT (divergence): full asserting bodies kept, `#[ignore]`d; each verified
-//!   against the built binary. Two pipe refusals (Rust's "add needs a source path … --edit …" vs
-//!   the oracle's "Provide a source path …", which never names --edit and points at `skit add -`
-//!   `-n NAME`); the six plain unknown-kind picks + the two `_ask_kind_plain` CLI layouts (Rust has
-//!   no plain kind ASK — `add()` answers "could not infer the entry kind; pass --kind KIND",
-//!   cli.rs:2896); the rich `[1/2/3/4] (1)` prompt shape (dialoguer renders `[1]:`); and the two
-//!   plain directory-consent lanes (Rust errors "could not read … Is a directory", no Confirm).
+//! - 19 REAL asserting tests that PASS: 3 pipe tests (the two bare lane-list refusals and the
+//!   `--cmd` secret note) + 16 pty tests (the orphan-flag refusals, the refusal-advice matrix, the
+//!   plain menu's four command/path/cancel lanes, the tui source-step cancel, and the exact
+//!   plain-menu lines).
+//! - 11 FAILING CONTRACT (divergence): full asserting bodies kept, `#[ignore]`d; each verified
+//!   against the built binary. The six plain unknown-kind picks + the two `_ask_kind_plain` CLI
+//!   layouts (Rust has no plain kind ASK — `add()` answers "could not infer the entry kind; pass
+//!   --kind KIND", cli.rs:2896); the rich `[1/2/3/4] (1)` prompt shape (dialoguer renders `[1]:`);
+//!   and the two plain directory-consent lanes (Rust errors "could not read … Is a directory", no
+//!   Confirm).
 //!   Ties to pending task #15.
 //! - 7 ABSENT gaps: the plain-line kind ASK `_ask_kind_plain` (src/skit/cli.py:1370-1400) and the
 //!   plain directory-consent Confirm (src/skit/cli.py:1884) have no Rust twin; the strings live
@@ -221,7 +221,6 @@ fn flat(text: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a pipe/`--no-input` bare add exits 2, but Rust prints \"add needs a source path, standard input as `-`, --edit, --prompt, or --cmd\" (cli.rs:1060) where the oracle prints \"Provide a source path — or pipe the text in (skit add - -n NAME; add --prompt …), or register a command template with --cmd.\" (src/skit/cli.py:1788): Rust NAMES --edit (a lane that refuses without a terminal) and never names `skit add -` or `-n NAME`. Verified against the built binary."]
 fn test_bare_add_no_input_lists_the_lanes() {
     // The message names ONLY the lanes that work under --no-input / in a pipe: the stdin
     // spellings and --cmd. It no longer recommends --edit/--prompt-with-editor.
@@ -243,7 +242,6 @@ fn test_bare_add_no_input_lists_the_lanes() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): same message divergence as test_bare_add_no_input_lists_the_lanes — a pipe (no tty) is non-interactive even without --no-input, and Rust's cli.rs:1059-1062 refusal reads \"add needs a source path …\" not the oracle's \"Provide a source path …\" (src/skit/cli.py:1788). Verified against the built binary."]
 fn test_bare_add_piped_lists_the_lanes() {
     // A pipe (no TTY) is non-interactive even without --no-input; `Sandbox::bin` IS that pipe,
     // so this needs no monkeypatch analogue.

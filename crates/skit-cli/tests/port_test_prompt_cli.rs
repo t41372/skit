@@ -28,7 +28,8 @@
 //! (`_json`) is the exception: the whole of STDOUT must parse as exactly one JSON document.
 //!
 //! Buckets:
-//! - REAL asserting `#[test]` (API EXISTS, behavior reachable black-box).
+//! - REAL asserting `#[test]` (API EXISTS, behavior reachable black-box), including typed-value
+//!   refusal when an explicit value and an extra argument tail are both present.
 //! - FAILING CONTRACT (divergence): the full asserting body is kept intact and `#[ignore]`d with
 //!   the observed-vs-oracle evidence; deleting the `#[ignore]` after the impl is fixed turns it
 //!   green. Never softened to match Rust output.
@@ -247,7 +248,7 @@ fn test_add_prompt_read_oserror_is_a_clean_store_error() {}
 fn test_localized_starter_is_minimal_and_never_creates_its_own_field() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md` (no -n): oracle slug 'p' (store.py:571 removesuffix '.prompt'); Rust slug 'p-prompt', so `show p` is 'entry not found'. The 'Managed parameters: target, focus' line itself converges."]
+#[ignore = "FAILING CONTRACT (divergence): the prompt name, fields, and managed-parameter summary converge, but `show --json` returns null for an unset runner instead of the oracle's empty string."]
 fn test_add_prompt_file_no_input_manages_everything() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file(
@@ -361,7 +362,6 @@ fn test_add_prompt_runner_flag_non_interactive() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches. Oracle prints 'Unknown runner'; Rust prints 'prompt runner \"ghost\" is not configured'."]
 fn test_add_prompt_unknown_runner_flag_is_usage_error() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
@@ -414,7 +414,6 @@ fn test_add_prompt_flag_forces_the_kind_on_any_extension() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches, wording differs. A bare .md with --no-input: oracle names the fix '--prompt'; Rust prints the generic 'could not infer the entry kind; pass --kind KIND' (no .md-specific --prompt hint)."]
 fn test_add_bare_md_no_input_requires_explicit_prompt() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("notes.md", b"hello {{x}}\n");
@@ -424,7 +423,6 @@ fn test_add_bare_md_no_input_requires_explicit_prompt() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 1 matches. Oracle prints 'File not found:'; Rust prints the raw 'could not resolve <path>: No such file or directory (os error 2)'."]
 fn test_missing_bare_md_is_refused_before_the_prompt_confirmation() {
     // Black-box: a path that does not exist is refused before any kind question at all.
     let sandbox = Sandbox::new();
@@ -455,7 +453,6 @@ fn test_add_bare_md_interactive_ask_yes_and_no() {}
 fn test_add_bare_md_confirm_no_falls_through_to_kind_ask_and_honors_pick() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle exit 2 requiring '--name' for a stdin prompt with no name; Rust instead ADDS an entry named 'stdin' (exit 0, 'Added: stdin (copy mode)') rather than refusing."]
 fn test_add_prompt_from_stdin_needs_a_name() {
     let sandbox = Sandbox::new();
     let output = sandbox
@@ -468,6 +465,13 @@ fn test_add_prompt_from_stdin_needs_a_name() {
     combined.push_str(&String::from_utf8_lossy(&output.stderr));
     assert_eq!(output.status.code(), Some(2), "{combined}");
     assert!(combined.contains("--name"), "{combined}");
+    assert!(
+        sandbox
+            .json(&["list", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -527,7 +531,6 @@ fn test_add_kind_prompt_from_stdin_uses_the_prompt_contract() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle exit 1 'Nothing arrived on stdin' for a whitespace-only stdin body; Rust ADDS the entry (exit 0, 'Added: e (copy mode)') instead of refusing an empty body."]
 fn test_add_prompt_from_stdin_empty_body() {
     let sandbox = Sandbox::new();
     let output = sandbox
@@ -540,6 +543,13 @@ fn test_add_prompt_from_stdin_empty_body() {
     combined.push_str(&String::from_utf8_lossy(&output.stderr));
     assert_eq!(output.status.code(), Some(1), "{combined}");
     assert!(combined.contains("Nothing arrived on stdin"), "{combined}");
+    assert!(
+        sandbox
+            .json(&["list", "--json"])
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -585,7 +595,6 @@ fn test_add_prompt_editor_lane_post_edit_failure_keeps_the_draft() {}
 fn test_add_prompt_editor_lane_deleted_draft_is_a_clean_honest_failure() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md --ref` (no -n): oracle slug 'p' (store.py:571 removesuffix '.prompt'); Rust slug 'p-prompt', so `show p` is 'entry not found'."]
 fn test_add_prompt_ref_mode_keeps_original_and_pins_invoke() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"Ref {{x}}\n");
@@ -679,13 +688,33 @@ fn test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust human doctor prints 'Entries: 1', never the oracle's taxonomy-aware '1 entry registered'."]
 fn test_prompt_only_library_uses_entry_taxonomy_on_dynamic_cli_surfaces() {
     let sandbox = Sandbox::new();
     sandbox.added("Review this\n", "p");
     let combined = sandbox.ok(&["doctor"]);
     assert!(combined.contains("1 entry registered"), "{combined}");
     assert!(!combined.contains("script registered"), "{combined}");
+
+    sandbox.added("Summarize this\n", "q");
+    for (locale, phrase) in [
+        ("en", "2 entries registered"),
+        ("zh-CN", "已登记 2 个条目"),
+        ("zh-TW", "已登記 2 個條目"),
+    ] {
+        let output = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .arg("doctor")
+            .output()
+            .unwrap();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(0), "{locale}: {combined}");
+        assert!(combined.contains(phrase), "{locale}: {combined}");
+    }
 }
 
 #[test]
@@ -697,7 +726,6 @@ fn test_empty_library_does_not_claim_it_only_accepts_scripts() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 126 matches. Oracle says 'No runner selected'; Rust says 'prompt runner is required'."]
 fn test_run_prompt_no_input_without_pin_is_126() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -707,7 +735,6 @@ fn test_run_prompt_no_input_without_pin_is_126() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 126 matches. Oracle says 'No runner selected'; Rust says 'prompt runner is required'."]
 fn test_run_no_input_is_provably_unaffected_by_last_picked_state() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -718,7 +745,6 @@ fn test_run_no_input_is_provably_unaffected_by_last_picked_state() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust does not trim --runner. Oracle accepts '--runner \" claude \"' (trimmed to 'claude') and runs (exit 0); Rust looks up ' claude ' verbatim, misses, exits 126 'prompt runner \" claude \" is not configured'."]
 fn test_run_prompt_runner_flag_threads_through() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -756,7 +782,6 @@ fn test_run_prompt_runner_flag_threads_through() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust prompt analyzer does not detect a unicode placeholder name — `{{目标}}` yields empty fields, so `--set 目标=…` fails 'unknown parameter in --set: 目标'. Ties to task #14 (prompt analyzer defects)."]
 fn test_run_prompt_unicode_placeholder_threads_through_set() {
     let sandbox = Sandbox::new();
     sandbox.added("审查 {{目标}}\n", "p");
@@ -812,7 +837,6 @@ fn test_run_prompt_pin_resolves_without_touching_last_picked() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 126 matches and 'ghost' is named, but Rust does not list the AVAILABLE runner names (no 'claude') — it prints only 'prompt runner \"ghost\" is not configured'."]
 fn test_run_prompt_unknown_runner_is_126_listing_names() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -844,7 +868,6 @@ fn test_run_prompt_pinned_but_removed_runner_is_126() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 126 matches, but with an empty runner list Rust still prints 'prompt runner is required' instead of the oracle's 'No agents are configured' + the copyable 'skit runner add mycli -- mycli run {{prompt}}' recovery."]
 fn test_run_unpinned_prompt_with_empty_runner_list_teaches_a_copyable_recovery() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -907,7 +930,6 @@ fn test_run_prompt_dry_run_prints_the_resolved_argv() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle exits 127 'doesn't exist' when the prompt body was deleted; Rust cannot resolve the entry and exits 2 'invalid entry mutation: copy entry has no stored payload'."]
 fn test_run_prompt_dry_run_missing_body_is_127_before_output() {
     let sandbox = Sandbox::new();
     sandbox.added_pin("Say it\n", "p", "claude");
@@ -970,7 +992,6 @@ fn test_normal_prompt_transparency_omits_body_but_keeps_agent_flags() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 125 matches, marker never leaks. Oracle says 'over this platform'; Rust says 'the rendered prompt makes the command line N bytes; the limit is 100000 bytes'."]
 fn test_overlong_prompt_refuses_before_normal_transparency() {
     let sandbox = Sandbox::new();
     let marker = "MUST-NOT-REACH-SCROLLBACK";
@@ -983,7 +1004,6 @@ fn test_overlong_prompt_refuses_before_normal_transparency() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 125 matches. Oracle says 'NUL byte'; Rust says 'the rendered prompt contains a NUL character'."]
 fn test_dry_run_refuses_nul_without_looking_up_agent_binary() {
     let sandbox = Sandbox::new();
     sandbox.added_pin("before\u{0}after", "p", "claude");
@@ -1004,7 +1024,6 @@ fn test_dry_run_refuses_nul_without_looking_up_agent_binary() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 125 matches, marker never leaks. Oracle says 'over this platform'; Rust says 'the rendered prompt makes the command line N bytes; the limit is 100000 bytes'."]
 fn test_dry_run_refuses_overlong_prompt_without_printing_it() {
     let sandbox = Sandbox::new();
     let marker = "DRY-RUN-TOO-LONG";
@@ -1097,7 +1116,6 @@ fn test_prompt_extra_agent_args_do_not_fill_required_placeholders() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 125 matches. Oracle says 'whole number'; Rust says 'parameter \"count\" has invalid Int value \"nope\"' (same tier as port_test_run_set.rs)."]
 fn test_extra_argv_does_not_hide_a_filled_flag_type_error() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_file(
@@ -1387,7 +1405,6 @@ fn test_params_deliver_placeholder_is_allowed_on_prompts() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): pin/clear and last_runner preservation converge, but clearing prints the human 'Prompt runner: not set' where the oracle prints 'asks at run time'."]
 fn test_params_runner_pin_and_clear() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -1434,18 +1451,21 @@ fn test_params_interpolate_with_json_emits_the_read_view() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust exits 2 (oracle exits 1) and prints 'prompt runner \"ghost\" is not configured' where the oracle prints 'isn't configured'. The pin stays cleared in both."]
 fn test_params_runner_pin_validates_the_name() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
     let (code, combined) = sandbox.out(&["params", "p", "--runner", "ghost"]);
     assert_eq!(code, 1, "{combined}");
     assert!(combined.contains("isn't configured"), "{combined}");
-    assert_eq!(sandbox.json(&["show", "p", "--json"])["runner"], "");
+    // The oracle inspects its private stored meta.runner here (empty string). The public CLI
+    // projects that same unpinned state as null, as the pin-and-clear and read-view contracts do.
+    assert_eq!(
+        sandbox.json(&["show", "p", "--json"])["runner"],
+        Value::Null
+    );
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): message '--runner only applies to prompt entries' converges, but Rust exits 2 (CliError::Usage) where the oracle exits 1."]
 fn test_params_runner_pin_refused_on_non_prompt() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["add", "--cmd", "echo {m}", "-n", "cmd", "--no-input"]);
@@ -1729,7 +1749,6 @@ fn test_runner_add_preserves_bad_rows_and_force_repairs_matching_name() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches, config unseeded. Oracle says 'A name is required'; Rust says 'a prompt runner needs a name'."]
 fn test_runner_add_blank_name_is_refused_before_seeding() {
     let sandbox = Sandbox::new();
     let (code, combined) = sandbox.out(&["runner", "add", "   ", "x", "{{prompt}}"]);
@@ -1739,7 +1758,6 @@ fn test_runner_add_blank_name_is_refused_before_seeding() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches on each case, but the sentences differ — e.g. oracle 'first word' vs Rust '{{prompt}} cannot be the prompt runner program'."]
 fn test_runner_add_validation_errors() {
     let sandbox = Sandbox::new();
     let cases: [(&[&str], &str); 3] = [
@@ -1804,7 +1822,6 @@ fn test_runner_remove_and_unknown() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches, config unseeded. Oracle says 'A name is required'; Rust says 'a prompt runner needs a name'."]
 fn test_runner_remove_blank_name_is_usage_error_before_seeding() {
     let sandbox = Sandbox::new();
     let (code, combined) = sandbox.out(&["runner", "remove", "   ", "--yes"]);
@@ -1814,7 +1831,6 @@ fn test_runner_remove_blank_name_is_usage_error_before_seeding() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches and nothing is written, but the sentences differ — oracle 'exactly one' / 'non-negative index'; Rust 'runner remove needs a name or --row INDEX' etc."]
 fn test_runner_remove_rejects_ambiguous_or_invalid_targets_before_writing() {
     let cases: [(&[&str], &str); 4] = [
         (&[], "exactly one"),
@@ -1941,7 +1957,6 @@ fn test_runner_remove_raw_duplicate_has_no_false_pin_warning_or_key_removed_clai
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches and rows are preserved, but Rust names the stable path without quotes ('skit runner remove same') where the oracle quotes it ('skit runner remove \"same\"')."]
 fn test_runner_remove_raw_valid_row_requires_stable_name_path() {
     let sandbox = Sandbox::new();
     let rows = "[prompt]\nrunners_seeded = true\nrunners = [\n  { name = \"same\", argv = [\"first\", \"{{prompt}}\"] },\n  { name = \"same\", argv = [\"second\", \"{{prompt}}\"] },\n]\n";
@@ -1985,7 +2000,6 @@ fn test_runner_remove_container_repairs_only_targeted_prompt_value() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the doctor --json half converges (drift contains 'p', runner_rows_invalid == ['broken']) and the human line names 'broken'; but the oracle's recovery line 'Inspect and repair with: skit runner list --all' is absent from Rust's human doctor (it prints 'WARN malformed prompt runners: broken')."]
 fn test_doctor_reports_prompt_drift_and_bad_runner_rows() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}}\n", "p");
@@ -1993,7 +2007,18 @@ fn test_doctor_reports_prompt_drift_and_bad_runner_rows() {
     sandbox.set_config(
         "[prompt]\nrunners_seeded = true\n[[prompt.runners]]\nname = \"broken\"\nargv = [\"x\"]\n",
     );
-    let payload = sandbox.json(&["doctor", "--json"]);
+    let json_output = sandbox
+        .command()
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(json_output.status.success());
+    assert!(
+        json_output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&json_output.stdout).unwrap();
     assert!(
         payload["drift"]
             .as_array()
@@ -2010,7 +2035,9 @@ fn test_doctor_reports_prompt_drift_and_bad_runner_rows() {
     assert!(human.contains("broken"), "{human}");
     let flat = human.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        flat.contains("Inspect and repair with: skit runner list --all"),
+        flat.contains(
+            "Ignored malformed runner row(s) in config: broken. Inspect and repair with: skit runner list --all"
+        ),
         "{human}"
     );
 }
@@ -2022,6 +2049,49 @@ fn test_doctor_healthy_prompt_reports_no_drift() {
     let payload = sandbox.json(&["doctor", "--json"]);
     assert_eq!(payload["drift"], serde_json::json!([]));
     assert_eq!(payload["runner_rows_invalid"], serde_json::json!([]));
+    let human = sandbox.ok(&["doctor"]);
+    assert!(!human.contains("Ignored malformed runner row"), "{human}");
+    assert!(!human.contains("skit runner list --all"), "{human}");
+}
+
+#[test]
+fn test_doctor_malformed_runner_recovery_localizes_and_preserves_row_order() {
+    let sandbox = Sandbox::new();
+    sandbox.set_config(
+        "[prompt]\nrunners_seeded = true\n[[prompt.runners]]\nname = \"zebra\"\nargv = [\"x\"]\n[[prompt.runners]]\nname = \"alpha\"\nargv = [\"y\"]\n",
+    );
+    let payload = sandbox.json(&["doctor", "--json"]);
+    assert_eq!(
+        payload["runner_rows_invalid"],
+        serde_json::json!(["zebra", "alpha"])
+    );
+
+    for (locale, expected) in [
+        (
+            "en",
+            "Ignored malformed runner row(s) in config: zebra, alpha. Inspect and repair with: skit runner list --all",
+        ),
+        (
+            "zh-CN",
+            "已忽略配置中格式错误的执行器行：zebra, alpha。检查并修复：skit runner list --all",
+        ),
+        (
+            "zh-TW",
+            "已忽略設定中格式錯誤的執行器列：zebra, alpha。檢查並修復：skit runner list --all",
+        ),
+    ] {
+        let output = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .arg("doctor")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{locale}");
+        let mut combined = String::from_utf8_lossy(&output.stdout).into_owned();
+        combined.push_str(&String::from_utf8_lossy(&output.stderr));
+        let flat = combined.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains(expected), "{locale}: {combined}");
+    }
 }
 
 // ==========================================================================
@@ -2067,7 +2137,6 @@ fn test_complete_runner_names() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 1 matches. Oracle prints 'Not a file' for a directory .prompt.md; Rust prints the raw OS error 'could not read <path>: Is a directory (os error 21)'."]
 fn test_add_prompt_unreadable_file_is_a_store_error() {
     let sandbox = Sandbox::new();
     let trap = sandbox.data.path().join("dir.prompt.md");
@@ -2124,7 +2193,6 @@ fn test_add_no_interpolate_refused_up_front_on_non_prompt_path_lane() {
 fn test_add_prompt_editor_lane_reports_store_errors() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 1 matches. Oracle prints 'already taken'; Rust prints 'entry \"taken\" already exists at slug \"taken\"'."]
 fn test_add_prompt_stdin_lane_reports_store_errors() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["add", "--cmd", "echo hi", "-n", "taken", "--no-input"]);
@@ -2144,7 +2212,7 @@ fn test_add_prompt_stdin_lane_reports_store_errors() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md --ref` (no -n): oracle slug 'p' (store.py:571 removesuffix '.prompt'); Rust slug 'p-prompt', so `params p` is 'entry not found'."]
+#[ignore = "FAILING CONTRACT (divergence): the vanished reference body does not prevent a successful parameter view, but Rust prints `Parameter: a` instead of the oracle's managed-record line `a = ...`."]
 fn test_params_view_survives_an_unreadable_reference_body() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
@@ -2188,7 +2256,6 @@ fn test_doctor_skips_a_prompt_whose_body_is_gone() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md` (no -n): oracle slug 'p' (store.py:571 removesuffix '.prompt'); Rust slug 'p-prompt', so `show p` is 'entry not found'."]
 fn test_add_no_interpolate() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}} {{b}}\n");
@@ -2236,7 +2303,6 @@ fn test_add_no_interpolate_through_stdin_lane() {
 fn test_add_interactive_off_answer_disables_insertion() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): name derivation. `add p.prompt.md` (no -n): oracle derives slug 'p' via source.stem.removesuffix('.prompt') (store.py:571); Rust keeps 'p.prompt' -> slug 'p-prompt', so `show p` is 'entry not found'."]
 fn test_add_flood_cap_manages_nothing_and_says_so() {
     let sandbox = Sandbox::new();
     let many = (0..AUTO_MANAGE_LIMIT + 5)
@@ -2267,7 +2333,6 @@ fn test_add_interactive_flood_defaults_to_none_and_caps_the_listing() {}
 fn test_add_interactive_explicit_all_beats_the_flood_cap() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the --json and re-manage halves converge, but the human params view says 'Interpolation: off', never the oracle's 'Variable insertion is off'."]
 fn test_params_interpolate_off_and_on() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -2275,6 +2340,9 @@ fn test_params_interpolate_off_and_on() {
     assert_eq!(sandbox.json(&["show", "p", "--json"])["interpolate"], false);
     let view = sandbox.ok(&["params", "p"]);
     assert!(view.contains("Variable insertion is off"), "{view}");
+    assert!(!view.contains("Parameter:"), "{view}");
+    assert!(!view.contains("Prompt runner:"), "{view}");
+    assert!(!view.contains("Interpolation: off"), "{view}");
     let payload = sandbox.json(&["params", "p", "--json"]);
     assert_eq!(payload["interpolate"], false);
     assert_eq!(payload["unmanaged"], serde_json::json!([])); // no scanning while off
@@ -2291,7 +2359,6 @@ fn test_params_interpolate_off_and_on() {
 fn test_params_interpolate_reports_store_errors() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): message '--interpolate only applies to prompt entries' converges, but Rust exits 2 (CliError::Usage) where the oracle exits 1."]
 fn test_params_interpolate_refused_on_non_prompt() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["add", "--cmd", "echo {m}", "-n", "cmd", "--no-input"]);
@@ -2416,11 +2483,13 @@ fn test_run_insertion_off_prompt_rejects_set_and_sends_verbatim() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust has no insertion-off gate on schema edits — with interpolation off, `params --add b` is processed (and errors 'parameter already exists: b') instead of the oracle's exit-1 refusal 'Variable insertion is off'."]
 fn test_params_schema_edits_refused_while_insertion_is_off() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}} {{b}}\n", "p");
     sandbox.ok(&["params", "p", "--no-interpolate"]);
+    let meta_before = sandbox.meta("p");
+    let body_before = sandbox.body_bytes("p");
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
     for flags in [
         vec!["--add", "b"],
         vec!["--rm", "a"],
@@ -2433,6 +2502,17 @@ fn test_params_schema_edits_refused_while_insertion_is_off() {
         assert!(
             combined.contains("Variable insertion is off"),
             "{flags:?}: {combined}"
+        );
+        assert_eq!(sandbox.meta("p"), meta_before, "{flags:?}: metadata write");
+        assert_eq!(
+            sandbox.body_bytes("p"),
+            body_before,
+            "{flags:?}: body write"
+        );
+        assert_eq!(
+            fs::read_dir(sandbox.state.path()).unwrap().count(),
+            0,
+            "{flags:?}: state write"
         );
     }
     sandbox.ok(&["params", "p", "--interpolate"]);
@@ -2581,7 +2661,6 @@ fn test_edit_prompt_with_no_new_placeholders_is_silent() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust `edit` on a script prints no reconcile hint; the oracle's generic 'skit reconciles parameter drift at run time' line is absent."]
 fn test_edit_non_prompt_keeps_the_generic_drift_hint() {
     let sandbox = Sandbox::new();
     let script = sandbox.write_file("s.py", b"print(1)\n");

@@ -47,7 +47,8 @@
 //! Buckets:
 //! - REAL asserting `#[test]` (API EXISTS, behavior converges): the injection, command,
 //!   argparse-preview, deferred-preset, dry-run-preset, launch-refusal, prompt-argv-limit,
-//!   token-expansion, embedded-equals, empty-required, and SIGINT-persist cases.
+//!   token-expansion, embedded-equals, typed-value refusal, empty-required, and SIGINT-persist
+//!   cases.
 //! - FAILING CONTRACT (divergence): the message/format cases. The Rust `run` error strings
 //!   differ from the oracle's, and `apply_sets` (`run/command.rs`) stops at the first bad item,
 //!   does not strip the key, does not sort, and lists no valid names. Each keeps its full
@@ -321,7 +322,6 @@ fn test_set_saves_preset_with_dry_run_without_running() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Python-exact sentence `<name> has no form fields, so there's nothing to save.` EXISTS in the Rust catalog (skit-i18n/src/lib.rs:869) but the run path uses `RunError::PresetWithoutFields` (skit-i18n line 718) instead, printing `cannot save a preset because the entry has no form fields`. One-line fix: route the run refusal through the line-869 message. Exit code 2 and 'nothing saved/ran' both converge."]
 fn test_save_preset_on_field_less_entry_refused_saves_nothing() {
     // A field-less entry has nothing to put in a preset — `--save-preset` is refused with the
     // same sentence `skit preset save` uses, and nothing is saved OR run. The exit code is
@@ -459,7 +459,6 @@ fn test_save_preset_dry_run_validation_failure_writes_nothing() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a --dry-run on an INJECT-delivered secret shows no mask. The Rust dry-run path (run/command.rs:537-543) prints only `plan.display` (the command line `bash …/script.sh`) and returns BEFORE `transparency_messages`, so the oracle's `→ inject: KEY=•••` line — the only place the mask would appear for an injected const — is never emitted. The secret is also never shown (that assertion converges); the divergence is the missing `•••`. NOTE: the second claim (KEY never on disk) was verified to CONVERGE by a separate probe — the injected secret is absent from both `[values]` and `[last_run.values]` after a real run."]
 fn test_set_secret_never_persisted_and_masked_in_dry_run() {
     // A secret --set value is masked in dry-run output and never persisted to disk.
     let root = sandbox();
@@ -484,6 +483,21 @@ fn test_set_secret_never_persisted_and_masked_in_dry_run() {
         .success()
         .stdout(predicate::str::contains("s3cret-value").not())
         .stdout(predicate::str::contains("•••"));
+    assert!(state_text(&root, "api").is_none(), "dry run wrote state");
+    let entry_dir = root.path().join("data/scripts/api");
+    assert!(
+        !fs::read_to_string(entry_dir.join("script.sh"))
+            .unwrap()
+            .contains("s3cret-value"),
+        "dry run changed the stored source"
+    );
+    assert!(
+        fs::read_dir(&entry_dir)
+            .unwrap()
+            .flatten()
+            .all(|item| !item.file_name().to_string_lossy().starts_with(".run-")),
+        "dry run wrote a staged source"
+    );
     skit(&root)
         .args(["run", "api", "--set", "KEY=s3cret-value", "--no-input"])
         .assert()
@@ -518,7 +532,6 @@ fn test_set_token_values_expand_at_assembly() {
 // --------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle prints `Malformed --set (expected NAME=VALUE): NOVALUE, =v` (all bad items joined). Rust `apply_sets` (run/command.rs) stops at the first bad item and prints `--set needs NAME=VALUE; got \"NOVALUE\"` — no join. Exit code 2 matches."]
 fn test_set_malformed_exits_2_with_exact_message() {
     let root = sandbox();
     build_trip(&root);
@@ -565,7 +578,6 @@ fn test_set_value_may_contain_equals_signs() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle strips the --set key (` CITY ` -> `CITY`) and succeeds. Rust `apply_sets` (run/command.rs) does not strip: it looks up ` CITY ` verbatim, misses, and exits 2 `unknown parameter in --set:  CITY `."]
 fn test_set_key_is_stripped() {
     let root = sandbox();
     build_trip(&root);
@@ -578,7 +590,6 @@ fn test_set_key_is_stripped() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle prints `Unknown parameter for --set: ALSO, NOPE. This entry's parameters: CITY, TIMES` (all unknowns sorted + valid names listed). Rust `apply_sets` (run/command.rs) stops at the first unknown, sorts nothing, lists nothing: `unknown parameter in --set: NOPE`. Exit code 2 matches."]
 fn test_set_unknown_name_exits_2_and_lists_valid() {
     let root = sandbox();
     build_trip(&root);
@@ -601,7 +612,6 @@ fn test_set_unknown_name_exits_2_and_lists_valid() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle prints `Unknown parameter for --set: X. This entry's parameters: —` (a dash for a field-less entry). Rust `apply_sets` (run/command.rs) prints `unknown parameter in --set: X` with no valid-names clause. Exit code 2 matches."]
 fn test_set_on_entry_without_fields_lists_a_dash() {
     let root = sandbox();
     let exe = root.path().join("tool");
@@ -632,7 +642,6 @@ fn test_set_on_entry_without_fields_lists_a_dash() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle refuses --raw + --set with `--raw runs the script as-is; --set, --preset, and --save-preset do not apply.`. Rust (run/command.rs RawConflict) prints `--raw cannot be combined with --set, --preset, or --save-preset`. Exit code 2 matches."]
 fn test_set_with_raw_is_a_usage_conflict() {
     let root = sandbox();
     build_trip(&root);
@@ -646,7 +655,6 @@ fn test_set_with_raw_is_a_usage_conflict() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): same RAW_CONFLICT message divergence as test_set_with_raw_is_a_usage_conflict, for --raw + --preset. Exit code 2 matches."]
 fn test_preset_with_raw_is_a_usage_conflict() {
     let root = sandbox();
     build_trip(&root);
@@ -663,7 +671,6 @@ fn test_preset_with_raw_is_a_usage_conflict() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): same RAW_CONFLICT message divergence as test_set_with_raw_is_a_usage_conflict, for --raw + --save-preset. Exit code 2 matches, and (convergent) no empty preset is persisted."]
 fn test_save_preset_with_raw_is_a_usage_conflict() {
     let root = sandbox();
     build_trip(&root);
@@ -688,7 +695,6 @@ fn test_save_preset_with_raw_is_a_usage_conflict() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the `Reusing your last arguments: …` stderr notice is ABSENT in Rust. `run/command.rs` reuses `saved.extra_args` silently (no such msgid in the i18n catalog). The reuse behavior itself converges; only the notice is missing."]
 fn test_raw_never_replays_last_extra_args() {
     let root = sandbox();
     // `printf '%s\n' "$@"` makes the replayed tail visible on stdout.
@@ -720,7 +726,6 @@ fn test_raw_never_replays_last_extra_args() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the upfront --set validation message diverges. Oracle uses the FORM message `TIMES needs a whole number — you typed 'abc'.` (flows.validate_value). Rust validates at assembly (`value_preparation.rs`) and prints `parameter \"TIMES\" has invalid Int value \"abc\"`. Exit code 125 matches."]
 fn test_set_bad_typed_value_exits_125() {
     let root = sandbox();
     build_trip(&root);

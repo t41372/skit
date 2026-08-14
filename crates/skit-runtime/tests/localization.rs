@@ -174,7 +174,19 @@ fn every_uv_bootstrap_error_localizes_and_keeps_its_values() {
         },
         &["https://example.invalid/uv.tar.gz", "connection refused"],
     );
-    assert_localized(&UvBootstrapError::Checksum, &[]);
+    assert_localized(
+        &UvBootstrapError::Checksum {
+            expected: "aaaa".to_owned(),
+            actual: "bbbb".to_owned(),
+        },
+        &["aaaa", "bbbb"],
+    );
+    assert_localized(
+        &UvBootstrapError::NoPinnedChecksum {
+            triple: "riscv64-unknown-linux-gnu".to_owned(),
+        },
+        &["riscv64-unknown-linux-gnu"],
+    );
     assert_localized(
         &UvBootstrapError::Archive {
             reason: "the executable is absent".to_owned(),

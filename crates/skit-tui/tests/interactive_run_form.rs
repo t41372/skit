@@ -22,8 +22,12 @@ fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
 }
 
 fn mouse(column: u16, row: u16) -> Event {
+    mouse_with_kind(MouseEventKind::Down(MouseButton::Left), column, row)
+}
+
+fn mouse_with_kind(kind: MouseEventKind, column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
+        kind,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -381,6 +385,79 @@ fn checkbox_radio_and_picker_have_keyboard_and_mouse_paths() {
     );
 
     assert!(buffer_text(terminal.backend().buffer()).contains("Enable upload?"));
+}
+
+#[test]
+fn run_and_generic_form_hits_require_a_mouse_button_press() {
+    let run = state_with_form(form());
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &run, 100, 28);
+    let run_hit = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(2))
+        .expect("the checkbox must expose its mouse hit area");
+
+    for kind in [
+        MouseEventKind::Moved,
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+    ] {
+        assert_eq!(
+            session.handle_event(
+                mouse_with_kind(kind, run_hit.rect.x, run_hit.rect.y),
+                &run,
+                &geometry,
+            ),
+            EventHandling::Ignored,
+            "a run-form hit must ignore {kind:?}"
+        );
+    }
+    assert_eq!(
+        session.handle_event(mouse(run_hit.rect.x, run_hit.rect.y), &run, &geometry),
+        EventHandling::Action(Action::ToggleField(2))
+    );
+
+    let mut form = LibraryState::default();
+    form.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Edit entry".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: vec![
+            FormField::text("name", "Name", "demo"),
+            FormField::text("description", "Description", ""),
+        ],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    let (_, geometry) = draw(&mut session, &form, 80, 18);
+    let form_hit = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(1))
+        .expect("the second form field must expose its mouse hit area");
+
+    for kind in [
+        MouseEventKind::Moved,
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+    ] {
+        assert_eq!(
+            session.handle_event(
+                mouse_with_kind(kind, form_hit.rect.x, form_hit.rect.y),
+                &form,
+                &geometry,
+            ),
+            EventHandling::Ignored,
+            "a generic-form hit must ignore {kind:?}"
+        );
+    }
+    assert_eq!(
+        session.handle_event(mouse(form_hit.rect.x, form_hit.rect.y), &form, &geometry),
+        EventHandling::Action(Action::FocusField(1))
+    );
 }
 
 #[test]

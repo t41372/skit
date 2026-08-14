@@ -12,8 +12,9 @@ use clap::Args;
 use clap_complete::ArgValueCandidates;
 use skit_application::{
     LibraryService, RepositoryError, RepositoryOperation,
-    delivery::{Assembly, transparency_messages},
+    delivery::{Assembly, injection_transparency_messages, transparency_messages},
     form_state::{FormStateService, StateWriteError, prefill},
+    prompt_selection::PromptSelectionService,
     run_inputs::{RunInputError, assemble_run_inputs},
     tokens::TokenContext,
 };
@@ -23,7 +24,10 @@ use skit_domain::{
 };
 use skit_form::form_params;
 use skit_i18n::{Localize, Message};
-use skit_language::{LanguageError, inject_values_for_interpreter, render_prompt_body};
+use skit_language::{
+    LanguageError, PromptEncodingError, decode_prompt, inject_values_for_interpreter,
+    render_prompt_body,
+};
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
     SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, UvDownloadConsent,
@@ -32,7 +36,8 @@ use skit_runtime::{
     resolve_javascript_runtime,
 };
 use skit_store::{
-    ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FileStore, content_hash,
+    ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
+    FileStore, content_hash,
 };
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
@@ -65,6 +70,10 @@ pub(crate) struct RunArgs {
     /// Select a prompt runner for this run.
     #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
     pub(crate) runner: Option<String>,
+
+    /// Whether the runner value came from a user selection rather than a form default.
+    #[arg(skip)]
+    pub(crate) runner_was_picked: bool,
 
     /// Print the masked launch command and do not start a child.
     #[arg(long)]
@@ -108,22 +117,24 @@ pub(crate) enum RunError {
     Dependencies(#[from] DependencyError),
     #[error(transparent)]
     Uv(#[from] UvBootstrapError),
-    #[error("--set needs NAME=VALUE; got {value:?}")]
-    InvalidSet { value: String },
-    #[error("unknown parameter in --set: {name}")]
-    UnknownSet { name: String },
+    #[error("Malformed --set (expected NAME=VALUE): {items}")]
+    InvalidSet { items: String },
+    #[error("Unknown parameter for --set: {names}. This entry's parameters: {valid}")]
+    UnknownSet { names: String, valid: String },
     #[error("preset {name:?} does not exist")]
     PresetNotFound { name: String },
-    #[error("cannot save a preset because the entry has no form fields")]
-    PresetWithoutFields,
+    #[error("{name} has no form fields, so there's nothing to save.")]
+    PresetWithoutFields { name: String },
     #[error("could not read {path}: {source}")]
     Read {
         path: String,
         #[source]
         source: io::Error,
     },
-    #[error("{path} is not valid UTF-8")]
-    Encoding { path: String },
+    #[error("prompt body doesn't exist: {path}")]
+    PromptBodyMissing { path: String },
+    #[error(transparent)]
+    Encoding(#[from] PromptEncodingError),
     #[error("could not write staged source {path}: {source}")]
     Stage {
         path: String,
@@ -132,13 +143,23 @@ pub(crate) enum RunError {
     },
     #[error("could not determine the platform state directory; set SKIT_STATE_DIR")]
     StateDirectoryUnavailable,
-    #[error("prompt runner {name:?} is not configured")]
-    RunnerNotFound { name: String },
+    #[error(
+        "The runner {name} isn't configured (known: {known}). Manage runners with: skit runner list"
+    )]
+    RunnerNotFound { name: String, known: String },
+    #[error(
+        "No agents are configured. Add one with: skit runner add mycli -- mycli run {{{{prompt}}}}"
+    )]
+    NoRunnersConfigured,
+    #[error(
+        "No runner selected for {name}. Pass --runner NAME, or pin one with: skit params {name} --runner NAME"
+    )]
+    RunnerRequired { name: String },
     #[error("--runner only applies to prompt entries.")]
     RunnerUnsupported,
     #[error("--raw does not apply to {kind} entries because placeholders are part of the artifact")]
     RawUnsupported { kind: String },
-    #[error("--raw cannot be combined with --set, --preset, or --save-preset")]
+    #[error("--raw runs the script as-is; --set, --preset, and --save-preset do not apply.")]
     RawConflict,
     #[error(transparent)]
     Config(#[from] ConfigError),
@@ -157,35 +178,52 @@ impl Localize for RunError {
             Self::Dependencies(error) => error.message(),
             Self::Uv(error) => error.message(),
             Self::Config(error) => error.message(),
-            Self::InvalidSet { value } => {
-                Message::new("--set needs NAME=VALUE; got {}").quoted(value)
+            Self::InvalidSet { items } => {
+                Message::new("Malformed --set (expected NAME=VALUE): {}").with(items)
             }
-            Self::UnknownSet { name } => Message::new("unknown parameter in --set: {}").with(name),
+            Self::UnknownSet { names, valid } => {
+                Message::new("Unknown parameter for --set: {}. This entry's parameters: {}")
+                    .with(names)
+                    .with(valid)
+            }
             Self::PresetNotFound { name } => Message::new("preset {} does not exist").quoted(name),
-            Self::PresetWithoutFields => {
-                Message::new("cannot save a preset because the entry has no form fields")
+            Self::PresetWithoutFields { name } => {
+                Message::new("{} has no form fields, so there's nothing to save.").with(name)
             }
             Self::Read { path, source } => Message::new("could not read {}: {}")
                 .with(path)
                 .with(source),
-            Self::Encoding { path } => Message::new("{} is not valid UTF-8").with(path),
+            Self::PromptBodyMissing { path } => {
+                Message::new("prompt body doesn't exist: {}").with(path)
+            }
+            Self::Encoding(error) => error.message(),
             Self::Stage { path, source } => Message::new("could not write staged source {}: {}")
                 .with(path)
                 .with(source),
             Self::StateDirectoryUnavailable => {
                 Message::new("could not determine the platform state directory; set SKIT_STATE_DIR")
             }
-            Self::RunnerNotFound { name } => {
-                Message::new("prompt runner {} is not configured").quoted(name)
-            }
+            Self::RunnerNotFound { name, known } => Message::new(
+                "The runner {} isn't configured (known: {}). Manage runners with: skit runner list",
+            )
+            .with(name)
+            .with(known),
+            Self::NoRunnersConfigured => Message::new(
+                "No agents are configured. Add one with: skit runner add mycli -- mycli run {{prompt}}",
+            ),
+            Self::RunnerRequired { name } => Message::new(
+                "No runner selected for {}. Pass --runner NAME, or pin one with: skit params {} --runner NAME",
+            )
+            .with(name)
+            .with(name),
             Self::RunnerUnsupported => Message::new("--runner only applies to prompt entries."),
             Self::RawUnsupported { kind } => Message::new(
                 "--raw does not apply to {} entries because placeholders are part of the artifact",
             )
             .with(kind),
-            Self::RawConflict => {
-                Message::new("--raw cannot be combined with --set, --preset, or --save-preset")
-            }
+            Self::RawConflict => Message::new(
+                "--raw runs the script as-is; --set, --preset, and --save-preset do not apply.",
+            ),
             Self::ConfigDirectoryUnavailable => Message::new(
                 "could not determine the platform configuration directory; set SKIT_CONFIG_DIR",
             ),
@@ -200,11 +238,12 @@ impl RunError {
             Self::InvalidSet { .. }
             | Self::UnknownSet { .. }
             | Self::PresetNotFound { .. }
-            | Self::PresetWithoutFields
+            | Self::PresetWithoutFields { .. }
             | Self::RunnerUnsupported
             | Self::RawUnsupported { .. }
             | Self::RawConflict => 2,
             Self::Launch(error) => error.exit_code(),
+            Self::PromptBodyMissing { .. } => 127,
             Self::Dependencies(DependencyError::InstallerNotFound { .. })
             | Self::Dependencies(DependencyError::InstallFailed { .. })
             | Self::Dependencies(DependencyError::Io { .. })
@@ -213,12 +252,14 @@ impl RunError {
             // (`src/skit/langs/launch.py:57-63`), and a launch failure exits 125
             // (`src/skit/flows.py:868`).
             Self::Uv(_) => 125,
-            Self::RunnerNotFound { .. } => 126,
+            Self::RunnerNotFound { .. }
+            | Self::NoRunnersConfigured
+            | Self::RunnerRequired { .. } => 126,
             Self::State(_)
             | Self::Inputs(_)
             | Self::Language(_)
             | Self::Read { .. }
-            | Self::Encoding { .. }
+            | Self::Encoding(_)
             | Self::Stage { .. }
             | Self::StateDirectoryUnavailable
             | Self::Config(_)
@@ -275,7 +316,9 @@ pub(crate) fn run_with_roots(
         form_params(entry.meta.kind.as_str(), &source, &settings)
     };
     if args.save_preset.is_some() && declarations.is_empty() {
-        return Err(RunError::PresetWithoutFields);
+        return Err(RunError::PresetWithoutFields {
+            name: entry.meta.name.clone(),
+        });
     }
     let preset = match args.preset.as_deref() {
         Some(name) => Some(
@@ -308,9 +351,36 @@ pub(crate) fn run_with_roots(
     } else {
         (saved.extra_args.clone(), saved.extra_args_raw, None)
     };
+    if !args.raw && args.extra_args.is_empty() && !args.forget_args && !saved.extra_args.is_empty()
+    {
+        eprintln!(
+            "{}",
+            skit_i18n::format_text(
+                crate::cli::active_locale(),
+                "Reusing your last arguments: {}",
+                &[&extra_args.join(" ")],
+            )
+        );
+    }
 
     let context = token_context();
     let glob = FileGlobExpander::new(&context.cwd);
+    let explicit_arg_declarations = (!args.extra_args.is_empty()).then(|| {
+        declarations
+            .iter()
+            .filter(|declaration| {
+                declaration.delivery != ParameterDelivery::Flag
+                    || !declaration.required
+                    || raw_values
+                        .get(&declaration.name)
+                        .is_some_and(|value| !value.trim().is_empty())
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    });
+    let assembly_declarations = explicit_arg_declarations
+        .as_deref()
+        .unwrap_or(&declarations);
     let assembly = if args.raw {
         skit_application::delivery::Assembly {
             args: extra_args.clone(),
@@ -319,7 +389,7 @@ pub(crate) fn run_with_roots(
         }
     } else {
         assemble_run_inputs(
-            &declarations,
+            assembly_declarations,
             &raw_values,
             &extra_args,
             expand_extra,
@@ -328,13 +398,21 @@ pub(crate) fn run_with_roots(
         )?
     };
 
-    let runner_name = args
-        .runner
-        .as_deref()
-        .or_else(|| (!settings.runner.is_empty()).then_some(settings.runner.as_str()));
-    let runner = runner_name
-        .map(|name| configured_runner(&config, name))
-        .transpose()?;
+    let runner = resolve_runner(
+        &config,
+        state_dir,
+        args.runner.as_deref(),
+        &settings.runner,
+        args.runner_was_picked,
+    )?;
+    if entry.meta.kind.as_str() == "prompt" && runner.is_none() {
+        if config.runners()?.is_empty() {
+            return Err(RunError::NoRunnersConfigured);
+        }
+        return Err(RunError::RunnerRequired {
+            name: entry.meta.name.clone(),
+        });
+    }
     if !args.dry_run
         && matches!(entry.meta.kind.as_str(), "js" | "ts")
         && entry.meta.mode == skit_domain::StorageMode::Reference
@@ -361,7 +439,7 @@ pub(crate) fn run_with_roots(
     let script = if entry.meta.kind.as_str() == "command" {
         PathBuf::new()
     } else {
-        data_store.payload_path(&entry)?
+        launch_payload_path(data_store, &entry)?
     };
     let prompt_body = (entry.meta.kind.as_str() == "prompt")
         .then(|| render_prompt_body(&source, &assembly.command_values, settings.interpolate));
@@ -451,7 +529,7 @@ pub(crate) fn run_with_roots(
     } else if let Some(path) = prepared.as_ref().and_then(|launch| launch.payload_path()) {
         path.to_path_buf()
     } else {
-        data_store.payload_path(&entry)?
+        launch_payload_path(data_store, &entry)?
     };
     let prompt_body = if entry.meta.kind.as_str() == "prompt" {
         Some(render_prompt_body(
@@ -538,6 +616,9 @@ pub(crate) fn run_with_roots(
         if let Some(name) = args.save_preset.as_deref() {
             state.save_preset(&entry.slug, name, &declarations, &raw_values)?;
         }
+        for message in injection_transparency_messages(&assembly) {
+            println!("{}", message.localize(crate::cli::active_locale()));
+        }
         println!("{}", plan.display);
         return Ok(0);
     }
@@ -575,7 +656,7 @@ fn prompt_sends_secret(entry: &Entry, declarations: &[ParamDecl], assembly: &Ass
         })
 }
 
-fn apply_sets(
+pub(crate) fn apply_sets(
     declarations: &[skit_domain::parameters::ParamDecl],
     sets: &[String],
     values: &mut BTreeMap<String, String>,
@@ -584,22 +665,41 @@ fn apply_sets(
         .iter()
         .map(|item| item.name.as_str())
         .collect::<BTreeSet<_>>();
+    let mut pairs = Vec::with_capacity(sets.len());
+    let mut malformed = Vec::new();
     for item in sets {
-        let Some((name, value)) = item.split_once('=') else {
-            return Err(RunError::InvalidSet {
-                value: item.clone(),
-            });
-        };
-        if name.is_empty() {
-            return Err(RunError::InvalidSet {
-                value: item.clone(),
-            });
+        match item.split_once('=') {
+            Some((name, value)) if !name.trim().is_empty() => {
+                pairs.push((name.trim(), value));
+            }
+            _ => malformed.push(item.clone()),
         }
-        if !names.contains(name) {
-            return Err(RunError::UnknownSet {
-                name: name.to_owned(),
-            });
-        }
+    }
+    if !malformed.is_empty() {
+        return Err(RunError::InvalidSet {
+            items: malformed.join(", "),
+        });
+    }
+    let unknown = pairs
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| !names.contains(name))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if !unknown.is_empty() {
+        let valid = names.into_iter().collect::<Vec<_>>().join(", ");
+        return Err(RunError::UnknownSet {
+            names: unknown.join(", "),
+            valid: if valid.is_empty() {
+                "—".to_owned()
+            } else {
+                valid
+            },
+        });
+    }
+    for (name, value) in pairs {
         values.insert(name.to_owned(), value.to_owned());
     }
     Ok(())
@@ -640,12 +740,21 @@ fn source_snapshot(
         "command" => Ok((settings.template.clone(), None)),
         "exe" => Ok((String::new(), None)),
         "prompt" => {
-            let path = store.payload_path(entry)?;
-            let bytes = read_bytes(&path)?;
-            let hash = content_hash(&bytes);
-            let text = String::from_utf8(bytes).map_err(|_| RunError::Encoding {
-                path: path.display().to_string(),
+            let path = launch_payload_path(store, entry)?;
+            let bytes = fs::read(&path).map_err(|source| {
+                if source.kind() == io::ErrorKind::NotFound {
+                    RunError::PromptBodyMissing {
+                        path: path.display().to_string(),
+                    }
+                } else {
+                    RunError::Read {
+                        path: path.display().to_string(),
+                        source,
+                    }
+                }
             })?;
+            let hash = content_hash(&bytes);
+            let text = decode_prompt(&bytes, path.display().to_string())?.to_owned();
             Ok((text, Some(hash)))
         }
         _ => {
@@ -661,6 +770,24 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>, RunError> {
     fs::read(path).map_err(|source| RunError::Read {
         path: path.display().to_string(),
         source,
+    })
+}
+
+fn launch_payload_path(store: &FileStore, entry: &Entry) -> Result<PathBuf, RunError> {
+    store.payload_path(entry).map_err(|error| match &error {
+        RepositoryError::InvalidMutation { reason }
+            if entry.meta.kind.as_str() == "prompt"
+                && reason.template() == "copy entry has no stored payload" =>
+        {
+            RunError::PromptBodyMissing {
+                path: store
+                    .entry_dir_path(&entry.slug)
+                    .join("prompt.md")
+                    .display()
+                    .to_string(),
+            }
+        }
+        _ => RunError::Repository(error),
     })
 }
 
@@ -685,7 +812,7 @@ fn stage_injected_source(
     )?;
     let entry_dir = store.entry_dir_path(&entry.slug);
     sweep_staged_sources(&entry_dir);
-    let original = store.payload_path(entry)?;
+    let original = launch_payload_path(store, entry)?;
     let suffix = original
         .extension()
         .and_then(|value| value.to_str())
@@ -830,17 +957,46 @@ impl Drop for StagedSource {
 }
 
 fn configured_runner(config: &FileConfigStore, name: &str) -> Result<PromptRunner, RunError> {
-    let runner = config
-        .runners()?
+    let runners = config.runners()?;
+    let known = runners
+        .iter()
+        .map(|runner| runner.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let runner = runners
         .into_iter()
         .find(|runner| runner.name == name)
         .ok_or_else(|| RunError::RunnerNotFound {
             name: name.to_owned(),
+            known: if known.is_empty() {
+                "—".to_owned()
+            } else {
+                known
+            },
         })?;
     Ok(PromptRunner {
         name: runner.name,
         argv: runner.argv,
     })
+}
+
+fn resolve_runner(
+    config: &FileConfigStore,
+    state_dir: &Path,
+    runner_override: Option<&str>,
+    runner_pin: &str,
+    runner_was_picked: bool,
+) -> Result<Option<PromptRunner>, RunError> {
+    let picked = runner_override.map(str::trim);
+    let name = picked.or_else(|| (!runner_pin.is_empty()).then_some(runner_pin));
+    let runner = name
+        .map(|name| configured_runner(config, name))
+        .transpose()?;
+    if let Some(name) = picked.filter(|_| runner_was_picked) {
+        PromptSelectionService::new(FilePromptSelectionStore::new(state_dir))
+            .remember_runner(name)?;
+    }
+    Ok(runner)
 }
 
 pub(crate) fn token_context() -> TokenContext {
@@ -1047,6 +1203,12 @@ mod tests {
                 126,
             ),
             (
+                RunError::PromptBodyMissing {
+                    path: "/data/prompt.md".to_owned(),
+                },
+                127,
+            ),
+            (
                 RunError::Inputs(RunInputError::ExtraToken(TokenError::MissingEnvironment {
                     name: "MISSING".to_owned(),
                     token: "{env:MISSING}".to_owned(),
@@ -1055,13 +1217,14 @@ mod tests {
             ),
             (
                 RunError::InvalidSet {
-                    value: "bad".to_owned(),
+                    items: "bad".to_owned(),
                 },
                 2,
             ),
             (
                 RunError::UnknownSet {
-                    name: "bad".to_owned(),
+                    names: "bad".to_owned(),
+                    valid: "good".to_owned(),
                 },
                 2,
             ),
@@ -1091,6 +1254,14 @@ mod tests {
             (
                 RunError::RunnerNotFound {
                     name: "agent".to_owned(),
+                    known: "claude, codex".to_owned(),
+                },
+                126,
+            ),
+            (RunError::NoRunnersConfigured, 126),
+            (
+                RunError::RunnerRequired {
+                    name: "Review".to_owned(),
                 },
                 126,
             ),
@@ -1108,6 +1279,34 @@ mod tests {
         assert!(apply_sets(&declarations, &["other=x".to_owned()], &mut values).is_err());
         apply_sets(&declarations, &["name=value=tail".to_owned()], &mut values).unwrap();
         assert_eq!(values["name"], "value=tail");
+        apply_sets(&declarations, &[" name = padded".to_owned()], &mut values).unwrap();
+        assert_eq!(values["name"], " padded");
+
+        let unchanged = values.clone();
+        let malformed = apply_sets(
+            &declarations,
+            &["name=changed".to_owned(), "broken".to_owned()],
+            &mut values,
+        )
+        .unwrap_err();
+        let RunError::InvalidSet { items: malformed } = malformed else {
+            panic!("expected malformed --set values");
+        };
+        assert_eq!(malformed, "broken");
+        assert_eq!(values, unchanged);
+
+        let unknown = apply_sets(
+            &declarations,
+            &["z=1".to_owned(), "a=2".to_owned(), "z=3".to_owned()],
+            &mut values,
+        )
+        .unwrap_err();
+        let RunError::UnknownSet { names, valid } = unknown else {
+            panic!("expected unknown --set names");
+        };
+        assert_eq!(names, "a, z");
+        assert_eq!(valid, "name");
+        assert_eq!(values, unchanged);
     }
 
     #[test]
@@ -1213,7 +1412,7 @@ mod tests {
         shell.meta.kind = EntryKind::parse("prompt").unwrap();
         assert!(matches!(
             source_text(&store, &shell, &EntrySettings::default()),
-            Err(RunError::Encoding { .. })
+            Err(RunError::Encoding(_))
         ));
         assert!(matches!(
             read_bytes(&directory.join("missing")),
@@ -1258,7 +1457,7 @@ mod tests {
         fs::write(prompt_dir.join("prompt.md"), [0xff]).unwrap();
         assert!(matches!(
             source_text(&store, &prompt, &EntrySettings::default()).unwrap_err(),
-            RunError::Encoding { .. }
+            RunError::Encoding(_)
         ));
 
         let generic = entry("shell", "bash");
@@ -1288,6 +1487,33 @@ mod tests {
             configured_runner(&config_store, "missing").unwrap_err(),
             RunError::RunnerNotFound { .. }
         ));
+
+        let state_dir = root.path().join("state");
+        let selection = PromptSelectionService::new(FilePromptSelectionStore::new(&state_dir));
+        let defaulted = resolve_runner(&config_store, &state_dir, Some("local"), "", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(defaulted.name, "local");
+        assert_eq!(selection.last_runner(), "");
+
+        let picked = resolve_runner(&config_store, &state_dir, Some(" local "), "", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(picked.name, "local");
+        assert_eq!(selection.last_runner(), "local");
+
+        selection.remember_runner("prior").unwrap();
+        assert!(matches!(
+            resolve_runner(&config_store, &state_dir, Some(" missing "), "", true),
+            Err(RunError::RunnerNotFound { .. })
+        ));
+        assert_eq!(selection.last_runner(), "prior");
+
+        let pinned = resolve_runner(&config_store, &state_dir, None, "local", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pinned.name, "local");
+        assert_eq!(selection.last_runner(), "prior");
     }
 
     #[test]
@@ -1536,7 +1762,13 @@ mod localization_tests {
             }),
             &["npm"],
         );
-        assert_localized(&RunError::Uv(UvBootstrapError::Checksum), &[]);
+        assert_localized(
+            &RunError::Uv(UvBootstrapError::Checksum {
+                expected: "aaaa".to_owned(),
+                actual: "bbbb".to_owned(),
+            }),
+            &["aaaa", "bbbb"],
+        );
         assert_localized(
             &RunError::Config(ConfigError::Encode {
                 reason: "unsupported value".to_owned(),
@@ -1545,15 +1777,16 @@ mod localization_tests {
         );
         assert_localized(
             &RunError::InvalidSet {
-                value: "novalue".to_owned(),
+                items: "novalue".to_owned(),
             },
             &["novalue"],
         );
         assert_localized(
             &RunError::UnknownSet {
-                name: "target".to_owned(),
+                names: "target".to_owned(),
+                valid: "output".to_owned(),
             },
-            &["target"],
+            &["target", "output"],
         );
         assert_localized(
             &RunError::PresetNotFound {
@@ -1561,7 +1794,12 @@ mod localization_tests {
             },
             &["nightly"],
         );
-        assert_localized(&RunError::PresetWithoutFields, &[]);
+        assert_localized(
+            &RunError::PresetWithoutFields {
+                name: "No args".to_owned(),
+            },
+            &["No args"],
+        );
         assert_localized(
             &RunError::Read {
                 path: "/data/demo.py".to_owned(),
@@ -1570,10 +1808,17 @@ mod localization_tests {
             &["/data/demo.py", "permission denied"],
         );
         assert_localized(
-            &RunError::Encoding {
-                path: "/data/demo.py".to_owned(),
+            &RunError::PromptBodyMissing {
+                path: "/data/prompt.md".to_owned(),
             },
-            &["/data/demo.py"],
+            &["/data/prompt.md"],
+        );
+        assert_localized(
+            &RunError::Encoding(
+                skit_language::decode_prompt(&[0xff], "/data/demo.py")
+                    .expect_err("fixture must be invalid"),
+            ),
+            &["/data/demo.py", "0"],
         );
         assert_localized(
             &RunError::Stage {
@@ -1586,8 +1831,16 @@ mod localization_tests {
         assert_localized(
             &RunError::RunnerNotFound {
                 name: "claude".to_owned(),
+                known: "codex, amp".to_owned(),
             },
-            &["claude"],
+            &["claude", "codex, amp"],
+        );
+        assert_localized(&RunError::NoRunnersConfigured, &[]);
+        assert_localized(
+            &RunError::RunnerRequired {
+                name: "Review".to_owned(),
+            },
+            &["Review"],
         );
         assert_localized(
             &RunError::RawUnsupported {

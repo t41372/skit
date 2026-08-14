@@ -258,7 +258,6 @@ fn test_install_into_writes_and_upgrades() {
 // --------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the CLI prints \"Installed Agent Skill: {}\" (cli.rs:5172, skit-i18n/src/lib.rs:1131), but the oracle _agent_install_confirmed (cli.py:5032-5033) and Rust's own TUI/preferences path (skit-i18n/src/lib.rs:3171) both say \"Installed the skit Agent Skill: {}\". Exit 0 and the written bytes already match; only the word \"the skit\" is missing."]
 fn test_cli_install_to_explicit_dir() {
     let sandbox = Sandbox::new();
     let dest = sandbox.scratch.path().join("anywhere");
@@ -286,7 +285,6 @@ fn test_cli_install_broken_package_fails_loudly() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle wraps the write error as \"Could not write the skill there: {error}\" and exits 1 (cli.py:5025-5031); Rust surfaces the raw repository error \"could not inspect <path>: Not a directory (os error 20)\" from FileAgentSkillStore::install/follow_final_symlink (skit-store agent_skill.rs:33-36). Exit code 1 and the no-traceback promise already match; only the message differs."]
 fn test_cli_install_to_a_file_fails_cleanly() {
     let sandbox = Sandbox::new();
     let blocker = sandbox.scratch.path().join("afile");

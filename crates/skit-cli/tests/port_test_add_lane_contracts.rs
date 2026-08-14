@@ -30,17 +30,16 @@
 //!   branch, the divergence note records the actual non-tty Rust behavior.
 //!
 //! Bucket disposition (all 21 defs drive the binary and COMPILE; zero absent/cross-crate stubs):
-//! - 10 PASS asserting tests: the 5 versioned/piped/reader-notice lanes, both editor-lane
+//! - 15 PASS asserting tests: the 5 versioned/piped/reader-notice lanes, both editor-lane
 //!   `--description` threads, the versioned-shebang editor lane, the normal-file no-unlink lane,
-//!   and the JSON-is-one-document flip lane.
-//! - 11 FAILING CONTRACT (divergence) tests: full asserting bodies kept intact behind
+//!   the JSON-is-one-document flip lane, both parameter read views, and both unknown-runner
+//!   early-refusal lanes, plus the post-editor Python-flag refusal.
+//! - 6 FAILING CONTRACT (divergence) tests: full asserting bodies kept intact behind
 //!   `#[ignore]`; each label was verified against the built binary. Most tie to pending tasks
 //!   #15 (refuse the add-lane inputs v0.4 refuses) and #16 (params batch fault tolerance). The
 //!   recurring shapes are: no one-voice selector-collision refusal (clap `conflicts_with`
-//!   answers first with a different message), runner-refusal wording ("prompt runner … is not
-//!   configured" vs "Unknown runner"), pipe-spelling wording ("--name" vs "-n"), no resumed-
-//!   draft cleanup / kept-draft `--ref` guard on the plain path lane, and no
-//!   "has no managed parameters." / "--manage" / flip-note lines in the params read view.
+//!   answers first with a different message), pipe spelling, no resumed-draft cleanup / kept-draft
+//!   `--ref` guard on the plain path lane, and no flip note.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -294,7 +293,6 @@ fn test_editor_lane_versioned_python_shebang_onboards_as_python() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the before-any-draft ORDERING holds (Rust validates the runner at cli.rs:1044/2790 before materializing a draft — exit 2, no draft), but the message is 'prompt runner \"bogus\" is not configured' where the oracle says 'Unknown runner: …' (src/skit/cli.py:1040). Verified against the built binary."]
 fn test_stdin_prompt_bogus_runner_refused_before_any_draft() {
     // A bogus --runner on the stdin prompt lane exits 2 with 'Unknown runner' and
     // materializes NO draft (the old code left a silent, anonymous file behind).
@@ -317,7 +315,6 @@ fn test_stdin_prompt_bogus_runner_refused_before_any_draft() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the before-the-editor ORDERING holds (validate_prompt_runner_in precedes add_draft, cli.rs:1044 — exit 2, editor never launched), but the message is 'prompt runner \"bogus\" is not configured' where the oracle says 'Unknown runner: …' (src/skit/cli.py:1040). Verified against the built binary."]
 fn test_prompt_editor_bogus_runner_refused_before_the_editor() {
     // --runner names static config, so the TTY prompt-editor lane refuses it BEFORE opening
     // $EDITOR — the editor is never launched (the same before-authoring rule as name conflicts).
@@ -347,7 +344,6 @@ fn test_prompt_editor_bogus_runner_refused_before_the_editor() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the no_input-before-editor ORDERING holds (cli.rs:1033 fires first — exit 2, editor stays shut), but the pipe spelling is 'skit add - --name NAME' where the oracle points at 'skit add - -n NAME' (src/skit/cli.py:770). Verified against the built binary."]
 fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
     // --edit opens an editor — interaction — so --no-input can't keep the never-prompt
     // promise: it is refused up front, pointing at the stdin spelling. (The oracle forces
@@ -364,10 +360,9 @@ fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(
-        combined(&output).contains("skit add - -n NAME"),
-        "{}",
-        combined(&output)
+    assert_eq!(
+        flat(&output),
+        "--edit opens your editor, which --no-input forbids — pipe the script in instead: skit add - -n NAME"
     ); // the pipe spelling
     assert!(!marker.exists());
 }
@@ -466,7 +461,6 @@ fn test_edit_description_flag_on_non_python_draft_is_stored() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the keep-and-announce-SHORT behavior holds (post-editor --dep refusal exits 2, prints 'Your draft was kept at', omits the long 'fix the problem and add it with' form, keeps the draft, adds nothing), but the refusal reads 'shell entries do not take package dependencies' where the oracle says '--dep/--python are python flags …' (src/skit/cli.py:740-742). Verified against the built binary."]
 fn test_edit_post_editor_refusal_keeps_draft_and_announces_short() {
     // --dep against a non-python draft is refused post-editor. The draft is the user's only
     // copy: it is kept on disk AND the SHORT 'kept at' line is printed (not the long

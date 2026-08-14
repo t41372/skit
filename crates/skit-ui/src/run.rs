@@ -440,6 +440,8 @@ pub struct RunFormView {
     initial_values: BTreeMap<String, String>,
     #[serde(default)]
     hidden_values: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    runner_was_picked: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context: Option<RunFormContext>,
     /// Source drift notices in display order.
@@ -541,6 +543,7 @@ impl RunFormView {
                 ("_skit_save_preset".to_owned(), String::new()),
                 ("_skit_dry_run".to_owned(), "false".to_owned()),
             ]),
+            runner_was_picked: false,
             context: None,
             drift_lines: Vec::new(),
             degraded_reason: None,
@@ -693,6 +696,7 @@ impl RunFormView {
         }
         choice.selected = runner;
         field.validation_error = None;
+        self.runner_was_picked = true;
     }
 
     /// Return the insertion menu for the focused field when that field accepts tokens.
@@ -805,10 +809,15 @@ impl RunFormView {
             .fields
             .get(index)
             .is_some_and(|field| matches!(field.role, RunFieldRole::Preset));
+        let is_runner = self
+            .fields
+            .get(index)
+            .is_some_and(|field| matches!(field.role, RunFieldRole::Runner));
         if let Some(field) = self.fields.get_mut(index) {
             field.control.select(value.to_owned());
             field.validation_error = None;
         }
+        self.runner_was_picked |= is_runner;
         if is_preset {
             self.apply_preset(value);
         }
@@ -843,6 +852,9 @@ impl RunFormView {
                 .iter()
                 .map(|field| (field.key.clone(), field.control.typed_value())),
         );
+        if self.runner_was_picked {
+            values.insert("_skit_runner_picked".to_owned(), FieldValue::boolean(true));
+        }
         values
     }
 

@@ -245,7 +245,9 @@ fn library_layout_uses_main_breakpoints_and_three_to_two_ratio() {
         "a narrow short view must auto-hide detail"
     );
 
-    view.update(Action::ToggleDetail);
+    view.update(Action::ToggleDetail {
+        currently_visible: true,
+    });
     let pinned_closed = draw(&view, 120, 30, Locale::En);
     assert!(
         !lines(pinned_closed.backend().buffer())
@@ -254,7 +256,9 @@ fn library_layout_uses_main_breakpoints_and_three_to_two_ratio() {
         "pinning detail closed must override a wide layout"
     );
 
-    view.update(Action::ToggleDetail);
+    view.update(Action::ToggleDetail {
+        currently_visible: false,
+    });
     let pinned_open = draw(&view, 60, 15, Locale::En);
     assert!(
         lines(pinned_open.backend().buffer())

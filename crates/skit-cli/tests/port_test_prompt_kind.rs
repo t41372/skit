@@ -13,26 +13,14 @@
 //! concern that the CLI does not expose (or maps differently), the stub is "absent" with the
 //! concrete blocking fact, not "cross-crate".
 //!
-//! Two assertions the oracle makes are genuine Rust divergences. This port earlier SOFTENED them
-//! to keep the tests green; the exact oracle assertions are now restored and both tests are
-//! FAILING CONTRACT (divergence), `#[ignore]`d with the full body — remove the ignore once the
-//! impl converges and they go green:
-//! - `test_malformed_runner_rows_are_skipped_and_reported`: the oracle keeps a blank runner name
-//!   as the exact `""` (test_prompt_kind.py:1024); the Rust `runner_row` normalizes an empty name
-//!   to `None` (skit-store/src/config.rs:1233-1236). The restored `rows[2].name == Some("")` fails.
-//! - `test_runner_container_rows_have_localized_human_recovery_reason`: the machine reason TOKEN
-//!   matches exactly (`prompt-section-not-table` / `runners-not-list`), but the localized English
-//!   wording is "is not a table" / "is not a list" (skit-store/src/config.rs:160-165), not the
-//!   oracle's contraction "isn't a table" / "isn't a list" (test_prompt_kind.py:1062-1067). The
-//!   restored exact-needle assertion fails.
+//! The compound prompt suffix and missing stored-body assertions run as REAL contracts.
 //!
 //! Concept mapping used throughout:
 //! - Python `analyzer.placeholder_names(text)` -> `placeholder_params("prompt", text)` mapped
 //!   to `.name` (the Rust analyzer returns synthesized `ParamDecl`s; `names(text)` collects
-//!   their names).  The Rust body scanner (`scan_placeholders`) is ASCII-only, lacks the
-//!   reserved-`prompt` exclusion, and lacks the brace-adjacency guard — the three known
-//!   analyzer defects (shared task #14), so the unicode / reserved / triple-stache tests are
-//!   FAILING CONTRACT (divergence).
+//!   their names). The Rust body scanner uses Unicode XID rules for prompt names and keeps the
+//!   command template's identifier rules ASCII-only. It excludes the reserved `prompt` name and
+//!   brace-adjacent tokens with the same grammar the prompt renderer uses.
 //! - Python `render.render_body(text, values, managed)` -> `render_prompt_body(text, values,
 //!   interpolate=true)`.  The Rust renderer takes NO managed list and never raises on a
 //!   missing managed value (that refusal moved to skit-application validation).
@@ -336,31 +324,20 @@ fn test_placeholder_names_single_braces_are_never_candidates() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust body scanner (scan_placeholders in \
-            skit-language/src/lib.rs) has no brace-adjacency guard, so a Handlebars triple-stache \
-            `{{y}}}` yields the candidate \"y\"; the oracle's TOKEN_RE `(?<!\\{)…(?!\\})` excludes it \
-            (analyzer.py:34). Shared task #14 (prompt analyzer defects). Oracle expects []."]
 fn test_placeholder_names_brace_adjacent_is_not_a_candidate() {
     // A Handlebars triple-stache (and any brace-hugging shape) is someone else's syntax.
     assert!(names("{{{raw}}} and {{{x}} and {{y}}}").is_empty());
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): scan_placeholders has no reserved-`prompt` exclusion, \
-            so a literal `{{prompt}}` becomes a candidate; the oracle drops it \
-            (analyzer.py:44 RESERVED_NAME). Shared task #14. Oracle expects [\"real\"]."]
 fn test_placeholder_names_reserved_name_excluded() {
     assert_eq!(names("{{prompt}} {{real}}"), ["real"]);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust valid_identifier is ASCII-only \
-            (skit-language/src/lib.rs:959), so unicode identifiers are rejected; the oracle uses \
-            Python str.isidentifier() (analyzer.py:31). Shared task #14. Oracle expects \
-            [\"任务\", \"café\", \"é\"]."]
 fn test_placeholder_names_accept_unicode_identifiers_and_reject_non_names() {
-    let text = "{{任务}} {{café}} {{é}} {{not-a-name}} {{💥}} {{}}";
-    assert_eq!(names(text), ["任务", "café", "é"]);
+    let text = "{{任务}} {{café}} {{e\u{301}}} {{not-a-name}} {{💥}} {{}}";
+    assert_eq!(names(text), ["任务", "café", "e\u{301}"]);
 }
 
 #[test]
@@ -387,6 +364,7 @@ fn test_prompt_grammar_is_independent_of_command_templates() {
         .map(|declaration| declaration.name)
         .collect();
     assert_eq!(command, ["name"]);
+    assert!(placeholder_params("command", "{任务} {café}").is_empty());
 }
 
 // ===========================================================================
@@ -426,10 +404,6 @@ fn test_corpus_crlf_preserved_verbatim() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the ASCII-only valid_identifier rejects the CJK \
-            managed name `目標檔案`, so neither detection nor render sees it (shared task #14, \
-            unicode identifiers). Oracle expects names == [\"目標檔案\", \"focus\"] and \
-            `審查 src/主程式.py` in the render."]
 fn test_corpus_cjk_emoji_no_trailing_newline() {
     let raw = corpus_bytes("03_cjk_emoji.prompt.md");
     assert!(!raw.ends_with(b"\n"), "deliberate: no trailing newline");
@@ -446,9 +420,6 @@ fn test_corpus_cjk_emoji_no_trailing_newline() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): scan_placeholders lacks the reserved-`prompt` \
-            exclusion, so a literal `{{prompt}}` in the body becomes a candidate (shared task #14). \
-            Oracle expects names == [\"real\"]."]
 fn test_corpus_reserved_prompt_stays_verbatim() {
     let text = String::from_utf8(corpus_bytes("05_reserved.prompt.md")).unwrap();
     assert_eq!(names(&text), ["real"]);
@@ -647,7 +618,7 @@ fn test_add_prompt_manages_all_detected_by_default() {
         .args(["add", source.to_str().unwrap(), "--prompt", "--no-input"])
         .assert()
         .success();
-    let entry = sandbox.resolve("p.prompt");
+    let entry = sandbox.resolve("p");
     let settings = EntrySettings::from_meta(&entry.meta);
     assert_eq!(entry.meta.kind.as_str(), "prompt");
     assert_eq!(settings.params, ["a", "b"]);
@@ -690,17 +661,13 @@ fn test_add_prompt_reference_mode_still_pins_invoke_workdir() {
         ])
         .assert()
         .success();
-    let entry = sandbox.resolve("r.prompt");
+    let entry = sandbox.resolve("r");
     assert_eq!(entry.meta.mode, StorageMode::Reference);
     assert_eq!(entry.meta.workdir, "invoke"); // never the prompt file's directory
     assert_eq!(entry.meta.source, source.to_str().unwrap());
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust add strips only the final extension, so \
-            `review.prompt.md` names the entry `review.prompt`; the oracle strips the whole \
-            `.prompt.md` compound suffix to `review` (store.add_prompt name derivation). Verified \
-            against the built binary: meta.name == \"review.prompt\"."]
 fn test_add_prompt_name_strips_double_extension() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_source("review.prompt.md", b"x\n");
@@ -938,7 +905,7 @@ fn test_seeded_pi_warns_and_prefixes_newline_for_parser_ambiguous_prompt() {
         .success();
     let output = sandbox
         .command()
-        .args(["run", "pi.prompt", "--dry-run", "--no-input"])
+        .args(["run", "pi", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     let shown = format!(
@@ -1046,7 +1013,7 @@ fn test_build_resolves_the_pin_when_no_override_is_given() {
         .success();
     let output = sandbox
         .command()
-        .args(["run", "p.prompt", "--set", "a=1", "--dry-run", "--no-input"])
+        .args(["run", "p", "--set", "a=1", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1101,13 +1068,13 @@ fn test_build_with_unconfigured_pin_is_exit_126() {
         .success();
     let output = sandbox
         .command()
-        .args(["run", "c.prompt", "--set", "a=1", "--no-input"])
+        .args(["run", "c", "--set", "a=1", "--no-input"])
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("mine") && stderr.contains("not configured"),
+        stderr.contains("mine") && stderr.contains("isn't configured"),
         "{stderr}"
     );
 }
@@ -1130,12 +1097,6 @@ fn test_build_missing_binary_is_exit_126() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle maps a missing prompt body to exit 127 \
-            (TargetMissingError, test_prompt_kind.py:630). Verified against the built binary: after \
-            the stored prompt.md is deleted the run pipeline fails entry resolution with 'invalid \
-            entry mutation: copy entry has no stored payload' and exits 2, so a missing prompt body \
-            is classified differently. The restored body fails at the exit-code assertion (2, not \
-            127)."]
 fn test_build_missing_body_is_exit_127() {
     let sandbox = Sandbox::new();
     let source = sandbox.write_source("miss.prompt.md", b"Do {{a}}\n");
@@ -1152,7 +1113,7 @@ fn test_build_missing_body_is_exit_127() {
         .assert()
         .success();
     // The stored prompt body is gone; the launch target no longer exists.
-    let entry = sandbox.resolve("miss.prompt");
+    let entry = sandbox.resolve("miss");
     fs::remove_file(
         sandbox
             .store()
@@ -1162,7 +1123,7 @@ fn test_build_missing_body_is_exit_127() {
     .unwrap();
     let output = sandbox
         .command()
-        .args(["run", "miss.prompt", "--set", "a=1", "--no-input"])
+        .args(["run", "miss", "--set", "a=1", "--no-input"])
         .output()
         .unwrap();
     // Oracle: a missing prompt body raises TargetMissingError -> exit 127.
@@ -1218,14 +1179,7 @@ fn test_describe_with_runner_shows_the_real_argv() {
         .success();
     let output = sandbox
         .command()
-        .args([
-            "run",
-            "d.prompt",
-            "--set",
-            "a=•••",
-            "--dry-run",
-            "--no-input",
-        ])
+        .args(["run", "d", "--set", "a=•••", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1261,14 +1215,7 @@ fn test_describe_resolves_a_pinned_multi_token_runner() {
         .success();
     let output = sandbox
         .command()
-        .args([
-            "run",
-            "mt.prompt",
-            "--set",
-            "a=1",
-            "--dry-run",
-            "--no-input",
-        ])
+        .args(["run", "mt", "--set", "a=1", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -1294,7 +1241,7 @@ fn test_describe_with_no_pin_and_no_runner_never_reads_config() {}
 #[test]
 #[ignore = "UNMAPPED (absent): describe degrading to a literal {{prompt}} stub when the body is \
             missing or values are absent has no CLI path — with a missing body the run pipeline \
-            errors ('no stored payload', see test_build_missing_body_is_exit_127) instead of \
+            exits 127 (see test_build_missing_body_is_exit_127) instead of \
             printing a degraded describe line. Oracle: test_prompt_kind.py:709."]
 fn test_describe_degrades_on_missing_body_and_missing_values() {}
 
@@ -1343,7 +1290,7 @@ fn test_run_entry_preserves_crlf_bodies_byte_for_byte() {
         .command()
         .args([
             "run",
-            "crlf.prompt",
+            "crlf",
             "--runner",
             "rec",
             "--set",
@@ -1381,7 +1328,7 @@ fn test_run_entry_executes_the_recorder_end_to_end() {
         .current_dir(sandbox.scratch.path())
         .args([
             "run",
-            "inj.prompt",
+            "inj",
             "--runner",
             "rec",
             "--set",
@@ -1542,9 +1489,6 @@ fn test_hand_authored_rows_without_marker_count_as_seeded() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle keeps a blank runner name as the exact `\"\"` \
-            (test_prompt_kind.py:1024); the Rust `runner_row` normalizes an empty name to `None` \
-            (skit-store/src/config.rs:1233-1236). The restored `rows[2].name == Some(\"\")` fails."]
 fn test_malformed_runner_rows_are_skipped_and_reported() {
     let dir = TempDir::new().unwrap();
     let config = FileConfigStore::new(dir.path());
@@ -1565,8 +1509,8 @@ fn test_malformed_runner_rows_are_skipped_and_reported() {
     );
     assert_eq!(runner_names(&config), ["good"]);
     let rows = config.runner_rows().unwrap();
-    // The oracle keeps a blank runner name as the exact empty string (the invalid name does not
-    // hide the usable argv). Rust normalizes an empty name to None, so this assertion diverges.
+    // The raw row keeps a blank runner name as the exact empty string. The invalid name does not
+    // hide the usable argv or enter the valid runner list.
     assert_eq!(rows[2].name.as_deref(), Some(""));
     assert_eq!(
         rows[2].argv.as_deref(),
@@ -1619,11 +1563,6 @@ fn test_runners_section_of_wrong_type_degrades() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the machine reason TOKEN matches exactly, but the \
-            localized English wording is \"is not a table\" / \"is not a list\" \
-            (skit-store/src/config.rs:160-165), not the oracle's contraction \"isn't a table\" / \
-            \"isn't a list\" (test_prompt_kind.py:1062-1067). The restored exact-needle assertion \
-            fails."]
 fn test_runner_container_rows_have_localized_human_recovery_reason() {
     use skit_i18n::Locale;
     let dir = TempDir::new().unwrap();
@@ -1642,8 +1581,7 @@ fn test_runner_container_rows_have_localized_human_recovery_reason() {
     ] {
         write_config(&config, document);
         let row = config.runner_rows().unwrap().remove(0);
-        // The machine reason token is the stable contract and matches exactly; the oracle's exact
-        // human needle is restored below and diverges from the Rust "is not a …" wording.
+        // The machine reason token stays stable while the human reason follows the locale.
         assert_eq!(row.reason.as_deref(), Some(reason));
         assert!(
             row.localized_reason(Locale::En).unwrap().contains(needle),
@@ -2100,7 +2038,7 @@ fn test_add_prompt_interpolate_off_scans_and_manages_nothing() {
         ])
         .assert()
         .success();
-    let settings = EntrySettings::from_meta(&sandbox.resolve("off.prompt").meta);
+    let settings = EntrySettings::from_meta(&sandbox.resolve("off").meta);
     assert!(!settings.interpolate);
     assert!(settings.params.is_empty());
 }
@@ -2119,7 +2057,7 @@ fn test_add_prompt_auto_manage_flood_cap() {
         .args(["add", source.to_str().unwrap(), "--prompt", "--no-input"])
         .assert()
         .success();
-    let settings = EntrySettings::from_meta(&sandbox.resolve("many.prompt").meta);
+    let settings = EntrySettings::from_meta(&sandbox.resolve("many").meta);
     assert!(settings.params.is_empty()); // over the cap: nothing auto-managed
     assert!(settings.interpolate);
 
@@ -2168,21 +2106,21 @@ fn test_write_prompt_interpolate_keeps_the_managed_list() {
         .success();
     sandbox
         .command()
-        .args(["params", "keep.prompt", "--no-interpolate"])
+        .args(["params", "keep", "--no-interpolate"])
         .assert()
         .success();
-    let off = EntrySettings::from_meta(&sandbox.resolve("keep.prompt").meta);
+    let off = EntrySettings::from_meta(&sandbox.resolve("keep").meta);
     assert!(!off.interpolate);
     assert_eq!(off.params, ["a"]); // survives for a later switch-on
     sandbox
         .command()
-        .args(["params", "keep.prompt", "--interpolate"])
+        .args(["params", "keep", "--interpolate"])
         .assert()
         .success();
-    assert!(EntrySettings::from_meta(&sandbox.resolve("keep.prompt").meta).interpolate);
+    assert!(EntrySettings::from_meta(&sandbox.resolve("keep").meta).interpolate);
 
-    // write_prompt_interpolate on a NON-prompt entry raises the store usage error; through the CLI
-    // a command entry refuses --no-interpolate/--interpolate (exit 2).
+    // write_prompt_interpolate on a NON-prompt entry raises the store error; through the CLI a
+    // command entry refuses --no-interpolate/--interpolate as an unsuccessful operation (exit 1).
     sandbox
         .command()
         .args(["add", "--cmd", "echo {x}", "-n", "cmd", "--no-input"])
@@ -2193,7 +2131,7 @@ fn test_write_prompt_interpolate_keeps_the_managed_list() {
         .args(["params", "cmd", "--no-interpolate"])
         .output()
         .unwrap();
-    assert_eq!(refusal.status.code(), Some(2));
+    assert_eq!(refusal.status.code(), Some(1));
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&refusal.stdout),
@@ -2256,7 +2194,7 @@ fn test_build_for_an_insertion_off_prompt_sends_the_body_verbatim() {
         .success();
     let output = sandbox
         .command()
-        .args(["run", "off.prompt", "--dry-run", "--no-input"])
+        .args(["run", "off", "--dry-run", "--no-input"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -2300,7 +2238,7 @@ fn test_unmanaged_prompt_placeholders_empty_when_insertion_off() {
         .success();
     let output = sandbox
         .command()
-        .args(["params", "uoff.prompt", "--json"])
+        .args(["params", "uoff", "--json"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -2351,7 +2289,7 @@ fn test_unmanaged_prompt_placeholders_empty_when_body_missing_or_undecodable() {
         .args(["add", source.to_str().unwrap(), "--prompt", "--no-input"])
         .assert()
         .success();
-    let entry = sandbox.resolve("bad.prompt");
+    let entry = sandbox.resolve("bad");
     let stored = sandbox
         .store()
         .entry_dir_path(&entry.slug)
@@ -2359,7 +2297,7 @@ fn test_unmanaged_prompt_placeholders_empty_when_body_missing_or_undecodable() {
     fs::write(&stored, b"\xff\xfe not utf-8 {{a}}").unwrap();
     let undecodable = sandbox
         .command()
-        .args(["params", "bad.prompt", "--json"])
+        .args(["params", "bad", "--json"])
         .output()
         .unwrap();
     if undecodable.status.success() {
@@ -2374,7 +2312,7 @@ fn test_unmanaged_prompt_placeholders_empty_when_body_missing_or_undecodable() {
     fs::remove_file(&stored).unwrap();
     let missing = sandbox
         .command()
-        .args(["params", "bad.prompt", "--json"])
+        .args(["params", "bad", "--json"])
         .output()
         .unwrap();
     if missing.status.success() {

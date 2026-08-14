@@ -83,6 +83,15 @@ fn python_copy(name: &str, bytes: &[u8], description: &str) -> CreateEntry {
     }
 }
 
+/// A prepared copy-mode prompt `CreateEntry` (the store slice of `store.add_prompt`).
+fn prompt_copy(name: &str, bytes: &[u8], description: &str) -> CreateEntry {
+    let mut request = python_copy(name, bytes, description);
+    request.kind = EntryKind::parse("prompt").unwrap();
+    request.source = format!("/original/{name}.prompt.md");
+    request.payload.as_mut().unwrap().stored_name = Some("prompt.md".to_owned());
+    request
+}
+
 /// A prepared reference-mode Python `CreateEntry` (the store slice of `add_python(mode=reference)`).
 fn python_reference(name: &str, source: &str) -> CreateEntry {
     CreateEntry {
@@ -451,15 +460,6 @@ fn test_human_size_units_and_thresholds() {}
 // infer_kind — skit-language, not the store.
 // ===========================================================================
 
-#[ignore = "UNMAPPED -> skit-language. infer_kind lives in skit-language (used by skit-ui::add and \
-            skit-cli); it is not a store function."]
-#[test]
-fn test_infer_kind_python_and_forced_exe() {}
-
-#[ignore = "UNMAPPED -> skit-language. infer_kind is skit-language, not a store function."]
-#[test]
-fn test_infer_kind_posix_uses_execute_bit() {}
-
 #[ignore = "UNMAPPED -> skit-language. infer_kind is skit-language, not a store function."]
 #[test]
 fn test_infer_kind_windows_uses_pathext_not_execute_bit() {}
@@ -475,35 +475,6 @@ fn test_infer_kind_windows_falls_back_to_default_pathext() {}
 // ===========================================================================
 // extract_comment_description — skit-language::description, not the store.
 // ===========================================================================
-
-#[ignore = "UNMAPPED -> skit-language. extract_comment_description is skit-language::description; \
-            not a store function."]
-#[test]
-fn test_extract_comment_description_first_comment_line_wins() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_skips_shebang_and_blank_lines() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_skips_metadata_fence() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_empty_comment_line_continues() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_code_first_is_empty() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_only_shebang_is_empty() {}
-
-#[ignore = "UNMAPPED -> skit-language::description; not a store function."]
-#[test]
-fn test_extract_comment_description_lua_double_dash_prefix() {}
 
 // ===========================================================================
 // add_script — the generic Tier-0 add orchestration (skit-ui/cli + skit-language).
@@ -1356,13 +1327,6 @@ fn test_an_index_whose_entries_key_is_not_a_table_reads_empty() {
 #[test]
 fn test_repair_skips_a_meta_that_broke_or_went_unrepresentable_meanwhile() {}
 
-#[ignore = "UNMAPPED -> launcher/library_surface. launcher.target_missing for a hand-edited \
-            copy-mode exe is the launch-target projection (library_surface::launch_target keys exe \
-            off SOURCE regardless of mode); resolve() (store) returns mode=copy correctly. Off the \
-            store surface."]
-#[test]
-fn test_a_copy_mode_exe_meta_still_reports_its_gone_binary() {}
-
 // ===========================================================================
 // Every meta write keeps its own index row fresh (the pure store contract).
 // ===========================================================================
@@ -1444,14 +1408,15 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
     // registry.toml is unchanged across the read) and still reflects what the mutation changed.
     // Proven by binding the row's cache proof to the new meta bytes and by byte-comparing
     // registry.toml across the listing. (v0.4's mutation set
-    // maps to the store's identity-gated setters: describe and update_settings; the prompt-managed
-    // and dependency-injection variants live above the store.)
-    type Mutation = (&'static str, fn(&FileStore, &Entry) -> Entry, bool);
-    let mutations: [Mutation; 5] = [
+    // maps to the store's identity-gated setters: describe and update_settings; dependency
+    // injection lives above the store.)
+    type Mutation = (&'static str, fn(&FileStore, &Entry) -> Entry, bool, bool);
+    let mutations: [Mutation; 6] = [
         (
             "update_description",
             |store, entry| store.describe(entry, "the new text").unwrap(),
             true,
+            false,
         ),
         (
             "update_needs",
@@ -1467,6 +1432,7 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
                     )
                     .unwrap()
             },
+            false,
             false,
         ),
         (
@@ -1484,6 +1450,7 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
                     .unwrap()
             },
             false,
+            false,
         ),
         (
             "write_workdir",
@@ -1492,6 +1459,7 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
                     .update_settings(entry, &EntrySettings::default(), "store")
                     .unwrap()
             },
+            false,
             false,
         ),
         (
@@ -1509,17 +1477,46 @@ fn test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched() {
                     .unwrap()
             },
             false,
+            false,
+        ),
+        (
+            "write_prompt_managed",
+            |store, entry| {
+                store
+                    .update_settings(
+                        entry,
+                        &EntrySettings {
+                            params: vec!["topic".to_owned()],
+                            ..EntrySettings::default()
+                        },
+                        "invoke",
+                    )
+                    .unwrap()
+            },
+            false,
+            true,
         ),
     ];
 
-    for (label, mutate, changes_description) in mutations {
+    for (label, mutate, changes_description, uses_prompt) in mutations {
         let root = TempDir::new().unwrap();
         let store = FileStore::new(root.path());
         let entry = store
-            .create(python_copy("subject", b"print(1)\n", "the old text"))
+            .create(if uses_prompt {
+                prompt_copy("subject", b"Summarize {{topic}}\n", "the old text")
+            } else {
+                python_copy("subject", b"print(1)\n", "the old text")
+            })
             .unwrap();
 
-        mutate(&store, &entry);
+        let updated = mutate(&store, &entry);
+        if uses_prompt {
+            assert_eq!(
+                EntrySettings::from_meta(&updated.meta).params,
+                ["topic"],
+                "{label}: the prompt mutation did not persist"
+            );
+        }
         let slug = entry.slug.as_str();
 
         // Re-projected: the row carries a fresh cache proof bound to the new meta bytes.

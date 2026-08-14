@@ -69,8 +69,8 @@ impl LibraryScreenSession {
         state: &LibraryState,
         locale: Locale,
     ) -> ViewGeometry {
-        let narrow = area.width < 80;
-        let short = frame.area().height < 16;
+        let narrow = crate::layout::is_narrow(area.width);
+        let short = crate::layout::is_short(frame.area().height);
         let show_detail = match state.detail_pane_mode() {
             DetailPaneMode::PinnedOpen => true,
             DetailPaneMode::PinnedClosed => false,
@@ -165,6 +165,7 @@ impl LibraryScreenSession {
             rows,
             first_visible: table_state.offset(),
             hits: Vec::new(),
+            detail_pane_visible: show_detail,
         }
     }
 

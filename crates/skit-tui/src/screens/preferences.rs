@@ -231,6 +231,9 @@ impl PreferencesWidgetSession {
             {
                 return PreferencesEventHandling::Consumed;
             }
+            if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+                return PreferencesEventHandling::Ignored;
+            }
             if let Some(handling) = self.handle_select_mouse(mouse) {
                 return handling;
             }
@@ -660,6 +663,7 @@ impl PreferencesWidgetSession {
                 buttons,
                 ..
             } => {
+                let stacked = radio_options_stack(control.id, area.width);
                 let mut y = area.y;
                 if !label.is_empty() {
                     frame.render_widget(
@@ -674,7 +678,7 @@ impl PreferencesWidgetSession {
                     let wanted = u16::try_from(option_label.width().saturating_add(2))
                         .unwrap_or(u16::MAX)
                         .min(area.width.max(1));
-                    if x > area.x && x.saturating_add(wanted) > area.right() {
+                    if x > area.x && (stacked || x.saturating_add(wanted) > area.right()) {
                         x = area.x;
                         y = y.saturating_add(1);
                     }
@@ -1022,9 +1026,26 @@ fn control_height(control: &PreferencesControl, locale: Locale, width: u16) -> u
             3
         }
         PreferencesControlKind::Choice(choice) => usize::from(!control.label.is_empty())
-            .saturating_add(radio_rows(&choice.options, locale, width).max(1)),
+            .saturating_add(
+                if radio_options_stack(control.id, width) {
+                    choice.options.len()
+                } else {
+                    radio_rows(&choice.options, locale, width)
+                }
+                .max(1),
+            ),
         PreferencesControlKind::Button => 1,
     }
+}
+
+fn radio_options_stack(id: PreferencesControlId, width: u16) -> bool {
+    !matches!(
+        id,
+        PreferencesControlId::MirrorMaster
+            | PreferencesControlId::PypiChoice
+            | PreferencesControlId::GithubChoice
+            | PreferencesControlId::NpmChoice
+    ) || crate::layout::is_narrow(width)
 }
 
 fn radio_rows(options: &[PreferencesOption], locale: Locale, width: u16) -> usize {
@@ -1429,6 +1450,48 @@ mod tests {
             PreferencesEventHandling::Action(PreferencesAction::SetInteractiveForm(
                 InteractiveFormChoice::Plain,
             ))
+        );
+    }
+
+    #[test]
+    fn preference_hits_require_a_mouse_button_press() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 120, 44, Locale::En);
+        let area = session
+            .control_area(PreferencesControlId::ManageAgents)
+            .expect("visible Manage agents button");
+
+        for kind in [
+            MouseEventKind::Moved,
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Drag(MouseButton::Left),
+        ] {
+            assert_eq!(
+                session.handle_event(
+                    Event::Mouse(MouseEvent {
+                        kind,
+                        column: area.x,
+                        row: area.y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    &view,
+                ),
+                PreferencesEventHandling::Ignored,
+                "a preference hit must ignore {kind:?}"
+            );
+        }
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
         );
     }
 

@@ -35,7 +35,7 @@ use std::{
 
 use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
 use skit_domain::{Entry, EntryKind, EntrySettings, StorageMode};
-use skit_store::{ConfigError, FileConfigStore, FileStore, content_hash};
+use skit_store::{FileConfigStore, FileStore, content_hash};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -137,31 +137,33 @@ fn test_load_toml_recoverable_corrupt_file_backs_up_and_returns_empty() {
         .unwrap()
         .expect("a corrupt file must be preserved as a byte-exact backup, not wiped");
 
-    assert_eq!(recovery.backup_path, backup);
+    assert_eq!(recovery.backup_path.as_deref(), Some(backup.as_path()));
     assert_eq!(fs::read(&backup).unwrap(), corrupt); // byte-exact preservation
 }
 
 #[test]
 fn test_load_toml_recoverable_reports_none_when_backup_itself_fails() {
-    // WHY: Python simulates a failing copy2 and asserts the corrupt original is NOT lost. Rust has
-    // no read-time backup or copy2 seam; the write-path analog blocks the backup by making
-    // `<name>.bak` a directory. Rust surfaces an Err where Python swallowed and returned None; the
-    // ported data-safety invariant is the shared one — a failed backup never destroys the corrupt
-    // original.
+    // WHY: Python reports no backup, warns, and still applies the requested setting. A directory at
+    // the nested copy target blocks the write while leaving unrelated directory contents intact.
     let root = TempDir::new().unwrap();
     let path = root.path().join("config.toml");
     let backup = root.path().join("config.toml.bak");
     let corrupt = b"this is = = not valid toml";
     fs::write(&path, corrupt).unwrap();
     fs::create_dir(&backup).unwrap();
-    fs::write(backup.join("owned"), "keep").unwrap();
+    let blocker = backup.join("config.toml");
+    fs::create_dir(&blocker).unwrap();
+    fs::write(blocker.join("owned"), "keep").unwrap();
     let store = FileConfigStore::new(root.path());
 
-    let error = store.set("editor", "vim").unwrap_err();
+    let recovery = store
+        .set_with_recovery("editor", "vim")
+        .unwrap()
+        .expect("the malformed file must report recovery");
 
-    assert!(matches!(error, ConfigError::Io { .. }));
-    assert_eq!(fs::read(&path).unwrap(), corrupt); // corrupt original intact, not replaced
-    assert_eq!(fs::read_to_string(backup.join("owned")).unwrap(), "keep");
+    assert_eq!(recovery.backup_path, None);
+    assert_eq!(store.get("editor").unwrap(), "vim");
+    assert_eq!(fs::read_to_string(blocker.join("owned")).unwrap(), "keep");
 }
 
 // ===========================================================================

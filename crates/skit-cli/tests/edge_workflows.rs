@@ -361,7 +361,7 @@ fn doctor_human_report_exposes_each_repair_axis() {
         "form definitions are out of sync",
         "missing external commands",
         "a run would refuse to start",
-        "malformed prompt runners",
+        "Ignored malformed runner row(s) in config: bad. Inspect and repair with: skit runner list --all",
     ] {
         assert!(
             output.contains(text),
@@ -437,8 +437,16 @@ fn add_dependency_and_parameter_refusals_leave_no_partial_entry() {
     );
 
     let javascript = sandbox.source("tool.js", b"import 'chalk';\n");
-    sandbox.code(&["add", &javascript, "--ref"], 2);
-    assert!(!sandbox.data.path().join("scripts/tool").exists());
+    sandbox.ok(&["add", &javascript, "--ref"]);
+    assert_eq!(
+        sandbox.json(&["deps", "tool", "--json"])["dependencies"],
+        serde_json::json!([])
+    );
+    assert_eq!(fs::read(&javascript).unwrap(), b"import 'chalk';\n");
+
+    let explicit = sandbox.source("explicit.js", b"console.log('ok');\n");
+    sandbox.code(&["add", &explicit, "--ref", "--dep", "chalk"], 2);
+    assert!(!sandbox.data.path().join("scripts/explicit").exists());
 }
 
 #[test]
@@ -517,8 +525,8 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
         "printf '%s' {name}",
     ]);
     sandbox.code(&["params", "demo", "--interpreter", "sh"], 2);
-    sandbox.code(&["params", "demo", "--runner", ""], 2);
-    sandbox.code(&["params", "demo", "--no-interpolate"], 2);
+    sandbox.code(&["params", "demo", "--runner", ""], 1);
+    sandbox.code(&["params", "demo", "--no-interpolate"], 1);
     sandbox.ok(&[
         "params",
         "demo",
@@ -638,34 +646,42 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
         fs::read_to_string(sandbox.data.path().join("scripts/edit-copy/script.sh")).unwrap(),
         "changedn"
     );
+    // v0.4 ignores the editor's own exit status (some editors exit non-zero on an
+    // unmodified close), so a non-zero editor still saves cleanly.
     sandbox.ok(&["config", "editor", "sh -c 'exit 3'"]);
-    sandbox.code(&["edit", "edit-copy", "--no-input"], 2);
+    sandbox.ok(&["edit", "edit-copy", "--no-input"]);
+    // An unbalanced-quote value becomes the program name; launching it fails (1).
     sandbox.ok(&["config", "editor", "'"]);
-    sandbox.code(&["edit", "edit-copy", "--no-input"], 2);
+    sandbox.code(&["edit", "edit-copy", "--no-input"], 1);
+    // Every candidate blank resolves the platform default `vi`; with an empty PATH
+    // the launch fails as a failed operation, never a usage error.
     sandbox.ok(&["config", "editor", "   "]);
+    let empty_path = TempDir::new().unwrap();
     sandbox
         .command()
         .env_remove("VISUAL")
         .env_remove("EDITOR")
+        .env("PATH", empty_path.path())
         .args(["edit", "edit-copy", "--no-input"])
         .assert()
-        .code(2);
+        .code(1);
     sandbox
         .command()
         .env_remove("VISUAL")
         .env("EDITOR", "")
+        .env("PATH", empty_path.path())
         .args(["edit", "edit-copy", "--no-input"])
         .assert()
-        .code(2);
+        .code(1);
 
     let reference = sandbox.source("reference.sh", b"echo reference\n");
     sandbox.ok(&["add", &reference, "--ref", "--name", "Reference"]);
     sandbox.ok(&["config", "editor", "true"]);
     sandbox.ok(&["edit", "reference", "--no-input"]);
     sandbox.ok(&["config", "editor", "false"]);
-    sandbox.code(&["edit", "reference", "--no-input"], 2);
+    sandbox.ok(&["edit", "reference", "--no-input"]);
     sandbox.ok(&["add", "--cmd", "echo ok", "--name", "No source"]);
-    sandbox.code(&["edit", "no-source", "--no-input"], 2);
+    sandbox.code(&["edit", "no-source", "--no-input"], 1);
     sandbox.code(&["edit", "missing", "--no-input"], 1);
 
     let managed = sandbox.source("managed.sh", b"NAME=old\necho \"$NAME\"\n");
@@ -674,7 +690,7 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
     sandbox.ok(&["params", "managed", "--manage", "NAME"]);
     sandbox.ok(&["params", "managed", "--manage", "NAME"]);
     sandbox.ok(&["params", "managed", "--resync"]);
-    sandbox.code(&["params", "reference", "--resync"], 2);
+    sandbox.code(&["params", "reference", "--resync"], 1);
     sandbox.code(&["params", "managed", "--normalize", "missing"], 2);
     sandbox.ok(&["params", "managed", "--normalize", "NAME"]);
 
@@ -719,17 +735,25 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
 fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["config", "editor", "true"]);
-    sandbox.code(&["add", "--edit", "--name", "Empty"], 2);
+    let untouched = sandbox.ok(&["add", "--edit", "--name", "Empty"]);
+    assert!(
+        String::from_utf8_lossy(&untouched)
+            .contains("Nothing was written, so no script was added.")
+    );
     assert!(
         fs::read_dir(sandbox.data.path().join("drafts"))
             .unwrap()
-            .any(|item| item.unwrap().path().is_file())
+            .next()
+            .is_none(),
+        "an untouched draft is litter, not recoverable work"
     );
 
     sandbox.ok(&["config", "editor", "false"]);
     sandbox.code(&["add", "--edit", "--name", "Failed Editor"], 2);
+    // An unbalanced-quote value becomes the program name; the launch failure is a
+    // failed operation (exit 1), and the draft is kept like every editor failure.
     sandbox.ok(&["config", "editor", "'"]);
-    sandbox.code(&["add", "--edit", "--name", "Bad Quote"], 2);
+    sandbox.code(&["add", "--edit", "--name", "Bad Quote"], 1);
 
     let editor = sandbox.source(
         "draft-editor.sh",
@@ -742,13 +766,17 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     }
     sandbox.ok(&["config", "editor", &editor]);
     sandbox.ok(&["config", "editor", "   "]);
+    // Every candidate blank resolves the platform default `vi`; an empty PATH turns
+    // the launch into the failed-operation refusal (exit 1) with the config hint.
+    let empty_path = TempDir::new().unwrap();
     sandbox
         .command()
         .env_remove("VISUAL")
         .env("EDITOR", "")
+        .env("PATH", empty_path.path())
         .args(["add", "--edit", "--name", "Empty command"])
         .assert()
-        .code(2);
+        .code(1);
     sandbox
         .command()
         .env("VISUAL", &editor)
@@ -822,7 +850,14 @@ fn run_pipeline_materializes_javascript_and_preserves_trusted_command_semantics(
         .env("PATH", tools.path())
         .args(["run", "unsupported-runtime", "--no-input"])
         .assert()
-        .code(125);
+        .success();
+    assert!(
+        sandbox
+            .data
+            .path()
+            .join("scripts/unsupported-runtime/node_modules")
+            .is_dir()
+    );
 
     let reference = sandbox.source("reference.js", b"console.log('ref');\n");
     sandbox.ok(&["add", &reference, "--ref", "--name", "Reference JS"]);

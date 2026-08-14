@@ -2,22 +2,27 @@
 
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     fs::{self, File, OpenOptions},
     io::{self, Write as _},
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, SystemTime},
 };
 
+use sha2::{Digest as _, Sha256};
 use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 use crate::ProgramProbe;
 
 const STAMP_NAME: &str = ".skit-deps";
+const MARKER_NAME: &str = ".skit-deps-ok";
 const BACKUP_NAME: &str = ".skit-deps.backup";
 const BACKUP_INDEX: &str = ".items";
 const STAGE_PREFIX: &str = ".skit-deps.tmp-";
+const STALE_INJECTED_AGE: Duration = Duration::from_secs(60 * 60);
 const OWNED_FILES: &[&str] = &[
     "package.json",
     "package-lock.json",
@@ -179,18 +184,29 @@ fn javascript_dependency_manifest_for_module(
     dependencies: &[String],
     module_type: Option<JavaScriptModuleType>,
 ) -> Result<String, DependencyError> {
-    let mut rows = BTreeMap::new();
+    let mut rows: Vec<(String, String)> = Vec::new();
     for dependency in dependencies {
+        if dependency.trim().is_empty() {
+            continue;
+        }
         let (name, version) = split_package_spec(dependency)?;
-        rows.insert(name, version);
+        if let Some((_, old_version)) = rows.iter_mut().find(|(old_name, _)| old_name == &name) {
+            *old_version = version;
+        } else {
+            rows.push((name, version));
+        }
     }
-    let mut output = String::from("{\n  \"name\": \"skit-private-entry\",\n  \"private\": true,\n");
+    let mut output = String::from("{\n  \"private\": true,\n");
     if let Some(module_type) = module_type {
         output.push_str(&format!(
             "  \"type\": {},\n",
             serde_json::to_string(module_type.as_manifest_value())
                 .expect("a module type is valid JSON")
         ));
+    }
+    if rows.is_empty() {
+        output.push_str("  \"dependencies\": {}\n}\n");
+        return Ok(output);
     }
     output.push_str("  \"dependencies\": {\n");
     for (index, (name, version)) in rows.iter().enumerate() {
@@ -203,6 +219,14 @@ fn javascript_dependency_manifest_for_module(
     }
     output.push_str("  }\n}\n");
     Ok(output)
+}
+
+fn javascript_module_manifest(module_type: JavaScriptModuleType) -> String {
+    format!(
+        "{{\n  \"private\": true,\n  \"type\": {}\n}}\n",
+        serde_json::to_string(module_type.as_manifest_value())
+            .expect("a module type is valid JSON")
+    )
 }
 
 /// Make the entry's private dependency tree match its declared packages.
@@ -269,22 +293,25 @@ where
     require_entry_directory(entry_dir)?;
     recover_dependency_backup(entry_dir)?;
     remove_staging_leftovers(entry_dir)?;
-    if dependencies.is_empty() && module_type.is_none() {
-        return clear_javascript_dependencies_unlocked(entry_dir);
+    if dependencies.is_empty() {
+        return module_type.map_or_else(
+            || clear_javascript_dependencies_unlocked(entry_dir),
+            |module_type| ensure_module_manifest_unlocked(entry_dir, module_type),
+        );
     }
     let manifest = javascript_dependency_manifest_for_module(dependencies, module_type)?;
-    let stamp = format!("v1\n{runtime}\n{:016x}\n", stable_hash(manifest.as_bytes()));
-    let stamp_path = entry_dir.join(STAMP_NAME);
-    if read_optional(&stamp_path)?.as_deref() == Some(stamp.as_bytes())
-        && (dependencies.is_empty() || entry_dir.join("node_modules").is_dir())
-    {
+    let installer = installer_for_runtime(runtime);
+    let stamp = dependency_stamp(installer, &manifest);
+    let marker_path = entry_dir.join("node_modules").join(MARKER_NAME);
+    if fs::read(&marker_path).ok().as_deref() == Some(stamp.as_bytes()) {
         return Ok(());
     }
 
-    let staged = TemporaryDependencyDirectory::new(entry_dir)?;
-    atomic_write(&staged.path.join("package.json"), manifest.as_bytes())?;
-    if !dependencies.is_empty() {
-        let command = dependency_command(&staged.path, runtime, environment, probe)?;
+    // Resolve the installer before the transaction moves a complete environment aside.
+    let command = dependency_command(entry_dir, runtime, environment, probe)?;
+    begin_dependency_backup(entry_dir)?;
+    let install = (|| {
+        atomic_write(&entry_dir.join("package.json"), manifest.as_bytes())?;
         let success = runner
             .run(&command)
             .map_err(|error| io_error("start package manager in", entry_dir, error))?;
@@ -293,12 +320,33 @@ where
                 program: command.program.display().to_string(),
             });
         }
+        ensure_real_node_modules(entry_dir)?;
+        atomic_write(&marker_path, stamp.as_bytes())
+    })();
+    match install {
+        Ok(()) => finish_dependency_backup(entry_dir),
+        Err(primary) => {
+            let rollback = recover_dependency_backup(entry_dir);
+            Err(combine_rollback_error(primary, rollback, entry_dir))
+        }
     }
-    atomic_write(&staged.path.join(STAMP_NAME), stamp.as_bytes())?;
+}
+
+fn ensure_module_manifest_unlocked(
+    entry_dir: &Path,
+    module_type: JavaScriptModuleType,
+) -> Result<(), DependencyError> {
+    let manifest = javascript_module_manifest(module_type);
+    let target = entry_dir.join("package.json");
+    if read_optional(&target)?.as_deref() == Some(manifest.as_bytes()) {
+        return Ok(());
+    }
+    let staged = TemporaryDependencyDirectory::new(entry_dir)?;
+    atomic_write(&staged.path.join("package.json"), manifest.as_bytes())?;
     commit_dependency_stage(entry_dir, &staged.path)
 }
 
-/// Remove only support artifacts that skit owns for one entry.
+/// Remove JavaScript dependency artifacts from one private entry directory.
 pub fn clear_javascript_dependencies(entry_dir: &Path) -> Result<(), DependencyError> {
     let _lock = dependency_lock(entry_dir)?;
     require_entry_directory(entry_dir)?;
@@ -308,12 +356,35 @@ pub fn clear_javascript_dependencies(entry_dir: &Path) -> Result<(), DependencyE
 }
 
 fn clear_javascript_dependencies_unlocked(entry_dir: &Path) -> Result<(), DependencyError> {
-    if entry_dir.join(STAMP_NAME).exists() || generated_manifest(entry_dir)? {
-        validate_dependency_item_shapes(entry_dir)?;
+    sweep_stale_injected_at(entry_dir, SystemTime::now());
+    validate_dependency_item_shapes(entry_dir)?;
+    if dependency_items().any(|name| path_exists(&entry_dir.join(name))) {
         let staged = TemporaryDependencyDirectory::new(entry_dir)?;
         commit_dependency_stage(entry_dir, &staged.path)?;
     }
     Ok(())
+}
+
+fn sweep_stale_injected_at(entry_dir: &Path, now: SystemTime) {
+    let Some(cutoff) = now.checked_sub(STALE_INJECTED_AGE) else {
+        return;
+    };
+    let Ok(items) = fs::read_dir(entry_dir) else {
+        return;
+    };
+    for item in items.flatten() {
+        let path = item.path();
+        let is_injected = item
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(".injected-"));
+        let is_stale = fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| modified < cutoff);
+        if is_injected && is_stale {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 fn validate_dependency_item_shapes(entry_dir: &Path) -> Result<(), DependencyError> {
@@ -374,24 +445,12 @@ fn dependency_command<P: ProgramProbe>(
     environment: &BTreeMap<String, String>,
     probe: &P,
 ) -> Result<DependencyCommand, DependencyError> {
-    let (installer, args) = match runtime {
-        "node" => (
-            "npm",
-            ["install", "--ignore-scripts", "--no-audit", "--no-fund"].as_slice(),
-        ),
-        "bun" => (
-            "bun",
-            ["install", "--ignore-scripts", "--production"].as_slice(),
-        ),
-        "deno" => (
-            "deno",
-            ["install", "--node-modules-dir=auto", "--prod"].as_slice(),
-        ),
-        _ => {
-            return Err(DependencyError::UnsupportedRuntime {
-                runtime: runtime.to_owned(),
-            });
-        }
+    let installer = installer_for_runtime(runtime);
+    let args = match installer {
+        "npm" => ["install", "--no-audit", "--no-fund", "--ignore-scripts"].as_slice(),
+        "bun" => ["install", "--ignore-scripts"].as_slice(),
+        "deno" => ["install"].as_slice(),
+        _ => unreachable!("installer_for_runtime returns a known installer"),
     };
     let program =
         probe
@@ -405,6 +464,23 @@ fn dependency_command<P: ProgramProbe>(
         cwd: entry_dir.to_owned(),
         environment: environment.clone(),
     })
+}
+
+fn installer_for_runtime(runtime: &str) -> &'static str {
+    match runtime {
+        "bun" => "bun",
+        "deno" => "deno",
+        _ => "npm",
+    }
+}
+
+fn dependency_stamp(installer: &str, manifest: &str) -> String {
+    let digest = Sha256::digest(format!("{installer}\n{manifest}").as_bytes());
+    let mut stamp = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut stamp, "{byte:02x}").expect("writing to a string cannot fail");
+    }
+    stamp
 }
 
 static TEMPORARY_ID: AtomicU64 = AtomicU64::new(1);
@@ -427,6 +503,61 @@ impl TemporaryDependencyDirectory {
 impl Drop for TemporaryDependencyDirectory {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn begin_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
+    let backup = entry_dir.join(BACKUP_NAME);
+    fs::create_dir(&backup).map_err(|error| io_error("create backup", &backup, error))?;
+    let old_names = dependency_items()
+        .filter(|name| path_exists(&entry_dir.join(name)))
+        .collect::<Vec<_>>();
+    let index = if old_names.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", old_names.join("\n"))
+    };
+    atomic_write(&backup.join(BACKUP_INDEX), index.as_bytes())?;
+    for name in dependency_items() {
+        let current = entry_dir.join(name);
+        if path_exists(&current)
+            && let Err(error) = fs::rename(&current, backup.join(name))
+        {
+            let primary = io_error("backup", &current, error);
+            let rollback = recover_dependency_backup(entry_dir);
+            return Err(combine_rollback_error(primary, rollback, entry_dir));
+        }
+    }
+    let _ = sync_directory(&backup);
+    let _ = sync_directory(entry_dir);
+    Ok(())
+}
+
+fn finish_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
+    let backup = entry_dir.join(BACKUP_NAME);
+    let cleanup = unused_temporary_path(entry_dir);
+    if let Err(error) = fs::rename(&backup, &cleanup) {
+        let primary = io_error("commit dependency backup", &backup, error);
+        let rollback = recover_dependency_backup(entry_dir);
+        return Err(combine_rollback_error(primary, rollback, entry_dir));
+    }
+    let _ = sync_directory(entry_dir);
+    let _ = remove_path(&cleanup);
+    Ok(())
+}
+
+fn ensure_real_node_modules(entry_dir: &Path) -> Result<(), DependencyError> {
+    let node_modules = entry_dir.join("node_modules");
+    match optional_symlink_metadata(&node_modules)? {
+        Some(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
+        Some(_) => Err(DependencyError::Io {
+            operation: "inspect",
+            path: node_modules.display().to_string(),
+            reason: "node_modules is not a directory".to_owned(),
+        }),
+        None => {
+            fs::create_dir(&node_modules).map_err(|error| io_error("create", &node_modules, error))
+        }
     }
 }
 
@@ -708,47 +839,20 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
 
 fn split_package_spec(value: &str) -> Result<(String, String), DependencyError> {
     let value = value.trim();
-    let version_at = if value.starts_with('@') {
-        let slash = value.find('/').unwrap_or(value.len());
-        value.rfind('@').filter(|index| *index > slash)
-    } else {
-        value.rfind('@').filter(|index| *index > 0)
-    };
     let (name, version) =
-        version_at.map_or((value, "*"), |index| (&value[..index], &value[index + 1..]));
-    if !valid_package_name(name) || version.is_empty() {
-        return Err(DependencyError::InvalidPackage {
-            value: value.to_owned(),
-        });
-    }
+        value
+            .rfind('@')
+            .filter(|index| *index > 0)
+            .map_or((value, "*"), |index| {
+                let name = &value[..index];
+                if name.ends_with('/') {
+                    (value, "*")
+                } else {
+                    let version = &value[index + 1..];
+                    (name, if version.is_empty() { "*" } else { version })
+                }
+            });
     Ok((name.to_owned(), version.to_owned()))
-}
-
-fn valid_package_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('.')
-        && !name.contains("..")
-        && name.chars().all(|character| {
-            character.is_ascii_alphanumeric() || matches!(character, '@' | '/' | '-' | '_' | '.')
-        })
-        && if let Some(scoped) = name.strip_prefix('@') {
-            let mut parts = scoped.split('/');
-            parts.next().is_some_and(|part| !part.is_empty())
-                && parts.next().is_some_and(|part| !part.is_empty())
-                && parts.next().is_none()
-        } else {
-            !name.contains('/')
-        }
-}
-
-fn generated_manifest(entry_dir: &Path) -> Result<bool, DependencyError> {
-    Ok(
-        read_optional(&entry_dir.join("package.json"))?.is_some_and(|bytes| {
-            bytes
-                .windows(b"skit-private-entry".len())
-                .any(|window| window == b"skit-private-entry")
-        }),
-    )
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, DependencyError> {
@@ -782,12 +886,6 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), DependencyError> {
     Ok(())
 }
 
-fn stable_hash(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
-}
-
 fn io_error(operation: &'static str, path: &Path, error: io::Error) -> DependencyError {
     DependencyError::Io {
         operation,
@@ -803,6 +901,38 @@ mod transaction_tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn injected_sweep_uses_a_strict_one_hour_cutoff() {
+        let root = TempDir::new().unwrap();
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(2 * 60 * 60))
+            .unwrap();
+        let cutoff = now.checked_sub(STALE_INJECTED_AGE).unwrap();
+        let old = cutoff.checked_sub(Duration::from_secs(1)).unwrap();
+        let write_at = |name: &str, modified: SystemTime| {
+            let path = root.path().join(name);
+            fs::write(&path, "value").unwrap();
+            File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(modified))
+                .unwrap();
+            path
+        };
+        let stale = write_at(".injected-stale.js", old);
+        let edge = write_at(".injected-edge.js", cutoff);
+        let fresh = write_at(".injected-fresh.js", now);
+        let unrelated = write_at("keep.txt", old);
+
+        sweep_stale_injected_at(root.path(), now);
+
+        assert!(!stale.exists());
+        assert!(edge.exists());
+        assert!(fresh.exists());
+        assert!(unrelated.exists());
+    }
 
     #[cfg(unix)]
     #[test]

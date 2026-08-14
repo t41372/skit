@@ -27,7 +27,7 @@ use skit_ui::{
     KnownEntryKind, PROMPT_LIST_PREVIEW_LIMIT, PathOutputPolicy, PathPickerState,
     PathSelectionMode, PickerPurpose, ReviewLane,
 };
-use tui_input::{Input as LineInput, backend::crossterm::EventHandler as _};
+use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
@@ -167,7 +167,7 @@ pub struct AddScreenSession {
     scroll: ScrollableContentState,
     viewport: Rect,
     visible_height: usize,
-    row_starts: BTreeMap<AddControlId, usize>,
+    row_spans: BTreeMap<AddControlId, (usize, usize)>,
 }
 
 impl AddScreenSession {
@@ -188,7 +188,7 @@ impl AddScreenSession {
         self.focus.clear();
         self.inputs.clear();
         self.checks.clear();
-        self.row_starts.clear();
+        self.row_spans.clear();
         match state.stage() {
             AddStage::Source => {
                 let source = state.source();
@@ -361,15 +361,15 @@ impl AddScreenSession {
             return None;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            // Ctrl+E belongs to a focused text Input as its end-of-line motion (the
-            // oracle's Ctrl+A rule); it opens $EDITOR only when no Input owns focus.
-            // So while a review text field is focused, do not consume Ctrl+E here —
-            // let it fall through to the Input below, which maps it to end-of-line.
             let text_focused = matches!(self.focus.current(), Some(AddControlId::Text(_)));
-            if !(text_focused
-                && key.code == KeyCode::Char('e')
-                && state.stage() == AddStage::Review)
-            {
+            // Editing keys belong to the focused mature Input. Ctrl+E moves to the end in a
+            // review field. Ctrl+D deletes the next character in a source field.
+            let input_owns_key = text_focused
+                && matches!(
+                    (key.code, state.stage()),
+                    (KeyCode::Char('e'), AddStage::Review) | (KeyCode::Char('d'), AddStage::Source)
+                );
+            if !input_owns_key {
                 return match (key.code, state.stage()) {
                     (KeyCode::Char('n'), AddStage::Source) => Some(AddScreenEvent::Action(
                         AddAction::NewDraft(DraftKind::Script),
@@ -440,6 +440,13 @@ impl AddScreenSession {
                     return Some(AddScreenEvent::Action(AddAction::Continue));
                 }
                 let input = self.inputs.get_mut(&field)?;
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('d')
+                    && state.stage() == AddStage::Source
+                {
+                    let _ = input.handle(InputRequest::DeleteNextChar);
+                    return Some(AddScreenEvent::Action(text_action(field, input.value())));
+                }
                 if input.handle_event(&Event::Key(key)).is_some() {
                     return Some(AddScreenEvent::Action(text_action(field, input.value())));
                 }
@@ -642,19 +649,20 @@ impl AddScreenSession {
         let Some(id) = self.focus.current() else {
             return;
         };
-        let Some(row) = self.row_starts.get(id).copied() else {
+        let Some((row_start, row_height)) = self.row_spans.get(id).copied() else {
             return;
         };
-        if row < self.scroll.scroll_offset() {
-            self.scroll.set_scroll_offset(row);
-        } else if row
-            >= self
+        let row_end = row_start.saturating_add(row_height);
+        if row_start < self.scroll.scroll_offset() {
+            self.scroll.set_scroll_offset(row_start);
+        } else if row_end
+            > self
                 .scroll
                 .scroll_offset()
                 .saturating_add(self.visible_height)
         {
             self.scroll
-                .set_scroll_offset(row.saturating_sub(self.visible_height.saturating_sub(1)));
+                .set_scroll_offset(row_end.saturating_sub(self.visible_height));
         }
     }
 }
@@ -703,11 +711,13 @@ pub fn render_add(
         .set_lines(vec![String::new(); total_height.max(1)]);
     session.viewport = body;
     session.visible_height = usize::from(body.height).max(1);
-    session.row_starts.clear();
+    session.row_spans.clear();
     let mut logical = 0;
     for row in &rows {
         if let Some(id) = row.id() {
-            session.row_starts.insert(id.clone(), logical);
+            session
+                .row_spans
+                .insert(id.clone(), (logical, row.height()));
         }
         logical = logical.saturating_add(row.height());
     }

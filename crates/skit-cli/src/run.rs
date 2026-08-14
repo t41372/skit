@@ -2,4 +2,6 @@
 
 mod command;
 
-pub(crate) use command::{RunArgs, RunError, run, run_with_roots, source_text, token_context};
+pub(crate) use command::{
+    RunArgs, RunError, apply_sets, run, run_with_roots, source_text, token_context,
+};

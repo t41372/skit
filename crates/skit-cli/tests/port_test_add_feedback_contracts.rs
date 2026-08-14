@@ -307,7 +307,6 @@ fn test_micro_version_pin_unit() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the stored half HOLDS (cli.rs:2922-2925 pins requires-python from the shebang and cli.rs:3002-3018 writes it into the copy's PEP 723 block, so the stored `requires-python = \">=3.12.1,<3.13\"` lands), but the ANNOUNCE half is MISSING: Rust has no `_note_python_pin` analogue (src/skit/cli.py:288-299), so the 'requires-python >=3.12.1,<3.13' line never prints — the add just says 'Added: mv (copy mode)'. Same shape recorded by the sibling port_test_draft_inference_and_reader_cli.rs. Verified against the built binary."]
 fn test_micro_versioned_shebang_lands_in_stored_pep723() {
     // `#!/usr/bin/env python3.12.1` records requires-python `>=3.12.1,<3.13` in the stored
     // copy's PEP 723 block AND announces the pin (a value recorded on a no-ask path is said aloud).
@@ -337,7 +336,6 @@ fn test_micro_versioned_shebang_lands_in_stored_pep723() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the exit code holds (2), but the message differs — Rust emits the generic 'could not infer the entry kind; pass --kind KIND' (cli.rs:2896-2899) where the oracle emits '%(file)s isn't a script or an executable — pass --kind <language> …' (src/skit/cli.py:2067-2070). The 'isn't a script or an executable' voice is absent from Rust. Ties to pending task #15. Verified against the built binary."]
 fn test_shebangless_unknown_uses_the_isnt_a_script_voice() {
     // A shebang-LESS unknown file keeps the original 'isn't a script or an executable' message
     // (the registered-shebang complement has its own test).
@@ -356,7 +354,6 @@ fn test_shebangless_unknown_uses_the_isnt_a_script_voice() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the exit code holds (2), but the shebang-aware voice is MISSING on the on-disk path lane — Rust emits the generic 'could not infer the entry kind; pass --kind KIND' (cli.rs:2896-2899). Rust only has 'names no interpreter skit knows' for the PIPED lane ('The piped text's #! …', cli.rs:2887-2890); the per-file path-lane form '%(file)s names no interpreter skit knows — pass --kind …' (src/skit/cli.py:2040-2052) has no analogue. Ties to pending task #15. Verified against the built binary."]
 fn test_shebang_unknown_uses_the_names_no_interpreter_voice() {
     // A file WITH an unregistered #! (awk) gets the shebang-aware 'names no interpreter' voice
     // even OUTSIDE drafts (path lane, not just resume), naming --kind.

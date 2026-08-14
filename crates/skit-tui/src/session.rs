@@ -39,7 +39,7 @@ use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandl
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
-    HitRegion, HitTarget, ViewGeometry,
+    HitRegion, HitTarget, ViewGeometry, command_action,
     footer::FooterSession,
     map_event, run_field_command_action,
     screens::add::{AddScreenEvent, AddScreenGeometry, AddScreenSession, render_add},
@@ -578,14 +578,12 @@ impl TuiSession {
             None => match state.screen() {
                 Screen::Library if state.input_mode() == InputMode::Search => {
                     self.search.sync(state.query());
-                    render_line_input(
-                        frame,
-                        area,
-                        &self.search.input,
-                        false,
-                        true,
-                        &text(locale, "Search"),
-                    );
+                    let label = text(locale, "Search");
+                    if area.height < 3 {
+                        render_flat_search_input(frame, area, &self.search.input, &label);
+                    } else {
+                        render_line_input(frame, area, &self.search.input, false, true, &label);
+                    }
                     self.clicks.register(area, SessionHit::SearchInput);
                     return;
                 }
@@ -668,6 +666,7 @@ impl TuiSession {
             rows: inner,
             first_visible: self.form.scroll.scroll_offset(),
             hits,
+            detail_pane_visible: false,
         }
     }
 
@@ -779,6 +778,7 @@ impl TuiSession {
             rows: content,
             first_visible: self.run.scroll.scroll_offset(),
             hits,
+            detail_pane_visible: false,
         }
     }
 
@@ -794,6 +794,7 @@ impl TuiSession {
             rows: area,
             first_visible: 0,
             hits: Vec::new(),
+            detail_pane_visible: false,
         }
     }
 
@@ -809,6 +810,7 @@ impl TuiSession {
             rows: self.settings_geometry.body,
             first_visible: self.settings_geometry.first_visible,
             hits: Vec::new(),
+            detail_pane_visible: false,
         }
     }
 
@@ -826,6 +828,7 @@ impl TuiSession {
                     rows: geometry.rows,
                     first_visible: 0,
                     hits: Vec::new(),
+                    detail_pane_visible: false,
                 }
             }
             Some(AddOverlay::Prompt { session, geometry }) => {
@@ -834,6 +837,7 @@ impl TuiSession {
                     rows: geometry.rows,
                     first_visible: 0,
                     hits: Vec::new(),
+                    detail_pane_visible: false,
                 }
             }
             None => {
@@ -842,6 +846,7 @@ impl TuiSession {
                     rows: self.add_geometry.body,
                     first_visible: self.add_geometry.first_visible,
                     hits: Vec::new(),
+                    detail_pane_visible: false,
                 }
             }
         }
@@ -859,6 +864,7 @@ impl TuiSession {
             rows: area,
             first_visible: 0,
             hits: Vec::new(),
+            detail_pane_visible: false,
         }
     }
 
@@ -874,6 +880,7 @@ impl TuiSession {
             rows: area,
             first_visible: 0,
             hits: Vec::new(),
+            detail_pane_visible: false,
         }
     }
 
@@ -1345,6 +1352,9 @@ impl TuiSession {
         {
             return EventHandling::Consumed;
         }
+        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+            return EventHandling::Ignored;
+        }
 
         for index in 0..self.run.controls.len() {
             let WidgetControl::Choice {
@@ -1386,7 +1396,7 @@ impl TuiSession {
         match hit {
             SessionHit::SearchInput => EventHandling::Action(Action::BeginSearch),
             SessionHit::Target(HitTarget::Command(command)) => {
-                EventHandling::Action(command.action())
+                EventHandling::Action(command_action(command, geometry))
             }
             SessionHit::Target(HitTarget::RunFieldCommand { field, command }) => {
                 EventHandling::Action(run_field_command_action(field, command))
@@ -1536,6 +1546,9 @@ impl TuiSession {
         {
             return EventHandling::Consumed;
         }
+        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
+            return EventHandling::Ignored;
+        }
         let Some(hit) = self.clicks.handle_click(mouse.column, mouse.row).cloned() else {
             let _ = geometry;
             return EventHandling::Ignored;
@@ -1543,7 +1556,7 @@ impl TuiSession {
         match hit {
             SessionHit::SearchInput => EventHandling::Action(Action::BeginSearch),
             SessionHit::Target(HitTarget::Command(command)) => {
-                EventHandling::Action(command.action())
+                EventHandling::Action(command_action(command, geometry))
             }
             SessionHit::Target(HitTarget::RunFieldCommand { field, command }) => {
                 EventHandling::Action(run_field_command_action(field, command))
@@ -2487,6 +2500,40 @@ pub(crate) fn render_line_input(
         frame.set_cursor_position((
             inner.x.saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
             inner.y,
+        ));
+    }
+}
+
+fn render_flat_search_input(frame: &mut Frame, area: Rect, state: &LineInput, label: &str) {
+    let content = Rect::new(
+        area.x.saturating_add(1),
+        area.y,
+        area.width.saturating_sub(2),
+        area.height.min(1),
+    );
+    let width = usize::from(content.width.max(1));
+    let scroll = state.visual_scroll(width);
+    let shown = if state.value().is_empty() {
+        label.to_owned()
+    } else {
+        state.value().to_owned()
+    };
+    frame.render_widget(
+        Paragraph::new(shown)
+            .style(Style::default().fg(Color::White))
+            .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
+        content,
+    );
+    if content.width > 0 && content.height > 0 {
+        let x = state
+            .visual_cursor()
+            .saturating_sub(scroll)
+            .min(width.saturating_sub(1));
+        frame.set_cursor_position((
+            content
+                .x
+                .saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
+            content.y,
         ));
     }
 }

@@ -108,6 +108,15 @@ fn language_values_keep_the_v040_supported_families_and_canonical_spelling() {
         .unwrap();
     assert!(!document.contains_key("language"));
     assert_eq!(store.get("lang").unwrap(), "");
+
+    store.set("lang", "zh-CN").unwrap();
+    store.set("lang", "").unwrap();
+    let document = fs::read_to_string(&path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!document.contains_key("language"));
+    assert_eq!(store.get("lang").unwrap(), "");
 }
 
 #[test]
@@ -320,7 +329,7 @@ fn the_first_write_after_malformed_toml_preserves_an_exact_backup_then_repairs()
 
     assert_eq!(fs::read(&backup).unwrap(), corrupt);
     assert_eq!(recovery.path, path);
-    assert_eq!(recovery.backup_path, backup);
+    assert_eq!(recovery.backup_path.as_deref(), Some(backup.as_path()));
     assert_eq!(store.get("editor").unwrap(), "vim");
     assert_eq!(store.get("lang").unwrap(), "");
 }
@@ -368,7 +377,30 @@ fn non_utf8_toml_is_also_a_read_only_default_and_a_byte_exact_recoverable_write(
 }
 
 #[test]
-fn a_failed_corrupt_backup_rolls_back_without_replacing_the_original() {
+fn a_failed_corrupt_backup_still_applies_the_v040_update() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let backup = root.path().join("config.toml.bak");
+    let corrupt = b"this = [is not valid";
+    fs::write(&path, corrupt).unwrap();
+    fs::create_dir(&backup).unwrap();
+    let blocker = backup.join("config.toml");
+    fs::create_dir(&blocker).unwrap();
+    fs::write(blocker.join("owned"), "keep").unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    let recovery = store
+        .set_with_recovery("editor", "vim")
+        .unwrap()
+        .expect("a malformed write reports recovery even when its backup fails");
+
+    assert_eq!(recovery.backup_path, None);
+    assert_eq!(store.get("editor").unwrap(), "vim");
+    assert_eq!(fs::read_to_string(blocker.join("owned")).unwrap(), "keep");
+}
+
+#[test]
+fn a_backup_directory_preserves_the_corrupt_config_inside_it() {
     let root = TempDir::new().unwrap();
     let path = root.path().join("config.toml");
     let backup = root.path().join("config.toml.bak");
@@ -378,11 +410,42 @@ fn a_failed_corrupt_backup_rolls_back_without_replacing_the_original() {
     fs::write(backup.join("owned"), "keep").unwrap();
     let store = FileConfigStore::new(root.path());
 
-    let error = store.set("editor", "vim").unwrap_err();
+    let recovery = store
+        .set_with_recovery("editor", "vim")
+        .unwrap()
+        .expect("a malformed write must report its backup");
 
-    assert!(matches!(error, ConfigError::Io { .. }));
-    assert_eq!(fs::read(&path).unwrap(), corrupt);
+    assert_eq!(recovery.backup_path.as_deref(), Some(backup.as_path()));
+    assert_eq!(fs::read(backup.join("config.toml")).unwrap(), corrupt);
     assert_eq!(fs::read_to_string(backup.join("owned")).unwrap(), "keep");
+    assert_eq!(store.get("editor").unwrap(), "vim");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_backup_directory_symlink_never_writes_outside_the_config_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = TempDir::new().unwrap();
+    let config = root.path().join("config");
+    let outside = root.path().join("outside");
+    fs::create_dir(&config).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("owned"), "keep").unwrap();
+    let path = config.join("config.toml");
+    fs::write(&path, "this = [is not valid").unwrap();
+    symlink(&outside, config.join("config.toml.bak")).unwrap();
+    let store = FileConfigStore::new(&config);
+
+    let recovery = store
+        .set_with_recovery("editor", "vim")
+        .unwrap()
+        .expect("a malformed write must report recovery");
+
+    assert_eq!(recovery.backup_path, None);
+    assert_eq!(store.get("editor").unwrap(), "vim");
+    assert_eq!(fs::read_to_string(outside.join("owned")).unwrap(), "keep");
+    assert!(!outside.join("config.toml").exists());
 }
 
 #[test]
@@ -546,6 +609,40 @@ fn mirror_environment_is_a_child_only_overlay_and_defers_to_user_choices() {
 }
 
 #[test]
+fn mirror_environment_treats_empty_values_as_unset_but_keeps_nonempty_precedence() {
+    let root = TempDir::new().unwrap();
+    let store = FileConfigStore::new(root.path());
+    store.set("mirror.pypi", "tsinghua").unwrap();
+    store.set("mirror.github", "nju").unwrap();
+    store.set("mirror.npm", "npmmirror").unwrap();
+
+    let empty = BTreeMap::from([
+        ("UV_DEFAULT_INDEX".to_owned(), String::new()),
+        ("UV_INDEX_URL".to_owned(), String::new()),
+        ("UV_PYTHON_INSTALL_MIRROR".to_owned(), String::new()),
+        ("NPM_CONFIG_REGISTRY".to_owned(), String::new()),
+        ("npm_config_registry".to_owned(), String::new()),
+    ]);
+    let overlay = store.mirror_environment(&empty).unwrap();
+    assert!(overlay.contains_key("UV_DEFAULT_INDEX"));
+    assert!(overlay.contains_key("UV_PYTHON_INSTALL_MIRROR"));
+    assert!(overlay.contains_key("NPM_CONFIG_REGISTRY"));
+
+    let mixed = BTreeMap::from([
+        ("UV_DEFAULT_INDEX".to_owned(), String::new()),
+        ("UV_INDEX_URL".to_owned(), "https://user.example".to_owned()),
+        ("NPM_CONFIG_REGISTRY".to_owned(), String::new()),
+        (
+            "npm_config_registry".to_owned(),
+            "https://user.example".to_owned(),
+        ),
+    ]);
+    let overlay = store.mirror_environment(&mixed).unwrap();
+    assert!(!overlay.contains_key("UV_DEFAULT_INDEX"));
+    assert!(!overlay.contains_key("NPM_CONFIG_REGISTRY"));
+}
+
+#[test]
 fn mirror_updates_keep_unknown_configuration_fields() {
     let root = TempDir::new().unwrap();
     fs::write(
@@ -689,6 +786,31 @@ runners = [
             Some("stray-hole".to_owned()),
         ]
     );
+}
+
+#[test]
+fn blank_runner_name_stays_visible_in_the_raw_row_but_not_the_valid_runner_list() {
+    let root = TempDir::new().unwrap();
+    fs::write(
+        root.path().join("config.toml"),
+        concat!(
+            "[prompt]\n",
+            "runners_seeded = true\n",
+            "runners = [{ name = \"\", argv = [\"agent\", \"{{prompt}}\"] }]\n",
+        ),
+    )
+    .unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert!(store.runners().unwrap().is_empty());
+    let row = store.runner_rows().unwrap().pop().unwrap();
+    assert_eq!(row.name.as_deref(), Some(""));
+    assert_eq!(row.reason.as_deref(), Some("name"));
+    assert_eq!(
+        row.argv.as_deref(),
+        Some(["agent".to_owned(), "{{prompt}}".to_owned()].as_slice())
+    );
+    assert!(row.descriptor.starts_with('{'), "{}", row.descriptor);
 }
 
 #[test]

@@ -45,24 +45,24 @@ adjudicated · counts are Python `def test_` counts.
 | test_argspec_click_typer.py | 67 | crates/skit-language/tests/port_test_argspec_click_typer.rs | done (66) · 1 white-box |
 | test_callmatch.py | 9 | crates/skit-language/tests/port_test_callmatch.rs | done |
 | test_reconcile.py | 27 | crates/skit-language/tests/port_test_reconcile.rs | done (14) · 13 → Tier 4/5 |
-| test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (83) · 3 white-box, 6 → Tier 4 |
+| test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (85) · read enumeration and attached-value flags promoted `952394e` · 1 white-box, 6 → Tier 4 |
 | test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs | done (53) · 34 → Tier 3/4 |
 | test_shell_getopts.py | 11 | crates/skit-language/tests/port_test_shell_getopts.rs | done (9) · 2 cross-crate (plan/assemble) · no gap |
-| test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs | done (44) · 18 white-box scanner, 2 CLI |
-| test_powershell.py | 35 | crates/skit-language/tests/port_test_powershell.rs | done (17) · A+B fixed · C bool kept · 18 deferred |
+| test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs + crates/skit-cli/tests/port_test_fish_manage.rs | done (45) · managed env delivery executable `c592560` · 18 white-box scanner, 1 real-runtime CLI |
+| test_powershell.py | 35 | language + form + application ports + CLI manifest | done (20 executable / 15 architecture-closed) · global exact-name uniqueness enforced `51494e0` · A+B+runtime-scalar defaults fixed · C `[bool]` native checkbox kept |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
-| test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs | done (16) · ascii-escape gap fixed · 21 → Tier 3/4 |
-| test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (36) · 115 cross-crate/absent · 27 divergences (manifest name-key, installer argv, staging cwd, stamp path, sweep) · 6 verifier-caught defects fixed |
-| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (16) launch/invoke half · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language · 2 divergences |
+| test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs + crates/skit-cli/tests/port_test_js_inject_cli.rs | in progress (18 executable / 19 deferred) · ascii-escape gap fixed · faithful TS-suffix, Unix-0600, and bad-value prelaunch owners imported `af90a10`; native Windows runtime verification pending |
+| test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs | done (64) · 88 architecture/cross-crate/absent · all 27 implementation divergences fixed through `219a136` · exact manifest/order/parser, root-cwd install, SHA-256 node_modules marker, fresh short-circuit, resolve-before-touch, persistent lock, and transactional rollback all covered · 6 verifier-caught defects fixed |
+| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs | done (18) launch/invoke half · **bun run + JS refusal FIXED 19e5ab8** · 58 cross-crate · DETECTION half (shebang_program/infer_kind) OWED at skit-language |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
 | test_pep723_split.py | 24 | crates/skit-language/tests/port_test_pep723_split.rs (+ skit-ui re-home) | done (3) · 14 → skit-ui · 7 white-box/CLI |
 | test_metawriter.py | 24 | crates/skit-language/tests/port_test_metawriter.rs | done (29) · float-order gap fixed · 2 white-box |
 | test_template_context_quoting.py | 44 | crates/skit-runtime/tests/port_test_template_context_quoting.rs | done (28) · 16 white-box _posix_quote_state / cross-crate |
-| test_declared_params.py | 52 | crates/skit-cli/tests/port_test_declared_params.rs | done (37) · **empty-params plain line FIXED 8633128** · 14 divergences (batch fault tolerance, secret/env, template defaults) · 1 weakening caught+fixed by verify |
+| test_declared_params.py | 52 | crates/skit-cli/tests/port_test_declared_params.rs | in fix (41/11) · **empty-params plain line FIXED 8633128** · secret plaintext purge announcement fixed `0335ed1` · human secret defaults/last values masked `669abd1` · public env-source warning/no-op and secret transition order fixed `3d9c8ba` · 10 divergences (batch fault tolerance, secret/template defaults) · 1 weakening caught+fixed by verify |
 | test_source_default_semantics.py | 19 | crates/skit-form/tests/port_test_source_default_semantics.rs | done (7) · 12 cross-crate (assemble→skit-application, edit_specs→skit-cli) + 2 injection-seam |
-| test_default_semantics_review_fixes.py | 18 | crates/skit-language/tests/port_test_default_semantics_review_fixes.rs | done (6) · 12 cross-crate (flows/preset/argstate) + _record_default divergence + const-lane coercibility MUST-FIX |
+| test_default_semantics_review_fixes.py | 18 | crates/skit-language/tests/port_test_default_semantics_review_fixes.rs | implementation parity (8) · source-default coercibility fixed at the shared reconciliation seam `41a8146` · 10 cross-crate closures (flows/preset/argstate) |
 | test_effective_uv_metadata.py | 22 | crates/skit-language/tests/port_test_effective_uv_metadata.rs | done (11) · 15 cross-crate/deferred |
 | test_uv_metadata_views.py | 3 | crates/skit-cli/tests/port_test_uv_metadata_views.rs | done (5) · 1 deferred |
 | test_uv_metadata_unpinning.py | 3 | crates/skit-cli/tests/port_test_uv_metadata_unpinning.rs | done (3) · 1 deferred |
@@ -76,7 +76,7 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_store.py | 78 | crates/skit-store/tests/port_test_store.rs | in progress (34) · S2 corrupt-index backup + A2 read-path self-heal translated (c04395c) · full port ongoing |
+| test_store.py | 78 | crates/skit-store/tests/port_test_store.rs + owning language/runtime/CLI targets | in progress · store owner 34 active · 9 inference + 1 executable-target contracts moved from placeholders to their owning crates (`85f84b7`) · forced `--exe` inference moved to CLI (`769089a`) · prompt `params` completes the six mutator freshness rows (`db7f7f5`) · S2 corrupt-index backup + A2 read-path self-heal translated (c04395c) · full port ongoing |
 | test_store_fix.py | 38 | crates/skit-store/tests/port_test_store.rs | partial · repair/widening ports landed with A2 · remainder todo |
 | test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs | done (16) · temp-leak fixed · A1 retry seam + tests landed · S2/A2 gaps resolved (c04395c) · 16 deferred (crash-injection/Windows) |
 
@@ -85,37 +85,37 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_flows.py | 102 | crates/skit-application/tests/port_test_flows.rs | done (58) · 44 cross-crate (plan_for_entry/execute/transparency → skit-cli, exact messages → skit-tui) · divergences kept |
-| test_uvman.py | 36 | crates/skit-runtime/tests/port_test_uvman.rs | done (18) · 18 white-box/cross-crate · orphan-pin completeness OWED as skit-runtime unit test · 3 divergences |
+| test_uvman.py | 36 | crates/skit-runtime/tests/port_test_uvman.rs | done (19) · **checksum digests + dir-fsync swallow + unpinned-triple fail-closed FIXED 7977386** (white-box unit added in uv.rs) · 17 white-box/cross-crate · orphan-pin completeness OWED as skit-runtime unit test |
 | test_launcher.py | 38 | crates/skit-runtime/tests/port_test_launcher.rs | done (17) · 21 cross-crate |
 | test_launcher_fix.py | 12 | crates/skit-runtime/tests/port_test_launcher_fix.rs | done (11) · 1 cfg-gated Windows quoting · no gap (3 promotions stronger than oracle) |
 | test_shim.py | 38 | crates/skit-language/tests/port_test_shim.rs | done (33) · 5 cross-crate (write_injected → skit-cli) · SECRET-CRASH-SAFETY divergence flagged |
-| test_entrypoint.py | 10 | crates/skit-cli/tests/port_test_entrypoint.rs | done (9) · eager --install-completion divergence · 1 unmapped (python -m) |
+| test_entrypoint.py | 10 | crates/skit-cli/tests/port_test_entrypoint.rs | done (10) · eager completion/version precedence fixed `6189684` · 1 unmapped (`python -m`) |
 
 ### Tier 4 — CLI contracts (`skit-cli`)
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (82/58) · 2 weakenings being fixed (whitespace-constraint stored-value, reused-arg markup isolation) |
-| test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (57/93) · ~10 prompt-CLI divergences (name keeps .prompt, stdin defaults, {{目标}} undetected #14, deleted-body run exit, runner recovery msgs) + add/run --runner trim INCONSISTENCY · 2 weakenings + 1 mislabel being fixed |
-| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | in fix (65/50) · 4 undisclosed partial ports + gutted 127 stub being fixed |
+| test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | in fix (94/46) · reused-argument notice now escapes user markup while matching v0.4 `0b8bf2d` · typed run values use the form voice `33d9a4a` · missing, typed-directory, and unreadable add-source preflight fixed `22016c2`/`4fc1659`/`de754cf` · four editor contracts activated `5d0d888` · generic shebangless recovery fixed `7c4cb53` · secret plaintext purge announcement fixed `0335ed1` · explicit current passthrough satisfies blank required flags `39f9bd0` · remaining mixed add/run/params voices |
+| test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | in fix (94/56 + 1 Rust regression) · **stdin store-error 'taken' FIXED 592d236** · **edit drift hint FIXED 1cac4a4** · runner trim/pick persistence fixed `2c1f6ef` · Unicode `--set` fixed `07dfbce` · add-time unknown-runner voice fixed `3d43a40` · typed value voice fixed `33d9a4a` · compound `.prompt.md` naming fixed `19cc2ff` · missing prompt body exit fixed `0f1fdd9` · argv NUL/limit voices fixed `41f2ec0` · stable-name recovery quoting fixed `076d04c` · runner refusal diagnostics fixed `085a4b3` · insertion/flood summary fixed `2087afa` · blank runner name fixed `d92e264` · stdin boundary fixed `53bdb1c` · runner argv reasons fixed `e64407a` · params prompt-policy fixed `eeed834` · add-source preflight fixed `22016c2`/`4fc1659` · Markdown recovery fixed `c6d14ec` · malformed-runner recovery fixed `0e6d826` · runner-remove target validation fixed `f0dfcff` · doctor entry taxonomy and oracle translations fixed `06b4c99` · interpolation-off read notice fixed `52ef759` · schema edits while insertion is off fixed `4a8aa74` · remaining divergences are runner management/add/params voices |
+| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | implementation parity (72) · Unicode XID placeholder scan/render fixed `07dfbce` while command identifiers remain ASCII · brace-adjacent/triple-stache and reserved `prompt` grammar fixed `45516b3` · blank raw runner rows remain inspectable but invalid `059e24b` · malformed container recovery voice fixed `7bc5c5a` · compound naming fixed `19cc2ff` · missing-body classification fixed `0f1fdd9` · 43 architecture/cross-crate closures |
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | done (61) · **human-display layer FIXED 3bb4fbf** (sentinels, padded list, `k = v`, paused notice, choice-naming errors) · 14 cross-crate wizard/first-run |
-| test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs | done (17) · 51 cross-crate/absent (interactive add lane) |
-| test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs | done (55) · 8 deferred |
-| test_editor.py | 50 | crates/skit-cli/tests/port_test_editor.rs | in fix (20/30) · verifier caught 5 weakenings + 4 mislabels (add -e has no interactivity gate; resolve_editor divergences filed as absent) |
-| test_default_name_resolution.py | 42 | crates/skit-language/tests/port_test_default_name_resolution.rs | done (42) · 1 deferred · no gap |
+| test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs | done (19) · bare pipe/no-input lane advice fixed `157f9b7` · 11 divergences · 38 cross-crate/absent (interactive add lane) |
+| test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs + private CLI unit | implementation parity (59 REAL / 2 divergence / 2 closure across 63 translated rows) · blank index/install mirror values fixed in `c3e02b8` · axis-display owner corrected `a5710d9` · two low-level bash-path persistence divergences remain |
+| test_editor.py | 50 | crates/skit-cli/tests/port_test_editor.rs | in fix (34/16) · **name-conflict FIXED 592d236** · **editor resolution (vi default, blank fall-through, raw fallback) + Saved verb + reference-gone guard FIXED 1cac4a4** · **2 stubs promoted c1964dc** · post-editor Python flags fixed `62a7df8` · create decline fixed `7c3d615` · conflicts refuse before authoring `ea4389c` · unknown editor-draft shebang recovery fixed `7555a0e` · missing copy resync refusal fixed `add3c47` · untouched script/prompt drafts fixed `7f7be0d` · command no-copy source-management refusal fixed `4746c36` · remaining: add -e lane (#15) |
+| test_default_name_resolution.py | 42 | crates/skit-language/tests/port_test_default_name_resolution.rs | implementation parity (42 + 1 Rust additive) · Python bare match-capture binding fixed `b8cd947` · no gap |
 | test_params_edit.py | 41 | crates/skit-domain/tests/port_test_params_edit.rs | done (3) · 36 ABSENT: edit_declared (pure warn-and-continue batch editor + 9 warning codes) missing, CLI is fail-fast (#16) · 2 as_param_type |
-| test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | done (12) · 17 divergences (drafts-boundary guard absent #15, editor-validates-after-open, kind_for_draft missing, --python normalize + error wording) + 2 absent (interactive re-ask) · 1 weakening fixed |
+| test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | in fix (21/10) · **PEP 440/508 wording ×4 FIXED c5e84ea/8cf75fe** · explicit `--python` normalization fixed `f8f80f5` · unknown path shebang recovery fixed `c134c80` · malformed explicit editor flags now refuse before authoring `ea80ec4` · 9 divergences + 1 absent interactive re-ask · 1 weakening fixed |
 | test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
-| test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | done (12) · 15 cross-crate/divergence |
-| test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (18) · **read-view voices ×4 FIXED 8633128** · 6 divergences (draft not unlinked, kind_for_draft absent, pin-announce missing) ties #15 · 3 cross-crate/absent |
-| test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | done (17) · 5 deferred |
-| test_dependency_write_validation.py | 21 | crates/skit-cli/tests/port_test_dependency_write_validation.rs | done (12) · 9 divergence/cross-crate |
-| test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | done (12) · **read-view voices ×2 FIXED 8633128** · 9 cross-crate/divergence |
-| test_dependency_command_contracts.py | 20 | crates/skit-cli/tests/port_test_dependency_command_contracts.rs | done (5) · 15 divergence/cross-crate |
+| test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | done (23) · exact raw/set/preset conflict guidance fixed `0996295` · field-less save-preset refusal fixed `796a5d1` · `--set` names trim without changing values `18ec1a0` · implicit saved-tail notice fixed `0b8bf2d` · atomic complete malformed/unknown-name reporting fixed `27bbb4b` · typed value voice fixed `33d9a4a` · masked/no-write dry-run injection fixed `b439a5e` · 4 interactive/cross-crate closures |
+| test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (21) · **read-view voices ×4 FIXED 8633128** · shebang-derived Python pin note ×3 fixed `affa5b2` · 3 divergences (draft not unlinked, kind_for_draft absent) ties #15 · 3 cross-crate/absent |
+| test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | implementation parity (19) · exact CLI/TUI success and destination-write failure voices fixed `4d2c052` · 3 private/compile-time closures |
+| test_dependency_write_validation.py | 21 | crates/skit-cli/tests/port_test_dependency_write_validation.rs | implementation parity (17) · **PEP wording ×4 FIXED c5e84ea** · generic shebangless recovery fixed `7c4cb53` · 4 absent/cross-crate closures |
+| test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | in fix (16/5) · **read-view voices ×2 FIXED 8633128** · add-time unknown-runner early refusals fixed `3d43a40` · exact editor/no-input pipe advice fixed `c2187b7` · post-editor Python-flags voice fixed `62a7df8` · 5 divergences |
+| test_dependency_command_contracts.py | 20 | crates/skit-cli/tests/port_test_dependency_command_contracts.rs | in fix (10/10) · exact shared JS Python-constraint voice fixed `ceece3b` · 7 divergence + 3 closures (2 store-boundary semantic duplicates + 1 registry cross-crate) `ab901c4` |
 | test_params_model.py | 19 | crates/skit-domain/tests/port_test_params_model.rs | done (18) · 1 deferred · no gap |
 | test_show.py | 17 | crates/skit-cli/tests/port_test_show.rs | done (16) · 1 deferred |
-| test_add_feedback_contracts.py | 16 | crates/skit-cli/tests/port_test_add_feedback_contracts.rs | in fix (5/11) · add-lane cluster (#15, deduped vs siblings) · 1 tautology weakening being fixed |
-| test_edit.py | 14 | crates/skit-cli/tests/port_test_edit.rs | done (3) · 8 ABSENT: reconcile.edit_specs inlined private in cli.rs (MUST-FIX expose) · 3 exit-code divergences |
+| test_add_feedback_contracts.py | 16 | crates/skit-cli/tests/port_test_add_feedback_contracts.rs | in fix (8/8) · shebang-derived Python pin note fixed `affa5b2` · unknown-shebang and generic shebangless path recovery fixed `c134c80`/`7c4cb53` · add-lane cluster (#15, deduped vs siblings) |
+| test_edit.py | 14 | crates/skit-cli/tests/port_test_edit.rs | in fix (5/9) · command-source editor contract activated `5d0d888` · reference source-management refusal exit fixed `4746c36` · 8 ABSENT: reconcile.edit_specs inlined private in cli.rs (MUST-FIX expose) · 1 divergence |
 | test_presets.py | 12 | crates/skit-store/tests/port_test_presets.rs | done (12) · no gap |
 | test_add_review_contracts.py | 12 | crates/skit-tui/tests/port_test_add_review_contracts.rs | in fix (12/0) · async Textual add-review (skit-tui reducer) · 2 weakenings being fixed (wrap-display proxy, scroll containment) |
 | test_rename.py | 10 | crates/skit-cli/tests/port_test_rename.rs | done (6) · 4 cross-crate |
@@ -128,11 +128,11 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_prompt_tui.py | 83 | crates/skit-tui/tests/port_test_prompt_tui.rs | done (49) · **Library title FIXED 5574ff1** (工具库/庫) · 26 cross-crate run routing · Ctrl+O/Ctrl+E divergences in fix pass |
-| test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs | in fix (28/33) · 1 empty-needle weakening being fixed · 2 private-render drops |
+| test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs | in fix (30/31) · PageUp/PageDown navigation fixed `98b6bc8` · Python-compatible picked-path glob escaping fixed `0fd6d85` · 1 empty-needle weakening being fixed · 2 private-render drops |
 | test_phase1.py | 27 | crates/skit-cli/tests/port_test_phase1.rs | done (27) · no gap |
-| test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs | in fix (10/9) · 4 render-model narrowings being tightened/noted |
+| test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs + manifest | done (17 executable) · full replacement `459765a` · detail pin `462aa9e` · compact modal controls `ef7c1ef` · short Search `061d29c` · narrow Preferences `9238165` · 2 Textual-only architecture-closed |
 | test_settings_and_draft_review_atomicity.py | 16 | crates/skit-ui/tests/port_test_settings_and_draft_review_atomicity.rs | in fix (8/8) · settings-save npm-clear-first atomic-refusal ABSENT from Rust (mislabel being corrected) |
-| test_draft_and_reader_tui.py | 16 | crates/skit-tui/tests/port_test_draft_and_reader_tui.rs | done (14) · 2 deferred |
+| test_draft_and_reader_tui.py | 16 | crates/skit-tui/tests/port_test_draft_and_reader_tui.rs | in fix (15/1) · focused Ctrl+D input precedence, draft shortcut, and footer click fixed `f6516fa` · 1 remaining kept-draft shebang-first classification divergence |
 | test_reset_default_ui.py | 14 | crates/skit-tui/tests/port_test_reset_default_ui.rs | in fix (10/4) · const-field help weakening + param-row live-default fixture being fixed |
 | test_tui_edit.py | 6 | crates/skit-tui/tests/port_test_tui_edit.rs | done (1) · 5 cross-crate (editor lane) |
 | test_tui_nav.py | 5 | crates/skit-tui/tests/port_test_tui_nav.rs | done (1) · 4 cross-crate (terminal nav) |
@@ -142,9 +142,9 @@ adjudicated · counts are Python `def test_` counts.
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_i18n.py | 38 | crates/skit-i18n/tests/port_test_i18n.rs | done (28) · architecture-mapped (compiled catalog) · **3 divergences FIXED 5574ff1** (zh-MY/zh-XX→ZhCn negotiation, Library term 工具库/庫; #9 done) · 3 absent (Babel/ngettext) · 7 cross-crate |
-| test_prompt_utf8.py | 16 | crates/skit-cli/tests/port_test_prompt_utf8.rs | done (3) · 16 cross-crate (runtime UTF-8 path) |
-| test_packaging.py | 7 | crates/skit-cli/tests/port_test_packaging.rs | done (3) · 4 release-gate (Maturin wheel/PyPI) |
+| test_i18n.py | 38 | crates/skit-i18n/tests/port_test_i18n.rs + skit-cli config/manifest | done · 28 executable + 10 Babel/gettext/Python-runtime architecture-closed · 6 additive row tests · replacement and catalog/config fixes `f1dc3c7`/`7e53da4`/`5d3c303` |
+| test_prompt_utf8.py | 16 | crates/skit-cli/tests/port_test_prompt_utf8.rs | implementation parity (12 executable / 7 closures) · malformed file/stdin intake is atomic and offset-exact `9105a6d` · copy/reference edit retains invalid authored bytes for repair but refuses success `f38666b` · shared strict run/params/doctor decoder fixed `959e35f` |
+| test_packaging.py | 7 | crates/skit-cli/tests/port_test_packaging.rs + manifest | done · 3 executable + 4 Python-runtime architecture-closed · TOML 1.1 harness fixed in `606c716` |
 | test_benchmarks_tooling.py | 156 | N/A (adapt) — Rust skit-benchmarks crate is a native reimplementation with 92 #[test]s (budget/dataset/parsers/pipeline_plan/suites); the Python benchmarks/__main__ CLI does not port 1:1. Dev tooling, gate-enforced via benchmarks/check.sh + cargo bench | done (N/A) |
 | test_mutation_gate.py | 4 | N/A — Rust uses cargo-mutants (Phase 3 gate); the Python scripts/check_mutation_stats.py has no Rust analog | done (N/A) |
 | test_hermeticity.py | 1 | crates/skit-cli/tests/port_test_hermeticity.rs | done (1) · no gap |
@@ -189,13 +189,13 @@ Two follow-ups (tracked, not yet a gap fix):
   JS/TS supports an inline `// /// script\n dependencies = [...]` block; if it does and Rust cannot
   round-trip it, that is a real JS PEP-723 gap.
 
-### test_powershell.py → port_test_powershell.rs (17 done · gaps A+B fixed · C kept · 18 deferred)
+### test_powershell.py → language/form/application ports (20 executable · 15 architecture-closed)
 
-35 ported / 17 passed / 18 `#[ignore]`. The oracle's PowerShell reader spawns `pwsh` and reads its
-JSON; the Rust reader is a static tree-sitter rewrite (no subprocess). The 18 deferred are that
-architecture boundary: the subprocess plumbing, JSON-envelope robustness, and executable discovery
-tests have no static analog (the reader spawns nothing), plus 3 flows/store Tier-4 tests. The static
-reader surfaced 3 field-output gaps, all now resolved:
+The global manifest enforces 35 frozen names: 17 language semantics, 2 form-plan contracts, and 1
+application delivery contract are executable; 15 subprocess/JSON-envelope/discovery seams are
+architecture-closed. It scans all three owning crates and rejects duplicates, missing names,
+unexpected names, and active/closed overlap. The static reader surfaced the following field-output
+gaps, all now resolved or recorded:
 
 - **A (fixed): the static reader omitted `.PARAMETER` comment-based help.** The oracle reads it via
   pwsh `GetHelpContent`. Added `comment_help` to `powershell.rs`: it parses each `.PARAMETER <name>`
@@ -207,6 +207,10 @@ reader surfaced 3 field-output gaps, all now resolved:
   and `$true/$false/$null` and arrays/hashtables/operator-expressions of readable constants are
   readable; a command, subexpression, or other variable is dynamic and still degrades. Verified the
   dynamic cases (`(Get-Date)`, `$x`, `@{a=(Get-Date)}`) still degrade — no over-correction.
+- **Runtime scalar defaults (fixed):** default value decoding now follows the AST literal's runtime
+  shape independently from the declaration's static-type fallback. An unknown static type remains
+  degraded, but readable integer, float, Boolean, and string defaults keep their scalar types;
+  null, arrays, hash literals, and dynamic expressions do not invent a scalar default.
 - **C (kept as a deliberate superset improvement, reversible):** the oracle's `_STATIC_TYPES` map
   omits `System.Boolean`, so it degrades `[bool]` to free text; the Rust reader maps `[bool]` to a
   native `ParameterType::Bool` checkbox, consistent with bool in every other language. Kept as an
@@ -419,9 +423,9 @@ that owns the code:
   warnings for secret/no_secret/prompts targets; `drift_lines`/`render_warning` localized output.
   These behaviors must be shown to survive at their new layer or the gap is real.
 
-### test_shell_analyzer.py → port_test_shell_analyzer.rs (83 done · 9 deferred) — FIRST REAL GAP
+### test_shell_analyzer.py → port_test_shell_analyzer.rs (85 done · 7 deferred) — FIRST REAL GAP
 
-92 ported. Bucket 1 (pure analyzer): 83, and 2 of them failed on a genuine implementation gap that
+92 ported. Bucket 1 (pure analyzer): 85, and 2 of them failed on a genuine implementation gap that
 the fresh Rust tests missed — **the first real bug the port campaign found**:
 
 - **Fixed in `e4c00e3` (`fix(language): reconcile an envdefault by name, not by type`).**
@@ -433,10 +437,10 @@ the fresh Rust tests missed — **the first real bug the port campaign found**:
   (120 test binaries, clippy -D warnings clean). Tests: `test_reconcile_envdefault_ok`,
   `test_reconcile_envdefault_default_change_is_still_ok`.
 
-Bucket 2 (white-box Python parser internals): 1 ported via its public candidate contract; 3
-`#[ignore]`-UNMAPPED (`_read_flags`/`_walk` ReadShape `.raw` internals, the analyzer↔injector shared
-read-enumeration cross-check, and registry dynamic-import degradation — no Rust equivalent, analyzers
-are statically linked). Bucket 3 (CLI integration, 6): `params manage`/`params show`/`params resync`,
+Bucket 2 (white-box Python parser internals): 3 ported via public analyzer/injector contracts,
+including exact read enumeration and attached-value flag semantics (`952394e`); 1
+`#[ignore]`-UNMAPPED remains for registry dynamic-import degradation because analyzers are statically
+linked. Bucket 3 (CLI integration, 6): `params manage`/`params show`/`params resync`,
 `flows.plan_for_entry` degradation, and `drift_lines` rendering — deferred to Tier 4 (skit-cli).
 
 ### test_shell_inject.py → port_test_shell_inject.rs (53 done · 34 deferred)
@@ -523,9 +527,9 @@ Bucket 3 (21 deferred to Tier 3/4): `_resolve_runner`/`_gate_node` (`node --chec
 facts incl. **`test_injected_copy_is_0600` (MUST-VERIFY secret handling)**, the offline-gate
 escaper seam, and `flows.execute`/`skit run` end-to-end.
 
-### test_fish.py → port_test_fish.rs (44 done · 20 deferred · no gap)
+### test_fish.py → port_test_fish.rs / port_test_fish_manage.rs (45 done · 19 deferred · no gap)
 
-64 ported / 44 passed / 20 `#[ignore]`. No reader gap. The passing set covers the env-default idiom
+64 ported / 45 passed / 19 `#[ignore]`. No reader gap. The passing set covers the env-default idiom
 `set -q NAME; or set NAME default` (incl. the newline-continued `or` form), stray-`end` depth
 clamping, block nesting, CJK/emoji variable names via byte-exact `tests/corpus/fish/*.fish`
 (`include_str!`), and the full fish `argparse` spec grammar (`h/help`, `n/name=`, `=?`/`=+`/`=*`,
@@ -539,4 +543,5 @@ hand-written scanner (its own tokenizer, dequote, line-continuation joiner, `cla
 white-box unit tests probe that scanner directly. The Rust fish reader is tree-sitter-fish-backed and
 shares none of it, so each scanner behavior is instead exercised through the public bucket-1 tests
 (e.g. the tokenizer's quote/comment/escape handling shows up in the detection and corpus tests). 2
-more are CliRunner/real-fish integration → Tier 3/4 (no security-sensitive claim among them).
+more were CliRunner/real-fish integration. The offline manage/plan/assemble contract now has a
+unique CLI owner (`c592560`); only the real-fish runtime contract remains deferred.

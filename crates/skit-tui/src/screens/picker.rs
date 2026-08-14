@@ -525,12 +525,12 @@ impl FilePickerSession {
                 self.explorer.ensure_visible(self.visible_height);
                 Some(FilePickerEvent::Changed)
             }
-            KeyCode::Home => {
+            KeyCode::Home | KeyCode::PageUp => {
                 self.explorer.cursor_index = 0;
                 self.explorer.ensure_visible(self.visible_height);
                 Some(FilePickerEvent::Changed)
             }
-            KeyCode::End => {
+            KeyCode::End | KeyCode::PageDown => {
                 self.explorer.cursor_index = self.explorer.visible_count().saturating_sub(1);
                 self.explorer.ensure_visible(self.visible_height);
                 Some(FilePickerEvent::Changed)

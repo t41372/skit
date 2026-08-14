@@ -57,10 +57,8 @@ fn package_requirement_errors_localize_the_template_and_keep_the_value_verbatim(
 
     // `not` is catalog text. Substring translation would rewrite it inside the value.
     let value = "!!!not valid!!!";
-    for (locale, template) in [
-        ("zh-CN", "不是有效的 PEP 508 依赖描述"),
-        ("zh-TW", "不是有效的 PEP 508 相依描述"),
-    ] {
+    for (locale, template) in [("zh-CN", "不是软件包依赖"), ("zh-TW", "不是套件需求")]
+    {
         sandbox
             .command(locale)
             .args(["deps", "sample", "--dep", value])
@@ -75,7 +73,7 @@ fn package_requirement_errors_localize_the_template_and_keep_the_value_verbatim(
         .args(["deps", "sample", "--dep", value])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("invalid PEP 508 requirement"))
+        .stderr(predicate::str::contains("isn't a package requirement"))
         .stderr(predicate::str::contains(value));
 }
 
@@ -98,7 +96,7 @@ fn version_constraint_errors_localize_the_template_and_keep_the_value_verbatim()
         .args(["deps", "pinned", "--python", value])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("不是有效的 PEP 440 版本约束"))
+        .stderr(predicate::str::contains("不是 Python 版本约束"))
         .stderr(predicate::str::contains(value));
 }
 

@@ -6,9 +6,8 @@
 //!
 //! Concept mapping used throughout:
 //! - Python `pep723.requires_python_error(v)` -> `skit_language::validate_pep440_specifiers(v)`
-//!   (`None` for valid <-> `Ok(())`; an invalid value <-> `Err(PythonMetadataError)`). The Rust
-//!   typed error carries a DIFFERENT message ("invalid PEP 440 version constraint ..."), so the
-//!   message-exactness tests are divergences (see the file doc's bucket list).
+//!   (`None` for valid <-> `Ok(())`; an invalid value <-> `Err(PythonMetadataError)`) with the
+//!   oracle's localized refusal copy.
 //! - Python `pep723.requirement_error(v)` -> `skit_language::validate_pep508_requirement(v)`.
 //! - Python `cli._validate_python_flags(deps, python)` has NO public Rust function. The `skit add -`
 //!   (stdin) lane runs the same validate-then-normalize contract inside `add_with_config`
@@ -23,17 +22,17 @@
 //! - Python `cli._create_python_in_editor(...)` -> the `skit add --edit` lane (`add_draft`).
 //!
 //! Bucket disposition (31 Python defs -> 31 `#[test]`):
-//! - PASSING contract tests: sections 1 (valid + bare-version), 2 (most flag cases), 5 (dash/valid
-//!   python), 6 (prompt + extensionless kind).
+//! - PASSING contract tests: sections 1 and 2; section 5's stdin validation, dash, and valid-python
+//!   cases; and section 6's prompt and extensionless-kind cases.
 //! - DIVERGENCE (`#[ignore = "FAILING CONTRACT (divergence): ..."]`, full asserting body kept): the
-//!   validator message text (1, 5); the case-sensitive `-`/`none` normalization and blank `--python`
-//!   (2); the entire drafts boundary refusal, which is not implemented in the CLI add path (4);
+//!   entire drafts boundary refusal, which is not implemented in the CLI add path (4);
 //!   validate-before-editor (5 editor lane); the draft shebang-outranks-script-suffix rule and
 //!   draft-consume-on-success (6); the unknown-shebang refusal copy (7).
 //! - ABSENT gap stubs (`kind="absent"`): the interactive deps/python re-ask loop (3).
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 
 use skit_i18n::{Locale, Localize};
 use skit_language::{validate_pep440_specifiers, validate_pep508_requirement};
@@ -87,6 +86,41 @@ fn run(sandbox: &Sandbox, args: &[&str], stdin: Option<&str>) -> (Option<i32>, S
     (output.status.code(), flat(&combined))
 }
 
+/// Run an editor flow with terminal-backed stdin and stdout, as the oracle does.
+#[cfg(unix)]
+fn run_pty(sandbox: &Sandbox, args: &[&str], editor: &Path) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_LANG", "en");
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("EDITOR", editor);
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    });
+    let status = child.wait().unwrap();
+    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    (status.exit_code(), flat(&output))
+}
+
 /// Python `_draft`: write a body into `<SKIT_DATA_DIR>/drafts/<name>` (the real drafts home).
 fn draft(sandbox: &Sandbox, name: &str, body: &str) -> PathBuf {
     let dir = sandbox.data.path().join("drafts");
@@ -130,9 +164,6 @@ fn test_requires_python_error_is_none_for_valid_constraints() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle pep723.requires_python_error returns \
-'<value> isn't a Python version constraint (e.g. ...)'; Rust PythonMetadataError renders \
-'invalid PEP 440 version constraint \"not-a-version\": ...' (skit-language/src/lib.rs:194)."]
 fn test_requires_python_error_localizes_a_message_for_an_invalid_constraint() {
     let error = validate_pep440_specifiers("not-a-version").unwrap_err();
     let message = error.message().localize(Locale::En);
@@ -156,9 +187,6 @@ fn test_requirement_error_is_none_for_valid_requirements() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle pep723.requirement_error returns \
-'<value> isn't a package requirement (e.g. ...)'; Rust PythonMetadataError renders \
-'invalid PEP 508 requirement \"@@@\": ...' (skit-language/src/lib.rs:189)."]
 fn test_requirement_error_localizes_a_message_for_an_invalid_requirement() {
     let error = validate_pep508_requirement("@@@").unwrap_err();
     let message = error.message().localize(Locale::En);
@@ -203,9 +231,6 @@ fn test_validate_python_flags_passes_valid_and_normalizes_the_constraint() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle normalizes '-'/'none' case-insensitively \
-(cli.py:280 `cleaned.lower() in (\"-\", \"none\")`); Rust matches case-sensitively \
-(cli.rs:2928 `matches!(value.trim(), \"-\" | \"none\")`), so '  NONE  ' is validated and exits 2."]
 fn test_validate_python_flags_normalizes_dash_and_none_to_empty() {
     // Oracle: _validate_python_flags(None, "-") == "" and "none" == "" and "  NONE  " == "".
     for (value, name) in [
@@ -243,9 +268,6 @@ fn test_validate_python_flags_returns_none_when_no_python_given() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle _validate_python_flags(None, \"   \") == \"\" \
-(blank normalizes to automatic, cli.py:279-281); Rust keeps the blank and validates it \
-(cli.rs:2927-2948 trims only for the '-'/'none' check, filters only the empty string)."]
 fn test_validate_python_flags_treats_an_empty_python_as_empty() {
     // Oracle: _validate_python_flags(None, "   ") == "" (a blank constraint means automatic).
     let sandbox = Sandbox::new();
@@ -486,9 +508,6 @@ fn test_a_normal_draft_resume_still_adds_as_a_copy() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 holds and the drafts dir stays empty, but the \
-refusal reads 'invalid PEP 440 version constraint ...' not the oracle's 'isn't a Python version \
-constraint' (skit-language/src/lib.rs:194)."]
 fn test_stdin_garbage_python_exits_2_and_leaves_the_drafts_dir_empty() {
     let sandbox = Sandbox::new();
     let (code, out) = run(
@@ -503,9 +522,6 @@ fn test_stdin_garbage_python_exits_2_and_leaves_the_drafts_dir_empty() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 holds and the drafts dir stays empty, but the \
-refusal reads 'invalid PEP 508 requirement ...' not the oracle's 'isn't a package requirement' \
-(skit-language/src/lib.rs:189)."]
 fn test_stdin_garbage_dep_exits_2_and_leaves_the_drafts_dir_empty() {
     let sandbox = Sandbox::new();
     let (code, out) = run(
@@ -546,46 +562,42 @@ fn test_stdin_valid_python_lands_in_the_stored_block() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the editor lane validates AFTER the editor opens — \
-add_draft (cli.rs:1399-1440) opens the editor, then add validates, and keeps the draft on failure, \
-so the editor DID run and a draft WAS materialized (oracle cli.py:309-319 validates first)."]
 fn test_editor_lane_refuses_bad_python_before_opening_the_editor() {
     // The editor lane validates BEFORE the editor opens (the name-conflict precedent): a bad
     // --python is refused and open_in_editor is never called (no authoring session cost).
     let sandbox = Sandbox::new();
-    let marker = with_sentinel_editor(&sandbox);
-    let (code, out) = run(
+    let (editor, marker) = with_sentinel_editor(&sandbox);
+    let (code, out) = run_pty(
         &sandbox,
         &["add", "--edit", "-n", "edX", "--python", "garbage"],
-        None,
+        &editor,
     );
-    assert_eq!(code, Some(2), "{out}");
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("isn't a Python version constraint"), "{out}");
     assert!(!marker.exists(), "the editor never opened"); // opened == []
     assert!(drafts_dir_is_empty(&sandbox)); // no draft was materialized
 }
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the editor lane validates AFTER the editor opens — \
-add_draft (cli.rs:1399-1440) opens the editor, then add validates, so a bad --dep does not refuse \
-before the editor runs (oracle cli.py:322-329 validates first)."]
 fn test_editor_lane_refuses_bad_dep_before_opening_the_editor() {
     let sandbox = Sandbox::new();
-    let marker = with_sentinel_editor(&sandbox);
-    let (code, out) = run(
+    let (editor, marker) = with_sentinel_editor(&sandbox);
+    let (code, out) = run_pty(
         &sandbox,
         &["add", "--edit", "-n", "edY", "--dep", "@@@"],
-        None,
+        &editor,
     );
-    assert_eq!(code, Some(2), "{out}");
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("isn't a package requirement"), "{out}");
     assert!(!marker.exists(), "the editor never opened");
+    assert!(drafts_dir_is_empty(&sandbox));
 }
 
 /// Configure a fake editor that (a) touches a marker so a run is observable and (b) writes valid
-/// python so a materialized draft is non-empty. Returns the marker path. The oracle asserts the
-/// editor NEVER runs, so the marker must stay absent for the test to pass.
+/// python so a materialized draft is non-empty. The oracle asserts the marker stays absent.
 #[cfg(unix)]
-fn with_sentinel_editor(sandbox: &Sandbox) -> PathBuf {
+fn with_sentinel_editor(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt as _;
     let marker = sandbox.config.path().join("editor-ran");
     let editor = sandbox.config.path().join("editor.sh");
@@ -605,7 +617,7 @@ fn with_sentinel_editor(sandbox: &Sandbox) -> PathBuf {
         format!("editor = {:?}\n", editor.display().to_string()),
     )
     .unwrap();
-    marker
+    (editor, marker)
 }
 
 // ==========================================================================
@@ -710,9 +722,6 @@ fn test_prompt_single_extension_draft_resumes_as_prompt_end_to_end() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an unknown shebang on an on-disk file falls through to \
-'could not infer the entry kind; pass --kind KIND' (cli.rs:2896-2900); the oracle names the \
-interpreter gap and offers '--exe to run it directly' (cli.py:2040-2052)."]
 fn test_nondraft_awk_shebang_refusal_offers_the_exe_escape() {
     let sandbox = Sandbox::new();
     let file = sandbox.data.path().join("report.awkish");

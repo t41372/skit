@@ -39,12 +39,8 @@
 //! Buckets (recorded per test in the structured result):
 //! - REAL asserting `#[test]` (API exists, behavior agrees): the unpin/preserve/clear/valid deps
 //!   writes, the deps-before-needs abort order, the npm-skip, the whitespace strip-and-drop, the
-//!   `-`/`none` normalization, and the suggest filter + no-block add.
-//! - DIVERGENCE (full asserting body, `#[ignore]`d): the refusal COPY differs. The Rust validator
-//!   says `invalid PEP 508 requirement "@@@": …` / `invalid PEP 440 version constraint …`
-//!   (skit-language lib.rs:123-127), not the oracle's `… isn't a package requirement …` /
-//!   `… isn't a Python version constraint …`. The refusal fires at exit 2 either way; only the
-//!   wording diverges, so fixing the copy alone turns each green.
+//!   `-`/`none` normalization, the oracle PEP 440/508 refusal copy, and the suggest filter +
+//!   no-block add, plus the complete escape for an unclassifiable file outside the drafts directory.
 //! - ABSENT / GAP (full asserting body, `#[ignore]`d, MUST-FIX): the drafts guard and the
 //!   draft-aware "can't classify" variant (Python cli.py:1894-1933, cli.py:2053-2066) are not
 //!   built in `add_with_config`, so a draft added as exe/ref SUCCEEDS instead of being refused,
@@ -167,10 +163,6 @@ fn flat(output: &Output) -> String {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the refusal fires (exit 2, meta+block byte-unchanged), \
-but the Rust validator's copy is `invalid PEP 508 requirement \"@@@\": …` (skit-language \
-lib.rs:123) — the oracle substring `isn't a package requirement` is absent. Fixing the wording \
-alone turns this green. Python ref test_dependency_write_validation.py:75-88."]
 fn test_deps_garbage_dep_is_refused_and_nothing_changes() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_source(
@@ -188,10 +180,6 @@ fn test_deps_garbage_dep_is_refused_and_nothing_changes() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the refusal fires (exit 2, block byte-unchanged), but \
-the Rust validator's copy is `invalid PEP 440 version constraint \"not-a-version\": …` \
-(skit-language lib.rs:126) — the oracle substring `isn't a Python version constraint` is absent. \
-Python ref test_dependency_write_validation.py:91-99."]
 fn test_deps_garbage_python_is_refused_and_nothing_changes() {
     let sandbox = Sandbox::new();
     sandbox.add_python_print("a");
@@ -310,10 +298,6 @@ fn test_deps_npm_entry_takes_an_npm_shaped_dep_that_fails_pep508() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the store chokepoint moved to the CLI `deps` handler, \
-which DOES refuse `@@@` (exit 2, nothing written), but its copy is `invalid PEP 508 requirement \
-\"@@@\": …` — the oracle substring `isn't a package requirement` is absent. Python ref \
-test_dependency_write_validation.py:189-194."]
 fn test_update_dependencies_uv_invalid_dep_raises_usage_error() {
     let sandbox = Sandbox::new();
     sandbox.add_python_print("a");
@@ -325,10 +309,6 @@ fn test_update_dependencies_uv_invalid_dep_raises_usage_error() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the CLI chokepoint DOES refuse `not-a-version` (exit \
-2), but its copy is `invalid PEP 440 version constraint \"not-a-version\": …` — the oracle \
-substring `isn't a Python version constraint` is absent. Python ref \
-test_dependency_write_validation.py:197-201."]
 fn test_update_dependencies_uv_invalid_python_raises_usage_error() {
     let sandbox = Sandbox::new();
     sandbox.add_python_print("a");
@@ -505,10 +485,6 @@ fn test_shebang_less_unclassifiable_draft_gets_the_classify_variant() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the SAME unclassifiable file OUTSIDE drafts/ IS refused \
-(exit 2), but with the generic `could not infer the entry kind; pass --kind KIND` (cli.rs:2896), \
-not the full escape naming --exe/--cmd. The `kept draft` negative already holds. Fixing the copy \
-alone turns this green. Python ref test_dependency_write_validation.py:327-338."]
 fn test_same_unclassifiable_file_outside_drafts_gets_the_full_escape() {
     // The SAME shebang-less weird-extension file OUTSIDE drafts/ is not a draft, so it keeps the
     // full escape message naming --exe and --cmd (which an on-disk file can take).

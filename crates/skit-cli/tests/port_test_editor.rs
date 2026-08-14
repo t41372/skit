@@ -328,7 +328,6 @@ fn test_resolve_editor_editor_env_when_no_visual() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle resolves the unix platform default [\"vi\"] and launches it (editor.py:30-31,46); Rust has no platform default and exits 2 \"configure an editor before you use edit\" (cli.rs:3289), the editor never launched. Verified against the built binary."]
 fn test_resolve_editor_platform_default_unix() {
     // Nothing configured, VISUAL/EDITOR unset -> the oracle falls all the way through to the unix
     // platform default ["vi"] and launches it (`resolve_editor() == ["vi"]`). Observable: a fake
@@ -418,7 +417,6 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle skips a blank/whitespace $VISUAL and uses $EDITOR (editor.py:39,46); Rust uses VISUAL=\"   \" as-is, so shlex yields [] and it exits 2 \"the editor command is empty\" (cli.rs:3295) and $EDITOR is never launched. Verified against the built binary."]
 fn test_resolve_editor_whitespace_visual_falls_through_to_editor() {
     // A blank/whitespace-only $VISUAL is treated as unset, so a good $EDITOR still wins and is
     // launched (`resolve_editor() == ["nano"]`). Observable: the $EDITOR program is the one the edit
@@ -448,23 +446,94 @@ fn test_resolve_editor_whitespace_visual_falls_through_to_editor() {
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor. Rust config side DOES skip a whitespace editor (configured.trim().is_empty(), cli.rs:3286), but env candidates are not skipped. MUST-FIX: src/skit/editor.py:46."]
 fn test_resolve_editor_whitespace_config_falls_through_to_visual() {
-    // A whitespace-only config editor falls through to $VISUAL.
-    //   config.save_editor("   "); setenv VISUAL="mvim -f"; setenv EDITOR=nano
-    //   assert resolve_editor() == ["mvim", "-f"]
+    // A whitespace-only config editor falls through to $VISUAL, which beats $EDITOR
+    // (`resolve_editor() == ["mvim", "-f"]` shape). Observable: the $VISUAL program is
+    // the one the edit lane must invoke while $EDITOR stays untouched.
+    let sandbox = Sandbox::new();
+    sandbox.add_python("a", "print(1)\n");
+    sandbox
+        .command()
+        .args(["config", "editor", "   "])
+        .output()
+        .unwrap();
+    let visual_sentinel = sandbox.scratch.path().join("visual.launched");
+    let visual = writing_editor(
+        sandbox.scratch.path(),
+        "visual",
+        "import rich\nprint('x')\n",
+        &visual_sentinel,
+    );
+    let editor_sentinel = sandbox.scratch.path().join("editor.launched");
+    let editor = writing_editor(
+        sandbox.scratch.path(),
+        "editor",
+        "print('editor')\n",
+        &editor_sentinel,
+    );
+    let output = sandbox
+        .command()
+        .env("VISUAL", &visual)
+        .env("EDITOR", &editor)
+        .args(["edit", "a"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert!(
+        visual_sentinel.exists(),
+        "a whitespace config editor must fall through to VISUAL"
+    );
+    assert!(!editor_sentinel.exists(), "VISUAL wins over EDITOR");
+    assert!(sandbox.stored_script("a").contains("import rich"));
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor; Rust has no platform default and does not skip whitespace env candidates. MUST-FIX: src/skit/editor.py:46 (all-blank -> platform default)."]
 fn test_resolve_editor_all_whitespace_candidates_use_platform_default() {
-    // Every candidate blank -> the platform default, not a whitespace string handed to shlex.
-    //   config.save_editor("  "); setenv VISUAL=" "; setenv EDITOR=""; sys.platform="linux"
-    //   assert resolve_editor() == ["vi"]
+    // Every candidate blank -> the platform default `vi`, not a whitespace string
+    // handed to shlex (`resolve_editor() == ["vi"]`). Observable: a fake `vi` placed
+    // first on PATH is the program the edit lane must invoke.
+    let sandbox = Sandbox::new();
+    sandbox.add_python("a", "print(1)\n");
+    sandbox
+        .command()
+        .args(["config", "editor", "  "])
+        .output()
+        .unwrap();
+    let sentinel = sandbox.scratch.path().join("vi-default.launched");
+    let bin = sandbox.scratch.path().join("pathbin-default");
+    fs::create_dir_all(&bin).unwrap();
+    let content = sandbox.scratch.path().join("vi-default.content");
+    fs::write(&content, "import rich\nprint('x')\n").unwrap();
+    write_exec(
+        &bin.join("vi"),
+        &format!(
+            "#!/bin/sh\ntouch '{}'\ncat '{}' > \"$1\"\n",
+            sentinel.display(),
+            content.display()
+        ),
+    );
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = sandbox
+        .command()
+        .env("VISUAL", " ")
+        .env("EDITOR", "")
+        .env("PATH", path)
+        .args(["edit", "a"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert!(
+        sentinel.exists(),
+        "all-blank candidates must resolve the platform default vi"
+    );
+    assert!(sandbox.stored_script("a").contains("import rich"));
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle catches the shlex ValueError and falls back to the raw string as argv[0] (editor.py:47-52); Rust's shlex::split returns None and it exits 2 \"the editor command has invalid quoting\" (cli.rs:3294), never launching. Verified against the built binary."]
 fn test_resolve_editor_unbalanced_quotes_falls_back_to_raw() {
     // An unbalanced-quote value is unusable as a parsed command; the oracle treats the whole raw
     // string as argv[0] (`resolve_editor() == ['weird "editor']`). Observable: a fake editor whose
@@ -614,7 +683,6 @@ fn test_save_editor_clear_when_absent_does_not_raise() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): success verb — the oracle prints \"Saved a\" on an edit; Rust prints \"Edited: a (a)\". Exit 0 and the stored-copy update both match. Verified against the built binary."]
 fn test_edit_opens_copy_source() {
     // edit opens the copy's stored source; a change is saved back and reported with "Saved a". (The
     // oracle's white-box opened-path capture == scripts/a/script.py is observed here as the stored
@@ -669,7 +737,6 @@ fn test_edit_opens_reference_original() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): source_path returns the (now missing) reference path, so Rust LAUNCHES the editor on it and exits 0; the oracle refuses BEFORE launching with exit 1 and 'gone' in the output (src/skit/cli.py edit reference-gone guard). Verified against the built binary."]
 fn test_edit_reference_source_gone() {
     // A reference whose original was deleted -> exit 1, "gone", editor never launched.
     let sandbox = Sandbox::new();
@@ -739,19 +806,22 @@ fn test_edit_unknown_confirmed_creates() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): declining the create offer exits 130 (CliError::Aborted) — the oracle returns a clean exit 0 on a decline (nothing created either way). Verified against the built binary via PTY."]
 fn test_edit_unknown_declined_creates_nothing() {
     // Declining -> clean exit 0 and nothing created.
     let sandbox = Sandbox::new();
+    let sentinel = sandbox.scratch.path().join("declined.launched");
+    let editor = touch_only_editor(sandbox.scratch.path(), "declined", &sentinel);
     let (code, _out) = run_pty(
         &["edit", "nope"],
         sandbox.data.path(),
         sandbox.state.path(),
         sandbox.config.path(),
-        None,
+        Some(&editor),
         &[b"n\n"],
     );
     assert_eq!(code, 0);
+    assert!(!sentinel.exists());
+    assert!(!sandbox.data.path().join("scripts/nope").exists());
     assert!(!sandbox.resolvable("nope"));
 }
 
@@ -907,7 +977,6 @@ fn test_add_edit_shell_draft_onboards_picked_constants() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): message wording — the oracle's refusal names the \"python flags\" and the draft's \"shell\" kind; Rust says \"shell entries do not take package dependencies\" (no \"python flags\"). Exit 2, the \"shell\" kind, and nothing-added all match. Verified against the built binary."]
 fn test_add_edit_dep_flag_on_non_python_draft_is_refused() {
     // --dep is python-only: riding it on a draft whose shebang names another kind is REFUSED
     // (exit 2), the refusal names the python flags AND the draft's actual kind, and nothing is added.
@@ -937,21 +1006,22 @@ fn test_add_edit_dep_flag_on_non_python_draft_is_refused() {
 // --------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the -e lane does NOT pre-check the name — add_draft creates the draft and LAUNCHES the editor (cli.rs:1399-1415) before add() discovers the conflict; the oracle refuses BEFORE the editor opens, so the editor is never launched. Verified against the built binary (editor sentinel appears)."]
 fn test_add_edit_python_name_taken_refuses_before_the_editor() {
     // A taken name is caught BEFORE $EDITOR opens; the editor is never launched.
     let sandbox = Sandbox::new();
     sandbox.add_python("taken", "print(1)\n");
     let sentinel = sandbox.scratch.path().join("taken.launched");
     let editor = touch_only_editor(sandbox.scratch.path(), "taken", &sentinel);
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "taken"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(combined(&output).contains("already taken"));
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "taken"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(output.contains("already taken"));
     assert!(!sentinel.exists(), "the editor must not be launched");
 }
 
@@ -1034,23 +1104,30 @@ fn test_add_edit_non_interactive_errors() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an untouched draft makes Rust error 'the draft is empty and was kept at …' with exit 2 (cli.rs:1416-1419); the oracle exits 0 with 'Nothing was written, so nothing was added.' and adds nothing. Verified against the built binary."]
 fn test_add_edit_empty_content_adds_nothing() {
     // Leaving the starter unchanged -> exit 0, "Nothing was written", nothing added.
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .command()
-        .env("EDITOR", "/bin/true")
-        .args(["add", "-e", "--name", "ghost"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert!(combined(&output).contains("Nothing was written"));
+    let sentinel = sandbox.scratch.path().join("empty.launched");
+    let editor = touch_only_editor(sandbox.scratch.path(), "empty", &sentinel);
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "ghost"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("Nothing was written, so no script was added."),
+        "{output}"
+    );
+    assert!(sentinel.exists(), "the editor must open");
     assert!(!sandbox.resolvable("ghost"));
+    assert!(sandbox.draft_files().is_empty(), "{output}");
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an unregistered shebang (awk) is inferred as python (infer_kind fallback, cli.rs:1425-1429) and ADDED as a copy with exit 0; the oracle refuses (exit 2, 'names no interpreter skit knows', --kind escape), keeps the draft under data_dir/drafts/, and fabricates nothing. Verified against the built binary."]
 fn test_add_edit_unregistered_shebang_refused_keeps_draft() {
     // An unregistered-interpreter shebang can't be honored: refuse (exit 2), keep the draft, add
     // nothing — never fabricate a python entry.
@@ -1062,34 +1139,57 @@ fn test_add_edit_unregistered_shebang_refused_keeps_draft() {
         "#!/usr/bin/awk -f\nBEGIN { print 1 }\n",
         &sentinel,
     );
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "aw"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    let text = combined(&output);
-    assert!(text.contains("names no interpreter skit knows"));
-    assert!(text.contains("--kind")); // the escape hatch
-    assert!(!sandbox.draft_files().is_empty()); // the draft survived
+    let (code, text) = run_pty(
+        &["add", "-e", "--name", "aw"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 2, "{text}");
+    let usage = text
+        .find("The draft's #! names no interpreter skit knows")
+        .expect("the editor-draft usage voice");
+    let kept = text
+        .find("Your draft was kept at")
+        .expect("the short kept-draft notice");
+    assert!(usage < kept, "usage must precede the kept notice: {text}");
+    assert!(text.contains("skit add ") && text.contains(" --kind <language>"));
+    assert!(!text.contains("--exe")); // editor drafts never use the regular-path escape
+    assert_eq!(text.matches("Your draft was kept at").count(), 1, "{text}");
+    assert!(sentinel.exists(), "the editor authored the rejected draft");
+    let drafts = sandbox.draft_files();
+    assert_eq!(drafts.len(), 1, "the draft survived: {text}");
+    assert_eq!(
+        drafts[0].parent(),
+        Some(sandbox.data.path().join("drafts").as_path())
+    );
     assert!(!sandbox.resolvable("aw")); // nothing fabricated
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the untouched starter is KEPT (Rust errors 'the draft is empty and was kept at …', exit 2) rather than unlinked and reported as 'Nothing was written' with exit 0. Verified against the built binary."]
 fn test_add_edit_untouched_starter_unlinks_the_draft() {
     // The untouched-starter cancel is pure litter -> unlink it; the temp is gone after "Nothing was
     // written".
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .command()
-        .env("EDITOR", "/bin/true")
-        .args(["add", "-e", "--name", "ghost"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert!(combined(&output).contains("Nothing was written"));
+    let sentinel = sandbox.scratch.path().join("untouched.launched");
+    let editor = touch_only_editor(sandbox.scratch.path(), "untouched", &sentinel);
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "ghost"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("Nothing was written, so no script was added."),
+        "{output}"
+    );
+    assert!(sentinel.exists(), "the editor must open");
+    assert!(!sandbox.resolvable("ghost"));
     assert!(
         sandbox.draft_files().is_empty(),
         "the litter was cleaned up"
@@ -1097,19 +1197,27 @@ fn test_add_edit_untouched_starter_unlinks_the_draft() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): headless `add --prompt` reads the body from stdin (empty here) and ADDS an empty prompt entry with exit 0 (cli.rs:1048-1050); the prompt-editor lane (which unlinks an untouched starter and reports 'Nothing was written') is only reached on a tty. Verified against the built binary."]
 fn test_add_prompt_editor_untouched_starter_unlinks_the_draft() {
     // Same for the prompt editor lane: an untouched starter is unlinked, not left behind.
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .command()
-        .env("EDITOR", "/bin/true")
-        .args(["add", "--prompt", "--name", "ghostp"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert!(combined(&output).contains("Nothing was written"));
+    let sentinel = sandbox.scratch.path().join("prompt-untouched.launched");
+    let editor = touch_only_editor(sandbox.scratch.path(), "prompt-untouched", &sentinel);
+    let (code, output) = run_pty(
+        &["add", "--prompt", "--name", "ghostp"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("Nothing was written, so no prompt was added."),
+        "{output}"
+    );
+    assert!(sentinel.exists(), "the editor must open");
     assert!(!sandbox.resolvable("ghostp"));
+    assert!(sandbox.draft_files().is_empty(), "{output}");
 }
 
 #[test]
@@ -1168,22 +1276,24 @@ fn test_add_edit_editor_error_exits_one() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): message wording — the oracle's store.py says \"The name <name> is already taken.\" (\"taken\"); Rust says \"already exists\". Exit 1 and the name both match. Verified against the built binary."]
 fn test_add_edit_name_conflict_exits_one() {
     // A store name conflict is a failed operation (exit 1) that names the entry and says "taken".
     let sandbox = Sandbox::new();
     sandbox.add_python("dup", "print(1)\n");
     let sentinel = sandbox.scratch.path().join("dup.launched");
     let editor = writing_editor(sandbox.scratch.path(), "dup", "print('x')\n", &sentinel);
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "dup"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert!(combined(&output).contains("dup")); // the name is surfaced
-    assert!(combined(&output).contains("taken")); // the StoreError is surfaced
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "dup"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(output.contains("dup")); // the name is surfaced
+    assert!(output.contains("taken")); // the StoreError is surfaced
+    assert!(!sentinel.exists(), "the editor must not be launched");
 }
 
 #[test]
@@ -1229,21 +1339,37 @@ fn test_add_edit_writes_and_reports_managed_and_secret() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `params <command> --resync` returns CliError::Usage 'source management applies only to a stored copy' -> exit 2; the oracle treats it as a failed operation, exit 1 (src/skit/cli.py params). Verified against the built binary. Same exit-1-vs-2 family as the completed source-managed-params fix (task #13)."]
 fn test_params_edit_command_entry_refused() {
     // A command entry has no editable source -> params source-edit is refused (exit 1).
     let sandbox = Sandbox::new();
     sandbox.add_command("echo {x}", "ec");
+    let meta = sandbox
+        .data
+        .path()
+        .join("scripts")
+        .join("ec")
+        .join("meta.toml");
+    let meta_before = fs::read(&meta).unwrap();
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
     let output = sandbox
         .command()
         .args(["params", "ec", "--resync"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
+    assert_eq!(
+        fs::read(meta).unwrap(),
+        meta_before,
+        "metadata is unchanged"
+    );
+    assert_eq!(
+        fs::read_dir(sandbox.state.path()).unwrap().count(),
+        0,
+        "no state was written"
+    );
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): with the stored copy deleted, Rust reads an empty source, resyncs it (a no-op) and exits 0; the oracle refuses with exit 1 and 'no stored copy'. Verified against the built binary."]
 fn test_params_edit_missing_copy_refused() {
     // A copy whose stored source is gone -> params --resync refuses (exit 1, "no stored copy").
     let sandbox = Sandbox::new();
@@ -1256,11 +1382,38 @@ fn test_params_edit_missing_copy_refused() {
             fs::remove_file(&path).unwrap();
         }
     }
+    let meta_before = sandbox.stored_meta("a");
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+    let view = sandbox.command().args(["params", "a"]).output().unwrap();
+    assert_eq!(view.status.code(), Some(0), "{}", combined(&view));
     let output = sandbox
         .command()
         .args(["params", "a", "--resync"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert!(combined(&output).contains("no stored copy"));
+    assert!(
+        combined(&output).contains("a has no stored copy to edit."),
+        "{}",
+        combined(&output)
+    );
+    assert_eq!(
+        sandbox.stored_meta("a"),
+        meta_before,
+        "metadata is unchanged"
+    );
+    assert_eq!(
+        fs::read_dir(sandbox.state.path()).unwrap().count(),
+        0,
+        "no state was written"
+    );
+    let remaining = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        remaining,
+        ["meta.toml"],
+        "the missing payload was not recreated"
+    );
 }

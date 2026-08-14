@@ -220,6 +220,24 @@ fn completion_adapters_follow_each_latest_main_degradation_contract() {
 }
 
 #[test]
+fn runner_remove_zsh_completion_keeps_both_target_specs_without_an_empty_conflict_group() {
+    let mut output = Vec::new();
+    write_completion(Shell::Zsh, &mut output);
+    let output = String::from_utf8(output).unwrap();
+    let row_spec = concat!(
+        "'--row=[Remove one malformed raw row by its zero-based index or ",
+        "\\`container\\`]:ROW:_default' \\\n"
+    );
+
+    assert!(output.contains(row_spec), "{output}");
+    assert!(!output.contains(&format!("(){}", row_spec)), "{output}");
+    assert!(
+        output.contains("'::name -- Stable runner name:_default' \\\n"),
+        "{output}"
+    );
+}
+
+#[test]
 fn destructive_and_create_prompts_have_explicit_automation_paths() {
     assert!(user_confirmed("y", false));
     assert!(user_confirmed("YES", false));
@@ -288,11 +306,15 @@ fn source_helpers_preserve_bytes_names_and_storage_conventions() {
     let source = root.path().join("archive.custom");
     fs::write(&source, b"alpha\r\nbeta\r\n").unwrap();
 
-    let snapshot = read_source(&source, false).unwrap();
+    let snapshot = read_source(&source, false, false).unwrap();
 
     assert_eq!(snapshot.bytes, b"alpha\r\nbeta\r\n");
-    assert_eq!(source_default_name(&source), "archive");
-    assert_eq!(source_default_name(Path::new("")), "script");
+    assert_eq!(source_default_name(&source, false), "archive");
+    assert_eq!(source_default_name(Path::new(""), false), "script");
+    assert_eq!(
+        source_default_name(Path::new("review.prompt.md"), true),
+        "review"
+    );
     assert_eq!(
         [
             ("python", "script.py"),
@@ -329,7 +351,7 @@ fn source_helpers_preserve_bytes_names_and_storage_conventions() {
     assert!(snapshot.permissions.unix_mode.is_none());
 
     let missing = root.path().join("missing");
-    let error = read_source(&missing, false).unwrap_err();
+    let error = read_source(&missing, false, false).unwrap_err();
     assert!(matches!(
         error,
         CliError::Source {
@@ -618,7 +640,9 @@ fn adapter_only_error_paths_do_not_require_process_global_configuration() {
     assert!(
         runner_error
             .to_string()
-            .contains("prompt runner \"missing\" is not configured"),
+            .contains(
+                "Unknown runner: missing. Configured runners: claude, codex, opencode, amp, antigravity, copilot, cursor, pi"
+            ),
         "{runner_error}"
     );
     let valid_store = FileStore::new(root.path().join("valid-data"));
@@ -646,6 +670,70 @@ fn adapter_only_error_paths_do_not_require_process_global_configuration() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn test_axis_display_helpers_exact() {
+    let displayed = |store: &FileConfigStore, key: &str| {
+        let raw = store.get(key).unwrap();
+        config_display_value(store, key, &raw).unwrap()
+    };
+
+    let full_dir = TempDir::new().unwrap();
+    let full = FileConfigStore::new(full_dir.path());
+    full.set_many(&BTreeMap::from([
+        ("mirror.pypi".to_owned(), "tsinghua".to_owned()),
+        ("mirror.github".to_owned(), "nju".to_owned()),
+        ("mirror.npm".to_owned(), "npmmirror".to_owned()),
+    ]))
+    .unwrap();
+    assert_eq!(displayed(&full, "mirror.pypi"), "tsinghua");
+    assert_eq!(displayed(&full, "mirror.github"), "nju");
+    assert_eq!(displayed(&full, "mirror.npm"), "npmmirror");
+
+    let custom_dir = TempDir::new().unwrap();
+    fs::write(
+        custom_dir.path().join("config.toml"),
+        concat!(
+            "[mirror]\n",
+            "enabled = true\n",
+            "pypi = \"https://my/simple\"\n",
+            "python_install = \"https://my/py/\"\n",
+            "uv_binary = \"https://my/uv\"\n",
+            "npm = \"https://my/npm\"\n",
+        ),
+    )
+    .unwrap();
+    let custom = FileConfigStore::new(custom_dir.path());
+    assert_eq!(displayed(&custom, "mirror.pypi"), "https://my/simple");
+    assert_eq!(custom.get("mirror.github").unwrap(), "custom");
+    assert_eq!(
+        displayed(&custom, "mirror.github"),
+        "https://my/py/ + https://my/uv"
+    );
+    assert_eq!(displayed(&custom, "mirror.npm"), "https://my/npm");
+
+    for (source, expected) in [
+        (
+            "[mirror]\npython_install = \"https://my/py/\"\n",
+            "https://my/py/ + off",
+        ),
+        (
+            "[mirror]\nuv_binary = \"https://my/uv\"\n",
+            "off + https://my/uv",
+        ),
+    ] {
+        let half_dir = TempDir::new().unwrap();
+        fs::write(half_dir.path().join("config.toml"), source).unwrap();
+        let half = FileConfigStore::new(half_dir.path());
+        assert_eq!(displayed(&half, "mirror.github"), expected);
+    }
+
+    let off_dir = TempDir::new().unwrap();
+    let off = FileConfigStore::new(off_dir.path());
+    assert_eq!(displayed(&off, "mirror.pypi"), "off");
+    assert_eq!(displayed(&off, "mirror.github"), "off");
+    assert_eq!(displayed(&off, "mirror.npm"), "off");
 }
 
 #[test]
@@ -724,6 +812,35 @@ fn tui_run_forms_preserve_saved_values_but_never_prefill_secrets() {
             .label,
         "Extra agent arguments"
     );
+}
+
+#[test]
+fn interactive_runner_value_tracks_selection_separately_from_the_default() {
+    let mut args = RunArgs {
+        selector: "prompt".to_owned(),
+        values: Vec::new(),
+        preset: None,
+        save_preset: None,
+        runner: None,
+        runner_was_picked: false,
+        dry_run: false,
+        no_input: false,
+        plain: false,
+        raw: false,
+        forget_args: false,
+        extra_args: Vec::new(),
+    };
+    let baseline = BTreeMap::new();
+    let mut values =
+        SubmittedValues::from([("_skit_runner".to_owned(), FieldValue::text("codex"))]);
+
+    apply_interactive_run_values(&mut args, &values, &baseline).unwrap();
+    assert_eq!(args.runner.as_deref(), Some("codex"));
+    assert!(!args.runner_was_picked);
+
+    values.insert("_skit_runner_picked".to_owned(), FieldValue::boolean(true));
+    apply_interactive_run_values(&mut args, &values, &baseline).unwrap();
+    assert!(args.runner_was_picked);
 }
 
 #[test]

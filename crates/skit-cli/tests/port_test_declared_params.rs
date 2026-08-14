@@ -39,8 +39,8 @@
 //! - DIVERGENCE (full asserting body, `#[ignore]`d): the assertion is faithful to the oracle
 //!   and compiles; it fails because Rust diverges. Fixing the impl and deleting the `#[ignore]`
 //!   line turns it green. These capture: the absent confirmation/warning strings
-//!   ("Declared parameters:", "has no managed parameters", "isn't secret", "Ignored a
-//!   malformed value", "Removed previously stored plaintext"), the `params` batch
+//!   ("Declared parameters:", "has no managed parameters", "Ignored a malformed value",
+//!   "Removed previously stored plaintext"), the `params` batch
 //!   fault-tolerance gap (a malformed/bad value hard-errors exit 2 instead of warning at
 //!   exit 0), the `add --cmd` placeholder pre-seeding (which makes `--add <placeholder>`
 //!   refuse with exit 2), the non-placeholder template `--add` defaulting to `flag` not `env`,
@@ -786,26 +786,53 @@ fn test_cli_declared_edit_with_json_emits_the_final_read_view() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): --env-source on a DECLARED non-secret param must warn \"<name> isn't secret\" (it only applies to secrets) instead of silently applying (src/skit/params.py:_apply_declared_tweaks env-source-not-secret). The Rust product has no such warning (absent from skit-i18n) and applies env_source to the non-secret row."]
 fn test_cli_env_source_on_non_secret_declared_param_warns() {
     let workspace = lib();
     workspace.add_exe("prog");
-    workspace.run(&["params", "prog", "--add", "WIDTH", "--deliver", "WIDTH=env"]);
+    let setup = workspace.run(&["params", "prog", "--add", "WIDTH", "--deliver", "WIDTH=env"]);
+    assert!(setup.status.success(), "{}", combined(&setup));
+    let meta_path = workspace.data.path().join("scripts/prog/meta.toml");
+    let before = std::fs::read(&meta_path).unwrap();
+
     let output = workspace.run(&["params", "prog", "--env-source", "WIDTH=COLS"]);
     assert!(output.status.success(), "{}", combined(&output));
     assert!(stderr_text(&output).contains("WIDTH isn't secret")); // the no-op flag is surfaced
+    assert_eq!(std::fs::read(&meta_path).unwrap(), before); // a refused edit does not rewrite data
 
     let json_run = workspace.run(&["params", "prog", "--env-source", "WIDTH=COLS", "--json"]);
     assert!(json_run.status.success(), "{}", combined(&json_run));
     let payload = stdout_json(&json_run); // stdout alone is pure JSON
-    assert!(
-        payload["declared"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["name"] == "WIDTH")
-    );
+    let width = payload["declared"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "WIDTH")
+        .unwrap();
+    assert!(width.get("env_source").is_none());
+    assert!(width.get("secret").is_none());
     assert!(stderr_text(&json_run).contains("WIDTH isn't secret")); // the warning rode stderr
+    assert_eq!(std::fs::read(&meta_path).unwrap(), before); // JSON is the same no-op
+
+    let made_secret = stdout_json(&workspace.run(&[
+        "params",
+        "prog",
+        "--secret",
+        "WIDTH",
+        "--env-source",
+        "WIDTH= COLS ",
+        "--json",
+    ]));
+    assert_eq!(made_secret["declared"][0]["secret"], true);
+    assert_eq!(made_secret["declared"][0]["env_source"], "COLS");
+
+    let updated_secret =
+        stdout_json(&workspace.run(&["params", "prog", "--env-source", "WIDTH=LINES", "--json"]));
+    assert_eq!(updated_secret["declared"][0]["env_source"], "LINES");
+
+    let made_public =
+        stdout_json(&workspace.run(&["params", "prog", "--no-secret", "WIDTH", "--json"]));
+    assert!(made_public["declared"][0].get("secret").is_none());
+    assert!(made_public["declared"][0].get("env_source").is_none());
 }
 
 #[test]
@@ -1038,7 +1065,6 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): flipping a param to --secret must announce \"Removed previously stored plaintext\" when it purges a prior plaintext value (src/skit/cli.py). The Rust product DOES purge the plaintext (the values file loses TOKEN) but prints no such line — the message is absent from skit-i18n."]
 fn test_cli_secret_declared_env_purges_prior_plaintext() {
     let workspace = lib();
     workspace.add_exe("prog");
@@ -1185,7 +1211,6 @@ fn test_cli_command_env_show_json_source_env() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the params human read view must mask a secret row's default and last value as ••• and never echo the plaintext (src/skit/cli.py secret masking). The Rust read view prints \"Last value: stale\" and \"Current default: x\" verbatim — no masking (crates/skit-cli/src/cli.rs)."]
 fn test_cli_exe_show_masks_secret_default_and_last_value() {
     // Covers the read-view secret masking: a secret row with a stored value -> •••; a secret row
     // with a default -> •••; the stored plaintext is never echoed.
@@ -1217,15 +1242,43 @@ fn test_cli_exe_show_masks_secret_default_and_last_value() {
         "--secret",
         "b",
     ]);
-    workspace.seed_values("prog", "[values]\na = \"stale\"\n");
+    workspace.run(&[
+        "params",
+        "prog",
+        "--add",
+        "c",
+        "--deliver",
+        "c=flag",
+        "--type",
+        "c=str",
+        "--default",
+        "c=public-default",
+    ]);
+    workspace.seed_values("prog", "[values]\na = \"stale\"\nc = \"public-last\"\n");
     let output = workspace.run(&["params", "prog"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("•••"));
-    assert!(!combined(&output).contains("stale")); // the secret value is never echoed
+    let text = combined(&output);
+    assert_eq!(text.matches("•••").count(), 2, "{text}");
+    assert!(!text.contains("Current default: x"), "{text}");
+    assert!(!text.contains("Last value: stale"), "{text}");
+    assert_eq!(text.matches("Current default:").count(), 2, "{text}");
+    assert_eq!(text.matches("Last value:").count(), 2, "{text}");
+    assert!(text.contains("Current default: public-default"), "{text}");
+    assert!(text.contains("Last value: public-last"), "{text}");
+
+    let payload = stdout_json(&workspace.run(&["params", "prog", "--json"]));
+    assert_eq!(payload["last_values"]["a"], "stale");
+    assert_eq!(payload["last_values"]["c"], "public-last");
+    let b = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "b")
+        .unwrap();
+    assert_eq!(b["default"], "x");
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a secret command placeholder's default and last value must mask as ••• in the params read view (src/skit/cli.py _show_command_params). The Rust read view echoes the plaintext instead of masking (crates/skit-cli/src/cli.rs)."]
 fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
     // Covers command-param secret masking + an undeclared placeholder's empty schema suffix.
     let workspace = lib();
@@ -1253,9 +1306,13 @@ fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
     workspace.seed_values("lg", "[values]\npassword = \"stale\"\n");
     let output = workspace.run(&["params", "lg"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("•••")); // secret default + last value masked
-    assert!(!combined(&output).contains("seed"));
-    assert!(combined(&output).contains("other")); // the undeclared placeholder is still listed
+    let text = combined(&output);
+    assert_eq!(text.matches("•••").count(), 2, "{text}");
+    assert!(!text.contains("Current default: seed"), "{text}");
+    assert!(!text.contains("Last value: stale"), "{text}");
+    assert_eq!(text.matches("Current default:").count(), 1, "{text}");
+    assert_eq!(text.matches("Last value:").count(), 1, "{text}");
+    assert!(text.contains("other")); // the undeclared placeholder is still listed
 }
 
 // ---- Delivery capability honesty ---------------------------------------------------------------

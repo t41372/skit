@@ -24,6 +24,7 @@ tree-sitter-javascript.workspace = true
 tree-sitter-powershell.workspace = true
 tree-sitter-python.workspace = true
 tree-sitter-typescript.workspace = true
+unicode-ident.workspace = true
 skit-domain.workspace = true
 
 [dev-dependencies]

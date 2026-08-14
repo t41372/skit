@@ -118,8 +118,7 @@ fn test_argparse_loop_reassigned_name_does_not_resolve() {
 #[test]
 fn test_argparse_non_store_value_binding_does_not_resolve() {
     // Definitions/imports/handlers/patterns/delete all invalidate the outer literal.
-    // The `case HOST:` capture-pattern member of the oracle's parametrize set is a Rust
-    // divergence; it is pinned separately below as an ignored FAILING CONTRACT.
+    // The `case HOST:` capture-pattern member is pinned separately with its qualified reverse.
     for binding in [
         "def HOST():\n    pass",
         "async def HOST():\n    pass",
@@ -142,11 +141,9 @@ fn test_argparse_non_store_value_binding_does_not_resolve() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a bare `case HOST:` capture binds HOST (CPython ast -> MatchAs(name='HOST'), counted by the oracle analyzer._bound_names, tests/test_default_name_resolution.py L90), so the outer constant must degrade. skit-language misses it: bound_name_counts -> explicit_binding_names collects only `identifier` children of a `case_pattern` (semantic.rs), but tree-sitter-python represents a bare capture as a `dotted_name` child of `case_pattern`, so HOST stays count-1 and wrongly resolves to \"outer\"."]
 fn test_argparse_non_store_value_binding_does_not_resolve_case_capture() {
     // The `case HOST:` member of the oracle parametrize set: a capture pattern binds HOST a
-    // second time, so the outer literal must not resolve. Full asserting body kept intact;
-    // delete the ignore once the case-capture binding is counted.
+    // second time, so the outer literal must not resolve.
     let fields = static_fields(
         "python",
         "import argparse\nHOST = 'outer'\nmatch value:\n    case HOST:\n        pass\nap = argparse.ArgumentParser()\nap.add_argument('--host', default=HOST)\n",
@@ -154,6 +151,15 @@ fn test_argparse_non_store_value_binding_does_not_resolve_case_capture() {
     let f = &fields[0];
     assert!(f.degraded);
     assert_eq!(f.default, None);
+
+    // A qualified value pattern reads both segments. It does not bind the trailing name.
+    let fields = static_fields(
+        "python",
+        "import argparse\nHOST = 'outer'\nmatch value:\n    case Color.HOST:\n        pass\nap = argparse.ArgumentParser()\nap.add_argument('--host', default=HOST)\n",
+    );
+    let f = &fields[0];
+    assert!(!f.degraded);
+    assert_eq!(f.default, Some(ParameterValue::String("outer".to_owned())));
 }
 
 #[test]

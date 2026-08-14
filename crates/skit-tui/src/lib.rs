@@ -15,8 +15,8 @@ use ratatui_crossterm::crossterm::event::{
 };
 use skit_i18n::{Locale, format_text};
 use skit_ui::{
-    Action, CommandContext, FormField, FormView, LibraryState, ModalState, Screen, UiBinding,
-    UiCommand, UiKey, UiModifiers, command_specs,
+    Action, CommandContext, FormField, FormView, InputMode, LibraryState, ModalState, Screen,
+    UiBinding, UiCommand, UiKey, UiModifiers, command_specs,
 };
 
 pub use screens::add::{
@@ -70,6 +70,8 @@ pub struct ViewGeometry {
     pub first_visible: usize,
     /// Clickable footer chips.
     pub hits: Vec<HitRegion>,
+    /// Whether the Library detail pane was visible in this rendered frame.
+    pub detail_pane_visible: bool,
 }
 
 /// Draw the library browser and return its mouse hit map.
@@ -96,7 +98,11 @@ pub fn render_with_session(
     session.begin_render(state);
     let footer_height =
         footer::required_height(frame.area().width, frame.area().height, state, locale);
-    let areas = layout::split_with_header(frame.area(), footer_height, header_height(state));
+    let areas = layout::split_with_header(
+        frame.area(),
+        footer_height,
+        header_height(state, frame.area().height),
+    );
 
     if areas.header.height > 0 {
         session.render_header(frame, areas.header, state, locale);
@@ -139,9 +145,17 @@ pub fn render_with_session(
 /// A screen that titles its own panel gets the whole body (`src/skit/tui_form.py:606-611`,
 /// `src/skit/tui_settings.py:869-871`). Drawing the header above it prints the same title twice and
 /// spends three rows saying so — on entry settings that was three of the rows the parameter section
-/// needed to be on screen at all. A modal keeps the header because that is where its own title
-/// lives.
-fn header_height(state: &LibraryState) -> u16 {
+/// needed to be on screen at all. Most modals keep the header. The compact environment picker owns
+/// its title and uses those rows for its input.
+fn header_height(state: &LibraryState, terminal_height: u16) -> u16 {
+    // The environment picker owns a titled panel. On short and tiny terminals,
+    // omit the duplicate global title so its bordered input and the global
+    // Cancel chip both fit. This matches the short-tier modal chrome budget.
+    if terminal_height < 16
+        && matches!(state.modal(), Some(ModalState::RunEnvironmentPicker { .. }))
+    {
+        return 0;
+    }
     if state.modal().is_none()
         && matches!(
             state.screen(),
@@ -149,6 +163,12 @@ fn header_height(state: &LibraryState) -> u16 {
         )
     {
         0
+    } else if state.modal().is_none()
+        && matches!(state.screen(), Screen::Library)
+        && state.input_mode() == InputMode::Search
+        && layout::is_short(terminal_height)
+    {
+        1
     } else {
         3
     }
@@ -202,7 +222,7 @@ pub(crate) fn form_title(locale: Locale, form: &FormView) -> String {
 #[must_use]
 pub fn map_event(event: Event, state: &LibraryState, geometry: &ViewGeometry) -> Option<Action> {
     match event {
-        Event::Key(key) if key.kind != KeyEventKind::Release => map_key(key, state),
+        Event::Key(key) if key.kind != KeyEventKind::Release => map_key(key, state, geometry),
         Event::Mouse(mouse) => map_mouse(mouse, state, geometry),
         Event::FocusGained
         | Event::FocusLost
@@ -212,7 +232,7 @@ pub fn map_event(event: Event, state: &LibraryState, geometry: &ViewGeometry) ->
     }
 }
 
-fn map_key(key: KeyEvent, state: &LibraryState) -> Option<Action> {
+fn map_key(key: KeyEvent, state: &LibraryState, geometry: &ViewGeometry) -> Option<Action> {
     let context = state.command_context();
     if context == CommandContext::Form
         && key.code == KeyCode::Enter
@@ -239,7 +259,7 @@ fn map_key(key: KeyEvent, state: &LibraryState) -> Option<Action> {
         ) {
             return None;
         }
-        return Some(spec.command.action());
+        return Some(command_action(spec.command, geometry));
     }
     None
 }
@@ -301,7 +321,7 @@ fn map_mouse(mouse: MouseEvent, state: &LibraryState, geometry: &ViewGeometry) -
                 .find(|hit| contains(hit.rect, mouse.column, mouse.row))
             {
                 return Some(match hit.action {
-                    HitTarget::Command(command) => command.action(),
+                    HitTarget::Command(command) => command_action(command, geometry),
                     HitTarget::RunFieldCommand { field, command } => {
                         run_field_command_action(field, command)
                     }
@@ -329,12 +349,26 @@ fn map_mouse(mouse: MouseEvent, state: &LibraryState, geometry: &ViewGeometry) -
     }
 }
 
-const fn run_field_command_action(field: usize, command: UiCommand) -> Action {
+pub(crate) fn command_action(command: UiCommand, geometry: &ViewGeometry) -> Action {
+    if matches!(command, UiCommand::ToggleDetail) {
+        Action::ToggleDetail {
+            currently_visible: geometry.detail_pane_visible,
+        }
+    } else {
+        command
+            .direct_action()
+            .expect("only detail commands need rendered state")
+    }
+}
+
+fn run_field_command_action(field: usize, command: UiCommand) -> Action {
     match command {
         UiCommand::BrowsePath => Action::OpenRunFilePicker(field),
         UiCommand::InsertValue => Action::OpenRunTokenMenuFor(field),
         UiCommand::ResetDefault => Action::ResetRunField(field),
-        _ => command.action(),
+        _ => command
+            .direct_action()
+            .expect("detail commands are not run-field commands"),
     }
 }
 

@@ -44,8 +44,7 @@
 //!   `skit-cli` (`cli.rs` builds `RunPathContext`); the cursor-position token insert is owned
 //!   by skit-tui's interactive `TuiSession` cursor layer (not the reducer surface here).
 //! - DIVERGENCE (full body, `#[ignore = "FAILING CONTRACT (divergence): …"]`): the mouse-only
-//!   use-this-directory affordance (no keyboard route), absent PageUp/PageDown steering, the
-//!   "(use this directory)" label, and the glob-escape byte spelling (`glob` escapes `]` too).
+//!   use-this-directory affordance (no keyboard route) and the "(use this directory)" label.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -370,20 +369,62 @@ fn test_picker_use_this_directory_row_by_real_keys() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): FilePickerSession::handle_key has no PageUp/PageDown arms, so page steering is a no-op. Oracle: pagedown->last row, pageup->first row (test_path_tui.py:313-336)."]
 fn test_picker_arrows_steer_highlight_without_leaving_the_filter() {
     let (_tmp, root) = tree();
+    fs::write(root.join("delta.md"), "x").unwrap();
     let mut session = picker(&root);
+    typed(&mut session, "d");
+    assert_eq!(session.explorer().visible_count(), 3);
     let start = session.explorer().cursor_index;
-    let _ = feed(&mut session, key(KeyCode::Down));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Down)),
+        Some(FilePickerEvent::Changed)
+    );
     assert_eq!(session.explorer().cursor_index, start + 1);
-    let _ = feed(&mut session, key(KeyCode::PageDown));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Up)),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(session.explorer().cursor_index, start);
+    assert_eq!(
+        feed(&mut session, key(KeyCode::End)),
+        Some(FilePickerEvent::Changed)
+    );
     assert_eq!(
         session.explorer().cursor_index,
         session.explorer().visible_count() - 1
     );
-    let _ = feed(&mut session, key(KeyCode::PageUp));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Home)),
+        Some(FilePickerEvent::Changed)
+    );
     assert_eq!(session.explorer().cursor_index, 0);
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Down)),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(session.explorer().cursor_index, start + 1);
+    assert_eq!(
+        feed(&mut session, key(KeyCode::PageDown)),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(
+        session.explorer().cursor_index,
+        session.explorer().visible_count() - 1
+    );
+    assert_eq!(
+        feed(&mut session, key(KeyCode::PageUp)),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(session.explorer().cursor_index, 0);
+    assert_eq!(
+        listing(&session),
+        vec![
+            ("data.csv".to_owned(), false),
+            ("delta.md".to_owned(), false),
+            ("draft.txt".to_owned(), false),
+        ]
+    );
 }
 
 #[test]
@@ -842,7 +883,6 @@ fn test_insert_picked_shapes() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the `glob` crate escapes `]` as `[]]` too, so insert_picked_path yields '\\'data[[]1[]].csv\\'' where Python's glob.escape (which leaves `]` literal) yields '\\'data[[]1].csv\\''. Benign — both suppress globbing and re-glob to the one literal file — but the exact bytes differ (path_insertion.rs:57 Pattern::escape vs glob.escape). Oracle: test_path_tui.py:852-873."]
 fn test_insert_picked_escapes_glob_metacharacters() {
     assert_eq!(
         insert_picked_path_for_dialect(

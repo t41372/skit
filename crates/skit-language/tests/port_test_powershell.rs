@@ -241,16 +241,53 @@ fn test_non_scalar_default_is_left_unset() {
 
 #[test]
 fn test_bool_default_is_carried() {
-    // A readable bool default on a non-switch typed param survives through the scalar domain.
-    let fields = fields_by_name("param([bool]$On = $true)\n");
-    // BEHAVIOR-CHANGE (kept superset): [bool] -> native Bool checkbox; the oracle degrades
-    // System.Boolean to free-text. The oracle's `_STATIC_TYPES` map (cli_reader.py:63-69) omits
-    // System.Boolean, so `_apply_static_type` (cli_reader.py:253-260) sets `decl.degraded = True`.
-    // The Rust reader maps [bool]/[boolean] -> ParameterType::Bool (a correctly typed checkbox,
-    // consistent with bool in every other language), so the field is NOT degraded. See
-    // docs/behavior-changes.md. The readable $true default still carries onto the scalar model.
+    // The v0.4 type map does not include System.Boolean. It degrades the field to free text, but
+    // `_apply_default` still carries the independently read Boolean scalar through the domain.
+    let fields = fields_by_name("param([System.Boolean]$On = $true)\n");
     assert_eq!(fields["On"].default, Some(ParameterValue::Bool(true)));
-    assert!(!fields["On"].degraded);
+    assert!(fields["On"].degraded);
+}
+
+#[test]
+fn rust_additive_unknown_static_types_keep_readable_scalar_default_types() {
+    let fields = fields_by_name(concat!(
+        "param(\n",
+        "  [object]$Count = 5,\n",
+        "  [object]$Ratio = 2.5,\n",
+        "  [object]$Off = $false,\n",
+        "  [object]$Label = 'five',\n",
+        "  [object]$Nothing = $null,\n",
+        "  [object]$Items = @(1, 2),\n",
+        "  [object]$Variable = $outside,\n",
+        "  [object]$When = (Get-Date)\n",
+        ")\n",
+    ));
+    assert_eq!(fields["Count"].default, Some(ParameterValue::Integer(5)));
+    assert_eq!(fields["Ratio"].default, Some(ParameterValue::Float(2.5)));
+    assert_eq!(fields["Off"].default, Some(ParameterValue::Bool(false)));
+    assert_eq!(
+        fields["Label"].default,
+        Some(ParameterValue::String("five".to_owned()))
+    );
+    assert_eq!(fields["Nothing"].default, None);
+    assert_eq!(fields["Items"].default, None);
+    assert_eq!(fields["Variable"].default, None);
+    assert_eq!(fields["When"].default, None);
+    assert!(fields.values().all(|field| field.degraded));
+}
+
+#[test]
+fn rust_additive_readable_scalar_defaults_use_runtime_value_types() {
+    let fields = fields_by_name("param([int]$Quoted = '5', [string]$Number = 5)\n");
+    assert_eq!(fields["Quoted"].parameter_type, ParameterType::Int);
+    assert_eq!(
+        fields["Quoted"].default,
+        Some(ParameterValue::String("5".to_owned()))
+    );
+    assert_eq!(fields["Number"].parameter_type, ParameterType::Str);
+    assert_eq!(fields["Number"].default, Some(ParameterValue::Integer(5)));
+    assert!(!fields["Quoted"].degraded);
+    assert!(!fields["Number"].degraded);
 }
 
 #[test]
@@ -362,18 +399,6 @@ fn test_find_falls_back_to_powershell_exe_on_windows() {}
 fn test_find_none_on_windows_without_powershell() {}
 
 // ---------------------------------------------------------------- flag assembly + plan
-
-#[test]
-#[ignore = "UNMAPPED: `flows.FormPlan`/`flows.assemble` build `-Name value` argv and fire a bare `[switch]`. Argv assembly from a form plan lives in skit-application/flows, above skit-language -> Tier 4. The reader half (single-dash PascalCase `flag = -Name`) is covered by test_string_param_with_default_and_help and test_switch_is_a_store_true_flag."]
-fn test_single_dash_flags_assemble() {}
-
-#[test]
-#[ignore = "UNMAPPED: `store.add_script` + `flows.plan_for_entry` assert plan.source=='argparse' and plan.fields[0].flag=='-City' -> Tier 4 (skit-cli/flows/store). The reader half (a `param([string]$City = 'Taipei')` block yields a static City field with flag `-City`) is covered by the type-matrix tests."]
-fn test_plan_reads_powershell_param_block() {}
-
-#[test]
-#[ignore = "UNMAPPED: `store.add_script` + `flows.plan_for_entry` assert plan.source=='none' when the reader finds no surface -> Tier 4 (skit-cli/flows/store). The reader half (no param block -> Absent surface) is covered by test_no_param_block_returns_none."]
-fn test_plan_none_when_reader_finds_no_surface() {}
 
 // ---------------------------------------------------------------- real pwsh (skip-gated in Python)
 

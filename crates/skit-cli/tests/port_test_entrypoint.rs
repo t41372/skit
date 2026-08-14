@@ -5,9 +5,8 @@
 //! decorators run at import time, so `src/skit/__main__.py` answers `--version` ahead of
 //! that import to avoid loading ~230 modules for a machine-facing flag. A compiled Rust
 //! binary has no import cost, so the Rust rewrite drops the two-tier dispatcher: `--version`
-//! and `-V` are a plain Clap bool flag handled inside `execute()`
-//! (`crates/skit-cli/src/cli.rs:721-724`: `if cli.version { println!("skit {}", ...); return
-//! Ok(0) }`).
+//! and `-V` are a plain Clap bool flag handled inside `execute()` after the eager completion
+//! actions.
 //!
 //! Concept mapping used throughout:
 //! - Python `skit.__main__:main` + `skit.cli:app` -> the single `skit` binary built from
@@ -19,14 +18,12 @@
 //!   package `skit-cli-rs`, so this equals the binary's version).
 //!
 //! Buckets:
-//! - Real asserting tests (8 def -> 9 `#[test]`): the observable half of every version-flag
+//! - Real asserting tests (8 def -> 10 `#[test]`): the observable half of every version-flag
 //!   contract -- exact stdout line, plain text, exit code, the `--version`-vs-callback byte
-//!   equality, and "a real command reaches the CLI". The Python "did not import typer/rich/
-//!   textual/tree_sitter" assertions have no equivalent in a monolithic binary; the version
-//!   line and exit code are what a shell or agent observes, and those are asserted.
-//! - Divergence gap (1 `#[test]`, `#[ignore]`): `skit --install-completion --version` prints
-//!   the version and drops the install on the Rust side, opposite to the oracle's
-//!   eager-option-first ordering. Full failing body kept per protocol.
+//!   equality, eager completion ordering, and "a real command reaches the CLI". The Python "did
+//!   not import typer/rich/textual/tree_sitter" assertions have no equivalent in a monolithic
+//!   binary; the version line and exit code are what a shell or agent observes, and those are
+//!   asserted.
 //! - UNMAPPED (1 `#[test]`, `#[ignore]`): `python -m skit` has no module-execution form for a
 //!   compiled binary; the single-binary `--version` contract is covered elsewhere. Not a gap
 //!   -- no analog exists by design.
@@ -152,7 +149,8 @@ fn test_the_flag_is_claimed_only_as_the_whole_command_line() {
     //   - `list --version`, `--version foo`, `-V bar baz`  -> NOT a silent version-exit-0.
     //   - `--version list`                                 -> prints the version, exit 0
     //     (oracle: "prints the version through the callback"; here the version branch answers).
-    // The eager `--install-completion --version` case is split out below because Rust diverges.
+    // The eager `--install-completion --version` case is split out below because it installs a
+    // file and needs its own sandbox.
     let sandbox = Sandbox::new();
     let cases: [(&[&str], bool); 4] = [
         (&["list", "--version"], false),
@@ -173,11 +171,10 @@ fn test_the_flag_is_claimed_only_as_the_whole_command_line() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle __main__.py:13-15 and test_entrypoint.py:118-141 -- `skit --install-completion --version` exits on the eager --install-completion option FIRST (installs completion), it does not print the version. Rust cli.rs:721-729 checks cli.version before install_completion, so it prints the version and silently drops the install. Fix ordering, then delete this #[ignore]."]
 fn test_the_flag_is_claimed_only_as_the_whole_command_line_install_completion() {
-    // Split from the parametrized oracle case above. HOME/XDG are sandboxed too: once the impl
-    // is fixed and this #[ignore] is deleted, the invocation actually installs completion, and
-    // `completion_path()` resolves under HOME/XDG_DATA_HOME, outside the SKIT_* dirs.
+    // Split from the parametrized oracle case above. HOME/XDG are sandboxed too because the
+    // invocation installs completion, and `completion_path()` resolves under HOME/XDG_DATA_HOME,
+    // outside the SKIT_* dirs.
     let sandbox = Sandbox::new();
     let home = TempDir::new().unwrap();
     let xdg_data = TempDir::new().unwrap();
@@ -197,6 +194,27 @@ fn test_the_flag_is_claimed_only_as_the_whole_command_line_install_completion() 
         !silent_version,
         "the eager --install-completion must run first, not print the version"
     );
+    assert!(
+        xdg_data
+            .path()
+            .join("bash-completion/completions/skit")
+            .is_file(),
+        "the eager --install-completion did not install completion"
+    );
+
+    // The other completion action is eager too. It must print the shell definition instead of
+    // letting the version action consume the invocation.
+    let output = sandbox
+        .command()
+        .env("SHELL", "/bin/bash")
+        .env_remove("PSModulePath")
+        .args(["--show-completion", "--version"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("_skit"), "{stdout:?}");
+    assert_ne!(stdout, version_line());
 }
 
 #[test]

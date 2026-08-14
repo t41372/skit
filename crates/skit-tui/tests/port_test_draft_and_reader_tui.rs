@@ -47,24 +47,22 @@
 //! - Python `#add-draft-actions` Ctrl+D chip -> the source-stage footer "Delete draft…" chip,
 //!   rendered only when a draft is listed.
 //!
-//! Bucket disposition (16 oracle defs; 14 real asserting tests, 2 divergence):
-//! - 14 real: the review pin/rescan/explicit trio, the dynamic-vs-modeled review ticks + Space
+//! Bucket disposition (16 oracle defs; 15 real asserting tests, 1 divergence):
+//! - 15 real: the review pin/rescan/explicit trio, the dynamic-vs-modeled review ticks + Space
 //!   chip, both settings-gate tests, the singular/plural notices, and every draft-delete flow.
-//! - 2 FAILING CONTRACT (divergence), full asserting body kept behind `#[ignore]`:
+//! - 1 FAILING CONTRACT (divergence), full asserting body kept behind `#[ignore]`:
 //!   * `test_resume_bash_shebang_draft_lands_as_shell` — Rust's `infer_kind` is extension-first
 //!     (`.py` -> python) and there is no `kind_for_draft` shebang-first rule for skit's OWN
 //!     drafts (registry.py:442, store.py:308), so the bash-shebang `skit-new-*.py` draft resumes
 //!     as PYTHON, not shell. The TUI reducer DOES wire the consume-on-copy unlink (unlike the CLI
 //!     lane), so the divergence here is the kind alone. Same diagnosis as the CLI twin
 //!     `port_test_draft_inference_and_reader_cli.rs::test_cli_add_bash_shebang_draft_lands_as_shell_and_unlinks`.
-//!   * `test_ctrl_d_while_editing_a_field_is_the_inputs_delete_right` — the oracle's Ctrl+D is a
-//!     NON-priority binding (tui_add.py:203-205), so a focused Input consumes it as delete-right;
-//!     Rust's `handle_event` intercepts Ctrl+D unconditionally in the Source stage (add.rs:363-373)
-//!     and returns `DeleteSelectedDraft`, so mid-edit the Input never sees the key.
 //! - 0 cross-crate, 0 absent.
 
 use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
-use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui_crossterm::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use skit_application::SourcePermissions;
 use skit_domain::EntryKind;
 use skit_i18n::Locale;
@@ -136,6 +134,16 @@ fn route_source(source: SourceSnapshot) -> AddWorkflowState {
 /// The rendered buffer flattened to one string, like the oracle's `_statics` join.
 fn rendered(buffer: &Buffer) -> String {
     buffer.content().iter().map(|cell| cell.symbol()).collect()
+}
+
+/// Click one rendered add control through the same mouse path as the host session.
+fn left_click(column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
 }
 
 /// Render one add workflow through the real `render_add` and return the flattened buffer.
@@ -412,14 +420,33 @@ fn test_ctrl_d_deletes_the_highlighted_draft_after_confirm() {
         .iter()
         .position(|draft| draft.path == doomed.path)
         .expect("doomed is listed");
-    let _ = workflow.reduce(AddAction::SelectDraft(doomed_index)); // highlight, do NOT resume
-
-    // The advertised key, from the source screen (not an Input): Ctrl+D -> DeleteSelectedDraft.
     let mut session = AddScreenSession::default();
+    let mut geometry = AddScreenGeometry::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    terminal
+        .draw(|frame| {
+            geometry = render_add(frame, frame.area(), &workflow, &mut session, Locale::En);
+        })
+        .unwrap();
+    let draft_area = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == AddControlId::Draft(doomed_index))
+        .expect("the doomed draft is a mouse target")
+        .area;
+    let select = session.handle_event(left_click(draft_area.x, draft_area.y), &workflow, &geometry);
+    assert_eq!(
+        select,
+        Some(AddScreenEvent::Action(AddAction::SelectDraft(doomed_index)))
+    );
+    let _ = workflow.reduce(AddAction::SelectDraft(doomed_index)); // highlight, do NOT resume
+    assert_eq!(session.focused(), Some(&AddControlId::Draft(doomed_index)));
+
+    // The advertised key, from the focused draft list (not an Input): Ctrl+D deletes the row.
     let event = session.handle_event(
         Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
         &workflow,
-        &AddScreenGeometry::default(),
+        &geometry,
     );
     assert_eq!(
         event,
@@ -479,7 +506,6 @@ fn test_ctrl_d_confirm_esc_keeps_the_draft() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's Ctrl+D is a NON-priority binding (tui_add.py:203-205), so a focused Input consumes it as its own delete-right and no draft-delete fires. Rust's `handle_event` intercepts Ctrl+D unconditionally in the Source stage (add.rs:363-373) and returns `DeleteSelectedDraft`, so the focused path Input never sees the key — the returned event IS `DeleteSelectedDraft` and the assert_ne fails."]
 fn test_ctrl_d_while_editing_a_field_is_the_inputs_delete_right() {
     // Ctrl+D is NOT priority-bound: with an Input focused it is the Input's own delete-right, so
     // no confirm opens and no draft is touched (the AGENTS editing-chord rule).
@@ -487,7 +513,7 @@ fn test_ctrl_d_while_editing_a_field_is_the_inputs_delete_right() {
         path: PathBuf::from("skit-new-edit.py"),
         modified: 1,
     };
-    let mut workflow = AddWorkflowState::new(vec![draft]);
+    let mut workflow = AddWorkflowState::new(vec![draft.clone()]);
     let _ = workflow.reduce(AddAction::SetSourcePath("abc".to_owned())); // typing in the path field
 
     let mut session = AddScreenSession::default();
@@ -503,16 +529,37 @@ fn test_ctrl_d_while_editing_a_field_is_the_inputs_delete_right() {
         Some(&AddControlId::Text(AddTextField::SourcePath))
     );
 
+    // Match the oracle's cursor_position=1 without exposing private widget state.
+    let _ = session.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Home, KeyModifiers::NONE)),
+        &workflow,
+        &AddScreenGeometry::default(),
+    );
+    let _ = session.handle_event(
+        Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
+        &workflow,
+        &AddScreenGeometry::default(),
+    );
+
     let event = session.handle_event(
         Event::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
         &workflow,
         &AddScreenGeometry::default(),
     );
-    // Mid-edit Ctrl+D belongs to the Input (delete-right), never the draft-delete action.
-    assert_ne!(
+    assert_eq!(
         event,
-        Some(AddScreenEvent::Action(AddAction::DeleteSelectedDraft))
+        Some(AddScreenEvent::Action(AddAction::SetSourcePath(
+            "ac".to_owned()
+        )))
     );
+    let Some(AddScreenEvent::Action(action)) = event else {
+        unreachable!("the exact action was asserted above");
+    };
+    let effects = workflow.reduce(action);
+    assert!(effects.is_empty());
+    assert_eq!(workflow.stage(), AddStage::Source); // no confirm modal opened
+    assert_eq!(workflow.source().path, "ac");
+    assert_eq!(workflow.source().listed_drafts(), [draft]); // the draft was never touched
 }
 
 #[test]
@@ -550,14 +597,39 @@ fn test_delete_draft_chip_only_renders_when_drafts_exist() {
     assert!(!empty.contains("Ctrl+D")); // no drafts -> no chip
     assert!(!empty.contains("Delete draft"));
 
-    let present = render_add_text(
-        &AddWorkflowState::new(vec![DraftSummary {
-            path: PathBuf::from("skit-new-present.py"),
-            modified: 1,
-        }]),
-        200,
-        40,
+    let mut present = AddWorkflowState::new(vec![DraftSummary {
+        path: PathBuf::from("skit-new-present.py"),
+        modified: 1,
+    }]);
+    let _ = present.reduce(AddAction::SelectDraft(0));
+    let mut session = AddScreenSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(200, 40)).unwrap();
+    let mut geometry = AddScreenGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_add(frame, frame.area(), &present, &mut session, Locale::En);
+        })
+        .unwrap();
+    let text = rendered(terminal.backend().buffer());
+    assert!(text.contains("Ctrl+D")); // the mouse path is advertised
+    assert!(text.contains("Delete draft"));
+
+    let delete = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == AddControlId::DeleteDraft)
+        .expect("the advertised delete chip is clickable")
+        .area;
+    let event = session.handle_event(left_click(delete.x, delete.y), &present, &geometry);
+    assert_eq!(
+        event,
+        Some(AddScreenEvent::Action(AddAction::DeleteSelectedDraft))
     );
-    assert!(present.contains("Ctrl+D")); // the mouse path is advertised
-    assert!(present.contains("Delete draft"));
+    let Some(AddScreenEvent::Action(action)) = event else {
+        unreachable!("the exact action was asserted above");
+    };
+    let effects = present.reduce(action);
+    assert!(effects.is_empty());
+    assert_eq!(present.stage(), AddStage::ConfirmDraftDelete);
+    assert_eq!(present.source().listed_drafts().len(), 1); // no delete before confirmation
 }

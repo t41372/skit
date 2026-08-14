@@ -21,17 +21,12 @@
 //! Buckets:
 //! - REAL (asserting `#[test]`): the language-owned slices — shell/python reconcile
 //!   (`current_defaults`, secret exclusion, `empty_uses_default`), python shim injection, and shell
-//!   `source_parameter_semantics`. Six defs land here (3, 4, 6, 8, 17, 18); several of those defs
+//!   `source_parameter_semantics`. Seven defs land here (3–6, 8, 17, 18); several of those defs
 //!   ALSO carry cross-crate assertions (flows/CLI) that this crate cannot reach — each such slice is
 //!   named in the test comment and recorded as a gap.
-//! - DIVERGENCE (`#[ignore = "FAILING CONTRACT ..."]`, full body kept): def 5. Oracle
-//!   `analysis.py::_record_default` withholds a source default the declared type cannot hold
-//!   (`coerce_default` gate); Rust `reconcile_analysis` (crates/skit-language/src/semantic.rs) has
-//!   no such gate and publishes it. The full assertion is the finding.
-//! - ABSENT (`#[ignore]`, compiling stub): def 7. The const lane of the same coercibility gate is
-//!   reachable only through a SYNTHETIC `analyze` returning an int/int candidate over a non-int
-//!   literal; the Rust public API accepts no injected `SemanticAnalysis` (`reconcile_analysis` is
-//!   private) and the gate itself is absent. Same root cause as def 5's divergence, const lane.
+//! - PRIVATE UNIT: def 7. The const lane of the same coercibility gate is reachable only through a
+//!   SYNTHETIC `analyze` returning an int/int candidate over a non-int literal. The exact oracle
+//!   name lives beside private `reconcile_analysis` in `semantic.rs`, without exposing a test seam.
 //! - CROSS-CRATE (`#[ignore]`, compiling stub): the flows / argstate / preset / `params --json` /
 //!   `show --json` / `edit_specs` defs (1, 2, 9-16). Those use cases live in
 //!   skit-application / skit-form / skit-store / skit-cli, which this integration test cannot depend
@@ -244,11 +239,6 @@ fn test_main_guard_override_receives_the_unchanged_default() {
 // --------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle analysis.py::_record_default withholds a source \
-            default the declared type cannot hold (coerce_default gate); Rust reconcile_analysis \
-            (crates/skit-language/src/semantic.rs) has no gate and publishes current_defaults == \
-            {\"PORT\": String(\"$FALLBACK\")} onto an int envdefault. Fix: gate the current_defaults \
-            insert on coercibility, then delete this #[ignore]."]
 fn test_envdefault_default_that_no_longer_fits_the_type_is_not_published() {
     // An envdefault stays `ok` through a type change (the value arrives by environment either way),
     // so reconcile keeps delivering it. But its SOURCE default may now be text an int param cannot
@@ -291,24 +281,6 @@ fn test_int_shaped_literal_still_refreshes_a_str_envdefault() {
         report.current_defaults,
         BTreeMap::from([("PORT".to_owned(), ParameterValue::Integer(8080))])
     );
-}
-
-#[test]
-#[ignore = "ABSENT (MUST-FIX): the const lane of the coercibility gate. Oracle \
-            analysis.py::_record_default rejects a default the declared type cannot hold via \
-            coerce_default; it is reachable on the const lane only through a SYNTHETIC analyze \
-            returning Candidate(binding='const', type='int', default='three') (real analyzers type \
-            'three' as str, landing it in `changed`, not `ok`). The Rust public API accepts no \
-            injected SemanticAnalysis (reconcile_analysis is private) and, as \
-            test_envdefault_default_that_no_longer_fits_the_type_is_not_published proves for the \
-            envdefault lane, the gate is absent. MUST-FIX: tests/test_default_semantics_review_fixes.py \
-            test_const_default_that_no_longer_fits_the_declared_type_is_not_published."]
-fn test_const_default_that_no_longer_fits_the_declared_type_is_not_published() {
-    // The const lane shares the gate, even though a real analyzer can't reach it: a const whose
-    // derived type stops matching lands in report.changed (drift), which never calls _record_default
-    // at all. So the oracle drives the residual case through a synthetic analyze — types that agree
-    // (int/int) over a literal the type still cannot hold ("three") — and asserts ok == ["N"] with
-    // current_defaults == {} (types agree, so not drift; but "three" is not an int).
 }
 
 // --------------------------------------------------------------------------

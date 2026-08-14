@@ -70,8 +70,8 @@ pub struct MirrorSettings {
 pub struct ConfigRecovery {
     /// Malformed file that the write replaced.
     pub path: PathBuf,
-    /// Byte-exact backup that preserves the malformed file.
-    pub backup_path: PathBuf,
+    /// Location of the byte-exact backup, or `None` when the backup failed.
+    pub backup_path: Option<PathBuf>,
 }
 
 /// One configured prompt runner.
@@ -172,20 +172,24 @@ impl PromptRunnerIssue {
     fn message(self) -> Message {
         match self {
             Self::PromptSectionNotTable => {
-                Message::new("the prompt value is not a table; repair it before runner management")
+                Message::new("the prompt value isn't a table; repair it before runner management")
             }
             Self::RunnersNotList => Message::new(
-                "the prompt.runners value is not a list; repair it before runner management",
+                "the prompt.runners value isn't a list; repair it before runner management",
             ),
-            Self::Empty => Message::new("a prompt runner command needs nonempty arguments"),
+            Self::Empty => Message::new(
+                "A runner needs a command — e.g. skit runner add mycli mycli run {{prompt}}",
+            ),
             Self::PromptSlotCount => Message::new(
-                "a prompt runner command needs {{prompt}} exactly once after the program",
+                "A runner command must contain the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
             ),
-            Self::PromptInBinary => Message::new("{{prompt}} cannot be the prompt runner program"),
-            Self::StrayHole => {
-                Message::new("a prompt runner command supports only the {{prompt}} slot")
-            }
-            Self::Name => Message::new("a prompt runner needs a name"),
+            Self::PromptInBinary => Message::new(
+                "{{prompt}} can't be the command itself — the first word must be the program to run.",
+            ),
+            Self::StrayHole => Message::new(
+                "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",
+            ),
+            Self::Name => Message::new("A name is required."),
             Self::ArgvType => Message::new("a prompt runner argv must be a list of strings"),
             Self::RowNotTable => Message::new("the prompt runner row is not a table"),
             Self::Duplicate => Message::new("another row already uses this prompt runner name"),
@@ -477,18 +481,16 @@ impl FileConfigStore {
         if !mirror.enabled {
             return Ok(output);
         }
-        if !mirror.pypi.is_empty()
-            && !base.contains_key("UV_DEFAULT_INDEX")
-            && !base.contains_key("UV_INDEX_URL")
-        {
+        let has_value = |key| base.get(key).is_some_and(|value| !value.is_empty());
+        if !mirror.pypi.is_empty() && !has_value("UV_DEFAULT_INDEX") && !has_value("UV_INDEX_URL") {
             output.insert("UV_DEFAULT_INDEX".to_owned(), mirror.pypi);
         }
-        if !mirror.python_install.is_empty() && !base.contains_key("UV_PYTHON_INSTALL_MIRROR") {
+        if !mirror.python_install.is_empty() && !has_value("UV_PYTHON_INSTALL_MIRROR") {
             output.insert("UV_PYTHON_INSTALL_MIRROR".to_owned(), mirror.python_install);
         }
         if !mirror.npm.is_empty()
-            && !base.contains_key("NPM_CONFIG_REGISTRY")
-            && !base.contains_key("npm_config_registry")
+            && !has_value("NPM_CONFIG_REGISTRY")
+            && !has_value("npm_config_registry")
         {
             output.insert("NPM_CONFIG_REGISTRY".to_owned(), mirror.npm);
         }
@@ -825,14 +827,10 @@ impl FileConfigStore {
             .map_err(|reason| ConfigError::Encode { reason })?
             .into_bytes()
         };
-        let recovery = loaded
-            .malformed
-            .then(|| preserve_corrupt_backup(&path, &loaded.original))
-            .transpose()?
-            .map(|backup_path| ConfigRecovery {
-                path: path.clone(),
-                backup_path,
-            });
+        let recovery = loaded.malformed.then(|| ConfigRecovery {
+            path: path.clone(),
+            backup_path: preserve_corrupt_backup(&path, &loaded.original).ok(),
+        });
         atomic_write_bytes(&path, &encoded).map_err(|error| io_error("write", &path, error))?;
         Ok((result, recovery))
     }
@@ -840,6 +838,7 @@ impl FileConfigStore {
 
 fn normalize_setting(key: &str, value: &str) -> Result<String, ConfigError> {
     match key {
+        "lang" if value.is_empty() => Ok(String::new()),
         "lang" if value.trim().eq_ignore_ascii_case("auto") => Ok(String::new()),
         "lang" => normalize_supported_language(value).ok_or_else(|| {
             ConfigError::Usage(
@@ -1301,10 +1300,8 @@ fn runner_row(
     let raw_name = table
         .and_then(|row| row.get("name"))
         .and_then(Value::as_str);
-    let name = raw_name
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_owned);
+    let name = raw_name.map(str::trim).map(str::to_owned);
+    let valid_name = name.as_ref().filter(|name| !name.is_empty());
     let argv = table
         .and_then(|row| row.get("argv"))
         .and_then(Value::as_array)
@@ -1317,25 +1314,25 @@ fn runner_row(
         });
     let mut issue = if table.is_none() {
         Some(PromptRunnerIssue::RowNotTable)
-    } else if name.is_none() {
+    } else if valid_name.is_none() {
         Some(PromptRunnerIssue::Name)
     } else if argv.is_none() {
         Some(PromptRunnerIssue::ArgvType)
     } else {
         validate_runner(&PromptRunner {
-            name: name.clone().expect("the name was checked"),
+            name: valid_name.expect("the name was checked").clone(),
             argv: argv.clone().expect("argv was checked"),
         })
         .err()
     };
     if issue.is_none() {
-        let normalized = name.as_ref().expect("a valid row has a name");
+        let normalized = valid_name.expect("a valid row has a name");
         if !seen.insert(normalized.clone()) {
             issue = Some(PromptRunnerIssue::Duplicate);
         }
     }
     let descriptor = if issue == Some(PromptRunnerIssue::Duplicate) {
-        name.clone().expect("a duplicate row has a name")
+        valid_name.expect("a duplicate row has a name").clone()
     } else {
         raw_name
             .filter(|name| !name.trim().is_empty())
@@ -1520,22 +1517,34 @@ fn preserve_corrupt_backup(path: &Path, original: &[u8]) -> Result<PathBuf, Conf
             .and_then(|name| name.to_str())
             .unwrap_or("config.toml")
     ));
-    if backup.exists() && !backup.is_file() {
+    let backup_is_directory = fs::symlink_metadata(&backup)
+        .map(|metadata| metadata.file_type().is_dir())
+        .unwrap_or(false);
+    let target = if backup_is_directory {
+        backup.join(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("config.toml"),
+        )
+    } else {
+        backup.clone()
+    };
+    if target.exists() && !target.is_file() {
         return Err(io_error(
             "backup",
-            &backup,
+            &target,
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 "the backup path is not a regular file",
             ),
         ));
     }
-    let saved = if !backup.exists() {
-        atomic_write_bytes(&backup, original)
-            .map_err(|error| io_error("backup", &backup, error))?;
-        backup
+    let saved = if !target.exists() {
+        atomic_write_bytes(&target, original)
+            .map_err(|error| io_error("backup", &target, error))?;
+        target
     } else {
-        replace_existing_backup(&backup, original, atomic_write_bytes, |previous, target| {
+        replace_existing_backup(&target, original, atomic_write_bytes, |previous, target| {
             fs::rename(previous, target)
         })?
     };
@@ -1543,7 +1552,7 @@ fn preserve_corrupt_backup(path: &Path, original: &[u8]) -> Result<PathBuf, Conf
         .map_err(|error| io_error("backup", path, error))?
         .permissions();
     fs::set_permissions(&saved, permissions).map_err(|error| io_error("backup", &saved, error))?;
-    Ok(saved)
+    Ok(backup)
 }
 
 fn replace_existing_backup(

@@ -35,7 +35,8 @@
 //! Buckets:
 //! - REAL asserting `#[test]` (API EXISTS, behavior converges): the bulk — add/list/remove/run/
 //!   preset/params/deps/doctor/config lanes, and every markup case that Rust renders as literal
-//!   text (Rust has no Rich markup layer, so "escaping" reduces to "the datum is printed").
+//!   text (Rust has no Rich markup layer, so "escaping" reduces to "the datum is printed"), plus
+//!   typed-value validation before launch.
 //! - FAILING CONTRACT (divergence): the Rust message/exit differs from the oracle's. The full
 //!   asserting body is kept and `#[ignore]`d with the exact oracle-vs-Rust evidence; deleting the
 //!   `#[ignore]` line after the impl is fixed turns it green.
@@ -288,7 +289,6 @@ fn test_add_python_reference_skips_onboarding() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's non-py refusal leads with the extensionless escape hatch — \"...isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt ..., --exe ..., or --cmd ...\" (cli.py:2069). Rust's add() exits 2 with the terser \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896); the phrase \"pass --kind <language> for an extensionless script\" never appears. Exit code 2 converges. Ties to pending task #15."]
 fn test_add_rejects_non_py() {
     let root = sandbox();
     let path = write_src(&root, "notes.txt", "data");
@@ -369,7 +369,6 @@ fn test_add_exe_no_input_never_asks() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a missing path with --exe must error before any identity ask, with exit 1 + \"File not found\" (oracle _require_exists, cli.py:428). Rust exits 1 but with \"could not resolve <path>: No such file or directory (os error 2)\" (add read-path resolution) — no \"File not found\" phrase. Exit code 1 converges; the ordering claim (no ask fires) is moot in the non-tty harness."]
 fn test_add_exe_missing_path_errors_before_any_ask() {
     let root = sandbox();
     let missing = root.path().join("ghost.bin");
@@ -421,7 +420,6 @@ fn test_add_name_conflict_errors() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a missing path must yield a clean exit 1 + \"File not found\" (oracle _require_file, cli.py:420), not a traceback. Rust exits 1 but with \"could not resolve <path>: No such file or directory (os error 2)\" — no \"File not found\" phrase. Exit code 1 converges."]
 fn test_add_missing_path_clean_error_not_traceback() {
     let root = sandbox();
     let missing = root.path().join("typo").join("path.py");
@@ -431,7 +429,6 @@ fn test_add_missing_path_clean_error_not_traceback() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a directory whose NAME claims a kind (adir.py) is a typo, so the oracle reports exit 1 + \"Not a file\" and NEVER offers --exe (cli.py:422). Rust exits 1 but with \"could not read <dir>: Is a directory (os error 21)\" — a directory is treated as an unreadable file, so \"Not a file\" never appears (though --exe is correctly withheld). Exit code 1 converges."]
 fn test_add_directory_path_clean_error_not_traceback() {
     let root = sandbox();
     let dir = root.path().join("adir.py");
@@ -472,7 +469,6 @@ fn test_add_unknown_directory_with_exe_is_accepted() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an existing-but-unreadable file must be reported cleanly with exit 1 + \"Can't read %(path)s: %(error)s\" (oracle cli.py:817/1118/1254), distinct from \"File not found\". Rust exits 1 but with \"could not open <path>: Permission denied (os error 13)\" — no \"Can't read\" phrase. Exit code 1 converges. (Skipped entirely when the euid bypasses perms, matching the oracle's skipif(geteuid()==0).)"]
 fn test_add_unreadable_file_clean_error_not_traceback() {
     // An existing-but-unreadable file must be reported cleanly ("Can't read", distinct from
     // "File not found" since the path exists). Skipped when the euid bypasses perms — root reads
@@ -763,7 +759,6 @@ fn test_run_python_with_params_injects() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): passthrough args after `--` are the manual escape and must bypass an unfilled required argparse FIELD (the script's own parser takes over) — oracle exit 0, extra == [-o, x.png]. Rust still runs field validation and refuses with exit 125 + \"output is required.\" even with `-- -o x.png` present, so the passthrough never reaches the script. Owning ref src/skit/cli.py run(): extra_args disables required-field validation."]
 fn test_run_extra_args_bypass_required_field_validation() {
     let root = sandbox();
     let path = write_src(&root, "ar.py", ARGPARSE_REQUIRED);
@@ -803,6 +798,28 @@ fn test_run_required_field_missing_without_extra_args_exits_125() {
         run(skit(&root)
             .env("PATH", "")
             .args(["run", "ar2", "--no-input", "--dry-run"]));
+    assert_eq!(code, 125, "{out}");
+    assert!(out.contains("output"), "{out}");
+}
+
+#[test]
+fn test_run_remembered_extra_args_do_not_bypass_required_field_validation() {
+    let root = sandbox();
+    let path = write_src(&root, "ar3.py", ARGPARSE_REQUIRED);
+    run(skit(&root).arg("add").arg(&path).args([
+        "--name",
+        "ar3",
+        "--kind",
+        "python",
+        "--no-input",
+    ]));
+    seed_state(&root, "ar3", "extra_args = [\"-o\", \"x.png\"]\n");
+
+    let (code, out) =
+        run(skit(&root)
+            .env("PATH", "")
+            .args(["run", "ar3", "--no-input", "--dry-run"]));
+
     assert_eq!(code, 125, "{out}");
     assert!(out.contains("output"), "{out}");
 }
@@ -892,7 +909,6 @@ fn test_run_shim_error() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a value that can't coerce to its declared type is caught at form validation and mapped to exit 125, and the message NAMES the human type — the oracle asserts \"not-a-number\" AND \"whole number\" appear, and \"resync\" does NOT. Rust exits 125 and echoes \"not-a-number\" (both converge), and omits \"resync\" (converges), but its message is `parameter \"RETRIES\" has invalid Int value \"not-a-number\"` — the human phrase \"whole number\" never appears. Only the type-wording assertion diverges."]
 fn test_run_bad_typed_value_caught_at_validation() {
     let root = sandbox();
     inject_shell(
@@ -1091,7 +1107,6 @@ fn test_params_python_table_with_secret() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): marking a param secret must PURGE its already-stored plaintext AND announce it — the oracle asserts exit 0, the plaintext gone from state+disk, the now-empty preset dropped, and the line \"Removed previously stored plaintext value(s) for now-secret parameter(s): API_KEY\" (cli.py:4562). Rust purges correctly (verified: the plaintext leaves state and the emptied preset drops) but prints NO such confirmation line, so only the announcement assertion diverges. One-line fix: emit the removed-plaintext notice."]
 fn test_params_secret_purges_stored_last_value_and_presets() {
     let root = sandbox();
     let block = "# /// script\n# [tool.skit]\n# schema = 1\n#\n# [[tool.skit.params]]\n# name = \"API_KEY\"\n# binding = \"const\"\n# type = \"str\"\n# default = \"x\"\n# ///\nAPI_KEY = \"x\"\nprint(API_KEY)\n";
@@ -1124,6 +1139,85 @@ fn test_params_secret_purges_stored_last_value_and_presets() {
         let bytes = fs::read_to_string(entry.unwrap().path()).unwrap();
         assert!(!bytes.contains("plaintext-secret-123"), "{bytes}");
     }
+}
+
+#[test]
+fn test_params_secret_purge_message_sorts_multiple_names() {
+    let root = sandbox();
+    let block = r#"# /// script
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "A"
+# binding = "const"
+# type = "str"
+#
+# [[tool.skit.params]]
+# name = "B"
+# binding = "const"
+# type = "str"
+# ///
+A = "x"
+B = "y"
+print(A, B)
+"#;
+    let path = write_src(&root, "sorted.py", block);
+    run(skit(&root).arg("add").arg(&path).args([
+        "--name",
+        "sorted",
+        "--kind",
+        "python",
+        "--no-input",
+    ]));
+    seed_state(&root, "sorted", "[values]\nA = \"first\"\nB = \"second\"\n");
+
+    let (code, out) = run(skit(&root).args(["params", "sorted", "--secret", "B", "--secret", "A"]));
+
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        flat(&out).contains(
+            "Removed previously stored plaintext value(s) for now-secret parameter(s): A, B"
+        ),
+        "{out}"
+    );
+}
+
+#[test]
+fn test_params_secret_purge_json_stays_one_document() {
+    let root = sandbox();
+    run(skit(&root).args(["add", "--cmd", "echo hi", "--name", "json-secret"]));
+    let (code, out) = run(skit(&root).args([
+        "params",
+        "json-secret",
+        "--add",
+        "TOKEN",
+        "--deliver",
+        "TOKEN=env",
+    ]));
+    assert_eq!(code, 0, "{out}");
+    seed_state(&root, "json-secret", "[values]\nTOKEN = \"plaintext\"\n");
+
+    let output = skit(&root)
+        .args(["params", "json-secret", "--secret", "TOKEN", "--json"])
+        .output()
+        .expect("skit runs");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|error| {
+        panic!(
+            "stdout is not one JSON document: {error}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        )
+    });
+    assert_eq!(payload["parameters"][0]["secret"], true);
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("Removed previously stored plaintext")
+    );
 }
 
 #[test]
@@ -1528,7 +1622,6 @@ fn test_add_deps_summary_escapes_markup() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the not-a-script refusal must echo the offending filename (oracle interpolates `escape(resolved.name)`, cli.py:2069), so `[red]evil[bold].txt` renders literally. Rust's add() refusal is filename-free — \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896) — so the filename never appears. Exit code 2 converges. Ties to pending task #15."]
 fn test_add_not_py_file_warning_escapes_markup_in_filename() {
     let root = sandbox();
     let path = write_src(&root, "[red]evil[bold].txt", "hi");
@@ -1708,7 +1801,6 @@ fn test_config_set_unknown_mirror_escapes_markup() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `skit edit <name>` must print a report naming the entry (oracle echoes the name so it renders literally). Rust's edit opens the editor and prints NO name-bearing summary on success (verified with EDITOR=true: exit 0, empty stdout), so `[blue]a[/blue]` never appears. Owning ref src/skit/cli.py edit report."]
 fn test_edit_reports_escape_markup_in_name() {
     let root = sandbox();
     let path = write_src(&root, "a.py", "print(1)\n");
@@ -1724,7 +1816,6 @@ fn test_edit_reports_escape_markup_in_name() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): editing a reference entry must report the source PATH (oracle echoes it, so a markup path renders literally). Rust's edit prints no path-bearing summary on success (verified EDITOR=true: exit 0, empty stdout), so `[red]weird[bold]` never appears. Owning ref src/skit/cli.py edit report."]
 fn test_edit_reference_mode_escapes_markup_in_name_and_path() {
     let root = sandbox();
     let script = root.path().join("[red]weird[bold]").join("job.py");
@@ -1740,7 +1831,6 @@ fn test_edit_reference_mode_escapes_markup_in_name_and_path() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): editing a reference whose SOURCE is gone must fail with exit 1 and name the missing path (oracle checks existence before opening). Rust does not guard the reference source: `edit refjob` after the source is deleted opens the editor on the missing path and exits 0 with no path echoed (verified). Both exit code (1 vs 0) and the path echo diverge. Owning ref src/skit/cli.py edit existence guard."]
 fn test_edit_missing_reference_source_escapes_markup_in_path() {
     let root = sandbox();
     let script = root.path().join("[red]weird[bold]").join("job.py");
@@ -1790,7 +1880,6 @@ fn test_edit_params_malformed_prompt_escapes_markup() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle stubs launcher.run_entry (run_entry_spy), so the script never runs and the ONLY source of the reused arg is skit's OWN reused-arguments notice `Reusing your last arguments: [red]arg[/red]`, printed to STDERR (err_console, cli.py:3150-3157). Rust reuses saved.extra_args SILENTLY (run/command.rs:309; no such msgid in the i18n catalog): the reused arg surfaces only on the STDOUT command-preview line (`→ bash script.sh '[red]arg[/red]'`), never on stderr where the notice belongs. Same divergence recorded by the sibling port_test_run_set.rs test_raw_never_replays_last_extra_args. Verified against the built binary."]
 fn test_run_reusing_last_arguments_escapes_markup() {
     // The oracle stubs run_entry, so ONLY skit's own reused-arguments notice can carry the markup,
     // and that notice is a STDERR line (err_console, cli.py:3153-3156). Use a body that does NOT
