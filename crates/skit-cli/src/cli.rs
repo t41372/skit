@@ -4451,10 +4451,20 @@ fn write_params(
                 .and_then(|candidate| candidate.default.as_ref())
                 .or(item.default.as_ref())
             {
-                humanln!("Current default: {}", tui_parameter_value(default));
+                let shown = if item.secret {
+                    text(active_locale(), "•••").into_owned()
+                } else {
+                    tui_parameter_value(default)
+                };
+                humanln!("Current default: {}", shown);
             }
             if let Some(value) = state.values.get(&item.name) {
-                humanln!("Last value: {}", value);
+                let shown = if item.secret {
+                    text(active_locale(), "•••").into_owned()
+                } else {
+                    value.clone()
+                };
+                humanln!("Last value: {}", shown);
             }
             if !item.choices.is_empty() {
                 humanln!("Choices: {}", item.choices.join(", "));

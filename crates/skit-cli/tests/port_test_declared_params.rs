@@ -1184,7 +1184,6 @@ fn test_cli_command_env_show_json_source_env() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the params human read view must mask a secret row's default and last value as ••• and never echo the plaintext (src/skit/cli.py secret masking). The Rust read view prints \"Last value: stale\" and \"Current default: x\" verbatim — no masking (crates/skit-cli/src/cli.rs)."]
 fn test_cli_exe_show_masks_secret_default_and_last_value() {
     // Covers the read-view secret masking: a secret row with a stored value -> •••; a secret row
     // with a default -> •••; the stored plaintext is never echoed.
@@ -1216,15 +1215,43 @@ fn test_cli_exe_show_masks_secret_default_and_last_value() {
         "--secret",
         "b",
     ]);
-    workspace.seed_values("prog", "[values]\na = \"stale\"\n");
+    workspace.run(&[
+        "params",
+        "prog",
+        "--add",
+        "c",
+        "--deliver",
+        "c=flag",
+        "--type",
+        "c=str",
+        "--default",
+        "c=public-default",
+    ]);
+    workspace.seed_values("prog", "[values]\na = \"stale\"\nc = \"public-last\"\n");
     let output = workspace.run(&["params", "prog"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("•••"));
-    assert!(!combined(&output).contains("stale")); // the secret value is never echoed
+    let text = combined(&output);
+    assert_eq!(text.matches("•••").count(), 2, "{text}");
+    assert!(!text.contains("Current default: x"), "{text}");
+    assert!(!text.contains("Last value: stale"), "{text}");
+    assert_eq!(text.matches("Current default:").count(), 2, "{text}");
+    assert_eq!(text.matches("Last value:").count(), 2, "{text}");
+    assert!(text.contains("Current default: public-default"), "{text}");
+    assert!(text.contains("Last value: public-last"), "{text}");
+
+    let payload = stdout_json(&workspace.run(&["params", "prog", "--json"]));
+    assert_eq!(payload["last_values"]["a"], "stale");
+    assert_eq!(payload["last_values"]["c"], "public-last");
+    let b = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "b")
+        .unwrap();
+    assert_eq!(b["default"], "x");
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a secret command placeholder's default and last value must mask as ••• in the params read view (src/skit/cli.py _show_command_params). The Rust read view echoes the plaintext instead of masking (crates/skit-cli/src/cli.rs)."]
 fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
     // Covers command-param secret masking + an undeclared placeholder's empty schema suffix.
     let workspace = lib();
@@ -1252,9 +1279,13 @@ fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
     workspace.seed_values("lg", "[values]\npassword = \"stale\"\n");
     let output = workspace.run(&["params", "lg"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("•••")); // secret default + last value masked
-    assert!(!combined(&output).contains("seed"));
-    assert!(combined(&output).contains("other")); // the undeclared placeholder is still listed
+    let text = combined(&output);
+    assert_eq!(text.matches("•••").count(), 2, "{text}");
+    assert!(!text.contains("Current default: seed"), "{text}");
+    assert!(!text.contains("Last value: stale"), "{text}");
+    assert_eq!(text.matches("Current default:").count(), 1, "{text}");
+    assert_eq!(text.matches("Last value:").count(), 1, "{text}");
+    assert!(text.contains("other")); // the undeclared placeholder is still listed
 }
 
 // ---- Delivery capability honesty ---------------------------------------------------------------
