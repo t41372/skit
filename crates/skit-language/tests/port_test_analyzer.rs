@@ -565,11 +565,13 @@ fn test_match_inputs_triple_duplicate_stored_prompts_only_one_winner() {
 
 #[test]
 fn test_match_capture_named_input_shadows_only_its_own_scope() {
-    // The pattern-capture binding forms count too — a `case {**input}` rest-capture and a
-    // `case [*input]` star-capture bind the name where they appear, like any assignment.
+    // The pattern-capture binding forms count too — bare, mapping-rest, and star captures bind
+    // the name where they appear, like any assignment.
+    let bare = "def h(d):\n    match d:\n        case input:\n            return input('Inner: ')\nname = input('Name: ')\n";
     let mapping = "def f(d):\n    match d:\n        case {**input}:\n            return input\nname = input('Name: ')\n";
     let star = "def g(d):\n    match d:\n        case [*input]:\n            return input\nname = input('Name: ')\n";
     // Each pattern alone, so neither arm can be masked by the other short-circuiting first.
+    assert_eq!(input_names(bare), ["input-1"]);
     assert_eq!(input_names(mapping), ["input-1"]);
     assert_eq!(input_names(star), ["input-1"]);
 }

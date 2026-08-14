@@ -1745,8 +1745,16 @@ fn explicit_binding_names(document: &ParsedDocument, node: tree_sitter::Node<'_>
             .collect(),
         "case_pattern" => named_children(node)
             .into_iter()
-            .filter(|child| child.kind() == "identifier")
-            .map(|child| text(document, child).to_owned())
+            .filter(|child| child.kind() == "dotted_name")
+            .filter_map(|name| {
+                let segments = named_children(name);
+                match segments.as_slice() {
+                    [segment] if segment.kind() == "identifier" => {
+                        Some(text(document, *segment).to_owned())
+                    }
+                    _ => None,
+                }
+            })
             .collect(),
         "dictionary_splat_pattern" | "splat_pattern" => target_names(document, node),
         _ => Vec::new(),
