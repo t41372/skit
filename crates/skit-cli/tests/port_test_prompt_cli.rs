@@ -1717,7 +1717,6 @@ fn test_runner_add_preserves_bad_rows_and_force_repairs_matching_name() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches, config unseeded. Oracle says 'A name is required'; Rust says 'a prompt runner needs a name'."]
 fn test_runner_add_blank_name_is_refused_before_seeding() {
     let sandbox = Sandbox::new();
     let (code, combined) = sandbox.out(&["runner", "add", "   ", "x", "{{prompt}}"]);
@@ -1792,7 +1791,6 @@ fn test_runner_remove_and_unknown() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches, config unseeded. Oracle says 'A name is required'; Rust says 'a prompt runner needs a name'."]
 fn test_runner_remove_blank_name_is_usage_error_before_seeding() {
     let sandbox = Sandbox::new();
     let (code, combined) = sandbox.out(&["runner", "remove", "   ", "--yes"]);

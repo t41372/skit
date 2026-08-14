@@ -4681,9 +4681,7 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                     RunnerSelection::Name(name.trim().to_owned())
                 }
                 (Some(_), None) => {
-                    return Err(CliError::Usage(Message::new(
-                        "a prompt runner needs a name",
-                    )));
+                    return Err(CliError::Usage(Message::new("A name is required.")));
                 }
                 (None, Some("container")) => RunnerSelection::Container,
                 (None, Some(row)) => {

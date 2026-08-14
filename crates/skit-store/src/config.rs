@@ -185,7 +185,7 @@ impl PromptRunnerIssue {
             Self::StrayHole => {
                 Message::new("a prompt runner command supports only the {{prompt}} slot")
             }
-            Self::Name => Message::new("a prompt runner needs a name"),
+            Self::Name => Message::new("A name is required."),
             Self::ArgvType => Message::new("a prompt runner argv must be a list of strings"),
             Self::RowNotTable => Message::new("the prompt runner row is not a table"),
             Self::Duplicate => Message::new("another row already uses this prompt runner name"),
