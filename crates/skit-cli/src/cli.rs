@@ -1036,6 +1036,23 @@ fn add_command(
         )));
     }
     if edit {
+        if let Some(name) = options
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            match service.show(name) {
+                Ok(_) | Err(RepositoryError::Ambiguous { .. }) => {
+                    return Err(CliError::Failure(
+                        Message::new("The name {} is already taken — pick another name.")
+                            .with(name),
+                    ));
+                }
+                Err(RepositoryError::NotFound { .. }) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
         return add_draft(service, options, false);
     }
     if options.source.is_none() && options.command_template.is_none() {

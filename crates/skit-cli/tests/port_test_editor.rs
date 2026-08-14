@@ -1006,21 +1006,22 @@ fn test_add_edit_dep_flag_on_non_python_draft_is_refused() {
 // --------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the -e lane does NOT pre-check the name — add_draft creates the draft and LAUNCHES the editor (cli.rs:1399-1415) before add() discovers the conflict; the oracle refuses BEFORE the editor opens, so the editor is never launched. Verified against the built binary (editor sentinel appears)."]
 fn test_add_edit_python_name_taken_refuses_before_the_editor() {
     // A taken name is caught BEFORE $EDITOR opens; the editor is never launched.
     let sandbox = Sandbox::new();
     sandbox.add_python("taken", "print(1)\n");
     let sentinel = sandbox.scratch.path().join("taken.launched");
     let editor = touch_only_editor(sandbox.scratch.path(), "taken", &sentinel);
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "taken"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(combined(&output).contains("already taken"));
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "taken"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(output.contains("already taken"));
     assert!(!sentinel.exists(), "the editor must not be launched");
 }
 
@@ -1243,15 +1244,18 @@ fn test_add_edit_name_conflict_exits_one() {
     sandbox.add_python("dup", "print(1)\n");
     let sentinel = sandbox.scratch.path().join("dup.launched");
     let editor = writing_editor(sandbox.scratch.path(), "dup", "print('x')\n", &sentinel);
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "dup"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert!(combined(&output).contains("dup")); // the name is surfaced
-    assert!(combined(&output).contains("taken")); // the StoreError is surfaced
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "dup"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(output.contains("dup")); // the name is surfaced
+    assert!(output.contains("taken")); // the StoreError is surfaced
+    assert!(!sentinel.exists(), "the editor must not be launched");
 }
 
 #[test]
