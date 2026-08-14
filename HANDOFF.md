@@ -13,12 +13,13 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 76 fix commits landed, 181 FAILING CONTRACTs closed
-(177 removed/un-ignored + 4 re-labeled architecture closures), 2 stubs promoted, 2 owed white-box
-units added. The last fully green recorded baseline was workspace 3169 pass / 0 fail / 959 ignored. Reviewed
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 81 fix commits landed, 187 FAILING CONTRACTs closed
+(183 removed, translated, or un-ignored + 4 re-labeled architecture closures), 2 stubs promoted,
+2 owed white-box units added. The last fully green recorded baseline was workspace
+3175 pass / 0 fail / 953 ignored. Reviewed
 PR #44 waves continue to add executable parity owners and completeness checks after duplicate and
 test-quality review.
-105 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+99 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -183,6 +184,11 @@ This session (2026-08-11/12), in order — each closed the named contracts:
 | `0e6d826` | doctor malformed-runner recovery: exact three-language repair command, stable multi-row order, and pure JSON output | 1 |
 | `ab901c4` | reclassified two duplicate Python store-boundary names as architecture closures; kept their ignored bodies and stronger CLI owners | — (2 re-labeled) |
 | `f0dfcff` | runner removal targets: callback-level exactly-one validation, negative-row handling, pre-write refusal, and semantically equivalent zsh completion | 1 |
+| `41a8146` | source-default reconciliation: publish only values coercible to the declared type while preserving the original typed value | 2 (integration + private unit translation) |
+| `f6516fa` | TUI add input: Ctrl+D deletes the next focused text character; draft shortcut, footer click, and confirm-before-delete stay active | 1 |
+| `7555a0e` | editor draft classification: unknown shebangs refuse with exact recovery-before-kept order, preserve the draft, and do not create an entry | 1 |
+| `98b6bc8` | file picker navigation: PageUp/PageDown share Home/End semantics without closing or unfiltering the modal | 1 |
+| `b8cd947` | Python match captures: count single-segment `case NAME:` bindings without treating qualified value patterns as captures | 1 |
 
 PR #44 is actively continuing. The last corrected integrated accounting is 64/84 behavior modules
 and 1318/3018 Python contracts. Its merge ancestry and complete test snapshot are preserved on
@@ -211,8 +217,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3169 passed / 0 failed / 959 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 105
+# => 3175 passed / 0 failed / 953 ignored
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 99
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -224,10 +230,10 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 105 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 99 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `f0dfcff`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `b8cd947`.
 
 - **17 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Remaining work is the params human read/manage view, post-edit placeholder
@@ -250,7 +256,7 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   (`de754cf`); the remaining items overlap the add-lane and general CLI clusters.
 - **9 port_test_add_validation_contracts.rs + 5 port_test_add_lane_contracts.rs + 3
   port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 11
-  port_test_add_no_source.rs + ~8 of port_test_editor.rs (the `-e` lane) — the add-lane cluster
+  port_test_add_no_source.rs + ~7 of port_test_editor.rs (the `-e` lane) — the add-lane cluster
   (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
   cli.py:1894-1933); resumed draft not consumed on success (cli.py:258-266); editor lane must
   validate BEFORE opening $EDITOR (cli.py:309-329); `kind_for_draft` shebang-first classifier
@@ -280,9 +286,8 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
   region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
   `deps`-clear must sweep node_modules.
-- **TUI: 5 path_tui + 4 tui_nav + 2 draft_and_reader_tui + 1 reset_default_ui.**
-- **Small:** 2 default_semantics_review_fixes, 1 default_name_resolution, 1 show,
-  1 flows.
+- **TUI: 4 path_tui + 4 tui_nav + 1 draft_and_reader_tui + 1 reset_default_ui.**
+- **Small:** 1 show and 1 flows.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
   port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job

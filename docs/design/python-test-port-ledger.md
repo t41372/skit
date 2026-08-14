@@ -62,7 +62,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_template_context_quoting.py | 44 | crates/skit-runtime/tests/port_test_template_context_quoting.rs | done (28) · 16 white-box _posix_quote_state / cross-crate |
 | test_declared_params.py | 52 | crates/skit-cli/tests/port_test_declared_params.rs | in fix (38/14) · **empty-params plain line FIXED 8633128** · secret plaintext purge announcement fixed `0335ed1` · 13 divergences (batch fault tolerance, secret/env, template defaults) · 1 weakening caught+fixed by verify |
 | test_source_default_semantics.py | 19 | crates/skit-form/tests/port_test_source_default_semantics.rs | done (7) · 12 cross-crate (assemble→skit-application, edit_specs→skit-cli) + 2 injection-seam |
-| test_default_semantics_review_fixes.py | 18 | crates/skit-language/tests/port_test_default_semantics_review_fixes.rs | done (6) · 12 cross-crate (flows/preset/argstate) + _record_default divergence + const-lane coercibility MUST-FIX |
+| test_default_semantics_review_fixes.py | 18 | crates/skit-language/tests/port_test_default_semantics_review_fixes.rs | implementation parity (8) · source-default coercibility fixed at the shared reconciliation seam `41a8146` · 10 cross-crate closures (flows/preset/argstate) |
 | test_effective_uv_metadata.py | 22 | crates/skit-language/tests/port_test_effective_uv_metadata.rs | done (11) · 15 cross-crate/deferred |
 | test_uv_metadata_views.py | 3 | crates/skit-cli/tests/port_test_uv_metadata_views.rs | done (5) · 1 deferred |
 | test_uv_metadata_unpinning.py | 3 | crates/skit-cli/tests/port_test_uv_metadata_unpinning.rs | done (3) · 1 deferred |
@@ -101,8 +101,8 @@ adjudicated · counts are Python `def test_` counts.
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | done (61) · **human-display layer FIXED 3bb4fbf** (sentinels, padded list, `k = v`, paused notice, choice-naming errors) · 14 cross-crate wizard/first-run |
 | test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs | done (19) · bare pipe/no-input lane advice fixed `157f9b7` · 11 divergences · 38 cross-crate/absent (interactive add lane) |
 | test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs | done (57) · blank index/install mirror values fixed in `c3e02b8` · 6 deferred |
-| test_editor.py | 50 | crates/skit-cli/tests/port_test_editor.rs | in fix (28/22) · **name-conflict FIXED 592d236** · **editor resolution (vi default, blank fall-through, raw fallback) + Saved verb + reference-gone guard FIXED 1cac4a4** · **2 stubs promoted c1964dc** · post-editor Python-flags voice fixed `62a7df8` · explicit create decline fixed `7c3d615` · add-editor conflicts now refuse before editor/draft effects `ea4389c` · remaining: add -e lane (#15) + params resync |
-| test_default_name_resolution.py | 42 | crates/skit-language/tests/port_test_default_name_resolution.rs | done (42) · 1 deferred · no gap |
+| test_editor.py | 50 | crates/skit-cli/tests/port_test_editor.rs | in fix (29/21) · **name-conflict FIXED 592d236** · **editor resolution (vi default, blank fall-through, raw fallback) + Saved verb + reference-gone guard FIXED 1cac4a4** · **2 stubs promoted c1964dc** · post-editor Python flags fixed `62a7df8` · create decline fixed `7c3d615` · conflicts refuse before authoring `ea4389c` · unknown editor-draft shebang recovery fixed `7555a0e` · remaining: add -e lane (#15) + params resync |
+| test_default_name_resolution.py | 42 | crates/skit-language/tests/port_test_default_name_resolution.rs | implementation parity (42 + 1 Rust additive) · Python bare match-capture binding fixed `b8cd947` · no gap |
 | test_params_edit.py | 41 | crates/skit-domain/tests/port_test_params_edit.rs | done (3) · 36 ABSENT: edit_declared (pure warn-and-continue batch editor + 9 warning codes) missing, CLI is fail-fast (#16) · 2 as_param_type |
 | test_add_validation_contracts.py | 31 | crates/skit-cli/tests/port_test_add_validation_contracts.rs | in fix (21/10) · **PEP 440/508 wording ×4 FIXED c5e84ea/8cf75fe** · explicit `--python` normalization fixed `f8f80f5` · unknown path shebang recovery fixed `c134c80` · malformed explicit editor flags now refuse before authoring `ea80ec4` · 9 divergences + 1 absent interactive re-ask · 1 weakening fixed |
 | test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
@@ -128,11 +128,11 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_prompt_tui.py | 83 | crates/skit-tui/tests/port_test_prompt_tui.rs | done (49) · **Library title FIXED 5574ff1** (工具库/庫) · 26 cross-crate run routing · Ctrl+O/Ctrl+E divergences in fix pass |
-| test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs | in fix (28/33) · 1 empty-needle weakening being fixed · 2 private-render drops |
+| test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs | in fix (29/32) · PageUp/PageDown navigation fixed `98b6bc8` · 1 empty-needle weakening being fixed · 2 private-render drops |
 | test_phase1.py | 27 | crates/skit-cli/tests/port_test_phase1.rs | done (27) · no gap |
 | test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs + manifest | done (17 executable) · full replacement `459765a` · detail pin `462aa9e` · compact modal controls `ef7c1ef` · short Search `061d29c` · narrow Preferences `9238165` · 2 Textual-only architecture-closed |
 | test_settings_and_draft_review_atomicity.py | 16 | crates/skit-ui/tests/port_test_settings_and_draft_review_atomicity.rs | in fix (8/8) · settings-save npm-clear-first atomic-refusal ABSENT from Rust (mislabel being corrected) |
-| test_draft_and_reader_tui.py | 16 | crates/skit-tui/tests/port_test_draft_and_reader_tui.rs | done (14) · 2 deferred |
+| test_draft_and_reader_tui.py | 16 | crates/skit-tui/tests/port_test_draft_and_reader_tui.rs | in fix (15/1) · focused Ctrl+D input precedence, draft shortcut, and footer click fixed `f6516fa` · 1 remaining kept-draft shebang-first classification divergence |
 | test_reset_default_ui.py | 14 | crates/skit-tui/tests/port_test_reset_default_ui.rs | in fix (10/4) · const-field help weakening + param-row live-default fixture being fixed |
 | test_tui_edit.py | 6 | crates/skit-tui/tests/port_test_tui_edit.rs | done (1) · 5 cross-crate (editor lane) |
 | test_tui_nav.py | 5 | crates/skit-tui/tests/port_test_tui_nav.rs | done (1) · 4 cross-crate (terminal nav) |
