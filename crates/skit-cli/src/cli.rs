@@ -4171,17 +4171,6 @@ fn params(
         item.prompt = value.to_owned();
         changed = true;
     }
-    for spec in args.env_sources {
-        let (name, value) = assignment(&spec, "environment source")?;
-        let item = parameter_mut(&mut declarations, name)?;
-        if source_parameter_kind && item.binding == ParameterBinding::None {
-            return Err(CliError::Usage(
-                Message::new("parameter {} is not managed in the stored source").with(name),
-            ));
-        }
-        item.env_source = value.to_owned();
-        changed = true;
-    }
     changed |= set_bool(
         &mut declarations,
         &args.required,
@@ -4213,12 +4202,30 @@ fn params(
         |item| &mut item.secret,
         true,
     )?;
-    changed |= set_bool(
-        &mut declarations,
-        &args.no_secret,
-        |item| &mut item.secret,
-        false,
-    )?;
+    for name in &args.no_secret {
+        let item = parameter_mut(&mut declarations, name)?;
+        item.secret = false;
+        item.env_source.clear();
+        changed = true;
+    }
+    for spec in args.env_sources {
+        let (name, value) = assignment(&spec, "environment source")?;
+        let item = parameter_mut(&mut declarations, name)?;
+        if source_parameter_kind && item.binding == ParameterBinding::None {
+            return Err(CliError::Usage(
+                Message::new("parameter {} is not managed in the stored source").with(name),
+            ));
+        }
+        if !item.secret {
+            humanerrln!(
+                "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+                name
+            );
+            continue;
+        }
+        item.env_source = value.trim().to_owned();
+        changed = true;
+    }
 
     for name in tweaked_names {
         let Some(previous) = tweak_baseline.iter().find(|item| item.name == name) else {

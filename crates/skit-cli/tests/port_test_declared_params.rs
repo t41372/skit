@@ -39,8 +39,8 @@
 //! - DIVERGENCE (full asserting body, `#[ignore]`d): the assertion is faithful to the oracle
 //!   and compiles; it fails because Rust diverges. Fixing the impl and deleting the `#[ignore]`
 //!   line turns it green. These capture: the absent confirmation/warning strings
-//!   ("Declared parameters:", "has no managed parameters", "isn't secret", "Ignored a
-//!   malformed value", "Removed previously stored plaintext"), the `params` batch
+//!   ("Declared parameters:", "has no managed parameters", "Ignored a malformed value",
+//!   "Removed previously stored plaintext"), the `params` batch
 //!   fault-tolerance gap (a malformed/bad value hard-errors exit 2 instead of warning at
 //!   exit 0), the `add --cmd` placeholder pre-seeding (which makes `--add <placeholder>`
 //!   refuse with exit 2), the non-placeholder template `--add` defaulting to `flag` not `env`,
@@ -786,26 +786,53 @@ fn test_cli_declared_edit_with_json_emits_the_final_read_view() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): --env-source on a DECLARED non-secret param must warn \"<name> isn't secret\" (it only applies to secrets) instead of silently applying (src/skit/params.py:_apply_declared_tweaks env-source-not-secret). The Rust product has no such warning (absent from skit-i18n) and applies env_source to the non-secret row."]
 fn test_cli_env_source_on_non_secret_declared_param_warns() {
     let workspace = lib();
     workspace.add_exe("prog");
-    workspace.run(&["params", "prog", "--add", "WIDTH", "--deliver", "WIDTH=env"]);
+    let setup = workspace.run(&["params", "prog", "--add", "WIDTH", "--deliver", "WIDTH=env"]);
+    assert!(setup.status.success(), "{}", combined(&setup));
+    let meta_path = workspace.data.path().join("scripts/prog/meta.toml");
+    let before = std::fs::read(&meta_path).unwrap();
+
     let output = workspace.run(&["params", "prog", "--env-source", "WIDTH=COLS"]);
     assert!(output.status.success(), "{}", combined(&output));
     assert!(stderr_text(&output).contains("WIDTH isn't secret")); // the no-op flag is surfaced
+    assert_eq!(std::fs::read(&meta_path).unwrap(), before); // a refused edit does not rewrite data
 
     let json_run = workspace.run(&["params", "prog", "--env-source", "WIDTH=COLS", "--json"]);
     assert!(json_run.status.success(), "{}", combined(&json_run));
     let payload = stdout_json(&json_run); // stdout alone is pure JSON
-    assert!(
-        payload["declared"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|row| row["name"] == "WIDTH")
-    );
+    let width = payload["declared"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "WIDTH")
+        .unwrap();
+    assert!(width.get("env_source").is_none());
+    assert!(width.get("secret").is_none());
     assert!(stderr_text(&json_run).contains("WIDTH isn't secret")); // the warning rode stderr
+    assert_eq!(std::fs::read(&meta_path).unwrap(), before); // JSON is the same no-op
+
+    let made_secret = stdout_json(&workspace.run(&[
+        "params",
+        "prog",
+        "--secret",
+        "WIDTH",
+        "--env-source",
+        "WIDTH= COLS ",
+        "--json",
+    ]));
+    assert_eq!(made_secret["declared"][0]["secret"], true);
+    assert_eq!(made_secret["declared"][0]["env_source"], "COLS");
+
+    let updated_secret =
+        stdout_json(&workspace.run(&["params", "prog", "--env-source", "WIDTH=LINES", "--json"]));
+    assert_eq!(updated_secret["declared"][0]["env_source"], "LINES");
+
+    let made_public =
+        stdout_json(&workspace.run(&["params", "prog", "--no-secret", "WIDTH", "--json"]));
+    assert!(made_public["declared"][0].get("secret").is_none());
+    assert!(made_public["declared"][0].get("env_source").is_none());
 }
 
 #[test]

@@ -145,6 +145,23 @@ fn secret_purge_notice_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn non_secret_environment_source_warning_matches_the_oracle_in_every_locale() {
+    let template = "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).";
+    assert_eq!(
+        format_text(Locale::En, template, &[&"WIDTH"]),
+        "WIDTH isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&"WIDTH"]),
+        "WIDTH 不是机密参数；--env-source 只适用于机密参数（先用 --secret 标记）。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&"WIDTH"]),
+        "WIDTH 不是機密參數；--env-source 只適用於機密參數（先用 --secret 標記）。"
+    );
+}
+
+#[test]
 fn add_onboarding_controls_and_source_facts_are_fully_localized() {
     assert_eq!(
         text(

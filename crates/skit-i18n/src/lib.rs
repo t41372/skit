@@ -1459,6 +1459,11 @@ const CATALOG: &[Translation] = &[
         "环境变量来源：{}",
         "環境變數來源：{}",
     ),
+    row!(
+        "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+        "{} 不是机密参数；--env-source 只适用于机密参数（先用 --secret 标记）。",
+        "{} 不是機密參數；--env-source 只適用於機密參數（先用 --secret 標記）。",
+    ),
     row!("Secret: yes", "敏感值：是", "敏感值：是"),
     row!(
         "Removed previously stored plaintext value(s) for now-secret parameter(s): {}",
