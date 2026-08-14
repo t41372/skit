@@ -690,9 +690,6 @@ fn test_prompt_single_extension_draft_resumes_as_prompt_end_to_end() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an unknown shebang on an on-disk file falls through to \
-'could not infer the entry kind; pass --kind KIND' (cli.rs:2896-2900); the oracle names the \
-interpreter gap and offers '--exe to run it directly' (cli.py:2040-2052)."]
 fn test_nondraft_awk_shebang_refusal_offers_the_exe_escape() {
     let sandbox = Sandbox::new();
     let file = sandbox.data.path().join("report.awkish");

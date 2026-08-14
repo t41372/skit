@@ -2494,6 +2494,11 @@ const CATALOG: &[Translation] = &[
         "管線文字的 #! 指定了 skit 不認識的直譯器——請傳入 --kind <language> 進行選擇。",
     ),
     row!(
+        "The #! in {} names no interpreter skit knows — pass --kind <language> to choose one, or --exe to run it directly.",
+        "{} 的 #! 指定了 skit 不认识的解释器——请用 --kind <语言> 指定一个，或用 --exe 直接运行。",
+        "{} 的 #! 指定了 skit 不認識的直譯器——請用 --kind <語言> 指定一個，或用 --exe 直接執行。",
+    ),
+    row!(
         "The #! line pins a python version — recording requires-python {} (change it with --python).",
         "#! 行指定了 python 版本——记录 requires-python {}（可用 --python 更改）。",
         "#! 行指定了 python 版本——記錄 requires-python {}（可用 --python 更改）。",

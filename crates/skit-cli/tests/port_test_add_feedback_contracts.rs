@@ -355,7 +355,6 @@ fn test_shebangless_unknown_uses_the_isnt_a_script_voice() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the exit code holds (2), but the shebang-aware voice is MISSING on the on-disk path lane — Rust emits the generic 'could not infer the entry kind; pass --kind KIND' (cli.rs:2896-2899). Rust only has 'names no interpreter skit knows' for the PIPED lane ('The piped text's #! …', cli.rs:2887-2890); the per-file path-lane form '%(file)s names no interpreter skit knows — pass --kind …' (src/skit/cli.py:2040-2052) has no analogue. Ties to pending task #15. Verified against the built binary."]
 fn test_shebang_unknown_uses_the_names_no_interpreter_voice() {
     // A file WITH an unregistered #! (awk) gets the shebang-aware 'names no interpreter' voice
     // even OUTSIDE drafts (path lane, not just resume), naming --kind.

@@ -2926,6 +2926,15 @@ fn add_with_config(
             "The piped text's #! names no interpreter skit knows — pass --kind <language> to choose one.",
         )));
     }
+    if kind.is_none() && inferred.is_none() && !from_stdin && shebang.is_some() {
+        let file = source.file_name().unwrap_or(source.as_os_str());
+        return Err(CliError::Usage(
+            Message::new(
+                "The #! in {} names no interpreter skit knows — pass --kind <language> to choose one, or --exe to run it directly.",
+            )
+            .with(file.to_string_lossy()),
+        ));
+    }
     let kind = kind
         .as_deref()
         .or(inferred)
