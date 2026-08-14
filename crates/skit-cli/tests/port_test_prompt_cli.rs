@@ -966,7 +966,6 @@ fn test_normal_prompt_transparency_omits_body_but_keeps_agent_flags() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 125 matches, marker never leaks. Oracle says 'over this platform'; Rust says 'the rendered prompt makes the command line N bytes; the limit is 100000 bytes'."]
 fn test_overlong_prompt_refuses_before_normal_transparency() {
     let sandbox = Sandbox::new();
     let marker = "MUST-NOT-REACH-SCROLLBACK";
@@ -979,7 +978,6 @@ fn test_overlong_prompt_refuses_before_normal_transparency() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 125 matches. Oracle says 'NUL byte'; Rust says 'the rendered prompt contains a NUL character'."]
 fn test_dry_run_refuses_nul_without_looking_up_agent_binary() {
     let sandbox = Sandbox::new();
     sandbox.added_pin("before\u{0}after", "p", "claude");
@@ -1000,7 +998,6 @@ fn test_dry_run_refuses_nul_without_looking_up_agent_binary() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 125 matches, marker never leaks. Oracle says 'over this platform'; Rust says 'the rendered prompt makes the command line N bytes; the limit is 100000 bytes'."]
 fn test_dry_run_refuses_overlong_prompt_without_printing_it() {
     let sandbox = Sandbox::new();
     let marker = "DRY-RUN-TOO-LONG";

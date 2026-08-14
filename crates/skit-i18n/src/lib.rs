@@ -2938,14 +2938,14 @@ const CATALOG: &[Translation] = &[
         "內嵌中繼資料區塊不是有效的 TOML",
     ),
     row!(
-        "the rendered prompt contains a NUL character",
-        "渲染后的提示词包含 NUL 字符",
-        "算繪後的提示詞包含 NUL 字元",
+        "the rendered prompt contains a NUL byte; process arguments cannot contain NUL bytes",
+        "渲染后的提示词包含 NUL 字节；进程参数不能包含 NUL 字节",
+        "算繪後的提示詞包含 NUL 位元組；處理程序引數不能包含 NUL 位元組",
     ),
     row!(
-        "the rendered prompt makes the command line {} {}; the limit is {} {}",
-        "渲染后的提示词使命令行达到 {} {}；上限是 {} {}",
-        "算繪後的提示詞使命令列達到 {} {}；上限是 {} {}",
+        "the rendered prompt makes the command line {} {} — over this platform's limit of {} {}. Shorten the prompt or its parameter values.",
+        "渲染后的提示词使命令行达到 {} {}，超过此平台的 {} {} 上限。请缩短提示词或参数值。",
+        "算繪後的提示詞使命令列達到 {} {}，超過此平台的 {} {} 上限。請縮短提示詞或參數值。",
     ),
     row!(
         "the runner arguments have invalid quoting",

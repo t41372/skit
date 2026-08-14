@@ -154,12 +154,12 @@ pub enum LaunchError {
         "prompt runner {name:?} must contain exactly one {{{{prompt}}}} marker outside the program token"
     )]
     InvalidPromptRunner { name: String },
-    /// A prompt argument contains a NUL character.
-    #[error("the rendered prompt contains a NUL character")]
+    /// A prompt argument contains a NUL byte.
+    #[error("the rendered prompt contains a NUL byte; process arguments cannot contain NUL bytes")]
     PromptContainsNul,
     /// A prompt command line exceeds the safe platform limit.
     #[error(
-        "the rendered prompt makes the command line {size} {unit}; the limit is {limit} {unit}"
+        "the rendered prompt makes the command line {size} {unit} — over this platform's limit of {limit} {unit}. Shorten the prompt or its parameter values."
     )]
     PromptArgvTooLong {
         /// Measured command-line size.
@@ -218,9 +218,11 @@ impl Localize for LaunchError {
                 "prompt runner {} must contain exactly one {{prompt}} marker outside the program token",
             )
             .quoted(name),
-            Self::PromptContainsNul => Message::new("the rendered prompt contains a NUL character"),
+            Self::PromptContainsNul => Message::new(
+                "the rendered prompt contains a NUL byte; process arguments cannot contain NUL bytes",
+            ),
             Self::PromptArgvTooLong { size, limit, unit } => Message::new(
-                "the rendered prompt makes the command line {} {}; the limit is {} {}",
+                "the rendered prompt makes the command line {} {} — over this platform's limit of {} {}. Shorten the prompt or its parameter values.",
             )
             .with(size)
             .with(unit)
