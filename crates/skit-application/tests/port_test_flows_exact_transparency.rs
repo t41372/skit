@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use skit_application::delivery::{PreparedValue, assemble, transparency_messages};
+use skit_application::delivery::{Assembly, PreparedValue, assemble, transparency_messages};
 use skit_domain::parameters::{ParamDecl, ParameterDelivery};
 use skit_i18n::Locale;
 
@@ -13,8 +13,14 @@ fn scalar(values: &[(&str, &str)]) -> BTreeMap<String, PreparedValue> {
         .collect()
 }
 
-#[test]
-fn test_transparency_lines_inject_source_shows_masked_and_temp_note() {
+fn localized_lines(assembly: &Assembly, command: &str) -> Vec<String> {
+    transparency_messages(assembly, command)
+        .into_iter()
+        .map(|message| message.localize(Locale::En))
+        .collect()
+}
+
+fn inject_assembly(secret: &str) -> Assembly {
     let mut output = ParamDecl::new("OUTPUT");
     output.delivery = ParameterDelivery::Inject;
     let mut width = ParamDecl::new("WIDTH");
@@ -22,17 +28,18 @@ fn test_transparency_lines_inject_source_shows_masked_and_temp_note() {
     let mut key = ParamDecl::new("API_KEY");
     key.delivery = ParameterDelivery::Inject;
     key.secret = true;
-
-    let assembly = assemble(
+    assemble(
         &[output, width, key],
-        &scalar(&[("OUTPUT", "new.jpg"), ("WIDTH", "900"), ("API_KEY", "sekret")]),
+        &scalar(&[("OUTPUT", "new.jpg"), ("WIDTH", "900"), ("API_KEY", secret)]),
         &[],
     )
-    .unwrap();
-    let lines = transparency_messages(&assembly, "python /data/script.py")
-        .into_iter()
-        .map(|message| message.localize(Locale::En))
-        .collect::<Vec<_>>();
+    .unwrap()
+}
+
+#[test]
+fn test_transparency_lines_inject_source_shows_masked_and_temp_note() {
+    let assembly = inject_assembly("sekret");
+    let lines = localized_lines(&assembly, "python /data/script.py");
     let joined = lines.join("\n");
 
     assert!(joined.contains("→ inject:"), "{joined}");
@@ -71,11 +78,61 @@ fn test_transparency_lines_flag_source_is_single_command_line() {
     output.delivery = ParameterDelivery::Flag;
     output.flag = "--output".to_owned();
     let assembly = assemble(&[output], &scalar(&[("output", "o.png")]), &[]).unwrap();
-    let lines = transparency_messages(&assembly, "python script.py --output o.png")
-        .into_iter()
-        .map(|message| message.localize(Locale::En))
-        .collect::<Vec<_>>();
+    let lines = localized_lines(&assembly, "python script.py --output o.png");
 
     assert_eq!(lines.len(), 1);
     assert!(lines[0].starts_with("→ "), "{:?}", lines);
+}
+
+#[test]
+fn test_transparency_inject_lines_are_exact() {
+    let assembly = inject_assembly("s");
+    let lines = localized_lines(&assembly, "python /tmp/.injected-abc.py");
+    assert_eq!(
+        lines[0],
+        "→ inject: OUTPUT = new.jpg, WIDTH = 900, API_KEY = •••"
+    );
+    assert!(
+        lines[1].starts_with("  (written to a temporary copy"),
+        "{:?}",
+        lines
+    );
+}
+
+#[test]
+fn test_transparency_shows_the_injected_temp_path() {
+    let assembly = inject_assembly("s");
+    let lines = localized_lines(&assembly, "python /tmp/.injected-abc.py");
+    assert!(
+        lines.last().is_some_and(|line| line.contains(".injected-abc.py")),
+        "the actual staged path disappeared from transparency: {:?}",
+        lines
+    );
+}
+
+#[test]
+fn test_transparency_flag_source_masks_secret_in_command() {
+    let mut api_key = ParamDecl::new("api_key");
+    api_key.delivery = ParameterDelivery::Flag;
+    api_key.flag = "--api-key".to_owned();
+    api_key.secret = true;
+    let mut name = ParamDecl::new("name");
+    name.delivery = ParameterDelivery::Flag;
+    name.flag = "--name".to_owned();
+    let assembly = assemble(
+        &[api_key, name],
+        &scalar(&[("api_key", "sk-SECRET"), ("name", "ada")]),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        assembly.masked_args,
+        ["--api-key", "•••", "--name", "ada"]
+    );
+    let command = format!("python script.py {}", assembly.masked_args.join(" "));
+    let lines = localized_lines(&assembly, &command);
+    let line = lines.last().expect("flag transparency has a command line");
+    assert!(!line.contains("sk-SECRET"), "secret leaked into transparency: {line}");
+    assert!(line.contains("•••"), "masked value disappeared: {line}");
+    assert!(line.contains("--name ada"), "non-secret flags disappeared: {line}");
 }
