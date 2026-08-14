@@ -3,7 +3,7 @@
 use skit_language::external_dependencies;
 
 #[test]
-fn test_external_imports_cover_all_static_and_dynamic_literal_forms_with_dedup() {
+fn test_external_imports_covers_all_import_forms() {
     let text = concat!(
         "import chalk from \"chalk\";\n",
         "import { z } from \"zod\";\n",
@@ -14,12 +14,12 @@ fn test_external_imports_cover_all_static_and_dynamic_literal_forms_with_dedup()
     );
     assert_eq!(
         external_dependencies("js", text),
-        ["chalk", "commander", "execa", "rimraf", "zod"]
+        ["chalk", "zod", "commander", "execa", "rimraf"]
     );
 }
 
 #[test]
-fn test_external_imports_exclude_builtins_relative_absolute_protocol_and_internal_specifiers() {
+fn test_external_imports_excludes_non_packages() {
     let text = concat!(
         "import fs from \"node:fs\";\n",
         "import path from \"path\";\n",
@@ -36,7 +36,7 @@ fn test_external_imports_exclude_builtins_relative_absolute_protocol_and_interna
 }
 
 #[test]
-fn test_external_imports_reject_malformed_scoped_specifiers() {
+fn test_external_imports_rejects_malformed_scoped_specifiers() {
     for specifier in ["@scope/", "@scope//pkg", "@/pkg", "@only-a-scope"] {
         let text = format!("import x from \"{specifier}\";\n");
         assert!(external_dependencies("js", &text).is_empty(), "{specifier}");
@@ -44,7 +44,7 @@ fn test_external_imports_reject_malformed_scoped_specifiers() {
 }
 
 #[test]
-fn test_external_imports_map_deep_imports_to_package_root() {
+fn test_external_imports_maps_deep_imports_to_the_package_root() {
     let text = concat!(
         "import fp from \"lodash/fp\";\n",
         "import cmd from \"@aws-sdk/client-s3/commands\";\n",
@@ -52,12 +52,12 @@ fn test_external_imports_map_deep_imports_to_package_root() {
     );
     assert_eq!(
         external_dependencies("js", text),
-        ["@a/b", "@aws-sdk/client-s3", "lodash"]
+        ["lodash", "@aws-sdk/client-s3", "@a/b"]
     );
 }
 
 #[test]
-fn test_external_imports_skip_unreadable_or_non_require_call_shapes() {
+fn test_external_imports_skips_unreadable_specifiers() {
     let text = concat!(
         "const a = require(name);\n",
         "const b = require(\"a\", \"b\");\n",
@@ -69,29 +69,29 @@ fn test_external_imports_skip_unreadable_or_non_require_call_shapes() {
 }
 
 #[test]
-fn test_external_imports_read_typescript_type_imports_under_ts_grammar() {
+fn test_external_imports_reads_typescript_under_the_ts_grammar() {
     let text = concat!(
         "import type { X } from \"type-fest\";\n",
         "import { t } from \"@trpc/server\";\n",
     );
     assert_eq!(
         external_dependencies("ts", text),
-        ["@trpc/server", "type-fest"]
+        ["type-fest", "@trpc/server"]
     );
 }
 
 #[test]
-fn test_external_imports_degrade_to_empty_on_parse_error() {
+fn test_external_imports_degrades_to_empty_on_a_parse_error() {
     assert!(external_dependencies("js", "import broken from ;").is_empty());
 }
 
 #[test]
-fn test_external_import_statement_without_string_source_is_ignored() {
+fn test_external_imports_ignores_an_import_statement_without_a_string_source() {
     assert!(external_dependencies("js", "import x from 1;\n").is_empty());
 }
 
 #[test]
-fn test_sourceless_export_never_becomes_a_dependency() {
+fn rust_additive_sourceless_export_never_becomes_a_dependency() {
     assert!(external_dependencies("js", "export const X = 5;\n").is_empty());
     assert_eq!(
         external_dependencies("js", "import chalk from 'chalk';\nexport const X = 5;\n",),
