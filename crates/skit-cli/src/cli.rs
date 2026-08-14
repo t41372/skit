@@ -1469,6 +1469,35 @@ fn validate_prompt_runner_in(config: &FileConfigStore, name: Option<&str>) -> Re
     }
 }
 
+fn validate_prompt_runner_pin_in(
+    config: &FileConfigStore,
+    name: Option<&str>,
+) -> Result<(), CliError> {
+    let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
+        return Ok(());
+    };
+    let runners = config.runners()?;
+    if runners.iter().any(|runner| runner.name == name) {
+        return Ok(());
+    }
+    let configured = runners
+        .iter()
+        .map(|runner| runner.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(CliError::Failure(
+        Message::new(
+            "The runner {} isn't configured (known: {}). Manage runners with: skit runner list",
+        )
+        .with(name)
+        .with(if configured.is_empty() {
+            "—".to_owned()
+        } else {
+            configured
+        }),
+    ))
+}
+
 fn write_completion(shell: Shell, output: &mut dyn io::Write) {
     let mut command = Cli::command();
     generate(shell, &mut command, "skit", output);
@@ -3830,17 +3859,17 @@ fn params(
     }
     if has_runner_policy {
         if kind != "prompt" {
-            return Err(CliError::Usage(Message::new(
+            return Err(CliError::Failure(Message::new(
                 "--runner only applies to prompt entries",
             )));
         }
-        validate_prompt_runner_in(
+        validate_prompt_runner_pin_in(
             &FileConfigStore::new(resolve_config_dir()?),
             args.runner.as_deref(),
         )?;
     }
     if has_interpolation_policy && kind != "prompt" {
-        return Err(CliError::Usage(Message::new(
+        return Err(CliError::Failure(Message::new(
             "--interpolate only applies to prompt entries",
         )));
     }
@@ -4349,7 +4378,7 @@ fn write_params(
             humanln!(
                 "Prompt runner: {}",
                 if settings.runner.is_empty() {
-                    text(active_locale(), "not set").into_owned()
+                    text(active_locale(), "(asks at run time)").into_owned()
                 } else {
                     settings.runner.clone()
                 }

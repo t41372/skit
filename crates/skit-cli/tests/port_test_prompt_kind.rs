@@ -2119,8 +2119,8 @@ fn test_write_prompt_interpolate_keeps_the_managed_list() {
         .success();
     assert!(EntrySettings::from_meta(&sandbox.resolve("keep").meta).interpolate);
 
-    // write_prompt_interpolate on a NON-prompt entry raises the store usage error; through the CLI
-    // a command entry refuses --no-interpolate/--interpolate (exit 2).
+    // write_prompt_interpolate on a NON-prompt entry raises the store error; through the CLI a
+    // command entry refuses --no-interpolate/--interpolate as an unsuccessful operation (exit 1).
     sandbox
         .command()
         .args(["add", "--cmd", "echo {x}", "-n", "cmd", "--no-input"])
@@ -2131,7 +2131,7 @@ fn test_write_prompt_interpolate_keeps_the_managed_list() {
         .args(["params", "cmd", "--no-interpolate"])
         .output()
         .unwrap();
-    assert_eq!(refusal.status.code(), Some(2));
+    assert_eq!(refusal.status.code(), Some(1));
     let combined = format!(
         "{}{}",
         String::from_utf8_lossy(&refusal.stdout),

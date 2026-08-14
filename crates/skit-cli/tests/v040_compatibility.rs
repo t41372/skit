@@ -1192,15 +1192,18 @@ fn params_refuses_inapplicable_or_order_dependent_operations_without_a_write() {
     let meta_path = sandbox.data.path().join("scripts/demo/meta.toml");
     let before = fs::read(&meta_path).unwrap();
 
-    for arguments in [
-        vec!["params", "demo", "--runner", ""],
-        vec!["params", "demo", "--no-interpolate"],
-        vec!["params", "demo", "--interpreter", "bash"],
-        vec!["params", "demo", "--workdir", "relative/path"],
-        vec!["params", "demo", "--runner", "", "--add", "other"],
-        vec!["params", "demo", "--template", "", "--add", "other"],
+    for (arguments, exit_code) in [
+        (vec!["params", "demo", "--runner", ""], 1),
+        (vec!["params", "demo", "--no-interpolate"], 1),
+        (vec!["params", "demo", "--interpreter", "bash"], 2),
+        (vec!["params", "demo", "--workdir", "relative/path"], 2),
+        (vec!["params", "demo", "--runner", "", "--add", "other"], 2),
+        (
+            vec!["params", "demo", "--template", "", "--add", "other"],
+            2,
+        ),
     ] {
-        sandbox.command().args(arguments).assert().code(2);
+        sandbox.command().args(arguments).assert().code(exit_code);
         assert_eq!(fs::read(&meta_path).unwrap(), before);
     }
 }

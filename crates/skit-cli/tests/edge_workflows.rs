@@ -525,8 +525,8 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
         "printf '%s' {name}",
     ]);
     sandbox.code(&["params", "demo", "--interpreter", "sh"], 2);
-    sandbox.code(&["params", "demo", "--runner", ""], 2);
-    sandbox.code(&["params", "demo", "--no-interpolate"], 2);
+    sandbox.code(&["params", "demo", "--runner", ""], 1);
+    sandbox.code(&["params", "demo", "--no-interpolate"], 1);
     sandbox.ok(&[
         "params",
         "demo",

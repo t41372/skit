@@ -1387,7 +1387,6 @@ fn test_params_deliver_placeholder_is_allowed_on_prompts() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): pin/clear and last_runner preservation converge, but clearing prints the human 'Prompt runner: not set' where the oracle prints 'asks at run time'."]
 fn test_params_runner_pin_and_clear() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -1434,18 +1433,21 @@ fn test_params_interpolate_with_json_emits_the_read_view() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust exits 2 (oracle exits 1) and prints 'prompt runner \"ghost\" is not configured' where the oracle prints 'isn't configured'. The pin stays cleared in both."]
 fn test_params_runner_pin_validates_the_name() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
     let (code, combined) = sandbox.out(&["params", "p", "--runner", "ghost"]);
     assert_eq!(code, 1, "{combined}");
     assert!(combined.contains("isn't configured"), "{combined}");
-    assert_eq!(sandbox.json(&["show", "p", "--json"])["runner"], "");
+    // The oracle inspects its private stored meta.runner here (empty string). The public CLI
+    // projects that same unpinned state as null, as the pin-and-clear and read-view contracts do.
+    assert_eq!(
+        sandbox.json(&["show", "p", "--json"])["runner"],
+        Value::Null
+    );
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): message '--runner only applies to prompt entries' converges, but Rust exits 2 (CliError::Usage) where the oracle exits 1."]
 fn test_params_runner_pin_refused_on_non_prompt() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["add", "--cmd", "echo {m}", "-n", "cmd", "--no-input"]);
@@ -2284,7 +2286,6 @@ fn test_params_interpolate_off_and_on() {
 fn test_params_interpolate_reports_store_errors() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): message '--interpolate only applies to prompt entries' converges, but Rust exits 2 (CliError::Usage) where the oracle exits 1."]
 fn test_params_interpolate_refused_on_non_prompt() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["add", "--cmd", "echo {m}", "-n", "cmd", "--no-input"]);
