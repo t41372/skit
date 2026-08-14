@@ -161,7 +161,7 @@ fn human_success_and_health_output_use_the_requested_catalog_but_json_does_not()
         .arg("doctor")
         .assert()
         .success()
-        .stdout(predicate::str::contains("項目：1"))
+        .stdout(predicate::str::contains("已登記 1 個條目"))
         .stdout(predicate::str::contains("工具庫："))
         .stdout(predicate::str::contains("狀態資料："))
         .stdout(predicate::str::contains("組態："));

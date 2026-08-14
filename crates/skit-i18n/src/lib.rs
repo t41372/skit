@@ -401,13 +401,13 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "{} entry registered",
-        "已注册 {} 个条目",
-        "已登錄 {} 個項目"
+        "已登记 {} 个条目",
+        "已登記 {} 個條目"
     ),
     row!(
         "{} entries registered",
-        "已注册 {} 个条目",
-        "已登錄 {} 個項目",
+        "已登记 {} 个条目",
+        "已登記 {} 個條目",
     ),
     row!(
         "Malformed agent (runner) rows in config: {} — fix them in Preferences → Manage agents",

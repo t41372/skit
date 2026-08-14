@@ -5329,7 +5329,11 @@ fn doctor(
             UvHealth::Missing => humanln!("ERROR uv: not found"),
             UvHealth::NotRequired => humanln!("OK uv: not required"),
         }
-        humanln!("Entries: {}", snapshot.entry_count);
+        if snapshot.entry_count == 1 {
+            humanln!("{} entry registered", snapshot.entry_count);
+        } else {
+            humanln!("{} entries registered", snapshot.entry_count);
+        }
         humanln!("Library: {} ({} bytes)", scripts.display(), size);
         humanln!("State: {}", state_location.display());
         humanln!("Config: {}", config_location.display());

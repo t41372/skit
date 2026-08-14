@@ -688,13 +688,33 @@ fn test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust human doctor prints 'Entries: 1', never the oracle's taxonomy-aware '1 entry registered'."]
 fn test_prompt_only_library_uses_entry_taxonomy_on_dynamic_cli_surfaces() {
     let sandbox = Sandbox::new();
     sandbox.added("Review this\n", "p");
     let combined = sandbox.ok(&["doctor"]);
     assert!(combined.contains("1 entry registered"), "{combined}");
     assert!(!combined.contains("script registered"), "{combined}");
+
+    sandbox.added("Summarize this\n", "q");
+    for (locale, phrase) in [
+        ("en", "2 entries registered"),
+        ("zh-CN", "已登记 2 个条目"),
+        ("zh-TW", "已登記 2 個條目"),
+    ] {
+        let output = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .arg("doctor")
+            .output()
+            .unwrap();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(0), "{locale}: {combined}");
+        assert!(combined.contains(phrase), "{locale}: {combined}");
+    }
 }
 
 #[test]
