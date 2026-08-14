@@ -5,7 +5,6 @@
 //! or recreating private helpers in the test suite. Behavioral mismatches stay red.
 
 use std::{
-    collections::BTreeMap,
     fs::{self, OpenOptions},
     sync::mpsc,
     thread,
@@ -207,15 +206,6 @@ fn assert_repaired(root: &TempDir) {
     assert!(row.get("mtime_ns").and_then(Value::as_integer).is_some());
 }
 
-#[test]
-fn test_try_lock_acquires_when_free_and_excludes_a_second_taker() {
-    let root = TempDir::new().unwrap();
-    let store = make_legacy(&root);
-    let scan = store.scan().unwrap();
-    assert_eq!(scan.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(), ["legacy"]);
-    assert_repaired(&root);
-}
-
 fn busy_read_path_case() {
     let root = TempDir::new().unwrap();
     let store = make_legacy(&root);
@@ -247,6 +237,16 @@ fn busy_read_path_case() {
 }
 
 #[test]
+fn test_try_lock_acquires_when_free_and_excludes_a_second_taker() {
+    let root = TempDir::new().unwrap();
+    let store = make_legacy(&root);
+    let scan = store.scan().unwrap();
+    assert_eq!(scan.entries.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(), ["legacy"]);
+    assert_repaired(&root);
+    busy_read_path_case();
+}
+
+#[test]
 fn test_try_lock_declines_while_the_blocking_lock_is_held() { busy_read_path_case(); }
 
 #[test]
@@ -269,9 +269,4 @@ fn test_try_lock_treats_an_unopenable_lock_file_as_not_acquired() {
     fs::remove_dir(&lock_path).unwrap();
     store.scan().unwrap();
     assert_repaired(&root);
-}
-
-#[test]
-fn rust_additive_atomic_public_consumer_test_uses_no_fake_document_model() {
-    let _ = BTreeMap::<String, String>::new();
 }
