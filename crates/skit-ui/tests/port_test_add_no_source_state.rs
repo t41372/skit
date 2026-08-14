@@ -10,7 +10,7 @@ use skit_ui::{
     SourceSnapshot,
 };
 
-fn snapshot(path: &str, bytes: &[u8], *, is_directory: bool, is_draft: bool) -> SourceSnapshot {
+fn snapshot(path: &str, bytes: &[u8], is_directory: bool, is_draft: bool) -> SourceSnapshot {
     SourceSnapshot {
         path: path.into(),
         source_record: path.to_owned(),
