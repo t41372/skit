@@ -470,7 +470,6 @@ fn test_add_unknown_directory_with_exe_is_accepted() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): an existing-but-unreadable file must be reported cleanly with exit 1 + \"Can't read %(path)s: %(error)s\" (oracle cli.py:817/1118/1254), distinct from \"File not found\". Rust exits 1 but with \"could not open <path>: Permission denied (os error 13)\" — no \"Can't read\" phrase. Exit code 1 converges. (Skipped entirely when the euid bypasses perms, matching the oracle's skipif(geteuid()==0).)"]
 fn test_add_unreadable_file_clean_error_not_traceback() {
     // An existing-but-unreadable file must be reported cleanly ("Can't read", distinct from
     // "File not found" since the path exists). Skipped when the euid bypasses perms — root reads

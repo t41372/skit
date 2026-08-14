@@ -2546,6 +2546,7 @@ const CATALOG: &[Translation] = &[
     ),
     row!("could not {} {}: {}", "无法{} {}：{}", "無法{} {}：{}",),
     row!("File not found: {}", "找不到文件：{}", "找不到檔案：{}",),
+    row!("Can't read {}: {}", "无法读取 {}：{}", "無法讀取 {}：{}",),
     row!("Not a file: {}", "不是文件：{}", "不是檔案：{}",),
     row!(
         "custom working directory must be absolute: {}",

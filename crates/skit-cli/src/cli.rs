@@ -7762,13 +7762,13 @@ fn read_source(
             is_regular: false,
         });
     }
-    let mut file = File::open(path).map_err(|error| source_error("open", path, error))?;
+    let mut file = File::open(path).map_err(|error| source_read_error(path, error))?;
     let metadata = file
         .metadata()
         .map_err(|error| source_error("inspect", path, error))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
-        .map_err(|error| source_error("read", path, error))?;
+        .map_err(|error| source_read_error(path, error))?;
     Ok(SourceSnapshot {
         bytes,
         permissions: source_permissions(&metadata),
@@ -7796,6 +7796,14 @@ fn source_error(operation: &'static str, path: &Path, source: io::Error) -> CliE
         path: path.display().to_string(),
         source,
     }
+}
+
+fn source_read_error(path: &Path, error: io::Error) -> CliError {
+    CliError::Failure(
+        Message::new("Can't read {}: {}")
+            .with(path.display())
+            .with(error),
+    )
 }
 
 fn resolve_add_source(path: &Path) -> Result<PathBuf, CliError> {
