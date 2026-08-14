@@ -59,6 +59,42 @@ impl Sandbox {
         );
     }
 
+    fn add_hostile_python_param(&self) {
+        let source = self.home.path().join("hostile.py");
+        fs::write(
+            &source,
+            concat!(
+                "# /// script\n",
+                "# dependencies = []\n",
+                "#\n",
+                "# [tool.skit]\n",
+                "# schema = 1\n",
+                "#\n",
+                "# [[tool.skit.params]]\n",
+                "# name = \"[red]msg[/red]\"\n",
+                "# kind = \"const\"\n",
+                "# type = \"str\"\n",
+                "# ///\n",
+                "print(1)\n",
+            ),
+        )
+        .expect("hostile managed source");
+        let output = self.run(&[
+            "add",
+            source.to_str().expect("utf8 source"),
+            "--name",
+            "e",
+            "--no-input",
+        ]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     fn entry_exists(&self, slug: &str) -> bool {
         self.data.path().join("scripts").join(slug).is_dir()
     }
@@ -166,9 +202,10 @@ fn test_preset_save_command_escapes_markup_in_preset_name_and_entry_name() {
 #[test]
 fn test_preset_save_prompt_escapes_markup_in_placeholder_name() {
     let sandbox = Sandbox::new();
-    // Python injects a hostile placeholder name directly into the entry model. The public Rust
-    // equivalent is an on-disk command whose real placeholder itself carries the same markup.
-    sandbox.add_command("e", "echo {[red]msg[/red]}");
+    // The frozen test injects a hostile declaration directly because normal command placeholders
+    // are identifier-constrained. Use real hand-edited managed metadata here for the same reason:
+    // reach the real preset-save prompt without first making parser acceptance the thing under test.
+    sandbox.add_hostile_python_param();
     let (code, output) = run_pty(
         &sandbox,
         &["preset", "save", "e", "p"],
@@ -177,7 +214,7 @@ fn test_preset_save_prompt_escapes_markup_in_placeholder_name() {
     assert_eq!(code, 0, "{output}");
     assert!(
         output.contains("[red]msg[/red]"),
-        "the interactive preset prompt must render the hostile placeholder name literally: {output}"
+        "the interactive preset prompt must render the hostile parameter name literally: {output}"
     );
     assert_state_contains(&sandbox.state_text("e"), &["[red]msg[/red]", "x"]);
 }
