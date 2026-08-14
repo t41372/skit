@@ -108,7 +108,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_review_fixes.py | 30 | crates/skit-cli/tests/port_test_review_fixes.rs | done (23) · 7 deferred · 1 weakening fixed (title-caser now live) |
 | test_run_set.py | 27 | crates/skit-cli/tests/port_test_run_set.rs | done (23) · exact raw/set/preset conflict guidance fixed `0996295` · field-less save-preset refusal fixed `796a5d1` · `--set` names trim without changing values `18ec1a0` · implicit saved-tail notice fixed `0b8bf2d` · atomic complete malformed/unknown-name reporting fixed `27bbb4b` · typed value voice fixed `33d9a4a` · masked/no-write dry-run injection fixed `b439a5e` · 4 interactive/cross-crate closures |
 | test_draft_inference_and_reader_cli.py | 27 | crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs | done (21) · **read-view voices ×4 FIXED 8633128** · shebang-derived Python pin note ×3 fixed `affa5b2` · 3 divergences (draft not unlinked, kind_for_draft absent) ties #15 · 3 cross-crate/absent |
-| test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | done (17) · 5 deferred |
+| test_agent_install.py | 22 | crates/skit-cli/tests/port_test_agent_install.rs | implementation parity (19) · exact CLI/TUI success and destination-write failure voices fixed `4d2c052` · 3 private/compile-time closures |
 | test_dependency_write_validation.py | 21 | crates/skit-cli/tests/port_test_dependency_write_validation.rs | done (16) · **PEP wording ×4 FIXED c5e84ea** · 5 divergence/cross-crate |
 | test_add_lane_contracts.py | 21 | crates/skit-cli/tests/port_test_add_lane_contracts.rs | done (15) · **read-view voices ×2 FIXED 8633128** · add-time unknown-runner early refusals fixed `3d43a40` · exact editor/no-input pipe advice fixed `c2187b7` · 6 divergences |
 | test_dependency_command_contracts.py | 20 | crates/skit-cli/tests/port_test_dependency_command_contracts.rs | done (5) · 15 divergence/cross-crate |
@@ -143,7 +143,7 @@ adjudicated · counts are Python `def test_` counts.
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_i18n.py | 38 | crates/skit-i18n/tests/port_test_i18n.rs + skit-cli config/manifest | done · 28 executable + 10 Babel/gettext/Python-runtime architecture-closed · 6 additive row tests · replacement and catalog/config fixes `f1dc3c7`/`7e53da4`/`5d3c303` |
-| test_prompt_utf8.py | 16 | crates/skit-cli/tests/port_test_prompt_utf8.rs | in fix (7 executable / 12 classified rows) · malformed file/stdin intake is atomic and offset-exact `9105a6d` · 5 corrupt-read/edit divergences remain |
+| test_prompt_utf8.py | 16 | crates/skit-cli/tests/port_test_prompt_utf8.rs | in fix (9 executable / 10 classified rows) · malformed file/stdin intake is atomic and offset-exact `9105a6d` · copy/reference edit retains invalid authored bytes for repair but refuses success `f38666b` · 3 corrupt-read/doctor divergences remain |
 | test_packaging.py | 7 | crates/skit-cli/tests/port_test_packaging.rs + manifest | done · 3 executable + 4 Python-runtime architecture-closed · TOML 1.1 harness fixed in `606c716` |
 | test_benchmarks_tooling.py | 156 | N/A (adapt) — Rust skit-benchmarks crate is a native reimplementation with 92 #[test]s (budget/dataset/parsers/pipeline_plan/suites); the Python benchmarks/__main__ CLI does not port 1:1. Dev tooling, gate-enforced via benchmarks/check.sh + cargo bench | done (N/A) |
 | test_mutation_gate.py | 4 | N/A — Rust uses cargo-mutants (Phase 3 gate); the Python scripts/check_mutation_stats.py has no Rust analog | done (N/A) |
