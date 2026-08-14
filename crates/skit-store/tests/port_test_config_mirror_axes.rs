@@ -1,8 +1,12 @@
-//! Public-API ports of Python v0.4 mirror-axis persistence and transaction contracts.
+//! Public-API strengthening around Python v0.4 mirror-axis persistence and transaction contracts.
 //!
 //! The three axes are independent. Fresh URL configuration auto-enables; clearing the final URL
 //! disables; a paused configuration stays paused while edited so saved siblings are never silently
 //! resurrected. Custom URL validation uses one-token http(s), with GitHub release bases https-only.
+//!
+//! These tests are intentionally `rust_additive_*`: the frozen Python names are owned by the exact
+//! canonical files used by `port_test_config_manifest.rs`. Keeping these assertions under invented
+//! `test_*` names would falsely make implementation-authored strengthening look like migrated oracles.
 
 use std::collections::BTreeMap;
 
@@ -18,7 +22,7 @@ const NJU_PYTHON: &str =
 const NJU_UV: &str = "https://mirror.nju.edu.cn/github-release/astral-sh/uv";
 
 #[test]
-fn test_fresh_first_axis_auto_enables_and_preset_roundtrips_by_name() {
+fn rust_additive_fresh_first_axis_auto_enables_and_preset_roundtrips_by_name() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
 
@@ -35,7 +39,7 @@ fn test_fresh_first_axis_auto_enables_and_preset_roundtrips_by_name() {
 }
 
 #[test]
-fn test_axes_are_independent_and_setting_one_preserves_existing_siblings() {
+fn rust_additive_axes_are_independent_and_setting_one_preserves_existing_siblings() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
 
@@ -51,7 +55,7 @@ fn test_axes_are_independent_and_setting_one_preserves_existing_siblings() {
 }
 
 #[test]
-fn test_github_preset_expands_one_base_into_both_release_vectors() {
+fn rust_additive_github_preset_expands_one_base_into_both_release_vectors() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
 
@@ -64,7 +68,7 @@ fn test_github_preset_expands_one_base_into_both_release_vectors() {
 }
 
 #[test]
-fn test_custom_github_base_roundtrips_without_trailing_slash() {
+fn rust_additive_custom_github_base_roundtrips_without_trailing_slash() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
     let base = "https://my.mirror/gh/";
@@ -81,7 +85,7 @@ fn test_custom_github_base_roundtrips_without_trailing_slash() {
 }
 
 #[test]
-fn test_pypi_and_npm_accept_pastable_http_custom_urls_and_trim_one_trailing_slash() {
+fn rust_additive_pypi_and_npm_accept_pastable_http_custom_urls_and_trim_one_trailing_slash() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
 
@@ -97,7 +101,7 @@ fn test_pypi_and_npm_accept_pastable_http_custom_urls_and_trim_one_trailing_slas
 }
 
 #[test]
-fn test_github_custom_base_rejects_http_even_though_other_axes_accept_it() {
+fn rust_additive_github_custom_base_rejects_http_even_though_other_axes_accept_it() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
 
@@ -109,7 +113,7 @@ fn test_github_custom_base_rejects_http_even_though_other_axes_accept_it() {
 }
 
 #[test]
-fn test_custom_axis_gate_rejects_non_urls_whitespace_and_display_prose_without_writing() {
+fn rust_additive_custom_axis_gate_rejects_non_urls_whitespace_and_display_prose_without_writing() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
 
@@ -128,7 +132,7 @@ fn test_custom_axis_gate_rejects_non_urls_whitespace_and_display_prose_without_w
 }
 
 #[test]
-fn test_clearing_one_of_several_axes_keeps_master_enabled() {
+fn rust_additive_clearing_one_of_several_axes_keeps_master_enabled() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
     store.set("mirror.pypi", "tsinghua").unwrap();
@@ -143,7 +147,7 @@ fn test_clearing_one_of_several_axes_keeps_master_enabled() {
 }
 
 #[test]
-fn test_clearing_the_last_axis_disables_the_master() {
+fn rust_additive_clearing_the_last_axis_disables_the_master() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
     store.set("mirror.npm", "npmmirror").unwrap();
@@ -157,7 +161,7 @@ fn test_clearing_the_last_axis_disables_the_master() {
 }
 
 #[test]
-fn test_paused_axis_edit_stays_paused_and_preserves_other_saved_urls() {
+fn rust_additive_paused_axis_edit_stays_paused_and_preserves_other_saved_urls() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
     store.set("mirror.pypi", "tsinghua").unwrap();
@@ -177,7 +181,7 @@ fn test_paused_axis_edit_stays_paused_and_preserves_other_saved_urls() {
 }
 
 #[test]
-fn test_master_enable_refuses_when_no_urls_are_saved() {
+fn rust_additive_master_enable_refuses_when_no_urls_are_saved() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
 
@@ -187,7 +191,7 @@ fn test_master_enable_refuses_when_no_urls_are_saved() {
 }
 
 #[test]
-fn test_master_reenable_restores_saved_urls_without_rewriting_axes() {
+fn rust_additive_master_reenable_restores_saved_urls_without_rewriting_axes() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
     store.set("mirror.pypi", "tsinghua").unwrap();
@@ -205,7 +209,7 @@ fn test_master_reenable_restores_saved_urls_without_rewriting_axes() {
 }
 
 #[test]
-fn test_each_axis_can_supply_environment_independently() {
+fn rust_additive_each_axis_can_supply_environment_independently() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
 
@@ -224,6 +228,6 @@ fn test_each_axis_can_supply_environment_independently() {
 }
 
 #[test]
-fn test_github_preset_base_constant_remains_exact() {
+fn rust_additive_github_preset_base_constant_remains_exact() {
     assert_eq!(NJU_BASE, "https://mirror.nju.edu.cn/github-release");
 }

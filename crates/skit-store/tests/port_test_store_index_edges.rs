@@ -1,4 +1,9 @@
 //! Additional public index/listing ports from Python v0.4 `tests/test_store.py`.
+//!
+//! `test_a_store_that_cannot_be_written_still_lists` is intentionally not executable here:
+//! Python injects a repair-write failure by monkeypatching its private `_save_registry` helper.
+//! Rust currently has no deterministic public write-failure seam on the read path; chmod-ing only
+//! `registry.toml` is not equivalent because atomic replacement depends on the parent directory.
 
 use std::fs;
 
@@ -107,31 +112,6 @@ fn test_an_entry_whose_meta_is_gone_is_not_listed() {
         ["kept"]
     );
     assert!(source.exists());
-}
-
-#[test]
-fn test_a_store_that_cannot_be_written_still_lists() {
-    let root = TempDir::new().unwrap();
-    let store = FileStore::new(root.path());
-    let entry = store
-        .create(request("legacy", "python", StorageMode::Copy, "/origin/legacy.py"))
-        .unwrap();
-    let mut registry = load_registry(&root);
-    replace_with_legacy_row(&mut registry, entry.slug.as_str(), "legacy", "python");
-    save_registry(&root, &registry);
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let path = root.path().join("registry.toml");
-        let mut permissions = fs::metadata(&path).unwrap().permissions();
-        permissions.set_mode(0o444);
-        fs::set_permissions(&path, permissions).unwrap();
-    }
-
-    let summary = store.scan().unwrap().entries.into_iter().next().unwrap();
-    assert_eq!(summary.name, "legacy");
-    assert_eq!(summary.mode, entry.meta.mode);
 }
 
 #[test]
