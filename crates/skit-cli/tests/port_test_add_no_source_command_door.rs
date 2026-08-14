@@ -7,6 +7,8 @@
 #[path = "support/add_no_source.rs"]
 mod support;
 
+use std::fs;
+
 use skit_application::{EntryMutationRepository as _, EntryRepository as _};
 use skit_domain::{EntrySettings, parameters::is_secret_name};
 use skit_ui::{AddAction, AddEffect, AddWorkflowState};
@@ -105,8 +107,16 @@ fn test_bare_add_tui_command_door_summary_call_contract() {
         .map(String::as_str)
         .collect::<Vec<_>>();
     assert_eq!(secrets, ["API_KEY"]);
-    assert!(
-        s.store().payload_path(&persisted).is_none(),
+
+    let entry_dir = s.store().entry_dir_path(&persisted.slug);
+    let files = fs::read_dir(entry_dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|item| item.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        files,
+        ["meta.toml"],
         "summary managed-input projection must be empty for a metadata-only command entry"
     );
 }
