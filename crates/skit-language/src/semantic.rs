@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, is_secret_name,
+    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, coerce_default,
+    is_secret_name,
 };
 
 use crate::LanguageError;
@@ -1591,13 +1592,17 @@ fn literal_bool(document: &ParsedDocument, node: tree_sitter::Node<'_>) -> Optio
 
 fn literal_as_string(literal: &PythonLiteral) -> Option<String> {
     match literal {
-        PythonLiteral::Value(ParameterValue::String(value)) => Some(value.clone()),
-        PythonLiteral::Value(ParameterValue::Integer(value)) => Some(value.to_string()),
-        PythonLiteral::Value(ParameterValue::Float(value)) => Some(render_float(*value)),
-        PythonLiteral::Value(ParameterValue::Bool(value)) => {
-            Some(if *value { "True" } else { "False" }.to_owned())
-        }
+        PythonLiteral::Value(value) => Some(parameter_value_text(value)),
         PythonLiteral::None | PythonLiteral::Ellipsis => None,
+    }
+}
+
+fn parameter_value_text(value: &ParameterValue) -> String {
+    match value {
+        ParameterValue::String(value) => value.clone(),
+        ParameterValue::Integer(value) => value.to_string(),
+        ParameterValue::Float(value) => render_float(*value),
+        ParameterValue::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
     }
 }
 
@@ -2427,6 +2432,8 @@ fn reconcile_analysis(analysis: &SemanticAnalysis, stored: &[ParamDecl]) -> Reco
         } else {
             if !declaration.secret
                 && let Some(default) = &candidate.declaration.default
+                && coerce_default(&parameter_value_text(default), declaration.parameter_type)
+                    .is_ok()
             {
                 report
                     .current_defaults
@@ -2777,5 +2784,54 @@ fn newline_style(source: &str) -> &'static str {
         "\r\n"
     } else {
         "\n"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_const_default_that_no_longer_fits_the_declared_type_is_not_published() {
+        let mut stored = ParamDecl::new("N");
+        stored.binding = ParameterBinding::Const;
+        stored.delivery = ParameterDelivery::Inject;
+        stored.parameter_type = ParameterType::Int;
+        stored.default = Some(ParameterValue::Integer(3));
+
+        let mut current = stored.clone();
+        current.default = Some(ParameterValue::String("three".to_owned()));
+        let analysis = SemanticAnalysis {
+            candidates: vec![SemanticCandidate {
+                declaration: current,
+                identity: BindingIdentity {
+                    binding: ParameterBinding::Const,
+                    key: "N".to_owned(),
+                    occurrence: 0,
+                    scope: Vec::new(),
+                },
+                span: SourceSpan {
+                    start: 0,
+                    end: 1,
+                    start_line: 1,
+                    end_line: 1,
+                },
+                demotion: None,
+                empty_uses_default: false,
+            }],
+            ..SemanticAnalysis::default()
+        };
+
+        let report = reconcile_analysis(&analysis, &[stored]);
+
+        assert_eq!(
+            report
+                .ok
+                .iter()
+                .map(|pair| pair.stored.name.as_str())
+                .collect::<Vec<_>>(),
+            ["N"]
+        );
+        assert!(report.current_defaults.is_empty());
     }
 }
