@@ -1,4 +1,4 @@
-//! Exact process-boundary ports from Python v0.4 `tests/test_flows.py`.
+//! Exact process-boundary ports from Python v0.4 `tests/test_flows.py` plus Rust-only strength.
 #![cfg(unix)]
 
 #[path = "support/shell_inject.rs"]
@@ -54,7 +54,7 @@ fn entry_dir(payload: &Path) -> &Path {
 }
 
 #[test]
-fn test_execute_env_only_does_not_materialize_temp_copy() {
+fn rust_additive_execute_env_only_does_not_materialize_temp_copy() {
     let sandbox = Sandbox::new();
     install_reporting_bash(&sandbox);
     sandbox.create_managed_entry("envonly", "#!/usr/bin/env bash\necho \"${MODE:-auto}\"\n");
@@ -69,7 +69,7 @@ fn test_execute_env_only_does_not_materialize_temp_copy() {
 }
 
 #[test]
-fn test_no_values_managed_copy_runs_original_payload() {
+fn rust_additive_no_values_managed_copy_runs_original_payload() {
     let sandbox = Sandbox::new();
     install_reporting_bash(&sandbox);
     sandbox.create_managed_entry("novalues", "#!/usr/bin/env bash\nWIDTH=800\necho \"$WIDTH\"\n");
@@ -83,7 +83,7 @@ fn test_no_values_managed_copy_runs_original_payload() {
 }
 
 #[test]
-fn test_execute_injected_script_is_not_written_under_the_entry_dir() {
+fn test_execute_injects_then_cleans_up_the_temp_copy() {
     let sandbox = Sandbox::new();
     install_reporting_bash(&sandbox);
     sandbox.create_managed_entry("outside", "#!/usr/bin/env bash\nWIDTH=800\necho \"$WIDTH\"\n");
@@ -99,11 +99,15 @@ fn test_execute_injected_script_is_not_written_under_the_entry_dir() {
         Some(entry_dir(&original)),
         "secret-bearing injected source must live in OS temp, not the persistent entry directory: {text}"
     );
+    assert!(
+        launched.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".injected-")),
+        "the frozen execute contract must launch an .injected-* temporary copy: {text}"
+    );
     assert!(!launched.exists(), "the injected source survived the run: {}", launched.display());
 }
 
 #[test]
-fn test_execute_injected_script_falls_back_to_entry_dir_if_os_temp_unavailable() {
+fn test_execute_inject_falls_back_to_entry_dir() {
     let sandbox = Sandbox::new();
     install_reporting_bash(&sandbox);
     sandbox.create_managed_entry("fallback", "#!/usr/bin/env bash\nWIDTH=800\necho \"$WIDTH\"\n");
@@ -128,7 +132,7 @@ fn test_execute_injected_script_falls_back_to_entry_dir_if_os_temp_unavailable()
 }
 
 #[test]
-fn test_execute_cleans_injected_file_after_launcher() {
+fn rust_additive_execute_cleans_injected_file_after_launcher() {
     let sandbox = Sandbox::new();
     install_reporting_bash(&sandbox);
     sandbox.create_managed_entry("cleanup", "#!/usr/bin/env bash\nWIDTH=800\necho \"$WIDTH\"\n");
@@ -141,7 +145,7 @@ fn test_execute_cleans_injected_file_after_launcher() {
 }
 
 #[test]
-fn test_execute_cleans_injected_file_after_launcher_raises() {
+fn rust_additive_execute_cleans_injected_file_after_launcher_raises() {
     use std::os::unix::fs::PermissionsExt as _;
     let sandbox = Sandbox::new();
     sandbox.create_managed_entry("raise", "#!/usr/bin/env bash\nWIDTH=800\necho \"$WIDTH\"\n");
@@ -167,7 +171,7 @@ fn test_execute_cleans_injected_file_after_launcher_raises() {
 }
 
 #[test]
-fn test_execute_syntax_failure_does_not_blame_the_user() {
+fn rust_additive_execute_syntax_failure_does_not_blame_the_user() {
     let sandbox = Sandbox::new();
     install_syntax_rejecting_bash(&sandbox);
     sandbox.create_managed_entry("syntax", "#!/usr/bin/env bash\nTITLE=hello\necho \"$TITLE\"\n");
@@ -186,7 +190,7 @@ fn test_execute_syntax_failure_does_not_blame_the_user() {
 }
 
 #[test]
-fn test_execute_dry_run_skips_launcher() {
+fn rust_additive_execute_dry_run_skips_launcher() {
     let sandbox = Sandbox::new();
     install_reporting_bash(&sandbox);
     sandbox.create_managed_entry("dry", "#!/usr/bin/env bash\nWIDTH=800\necho \"$WIDTH\"\n");
