@@ -63,8 +63,8 @@ impl Sandbox {
             .env("XDG_STATE_HOME", self.home.path().join("xdg-state"))
             .env("TERM", "dumb")
             .env("COLUMNS", "200")
-            .env_remove("FORCE_COLOR")
-            .env_remove("NO_COLOR")
+            .env("NO_COLOR", "1")
+            .env("FORCE_COLOR", "0")
             .current_dir(self.home.path());
         command
     }
@@ -100,8 +100,8 @@ impl Sandbox {
         command.env("XDG_STATE_HOME", self.home.path().join("xdg-state"));
         command.env("TERM", term);
         command.env("COLUMNS", "200");
-        command.env_remove("FORCE_COLOR");
-        command.env_remove("NO_COLOR");
+        command.env("NO_COLOR", "1");
+        command.env("FORCE_COLOR", "0");
 
         let mut child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
