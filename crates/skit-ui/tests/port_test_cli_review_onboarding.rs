@@ -65,8 +65,8 @@ fn test_prompt_identity_prompts_name_and_description() {
     review.set_name("stitch");
     review.set_description("Stack images vertically");
     let create = review.create_entry().expect("identity review");
-    assert_eq!(create.display_name, "stitch");
-    assert_eq!(create.settings.description, "Stack images vertically");
+    assert_eq!(create.name, "stitch");
+    assert_eq!(create.description, "Stack images vertically");
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn test_prompt_identity_blank_name_falls_back_to_stem() {
     );
     assert_eq!(review.description(), "");
     let create = review.create_entry().expect("default identity");
-    assert_eq!(create.display_name, "worker");
+    assert_eq!(create.name, "worker");
 }
 
 #[test]
