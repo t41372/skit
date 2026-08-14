@@ -25,8 +25,16 @@ impl Sandbox {
             config: TempDir::new().unwrap(),
             home: TempDir::new().unwrap(),
         };
-        fs::write(sandbox.config.path().join("config.toml"), "form = \"plain\"\n").unwrap();
+        sandbox.set_form("plain");
         sandbox
+    }
+
+    pub fn set_form(&self, form: &str) {
+        fs::write(
+            self.config.path().join("config.toml"),
+            format!("form = {form:?}\n"),
+        )
+        .unwrap();
     }
 
     pub fn store(&self) -> FileStore {
@@ -35,6 +43,10 @@ impl Sandbox {
 
     pub fn home(&self) -> &Path {
         self.home.path()
+    }
+
+    pub fn data(&self) -> &Path {
+        self.data.path()
     }
 
     pub fn command(&self) -> Command {
@@ -62,6 +74,10 @@ impl Sandbox {
     }
 
     pub fn run_pty(&self, args: &[&str], input: &str) -> (u32, String) {
+        self.run_pty_with_term(args, input, "dumb")
+    }
+
+    pub fn run_pty_with_term(&self, args: &[&str], input: &str, term: &str) -> (u32, String) {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 40,
@@ -82,7 +98,7 @@ impl Sandbox {
         command.env("XDG_CONFIG_HOME", self.home.path().join("xdg-config"));
         command.env("XDG_DATA_HOME", self.home.path().join("xdg-data"));
         command.env("XDG_STATE_HOME", self.home.path().join("xdg-state"));
-        command.env("TERM", "dumb");
+        command.env("TERM", term);
         command.env("COLUMNS", "200");
         command.env_remove("FORCE_COLOR");
         command.env_remove("NO_COLOR");
@@ -110,6 +126,14 @@ impl Sandbox {
 
     pub fn source(&self, name: &str, body: &[u8]) -> PathBuf {
         let path = self.home.path().join(name);
+        fs::write(&path, body).unwrap();
+        path
+    }
+
+    pub fn draft(&self, name: &str, body: &[u8]) -> PathBuf {
+        let root = self.data.path().join("drafts");
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(name);
         fs::write(&path, body).unwrap();
         path
     }
