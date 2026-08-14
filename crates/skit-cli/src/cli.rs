@@ -2949,6 +2949,22 @@ fn add_with_config(
             .with(file.to_string_lossy()),
         ));
     }
+    if kind.is_none()
+        && inferred.is_none()
+        && !from_stdin
+        && shebang.is_none()
+        && no_input
+        && source.extension().and_then(|extension| extension.to_str()) == Some("md")
+        && !is_owned_draft(service.repository().data_dir(), &source)
+    {
+        let file = source.file_name().unwrap_or(source.as_os_str());
+        return Err(CliError::Usage(
+            Message::new(
+                "{} isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.",
+            )
+            .with(file.to_string_lossy()),
+        ));
+    }
     let kind = kind
         .as_deref()
         .or(inferred)

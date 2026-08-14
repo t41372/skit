@@ -2489,6 +2489,11 @@ const CATALOG: &[Translation] = &[
         "無法推斷項目類型；請傳入 --kind KIND",
     ),
     row!(
+        "{} isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.",
+        "{} 不是脚本也不是可执行文件——没有扩展名的脚本请加 --kind <language>，AI-agent 提示词请加 --prompt，程序请加 --exe，命令模板请用 --cmd。",
+        "{} 不是腳本也不是可執行檔——沒有副檔名的腳本請加 --kind <language>，AI-agent 提示詞請加 --prompt，程式請加 --exe，命令範本請用 --cmd。",
+    ),
+    row!(
         "The piped text's #! names no interpreter skit knows — pass --kind <language> to choose one.",
         "管道文本的 #! 指定了 skit 不认识的解释器——请传入 --kind <language> 进行选择。",
         "管線文字的 #! 指定了 skit 不認識的直譯器——請傳入 --kind <language> 進行選擇。",

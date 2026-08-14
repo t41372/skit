@@ -414,7 +414,6 @@ fn test_add_prompt_flag_forces_the_kind_on_any_extension() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches, wording differs. A bare .md with --no-input: oracle names the fix '--prompt'; Rust prints the generic 'could not infer the entry kind; pass --kind KIND' (no .md-specific --prompt hint)."]
 fn test_add_bare_md_no_input_requires_explicit_prompt() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("notes.md", b"hello {{x}}\n");
