@@ -558,7 +558,7 @@ enum RunnerCommand {
         /// Stable runner name.
         name: String,
         /// Program and arguments. One token must contain `{{prompt}}`.
-        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
         /// Replace an existing name.
         #[arg(long)]

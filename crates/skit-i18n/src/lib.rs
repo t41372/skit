@@ -531,6 +531,16 @@ const CATALOG: &[Translation] = &[
         "請輸入 agent 的命令,例如 mycli run {{prompt}}",
     ),
     row!(
+        "A runner needs a command — e.g. skit runner add mycli mycli run {{prompt}}",
+        "执行器需要命令——例如 skit runner add mycli mycli run {{prompt}}",
+        "執行器需要命令——例如 skit runner add mycli mycli run {{prompt}}",
+    ),
+    row!(
+        "A runner command must contain the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+        "执行器命令必须恰好包含一个 {{prompt}} 槽位——渲染后的提示词会放在那里。",
+        "執行器命令必須恰好包含一個 {{prompt}} 槽位——渲染後的提示詞會放在那裡。",
+    ),
+    row!(
         "The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
         "命令必须恰好包含一个 {{prompt}} 槽位——渲染后的提示词会放在那里。",
         "命令必須恰好包含一個 {{prompt}} 槽位——渲染後的提示詞會放在那裡。",

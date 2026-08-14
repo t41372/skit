@@ -177,14 +177,18 @@ impl PromptRunnerIssue {
             Self::RunnersNotList => Message::new(
                 "the prompt.runners value isn't a list; repair it before runner management",
             ),
-            Self::Empty => Message::new("a prompt runner command needs nonempty arguments"),
-            Self::PromptSlotCount => Message::new(
-                "a prompt runner command needs {{prompt}} exactly once after the program",
+            Self::Empty => Message::new(
+                "A runner needs a command — e.g. skit runner add mycli mycli run {{prompt}}",
             ),
-            Self::PromptInBinary => Message::new("{{prompt}} cannot be the prompt runner program"),
-            Self::StrayHole => {
-                Message::new("a prompt runner command supports only the {{prompt}} slot")
-            }
+            Self::PromptSlotCount => Message::new(
+                "A runner command must contain the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+            ),
+            Self::PromptInBinary => Message::new(
+                "{{prompt}} can't be the command itself — the first word must be the program to run.",
+            ),
+            Self::StrayHole => Message::new(
+                "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",
+            ),
             Self::Name => Message::new("A name is required."),
             Self::ArgvType => Message::new("a prompt runner argv must be a list of strings"),
             Self::RowNotTable => Message::new("the prompt runner row is not a table"),

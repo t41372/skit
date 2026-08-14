@@ -1738,7 +1738,6 @@ fn test_runner_add_blank_name_is_refused_before_seeding() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches on each case, but the sentences differ — e.g. oracle 'first word' vs Rust '{{prompt}} cannot be the prompt runner program'."]
 fn test_runner_add_validation_errors() {
     let sandbox = Sandbox::new();
     let cases: [(&[&str], &str); 3] = [
