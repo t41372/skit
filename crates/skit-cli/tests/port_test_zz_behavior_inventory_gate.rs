@@ -52,7 +52,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_store.py", tests: 78, guard: Some("crates/skit-cli/tests/port_test_store_manifest.rs") },
     Module { python: "test_store_fix.py", tests: 38, guard: Some("crates/skit-cli/tests/port_test_store_fix_manifest.rs") },
     Module { python: "test_atomic.py", tests: 32, guard: Some("crates/skit-cli/tests/port_test_atomic_manifest.rs") },
-    Module { python: "test_flows.py", tests: 102, guard: None },
+    Module { python: "test_flows.py", tests: 102, guard: Some("crates/skit-cli/tests/port_test_flows_manifest.rs") },
     Module { python: "test_uvman.py", tests: 36, guard: Some("crates/skit-cli/tests/port_test_uvman_manifest.rs") },
     Module { python: "test_launcher.py", tests: 38, guard: Some("crates/skit-cli/tests/port_test_launcher_manifest.rs") },
     Module { python: "test_launcher_fix.py", tests: 12, guard: Some("crates/skit-cli/tests/port_test_launcher_fix_manifest.rs") },
