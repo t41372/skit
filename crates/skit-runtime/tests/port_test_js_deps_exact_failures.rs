@@ -1,7 +1,6 @@
 //! Exact dependency failure ports from Python v0.4 `tests/test_js_deps.py`.
 
 use std::{
-    collections::BTreeMap,
     fs,
     io,
     path::{Path, PathBuf},
