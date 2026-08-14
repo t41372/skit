@@ -370,20 +370,62 @@ fn test_picker_use_this_directory_row_by_real_keys() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): FilePickerSession::handle_key has no PageUp/PageDown arms, so page steering is a no-op. Oracle: pagedown->last row, pageup->first row (test_path_tui.py:313-336)."]
 fn test_picker_arrows_steer_highlight_without_leaving_the_filter() {
     let (_tmp, root) = tree();
+    fs::write(root.join("delta.md"), "x").unwrap();
     let mut session = picker(&root);
+    typed(&mut session, "d");
+    assert_eq!(session.explorer().visible_count(), 3);
     let start = session.explorer().cursor_index;
-    let _ = feed(&mut session, key(KeyCode::Down));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Down)),
+        Some(FilePickerEvent::Changed)
+    );
     assert_eq!(session.explorer().cursor_index, start + 1);
-    let _ = feed(&mut session, key(KeyCode::PageDown));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Up)),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(session.explorer().cursor_index, start);
+    assert_eq!(
+        feed(&mut session, key(KeyCode::End)),
+        Some(FilePickerEvent::Changed)
+    );
     assert_eq!(
         session.explorer().cursor_index,
         session.explorer().visible_count() - 1
     );
-    let _ = feed(&mut session, key(KeyCode::PageUp));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Home)),
+        Some(FilePickerEvent::Changed)
+    );
     assert_eq!(session.explorer().cursor_index, 0);
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Down)),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(session.explorer().cursor_index, start + 1);
+    assert_eq!(
+        feed(&mut session, key(KeyCode::PageDown)),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(
+        session.explorer().cursor_index,
+        session.explorer().visible_count() - 1
+    );
+    assert_eq!(
+        feed(&mut session, key(KeyCode::PageUp)),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(session.explorer().cursor_index, 0);
+    assert_eq!(
+        listing(&session),
+        vec![
+            ("data.csv".to_owned(), false),
+            ("delta.md".to_owned(), false),
+            ("draft.txt".to_owned(), false),
+        ]
+    );
 }
 
 #[test]
