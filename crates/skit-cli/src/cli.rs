@@ -3807,7 +3807,7 @@ fn prepare_source_management(
         return Ok((source, managed));
     }
     if mode == StorageMode::Reference {
-        return Err(CliError::Usage(Message::new(
+        return Err(CliError::Failure(Message::new(
             "source management applies only to a stored copy",
         )));
     }

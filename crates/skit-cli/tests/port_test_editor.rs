@@ -1339,17 +1339,34 @@ fn test_add_edit_writes_and_reports_managed_and_secret() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `params <command> --resync` returns CliError::Usage 'source management applies only to a stored copy' -> exit 2; the oracle treats it as a failed operation, exit 1 (src/skit/cli.py params). Verified against the built binary. Same exit-1-vs-2 family as the completed source-managed-params fix (task #13)."]
 fn test_params_edit_command_entry_refused() {
     // A command entry has no editable source -> params source-edit is refused (exit 1).
     let sandbox = Sandbox::new();
     sandbox.add_command("echo {x}", "ec");
+    let meta = sandbox
+        .data
+        .path()
+        .join("scripts")
+        .join("ec")
+        .join("meta.toml");
+    let meta_before = fs::read(&meta).unwrap();
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
     let output = sandbox
         .command()
         .args(["params", "ec", "--resync"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
+    assert_eq!(
+        fs::read(meta).unwrap(),
+        meta_before,
+        "metadata is unchanged"
+    );
+    assert_eq!(
+        fs::read_dir(sandbox.state.path()).unwrap().count(),
+        0,
+        "no state was written"
+    );
 }
 
 #[test]

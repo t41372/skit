@@ -690,7 +690,7 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
     sandbox.ok(&["params", "managed", "--manage", "NAME"]);
     sandbox.ok(&["params", "managed", "--manage", "NAME"]);
     sandbox.ok(&["params", "managed", "--resync"]);
-    sandbox.code(&["params", "reference", "--resync"], 2);
+    sandbox.code(&["params", "reference", "--resync"], 1);
     sandbox.code(&["params", "managed", "--normalize", "missing"], 2);
     sandbox.ok(&["params", "managed", "--normalize", "NAME"]);
 

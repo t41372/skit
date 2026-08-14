@@ -307,7 +307,6 @@ fn test_cli_bad_prompt_is_warned_not_fatal() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle _edit_params refuses reference mode with exit 1 (src/skit/cli.py:4499-4507); Rust prepare_source_management returns CliError::Usage -> exit 2 (verified). Sibling declared-schema refusal was restored to exit 1 (completed task #13) as precedent."]
 fn test_cli_params_edit_reference_refused() {
     let sandbox = Sandbox::new();
     let script = sandbox.data.path().join("ref.py");
