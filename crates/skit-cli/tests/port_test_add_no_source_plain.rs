@@ -167,7 +167,7 @@ fn test_cli_ask_kind_plain_full_layout() {
     assert_eq!(code, 130, "{output}");
     assert!(output.contains("What is mystery.xyz? skit can't tell from the name."), "{output}");
     for (index, label) in [
-        "Fish", "JavaScript", "Lua", "Perl", "PowerShell", "Python", "R", "Ruby", "Shell", "TypeScript",
+        "fish", "JavaScript", "Lua", "Perl", "PowerShell", "Python", "R", "Ruby", "Shell", "TypeScript",
         "A program (run it directly)", "A prompt for an AI agent",
     ]
     .into_iter()
