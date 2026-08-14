@@ -30,16 +30,16 @@
 //!   branch, the divergence note records the actual non-tty Rust behavior.
 //!
 //! Bucket disposition (all 21 defs drive the binary and COMPILE; zero absent/cross-crate stubs):
-//! - 14 PASS asserting tests: the 5 versioned/piped/reader-notice lanes, both editor-lane
+//! - 15 PASS asserting tests: the 5 versioned/piped/reader-notice lanes, both editor-lane
 //!   `--description` threads, the versioned-shebang editor lane, the normal-file no-unlink lane,
 //!   the JSON-is-one-document flip lane, both parameter read views, and both unknown-runner
-//!   early-refusal lanes.
-//! - 7 FAILING CONTRACT (divergence) tests: full asserting bodies kept intact behind
+//!   early-refusal lanes, plus the post-editor Python-flag refusal.
+//! - 6 FAILING CONTRACT (divergence) tests: full asserting bodies kept intact behind
 //!   `#[ignore]`; each label was verified against the built binary. Most tie to pending tasks
 //!   #15 (refuse the add-lane inputs v0.4 refuses) and #16 (params batch fault tolerance). The
 //!   recurring shapes are: no one-voice selector-collision refusal (clap `conflicts_with`
-//!   answers first with a different message), pipe-spelling and dependency-refusal wording, no
-//!   resumed-draft cleanup / kept-draft `--ref` guard on the plain path lane, and no flip note.
+//!   answers first with a different message), pipe spelling, no resumed-draft cleanup / kept-draft
+//!   `--ref` guard on the plain path lane, and no flip note.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -461,7 +461,6 @@ fn test_edit_description_flag_on_non_python_draft_is_stored() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the keep-and-announce-SHORT behavior holds (post-editor --dep refusal exits 2, prints 'Your draft was kept at', omits the long 'fix the problem and add it with' form, keeps the draft, adds nothing), but the refusal reads 'shell entries do not take package dependencies' where the oracle says '--dep/--python are python flags …' (src/skit/cli.py:740-742). Verified against the built binary."]
 fn test_edit_post_editor_refusal_keeps_draft_and_announces_short() {
     // --dep against a non-python draft is refused post-editor. The draft is the user's only
     // copy: it is kept on disk AND the SHORT 'kept at' line is printed (not the long

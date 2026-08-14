@@ -974,7 +974,6 @@ fn test_add_edit_shell_draft_onboards_picked_constants() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): message wording — the oracle's refusal names the \"python flags\" and the draft's \"shell\" kind; Rust says \"shell entries do not take package dependencies\" (no \"python flags\"). Exit 2, the \"shell\" kind, and nothing-added all match. Verified against the built binary."]
 fn test_add_edit_dep_flag_on_non_python_draft_is_refused() {
     // --dep is python-only: riding it on a draft whose shebang names another kind is REFUSED
     // (exit 2), the refusal names the python flags AND the draft's actual kind, and nothing is added.

@@ -1430,7 +1430,19 @@ fn add_draft(
     }
     options.source = Some(draft.clone());
     options.prompt = prompt;
-    let result = add(service, options);
+    let rejects_python_flags = !prompt
+        && options.kind.as_deref() != Some("python")
+        && (options.dependencies_explicit || options.requires_python.is_some());
+    let result = if rejects_python_flags {
+        Err(CliError::Usage(
+            Message::new(
+                "--dep/--python are python flags, but the draft's shebang names {} — drop them, or keep the python shebang.",
+            )
+            .with(options.kind.as_deref().unwrap_or("python")),
+        ))
+    } else {
+        add(service, options)
+    };
     if result.is_ok() {
         fs::remove_file(&draft)?;
     } else {

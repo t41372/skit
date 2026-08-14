@@ -3104,6 +3104,11 @@ const CATALOG: &[Translation] = &[
         "{} 條目不接受依賴套件——拿掉 --dep。",
     ),
     row!(
+        "--dep/--python are python flags, but the draft's shebang names {} — drop them, or keep the python shebang.",
+        "--dep/--python 是 python 专用标志，但草稿的 shebang 指定的是 {}——去掉它们，或改回 python shebang。",
+        "--dep/--python 是 python 專用旗標，但草稿的 shebang 指定的是 {}——拿掉它們，或改回 python shebang。",
+    ),
+    row!(
         "{} is not a valid {} default",
         "{} 不是有效的 {} 默认值",
         "{} 不是有效的 {} 預設值",
