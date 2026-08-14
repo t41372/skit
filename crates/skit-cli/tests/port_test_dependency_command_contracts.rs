@@ -31,10 +31,11 @@
 //!   add_python belt's validation, strip-and-drop, and no-deps transparency (11–14). 10 tests.
 //! - FAILING CONTRACT (divergence) — full oracle-faithful body, `#[ignore]`d because the
 //!   Rust behavior diverges (verified against the built binary): the wholly-unimplemented
-//!   drafts-boundary guard (1, 2), the duplicate store-mapped js `--python` refusal cases (7, 9),
-//!   and the deps confirmation-line shape (15–19). 9 tests.
-//! - CROSS-CRATE — compiling `#[ignore]` stub naming the owning tier: the language
-//!   `registry.spec_for(...).deps_flavor` premise, which the Rust rewrite disperses (20). 1 test.
+//!   drafts-boundary guard (1, 2) and the deps confirmation-line shape (15–19). 7 tests.
+//! - CLOSURE — 3 ignored exact names: the Python public-store refusal cases (7, 9) have no
+//!   equivalent Rust public store seam, and their closest CLI mappings duplicate stronger
+//!   executable owners; the language `registry.spec_for(...).deps_flavor` premise (20) is a
+//!   cross-crate compiling stub because the Rust rewrite disperses that surface.
 
 use std::path::PathBuf;
 
@@ -269,7 +270,7 @@ fn test_python_deps_python_dash_is_still_automatic() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the store chokepoint refuses (exit 2), but through the composition root Rust prints 'a Python constraint does not apply to js entries' — the substring 'doesn't apply' the oracle's StoreUsageError carries is absent (store.py:1255-1263). Verified against the built binary."]
+#[ignore = "ARCHITECTURE-CLOSED / SEMANTIC DUPLICATE: the Python oracle calls public store.update_dependencies and observes StoreUsageError, but Rust has no public store dependency-update seam. This closest Rust body drives the CLI and is strictly duplicated by the stronger executable owner test_js_deps_python_dash_is_refused_as_inapplicable, which pins the exact message. Keep this exact name as a closure; do not count it as REAL."]
 fn test_store_npm_spec_plus_dash_reaches_the_npm_refusal() {
     // The store unit: an npm-flavor entry + '-' is NOT normalized before the npm branch, so it
     // reaches the 'doesn't apply' refusal (StoreUsageError) instead of a silent accept.
@@ -302,7 +303,7 @@ fn test_store_uv_spec_plus_dash_normalizes() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the store chokepoint refuses the empty spelling (exit 2), but Rust prints 'a Python constraint does not apply to js entries' — the substring 'doesn't apply' is absent (store.py:1255-1263). Verified against the built binary."]
+#[ignore = "ARCHITECTURE-CLOSED / SEMANTIC DUPLICATE: the Python oracle calls public store.update_dependencies and observes StoreUsageError, but Rust has no public store dependency-update seam. This closest Rust body drives the CLI and is strictly duplicated by the stronger executable owner test_js_deps_python_empty_string_is_refused_as_inapplicable, which pins the exact message and unchanged state. Keep this exact name as a closure; do not count it as REAL."]
 fn test_store_npm_spec_plus_empty_string_reaches_the_npm_refusal() {
     // The empty branch of the npm predicate `requires_python is not None`: `""` (not None) is a
     // Python constraint spelling and raises StoreUsageError on an npm entry — the branch that used
