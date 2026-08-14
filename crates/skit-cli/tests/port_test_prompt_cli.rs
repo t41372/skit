@@ -1933,7 +1933,6 @@ fn test_runner_remove_raw_duplicate_has_no_false_pin_warning_or_key_removed_clai
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches and rows are preserved, but Rust names the stable path without quotes ('skit runner remove same') where the oracle quotes it ('skit runner remove \"same\"')."]
 fn test_runner_remove_raw_valid_row_requires_stable_name_path() {
     let sandbox = Sandbox::new();
     let rows = "[prompt]\nrunners_seeded = true\nrunners = [\n  { name = \"same\", argv = [\"first\", \"{{prompt}}\"] },\n  { name = \"same\", argv = [\"second\", \"{{prompt}}\"] },\n]\n";

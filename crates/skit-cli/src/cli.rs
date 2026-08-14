@@ -4741,12 +4741,17 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
             }
             if !matches!(&selection, RunnerSelection::Name(_)) && targets[0].reason.is_none() {
                 let name = targets[0].name.as_deref().unwrap_or_default();
+                let row = match &selection {
+                    RunnerSelection::Row(row) => row.to_string(),
+                    RunnerSelection::Container => "container".to_owned(),
+                    RunnerSelection::Name(_) => unreachable!("name selections use the stable path"),
+                };
                 return Err(CliError::Usage(
                     Message::new(
                         "Runner row {} is valid. Remove the agent by name instead: skit runner remove {}",
                     )
-                    .with(selection.label(active_locale()))
-                    .with(name),
+                    .with(row)
+                    .quoted(name),
                 ));
             }
             let target = selection.label(active_locale());
