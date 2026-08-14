@@ -3983,9 +3983,24 @@ fn params(
     let original_source = if prompt {
         show_source_text(store, &held)?
     } else {
-        source_path(store, &held)
-            .and_then(|path| fs::read_to_string(path).ok())
-            .unwrap_or_default()
+        let source = source_path(store, &held)
+            .map(fs::read_to_string)
+            .transpose();
+        let payload_is_missing = match &source {
+            Ok(None) => true,
+            Err(error) => error.kind() == io::ErrorKind::NotFound,
+            Ok(Some(_)) => false,
+        };
+        if source_parameter_kind
+            && has_source_schema_operation
+            && held.meta.mode == StorageMode::Copy
+            && payload_is_missing
+        {
+            return Err(CliError::Failure(
+                Message::new("{} has no stored copy to edit.").with(&held.meta.name),
+            ));
+        }
+        source.ok().flatten().unwrap_or_default()
     };
     let mut settings = EntrySettings::from_meta(&held.meta);
     let (mut source, prepared_managed) = prepare_source_management(

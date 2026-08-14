@@ -1329,7 +1329,6 @@ fn test_params_edit_command_entry_refused() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): with the stored copy deleted, Rust reads an empty source, resyncs it (a no-op) and exits 0; the oracle refuses with exit 1 and 'no stored copy'. Verified against the built binary."]
 fn test_params_edit_missing_copy_refused() {
     // A copy whose stored source is gone -> params --resync refuses (exit 1, "no stored copy").
     let sandbox = Sandbox::new();
@@ -1342,11 +1341,38 @@ fn test_params_edit_missing_copy_refused() {
             fs::remove_file(&path).unwrap();
         }
     }
+    let meta_before = sandbox.stored_meta("a");
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+    let view = sandbox.command().args(["params", "a"]).output().unwrap();
+    assert_eq!(view.status.code(), Some(0), "{}", combined(&view));
     let output = sandbox
         .command()
         .args(["params", "a", "--resync"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert!(combined(&output).contains("no stored copy"));
+    assert!(
+        combined(&output).contains("a has no stored copy to edit."),
+        "{}",
+        combined(&output)
+    );
+    assert_eq!(
+        sandbox.stored_meta("a"),
+        meta_before,
+        "metadata is unchanged"
+    );
+    assert_eq!(
+        fs::read_dir(sandbox.state.path()).unwrap().count(),
+        0,
+        "no state was written"
+    );
+    let remaining = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        remaining,
+        ["meta.toml"],
+        "the missing payload was not recreated"
+    );
 }
