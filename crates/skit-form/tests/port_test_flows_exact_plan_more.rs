@@ -18,7 +18,6 @@ fn test_plan_plain_script_is_none() {
     assert!(plan.fields.is_empty());
     assert!(plan.drift.is_empty());
     assert_eq!(plan.degradation, None);
-    assert_eq!(source.as_bytes(), b"print('plain')\n");
 }
 
 #[test]
@@ -58,5 +57,4 @@ fn test_plan_subparsers_degrades_with_reason() {
     assert_eq!(plan.source, FormSource::Reader);
     assert_eq!(plan.degradation, Some(DegradationReason::Subcommands));
     assert!(plan.fields.is_empty());
-    assert_eq!(source.as_bytes(), source.as_bytes());
 }
