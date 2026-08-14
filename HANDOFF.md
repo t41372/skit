@@ -13,10 +13,10 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 92 fix commits landed, 202 FAILING CONTRACTs closed
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 93 fix commits landed, 202 FAILING CONTRACTs closed
 (198 removed, translated, or un-ignored + 4 re-labeled architecture closures), 2 stubs promoted,
 2 owed white-box units added. The last fully green recorded baseline was workspace
-3194 pass / 0 fail / 938 ignored. Reviewed
+3196 pass / 0 fail / 938 ignored. Reviewed
 PR #44 waves continue to add executable parity owners and completeness checks after duplicate and
 test-quality review.
 84 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
@@ -200,6 +200,7 @@ This session (2026-08-11 through 2026-08-14), in order — each closed the named
 | `3d9c8ba` | declared env sources: warn and preserve bytes for public values; apply same-batch secret transitions before the trimmed env source | 1 |
 | `7f7be0d` | untouched editor drafts: safely unlink owned empty script/prompt drafts and report the exact typed success notice | 3 |
 | `4746c36` | params source management: classify reference and command no-copy refusals as operation failures before any source, metadata, or state write | 2 |
+| `623989f` | TUI mouse routing: ignore movement, button release, and drag events over Preferences, Run, and generic Form click targets while preserving left-button and wheel paths | regression fix (+2 tests) |
 
 PR #44 is paused at a fixed reviewed checkpoint. Its merge ancestry and complete test snapshot are
 preserved on `integration/pr44-20260812` at tip `a6e0513` (PR pin `38260ff`); do not use the earlier
@@ -232,7 +233,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3194 passed / 0 failed / 938 ignored
+# => 3196 passed / 0 failed / 938 ignored
 grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 84
 ```
 
