@@ -52,7 +52,7 @@ fn test_build_refuses_nul_in_prompt_as_launch_error(){let r=runner("rec",&["rec-
 fn test_build_over_long_render_is_a_clean_launch_error(){let r=runner("rec",&["rec-bin","{{prompt}}"]);let error=build_launch_plan(&entry(),&paths(),&Assembly::default(),Some(&"x".repeat(100_100)),Some(&r),&probe("rec-bin")).unwrap_err();let shown=error.to_string();assert!(matches!(error,LaunchError::PromptArgvTooLong{..}));assert!(shown.contains("bytes")||shown.contains("UTF-16"),"{shown}");assert!(!shown.contains("characters"),"{shown}");}
 
 #[test]
-fn test_describe_with_runner_shows_the_real_argv(){let r=runner("rec",&["rec-bin","{{prompt}}"]);let plan=build_launch_preview(&entry(),&paths(),&Assembly::default(),Some("Do •••\n"),Some(&r),&probe("rec-bin")).unwrap();assert!(plan.display.contains("rec-bin"),"{}",plan.display);assert!(plan.display.contains("•••"),"{}",plan.display);}
+fn test_describe_with_runner_shows_the_real_argv(){let r=runner("rec",&["rec-bin","{{prompt}}"]);let plan=build_launch_preview(&entry(),&paths(),&Assembly::default(),Some("Do •••\n"),Some("Do •••\n"),Some(&r),&probe("rec-bin")).unwrap();assert!(plan.display.contains("rec-bin"),"{}",plan.display);assert!(plan.display.contains("•••"),"{}",plan.display);}
 
 #[test]
 fn test_validate_argv_without_a_display_twin_returns_the_real_prompt(){let r=runner("rec",&["rec-bin","{{prompt}}"]);let plan=build_launch_plan(&entry(),&paths(),&assembly(&["--model","fast"]),Some("Do actual-value\n"),Some(&r),&probe("rec-bin")).unwrap();assert!(plan.display.contains("rec-bin"),"{}",plan.display);assert!(plan.display.contains("actual-value"),"{}",plan.display);assert!(plan.display.contains("--model fast"),"{}",plan.display);}
