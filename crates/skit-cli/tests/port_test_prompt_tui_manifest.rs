@@ -8,7 +8,9 @@ use std::{collections::{BTreeMap,BTreeSet},fs,path::Path};
 use syn::{Attribute,Item};
 
 const CLOSED:&[(&str,&str)]=&[];
-const OWNERS:&[&str]=&[];
+const OWNERS:&[&str]=&[
+    "crates/skit-tui/tests/port_test_prompt_tui_run_form.rs",
+];
 
 fn has_test(attrs:&[Attribute])->bool{attrs.iter().any(|attr|attr.path().is_ident("test"))}
 fn rust_tests(path:&Path)->Vec<String>{let source=fs::read_to_string(path).unwrap_or_else(|error|panic!("could not read {}: {error}",path.display()));let file=syn::parse_file(&source).unwrap_or_else(|error|panic!("could not parse {}: {error}",path.display()));file.items.iter().filter_map(|item|match item{Item::Fn(function) if has_test(&function.attrs)=>{let name=function.sig.ident.to_string();name.starts_with("test_").then_some(name)},_=>None}).collect()}
