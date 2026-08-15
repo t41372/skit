@@ -2,7 +2,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -180,8 +180,10 @@ fn test_real_run_spawns_the_same_prompt_snapshot_it_validated() {
     sandbox.configure(&mut child_command);
     child_command
         .env("SKIT_SNAPSHOT_CAPTURE", &capture)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .args(["run", "p", "--no-input"]);
-    let mut child = child_command.spawn().unwrap();
+    let child = child_command.spawn().unwrap();
 
     // prepare_launch takes the shared launch lease only after source_snapshot, rendering, runner
     // resolution, and the first launch-plan validation have completed. Because we hold meta.lock,
@@ -197,7 +199,7 @@ fn test_real_run_spawns_the_same_prompt_snapshot_it_validated() {
     let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
     let captured = fs::read_to_string(&capture).expect("runner must have spawned");
-    assert!(captured.contains("ONE-PREPARED-BODY"), "{captured}");
+    assert_eq!(captured, "ONE-PREPARED-BODY");
     assert!(!captured.contains("SECOND-BODY-MUST-NOT-BE-READ"), "{captured}");
 }
 
@@ -220,8 +222,10 @@ fn test_real_run_transparency_and_amp_note_use_the_prepared_runner_row() {
     child_command
         .env("PATH", sandbox.tools.path())
         .env("SKIT_SNAPSHOT_CAPTURE", &capture)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .args(["run", "p", "--no-input"]);
-    let mut child = child_command.spawn().unwrap();
+    let child = child_command.spawn().unwrap();
 
     wait_for_shared_launch_lease(&launch_lock);
     FileConfigStore::new(sandbox.config.path())
@@ -242,6 +246,10 @@ fn test_real_run_transparency_and_amp_note_use_the_prepared_runner_row() {
     assert!(shown.contains("amp -x"), "{shown}");
     assert!(!shown.contains("replacement-agent"), "{shown}");
     let captured = fs::read_to_string(capture).expect("prepared amp row must have spawned");
-    assert!(captured.starts_with("-x\u{1e}") || captured.starts_with("-x\x1e") || captured.starts_with("-x"), "{captured}");
+    assert_eq!(
+        captured.split('\u{001e}').collect::<Vec<_>>(),
+        ["-x", "Prepared runner body"],
+        "the child did not receive the frozen built-in amp row"
+    );
     assert!(amp.is_file());
 }
