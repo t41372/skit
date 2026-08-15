@@ -17,6 +17,7 @@ fn entry() -> Entry {
 }
 fn paths()->LaunchPaths { LaunchPaths{script:PathBuf::from("/data/scripts/p/prompt.md"),entry_dir:PathBuf::from("/data/scripts/p"),invoke_cwd:PathBuf::from("/invoke")} }
 fn probe(program:&str)->Probe { Probe{programs:BTreeMap::from([(program.to_owned(),PathBuf::from(format!("/bin/{program}")))]),files:vec![PathBuf::from("/data/scripts/p/prompt.md")],dirs:vec![PathBuf::from("/invoke"),PathBuf::from("/data/scripts/p")]} }
+fn basic_runner()->PromptRunner { PromptRunner{name:"agent".to_owned(),argv:vec!["agent".to_owned(),"{{prompt}}".to_owned()]} }
 
 #[test]
 fn test_fill_runner_argv_replaces_the_one_slot_raw() {
@@ -50,13 +51,30 @@ fn test_fill_runner_argv_puts_extra_options_before_end_of_options() {
 }
 
 #[test]
+fn test_check_argv_length_refuses_over_limit() {
+    let runner=basic_runner();
+    build_launch_plan(&entry(),&paths(),&Assembly::default(),Some(&"x".repeat(100)),Some(&runner),&probe("agent")).unwrap();
+    let error=build_launch_plan(&entry(),&paths(),&Assembly::default(),Some(&"x".repeat(100_001)),Some(&runner),&probe("agent")).unwrap_err();
+    assert!(matches!(error,LaunchError::PromptArgvTooLong{..}),"{error:?}");
+}
+
+#[test]
+fn test_check_argv_length_measures_bytes_not_characters() {
+    let runner=basic_runner();
+    let cjk="中".repeat(50_010);
+    assert!(cjk.chars().count()<60_000);
+    let error=build_launch_plan(&entry(),&paths(),&Assembly::default(),Some(&cjk),Some(&runner),&probe("agent")).unwrap_err();
+    assert!(matches!(error,LaunchError::PromptArgvTooLong{..}),"{error:?}");
+}
+
+#[test]
 fn test_check_argv_length_refuses_nul_before_subprocess() {
-    let runner=PromptRunner{name:"agent".to_owned(),argv:vec!["agent".to_owned(),"{{prompt}}".to_owned()]};
+    let runner=basic_runner();
     assert!(matches!(build_launch_plan(&entry(),&paths(),&Assembly::default(),Some("before\0after"),Some(&runner),&probe("agent")),Err(LaunchError::PromptContainsNul)));
 }
 
 #[test]
-fn test_argv_length_uses_full_runner_not_just_prompt() {
+fn rust_additive_argv_limit_counts_the_complete_runner_vector() {
     let runner=PromptRunner{name:"agent".to_owned(),argv:vec!["agent".to_owned(),"x".repeat(100_100),"{{prompt}}".to_owned()]};
     assert!(matches!(build_launch_plan(&entry(),&paths(),&Assembly::default(),Some("tiny"),Some(&runner),&probe("agent")),Err(LaunchError::PromptArgvTooLong{..})));
 }
