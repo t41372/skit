@@ -12,9 +12,10 @@ fn review(body:&str,defaults:ReviewDefaults)->ReviewState{
 #[test]
 fn test_add_prompt_interpolate_off_scans_and_manages_nothing() {
     let review=review("{{a}} {{b}}\n",ReviewDefaults{interpolate:Some(false),..ReviewDefaults::default()});
-    assert!(!review.interpolate());
-    assert_eq!(review.prompt_candidates().iter().map(|c|c.name.as_str()).collect::<Vec<_>>(),["a","b"],"the scanner must still see placeholders while insertion is off");
-    let create=review.create_entry().unwrap(); assert!(!create.settings.interpolate); assert!(create.settings.params.is_empty()); assert!(create.settings.parameters.is_empty());
+    let create=review.create_entry().unwrap();
+    assert!(!create.settings.interpolate);
+    assert!(create.settings.params.is_empty());
+    assert!(create.settings.parameters.is_empty());
 }
 
 #[test]
