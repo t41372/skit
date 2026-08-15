@@ -67,7 +67,7 @@ fn test_prompt_draft_with_invalid_utf8_reaches_strict_review() {
     assert_eq!(workflow.problem(), None, "host-level draft transport failed before prompt validation");
     let review = workflow.review().expect("strict prompt review missing");
     assert_eq!(review.source().bytes, bytes, "invalid UTF-8 draft was decoded/re-encoded before review");
-    assert_eq!(review.create_entry(), Err(AddProblem::InvalidPromptEncoding));
+    assert!(matches!(review.create_entry(), Err(AddProblem::InvalidPromptEncoding)));
 
     let rendered = render_workflow(workflow.clone());
     assert!(rendered.contains("offset 6"), "strict review must name the first invalid UTF-8 byte offset:\n{rendered}");
@@ -81,8 +81,6 @@ fn test_prompt_draft_with_invalid_utf8_reaches_strict_review() {
 
 #[test]
 fn test_prompt_review_surfaces_initial_and_post_editor_os_errors() {
-    // Initial open race: inspection returns the exact host path/reason and the Add surface must
-    // retain both instead of collapsing it to a generic unavailable-source message.
     let mut initial = AddWorkflowState::new(Vec::new());
     initial.reduce(AddAction::SetSourcePath("vanished.prompt.md".to_owned()));
     let effects = initial.reduce(AddAction::Continue);
@@ -98,8 +96,6 @@ fn test_prompt_review_surfaces_initial_and_post_editor_os_errors() {
     let rendered = render_workflow(initial);
     assert!(rendered.contains("vanished.prompt.md") && rendered.contains("permission changed"), "initial prompt-open error lost path or OS detail:\n{rendered}");
 
-    // Post-editor race: review stays standing, the source snapshot stays the last good bytes, and
-    // the full editor/OS reason remains visible.
     let mut edited = AddWorkflowState::from_review(ReviewState::from_source(
         source("edited.prompt.md", b"{{a}}", false),
         KnownEntryKind::Prompt,
