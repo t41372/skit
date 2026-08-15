@@ -10,6 +10,7 @@ use syn::{Attribute,Item};
 const CLOSED:&[(&str,&str)]=&[];
 const OWNERS:&[&str]=&[
     "crates/skit-tui/tests/port_test_prompt_tui_run_form.rs",
+    "crates/skit-ui/tests/port_test_prompt_tui_settings_core.rs",
 ];
 
 fn has_test(attrs:&[Attribute])->bool{attrs.iter().any(|attr|attr.path().is_ident("test"))}
