@@ -10,24 +10,24 @@ use syn::{Attribute, Item};
 
 const CLOSED: &[(&str, &str)] = &[
     (
-        "test_check_argv_length_posix_accepts_surrogateescaped_bytes",
-        "Python str can carry surrogateescape code points that round-trip arbitrary argv bytes. Rust prompt bodies and runner argv are UTF-8 String values before the public launch-plan boundary, so this exact surrogateescape-only representation has no Rust value/injection seam. UTF-8 byte counting, NUL refusal, and Windows UTF-16 command-line accounting remain executable.",
+        "test_check_argv_length_accepts_surrogateescaped_os_bytes",
+        "Python str can carry surrogateescape code points that round-trip arbitrary POSIX argv bytes. Rust prompt bodies and runner argv are valid-UTF-8 String values before the public launch-plan boundary, so this exact surrogateescape representation has no Rust value/injection seam. UTF-8 byte counting and real child argv remain executable for representable strings.",
+    ),
+    (
+        "test_check_argv_length_refuses_unencodable_surrogate_cleanly",
+        "Python can construct an isolated surrogate code point and specifically assert its UnicodeEncodeError cause. Rust String cannot contain Unicode surrogate scalar values, so there is no equivalent public input value to feed the prompt argv boundary. Ordinary encoding/length/NUL refusals remain executable.",
+    ),
+    (
+        "test_surrogateescaped_value_reaches_a_real_child_as_the_original_byte",
+        "Python os.fsdecode/os.fsencode deliberately round-trip an arbitrary non-UTF-8 POSIX argv byte through surrogateescape. Rust's prompt value and argv contracts use String, not OsString/OsStr payload values, so the exact 0xff round-trip is not representable at this public boundary. Real child spawning and byte-exact UTF-8 prompt delivery remain executable.",
     ),
     (
         "test_build_script_override_reads_the_override",
-        "Python PromptLaunch exposes a private script_override path parameter and directly tests that private loader. Rust's public prompt launch-plan API receives an already captured rendered prompt; the CLI does not expose a script-override prompt-body lane. Public stored/reference source selection and prepared-snapshot launch races remain executable.",
+        "Python PromptLaunch exposes a private script_override path parameter and directly tests that private loader. Rust's public prompt launch-plan API receives an already captured rendered prompt and the CLI has no prompt-body script-override lane. Public stored/reference source selection and prepared-snapshot launch races remain executable.",
     ),
     (
         "test_describe_with_no_pin_and_no_runner_never_reads_config",
-        "Python directly instruments private PromptLaunch.describe to assert a config loader call count. Rust exposes frontend descriptions/launch previews, not a public config-reader callback for this private no-read optimization. Public no-runner display/refusal behavior is executable.",
-    ),
-    (
-        "test_describe_prompt_does_not_read_or_rescan_the_body",
-        "Python monkeypatches private prompt body/analyzer readers and asserts PromptLaunch.describe never calls them. Rust description/preview APIs receive already prepared values and expose no equivalent reader callback/count seam. Public prompt show/preview output is executable.",
-    ),
-    (
-        "test_describe_prompt_unreadable_body_is_stable",
-        "Python injects a private body-read failure specifically into PromptLaunch.describe. Rust has no public describe-time body-reader injection seam; public show/missing-body and launch behavior are executable separately.",
+        "Python monkeypatches the private config loader and asserts a zero-call optimization inside PromptLaunch.describe. Rust exposes public description/preview behavior but no injectable config-reader callback for this call-count-only seam. No-runner display/refusal behavior remains executable.",
     ),
 ];
 
@@ -98,7 +98,7 @@ fn prompt_kind_frozen_name_audit_is_complete() {
     assert_eq!(frozen.len(), 115, "duplicate frozen Prompt-Kind test name");
     for sentinel in [
         "test_placeholder_names_accept_unicode_identifiers_and_reject_non_names",
-        "test_check_argv_length_windows_uses_real_quoted_command_line_utf16_units",
+        "test_check_argv_length_measures_windows_quoted_utf16",
         "test_runner_targeted_transactions_do_not_lose_concurrent_distinct_adds",
         "test_concurrent_prompt_writers_conflict_on_same_field_last_writer_wins",
     ] {
@@ -106,6 +106,7 @@ fn prompt_kind_frozen_name_audit_is_complete() {
     }
 
     let closed = CLOSED.iter().map(|(name, _)| *name).collect::<BTreeSet<_>>();
+    assert_eq!(closed.len(), 5, "Prompt-Kind architecture-closure allowlist must stay fixed at five");
     assert_eq!(closed.len(), CLOSED.len(), "duplicate Prompt-Kind closure name");
     assert!(CLOSED.iter().all(|(_, reason)| !reason.trim().is_empty()));
     assert!(closed.is_subset(&frozen), "Prompt-Kind closure list contains a non-frozen name");
@@ -125,6 +126,7 @@ fn prompt_kind_frozen_name_audit_is_complete() {
     let actual = owners.keys().map(String::as_str).collect::<BTreeSet<_>>();
     let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
     let extras = actual.difference(&expected).copied().collect::<Vec<_>>();
+    assert_eq!(expected.len(), 110, "Prompt-Kind executable partition must stay 110/115");
     assert!(
         missing.is_empty() && extras.is_empty(),
         "Prompt-Kind exact-name audit still incomplete: executable={}/{} closed={} missing={missing:?} extras={extras:?}",
