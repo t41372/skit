@@ -48,7 +48,8 @@ fn draw_add(
     let mut geometry = AddScreenGeometry::default();
     terminal
         .draw(|frame| {
-            geometry = render_add(frame, frame.area(), view, session, Locale::En);
+            let area = frame.area();
+            geometry = render_add(frame, area, view, session, Locale::En);
         })
         .unwrap();
     geometry
