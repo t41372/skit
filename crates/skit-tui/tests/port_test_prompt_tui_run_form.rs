@@ -29,7 +29,7 @@ fn buffer_text(buffer:&Buffer)->String{let mut output=String::new();for y in 0..
 fn row_containing(buffer:&Buffer,needle:&str)->u16{(0..buffer.area.height).find(|y|{let mut row=String::new();for x in 0..buffer.area.width{row.push_str(buffer[(x,*y)].symbol());}row.contains(needle)}).unwrap_or_else(||panic!("missing rendered row {needle:?}"))}
 
 #[test]
-fn test_form_picker_defaults_to_the_pin_and_submits_it(){
+fn rust_additive_prompt_tui_form_picker_default_submission_shape(){
  let mut state=state_with_form(form(&[ParamDecl::new("a")],&["claude","codex"],"codex"));
  assert_eq!(state.run_form().unwrap().fields()[0].control.value(),"codex");
  state.update(Action::SetFieldValue{field:1,value:"1".to_owned()});
@@ -37,7 +37,7 @@ fn test_form_picker_defaults_to_the_pin_and_submits_it(){
 }
 
 #[test]
-fn test_form_picker_keyboard_pick_runs_and_remembers(){
+fn rust_additive_prompt_tui_form_picker_keyboard_submission_shape(){
  let mut state=state_with_form(form(&[ParamDecl::new("a")],&["claude","codex"],"claude"));state.update(Action::SetFieldValue{field:1,value:"1".to_owned()});state.update(Action::FocusField(0));
  let mut session=TuiSession::default();let(_,geometry)=draw(&mut session,&state,90,24);assert_eq!(drive(&mut session,&mut state,&geometry,key(KeyCode::Enter)),EventHandling::Consumed);let(_,geometry)=draw(&mut session,&state,90,24);drive(&mut session,&mut state,&geometry,key(KeyCode::Down));drive(&mut session,&mut state,&geometry,key(KeyCode::Enter));
  assert_eq!(state.run_form().unwrap().fields()[0].control.value(),"codex");assert_eq!(submitted_runner(state.update(Action::Submit)),"codex");
