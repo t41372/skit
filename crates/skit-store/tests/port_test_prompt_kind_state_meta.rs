@@ -1,7 +1,10 @@
 use std::fs;
 
-use skit_application::{EntryRepository as _, prompt_selection::PromptSelectionStore as _};
-use skit_domain::{EntryKind, EntryMeta, EntrySettings};
+use skit_application::{
+    CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _,
+    SourcePermissions, prompt_selection::PromptSelectionStore as _,
+};
+use skit_domain::{EntryKind, EntryMeta, EntrySettings, StorageMode};
 use skit_store::{FilePromptSelectionStore, FileStore};
 use tempfile::TempDir;
 
@@ -18,7 +21,7 @@ fn test_last_runner_roundtrip_and_corruption_degrades() {
 fn test_meta_interpolate_round_trip_and_garbage_tolerance() {
     let kind=EntryKind::parse("prompt").unwrap();
     let mut meta=EntryMeta::minimal("p",kind.clone());
-    let mut settings=EntrySettings{interpolate:false,..EntrySettings::default()}; settings.write_to_meta(&mut meta);
+    let settings=EntrySettings{interpolate:false,..EntrySettings::default()}; settings.write_to_meta(&mut meta);
     assert_eq!(meta.extra.get("interpolate"),Some(&serde_json::Value::Bool(false)));
     assert!(!EntrySettings::from_meta(&meta).interpolate);
 
@@ -30,9 +33,27 @@ fn test_meta_interpolate_round_trip_and_garbage_tolerance() {
 
 #[test]
 fn test_meta_rejects_wrong_typed_runner_at_the_corruption_boundary() {
-    let data=TempDir::new().unwrap(); let dir=data.path().join("scripts/p"); fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("prompt.md"),"hello\n").unwrap();
-    fs::write(dir.join("meta.toml"),concat!("schema = 1\nname = \"p\"\nkind = \"prompt\"\nmode = \"copy\"\nsource = \"/source/p.prompt.md\"\nsource_hash = \"\"\nadded_at = \"2026-08-14T00:00:00Z\"\nid = \"0123456789abcdef0123456789abcdef\"\nworkdir = \"invoke\"\ndescription = \"\"\nrunner = 123\n")).unwrap();
-    fs::write(data.path().join("registry.toml"),"[entries.p]\n").unwrap();
-    assert!(FileStore::new(data.path()).resolve("p").is_err(),"wrong-typed runner was silently treated as an empty/default runner");
+    let data=TempDir::new().unwrap();
+    let store=FileStore::new(data.path());
+    let entry=store.create(CreateEntry{
+        name:"p".to_owned(),
+        kind:EntryKind::parse("prompt").unwrap(),
+        mode:StorageMode::Copy,
+        source:"/source/p.prompt.md".to_owned(),
+        workdir:"invoke".to_owned(),
+        description:String::new(),
+        payload:Some(EntryPayload{bytes:b"hello\n".to_vec(),stored_name:Some("prompt.md".to_owned()),permissions:SourcePermissions::default()}),
+        settings:EntrySettings::default(),
+    }).unwrap();
+    // Prove the control fixture is a fully valid registry + entry before corrupting one field.
+    assert_eq!(store.resolve(entry.slug.as_str()).unwrap().meta.name,"p");
+
+    let meta_path=data.path().join("scripts/p/meta.toml");
+    let mut raw=fs::read_to_string(&meta_path).unwrap();
+    raw.push_str("runner = 123\n");
+    fs::write(&meta_path,raw).unwrap();
+
+    let error=store.resolve("p").expect_err("wrong-typed runner was silently treated as an empty/default runner");
+    let shown=error.to_string();
+    assert!(shown.to_ascii_lowercase().contains("runner"),"corruption error did not identify the runner field: {shown}");
 }
