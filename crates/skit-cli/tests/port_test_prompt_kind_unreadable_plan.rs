@@ -14,7 +14,7 @@ impl Sandbox{
 fn combined(o:&Output)->String{format!("{}{}",String::from_utf8_lossy(&o.stdout),String::from_utf8_lossy(&o.stderr))}
 
 #[test]
-fn test_prompt_plan_degrades_when_body_is_unreadable(){
+fn test_prompt_plan_unreadable_body_degrades_to_none_plan(){
  let s=Sandbox::new();let p=s.source();let added=s.run(&["add",p.to_str().unwrap(),"--name","p","--no-input"]);assert_eq!(added.status.code(),Some(0),"{}",combined(&added));fs::remove_file(s.data.path().join("scripts/p/prompt.md")).unwrap();
  let shown=s.run(&["show","p","--json"]);assert_eq!(shown.status.code(),Some(0),"{}",combined(&shown));let payload:Value=serde_json::from_slice(&shown.stdout).unwrap();assert_eq!(payload["param_source"],"none","unreadable prompt body must not keep claiming a usable prompt form");assert_eq!(payload["fields"],serde_json::json!([]));assert_eq!(payload["drift"],false);
 }
