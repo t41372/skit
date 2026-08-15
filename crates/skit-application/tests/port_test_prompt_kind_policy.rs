@@ -2,7 +2,7 @@ use std::path::Path;
 
 use skit_application::{add_workdir, canonical_stored_filename, supports_storage_modes};
 use skit_domain::{EntryKind, StorageMode};
-use skit_language::{infer_kind, placeholder_params};
+use skit_language::{detect_candidates, infer_kind, managed_params, placeholder_params};
 
 #[test]
 fn test_prompt_spec_shape() {
@@ -17,7 +17,12 @@ fn test_prompt_spec_shape() {
             .into_iter().map(|field|field.name).collect::<Vec<_>>(),
         ["a"]
     );
-    // Prompt fields are not argv fields of the prompt itself; they are placeholder deliveries.
+    // Frozen LangSpec: prompt has no parser-backed analyzer and no in-source params I/O. Rust no
+    // longer exposes those LangSpec fields, so assert the public replacement seams directly:
+    // parser candidate detection and managed-inline-metadata reading must both stay empty, while
+    // placeholder_params above remains the independent prompt schema source.
+    assert!(detect_candidates("prompt","Do {{a}}").is_empty());
+    assert!(managed_params("prompt","Do {{a}}").is_empty());
     assert!(placeholder_params("prompt","plain text").is_empty());
 }
 
