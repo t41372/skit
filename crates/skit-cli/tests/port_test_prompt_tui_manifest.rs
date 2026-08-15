@@ -22,6 +22,7 @@ const OWNERS:&[&str]=&[
     "crates/skit-cli/tests/port_test_prompt_tui_error_boundaries.rs",
     "crates/skit-tui/tests/port_test_prompt_tui_input_priority.rs",
     "crates/skit-tui/tests/port_test_prompt_tui_settings_picker_outer_save.rs",
+    "crates/skit-cli/tests/port_test_prompt_tui_pty_run.rs",
 ];
 
 fn has_test(attrs:&[Attribute])->bool{attrs.iter().any(|attr|attr.path().is_ident("test"))}
