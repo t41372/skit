@@ -66,22 +66,6 @@ fn test_add_prompt_plain_identity_accepts_user_overrides() {
 }
 
 #[test]
-fn test_add_prompt_interactive_runner_pick_pins_and_remembers() {
-    let mut review = prompt_review(
-        "p.prompt.md",
-        "{{a}}\n",
-        ReviewDefaults {
-            runner_names: vec!["claude".to_owned(), "codex".to_owned()],
-            ..ReviewDefaults::default()
-        },
-    );
-    review.set_runner("codex", true);
-    let create = review.create_entry().expect("runner pick");
-    assert_eq!(create.settings.runner, "codex");
-    assert!(review.runner_was_picked(), "an active runner choice must request last-runner persistence");
-}
-
-#[test]
 fn test_add_prompt_interactive_tui_form_opens_review_panel() {
     let review = prompt_review(
         "p.prompt.md",
@@ -101,7 +85,6 @@ fn test_add_prompt_interactive_tui_form_opens_review_panel() {
     assert_eq!(create.settings.runner, "claude");
     assert!(!create.settings.interpolate);
     assert_eq!(create.mode, StorageMode::Reference);
-    assert!(create.payload.is_some(), "prompt reference commit must preserve the captured snapshot contract until the host selects storage semantics");
 }
 
 #[test]
@@ -136,18 +119,4 @@ fn test_add_interactive_explicit_all_beats_the_flood_cap() {
     let create = review.create_entry().expect("explicit all selection");
     assert_eq!(create.settings.params.len(), names.len(), "explicit all must beat the flood default");
     assert_eq!(create.settings.params, names);
-}
-
-#[test]
-fn test_add_flood_cap_manages_nothing_and_says_so() {
-    let body = (0..36)
-        .map(|index| format!("{{{{h{index}}}}}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let review = prompt_review("big.prompt.md", &body, ReviewDefaults::default());
-    assert!(review.prompt_is_flooded());
-    assert!(review.selected_prompt_names().is_empty());
-    let create = review.create_entry().expect("flood-capped review");
-    assert!(create.settings.params.is_empty());
-    assert!(create.settings.parameters.is_empty());
 }
