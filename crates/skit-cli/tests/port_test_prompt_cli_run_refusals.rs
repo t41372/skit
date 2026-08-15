@@ -219,7 +219,7 @@ fn test_overlong_prompt_refuses_before_normal_transparency() {
     assert_eq!(output.status.code(), Some(125), "{}", combined(&output));
     let shown = combined(&output);
     assert!(!shown.contains(marker), "overlong prompt leaked into output: {shown}");
-    assert!(shown.contains("over this platform") || shown.contains("limit"), "{shown}");
+    assert!(shown.contains("over this platform"), "{shown}");
 }
 
 #[test]
@@ -245,7 +245,7 @@ fn test_dry_run_refuses_overlong_prompt_without_printing_it() {
     assert_eq!(output.status.code(), Some(125), "{}", combined(&output));
     let shown = combined(&output);
     assert!(!shown.contains(marker), "overlong dry-run leaked prompt: {shown}");
-    assert!(shown.contains("over this platform") || shown.contains("limit"), "{shown}");
+    assert!(shown.contains("over this platform"), "{shown}");
 }
 
 #[test]
