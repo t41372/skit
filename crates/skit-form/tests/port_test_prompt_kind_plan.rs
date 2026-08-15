@@ -20,5 +20,20 @@ fn test_prompt_plan_declared_rows_enrich_schema_and_env_riders_ride(){
 
 #[test]
 fn test_command_plan_is_unaffected_by_the_trait_refactor(){
- let settings=EntrySettings{params:vec!["x".to_owned()],parameters:vec![synthesized_placeholder("x")],template:"echo {x}".to_owned(),..EntrySettings::default()};let plan=form_plan("command","",&settings);assert_eq!(plan.source,FormSource::Command);assert_eq!(plan.fields.iter().map(|f|f.declaration.name.as_str()).collect::<Vec<_>>(),["x"]);assert!(plan.drift.is_empty());
+ let settings=EntrySettings{
+     params:vec!["size".to_owned(),"out".to_owned()],
+     parameters:vec![synthesized_placeholder("size"),synthesized_placeholder("out")],
+     template:"convert {size} {out}".to_owned(),
+     ..EntrySettings::default()
+ };
+ let plan=form_plan("command","",&settings);
+ assert_eq!(plan.source,FormSource::Command);
+ assert_eq!(plan.fields.iter().map(|f|f.declaration.name.as_str()).collect::<Vec<_>>(),["size","out"]);
+ assert!(plan.fields.iter().all(|f|f.declaration.delivery==ParameterDelivery::Placeholder&&f.declaration.required),"command fields lost the frozen synthesized-placeholder contract: {plan:?}");
+ assert!(plan.drift.is_empty());
+ assert!(plan.degradation.is_none());
+ // Rust's frontend-neutral FormPlan intentionally has no body-text member at all; unlike Python's
+ // legacy plan.text, there is therefore no channel through which command template text can leak as
+ // prompt body text. The exact template remains in EntrySettings above while the plan carries only
+ // its two synthesized fields.
 }
