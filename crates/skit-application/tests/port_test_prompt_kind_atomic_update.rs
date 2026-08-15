@@ -4,7 +4,7 @@ use skit_store::FileStore;
 use tempfile::TempDir;
 
 #[test]
-fn test_write_prompt_managed_and_runner_lock_atomically(){
+fn rust_additive_write_prompt_managed_and_runner_lock_atomically(){
  let data=TempDir::new().unwrap();let source=data.path().join("source.prompt.md");std::fs::write(&source,"{{a}} {{b}}\n").unwrap();let store=FileStore::new(data.path());let service=LibraryService::new(store.clone());
  let entry=service.add(CreateEntry{name:"p".to_owned(),kind:EntryKind::parse("prompt").unwrap(),mode:StorageMode::Copy,source:source.display().to_string(),workdir:"invoke".to_owned(),description:String::new(),payload:Some(skit_application::EntryPayload{bytes:b"{{a}} {{b}}\n".to_vec(),stored_name:Some("prompt.md".to_owned()),permissions:SourcePermissions::default()}),settings:EntrySettings::default()}).unwrap();
  let claimed=service.claim_identity(&entry).unwrap();let settings=EntrySettings{params:vec!["b".to_owned()],parameters:vec![synthesized_placeholder("b")],runner:"codex".to_owned(),..EntrySettings::default()};
