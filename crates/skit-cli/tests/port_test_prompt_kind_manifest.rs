@@ -46,6 +46,7 @@ const OWNERS: &[&str] = &[
     "crates/skit-application/tests/port_test_prompt_kind_atomic_update.rs",
     "crates/skit-store/tests/port_test_prompt_kind_runner_config.rs",
     "crates/skit-store/tests/port_test_prompt_kind_runner_cas.rs",
+    "crates/skit-store/tests/port_test_prompt_kind_runner_remaining.rs",
     "crates/skit-store/tests/port_test_prompt_kind_state_meta.rs",
     "crates/skit-ui/tests/port_test_prompt_kind_interpolate_flood.rs",
     "crates/skit-ui/tests/port_test_prompt_kind_strict_selection.rs",
@@ -56,7 +57,9 @@ const OWNERS: &[&str] = &[
     "crates/skit-cli/tests/port_test_prompt_kind_runner_resolution.rs",
     "crates/skit-cli/tests/port_test_prompt_kind_config_process_lock.rs",
     "crates/skit-cli/tests/port_test_prompt_kind_entry_lock.rs",
+    "crates/skit-cli/tests/port_test_prompt_kind_entry_lock_frozen.rs",
     "crates/skit-cli/tests/port_test_prompt_kind_unreadable_plan.rs",
+    "crates/skit-cli/tests/port_test_prompt_kind_unreadable_build.rs",
     "crates/skit-cli/tests/port_test_prompt_kind_prompt_only_writes.rs",
     "crates/skit-cli/tests/port_test_prompt_kind_real_spawn.rs",
     "crates/skit-cli/tests/port_test_prompt_kind_preflight.rs",
@@ -103,7 +106,7 @@ fn prompt_kind_frozen_name_audit_is_complete() {
         "test_placeholder_names_accept_unicode_identifiers_and_reject_non_names",
         "test_check_argv_length_measures_windows_quoted_utf16",
         "test_runner_targeted_transactions_do_not_lose_concurrent_distinct_adds",
-        "test_concurrent_prompt_writers_conflict_on_same_field_last_writer_wins",
+        "test_prompt_meta_setters_preserve_concurrent_distinct_fields",
     ] {
         assert!(frozen.contains(sentinel), "preserved Prompt-Kind source lost sentinel {sentinel}");
     }
@@ -130,6 +133,7 @@ fn prompt_kind_frozen_name_audit_is_complete() {
     let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
     let extras = actual.difference(&expected).copied().collect::<Vec<_>>();
     assert_eq!(expected.len(), 110, "Prompt-Kind executable partition must stay 110/115");
+    assert_eq!(actual.len(), 110, "Prompt-Kind owner count must stay exactly 110 executable frozen names");
     assert!(
         missing.is_empty() && extras.is_empty(),
         "Prompt-Kind exact-name audit still incomplete: executable={}/{} closed={} missing={missing:?} extras={extras:?}",
