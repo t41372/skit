@@ -39,6 +39,7 @@ const OWNERS: &[&str] = &[
     "crates/skit-runtime/tests/port_test_prompt_kind_windows_argv.rs",
     "crates/skit-runtime/tests/port_test_prompt_kind_launch.rs",
     "crates/skit-runtime/tests/port_test_prompt_kind_interpolate.rs",
+    "crates/skit-runtime/tests/port_test_prompt_kind_describe_degrade.rs",
     "crates/skit-application/tests/port_test_prompt_kind_policy.rs",
     "crates/skit-application/tests/port_test_prompt_kind_runner_validation.rs",
     "crates/skit-application/tests/port_test_prompt_kind_explicit_workdir.rs",
@@ -57,6 +58,8 @@ const OWNERS: &[&str] = &[
     "crates/skit-cli/tests/port_test_prompt_kind_entry_lock.rs",
     "crates/skit-cli/tests/port_test_prompt_kind_unreadable_plan.rs",
     "crates/skit-cli/tests/port_test_prompt_kind_prompt_only_writes.rs",
+    "crates/skit-cli/tests/port_test_prompt_kind_real_spawn.rs",
+    "crates/skit-cli/tests/port_test_prompt_kind_preflight.rs",
 ];
 
 fn has_test(attributes: &[Attribute]) -> bool {
