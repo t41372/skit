@@ -118,6 +118,29 @@ impl TuiPty {
         }
     }
 
+    pub fn wait_for_exit_after(&mut self, checkpoint: usize) -> String {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            self.drain();
+            if self.child.try_wait().expect("poll TUI child").is_some() {
+                return self.visible_after(checkpoint);
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                let visible = self.visible_after(checkpoint);
+                panic!("timed out waiting for TUI exit; new terminal output:\n{visible}\nfull terminal output:\n{}",self.visible())
+            };
+            match self.chunks.recv_timeout(remaining.min(Duration::from_millis(100))) {
+                Ok(chunk) => self.output.extend_from_slice(&chunk),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    if self.child.try_wait().expect("poll TUI child").is_some() {
+                        return self.visible_after(checkpoint);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn visible(&mut self) -> String {
         self.drain();
         strip_terminal_control(&String::from_utf8_lossy(&self.output))
