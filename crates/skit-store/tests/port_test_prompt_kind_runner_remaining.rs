@@ -52,7 +52,8 @@ fn test_targeted_runner_savers_refuse_malformed_containers_and_handle_absent_sec
     let error = store(&scalar_prompt)
         .set_runner(runner("x", &["x", "{{prompt}}"]), false)
         .expect_err("a scalar prompt section must not be silently repaired by a targeted runner save");
-    assert!(error.to_string().contains("table"), "{error}");
+    let shown = error.to_string();
+    assert!(shown.contains("isn't a table"), "frozen malformed-prompt refusal wording drifted: {shown}");
     assert_eq!(text(&scalar_prompt), before, "failed targeted save rewrote malformed prompt container");
 
     let scalar_rows = TempDir::new().unwrap();
@@ -61,7 +62,8 @@ fn test_targeted_runner_savers_refuse_malformed_containers_and_handle_absent_sec
     let error = store(&scalar_rows)
         .set_runner(runner("x", &["x", "{{prompt}}"]), false)
         .expect_err("a scalar prompt.runners value must not be silently repaired by a targeted runner save");
-    assert!(error.to_string().contains("array") || error.to_string().contains("list"), "{error}");
+    let shown = error.to_string();
+    assert!(shown.contains("isn't a list"), "frozen malformed-runner-list refusal wording drifted: {shown}");
     assert_eq!(text(&scalar_rows), before, "failed targeted save rewrote malformed runner container");
 }
 
