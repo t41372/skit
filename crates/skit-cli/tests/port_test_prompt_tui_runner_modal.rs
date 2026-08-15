@@ -1,12 +1,13 @@
 use std::collections::BTreeMap;
 
+use skit_application::{SourcePermissions, prompt_selection::{PromptSelectionService, PromptSelectionStore as _}};
 use skit_domain::parameters::ParamDecl;
 use skit_store::{FileConfigStore, FilePromptSelectionStore, PromptRunner};
-use skit_application::prompt_selection::{PromptSelectionService, PromptSelectionStore as _};
 use skit_ui::{
-    Action, Effect, FieldValue, FormPurpose, LibraryState, ModalState, RunnerEditorAction,
-    RunnerEditorError, RunnerEditorOwner, RunnerSaveOwner, RunnerSaveTarget, Screen, SettingsAction,
-    SettingsInputs, SettingsView, TypedValue, RunFormView,
+    Action, AddAction, AddEffect, AddWorkflowState, Effect, FieldValue, FormPurpose, KnownEntryKind,
+    LibraryState, ModalState, ReviewDefaults, ReviewState, RunnerEditorAction, RunnerEditorError,
+    RunnerEditorOwner, RunnerSaveOwner, RunnerSaveTarget, Screen, SettingsAction, SettingsInputs,
+    SettingsView, SourceSnapshot, TypedValue, RunFormView,
 };
 use tempfile::TempDir;
 
@@ -35,6 +36,25 @@ fn run_form(runners: &[String]) -> RunFormView {
         runners.first().map_or("", String::as_str),
         &BTreeMap::new(),
         "",
+    )
+}
+
+fn prompt_review(runners: Vec<String>) -> ReviewState {
+    ReviewState::from_source(
+        SourceSnapshot {
+            path: "n.prompt.md".into(),
+            source_record: "n.prompt.md".to_owned(),
+            bytes: b"{{a}}\n".to_vec(),
+            permissions: SourcePermissions::default(),
+            is_regular: true,
+            is_directory: false,
+            is_draft: false,
+        },
+        KnownEntryKind::Prompt,
+        ReviewDefaults {
+            runner_names: runners,
+            ..ReviewDefaults::default()
+        },
     )
 }
 
@@ -190,6 +210,62 @@ fn test_form_ctrl_n_defines_a_custom_agent_and_runs_with_it() {
         values.get("_skit_runner"),
         Some(&FieldValue::Explicit(TypedValue::Choice("aider".to_owned())))
     );
+}
+
+#[test]
+fn test_review_ctrl_n_defines_a_custom_agent_and_selects_it() {
+    let config_root = TempDir::new().unwrap();
+    let config = FileConfigStore::new(config_root.path());
+    let runners = config.runners().unwrap().into_iter().map(|runner| runner.name).collect::<Vec<_>>();
+    let review = prompt_review(runners);
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Add(Box::new(AddWorkflowState::from_review(review)))));
+    assert_eq!(state.update(Action::OpenAddRunnerEditor), Effect::None);
+    let owner = RunnerEditorOwner::Add;
+    let request = new_runner_effect(&mut state, owner.clone(), "aider", "aider --message {{prompt}}");
+    save_new_runner(&config, &request);
+    assert!(config.runners().unwrap().iter().any(|runner| runner.name == "aider"));
+
+    assert_eq!(
+        state.update(Action::RunnerEditorSaved {
+            owner,
+            name: "aider".to_owned(),
+            message: "saved".to_owned(),
+        }),
+        Effect::None
+    );
+    let review = state.add_workflow().unwrap().review().unwrap();
+    assert_eq!(review.runner(), "aider");
+    assert!(review.runner_was_picked(), "a runner defined from review was not marked as an active pick");
+    assert!(review.runner_names().contains(&"aider".to_owned()));
+
+    let Effect::Add(effects) = state.update(Action::Add(AddAction::Save)) else {
+        panic!("review did not emit its atomic add request")
+    };
+    let [AddEffect::Commit { entry, .. }] = effects.as_slice() else {
+        panic!("review save emitted something other than one commit: {effects:?}")
+    };
+    assert_eq!(entry.settings.runner, "aider");
+    assert_eq!(entry.settings.params, ["a"]);
+}
+
+#[test]
+fn test_review_modal_cancel_leaves_the_picker_alone() {
+    let initial = vec!["claude".to_owned(), "codex".to_owned()];
+    let review = prompt_review(initial.clone());
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Add(Box::new(AddWorkflowState::from_review(review)))));
+    let before_runner = state.add_workflow().unwrap().review().unwrap().runner().to_owned();
+    let before_names = state.add_workflow().unwrap().review().unwrap().runner_names().to_vec();
+
+    assert_eq!(state.update(Action::OpenAddRunnerEditor), Effect::None);
+    assert!(matches!(state.modal(), Some(ModalState::RunnerEditor { owner: RunnerEditorOwner::Add, .. })));
+    assert_eq!(state.update(Action::RunnerEditor(RunnerEditorAction::Cancel)), Effect::None);
+    assert!(state.modal().is_none());
+    let review = state.add_workflow().unwrap().review().unwrap();
+    assert_eq!(review.runner(), before_runner);
+    assert_eq!(review.runner_names(), before_names);
+    assert!(!review.runner_was_picked());
 }
 
 #[test]
