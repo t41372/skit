@@ -40,7 +40,7 @@ fn test_run_prompt_review_returns_the_apps_result() {
     let result = run_add_workflow(
         AddWorkflowState::from_review(review),
         vec![Action::Add(AddAction::Save)],
-        move |effect| -> Result<Action, HostError> {
+        |effect| -> Result<Action, HostError> {
             host_calls += 1;
             let Effect::Add(effects) = effect else {
                 panic!("Prompt review wrapper requested unrelated host work: {effect:?}")
