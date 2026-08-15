@@ -30,7 +30,7 @@ fn units(program:&str,args:&[String])->usize{
 }
 
 #[test]
-fn test_check_argv_length_windows_uses_real_quoted_command_line_utf16_units(){
+fn test_check_argv_length_measures_windows_quoted_utf16(){
  let program=r"C:\Tools\Agent App\agent.exe";let r=runner();
  // Use quote/backslash-heavy chunks so raw string length and actual quoted command-line size diverge.
  let chunk="arg \\\" ";
