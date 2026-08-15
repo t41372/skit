@@ -68,41 +68,71 @@ impl TuiPty {
         self.writer.flush().expect("flush PTY input");
     }
 
+    /// Mark the current byte boundary after draining every already-arrived terminal chunk.
+    pub fn checkpoint(&mut self) -> usize {
+        self.drain();
+        self.output.len()
+    }
+
     pub fn wait_for(&mut self, needle: &str) -> String {
         self.wait_for_timeout(needle, Duration::from_secs(4))
     }
 
     pub fn wait_for_timeout(&mut self, needle: &str, timeout: Duration) -> String {
+        self.wait_for_after_timeout(0, needle, timeout)
+    }
+
+    pub fn wait_for_after(&mut self, checkpoint: usize, needle: &str) -> String {
+        self.wait_for_after_timeout(checkpoint, needle, Duration::from_secs(4))
+    }
+
+    pub fn wait_for_after_timeout(
+        &mut self,
+        checkpoint: usize,
+        needle: &str,
+        timeout: Duration,
+    ) -> String {
         let deadline = Instant::now() + timeout;
         loop {
-            let visible = self.visible();
+            self.drain();
+            let visible = self.visible_after(checkpoint);
             if visible.contains(needle) {
                 return visible;
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                panic!("timed out waiting for {needle:?}; terminal output:\n{visible}")
+                panic!("timed out waiting for {needle:?} after checkpoint {checkpoint}; new terminal output:\n{visible}\nfull terminal output:\n{}",self.visible())
             };
             match self.chunks.recv_timeout(remaining.min(Duration::from_millis(100))) {
                 Ok(chunk) => self.output.extend_from_slice(&chunk),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if self.child.try_wait().expect("poll TUI child").is_some() {
-                        let visible = self.visible();
-                        panic!("TUI exited while waiting for {needle:?}; terminal output:\n{visible}");
+                        let visible = self.visible_after(checkpoint);
+                        panic!("TUI exited while waiting for {needle:?}; new terminal output:\n{visible}\nfull terminal output:\n{}",self.visible());
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    let visible = self.visible();
-                    panic!("PTY reader closed while waiting for {needle:?}; terminal output:\n{visible}");
+                    let visible = self.visible_after(checkpoint);
+                    panic!("PTY reader closed while waiting for {needle:?}; new terminal output:\n{visible}\nfull terminal output:\n{}",self.visible());
                 }
             }
         }
     }
 
     pub fn visible(&mut self) -> String {
+        self.drain();
+        strip_terminal_control(&String::from_utf8_lossy(&self.output))
+    }
+
+    pub fn visible_after(&mut self, checkpoint: usize) -> String {
+        self.drain();
+        let checkpoint = checkpoint.min(self.output.len());
+        strip_terminal_control(&String::from_utf8_lossy(&self.output[checkpoint..]))
+    }
+
+    fn drain(&mut self) {
         while let Ok(chunk) = self.chunks.try_recv() {
             self.output.extend_from_slice(&chunk);
         }
-        strip_terminal_control(&String::from_utf8_lossy(&self.output))
     }
 }
 
