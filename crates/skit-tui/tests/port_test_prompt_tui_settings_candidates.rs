@@ -51,7 +51,8 @@ fn draw_settings(
     let mut geometry = SettingsScreenGeometry::default();
     terminal
         .draw(|frame| {
-            geometry = render_settings(frame, frame.area(), view, session, Locale::En);
+            let area = frame.area();
+            geometry = render_settings(frame, area, view, session, Locale::En);
         })
         .unwrap();
     geometry
@@ -79,7 +80,10 @@ fn mouse(area: ratatui_core::layout::Rect) -> Event {
     })
 }
 
-fn candidate_hit<'a>(geometry: &'a SettingsScreenGeometry, name: &str) -> &'a skit_tui::SettingsHitRegion {
+fn candidate_hit<'a>(
+    geometry: &'a SettingsScreenGeometry,
+    name: &str,
+) -> &'a skit_tui::SettingsHitRegion {
     geometry
         .hits
         .iter()
@@ -90,7 +94,11 @@ fn candidate_hit<'a>(geometry: &'a SettingsScreenGeometry, name: &str) -> &'a sk
                     value: name.to_owned(),
                 }
         })
-        .unwrap_or_else(|| panic!("prompt settings did not expose detected placeholder {name:?} as a candidate control"))
+        .unwrap_or_else(|| {
+            panic!(
+                "prompt settings did not expose detected placeholder {name:?} as a candidate control"
+            )
+        })
 }
 
 #[test]
@@ -98,14 +106,21 @@ fn test_settings_tick_to_manage_a_detected_placeholder() {
     let mut view = prompt_view(true, &["a"], vec!["b".to_owned()]);
     let mut session = SettingsScreenSession::default();
     let geometry = draw_settings(&mut session, &view, 110, 80);
-    let hit = candidate_hit(&geometry, "b");
-    assert!(matches!(dispatch(&mut session, &mut view, &geometry, mouse(hit.area)), Some(SettingsScreenEvent::Action(SettingsAction::SetField { .. }))));
+    let area = candidate_hit(&geometry, "b").area;
+    assert!(matches!(
+        dispatch(&mut session, &mut view, &geometry, mouse(area)),
+        Some(SettingsScreenEvent::Action(SettingsAction::SetField { .. }))
+    ));
     assert_eq!(
         view.submitted_values().get(MANAGE_KEY),
-        Some(&FieldValue::Explicit(TypedValue::Choices(vec!["b".to_owned()])))
+        Some(&FieldValue::Explicit(TypedValue::Choices(vec![
+            "b".to_owned()
+        ])))
     );
     assert!(
-        !view.submitted_values().contains_key("parameter:a:keep"),
+        !view
+            .submitted_values()
+            .contains_key("parameter:a:keep"),
         "managing b spuriously rewrote the already-managed a row"
     );
 }
@@ -126,8 +141,14 @@ fn test_settings_unticking_a_row_unmanages_it() {
         Some(SettingsScreenEvent::Action(SettingsAction::SetField { .. }))
     ));
     let values = view.submitted_values();
-    assert_eq!(values.get("parameter:a:keep"), Some(&FieldValue::boolean(false)));
-    assert!(!values.contains_key("parameter:b:keep"), "unticking a also changed b");
+    assert_eq!(
+        values.get("parameter:a:keep"),
+        Some(&FieldValue::boolean(false))
+    );
+    assert!(
+        !values.contains_key("parameter:b:keep"),
+        "unticking a also changed b"
+    );
 }
 
 #[test]
@@ -136,34 +157,52 @@ fn test_settings_off_to_on_can_choose_first_parameters_in_the_same_save() {
     let mut session = SettingsScreenSession::default();
     let off = draw_settings(&mut session, &view, 110, 80);
     assert!(
-        !off.hits.iter().any(|hit| matches!(&hit.target, SettingsControlId::Option { field, .. } if field == MANAGE_KEY)),
+        !off.hits.iter().any(|hit| matches!(
+            &hit.target,
+            SettingsControlId::Option { field, .. } if field == MANAGE_KEY
+        )),
         "insertion-off prompt still offered placeholder candidate controls"
     );
 
     assert!(view.set_value(INTERPOLATE_KEY, FieldValue::boolean(true)));
     let on = draw_settings(&mut session, &view, 110, 80);
-    let hit = candidate_hit(&on, "b");
-    dispatch(&mut session, &mut view, &on, mouse(hit.area));
+    let area = candidate_hit(&on, "b").area;
+    dispatch(&mut session, &mut view, &on, mouse(area));
     let values = view.submitted_values();
-    assert_eq!(values.get(INTERPOLATE_KEY), Some(&FieldValue::boolean(true)));
+    assert_eq!(
+        values.get(INTERPOLATE_KEY),
+        Some(&FieldValue::boolean(true))
+    );
     assert_eq!(
         values.get(MANAGE_KEY),
-        Some(&FieldValue::Explicit(TypedValue::Choices(vec!["b".to_owned()])))
+        Some(&FieldValue::Explicit(TypedValue::Choices(vec![
+            "b".to_owned()
+        ])))
     );
 }
 
 #[test]
 fn test_settings_candidate_checkboxes_are_flood_capped() {
-    let candidates = (0..29).map(|index| format!("u{index}")).collect::<Vec<_>>();
+    let candidates = (0..29)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
     let view = prompt_view(true, &["a"], candidates);
     let mut session = SettingsScreenSession::default();
     let geometry = draw_settings(&mut session, &view, 120, 140);
     let inline = geometry
         .hits
         .iter()
-        .filter(|hit| matches!(&hit.target, SettingsControlId::Option { field, .. } if field == MANAGE_KEY))
+        .filter(|hit| {
+            matches!(
+                &hit.target,
+                SettingsControlId::Option { field, .. } if field == MANAGE_KEY
+            )
+        })
         .count();
-    assert_eq!(inline, 20, "frozen Prompt-TUI inline candidate preview is capped at 20, got {inline}");
+    assert_eq!(
+        inline, 20,
+        "frozen Prompt-TUI inline candidate preview is capped at 20, got {inline}"
+    );
 }
 
 #[test]
@@ -184,7 +223,10 @@ fn test_settings_choose_variables_key_is_harmless_when_off_or_short() {
             .unwrap();
         assert_eq!(
             session.handle_event(
-                Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+                Event::Key(KeyEvent::new(
+                    KeyCode::Char('o'),
+                    KeyModifiers::CONTROL,
+                )),
                 &state,
                 &geometry,
             ),
