@@ -20,5 +20,5 @@ fn test_build_for_an_insertion_off_prompt_sends_the_body_verbatim(){
     let body="Keep {{a}} as-is\n"; let rendered=render_prompt_body(body,&BTreeMap::new(),false); assert_eq!(rendered,body);
     let runner=PromptRunner{name:"agent".to_owned(),argv:vec!["agent".to_owned(),"{{prompt}}".to_owned()]};
     let plan=build_launch_plan(&entry(),&paths(),&Assembly::default(),Some(&rendered),Some(&runner),&Probe).unwrap(); assert_eq!(plan.args,[body]);
-    let preview=build_launch_preview(&entry(),&paths(),&Assembly::default(),Some(&rendered),Some(&runner),&Probe).unwrap(); assert!(preview.command.contains("Keep {{a}} as-is"),"{}",preview.command);
+    let preview=build_launch_preview(&entry(),&paths(),&Assembly::default(),Some(&rendered),Some(&rendered),Some(&runner),&Probe).unwrap(); assert!(preview.display.contains("Keep {{a}} as-is"),"{}",preview.display);
 }
