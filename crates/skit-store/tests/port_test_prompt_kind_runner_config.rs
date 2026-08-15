@@ -80,15 +80,31 @@ fn test_duplicate_normalized_runner_names_keep_first_and_are_reported() {
 #[test]
 fn test_runners_section_of_wrong_type_degrades() {
     let root=TempDir::new().unwrap(); write(&root,"[prompt]\nrunners_seeded = true\nrunners = \"garbage\"\n"); let config=store(&root);
-    assert!(config.runners().unwrap().is_empty()); assert_eq!(config.invalid_runner_rows().unwrap(),["prompt.runners"]);
-    let before=text(&root); assert!(config.ensure_runners_seeded().is_err()); assert_eq!(text(&root),before);
-    write(&root,"prompt = \"not-a-table\"\n"); assert!(config.runners().unwrap().is_empty()); assert_eq!(config.invalid_runner_rows().unwrap(),["prompt"]); let before=text(&root); assert!(config.ensure_runners_seeded().is_err()); assert_eq!(text(&root),before);
+    assert!(config.runners().unwrap().is_empty());
+    assert_eq!(config.invalid_runner_rows().unwrap(),["prompt.runners"]);
+
+    // Frozen Python only performs the explicit seeding read after switching to a malformed
+    // top-level prompt value. It must be a non-mutating no-op, not a new error contract.
+    write(&root,"prompt = \"not-a-table\"\n");
+    assert!(config.runners().unwrap().is_empty());
+    assert_eq!(config.invalid_runner_rows().unwrap(),["prompt"]);
+    let before=text(&root);
+    config.ensure_runners_seeded().expect("frozen management read tolerates a malformed prompt container");
+    assert_eq!(text(&root),before,"opening runner management rewrote a malformed prompt value");
 }
 
 #[test]
 fn test_runner_container_rows_have_localized_human_recovery_reason() {
-    for (doc,reason,needle) in [("prompt = \"bad\"\n","prompt-section-not-table","not a table"),("[prompt]\nrunners = \"bad\"\n","runners-not-list","not a list")] {
-        let root=TempDir::new().unwrap(); write(&root,doc); let row=store(&root).runner_rows().unwrap().remove(0); assert_eq!(row.reason.as_deref(),Some(reason)); assert!(row.localized_reason(Locale::En).unwrap().contains(needle));
+    for (doc,reason,needle) in [
+        ("prompt = \"bad\"\n","prompt-section-not-table","isn't a table"),
+        ("[prompt]\nrunners = \"bad\"\n","runners-not-list","isn't a list"),
+    ] {
+        let root=TempDir::new().unwrap();
+        write(&root,doc);
+        let row=store(&root).runner_rows().unwrap().remove(0);
+        assert_eq!(row.reason.as_deref(),Some(reason));
+        let shown=row.localized_reason(Locale::En).unwrap();
+        assert!(shown.contains(needle),"frozen human recovery wording drifted: {shown}");
     }
 }
 
