@@ -9,10 +9,24 @@ use std::{
     path::Path,
 };
 
-const CLOSED: &[(&str, &str)] = &[];
+const CLOSED: &[(&str, &str)] = &[
+    (
+        "test_census",
+        "Python-only sys.modules census parser; the native Rust imports suite records a zero Python-module census and has no module-graph parser input surface",
+    ),
+    (
+        "test_importtime",
+        "Python-only -X importtime tree parser; the native Rust imports suite emits an explicit not-applicable import-time artifact because no Python import tree exists",
+    ),
+    (
+        "test_pyperf",
+        "Python-only pyperf JSON parser; the Rust microbenchmark lane uses the native Criterion/CodSpeed harness and never consumes a pyperf artifact",
+    ),
+];
 const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_results.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_budget.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_parsers_compare.rs",
 ];
 
 fn frozen_names(source: &str) -> Vec<String> {
