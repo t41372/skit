@@ -1,13 +1,10 @@
-//! Live exact-name audit for frozen `tests/test_benchmarks_tooling.py`.
+//! Live occurrence audit for frozen `tests/test_benchmarks_tooling.py`.
 //!
 //! This guard is intentionally not attached to the master behavior inventory until every frozen
-//! benchmark-tooling name has an executable owner or one narrowly justified architecture closure.
+//! benchmark-tooling test-function occurrence has an executable owner or one narrowly justified
+//! architecture closure. Bare Python test names are a multiset: different classes can reuse one.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::Path,
-};
+use std::{collections::BTreeMap, fs, path::Path};
 
 const CLOSED: &[(&str, &str)] = &[
     (
@@ -72,6 +69,14 @@ fn frozen_names(source: &str) -> Vec<String> {
         .collect()
 }
 
+fn count_names(names: impl IntoIterator<Item = String>) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for name in names {
+        *counts.entry(name).or_default() += 1;
+    }
+    counts
+}
+
 fn executable_rust_tests(path: &Path) -> Vec<String> {
     let source = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()));
@@ -107,9 +112,17 @@ fn benchmarks_tooling_frozen_name_audit_is_live() {
     let python = fs::read_to_string(repo.join("tests/test_benchmarks_tooling.py"))
         .expect("preserved benchmark-tooling source");
     let frozen_list = frozen_names(&python);
-    let frozen = frozen_list.iter().map(String::as_str).collect::<BTreeSet<_>>();
-    assert_eq!(frozen_list.len(), 156, "frozen benchmark-tooling denominator changed");
-    assert_eq!(frozen.len(), 156, "duplicate frozen benchmark-tooling test name");
+    assert_eq!(
+        frozen_list.len(),
+        156,
+        "frozen benchmark-tooling function-occurrence denominator changed"
+    );
+    let frozen = count_names(frozen_list);
+    assert_eq!(
+        frozen.get("test_rejects_bad_inputs"),
+        Some(&2),
+        "the frozen suite's cross-class duplicate-name sentinel changed"
+    );
     for sentinel in [
         "test_round_trip",
         "test_loads_the_real_contract_file",
@@ -120,43 +133,54 @@ fn benchmarks_tooling_frozen_name_audit_is_live() {
         "test_exact_line_counts",
     ] {
         assert!(
-            frozen.contains(sentinel),
+            frozen.contains_key(sentinel),
             "preserved benchmark-tooling source lost sentinel {sentinel}"
         );
     }
 
-    let closed = CLOSED.iter().map(|(name, _)| *name).collect::<BTreeSet<_>>();
-    assert_eq!(closed.len(), CLOSED.len(), "duplicate benchmark-tooling closure name");
     assert!(CLOSED.iter().all(|(_, reason)| !reason.trim().is_empty()));
-    assert!(
-        closed.is_subset(&frozen),
-        "benchmark-tooling closure includes a non-frozen name"
-    );
+    let closed = count_names(CLOSED.iter().map(|(name, _)| (*name).to_owned()));
+    for (name, count) in &closed {
+        assert!(
+            frozen.get(name).is_some_and(|frozen_count| count <= frozen_count),
+            "benchmark-tooling closure over-accounts non-frozen or duplicate occurrence {name:?}: closed={count}, frozen={:?}",
+            frozen.get(name)
+        );
+    }
 
-    let mut owners = BTreeMap::<String, String>::new();
-    let mut duplicates = Vec::new();
+    let mut owner_names = Vec::new();
     for relative in OWNERS {
-        for name in executable_rust_tests(&repo.join(relative)) {
-            if let Some(previous) = owners.insert(name.clone(), (*relative).to_owned()) {
-                duplicates.push(format!("{name}: {previous} and {relative}"));
-            }
+        owner_names.extend(executable_rust_tests(&repo.join(relative)));
+    }
+    let owners = count_names(owner_names);
+
+    let mut missing = Vec::new();
+    let mut extras = Vec::new();
+    for (name, frozen_count) in &frozen {
+        let closed_count = closed.get(name).copied().unwrap_or(0);
+        let expected = frozen_count - closed_count;
+        let actual = owners.get(name).copied().unwrap_or(0);
+        if actual < expected {
+            missing.push(format!("{name} x{}", expected - actual));
+        } else if actual > expected {
+            extras.push(format!("{name} x{}", actual - expected));
         }
     }
-    assert!(
-        duplicates.is_empty(),
-        "duplicate benchmark-tooling owners:\n{}",
-        duplicates.join("\n")
-    );
+    for (name, count) in &owners {
+        if !frozen.contains_key(name) {
+            extras.push(format!("{name} x{count} (non-frozen)"));
+        }
+    }
 
-    let expected = frozen.difference(&closed).copied().collect::<BTreeSet<_>>();
-    let actual = owners.keys().map(String::as_str).collect::<BTreeSet<_>>();
-    let missing = expected.difference(&actual).copied().collect::<Vec<_>>();
-    let extras = actual.difference(&expected).copied().collect::<Vec<_>>();
+    let executable_count = owners.values().sum::<usize>();
+    let closed_count = closed.values().sum::<usize>();
     assert!(
         missing.is_empty() && extras.is_empty(),
-        "benchmark-tooling live exact-name audit incomplete: executable={}/{} closed={} missing={missing:?} extras={extras:?}",
-        actual.len(),
-        frozen.len(),
-        closed.len()
+        "benchmark-tooling live occurrence audit incomplete: executable={executable_count}/156 closed={closed_count} missing={missing:?} extras={extras:?}"
+    );
+    assert_eq!(
+        executable_count + closed_count,
+        156,
+        "benchmark-tooling occurrence accounting must cover the frozen denominator exactly"
     );
 }
