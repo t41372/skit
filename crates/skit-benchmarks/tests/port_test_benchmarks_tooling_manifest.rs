@@ -24,6 +24,12 @@ const CLOSED: &[(&str, &str)] = &[
     ("test_generate_refuses_silent_store_undercount", "Python injected a lying global store.list_entries; Rust generate performs the same post-generate count check through a concrete LibraryService<FileStore> but exposes no repository injection seam for an integration owner"),
     ("test_run_and_summarize_commands", "Python monkeypatched _run.execute and summarize_dir to inspect private CLI dispatch arguments without running the pipeline; Rust skit-bench dispatch calls execute/summarize_directory directly and exposes no injectable dispatch seam, while real summarize/pipeline behavior and other front-door commands remain executable"),
     ("test_cli_formats_subprocess_errors", "Python replaced benchmark_cli.main itself with a function that raises subprocess.TimeoutExpired to test the Python wrapper exception adapter; Rust main has no replaceable dispatch function or Python TimeoutExpired type, while real OS-error front-door formatting remains executable"),
+    ("test_hyperfine_pin_synced_to_install_action", "Python kept a duplicated HYPERFINE_VERSION constant in code and in the installer action; Rust removed the code-side duplicate so the composite installer action is the single pin source, while every benchmark workflow is checked to use that action"),
+    ("test_the_census_probe_runs_the_real_console_script", "Python import-census correctness depended on a Python console-script probe launching the installed skit entry point; the native Rust imports suite has no Python module census and records that measurement as not applicable"),
+    ("test_broken_lines_constant_is_the_same_in_both_files", "Python duplicated BROKEN_LINES between source generation and a separate micro script; Rust owns one BROKEN_LINES constant in the native micro suite and calls the shared generate_broken function, so there is no second constant to synchronize"),
+    ("test_cli_parser_surface_is_stable", "Frozen test hashes private argparse parser rendering at COLUMNS=80; Rust benchmark CLI is Clap-based with no argparse parser object, while all public benchmark subcommands and critical front-door options have executable binary owners"),
+    ("test_all_benchmark_subprocesses_are_bounded", "Python AST-scanned optional subprocess.run(timeout=...) keywords; Rust benchmark subprocesses go through ProcessSpec whose timeout: Duration field is mandatory by type, eliminating an unbounded call shape rather than preserving the Python AST seam"),
+    ("test_benchmarks_imports_stay_on_runtime_deps", "Python AST-scanned benchmark package imports against Python runtime/dev dependency groups; the native benchmark harness is a Rust crate whose dependency surface is resolved by Cargo and has no Python module-import surface, while legacy Python compare environments remain workflow-pinned"),
 ];
 const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_results.rs",
@@ -37,6 +43,7 @@ const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_review_edges.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_env_reuse.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_source_integrity.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_contract_sync.rs",
 ];
 
 fn frozen_names(source: &str) -> Vec<String> { source.lines().filter_map(|line| { let line=line.trim_start(); let tail=line.strip_prefix("def test_")?; let name=tail.split_once('(')?.0; Some(format!("test_{name}")) }).collect() }
@@ -49,7 +56,7 @@ fn benchmarks_tooling_frozen_name_audit_is_live(){
     let python=fs::read_to_string(repo.join("tests/test_benchmarks_tooling.py")).expect("preserved benchmark-tooling source");
     let frozen_list=frozen_names(&python);assert_eq!(frozen_list.len(),156,"frozen benchmark-tooling function-occurrence denominator changed");let frozen=count_names(frozen_list);
     assert_eq!(frozen.get("test_rejects_bad_inputs"),Some(&2),"the frozen suite's cross-class duplicate-name sentinel changed");
-    for sentinel in ["test_round_trip","test_loads_the_real_contract_file","test_stats","test_thresholds","test_platform_key","test_profiles","test_exact_line_counts","test_generate_small_library","test_datasets_command","test_compare_flags_harness_provenance_changes","test_build_env_composes_path_and_pins_locale","test_analyzer_workloads_are_byte_stable"]{assert!(frozen.contains_key(sentinel),"preserved benchmark-tooling source lost sentinel {sentinel}");}
+    for sentinel in ["test_round_trip","test_loads_the_real_contract_file","test_stats","test_thresholds","test_platform_key","test_profiles","test_exact_line_counts","test_generate_small_library","test_datasets_command","test_compare_flags_harness_provenance_changes","test_build_env_composes_path_and_pins_locale","test_analyzer_workloads_are_byte_stable","test_budgets_file_is_canonical"]{assert!(frozen.contains_key(sentinel),"preserved benchmark-tooling source lost sentinel {sentinel}");}
     assert!(CLOSED.iter().all(|(_,reason)|!reason.trim().is_empty()));let closed=count_names(CLOSED.iter().map(|(name,_)|(*name).to_owned()));
     for(name,count)in&closed{assert!(frozen.get(name).is_some_and(|frozen_count|count<=frozen_count),"benchmark-tooling closure over-accounts non-frozen or duplicate occurrence {name:?}: closed={count}, frozen={:?}",frozen.get(name));}
     let mut owner_names=Vec::new();for relative in OWNERS{owner_names.extend(executable_rust_tests(&repo.join(relative)));}let owners=count_names(owner_names);
