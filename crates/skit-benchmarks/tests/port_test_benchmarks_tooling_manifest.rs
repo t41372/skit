@@ -44,6 +44,7 @@ const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_env_reuse.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_source_integrity.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_contract_sync.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_suite_outputs.rs",
 ];
 
 fn frozen_names(source: &str) -> Vec<String> { source.lines().filter_map(|line| { let line=line.trim_start(); let tail=line.strip_prefix("def test_")?; let name=tail.split_once('(')?.0; Some(format!("test_{name}")) }).collect() }
@@ -56,7 +57,7 @@ fn benchmarks_tooling_frozen_name_audit_is_live(){
     let python=fs::read_to_string(repo.join("tests/test_benchmarks_tooling.py")).expect("preserved benchmark-tooling source");
     let frozen_list=frozen_names(&python);assert_eq!(frozen_list.len(),156,"frozen benchmark-tooling function-occurrence denominator changed");let frozen=count_names(frozen_list);
     assert_eq!(frozen.get("test_rejects_bad_inputs"),Some(&2),"the frozen suite's cross-class duplicate-name sentinel changed");
-    for sentinel in ["test_round_trip","test_loads_the_real_contract_file","test_stats","test_thresholds","test_platform_key","test_profiles","test_exact_line_counts","test_generate_small_library","test_datasets_command","test_compare_flags_harness_provenance_changes","test_build_env_composes_path_and_pins_locale","test_analyzer_workloads_are_byte_stable","test_budgets_file_is_canonical"]{assert!(frozen.contains_key(sentinel),"preserved benchmark-tooling source lost sentinel {sentinel}");}
+    for sentinel in ["test_round_trip","test_loads_the_real_contract_file","test_stats","test_thresholds","test_platform_key","test_profiles","test_exact_line_counts","test_generate_small_library","test_datasets_command","test_compare_flags_harness_provenance_changes","test_build_env_composes_path_and_pins_locale","test_analyzer_workloads_are_byte_stable","test_budgets_file_is_canonical","test_tui_records_the_selection_span_when_the_probe_measured_one"]{assert!(frozen.contains_key(sentinel),"preserved benchmark-tooling source lost sentinel {sentinel}");}
     assert!(CLOSED.iter().all(|(_,reason)|!reason.trim().is_empty()));let closed=count_names(CLOSED.iter().map(|(name,_)|(*name).to_owned()));
     for(name,count)in&closed{assert!(frozen.get(name).is_some_and(|frozen_count|count<=frozen_count),"benchmark-tooling closure over-accounts non-frozen or duplicate occurrence {name:?}: closed={count}, frozen={:?}",frozen.get(name));}
     let mut owner_names=Vec::new();for relative in OWNERS{owner_names.extend(executable_rust_tests(&repo.join(relative)));}let owners=count_names(owner_names);
