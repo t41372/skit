@@ -22,11 +22,42 @@ const CLOSED: &[(&str, &str)] = &[
         "test_pyperf",
         "Python-only pyperf JSON parser; the Rust microbenchmark lane uses the native Criterion/CodSpeed harness and never consumes a pyperf artifact",
     ),
+    (
+        "test_ci_runner",
+        "Python pure helper accepted an injected environment mapping; Rust collect_meta reads BENCH_CI_RUNNER/ImageVersion through a private non-empty process-environment helper with no map-injection seam",
+    ),
+    (
+        "test_cpu_model",
+        "Python parsed injected /proc/cpuinfo text; Rust collect_meta gets the CPU brand from sysinfo and exposes no text-parser seam",
+    ),
+    (
+        "test_mem_and_git",
+        "Python exposed pure memory-page and git-status text helpers; Rust collect_meta uses sysinfo total memory plus a bounded live git status process and exposes neither parser seam",
+    ),
+    (
+        "test_dist_version_fallback",
+        "Python queried importlib.metadata distribution versions; the native Rust benchmark harness has no Python distribution-metadata lookup and records native harness provenance instead",
+    ),
+    (
+        "test_build_host_and_meta",
+        "Python exposed pure injected HostInfo/Meta builder helpers; Rust collect_meta intentionally constructs them from bounded live probes and sysinfo, while typed Meta round-trip remains executable",
+    ),
+    (
+        "test_deterministic",
+        "Python benchmark source generation exposed a per-call seed injection; the Rust-only benchmark generator owns a fixed stable seed derived from language and line count and exposes no alternate-seed seam",
+    ),
+    (
+        "test_generate_asserts_generator_line_count",
+        "Python monkeypatched the private _shell generator to make it lie about line count; Rust language generators are private functions with no injectable generator callback, while public exact-line-count invariants remain executable",
+    ),
 ];
 const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_results.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_budget.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_parsers_compare.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_environment.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_pipeline.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_sources.rs",
 ];
 
 fn frozen_names(source: &str) -> Vec<String> {
@@ -85,6 +116,8 @@ fn benchmarks_tooling_frozen_name_audit_is_live() {
         "test_stats",
         "test_thresholds",
         "test_platform_key",
+        "test_profiles",
+        "test_exact_line_counts",
     ] {
         assert!(
             frozen.contains(sentinel),
