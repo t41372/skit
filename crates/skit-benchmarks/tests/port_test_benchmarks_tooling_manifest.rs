@@ -47,6 +47,18 @@ const CLOSED: &[(&str, &str)] = &[
         "test_generate_asserts_generator_line_count",
         "Python monkeypatched the private _shell generator to make it lie about line count; Rust language generators are private functions with no injectable generator callback, while public exact-line-count invariants remain executable",
     ),
+    (
+        "test_scoped_skit_dirs_restores_previously_unset_var",
+        "Python temporarily rewrote process-global SKIT_* variables through scoped_skit_dirs; the Rust dataset generator passes explicit store/state/config paths and has no process-environment scope to restore",
+    ),
+    (
+        "test_source_text_rejects_unknown_kind",
+        "Python directly called private _source_text; the Rust source_text helper is private and its unsupported-kind branch has an in-module unit test, while public dataset generation validates kinds before dispatch",
+    ),
+    (
+        "test_generate_refuses_silent_store_undercount",
+        "Python injected a lying global store.list_entries; Rust generate performs the same post-generate count check through a concrete LibraryService<FileStore> but exposes no repository injection seam for an integration owner",
+    ),
 ];
 const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_results.rs",
@@ -55,6 +67,7 @@ const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_environment.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_pipeline.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_sources.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_dataset.rs",
 ];
 
 fn frozen_names(source: &str) -> Vec<String> {
@@ -131,6 +144,7 @@ fn benchmarks_tooling_frozen_name_audit_is_live() {
         "test_platform_key",
         "test_profiles",
         "test_exact_line_counts",
+        "test_generate_small_library",
     ] {
         assert!(
             frozen.contains_key(sentinel),
