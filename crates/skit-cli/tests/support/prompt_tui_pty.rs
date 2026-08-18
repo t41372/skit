@@ -86,6 +86,52 @@ impl TuiPty {
         self.wait_for_after_timeout(checkpoint, needle, Duration::from_secs(4))
     }
 
+    pub fn wait_for_any_after(&mut self, checkpoint: usize, needles: &[&str]) -> String {
+        self.wait_for_any_after_timeout(checkpoint, needles, Duration::from_secs(4))
+    }
+
+    pub fn wait_for_any_after_timeout(
+        &mut self,
+        checkpoint: usize,
+        needles: &[&str],
+        timeout: Duration,
+    ) -> String {
+        assert!(!needles.is_empty(), "wait_for_any_after requires at least one needle");
+        let deadline = Instant::now() + timeout;
+        loop {
+            self.drain();
+            let visible = self.visible_after(checkpoint);
+            if needles.iter().any(|needle| visible.contains(needle)) {
+                return visible;
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                panic!(
+                    "timed out waiting for one of {needles:?} after checkpoint {checkpoint}; new terminal output:\n{visible}\nfull terminal output:\n{}",
+                    self.visible()
+                )
+            };
+            match self.chunks.recv_timeout(remaining.min(Duration::from_millis(100))) {
+                Ok(chunk) => self.output.extend_from_slice(&chunk),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self.child.try_wait().expect("poll TUI child").is_some() {
+                        let visible = self.visible_after(checkpoint);
+                        panic!(
+                            "TUI exited while waiting for one of {needles:?}; new terminal output:\n{visible}\nfull terminal output:\n{}",
+                            self.visible()
+                        );
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let visible = self.visible_after(checkpoint);
+                    panic!(
+                        "PTY reader closed while waiting for one of {needles:?}; new terminal output:\n{visible}\nfull terminal output:\n{}",
+                        self.visible()
+                    );
+                }
+            }
+        }
+    }
+
     pub fn wait_for_after_timeout(
         &mut self,
         checkpoint: usize,
