@@ -59,6 +59,14 @@ const CLOSED: &[(&str, &str)] = &[
         "test_generate_refuses_silent_store_undercount",
         "Python injected a lying global store.list_entries; Rust generate performs the same post-generate count check through a concrete LibraryService<FileStore> but exposes no repository injection seam for an integration owner",
     ),
+    (
+        "test_run_and_summarize_commands",
+        "Python monkeypatched _run.execute and summarize_dir to inspect private CLI dispatch arguments without running the pipeline; Rust skit-bench dispatch calls execute/summarize_directory directly and exposes no injectable dispatch seam, while real summarize/pipeline behavior and other front-door commands remain executable",
+    ),
+    (
+        "test_cli_formats_subprocess_errors",
+        "Python replaced benchmark_cli.main itself with a function that raises subprocess.TimeoutExpired to test the Python wrapper exception adapter; Rust main has no replaceable dispatch function or Python TimeoutExpired type, while real OS-error front-door formatting remains executable",
+    ),
 ];
 const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_results.rs",
@@ -68,6 +76,7 @@ const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_pipeline.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_sources.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_dataset.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_front_door.rs",
 ];
 
 fn frozen_names(source: &str) -> Vec<String> {
@@ -145,6 +154,7 @@ fn benchmarks_tooling_frozen_name_audit_is_live() {
         "test_profiles",
         "test_exact_line_counts",
         "test_generate_small_library",
+        "test_datasets_command",
     ] {
         assert!(
             frozen.contains_key(sentinel),
