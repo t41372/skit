@@ -24,6 +24,10 @@ const CLOSED: &[(&str, &str)] = &[
         "Python-only pyperf JSON parser validation; the Rust microbenchmark lane uses the native Criterion/CodSpeed harness and never parses Python pyperf benchmark elements",
     ),
     (
+        "test_pyperf_inherit_covers_the_fixture_vars",
+        "Python pyperf worker inheritance contract; the native Rust benchmark harness has no pyperf worker process and constructs the complete child environment directly",
+    ),
+    (
         "test_ci_runner",
         "Python pure helper accepted an injected environment mapping; Rust collect_meta reads BENCH_CI_RUNNER/ImageVersion through a private non-empty process-environment helper with no map-injection seam",
     ),
@@ -82,6 +86,7 @@ const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_dataset.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_front_door.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_review_edges.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_env_reuse.rs",
 ];
 
 fn frozen_names(source: &str) -> Vec<String> {
@@ -108,7 +113,7 @@ fn benchmarks_tooling_frozen_name_audit_is_live(){
     let python=fs::read_to_string(repo.join("tests/test_benchmarks_tooling.py")).expect("preserved benchmark-tooling source");
     let frozen_list=frozen_names(&python);assert_eq!(frozen_list.len(),156,"frozen benchmark-tooling function-occurrence denominator changed");let frozen=count_names(frozen_list);
     assert_eq!(frozen.get("test_rejects_bad_inputs"),Some(&2),"the frozen suite's cross-class duplicate-name sentinel changed");
-    for sentinel in ["test_round_trip","test_loads_the_real_contract_file","test_stats","test_thresholds","test_platform_key","test_profiles","test_exact_line_counts","test_generate_small_library","test_datasets_command","test_compare_flags_harness_provenance_changes"]{assert!(frozen.contains_key(sentinel),"preserved benchmark-tooling source lost sentinel {sentinel}");}
+    for sentinel in ["test_round_trip","test_loads_the_real_contract_file","test_stats","test_thresholds","test_platform_key","test_profiles","test_exact_line_counts","test_generate_small_library","test_datasets_command","test_compare_flags_harness_provenance_changes","test_build_env_composes_path_and_pins_locale"]{assert!(frozen.contains_key(sentinel),"preserved benchmark-tooling source lost sentinel {sentinel}");}
     assert!(CLOSED.iter().all(|(_,reason)|!reason.trim().is_empty()));let closed=count_names(CLOSED.iter().map(|(name,_)|(*name).to_owned()));
     for(name,count)in&closed{assert!(frozen.get(name).is_some_and(|frozen_count|count<=frozen_count),"benchmark-tooling closure over-accounts non-frozen or duplicate occurrence {name:?}: closed={count}, frozen={:?}",frozen.get(name));}
     let mut owner_names=Vec::new();for relative in OWNERS{owner_names.extend(executable_rust_tests(&repo.join(relative)));}let owners=count_names(owner_names);
