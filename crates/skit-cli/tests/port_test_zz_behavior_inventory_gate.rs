@@ -98,7 +98,7 @@ const MODULES: &[Module] = &[
     Module { python: "test_i18n.py", tests: 38, guard: Some("crates/skit-cli/tests/port_test_i18n_manifest.rs") },
     Module { python: "test_prompt_utf8.py", tests: 16, guard: Some("crates/skit-cli/tests/port_test_prompt_utf8_manifest.rs") },
     Module { python: "test_packaging.py", tests: 7, guard: Some("crates/skit-cli/tests/port_test_packaging_manifest.rs") },
-    Module { python: "test_benchmarks_tooling.py", tests: 156, guard: None },
+    Module { python: "test_benchmarks_tooling.py", tests: 156, guard: Some("crates/skit-benchmarks/tests/port_test_benchmarks_tooling_manifest.rs") },
     Module { python: "test_mutation_gate.py", tests: 4, guard: Some("crates/skit-cli/tests/port_test_mutation_gate_manifest.rs") },
     Module { python: "test_hermeticity.py", tests: 1, guard: Some(SMALL) },
 ];

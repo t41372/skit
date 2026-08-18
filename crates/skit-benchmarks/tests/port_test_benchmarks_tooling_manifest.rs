@@ -1,10 +1,14 @@
-//! Live occurrence audit for frozen `tests/test_benchmarks_tooling.py`.
+//! Live function-occurrence audit for frozen `tests/test_benchmarks_tooling.py`.
 //!
-//! This guard is intentionally not attached to the master behavior inventory until every frozen
-//! benchmark-tooling test-function occurrence has an executable owner or one narrowly justified
-//! architecture closure. Bare Python test names are a multiset: different classes can reuse one.
+//! Bare Python test names form a multiset because different classes can reuse one name. The audit
+//! therefore accounts for all 156 function occurrences, rejects duplicate/non-frozen Rust owners,
+//! and pins the architecture-closure partition so it cannot expand silently.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+};
 
 const CLOSED: &[(&str, &str)] = &[
     ("test_census", "Python-only sys.modules census parser; the native Rust imports suite records a zero Python-module census and has no module-graph parser input surface"),
@@ -21,7 +25,6 @@ const CLOSED: &[(&str, &str)] = &[
     ("test_generate_asserts_generator_line_count", "Python monkeypatched the private _shell generator to make it lie about line count; Rust language generators are private functions with no injectable generator callback, while public exact-line-count invariants remain executable"),
     ("test_scoped_skit_dirs_restores_previously_unset_var", "Python temporarily rewrote process-global SKIT_* variables through scoped_skit_dirs; the Rust dataset generator passes explicit store/state/config paths and has no process-environment scope to restore"),
     ("test_source_text_rejects_unknown_kind", "Python directly called private _source_text; the Rust source_text helper is private and its unsupported-kind branch has an in-module unit test, while public dataset generation validates kinds before dispatch"),
-    ("test_generate_refuses_silent_store_undercount", "Python injected a lying global store.list_entries; Rust generate performs the same post-generate count check through a concrete LibraryService<FileStore> but exposes no repository injection seam for an integration owner"),
     ("test_run_and_summarize_commands", "Python monkeypatched _run.execute and summarize_dir to inspect private CLI dispatch arguments without running the pipeline; Rust skit-bench dispatch calls execute/summarize_directory directly and exposes no injectable dispatch seam, while real summarize/pipeline behavior and other front-door commands remain executable"),
     ("test_cli_formats_subprocess_errors", "Python replaced benchmark_cli.main itself with a function that raises subprocess.TimeoutExpired to test the Python wrapper exception adapter; Rust main has no replaceable dispatch function or Python TimeoutExpired type, while real OS-error front-door formatting remains executable"),
     ("test_hyperfine_pin_synced_to_install_action", "Python kept a duplicated HYPERFINE_VERSION constant in code and in the installer action; Rust removed the code-side duplicate so the composite installer action is the single pin source, while every benchmark workflow is checked to use that action"),
@@ -31,6 +34,7 @@ const CLOSED: &[(&str, &str)] = &[
     ("test_all_benchmark_subprocesses_are_bounded", "Python AST-scanned optional subprocess.run(timeout=...) keywords; Rust benchmark subprocesses go through ProcessSpec whose timeout: Duration field is mandatory by type, eliminating an unbounded call shape rather than preserving the Python AST seam"),
     ("test_benchmarks_imports_stay_on_runtime_deps", "Python AST-scanned benchmark package imports against Python runtime/dev dependency groups; the native benchmark harness is a Rust crate whose dependency surface is resolved by Cargo and has no Python module-import surface, while legacy Python compare environments remain workflow-pinned"),
 ];
+
 const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_results.rs",
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_budget.rs",
@@ -49,21 +53,166 @@ const OWNERS: &[&str] = &[
     "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_runover_gap.rs",
 ];
 
-fn frozen_names(source: &str) -> Vec<String> { source.lines().filter_map(|line| { let line=line.trim_start(); let tail=line.strip_prefix("def test_")?; let name=tail.split_once('(')?.0; Some(format!("test_{name}")) }).collect() }
-fn count_names(names: impl IntoIterator<Item=String>) -> BTreeMap<String,usize> { let mut counts=BTreeMap::new(); for name in names { *counts.entry(name).or_default() += 1; } counts }
-fn executable_rust_tests(path:&Path)->Vec<String>{ let source=fs::read_to_string(path).unwrap_or_else(|error|panic!("could not read {}: {error}",path.display())); let lines=source.lines().collect::<Vec<_>>(); let mut names=Vec::new(); for(index,line)in lines.iter().enumerate(){let trimmed=line.trim_start();let Some(tail)=trimmed.strip_prefix("fn test_")else{continue;};let Some(name)=tail.split_once('(').map(|(name,_)|format!("test_{name}"))else{continue;};let has_test_attribute=lines[..index].iter().rev().map(|line|line.trim()).take_while(|line|line.is_empty()||line.starts_with("#[")).any(|line|line=="#[test]");if has_test_attribute{names.push(name);}} names }
+fn frozen_names(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let tail = line.strip_prefix("def test_")?;
+            let name = tail.split_once('(')?.0;
+            Some(format!("test_{name}"))
+        })
+        .collect()
+}
+
+fn count_names(names: impl IntoIterator<Item = String>) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for name in names {
+        *counts.entry(name).or_default() += 1;
+    }
+    counts
+}
+
+fn executable_rust_tests(path: &Path) -> Vec<String> {
+    let source = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("could not read {}: {error}", path.display()));
+    let lines = source.lines().collect::<Vec<_>>();
+    let mut names = Vec::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(tail) = trimmed.strip_prefix("fn test_") else {
+            continue;
+        };
+        let Some(name) = tail
+            .split_once('(')
+            .map(|(name, _)| format!("test_{name}"))
+        else {
+            continue;
+        };
+        let has_test_attribute = lines[..index]
+            .iter()
+            .rev()
+            .map(|line| line.trim())
+            .take_while(|line| line.is_empty() || line.starts_with("#["))
+            .any(|line| line == "#[test]");
+        if has_test_attribute {
+            names.push(name);
+        }
+    }
+    names
+}
 
 #[test]
-fn benchmarks_tooling_frozen_name_audit_is_live(){
-    let repo=Path::new(env!("CARGO_MANIFEST_DIR")).parent().and_then(Path::parent).expect("skit-benchmarks lives under <repo>/crates/skit-benchmarks");
-    let python=fs::read_to_string(repo.join("tests/test_benchmarks_tooling.py")).expect("preserved benchmark-tooling source");
-    let frozen_list=frozen_names(&python);assert_eq!(frozen_list.len(),156,"frozen benchmark-tooling function-occurrence denominator changed");let frozen=count_names(frozen_list);
-    assert_eq!(frozen.get("test_rejects_bad_inputs"),Some(&2),"the frozen suite's cross-class duplicate-name sentinel changed");
-    for sentinel in ["test_round_trip","test_loads_the_real_contract_file","test_stats","test_thresholds","test_platform_key","test_profiles","test_exact_line_counts","test_generate_small_library","test_datasets_command","test_compare_flags_harness_provenance_changes","test_build_env_composes_path_and_pins_locale","test_analyzer_workloads_are_byte_stable","test_budgets_file_is_canonical","test_tui_records_the_selection_span_when_the_probe_measured_one","test_runover_refuses_silent_store_undercount"]{assert!(frozen.contains_key(sentinel),"preserved benchmark-tooling source lost sentinel {sentinel}");}
-    assert!(CLOSED.iter().all(|(_,reason)|!reason.trim().is_empty()));let closed=count_names(CLOSED.iter().map(|(name,_)|(*name).to_owned()));
-    for(name,count)in&closed{assert!(frozen.get(name).is_some_and(|frozen_count|count<=frozen_count),"benchmark-tooling closure over-accounts non-frozen or duplicate occurrence {name:?}: closed={count}, frozen={:?}",frozen.get(name));}
-    let mut owner_names=Vec::new();for relative in OWNERS{owner_names.extend(executable_rust_tests(&repo.join(relative)));}let owners=count_names(owner_names);
-    let mut missing=Vec::new();let mut extras=Vec::new();for(name,frozen_count)in&frozen{let closed_count=closed.get(name).copied().unwrap_or(0);let expected=frozen_count-closed_count;let actual=owners.get(name).copied().unwrap_or(0);if actual<expected{missing.push(format!("{name} x{}",expected-actual));}else if actual>expected{extras.push(format!("{name} x{}",actual-expected));}}
-    for(name,count)in&owners{if !frozen.contains_key(name){extras.push(format!("{name} x{count} (non-frozen)"));}}
-    let executable_count=owners.values().sum::<usize>();let closed_count=closed.values().sum::<usize>();assert!(missing.is_empty()&&extras.is_empty(),"benchmark-tooling live occurrence audit incomplete: executable={executable_count}/156 closed={closed_count} missing={missing:?} extras={extras:?}");assert_eq!(executable_count+closed_count,156,"benchmark-tooling occurrence accounting must cover the frozen denominator exactly");
+fn benchmarks_tooling_frozen_name_audit_is_live() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("skit-benchmarks lives under <repo>/crates/skit-benchmarks");
+    let python = fs::read_to_string(repo.join("tests/test_benchmarks_tooling.py"))
+        .expect("preserved benchmark-tooling source");
+    let frozen_list = frozen_names(&python);
+    assert_eq!(
+        frozen_list.len(),
+        156,
+        "frozen benchmark-tooling function-occurrence denominator changed"
+    );
+    let frozen = count_names(frozen_list);
+    assert_eq!(
+        frozen.get("test_rejects_bad_inputs"),
+        Some(&2),
+        "the frozen suite's cross-class duplicate-name sentinel changed"
+    );
+    for sentinel in [
+        "test_round_trip",
+        "test_loads_the_real_contract_file",
+        "test_stats",
+        "test_thresholds",
+        "test_platform_key",
+        "test_profiles",
+        "test_exact_line_counts",
+        "test_generate_small_library",
+        "test_generate_refuses_silent_store_undercount",
+        "test_runover_refuses_silent_store_undercount",
+        "test_datasets_command",
+        "test_compare_flags_harness_provenance_changes",
+        "test_build_env_composes_path_and_pins_locale",
+        "test_analyzer_workloads_are_byte_stable",
+        "test_budgets_file_is_canonical",
+        "test_tui_records_the_selection_span_when_the_probe_measured_one",
+    ] {
+        assert!(
+            frozen.contains_key(sentinel),
+            "preserved benchmark-tooling source lost sentinel {sentinel}"
+        );
+    }
+
+    assert_eq!(
+        CLOSED.len(),
+        22,
+        "benchmark-tooling architecture closures may not expand silently"
+   );
+    assert!(
+        CLOSED.iter().all(|(_, reason)| !reason.trim().is_empty()),
+        "every architecture closure needs a specific reason"
+    );
+    let closed = count_names(CLOSED.iter().map(|(name, _)| (*name).to_owned()));
+    assert_eq!(
+        closed.values().sum::<usize>(),
+        22,
+        "duplicate closure rows make occurrence accounting ambiguous"
+    );
+    for (name, count) in &closed {
+        assert!(
+            frozen
+                .get(name)
+                .is_some_and(|frozen_count| count <= frozen_count),
+            "benchmark-tooling closure over-accounts non-frozen or duplicate occurrence {name:?}: closed={count}, frozen={:?}",
+            frozen.get(name)
+        );
+    }
+
+    let mut owner_names = Vec::new();
+    for relative in OWNERS {
+        owner_names.extend(executable_rust_tests(&repo.join(relative)));
+    }
+    let owners = count_names(owner_names);
+    let mut missing = Vec::new();
+    let mut extras = Vec::new();
+    for (name, frozen_count) in &frozen {
+        let closed_count = closed.get(name).copied().unwrap_or(0);
+        let expected = frozen_count - closed_count;
+        let actual = owners.get(name).copied().unwrap_or(0);
+        if actual < expected {
+            missing.push(format!("{name} x{}", expected - actual));
+        } else if actual > expected {
+            extras.push(format!("{name} x{}", actual - expected));
+        }
+    }
+    for (name, count) in &owners {
+        if !frozen.contains_key(name) {
+            extras.push(format!("{name} x{count} (non-frozen)"));
+        }
+    }
+
+    let executable_count = owners.values().sum::<usize>();
+    let closed_count = closed.values().sum::<usize>();
+    assert_eq!(
+        executable_count,
+        134,
+        "benchmark-tooling executable ownership may not shrink silently"
+    );
+    assert_eq!(
+        closed_count, 22,
+        "benchmark-tooling architecture closure partition changed"
+    );
+    assert!(
+        missing.is_empty() && extras.is_empty(),
+        "benchmark-tooling live occurrence audit incomplete: executable={executable_count}/156 closed={closed_count} missing={missing:?} extras={extras:?}"
+    );
+    assert_eq!(
+        executable_count + closed_count,
+        156,
+        "benchmark-tooling occurrence accounting must cover the frozen denominator exactly"
+    );
 }
