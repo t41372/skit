@@ -10,7 +10,10 @@ use std::{
 };
 
 const CLOSED: &[(&str, &str)] = &[];
-const OWNERS: &[&str] = &["crates/skit-benchmarks/tests/port_test_benchmarks_tooling_results.rs"];
+const OWNERS: &[&str] = &[
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_results.rs",
+    "crates/skit-benchmarks/tests/port_test_benchmarks_tooling_budget.rs",
+];
 
 fn frozen_names(source: &str) -> Vec<String> {
     source
