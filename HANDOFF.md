@@ -13,14 +13,14 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 107 fix commits landed, 215 FAILING CONTRACTs closed
-(210 removed, translated, or un-ignored + 5 re-labeled architecture closures), 23 cross-crate
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 114 fix commits landed, 228 FAILING CONTRACTs closed
+(222 removed, translated, or un-ignored + 6 re-labeled architecture closures), 23 cross-crate
 stubs promoted,
 2 owed white-box units added. The last fully green recorded baseline was workspace
-3245 pass / 0 fail / 904 ignored. The fixed final PR #44 head was audited as a diff, not by its
-500+ commit history. Thirty-one stronger owners were folded into the existing consolidated targets after
+3260 pass / 0 fail / 892 ignored. The fixed final PR #44 head was audited as a diff, not by its
+500+ commit history. Thirty-six stronger owners were folded into the existing consolidated targets after
 PR/main/Python body comparison; the raw split files and manifests were rejected.
-67 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+54 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -221,6 +221,14 @@ This session (2026-08-11 through 2026-08-14), in order — each closed the named
 | `4ba75ec` | prompt editor `--no-input`: replace the non-TTY surrogate with a true PTY owner and the exact three-language pipe recovery without editor or store writes | 1 divergence + stronger PR body fold |
 | `8253219` | show JSON schema: retain the frozen 21-key body as a v0.5 strict-superset closure and pin the exact 25-key union, metadata types, identity, snapshot hash, and field shape in the active owner | 1 re-labeled version closure |
 | `878826b` | declared parameter edits: exact post-commit human receipt after purge, JSON purity, empty-list dash, and separation from source-managed receipts | 1 divergence |
+| `6f193e6` | template riders: new command/prompt names outside the real placeholder set default to environment delivery while real placeholders, other kinds, and explicit delivery keep their paths | 2 divergences |
+| `fa1e9f3` | Settings live defaults: move the exact owner to the real CLI/TUI host, reconcile only display clones, use source-only Python repr, and prove open/cancel byte-no-write | 1 divergence + stronger PR body fold |
+| `22103c2` | malformed runner containers: use shared typed row issues for add/update/remove and prove both malformed shapes leave config bytes unchanged | 1 divergence + stronger PR body fold |
+| `ec4fbbc` | input assembly stages: retain the frozen post-validation direct-stage body as a stage-fusion closure while active owners reject invalid stale values before launch/write | 1 re-labeled architecture closure |
+| `4801539` | dependency Python-constraint receipts: exact set/clear human rows after successful commit, with JSON/state preservation and no spill into dependency/needs paths | 2 divergences |
+| `7fd57de` | editor authoring preflight: true non-TTY refusal, prompt-synchronized missing/blank name handling, exact three-language copy, and honest PTY conversion of legacy active siblings | 3 divergences + stronger PR body folds |
+| `659be98` | bare add menu: show the complete `[1/2/3/4] (1)` input prompt through a private Dialoguer theme without replacing validation or dispatch | 1 divergence |
+| `929e547` | bash-path persistence: keep the low-level store scalar literal and move file validation to direct CLI and legacy/typed Preferences write doors | 2 divergences |
 
 PR #44 is complete upstream at fixed head `005bc9b7365fca1cfa7173acb61a2e8629f03bc9`.
 Review only the diff from the previous pin `38260ff881420fbd06f95b5b9243e0caa610e370`;
@@ -242,7 +250,7 @@ stronger owners and dishonest green rewrites: for example, PR moved Python's pub
 `flows.assemble` retyping contract to lower-level `delivery::assemble` with a hand-built
 `PreparedValue`, bypassing the gate under test. Keep folding only a stronger unique body after a
 three-way PR/main/Python comparison. Current accepted final-head folds are `ef5c5a2`, `a219125`,
-`f5423d4`, `0e9f082`, `24e9510`, `f8091da`, `0f76635`, `c9d78af`, `949a51a`, `ccec2c6`, `8eb9b03`, `afeae66`, `9718a1a`, and `4ba75ec`. Runner confirmation exposed and fixed a real
+`f5423d4`, `0e9f082`, `24e9510`, `f8091da`, `0f76635`, `c9d78af`, `949a51a`, `ccec2c6`, `8eb9b03`, `afeae66`, `9718a1a`, `4ba75ec`, `fa1e9f3`, `22103c2`, and `7fd57de`. Runner confirmation exposed and fixed a real
 exit-code divergence, and the PR's seeded-runner fixture itself needed correction before its CAS
 assertion was valid. Prompt editor review likewise found that the PR's untouched test used an empty
 fixture and did not prove the localized starter; the corrected owner now does.
@@ -266,8 +274,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3245 passed / 0 failed / 904 ignored
-rg '^\s*#\[ignore = "FAILING CONTRACT' crates --glob='*.rs' | wc -l   # => 67
+# => 3260 passed / 0 failed / 892 ignored
+rg '^\s*#\[ignore = "FAILING CONTRACT' crates --glob='*.rs' | wc -l   # => 54
 ```
 
 Keep the regex anchored to the start of an attribute line. The previous unanchored `grep` also
@@ -283,12 +291,12 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 67 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 54 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `878826b`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `929e547`.
 
-- **12 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
+- **10 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Remaining work is the params human read/manage view, runner row/remove
   recovery copy, prompt-only option conflicts,
   help taxonomy copy, and the unset-runner JSON representation. Prompt naming, stdin
@@ -310,8 +318,8 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   (`de754cf`). Explicit passthrough arguments now satisfy only blank required flags (`39f9bd0`);
   the remaining items overlap the add-lane and general CLI clusters.
 - **8 port_test_add_validation_contracts.rs + 3 port_test_add_lane_contracts.rs + 3
-  port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 11
-  port_test_add_no_source.rs + 3 port_test_editor.rs (the `-e` lane) — the add-lane cluster
+  port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 10
+  port_test_add_no_source.rs + 0 port_test_editor.rs — the add-lane cluster
   (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
   cli.py:1894-1933); resumed draft not consumed on success (cli.py:258-266); `kind_for_draft` shebang-first classifier
   (registry.py:442-473 — a `.py` draft with a bash shebang stores kind=shell); `--python -/none/blank`
@@ -320,10 +328,10 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   re-ask loop (cli.py:224-261); `-e` lane name prompt/interactivity gate; awk-shebang → ask, not
   python-fallback; and interactive name collection. Explicit edit-create decline, explicit flag
   preflight, and untouched script/prompt draft cleanup are green.
-- **7 port_test_dependency_command_contracts.rs** — draft-boundary refusals and per-axis update
+- **5 port_test_dependency_command_contracts.rs** — draft-boundary refusals and per-axis update
   confirmations. Two ignored store-named JS-constraint cases are architecture-closed semantic
   duplicates of the stronger now-green CLI owners.
-- **9 port_test_declared_params.rs + 0 port_test_edit.rs + 0 of port_test_editor.rs (params
+- **8 port_test_declared_params.rs + 0 port_test_edit.rs + 0 of port_test_editor.rs (params
   resync) + port_test_params_edit.rs (36 tests currently ABSENT-stubbed) — the params/edit cluster
   (#16), reimplementation-scale, LAST.** `edit_declared` (params.py:352-472): pure warn-and-continue
   batch editor returning `DeclEditResult{decls, warnings}` with 9 closed warning codes, reverting a
@@ -333,22 +341,22 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   parameters.rs:340-349).
 - **0 port_test_run_set.rs implementation divergences.** Its 23 executable contracts are green;
   the 4 remaining ignores are interactive/cross-crate seam classifications.
-- **2 port_test_config.rs** — low-level bash-path persistence differs from the validated CLI write
-  door. The axis-display contract now runs against its correct private CLI owner (`a5710d9`).
+- **0 port_test_config.rs divergences.** Low-level bash-path persistence stays literal while direct
+  CLI and Preferences write doors own file validation (`929e547`). The two remaining ignores are
+  architecture closures; axis display runs against its correct private CLI owner (`a5710d9`).
 - **Data-safety (in js_deps + elsewhere):** shim writes the plaintext-secret injected copy to
   `entry_dir` unconditionally; oracle stages OS-temp-first (rewrite.py:176-180) so a crash never
   persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
   region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
   `deps`-clear must sweep node_modules.
-- **TUI: 0 path_tui + 2 tui_nav + 1 draft_and_reader_tui + 1 reset_default_ui.** The current-directory
+- **TUI: 0 path_tui + 2 tui_nav + 1 draft_and_reader_tui + 0 reset_default_ui.** The current-directory
   pinned row now has real keyboard/mouse/root behavior and exact labels (`9718a1a`). Add Review and
   Preferences navigation are green. Add Source still has a real focus-ring blocker because
   BrowseSource is the visible browse control's only keyboard path between SourcePath and
   CommandTemplate. Settings arrow navigation conflicts with the current multiline boundary owner
-  and needs an explicit semantic decision before implementation. Reset-default display needs its
-  exact owner moved to the live CLI/TUI host plus a display-only reconciled default projection;
-  the current in-memory TUI fixture cannot observe the live source value.
-- **Small:** 1 flows. The frozen 21-key show JSON contract is now a version-contract closure; the
+  and needs an explicit semantic decision before implementation. Reset-default display now uses
+  the live CLI/TUI host plus a display-only reconciled projection (`fa1e9f3`).
+- **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
