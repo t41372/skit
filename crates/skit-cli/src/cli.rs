@@ -6066,9 +6066,27 @@ fn tui_effect(
             })
         }
         UiEffect::Rerun { selector } => tui_rerun(service, store, state_dir, config_dir, &selector),
-        UiEffect::Open { request, selector } => Ok(UiAction::Present(tui_open(
-            service, store, state_dir, config_dir, request, selector,
-        )?)),
+        UiEffect::Open { request, selector } => {
+            let screen = tui_open(service, store, state_dir, config_dir, request, selector)?;
+            Ok(match screen {
+                Screen::Run(form)
+                    if form
+                        .context()
+                        .is_some_and(|context| context.entry_kind == "prompt")
+                        && !form.has_runner_picker() =>
+                {
+                    UiAction::PromptRunnerRequired {
+                        form,
+                        cancel_status: text(
+                            active_locale(),
+                            "A prompt needs a configured agent to run with.",
+                        )
+                        .into_owned(),
+                    }
+                }
+                screen => UiAction::Present(screen),
+            })
+        }
         UiEffect::Preferences(effect) => tui_preferences_effect(service, config_dir, effect),
         UiEffect::CountRunGlob {
             field,

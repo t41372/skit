@@ -8,8 +8,13 @@ use std::{
 };
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use skit_application::{EntryMutationRepository as _, EntryRepository as _, SourcePermissions};
-use skit_store::{FileConfigStore, FileStore, PromptRunner};
+use skit_application::{
+    EntryMutationRepository as _, EntryRepository as _, SourcePermissions,
+    form_state::FormStateRepository as _,
+    runner_management::{EditableArgvDialect, join_editable_argv},
+};
+use skit_domain::Slug;
+use skit_store::{FileConfigStore, FileFormStateStore, FileStore, PromptRunner};
 use skit_ui::{KnownEntryKind, ReviewDefaults, ReviewState, SourceSnapshot};
 use tempfile::TempDir;
 
@@ -506,6 +511,14 @@ impl PromptTuiSandbox {
             .unwrap();
     }
 
+    fn runner_draft(&self, name: &str, child_marker: &str) -> (String, Vec<String>, PathBuf) {
+        let marker_path = self.marker_path(name);
+        let program = runner_program(self.home.path(), name, child_marker);
+        let argv = runner_argv(&program, &marker_path);
+        let command = join_editable_argv(&argv, EditableArgvDialect::host());
+        (command, argv, marker_path)
+    }
+
     fn missing_runner(&self, name: &str) {
         self.config()
             .set_runner(
@@ -779,6 +792,173 @@ fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
         compact_terminal_text(&library).contains(&compact_terminal_text(&expected)),
         "the Library lost the exact localized refusal: {library}"
     );
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+}
+
+#[test]
+fn test_run_with_zero_runners_offers_the_new_agent_modal() {
+    const CANCELLED_CHILD: &str = "CHILD-ZERO-RUNNER-CANCELLED";
+
+    let sandbox = PromptTuiSandbox::new();
+    sandbox.prompt("");
+    sandbox.clear_runners();
+    let config_path = sandbox.config.path().join("config.toml");
+    let config_before = fs::read(&config_path).unwrap();
+    let (_, _, child_marker) = sandbox.runner_draft("cancelled", CANCELLED_CHILD);
+    let form_state = sandbox.state.path().join("values/p.toml");
+    let selection_state = sandbox.state.path().join("prompt.toml");
+
+    let mut tui = sandbox.tui();
+    tui.wait_for("Library");
+    let open = tui.checkpoint();
+    tui.send_effect_key(b"\r");
+    tui.wait_for_after(open, "New agent (runner)");
+
+    let cancel = tui.checkpoint();
+    tui.send(b"\x1b");
+    let returned = tui.wait_for_after(cancel, "configured");
+    let expected = "A prompt needs a configured agent to run with.";
+    assert!(
+        compact_terminal_text(&returned).contains(&compact_terminal_text(expected)),
+        "the zero-runner cancel lost its exact status: {returned}"
+    );
+    assert!(
+        returned.contains("Library"),
+        "the zero-runner cancel did not return to the Library: {returned}"
+    );
+    assert_eq!(fs::read(&config_path).unwrap(), config_before);
+    assert!(sandbox.config().runners().unwrap().is_empty());
+    assert!(!form_state.exists());
+    assert!(!selection_state.exists());
+    assert!(!child_marker.exists());
+
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+}
+
+#[test]
+fn test_run_with_zero_runners_define_agent_then_run() {
+    const CHILD: &str = "CHILD-ZERO-RUNNER-DEFINED";
+
+    let sandbox = PromptTuiSandbox::new();
+    sandbox.prompt("");
+    sandbox.clear_runners();
+    let (command, expected_argv, child_marker) = sandbox.runner_draft("mycli", CHILD);
+    let form_state_path = sandbox.state.path().join("values/p.toml");
+
+    let mut tui = sandbox.tui();
+    tui.wait_for("Library");
+    let open = tui.checkpoint();
+    tui.send_effect_key(b"\r");
+    tui.wait_for_after(open, "New agent (runner)");
+    tui.send(b"mycli");
+    tui.send(b"\t");
+    tui.send(command.as_bytes());
+    let save = tui.checkpoint();
+    tui.send_effect_key(b"\r");
+    let form = tui.wait_for_after(save, "Run p");
+    assert!(
+        compact_terminal_text(&form).contains("mycli"),
+        "the saved runner was not selected in the existing run form: {form}"
+    );
+
+    let runners = sandbox.config().runners().unwrap();
+    assert_eq!(runners.len(), 1);
+    assert_eq!(runners[0].name, "mycli");
+    assert_eq!(runners[0].argv, expected_argv);
+    assert!(!child_marker.exists());
+    assert!(!form_state_path.exists());
+
+    tui.send(b"x");
+    let submit = tui.checkpoint();
+    tui.send_effect_key(&[0x12]);
+    let child = tui.wait_for_after(submit, CHILD);
+    let rendered = tui.wait_for_after(submit, "Do x");
+    assert!(
+        compact_terminal_text(&child).contains(CHILD),
+        "the configured runner child did not execute: {child}"
+    );
+    assert!(
+        compact_terminal_text(&rendered).contains("Dox"),
+        "the runner did not receive the rendered prompt: {rendered}"
+    );
+    assert!(child_marker.is_file());
+
+    let persisted = FileFormStateStore::new(sandbox.state.path()).load(&Slug::parse("p").unwrap());
+    assert_eq!(persisted.values.get("a").map(String::as_str), Some("x"));
+    assert_eq!(persisted.last_run.exit, Some(0));
+    assert_eq!(
+        persisted
+            .last_run
+            .values
+            .as_ref()
+            .and_then(|values| values.get("a"))
+            .map(String::as_str),
+        Some("x")
+    );
+
+    tui.wait_for_after(submit, "Library");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+}
+
+#[test]
+fn zero_runner_save_failure_keeps_the_required_editor_and_config() {
+    const CHILD: &str = "CHILD-ZERO-RUNNER-RACE";
+
+    let sandbox = PromptTuiSandbox::new();
+    sandbox.prompt("");
+    sandbox.clear_runners();
+    let (command, expected_argv, child_marker) = sandbox.runner_draft("mycli", CHILD);
+
+    let mut tui = sandbox.tui();
+    tui.wait_for("Library");
+    let open = tui.checkpoint();
+    tui.send_effect_key(b"\r");
+    tui.wait_for_after(open, "New agent (runner)");
+    tui.send(b"mycli");
+    tui.send(b"\t");
+    tui.send(command.as_bytes());
+
+    sandbox
+        .config()
+        .set_runner(
+            PromptRunner {
+                name: "mycli".to_owned(),
+                argv: expected_argv,
+            },
+            false,
+        )
+        .unwrap();
+    let config_path = sandbox.config.path().join("config.toml");
+    let config_before_save = fs::read(&config_path).unwrap();
+
+    let save = tui.checkpoint();
+    tui.send_effect_key(b"\r");
+    let refused = tui.wait_for_after(save, "already exists");
+    let compact_refused = compact_terminal_text(&refused);
+    assert!(
+        compact_refused.contains("Newagent(runner)"),
+        "the failed save closed the required runner editor: {refused}"
+    );
+    assert!(
+        compact_refused.contains("mycli"),
+        "the failed save lost the entered runner name: {refused}"
+    );
+    assert!(
+        compact_refused.contains("child-mycli.ran") && compact_refused.contains("{{prompt}}"),
+        "the failed save lost the entered runner command: {refused}"
+    );
+    assert_eq!(fs::read(&config_path).unwrap(), config_before_save);
+    assert!(!child_marker.exists());
+
+    let cancel = tui.checkpoint();
+    tui.send(b"\x1b");
+    tui.wait_for_after(cancel, "Library");
     let quit = tui.checkpoint();
     tui.send(b"q");
     let _ = tui.wait_for_exit_after(quit);

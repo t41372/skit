@@ -945,6 +945,149 @@ fn shared_runner_editor_returns_to_run_and_add_owners_without_losing_typed_state
     assert_eq!(review.runner_names(), ["codex", "local"]);
 }
 
+#[test]
+fn a_required_prompt_runner_cancel_returns_to_library_but_normal_cancel_keeps_the_form() {
+    let required = Action::PromptRunnerRequired {
+        form: Box::new(RunFormView::from_declarations(
+            "demo",
+            "Demo",
+            &[ParamDecl::new("a")],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        )),
+        cancel_status: "A prompt needs a configured agent to run with.".to_owned(),
+    };
+    let encoded = serde_json::to_string(&required).unwrap();
+    assert_eq!(serde_json::from_str::<Action>(&encoded).unwrap(), required);
+
+    let mut state = LibraryState::default();
+    state.update(required);
+    assert!(matches!(state.screen(), Screen::Run(_)));
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            owner: RunnerEditorOwner::Run { selector },
+            cancel_status: Some(message),
+            ..
+        }) if selector == "demo" && message == "A prompt needs a configured agent to run with."
+    ));
+    let encoded = serde_json::to_string(&state).unwrap();
+    assert_eq!(
+        serde_json::from_str::<LibraryState>(&encoded).unwrap(),
+        state
+    );
+    state.update(Action::RunnerEditor(RunnerEditorAction::Cancel));
+    assert_eq!(state.screen(), &Screen::Library);
+    assert_eq!(
+        state.status(),
+        Some("A prompt needs a configured agent to run with.")
+    );
+
+    let normal = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[ParamDecl::new("a")],
+        &BTreeMap::new(),
+        &["codex".to_owned()],
+        "codex",
+        &BTreeMap::new(),
+        "",
+    );
+    state.update(Action::Present(Screen::Run(Box::new(normal))));
+    state.update(Action::OpenRunRunnerEditor);
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            cancel_status: None,
+            ..
+        })
+    ));
+    let encoded = serde_json::to_string(&state).unwrap();
+    assert!(!encoded.contains("cancel_status"));
+    assert_eq!(
+        serde_json::from_str::<LibraryState>(&encoded).unwrap(),
+        state
+    );
+    state.update(Action::RunnerEditor(RunnerEditorAction::Cancel));
+    assert!(matches!(state.screen(), Screen::Run(_)));
+    assert_eq!(state.modal(), None);
+}
+
+#[test]
+fn a_required_prompt_runner_save_inserts_one_picker_and_a_failure_keeps_the_editor() {
+    let required = || Action::PromptRunnerRequired {
+        form: Box::new(RunFormView::from_declarations(
+            "demo",
+            "Demo",
+            &[ParamDecl::new("a")],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        )),
+        cancel_status: "runner required".to_owned(),
+    };
+    let owner = RunnerEditorOwner::Run {
+        selector: "demo".to_owned(),
+    };
+    let mut state = LibraryState::default();
+    state.update(required());
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetName(
+        "mycli".to_owned(),
+    )));
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetCommand(
+        "mycli {{prompt}}".to_owned(),
+    )));
+    assert!(matches!(
+        state.update(Action::RunnerEditor(RunnerEditorAction::Submit)),
+        Effect::SaveRunner {
+            owner: RunnerSaveOwner::Editor(ref actual),
+            ref request,
+        } if actual == &owner && request.name == "mycli"
+    ));
+    state.update(Action::RunnerEditorSaveFailed {
+        owner: owner.clone(),
+        message: "config changed".to_owned(),
+    });
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor { view, .. })
+            if view.name() == "mycli"
+                && view.command() == "mycli {{prompt}}"
+                && view.host_error() == Some("config changed")
+    ));
+    assert!(matches!(state.screen(), Screen::Run(_)));
+
+    state = LibraryState::default();
+    state.update(required());
+    state.update(Action::RunnerEditorSaved {
+        owner,
+        name: "mycli".to_owned(),
+        message: "saved".to_owned(),
+    });
+    let form = state.run_form().unwrap();
+    assert!(form.has_runner_picker());
+    assert_eq!(state.focused_form_field(), Some(1));
+    assert!(matches!(
+        &form.fields()[0].control,
+        FormControl::Choice(choice)
+            if choice.options == ["mycli"] && choice.selected == "mycli"
+    ));
+    state.update(Action::SetFieldValue {
+        field: 1,
+        value: "x".to_owned(),
+    });
+    let Effect::Submit { values, .. } = state.update(Action::Submit) else {
+        panic!("the required-runner form did not submit after a runner was saved")
+    };
+    assert_eq!(values["_skit_runner"].as_text(), "mycli");
+    assert_eq!(values["value:a"].as_text(), "x");
+}
+
 /// The settings screen owns its runner editor, and the new agent lands in its picker.
 ///
 /// Version 0.4 defines a custom runner right from settings: it lands in configuration, joins the

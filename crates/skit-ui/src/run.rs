@@ -471,28 +471,7 @@ impl RunFormView {
             } else {
                 runners[0].clone()
             };
-            fields.push(RunField {
-                key: "_skit_runner".to_owned(),
-                label: "Runner".to_owned(),
-                help: String::new(),
-                role: RunFieldRole::Runner,
-                parameter_type: ParameterType::Choice,
-                multiple: false,
-                binding: ParameterBinding::None,
-                delivery: ParameterDelivery::Flag,
-                control: FormControl::Choice(ChoiceControl {
-                    options: runners.to_vec(),
-                    selected,
-                    presentation: ChoicePresentation::Picker,
-                }),
-                required: true,
-                default: None,
-                degraded: false,
-                input_binding: false,
-                env_source: String::new(),
-                validation_error: None,
-                feedback: RunFieldFeedback::default(),
-            });
+            fields.push(runner_field(runners, selected));
         }
         if !declarations.is_empty() && !presets.is_empty() {
             fields.push(preset_field(presets.keys().cloned(), String::new()));
@@ -681,21 +660,26 @@ impl RunFormView {
         if self.selector != selector {
             return;
         }
-        let Some(field) = self
+        if let Some(field) = self
             .fields
             .iter_mut()
             .find(|field| matches!(field.role, RunFieldRole::Runner))
-        else {
-            return;
-        };
-        let FormControl::Choice(choice) = &mut field.control else {
-            return;
-        };
-        if !choice.options.contains(&runner) {
-            choice.options.push(runner.clone());
+        {
+            let FormControl::Choice(choice) = &mut field.control else {
+                return;
+            };
+            if !choice.options.contains(&runner) {
+                choice.options.push(runner.clone());
+            }
+            choice.selected = runner;
+            field.validation_error = None;
+        } else {
+            self.fields.insert(
+                0,
+                runner_field(core::slice::from_ref(&runner), runner.clone()),
+            );
+            self.focused = self.focused.saturating_add(1);
         }
-        choice.selected = runner;
-        field.validation_error = None;
         self.runner_was_picked = true;
     }
 
@@ -1019,6 +1003,31 @@ fn preset_field(names: impl IntoIterator<Item = String>, selected: String) -> Ru
             presentation: ChoicePresentation::Picker,
         }),
         required: false,
+        default: None,
+        degraded: false,
+        input_binding: false,
+        env_source: String::new(),
+        validation_error: None,
+        feedback: RunFieldFeedback::default(),
+    }
+}
+
+fn runner_field(runners: &[String], selected: String) -> RunField {
+    RunField {
+        key: "_skit_runner".to_owned(),
+        label: "Runner".to_owned(),
+        help: String::new(),
+        role: RunFieldRole::Runner,
+        parameter_type: ParameterType::Choice,
+        multiple: false,
+        binding: ParameterBinding::None,
+        delivery: ParameterDelivery::Flag,
+        control: FormControl::Choice(ChoiceControl {
+            options: runners.to_vec(),
+            selected,
+            presentation: ChoicePresentation::Picker,
+        }),
+        required: true,
         default: None,
         degraded: false,
         input_binding: false,

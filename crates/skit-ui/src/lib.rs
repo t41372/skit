@@ -1340,6 +1340,9 @@ pub enum ModalState {
         owner: RunnerEditorOwner,
         /// Serializable editor values and validation state.
         view: Box<RunnerEditorView>,
+        /// Status published if this editor was the only route to a runnable prompt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cancel_status: Option<String>,
     },
 }
 
@@ -1563,6 +1566,13 @@ pub enum Action {
     Back,
     /// Present a screen built by the host adapter.
     Present(Screen),
+    /// Present a prompt launch form and require one configured runner before it can run.
+    PromptRunnerRequired {
+        /// Existing launch form that receives a successfully created runner.
+        form: Box<RunFormView>,
+        /// Localized status published if the runner editor is cancelled.
+        cancel_status: String,
+    },
     /// Finish an add transaction and select the created entry after its authoritative reload.
     AddCompleted {
         /// New library surface after the atomic create, detail facts included.
@@ -2017,6 +2027,7 @@ impl LibraryState {
                             selector: form.selector().to_owned(),
                         },
                         view: Box::default(),
+                        cancel_status: None,
                     });
                 }
             }
@@ -2037,6 +2048,7 @@ impl LibraryState {
                     self.modal = Some(ModalState::RunnerEditor {
                         owner: RunnerEditorOwner::Add,
                         view: Box::default(),
+                        cancel_status: None,
                     });
                 }
             }
@@ -2104,7 +2116,12 @@ impl LibraryState {
                 }
             }
             Action::RunnerEditor(action) => {
-                let Some(ModalState::RunnerEditor { owner, view }) = &mut self.modal else {
+                let Some(ModalState::RunnerEditor {
+                    owner,
+                    view,
+                    cancel_status,
+                }) = &mut self.modal
+                else {
                     return Effect::None;
                 };
                 match view.reduce(action) {
@@ -2115,7 +2132,15 @@ impl LibraryState {
                             owner: RunnerSaveOwner::Editor(owner.clone()),
                         };
                     }
-                    RunnerEditorEffect::Cancel => self.modal = None,
+                    RunnerEditorEffect::Cancel => {
+                        let cancel_status = cancel_status.clone();
+                        self.modal = None;
+                        if let Some(message) = cancel_status {
+                            self.workflow.return_to_library();
+                            self.input_mode = InputMode::Browse;
+                            self.status = Some(message);
+                        }
+                    }
                 }
             }
             Action::RunnerEditorSaved {
@@ -2154,6 +2179,7 @@ impl LibraryState {
                 if let Some(ModalState::RunnerEditor {
                     owner: current,
                     view,
+                    ..
                 }) = &mut self.modal
                     && current == &owner
                 {
@@ -2205,6 +2231,7 @@ impl LibraryState {
                         self.modal = Some(ModalState::RunnerEditor {
                             owner: RunnerEditorOwner::Settings { selector },
                             view: Box::default(),
+                            cancel_status: None,
                         });
                     }
                 }
@@ -2314,6 +2341,19 @@ impl LibraryState {
                 };
                 self.workflow.present(screen);
                 self.modal = None;
+            }
+            Action::PromptRunnerRequired {
+                form,
+                cancel_status,
+            } => {
+                let selector = form.selector().to_owned();
+                self.input_mode = InputMode::Form;
+                self.workflow.present(Screen::Run(form));
+                self.modal = Some(ModalState::RunnerEditor {
+                    owner: RunnerEditorOwner::Run { selector },
+                    view: Box::default(),
+                    cancel_status: Some(cancel_status),
+                });
             }
             Action::AddCompleted {
                 surface,

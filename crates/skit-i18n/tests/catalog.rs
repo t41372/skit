@@ -162,6 +162,20 @@ fn non_secret_environment_source_warning_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn prompt_runner_required_status_matches_the_oracle_in_every_locale() {
+    let source = "A prompt needs a configured agent to run with.";
+    assert_eq!(text(Locale::En, source), source);
+    assert_eq!(
+        text(Locale::ZhCn, source),
+        "提示词需要一个已配置的 agent 才能运行。"
+    );
+    assert_eq!(
+        text(Locale::ZhTw, source),
+        "提示詞需要一個已設定的 agent 才能執行。"
+    );
+}
+
+#[test]
 fn prompt_unmanaged_preview_matches_the_oracle_in_every_locale() {
     let plain = "Detected but not yet managed: {} (use --add to manage them)";
     assert_eq!(

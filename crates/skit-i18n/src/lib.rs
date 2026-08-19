@@ -449,6 +449,11 @@ const CATALOG: &[Translation] = &[
         "新增代理（執行器）"
     ),
     row!(
+        "A prompt needs a configured agent to run with.",
+        "提示词需要一个已配置的 agent 才能运行。",
+        "提示詞需要一個已設定的 agent 才能執行。",
+    ),
+    row!(
         "Edit agent (runner)",
         "编辑代理（运行器）",
         "編輯代理（執行器）"

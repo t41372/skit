@@ -571,18 +571,6 @@ fn test_missing_pinned_binary_cannot_block_a_different_pick() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-cli): action_run's zero-runners branch opens the RunnerAddModal instead of the form; that routing is in the composition root. tests/test_prompt_tui.py:446."]
-fn test_run_with_zero_runners_offers_the_new_agent_modal() {
-    // An emptied runner list opens the New agent modal rather than dead-ending on a CLI hint.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli): the define-agent-then-re-enter-the-form flow is host run routing. tests/test_prompt_tui.py:465."]
-fn test_run_with_zero_runners_define_agent_then_run() {
-    // Defining the agent re-enters the run straight into the form with it configured.
-}
-
-#[test]
 #[ignore = "CROSS-CRATE (skit-cli): tui.PendingRun and tui._finish_run carry the resolved runner into flows.execute in exit mode. tests/test_prompt_tui.py:519."]
 fn test_exit_mode_pending_run_carries_the_runner() {
     // Exit mode hands the resolved runner to the PendingRun and on to flows.execute.
