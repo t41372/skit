@@ -43,8 +43,7 @@
 //!   "Removed previously stored plaintext"), the `params` batch
 //!   fault-tolerance gap (a malformed/bad value hard-errors exit 2 instead of warning at
 //!   exit 0), the `add --cmd` placeholder pre-seeding (which makes `--add <placeholder>`
-//!   refuse with exit 2), the non-placeholder template `--add` defaulting to `flag` not `env`,
-//!   and the reader-kind env-rider source label ("declared" not "argparse").
+//!   refuse with exit 2), and the reader-kind env-rider source label ("declared" not "argparse").
 //! - UNMAPPABLE white-box (`#[ignore]` stub): `test_cli_declared_warning_codes_render` drives
 //!   the Python-private `cli._render_declared_warning`; the Rust warnings are localized
 //!   messages with no public renderer to observe, and their observable outcomes are covered
@@ -1472,7 +1471,6 @@ fn test_declared_param_on_an_interpreted_kind_actually_delivers() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `--add <non-placeholder>` on a template must default to env delivery — the only delivery a template can always honour (src/skit/params.py edit_declared: allowed_deliveries[0] == \"env\" for templates). The Rust product defaults it to flag (crates/skit-cli/src/cli.rs), a row the run surface then can't honour."]
 fn test_template_add_of_a_non_placeholder_name_creates_a_deliverable_env_row() {
     let workspace = lib();
     workspace
@@ -1480,19 +1478,32 @@ fn test_template_add_of_a_non_placeholder_name_creates_a_deliverable_env_row() {
         .args(["add", "--cmd", "greet {WHO}", "--name", "tpl", "--no-input"])
         .assert()
         .success();
-    assert!(
-        workspace
-            .run(&["params", "tpl", "--add", "RETRIES"])
-            .status
-            .success()
+    let config_before = std::fs::read(workspace.config.path().join("config.toml")).ok();
+    assert_eq!(
+        std::fs::read_dir(workspace.state.path()).unwrap().count(),
+        0
     );
+    let edit = workspace.run(&["params", "tpl", "--add", "RETRIES"]);
+    assert!(edit.status.success(), "{}", combined(&edit));
     let payload = stdout_json(&workspace.run(&["params", "tpl", "--json"]));
+    assert_eq!(payload["placeholders"], json!(["WHO"]));
     let retries = payload["declared"]
         .as_array()
         .unwrap()
         .iter()
         .find(|row| row["name"] == "RETRIES")
         .unwrap();
+    let show = stdout_json(&workspace.run(&["show", "tpl", "--json"]));
+    assert_eq!(show["template"], "greet {WHO}");
+    assert!(workspace.values_file("tpl").is_empty());
+    assert_eq!(
+        std::fs::read_dir(workspace.state.path()).unwrap().count(),
+        0
+    );
+    assert_eq!(
+        std::fs::read(workspace.config.path().join("config.toml")).ok(),
+        config_before
+    );
     assert_eq!(retries["delivery"], "env");
 
     // and it really delivers, rather than being denied by --set

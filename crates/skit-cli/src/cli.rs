@@ -4151,6 +4151,23 @@ fn params(
             declarations.push(item.clone());
         }
     }
+    let template_placeholder_names = match held.meta.kind.as_str() {
+        "command" => settings
+            .params
+            .iter()
+            .cloned()
+            .chain(
+                placeholder_params("command", &settings.template)
+                    .into_iter()
+                    .map(|item| item.name),
+            )
+            .collect::<BTreeSet<_>>(),
+        "prompt" => placeholder_params("prompt", &source)
+            .into_iter()
+            .map(|item| item.name)
+            .collect(),
+        _ => BTreeSet::new(),
+    };
     let original_declarations = declarations.clone();
     let mut tweaked_names = BTreeSet::new();
     for specification in args
@@ -4192,7 +4209,13 @@ fn params(
                 Message::new("parameter already exists: {}").with(name),
             ));
         }
-        declarations.push(ParamDecl::new(name));
+        let mut declaration = ParamDecl::new(name);
+        if matches!(held.meta.kind.as_str(), "command" | "prompt")
+            && !template_placeholder_names.contains(&declaration.name)
+        {
+            declaration.delivery = ParameterDelivery::Env;
+        }
+        declarations.push(declaration);
         changed = true;
     }
     if !args.remove.is_empty() {

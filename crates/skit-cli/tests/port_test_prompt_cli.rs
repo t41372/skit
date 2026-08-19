@@ -1690,20 +1690,26 @@ fn test_params_rm_unmanages_even_without_a_declared_row() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle `params --add EXTRA` declares an env rider (delivery 'env'); Rust `--add` declares delivery 'flag' instead."]
 fn test_params_add_unknown_name_becomes_env_rider() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}}\n", "p");
+    let body_before = sandbox.body_bytes("p");
+    let config_before = fs::read(sandbox.config_path()).ok();
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
     sandbox.ok(&["params", "p", "--add", "EXTRA"]);
     let payload = sandbox.json(&["params", "p", "--json"]);
     assert_eq!(payload["placeholders"], serde_json::json!(["a"])); // not a body hole
-    let deliveries: Vec<&str> = payload["parameters"]
+    let extra = payload["parameters"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|row| row["delivery"].as_str().unwrap())
-        .collect();
-    assert_eq!(deliveries, ["env"]);
+        .find(|row| row["name"] == "EXTRA")
+        .expect("EXTRA is declared");
+    assert_eq!(sandbox.body_bytes("p"), body_before);
+    assert_eq!(payload["last_values"], serde_json::json!({}));
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+    assert_eq!(fs::read(sandbox.config_path()).ok(), config_before);
+    assert_eq!(extra["delivery"], "env");
 }
 
 #[test]
