@@ -104,8 +104,12 @@ fn ctrl(character: char) -> Event {
 }
 
 fn mouse(column: u16, row: u16) -> Event {
+    mouse_with_kind(MouseEventKind::Down(MouseButton::Left), column, row)
+}
+
+fn mouse_with_kind(kind: MouseEventKind, column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
+        kind,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -154,6 +158,20 @@ fn draw_with_session(
         .draw(|frame| geometry = render_with_session(frame, state, Locale::En, session))
         .unwrap();
     (rendered(terminal.backend().buffer()), geometry)
+}
+
+fn buffer_position(buffer: &Buffer, needle: &str) -> (u16, u16) {
+    for row in 0..buffer.area.height {
+        for column in 0..buffer.area.width {
+            let tail = (column..buffer.area.width)
+                .map(|x| buffer[(x, row)].symbol())
+                .collect::<String>();
+            if tail.starts_with(needle) {
+                return (column, row);
+            }
+        }
+    }
+    panic!("the rendered buffer does not contain {needle:?}");
 }
 
 // --------------------------------------------------------------------------
@@ -438,14 +456,57 @@ fn test_form_picker_keyboard_pick_runs_and_remembers() {
 
 #[test]
 fn test_form_picker_mouse_click_picks_a_runner() {
-    // A mouse pick lands on the clicked runner and that is what the launch delivers.
+    // Mouse movement and button release do not open the picker. Two left-button presses open it
+    // and select one runner, and the typed submission delivers that selection.
     let mut state = run_state(prompt_form(&[], &[], &runners(), ""));
     let field = runner_index(&state);
-    state.update(Action::SelectFieldOption {
-        field,
-        value: RUNNERS[1].to_owned(),
-    });
-    assert_eq!(runner_value(&state), RUNNERS[1]); // the mouse pick landed
+    let original = runner_value(&state);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&mut session, &state, 90, 24);
+    let runner = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == skit_tui::HitTarget::FocusField(field))
+        .expect("the runner picker must expose its mouse hit area")
+        .rect;
+
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(mouse_with_kind(kind, runner.x, runner.y), &state, &geometry,),
+            EventHandling::Ignored,
+        );
+        assert_eq!(runner_value(&state), original);
+    }
+
+    let handling = session.handle_event(mouse(runner.x, runner.y), &state, &geometry);
+    let EventHandling::Action(action) = handling else {
+        panic!("clicking the closed runner picker must focus and open it: {handling:?}");
+    };
+    assert_eq!(action, Action::FocusField(field));
+    let _ = state.update(action);
+
+    let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &state, Locale::En, &mut session);
+        })
+        .unwrap();
+    let (column, row) = buffer_position(terminal.backend().buffer(), RUNNERS[1]);
+    let handling = session.handle_event(mouse(column, row), &state, &geometry);
+    let EventHandling::Action(action) = handling else {
+        panic!("clicking a rendered runner option must select it: {handling:?}");
+    };
+    assert_eq!(
+        action,
+        Action::SelectFieldOption {
+            field,
+            value: RUNNERS[1].to_owned(),
+        }
+    );
+    let _ = state.update(action);
+
+    assert_eq!(runner_value(&state), RUNNERS[1]);
     let values = submit_values(&mut state);
     assert_eq!(submitted_runner(&values), RUNNERS[1]);
 }
@@ -526,18 +587,6 @@ fn test_run_with_zero_runners_offers_the_new_agent_modal() {
 #[ignore = "CROSS-CRATE (skit-cli): the define-agent-then-re-enter-the-form flow is host run routing. tests/test_prompt_tui.py:465."]
 fn test_run_with_zero_runners_define_agent_then_run() {
     // Defining the agent re-enters the run straight into the form with it configured.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli): action_rerun's 'no pin -> never answer the runner question silently -> fall back to the form' is host routing. tests/test_prompt_tui.py:490."]
-fn test_rerun_unpinned_prompt_falls_back_to_the_form() {
-    // An unpinned rerun must open the form, never resolve the runner silently.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli): action_rerun's 'pinned -> skip the form, resolve inside PromptLaunch.build' is host routing. tests/test_prompt_tui.py:503."]
-fn test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin() {
-    // A pinned rerun skips the form and the pin resolves inside the launch build.
 }
 
 #[test]

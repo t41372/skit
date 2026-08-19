@@ -2,13 +2,15 @@ use std::{
     fs,
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
+    sync::mpsc::{self, Receiver},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use skit_application::EntryRepository as _;
-use skit_store::{FileConfigStore, FileStore};
+use skit_application::{EntryMutationRepository as _, EntryRepository as _, SourcePermissions};
+use skit_store::{FileConfigStore, FileStore, PromptRunner};
+use skit_ui::{KnownEntryKind, ReviewDefaults, ReviewState, SourceSnapshot};
 use tempfile::TempDir;
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
@@ -203,6 +205,510 @@ fn run_pty_configured(
     drop(writer);
     let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
     (status.exit_code(), output)
+}
+
+struct LiveTui {
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    writer: Box<dyn std::io::Write + Send>,
+    chunks: Receiver<Vec<u8>>,
+    output: Vec<u8>,
+}
+
+impl LiveTui {
+    fn spawn(data: &Path, state: &Path, config: &Path, home: &Path) -> Self {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 40,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.arg("tui");
+        command.cwd(home);
+        command.env("TERM", "xterm-256color");
+        command.env("NO_COLOR", "1");
+        command.env("SKIT_LANG", "en");
+        command.env("SKIT_DATA_DIR", data);
+        command.env("SKIT_STATE_DIR", state);
+        command.env("SKIT_CONFIG_DIR", config);
+        command.env("HOME", home);
+        command.env("USERPROFILE", home);
+        let child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let writer = pair.master.take_writer().unwrap();
+        let (sender, chunks) = mpsc::channel();
+        thread::spawn(move || {
+            let mut buffer = [0_u8; 8192];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        if sender.send(buffer[..read].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        let mut tui = Self {
+            child,
+            writer,
+            chunks,
+            output: Vec::new(),
+        };
+        tui.answer_cursor_query_after(0);
+        tui
+    }
+
+    fn send(&mut self, bytes: &[u8]) {
+        self.writer.write_all(bytes).unwrap();
+        self.writer.flush().unwrap();
+    }
+
+    fn send_effect_key(&mut self, bytes: &[u8]) {
+        let checkpoint = self.checkpoint();
+        self.send(bytes);
+        self.answer_cursor_query_after(checkpoint);
+    }
+
+    fn checkpoint(&mut self) -> usize {
+        self.drain();
+        self.output.len()
+    }
+
+    fn wait_for(&mut self, needle: &str) -> String {
+        self.wait_for_after(0, needle)
+    }
+
+    fn wait_for_after(&mut self, checkpoint: usize, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            self.drain();
+            let visible = self.visible_after(checkpoint);
+            if visible.contains(needle) {
+                return visible;
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                panic!(
+                    "timed out waiting for {needle:?} after checkpoint {checkpoint}; new terminal output:\n{visible}"
+                );
+            };
+            match self
+                .chunks
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
+                Ok(chunk) => self.output.extend_from_slice(&chunk),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    assert!(
+                        self.child.try_wait().unwrap().is_none(),
+                        "TUI exited while waiting for {needle:?}; new terminal output:\n{visible}"
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!(
+                    "TUI output closed while waiting for {needle:?}; new terminal output:\n{visible}"
+                ),
+            }
+        }
+    }
+
+    fn wait_for_exit_after(&mut self, checkpoint: usize) -> String {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            self.drain();
+            if self.child.try_wait().unwrap().is_some() {
+                return self.visible_after(checkpoint);
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                panic!(
+                    "timed out waiting for TUI exit; new terminal output:\n{}",
+                    self.visible_after(checkpoint)
+                );
+            };
+            match self
+                .chunks
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
+                Ok(chunk) => self.output.extend_from_slice(&chunk),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    if self.child.try_wait().unwrap().is_some() {
+                        return self.visible_after(checkpoint);
+                    }
+                }
+            }
+        }
+    }
+
+    fn visible_after(&mut self, checkpoint: usize) -> String {
+        self.drain();
+        let checkpoint = checkpoint.min(self.output.len());
+        strip_terminal_control(&String::from_utf8_lossy(&self.output[checkpoint..]))
+    }
+
+    fn drain(&mut self) {
+        while let Ok(chunk) = self.chunks.try_recv() {
+            self.output.extend_from_slice(&chunk);
+        }
+    }
+
+    fn answer_cursor_query_after(&mut self, checkpoint: usize) {
+        const QUERY: &[u8] = b"\x1b[6n";
+
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            self.drain();
+            if self.output[checkpoint.min(self.output.len())..]
+                .windows(QUERY.len())
+                .any(|window| window == QUERY)
+            {
+                self.send(b"\x1b[1;1R");
+                return;
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                panic!("timed out waiting for the terminal cursor-position query");
+            };
+            match self
+                .chunks
+                .recv_timeout(remaining.min(Duration::from_millis(100)))
+            {
+                Ok(chunk) => self.output.extend_from_slice(&chunk),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    assert!(
+                        self.child.try_wait().unwrap().is_none(),
+                        "TUI exited before it requested the cursor position"
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("TUI output closed before it requested the cursor position");
+                }
+            }
+        }
+    }
+}
+
+impl Drop for LiveTui {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn strip_terminal_control(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != 0x1b {
+            if bytes[index] != b'\r' {
+                output.push(bytes[index]);
+            }
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if index >= bytes.len() {
+            break;
+        }
+        match bytes[index] {
+            b'[' => {
+                index += 1;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            b']' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == 0x07 {
+                        index += 1;
+                        break;
+                    }
+                    if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    String::from_utf8_lossy(&output).into_owned()
+}
+
+struct PromptTuiSandbox {
+    data: TempDir,
+    state: TempDir,
+    config: TempDir,
+    home: TempDir,
+}
+
+impl PromptTuiSandbox {
+    fn new() -> Self {
+        let sandbox = Self {
+            data: TempDir::new().unwrap(),
+            state: TempDir::new().unwrap(),
+            config: TempDir::new().unwrap(),
+            home: TempDir::new().unwrap(),
+        };
+        sandbox.config().set("after_run", "stay").unwrap();
+        sandbox
+    }
+
+    fn config(&self) -> FileConfigStore {
+        FileConfigStore::new(self.config.path())
+    }
+
+    fn store(&self) -> FileStore {
+        FileStore::new(self.data.path())
+    }
+
+    fn clear_runners(&self) {
+        let config = self.config();
+        config.ensure_runners_seeded().unwrap();
+        let names = config
+            .runners()
+            .unwrap()
+            .into_iter()
+            .map(|runner| runner.name)
+            .collect::<Vec<_>>();
+        for name in names {
+            assert!(config.remove_runner(&name).unwrap());
+        }
+    }
+
+    fn runner(&self, name: &str, child_marker: &str) {
+        let marker_path = self.marker_path(name);
+        let program = runner_program(self.home.path(), name, child_marker);
+        self.config()
+            .set_runner(
+                PromptRunner {
+                    name: name.to_owned(),
+                    argv: runner_argv(&program, &marker_path),
+                },
+                false,
+            )
+            .unwrap();
+    }
+
+    fn marker_path(&self, name: &str) -> PathBuf {
+        self.home.path().join(format!("child-{name}.ran"))
+    }
+
+    fn prompt(&self, pin: &str) {
+        let path = self.home.path().join("p.prompt.md");
+        fs::write(&path, "Do {{a}}\n").unwrap();
+        let review = ReviewState::from_source(
+            SourceSnapshot {
+                path: path.clone(),
+                source_record: path.display().to_string(),
+                bytes: b"Do {{a}}\n".to_vec(),
+                permissions: SourcePermissions::default(),
+                is_regular: true,
+                is_directory: false,
+                is_draft: false,
+            },
+            KnownEntryKind::Prompt,
+            ReviewDefaults {
+                name: Some("p".to_owned()),
+                ..ReviewDefaults::default()
+            },
+        );
+        let mut request = review.create_entry().unwrap();
+        request.settings.runner = pin.to_owned();
+        self.store().create(request).unwrap();
+    }
+
+    fn seed_run(&self, runner: &str, child_marker: &str) {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_skit"))
+            .args([
+                "run",
+                "p",
+                "--set",
+                "a=1",
+                "--runner",
+                runner,
+                "--no-input",
+                "--plain",
+            ])
+            .env("SKIT_DATA_DIR", self.data.path())
+            .env("SKIT_STATE_DIR", self.state.path())
+            .env("SKIT_CONFIG_DIR", self.config.path())
+            .env("SKIT_LANG", "en")
+            .env("HOME", self.home.path())
+            .env("USERPROFILE", self.home.path())
+            .current_dir(self.home.path())
+            .output()
+            .unwrap();
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.status.success(), "seed run failed: {shown}");
+        assert!(
+            shown.lines().any(|line| line.trim() == child_marker),
+            "seed run did not reach the runner child: {shown}"
+        );
+        assert!(
+            shown.lines().any(|line| line.trim() == "Do 1"),
+            "seed run did not render its stored value: {shown}"
+        );
+        assert!(
+            self.marker_path(runner).is_file(),
+            "seed run did not write its child marker"
+        );
+    }
+
+    fn tui(&self) -> LiveTui {
+        LiveTui::spawn(
+            self.data.path(),
+            self.state.path(),
+            self.config.path(),
+            self.home.path(),
+        )
+    }
+}
+
+#[cfg(unix)]
+fn runner_program(home: &Path, name: &str, child_marker: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let path = home.join(format!("runner-{name}"));
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' {child_marker:?}\nprintf ran > \"$1\"\nprintf '%s\\n' \"$2\"\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn runner_argv(program: &Path, marker_path: &Path) -> Vec<String> {
+    vec![
+        program.display().to_string(),
+        marker_path.display().to_string(),
+        "{{prompt}}".to_owned(),
+    ]
+}
+
+#[cfg(windows)]
+fn runner_program(home: &Path, name: &str, child_marker: &str) -> PathBuf {
+    let path = home.join(format!("runner-{name}.cmd"));
+    fs::write(
+        &path,
+        format!("@echo off\r\necho {child_marker}\r\necho ran>\"%~1\"\r\necho %~2\r\n"),
+    )
+    .unwrap();
+    path
+}
+
+#[cfg(windows)]
+fn runner_argv(program: &Path, marker_path: &Path) -> Vec<String> {
+    vec![
+        "cmd.exe".to_owned(),
+        "/C".to_owned(),
+        program.display().to_string(),
+        marker_path.display().to_string(),
+        "{{prompt}}".to_owned(),
+    ]
+}
+
+#[test]
+fn test_rerun_unpinned_prompt_falls_back_to_the_form() {
+    const LAST_RUNNER_CHILD: &str = "CHILD-UNPINNED-LAST";
+    const OTHER_RUNNER_CHILD: &str = "CHILD-UNPINNED-OTHER";
+
+    let sandbox = PromptTuiSandbox::new();
+    sandbox.clear_runners();
+    sandbox.runner("codex", LAST_RUNNER_CHILD);
+    sandbox.runner("claude", OTHER_RUNNER_CHILD);
+    sandbox.prompt("");
+    sandbox.seed_run("codex", LAST_RUNNER_CHILD);
+    let last_runner_marker = sandbox.marker_path("codex");
+    let other_runner_marker = sandbox.marker_path("claude");
+    fs::remove_file(&last_runner_marker).unwrap();
+
+    let mut tui = sandbox.tui();
+    tui.wait_for("Library");
+    let rerun = tui.checkpoint();
+    tui.send_effect_key(b"r");
+    let opened = tui.wait_for_after(rerun, "Run p");
+    assert!(
+        opened.contains("Runner"),
+        "an unpinned rerun did not expose the runner picker: {opened}"
+    );
+    let after_rerun = tui.visible_after(rerun);
+    assert!(
+        !after_rerun.contains(LAST_RUNNER_CHILD) && !after_rerun.contains(OTHER_RUNNER_CHILD),
+        "an unpinned rerun silently launched a runner child: {after_rerun}"
+    );
+    assert!(
+        !last_runner_marker.exists() && !other_runner_marker.exists(),
+        "an unpinned rerun wrote a runner child marker"
+    );
+
+    let back = tui.checkpoint();
+    tui.send(b"\x1b");
+    tui.wait_for_after(back, "Library");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+}
+
+#[test]
+fn test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin() {
+    const LAST_RUNNER_CHILD: &str = "CHILD-PINNED-LAST";
+    const PINNED_RUNNER_CHILD: &str = "CHILD-PINNED-CLAUDE";
+
+    let sandbox = PromptTuiSandbox::new();
+    sandbox.clear_runners();
+    sandbox.runner("codex", LAST_RUNNER_CHILD);
+    sandbox.runner("claude", PINNED_RUNNER_CHILD);
+    sandbox.prompt("claude");
+    sandbox.seed_run("codex", LAST_RUNNER_CHILD);
+    let last_runner_marker = sandbox.marker_path("codex");
+    let pinned_runner_marker = sandbox.marker_path("claude");
+    fs::remove_file(&last_runner_marker).unwrap();
+
+    let mut tui = sandbox.tui();
+    tui.wait_for("Library");
+    let rerun = tui.checkpoint();
+    tui.send_effect_key(b"r");
+    let child = tui.wait_for_after(rerun, PINNED_RUNNER_CHILD);
+    let rendered = tui.wait_for_after(rerun, "Do 1");
+    assert!(
+        !child.contains(LAST_RUNNER_CHILD),
+        "the pinned rerun used the last-run runner instead of its pin: {child}"
+    );
+    assert!(
+        !rendered.contains("Run p"),
+        "the pinned rerun opened the form before it launched: {rendered}"
+    );
+    assert!(
+        pinned_runner_marker.is_file(),
+        "the pinned rerun did not write the pinned runner's child marker"
+    );
+    assert!(
+        !last_runner_marker.exists(),
+        "the pinned rerun wrote the last-run runner's child marker"
+    );
+
+    tui.wait_for_after(rerun, "Library");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
 }
 
 #[test]
