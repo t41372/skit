@@ -13,12 +13,12 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 94 fix commits landed, 202 FAILING CONTRACTs closed
-(198 removed, translated, or un-ignored + 4 re-labeled architecture closures), 11 cross-crate
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 95 fix commits landed, 202 FAILING CONTRACTs closed
+(198 removed, translated, or un-ignored + 4 re-labeled architecture closures), 20 cross-crate
 stubs promoted,
 2 owed white-box units added. The last fully green recorded baseline was workspace
-3207 pass / 0 fail / 929 ignored. The fixed final PR #44 head was audited as a diff, not by its
-500+ commit history. Nine stronger owners were folded into the existing consolidated targets after
+3214 pass / 0 fail / 922 ignored. The fixed final PR #44 head was audited as a diff, not by its
+500+ commit history. Eighteen stronger owners were folded into the existing consolidated targets after
 PR/main/Python body comparison; the raw split files and manifests were rejected.
 84 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
@@ -205,6 +205,9 @@ This session (2026-08-11 through 2026-08-14), in order — each closed the named
 | `ef5c5a2` | runner removal confirmation: real PTY yes/no and two confirmation-window CAS races; runner n/EOF use frozen failure exit 1 while entry removal remains abort 130 | 4 cross-crate owners + production parity |
 | `a219125` | JavaScript removal locking: move two exact owners to `skit-store`; prove wait-before-delete, persistent lock inode, and byte-exact no-write on lock-open failure | 2 cross-crate owners |
 | `f5423d4` | inject field projection: move three exact owners to `RunFormView::from_declarations` and retain typed control/default/secret/env/binding assertions | 3 cross-crate owners |
+| `0e9f082` | filesystem glob expansion: move two exact owners to the real store adapter; retain sorted/native/hidden assertions and add literal plus recursive `**` coverage | 2 cross-crate owners |
+| `24e9510` | prompt editor lifecycle: ask and validate the name before authoring, share the three-language starter, clean untouched drafts, and refuse collisions before editor launch | 5 cross-crate owners + production parity |
+| `f8091da` | prompt TUI public events: real mouse runner selection plus pinned/unpinned rerun through the live host, real child markers, and last-value replay | 2 cross-crate owners + 1 stronger owner |
 
 PR #44 is complete upstream at fixed head `005bc9b7365fca1cfa7173acb61a2e8629f03bc9`.
 Review only the diff from the previous pin `38260ff881420fbd06f95b5b9243e0caa610e370`;
@@ -226,8 +229,10 @@ stronger owners and dishonest green rewrites: for example, PR moved Python's pub
 `flows.assemble` retyping contract to lower-level `delivery::assemble` with a hand-built
 `PreparedValue`, bypassing the gate under test. Keep folding only a stronger unique body after a
 three-way PR/main/Python comparison. Current accepted final-head folds are `ef5c5a2`, `a219125`,
-and `f5423d4`; runner confirmation additionally exposed and fixed a real exit-code divergence, and
-the PR's seeded-runner fixture itself needed correction before its CAS assertion was valid.
+`f5423d4`, `0e9f082`, `24e9510`, and `f8091da`. Runner confirmation exposed and fixed a real
+exit-code divergence, and the PR's seeded-runner fixture itself needed correction before its CAS
+assertion was valid. Prompt editor review likewise found that the PR's untouched test used an empty
+fixture and did not prove the localized starter; the corrected owner now does.
 
 Earlier reviewed green waves on this branch
 include parser mutation
@@ -248,7 +253,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3207 passed / 0 failed / 929 ignored
+# => 3214 passed / 0 failed / 922 ignored
 grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 84
 ```
 
@@ -264,7 +269,7 @@ un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81
 ## 5. REMAINING work — 84 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `f5423d4`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `f8091da`.
 
 - **14 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Remaining work is the params human read/manage view, post-edit placeholder
