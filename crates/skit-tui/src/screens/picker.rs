@@ -433,6 +433,7 @@ pub struct FilePickerSession {
     contract: PathPickerState,
     explorer: FileExplorerState,
     query: LineInput,
+    current_directory_focused: bool,
     visible_height: usize,
     io_error: Option<String>,
 }
@@ -445,16 +446,20 @@ impl FilePickerSession {
         let mut explorer = FileExplorerState::new(start);
         explorer.show_hidden = contract.show_hidden() || contract.query().starts_with('.');
         let io_error = explorer.load_entries().err().map(|error| error.to_string());
-        select_first_real_entry(&mut explorer);
+        let has_real_entry = select_first_real_entry(&mut explorer);
         let query = LineInput::new(contract.query().to_owned());
-        if !contract.query().is_empty() {
-            explorer.search_query = contract.query().to_owned();
+        explorer.search_query = contract.query().trim().to_owned();
+        if !explorer.search_query.is_empty() {
             apply_filter(&mut explorer);
         }
+        let current_directory_focused = explorer.search_query.is_empty()
+            && accepts_current_directory(contract.selection())
+            && !has_real_entry;
         Self {
             contract,
             explorer,
             query,
+            current_directory_focused,
             visible_height: 1,
             io_error,
         }
@@ -516,28 +521,63 @@ impl FilePickerSession {
         }
         match key.code {
             KeyCode::Up => {
+                if self.current_directory_available()
+                    && (self.current_directory_focused
+                        || first_real_visible_index(&self.explorer)
+                            == Some(self.explorer.cursor_index))
+                {
+                    self.current_directory_focused = true;
+                    self.explorer.scroll = 0;
+                    return Some(FilePickerEvent::Changed);
+                }
                 self.explorer.cursor_up();
                 self.explorer.ensure_visible(self.visible_height);
                 Some(FilePickerEvent::Changed)
             }
             KeyCode::Down => {
+                if self.current_directory_focused {
+                    if let Some(index) = first_real_visible_index(&self.explorer) {
+                        self.current_directory_focused = false;
+                        self.explorer.cursor_index = index;
+                        self.explorer.ensure_visible(self.visible_height);
+                    }
+                    return Some(FilePickerEvent::Changed);
+                }
                 self.explorer.cursor_down();
                 self.explorer.ensure_visible(self.visible_height);
                 Some(FilePickerEvent::Changed)
             }
             KeyCode::Home | KeyCode::PageUp => {
+                if self.current_directory_available() {
+                    self.current_directory_focused = true;
+                    self.explorer.scroll = 0;
+                    return Some(FilePickerEvent::Changed);
+                }
+                self.current_directory_focused = false;
                 self.explorer.cursor_index = 0;
                 self.explorer.ensure_visible(self.visible_height);
                 Some(FilePickerEvent::Changed)
             }
             KeyCode::End | KeyCode::PageDown => {
-                self.explorer.cursor_index = self.explorer.visible_count().saturating_sub(1);
+                if let Some(index) = last_real_visible_index(&self.explorer) {
+                    self.current_directory_focused = false;
+                    self.explorer.cursor_index = index;
+                } else if self.current_directory_available() {
+                    self.current_directory_focused = true;
+                    self.explorer.scroll = 0;
+                    return Some(FilePickerEvent::Changed);
+                } else {
+                    self.current_directory_focused = false;
+                    self.explorer.cursor_index = self.explorer.visible_count().saturating_sub(1);
+                }
                 self.explorer.ensure_visible(self.visible_height);
                 Some(FilePickerEvent::Changed)
             }
             KeyCode::Enter => self.activate_current(),
             KeyCode::Char(' ') if self.contract.allow_multiple() => {
-                self.explorer.toggle_selection();
+                if !self.current_directory_focused {
+                    self.explorer.toggle_selection();
+                }
                 Some(FilePickerEvent::Changed)
             }
             KeyCode::Backspace if self.query.value().is_empty() => {
@@ -567,11 +607,15 @@ impl FilePickerSession {
     fn handle_hit(&mut self, target: FilePickerHit) -> Option<FilePickerEvent> {
         match target {
             FilePickerHit::Search => Some(FilePickerEvent::Changed),
-            FilePickerHit::CurrentDirectory => self.accept_current_directory(),
+            FilePickerHit::CurrentDirectory if self.current_directory_available() => {
+                self.accept_current_directory()
+            }
+            FilePickerHit::CurrentDirectory => None,
             FilePickerHit::Entry(index) => {
                 if index >= self.explorer.visible_count() {
                     return None;
                 }
+                self.current_directory_focused = false;
                 self.explorer.cursor_index = index;
                 self.activate_current()
             }
@@ -590,6 +634,9 @@ impl FilePickerSession {
     }
 
     fn activate_current(&mut self) -> Option<FilePickerEvent> {
+        if self.current_directory_focused && self.current_directory_available() {
+            return self.accept_current_directory();
+        }
         let entry = self.explorer.current_entry()?.clone();
         if entry.is_dir() {
             self.enter(entry.path);
@@ -609,13 +656,22 @@ impl FilePickerSession {
     }
 
     fn accept_current_directory(&self) -> Option<FilePickerEvent> {
-        matches!(
-            self.contract.selection(),
-            PathSelectionMode::Directory | PathSelectionMode::FileOrDirectory
-        )
-        .then(|| {
+        accepts_current_directory(self.contract.selection()).then(|| {
             FilePickerEvent::Accepted(vec![self.contract.output_path(&self.explorer.current_dir)])
         })
+    }
+
+    fn current_directory_available(&self) -> bool {
+        accepts_current_directory(self.contract.selection())
+            && self.explorer.search_query.is_empty()
+    }
+
+    fn reset_empty_filter_focus(&mut self) {
+        let has_real_entry = select_first_real_entry(&mut self.explorer);
+        self.current_directory_focused = self.current_directory_available() && !has_real_entry;
+        if self.current_directory_focused {
+            self.explorer.scroll = 0;
+        }
     }
 
     fn accept_selection(&self) -> Option<FilePickerEvent> {
@@ -651,7 +707,7 @@ impl FilePickerSession {
 
     fn sync_filter(&mut self) {
         self.contract.set_query(self.query.value());
-        let query = self.query.value().to_owned();
+        let query = self.query.value().trim().to_owned();
         let show_hidden = self.contract.show_hidden() || query.starts_with('.');
         if self.explorer.show_hidden != show_hidden {
             self.explorer.show_hidden = show_hidden;
@@ -664,7 +720,9 @@ impl FilePickerSession {
         self.explorer.search_query = query;
         apply_filter(&mut self.explorer);
         if self.explorer.search_query.is_empty() {
-            select_first_real_entry(&mut self.explorer);
+            self.reset_empty_filter_focus();
+        } else {
+            self.current_directory_focused = false;
         }
     }
 
@@ -675,7 +733,8 @@ impl FilePickerSession {
             .load_entries()
             .err()
             .map(|error| error.to_string());
-        select_first_real_entry(&mut self.explorer);
+        self.explorer.search_query.clear();
+        self.reset_empty_filter_focus();
     }
 }
 
@@ -739,23 +798,27 @@ pub fn render_file_picker(
             path_row,
         );
     }
-    let accepts_dir = matches!(
-        session.contract.selection(),
-        PathSelectionMode::Directory | PathSelectionMode::FileOrDirectory
-    );
     let mut lines = Vec::new();
     let mut hits = vec![FilePickerHitRegion {
         area: search,
         target: FilePickerHit::Search,
     }];
-    if accepts_dir {
-        lines.push(Line::from(vec![
-            Span::styled("▶ ", Style::default().fg(ACCENT)),
-            Span::styled(
-                session.explorer.current_dir.display().to_string(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ]));
+    if session.current_directory_available() {
+        let style = if session.current_directory_focused {
+            Style::default()
+                .fg(SELECT_FG)
+                .bg(SELECT_BG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(
+            Line::from(vec![
+                Span::styled("📂 ", Style::default().add_modifier(Modifier::DIM)),
+                Span::raw(text(locale, "(use this directory)").into_owned()),
+            ])
+            .style(style),
+        );
         hits.push(FilePickerHitRegion {
             area: Rect::new(rows.x, rows.y, rows.width, 1),
             target: FilePickerHit::CurrentDirectory,
@@ -766,7 +829,8 @@ pub fn render_file_picker(
     session.visible_height = row_capacity.max(1);
     let visible = visible_entries(&session.explorer);
     for (display_index, entry) in visible.iter().enumerate().skip(offset).take(row_capacity) {
-        let cursor = display_index == session.explorer.cursor_index;
+        let cursor =
+            !session.current_directory_focused && display_index == session.explorer.cursor_index;
         let selected = session.explorer.selected_files.contains(&entry.path);
         let icon = match entry.entry_type {
             EntryType::Directory | EntryType::ParentDir => "▸",
@@ -881,6 +945,13 @@ fn accepts_entry(mode: PathSelectionMode, entry: &FileEntry) -> bool {
     }
 }
 
+fn accepts_current_directory(mode: PathSelectionMode) -> bool {
+    matches!(
+        mode,
+        PathSelectionMode::Directory | PathSelectionMode::FileOrDirectory
+    )
+}
+
 fn nearest_directory(mut path: PathBuf) -> PathBuf {
     while !path.is_dir() {
         if !path.pop() {
@@ -903,13 +974,24 @@ fn apply_filter(explorer: &mut FileExplorerState) {
     });
 }
 
-fn select_first_real_entry(explorer: &mut FileExplorerState) {
-    if let Some(index) = explorer
-        .entries
+fn first_real_visible_index(explorer: &FileExplorerState) -> Option<usize> {
+    visible_entries(explorer)
         .iter()
         .position(|entry| !matches!(entry.entry_type, EntryType::ParentDir))
-    {
+}
+
+fn last_real_visible_index(explorer: &FileExplorerState) -> Option<usize> {
+    visible_entries(explorer)
+        .iter()
+        .rposition(|entry| !matches!(entry.entry_type, EntryType::ParentDir))
+}
+
+fn select_first_real_entry(explorer: &mut FileExplorerState) -> bool {
+    if let Some(index) = first_real_visible_index(explorer) {
         explorer.cursor_index = index;
+        true
+    } else {
+        false
     }
 }
 

@@ -221,6 +221,7 @@ const CATALOG: &[Translation] = &[
         "沒有相符的項目。按 [q] 結束。",
     ),
     row!("No matching entries", "没有匹配的条目", "沒有相符的項目"),
+    row!("(use this directory)", "(使用此目录)", "(使用此目錄)"),
     row!("valid", "有效", "有效"),
     row!(
         "could not read a parameter row: {}",

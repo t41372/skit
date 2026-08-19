@@ -22,9 +22,9 @@
 //!   `nearest_directory` (skit-tui); the missing-root bool is `run_modal::file_picker_contract`
 //!   (private).
 //! - Python `FilePickerModal` (Textual pilot) -> `FilePickerSession` + `render_file_picker`
-//!   (skit-tui): the pinned "(use this directory)" OptionList row is the mouse-only
-//!   `FilePickerHit::CurrentDirectory`; the parent step is a real `..` `EntryType::ParentDir`
-//!   row; `_list_filtered`'s rank is the free function `picker::apply_filter`.
+//!   (skit-tui): the pinned "(use this directory)" OptionList row is the keyboard-and-mouse
+//!   `FilePickerHit::CurrentDirectory`; the parent step is a real `..` `EntryType::ParentDir` row;
+//!   `_list_filtered`'s rank is the free function `picker::apply_filter`.
 //! - Python `RunFormScreen` browse/insert doors -> the `LibraryState` reducer
 //!   (`Action::OpenRunTokenMenu…`, `OpenRunFilePicker`, `OpenFocusedRunFilePicker`,
 //!   `SetRunPickedPathAndCloseModal`) over a `RunFormView::from_declarations(...).with_context`.
@@ -43,14 +43,14 @@
 //! - CROSS-CRATE stubs: `PathContext.for_entry` workdir/origin resolution is composed in
 //!   `skit-cli` (`cli.rs` builds `RunPathContext`); the cursor-position token insert is owned
 //!   by skit-tui's interactive `TuiSession` cursor layer (not the reducer surface here).
-//! - DIVERGENCE (full body, `#[ignore = "FAILING CONTRACT (divergence): …"]`): the mouse-only
-//!   use-this-directory affordance (no keyboard route) and the "(use this directory)" label.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ratatui_core::{backend::TestBackend, terminal::Terminal};
+use ratatui_core::{
+    backend::TestBackend, buffer::Buffer, layout::Rect, style::Color, terminal::Terminal,
+};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -62,13 +62,15 @@ use skit_application::tokens::TokenContext;
 use skit_domain::parameters::{ParamDecl, ParameterType};
 use skit_i18n::Locale;
 use skit_tui::{
-    FilePickerEvent, FilePickerGeometry, FilePickerHit, FilePickerSession, render_file_picker,
+    EventHandling, FilePickerEvent, FilePickerGeometry, FilePickerHit, FilePickerSession,
+    TuiSession, ViewGeometry, render_file_picker, render_with_session,
 };
 use skit_ui::{
     Action, LibraryState, ModalState, PathOutputPolicy, PathPickerState, PathSelectionMode,
     PickerPurpose, RunFormContext, RunFormView, RunPathContext, RunTokenOption, Screen,
 };
 use tempfile::TempDir;
+use unicode_width::UnicodeWidthStr as _;
 
 // --- Filesystem and event helpers (the oracle's `_tree`, `pilot.press`, `pilot.click`) ---
 
@@ -89,8 +91,12 @@ fn key(code: KeyCode) -> Event {
 }
 
 fn click(column: u16, row: u16) -> Event {
+    mouse(MouseEventKind::Down(MouseButton::Left), column, row)
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
+        kind,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -146,14 +152,37 @@ fn render(
     width: u16,
     height: u16,
 ) -> (String, FilePickerGeometry) {
+    let (buffer, geometry) = render_localized(session, width, height, Locale::En);
+    let text = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    (text, geometry)
+}
+
+fn render_localized(
+    session: &mut FilePickerSession,
+    width: u16,
+    height: u16,
+    locale: Locale,
+) -> (Buffer, FilePickerGeometry) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut geometry = FilePickerGeometry::default();
     terminal
-        .draw(|frame| geometry = render_file_picker(frame, frame.area(), session, Locale::En))
+        .draw(|frame| geometry = render_file_picker(frame, frame.area(), session, locale))
         .unwrap();
     let buffer = terminal.backend().buffer().clone();
-    let text = buffer.content().iter().map(|cell| cell.symbol()).collect();
-    (text, geometry)
+    (buffer, geometry)
+}
+
+fn region_text(buffer: &Buffer, area: Rect) -> String {
+    let mut text = String::new();
+    for row in area.y..area.bottom().min(buffer.area.height) {
+        let mut column = area.x;
+        while column < area.right().min(buffer.area.width) {
+            let symbol = buffer[(column, row)].symbol();
+            text.push_str(symbol);
+            column = column.saturating_add(u16::try_from(symbol.width()).unwrap_or(1).max(1));
+        }
+    }
+    text
 }
 
 // --- Run-form reducer helpers (the oracle's RunFormScreen / FieldRow) ---
@@ -208,6 +237,30 @@ fn form_state(
 
 fn field_value(state: &LibraryState, index: usize) -> String {
     state.run_form().unwrap().fields()[index].control.value()
+}
+
+fn render_root(session: &mut TuiSession, state: &LibraryState) -> ViewGeometry {
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, state, Locale::En, session);
+        })
+        .unwrap();
+    geometry
+}
+
+fn drive_root(
+    session: &mut TuiSession,
+    state: &mut LibraryState,
+    geometry: &ViewGeometry,
+    event: Event,
+) -> EventHandling {
+    let handling = session.handle_event(event, state, geometry);
+    if let EventHandling::Action(action) = &handling {
+        state.update(action.clone());
+    }
+    handling
 }
 
 fn token_options(state: &LibraryState) -> Vec<RunTokenOption> {
@@ -357,15 +410,74 @@ fn test_picker_enter_descends_then_picks_and_filter_clears() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the use-this-directory affordance is mouse-only (FilePickerHit::CurrentDirectory); there is no keyboard route. Up from the first real entry lands on the real `..` ParentDir row, so Enter ASCENDS to the parent instead of selecting the current directory. Oracle: up+enter picks PickedPath('.') (test_path_tui.py:293-310)."]
 fn test_picker_use_this_directory_row_by_real_keys() {
     let (_tmp, root) = tree();
     let mut session = picker(&root);
-    let _ = feed(&mut session, key(KeyCode::Up));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Up)),
+        Some(FilePickerEvent::Changed)
+    );
     assert_eq!(
         feed(&mut session, key(KeyCode::Enter)),
-        Some(FilePickerEvent::Accepted(vec![PathBuf::from(".")]))
+        Some(FilePickerEvent::Accepted(vec![PathBuf::new()]))
     );
+
+    // The composition root converts the frontend-neutral empty relative path into the oracle's
+    // visible PickedPath(".") value. Drive the real Run form, token menu, file picker, and reducer
+    // instead of publishing that action from the test.
+    let root_text = root.to_string_lossy().into_owned();
+    let mut state = form_state(
+        &[param("path", ParameterType::Path, false)],
+        &[("path", "old.txt")],
+        "",
+        Some(&root_text),
+    );
+    let mut root_session = TuiSession::default();
+    let geometry = render_root(&mut root_session, &state);
+    assert!(matches!(
+        drive_root(
+            &mut root_session,
+            &mut state,
+            &geometry,
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+        ),
+        EventHandling::Action(_)
+    ));
+    let geometry = render_root(&mut root_session, &state);
+    assert!(matches!(
+        drive_root(
+            &mut root_session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Enter),
+        ),
+        EventHandling::Action(_)
+    ));
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunFilePicker { .. })
+    ));
+    let geometry = render_root(&mut root_session, &state);
+    assert_eq!(
+        drive_root(&mut root_session, &mut state, &geometry, key(KeyCode::Up),),
+        EventHandling::Consumed
+    );
+    assert_eq!(field_value(&state, 0), "old.txt");
+    let geometry = render_root(&mut root_session, &state);
+    assert_eq!(
+        drive_root(
+            &mut root_session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Enter),
+        ),
+        EventHandling::Action(Action::SetRunPickedPathAndCloseModal {
+            field: 0,
+            path: ".".to_owned(),
+        })
+    );
+    assert_eq!(field_value(&state, 0), ".");
+    assert!(state.modal().is_none());
 }
 
 #[test]
@@ -503,6 +615,19 @@ fn test_picker_filtering_hides_the_pinned_row() {
     // Enter acts on the first MATCH.
     assert_eq!(session.explorer().current_entry().unwrap().name, "data.csv");
     assert_eq!(session.explorer().cursor_index, 0);
+    let (buffer, geometry) = render_localized(&mut session, 100, 30, Locale::En);
+    assert!(
+        geometry
+            .hits
+            .iter()
+            .all(|hit| hit.target != FilePickerHit::CurrentDirectory),
+        "a nonempty filter must remove the pinned row and its click target"
+    );
+    assert!(!region_text(&buffer, geometry.rows).contains("(use this directory)"));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Enter)),
+        Some(FilePickerEvent::Accepted(vec![PathBuf::from("data.csv")]))
+    );
 }
 
 #[test]
@@ -1025,29 +1150,81 @@ fn test_list_filtered_tiebreak_is_case_insensitive() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the pinned use-this-directory affordance is the mouse-only CurrentDirectory row, rendered as '▶ <current dir path>', not a localized '(use this directory)' OptionList row with id '__use_dir__'. Oracle: option 0 id is '__use_dir__' and its prompt ends with '(use this directory)' (test_path_tui.py:1079-1092)."]
 fn test_picker_pinned_row_shows_its_label() {
     let (_tmp, root) = tree();
+    for (locale, expected) in [
+        (Locale::En, "(use this directory)"),
+        (Locale::ZhCn, "(使用此目录)"),
+        (Locale::ZhTw, "(使用此目錄)"),
+    ] {
+        let mut session = picker(&root);
+        let (buffer, geometry) = render_localized(&mut session, 100, 30, locale);
+        let pinned = geometry
+            .hits
+            .iter()
+            .filter(|hit| hit.target == FilePickerHit::CurrentDirectory)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pinned.len(),
+            1,
+            "{} must expose one typed row",
+            locale.tag()
+        );
+        let row = region_text(&buffer, pinned[0].area);
+        assert!(
+            row.trim_end().ends_with(expected),
+            "{} must render the exact localized label tail: {row:?}",
+            locale.tag(),
+        );
+    }
+
     let mut session = picker(&root);
-    let (text, _geometry) = render(&mut session, 100, 30);
-    assert!(text.contains("(use this directory)"));
+    let (_buffer, geometry) = render_localized(&mut session, 100, 30, Locale::En);
+    let area = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == FilePickerHit::CurrentDirectory)
+        .expect("a typed current-directory row")
+        .area;
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(mouse(kind, area.x, area.y), &geometry),
+            None,
+            "hover and release must not accept the directory"
+        );
+    }
+    assert_eq!(
+        session.handle_event(click(area.x, area.y), &geometry),
+        Some(FilePickerEvent::Accepted(vec![PathBuf::new()]))
+    );
 }
 
 #[test]
 fn test_picker_empty_directory_highlights_the_pinned_row() {
-    // An empty directory offers only the use-this-directory affordance: no real entries, and
-    // the mouse CurrentDirectory door is rendered.
+    // An empty directory offers only the use-this-directory affordance. It is both highlighted
+    // and keyboard-selectable.
     let tmp = tempfile::tempdir().unwrap();
     let empty = tmp.path().join("empty");
     fs::create_dir(&empty).unwrap();
     let mut session = picker(&empty);
     assert_eq!(listing(&session), Vec::<(String, bool)>::new());
-    let (_text, geometry) = render(&mut session, 100, 30);
+    let (buffer, geometry) = render_localized(&mut session, 100, 30, Locale::En);
+    let pinned = geometry
+        .hits
+        .iter()
+        .filter(|hit| hit.target == FilePickerHit::CurrentDirectory)
+        .collect::<Vec<_>>();
+    assert_eq!(pinned.len(), 1, "only one pinned row may be clickable");
     assert!(
-        geometry
-            .hits
-            .iter()
-            .any(|hit| hit.target == FilePickerHit::CurrentDirectory)
+        (pinned[0].area.x..pinned[0].area.right()).any(|column| {
+            let cell = &buffer[(column, pinned[0].area.y)];
+            cell.fg == Color::Rgb(0xEE, 0xEE, 0xEE) && cell.bg == Color::Rgb(0x5A, 0x2D, 0x1E)
+        }),
+        "the sole pinned row must use the selection highlight"
+    );
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Enter)),
+        Some(FilePickerEvent::Accepted(vec![PathBuf::new()]))
     );
 }
 
