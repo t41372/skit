@@ -204,7 +204,7 @@ fn managed_parameter_flip_note_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
-fn bare_directory_add_hint_matches_the_oracle_in_every_locale() {
+fn add_dispatch_messages_match_the_oracle_in_every_locale() {
     let template = "{} is a directory — pass --exe to add it as a program that runs directly.";
     assert_eq!(
         format_text(Locale::En, template, &[&"bundle"]),
@@ -220,6 +220,60 @@ fn bare_directory_add_hint_matches_the_oracle_in_every_locale() {
     );
     let pseudo = format_text(Locale::Pseudo, template, &[&"bundle"]);
     assert!(pseudo.contains("bundle"), "{pseudo}");
+
+    for (source, zh_cn, zh_tw) in [
+        (
+            "--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.",
+            "--prompt 已直接指定类型——请去掉 --edit/--exe/--kind/--cmd。",
+            "--prompt 已直接指定類型——請去掉 --edit/--exe/--kind/--cmd。",
+        ),
+        ("stdin ('-')", "stdin（'-'）", "stdin（'-'）"),
+        ("a file path", "文件路径", "檔案路徑"),
+        (
+            "{} each pick a different way to add — use exactly one (nothing was added).",
+            "{} 各自代表一种不同的添加方式——请只用其中一种（未添加任何内容）。",
+            "{} 各自代表一種不同的加入方式——請只用其中一種（未加入任何內容）。",
+        ),
+        (
+            "a --cmd template takes only --name/--description",
+            "--cmd 模板只接受 --name/--description",
+            "--cmd 樣板只接受 --name/--description",
+        ),
+        (
+            "stdin authors a brand-new copy, and --ref/--exe need an existing file",
+            "stdin 会撰写一份全新副本，而 --ref/--exe 需要现成的文件",
+            "stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案",
+        ),
+        (
+            "--edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt",
+            "--edit 会起草一个全新脚本：它的类型取自你写的 shebang（例如 #!/usr/bin/env bash），--ref/--exe 需要现成的文件，而提示词要用 skit add --prompt 起草",
+            "--edit 會草擬一支全新腳本：它的類型取自你寫的 shebang（例如 #!/usr/bin/env bash），--ref/--exe 需要現成的檔案，而提示詞要用 skit add --prompt 草擬",
+        ),
+        (
+            "a drafted prompt takes only --name/--description/--runner/--no-interpolate",
+            "草稿提示词只接受 --name/--description/--runner/--no-interpolate",
+            "草稿提示詞只接受 --name/--description/--runner/--no-interpolate",
+        ),
+        (
+            "{} can't apply here — {} (nothing was added).",
+            "{} 在这里无法应用——{}(未添加任何内容)。",
+            "{} 在這裡無法套用——{}(未加入任何內容)。",
+        ),
+        (
+            "--no-interpolate only applies to prompt entries — add one with --prompt.",
+            "--no-interpolate 只适用于提示词条目——用 --prompt 添加一个。",
+            "--no-interpolate 只適用於提示詞項目——用 --prompt 加入一個。",
+        ),
+        (
+            "--runner only applies to prompt entries — add one with --prompt.",
+            "--runner 只适用于提示词条目——用 --prompt 添加一个。",
+            "--runner 只適用於提示詞項目——用 --prompt 加入一個。",
+        ),
+    ] {
+        assert_eq!(text(Locale::En, source), source);
+        assert_eq!(text(Locale::ZhCn, source), zh_cn);
+        assert_eq!(text(Locale::ZhTw, source), zh_tw);
+    }
 }
 
 #[test]

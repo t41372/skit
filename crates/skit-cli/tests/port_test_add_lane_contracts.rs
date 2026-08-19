@@ -30,12 +30,12 @@
 //!   it does not use a fixed sleep.
 //!
 //! Bucket disposition (all 21 defs drive the binary and COMPILE; zero absent/cross-crate stubs):
-//! - 18 PASS asserting tests: the 5 versioned/piped/reader-notice lanes, both editor-lane
+//! - 19 PASS asserting tests: the selector-collision contract, the 5
+//!   versioned/piped/reader-notice lanes, both editor-lane
 //!   `--description` threads, the versioned-shebang editor lane, the normal-file no-unlink lane,
 //!   the JSON-is-one-document flip lane, both parameter read views, and both unknown-runner
 //!   early-refusal lanes, the post-editor Python-flag refusal, and the managed-form flip note.
-//! - 3 FAILING CONTRACT (divergence) tests: the selector-collision voice and the two plain-path
-//!   draft cleanup/boundary contracts.
+//! - 2 FAILING CONTRACT (divergence) tests: the two plain-path draft cleanup/boundary contracts.
 
 use std::fs;
 #[cfg(unix)]
@@ -283,7 +283,6 @@ fn boom_editor(dir: &Path, marker: &Path) -> PathBuf {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle refuses colliding lane SELECTORS with one voice BEFORE dispatch (src/skit/cli.py:1603-1612, '%(flags)s each pick a different way to add — use exactly one'). Rust makes --edit/--cmd clap-`conflicts_with` `source` (cli.rs:302,311), so a collision is a clap 'the argument … cannot be used with …' error — same exit 2, but the one-voice message and the named selectors ('a file path'/'--edit') never appear. Ties to pending task #15. Verified against the built binary."]
 fn test_selector_collisions_are_refused_one_voice() {
     // --cmd / --edit / stdin('-') / a file path each pick a DIFFERENT add lane; any pair is
     // a usage error with the single 'each pick a different way to add' voice, BEFORE the flag
@@ -295,24 +294,36 @@ fn test_selector_collisions_are_refused_one_voice() {
     let real = sandbox.scratch.path().join("real.py");
     fs::write(&real, "print(1)\n").unwrap();
     let real = real.display().to_string();
-    let cases: [(Vec<String>, &str); 4] = [
-        (
-            vec![
-                "add".into(),
-                real.clone(),
-                "--cmd".into(),
-                "echo {x}".into(),
-            ],
-            "a file path",
-        ),
-        (
-            vec!["add".into(), "-".into(), "--cmd".into(), "echo {x}".into()],
-            "stdin ('-')",
-        ),
-        (vec!["add".into(), "--edit".into(), real.clone()], "--edit"),
-        (vec!["add".into(), "--edit".into(), "-".into()], "--edit"),
+    let cases: [Vec<String>; 5] = [
+        vec![
+            "add".into(),
+            "--cmd".into(),
+            "echo {x}".into(),
+            "--edit".into(),
+        ],
+        vec![
+            "add".into(),
+            real.clone(),
+            "--cmd".into(),
+            "echo {x}".into(),
+        ],
+        vec!["add".into(), "-".into(), "--cmd".into(), "echo {x}".into()],
+        vec!["add".into(), "--edit".into(), real.clone()],
+        vec!["add".into(), "--edit".into(), "-".into()],
     ];
-    for (argv, needle) in cases {
+    let expected = [
+        "--cmd, --edit each pick a different way to add — use exactly one (nothing was added).",
+        "--cmd, a file path each pick a different way to add — use exactly one (nothing was added).",
+        "--cmd, stdin ('-') each pick a different way to add — use exactly one (nothing was added).",
+        "--edit, a file path each pick a different way to add — use exactly one (nothing was added).",
+        "--edit, stdin ('-') each pick a different way to add — use exactly one (nothing was added).",
+    ];
+    for (argv, expected) in cases.into_iter().zip(expected) {
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
+        let scratch_before = snapshot_tree(sandbox.scratch.path());
+        let source_before = fs::read(&real).unwrap();
         let output = sandbox
             .command()
             .env("EDITOR", &editor)
@@ -327,15 +338,28 @@ fn test_selector_collisions_are_refused_one_voice() {
             "{argv:?}: {}",
             combined(&output)
         );
-        let flat = flat(&output);
-        assert!(
-            flat.contains("each pick a different way to add"),
-            "{argv:?}: {flat}"
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before, "{argv:?}");
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            state_before,
+            "{argv:?}"
         );
-        assert!(flat.contains(needle), "{argv:?}: {flat}"); // the colliding selectors are named
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            config_before,
+            "{argv:?}"
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.scratch.path()),
+            scratch_before,
+            "{argv:?}"
+        );
+        assert_eq!(fs::read(&real).unwrap(), source_before, "{argv:?}");
         assert!(list_entries(&sandbox).is_empty(), "{argv:?}"); // nothing landed
         assert!(drafts(&sandbox).is_empty(), "{argv:?}"); // drafts home untouched
         assert!(!marker.exists(), "the editor stayed shut: {argv:?}");
+        let flat = flat(&output);
+        assert!(flat.contains(expected), "{argv:?}: {flat}");
     }
 }
 

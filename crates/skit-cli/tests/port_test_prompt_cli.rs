@@ -647,22 +647,63 @@ fn test_add_runner_flag_without_prompt_is_refused() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches. Oracle prints 'drop --edit/--exe/--kind/--cmd'; Rust uses a clap conflict ('the argument --prompt cannot be used with --exe')."]
 fn test_add_prompt_conflicts_with_other_kind_flags() {
-    let sandbox = Sandbox::new();
-    let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
     for flags in [
         vec!["--exe"],
         vec!["--kind", "shell"],
         vec!["--edit"],
         vec!["--cmd", "echo {x}"],
     ] {
+        let sandbox = Sandbox::new();
+        let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
+        let tools = TempDir::new().unwrap();
+        let editor = capturing_prompt_editor(tools.path(), "must-not-open", b"");
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
+        let source_before = fs::read(&src).unwrap();
         let mut args = vec!["add", &src, "--prompt"];
         args.extend(flags.iter().copied());
-        let (code, combined) = sandbox.out(&args);
-        assert_eq!(code, 2, "{flags:?}: {combined}");
+        let output = sandbox
+            .command()
+            .env("EDITOR", &editor.executable)
+            .env("VISUAL", &editor.executable)
+            .args(&args)
+            .output()
+            .unwrap();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(2), "{flags:?}: {combined}");
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before, "{flags:?}");
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            state_before,
+            "{flags:?}"
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            config_before,
+            "{flags:?}"
+        );
+        assert_eq!(fs::read(&src).unwrap(), source_before, "{flags:?}");
+        assert!(sandbox.draft_files().is_empty(), "{flags:?}: {combined}");
         assert!(
-            combined.contains("drop --edit/--exe/--kind/--cmd"),
+            !editor.launched.exists(),
+            "editor opened before prompt-kind conflict: {flags:?}: {combined}"
+        );
+        assert!(
+            sandbox
+                .json(&["list", "--json"])
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{flags:?}: {combined}"
+        );
+        assert!(
+            combined.contains("--prompt names the kind outright — drop --edit/--exe/--kind/--cmd."),
             "{flags:?}: {combined}"
         );
     }
@@ -2694,43 +2735,105 @@ fn test_add_prompt_unreadable_file_is_a_store_error() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches. Oracle prints '--runner only applies to prompt entries' or '--runner can't apply here'; Rust uses a clap conflict ('the argument --cmd cannot be used with --runner')."]
 fn test_add_runner_flag_refused_on_cmd_edit_exe_lanes() {
-    let sandbox = Sandbox::new();
-    let cases: [Vec<&str>; 3] = [
-        vec!["add", "--cmd", "echo {x}", "-n", "c", "--runner", "claude"],
-        vec!["add", "--edit", "--runner", "claude"],
-        vec!["add", "x", "--exe", "--runner", "claude"],
+    let cases: [(Vec<&str>, &str); 3] = [
+        (
+            vec!["add", "--cmd", "echo {x}", "-n", "c", "--runner", "claude"],
+            "--runner can't apply here — a --cmd template takes only --name/--description (nothing was added).",
+        ),
+        (
+            vec!["add", "--edit", "--runner", "claude"],
+            "--runner can't apply here — --edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt (nothing was added).",
+        ),
+        (
+            vec!["add", "x", "--exe", "--runner", "claude"],
+            "--runner only applies to prompt entries — add one with --prompt.",
+        ),
     ];
-    for args in cases {
-        let (code, combined) = sandbox.out(&args);
-        assert_eq!(code, 2, "{args:?}: {combined}");
+    for (args, expected) in cases {
+        let sandbox = Sandbox::new();
+        let tools = TempDir::new().unwrap();
+        let editor = capturing_prompt_editor(tools.path(), "runner-must-not-open", b"");
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
+        let output = sandbox
+            .command()
+            .env("EDITOR", &editor.executable)
+            .env("VISUAL", &editor.executable)
+            .args(&args)
+            .output()
+            .unwrap();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {combined}");
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before, "{args:?}");
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            state_before,
+            "{args:?}"
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            config_before,
+            "{args:?}"
+        );
+        assert!(sandbox.draft_files().is_empty(), "{args:?}: {combined}");
         assert!(
-            combined.contains("--runner only applies to prompt entries")
-                || combined.contains("--runner can't apply here"),
+            !editor.launched.exists(),
+            "editor opened before runner/lane refusal: {args:?}: {combined}"
+        );
+        assert!(
+            sandbox
+                .json(&["list", "--json"])
+                .as_array()
+                .unwrap()
+                .is_empty(),
             "{args:?}: {combined}"
         );
+        assert!(combined.contains(expected), "{args:?}: {combined}");
     }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches. Oracle refuses up front with '--no-interpolate only applies to prompt entries'; Rust routes it through clap conflicts (the argument '--exe' cannot be used with '--no-interpolate') and never emits the prompt-only sentence."]
 fn test_add_no_interpolate_refused_up_front_on_non_prompt_path_lane() {
-    let sandbox = Sandbox::new();
-    let prog = sandbox.write_file("tool", b"#!/bin/sh\necho hi\n");
     for extra in [vec!["--exe"], vec!["--kind", "shell"]] {
+        let sandbox = Sandbox::new();
+        let prog = sandbox.write_file("tool", b"#!/bin/sh\necho hi\n");
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
+        let source_before = fs::read(&prog).unwrap();
         let mut args = vec!["add", &prog];
         args.extend(extra.iter().copied());
         args.extend(["--no-interpolate", "-n", "t", "--no-input"]);
         let (code, combined) = sandbox.out(&args);
         assert_eq!(code, 2, "{extra:?}: {combined}");
-        assert!(
-            combined.contains("--no-interpolate only applies to prompt entries"),
-            "{extra:?}: {combined}"
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before, "{extra:?}");
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            state_before,
+            "{extra:?}"
         );
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            config_before,
+            "{extra:?}"
+        );
+        assert_eq!(fs::read(&prog).unwrap(), source_before, "{extra:?}");
+        assert!(sandbox.draft_files().is_empty(), "{extra:?}: {combined}");
         assert_eq!(
             sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
             0
+        );
+        assert!(
+            combined.contains(
+                "--no-interpolate only applies to prompt entries — add one with --prompt."
+            ),
+            "{extra:?}: {combined}"
         );
     }
 }

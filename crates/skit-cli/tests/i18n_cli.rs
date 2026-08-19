@@ -58,21 +58,37 @@ fn add_flag_refusals_use_the_v040_catalog_in_every_locale() {
         command
     };
 
-    for (locale, dependency_refusal, stdin_refusal) in [
+    for (
+        locale,
+        dependency_refusal,
+        stdin_refusal,
+        selector_refusal,
+        prompt_refusal,
+        runner_refusal,
+    ) in [
         (
             "en",
             "shell entries don't take package dependencies — drop --dep.",
             "--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",
+            "--cmd, a file path each pick a different way to add — use exactly one (nothing was added).",
+            "--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.",
+            "--runner can't apply here — a --cmd template takes only --name/--description (nothing was added).",
         ),
         (
             "zh-CN",
             "shell 条目不接受依赖包——去掉 --dep。",
             "--ref 在这里无法应用——stdin 会撰写一份全新副本，而 --ref/--exe 需要现成的文件(未添加任何内容)。",
+            "--cmd, 文件路径 各自代表一种不同的添加方式——请只用其中一种（未添加任何内容）。",
+            "--prompt 已直接指定类型——请去掉 --edit/--exe/--kind/--cmd。",
+            "--runner 在这里无法应用——--cmd 模板只接受 --name/--description(未添加任何内容)。",
         ),
         (
             "zh-TW",
             "shell 條目不接受依賴套件——拿掉 --dep。",
             "--ref 在這裡無法套用——stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案(未加入任何內容)。",
+            "--cmd, 檔案路徑 各自代表一種不同的加入方式——請只用其中一種（未加入任何內容）。",
+            "--prompt 已直接指定類型——請去掉 --edit/--exe/--kind/--cmd。",
+            "--runner 在這裡無法套用——--cmd 樣板只接受 --name/--description(未加入任何內容)。",
         ),
     ] {
         command(locale)
@@ -88,6 +104,25 @@ fn add_flag_refusals_use_the_v040_catalog_in_every_locale() {
             .assert()
             .code(2)
             .stderr(predicate::str::contains(stdin_refusal));
+        command(locale)
+            .arg("add")
+            .arg(&source)
+            .args(["--cmd", "echo {x}"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(selector_refusal));
+        command(locale)
+            .arg("add")
+            .arg(&source)
+            .args(["--prompt", "--exe"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(prompt_refusal));
+        command(locale)
+            .args(["add", "--cmd", "echo {x}", "--runner", "claude"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains(runner_refusal));
     }
 }
 

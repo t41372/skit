@@ -220,7 +220,7 @@ fn completion_adapters_follow_each_latest_main_degradation_contract() {
 }
 
 #[test]
-fn runner_remove_zsh_completion_keeps_both_target_specs_without_an_empty_conflict_group() {
+fn zsh_completion_keeps_runtime_validated_targets_without_parser_conflict_groups() {
     let mut output = Vec::new();
     write_completion(Shell::Zsh, &mut output);
     let output = String::from_utf8(output).unwrap();
@@ -235,6 +235,28 @@ fn runner_remove_zsh_completion_keeps_both_target_specs_without_an_empty_conflic
         output.contains("'::name -- Stable runner name:_default' \\\n"),
         "{output}"
     );
+
+    for spec in [
+        "'--cmd=[Register a command template instead of a file]:COMMAND_TEMPLATE:_default' \\\n",
+        "'-e[Write a new source in the configured editor, then add it]' \\\n",
+        "'--edit[Write a new source in the configured editor, then add it]' \\\n",
+        "'--prompt[Treat the source as a prompt entry]' \\\n",
+        "'--exe[Force executable kind inference]' \\\n",
+    ] {
+        assert!(output.contains(spec), "missing spec {spec:?}: {output}");
+    }
+    for stale in [
+        "(--prompt --exe --kind --runner --no-interpolate)--cmd=",
+        "(--cmd --prompt --ref --exe --kind --runner)-e",
+        "(--cmd --prompt --ref --exe --kind --runner)--edit",
+        "(--exe --kind)--prompt",
+        "(--prompt --kind --runner --no-interpolate)--exe",
+    ] {
+        assert!(
+            !output.contains(stale),
+            "stale parser conflict {stale}: {output}"
+        );
+    }
 }
 
 #[test]

@@ -3035,6 +3035,53 @@ const CATALOG: &[Translation] = &[
         "項目類型 {} 不支援來源操作",
     ),
     row!(
+        "--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.",
+        "--prompt 已直接指定类型——请去掉 --edit/--exe/--kind/--cmd。",
+        "--prompt 已直接指定類型——請去掉 --edit/--exe/--kind/--cmd。",
+    ),
+    row!("stdin ('-')", "stdin（'-'）", "stdin（'-'）"),
+    row!("a file path", "文件路径", "檔案路徑"),
+    row!(
+        "{} each pick a different way to add — use exactly one (nothing was added).",
+        "{} 各自代表一种不同的添加方式——请只用其中一种（未添加任何内容）。",
+        "{} 各自代表一種不同的加入方式——請只用其中一種（未加入任何內容）。",
+    ),
+    row!(
+        "a --cmd template takes only --name/--description",
+        "--cmd 模板只接受 --name/--description",
+        "--cmd 樣板只接受 --name/--description",
+    ),
+    row!(
+        "stdin authors a brand-new copy, and --ref/--exe need an existing file",
+        "stdin 会撰写一份全新副本，而 --ref/--exe 需要现成的文件",
+        "stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案",
+    ),
+    row!(
+        "--edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt",
+        "--edit 会起草一个全新脚本：它的类型取自你写的 shebang（例如 #!/usr/bin/env bash），--ref/--exe 需要现成的文件，而提示词要用 skit add --prompt 起草",
+        "--edit 會草擬一支全新腳本：它的類型取自你寫的 shebang（例如 #!/usr/bin/env bash），--ref/--exe 需要現成的檔案，而提示詞要用 skit add --prompt 草擬",
+    ),
+    row!(
+        "a drafted prompt takes only --name/--description/--runner/--no-interpolate",
+        "草稿提示词只接受 --name/--description/--runner/--no-interpolate",
+        "草稿提示詞只接受 --name/--description/--runner/--no-interpolate",
+    ),
+    row!(
+        "{} can't apply here — {} (nothing was added).",
+        "{} 在这里无法应用——{}(未添加任何内容)。",
+        "{} 在這裡無法套用——{}(未加入任何內容)。",
+    ),
+    row!(
+        "--no-interpolate only applies to prompt entries — add one with --prompt.",
+        "--no-interpolate 只适用于提示词条目——用 --prompt 添加一个。",
+        "--no-interpolate 只適用於提示詞項目——用 --prompt 加入一個。",
+    ),
+    row!(
+        "--runner only applies to prompt entries — add one with --prompt.",
+        "--runner 只适用于提示词条目——用 --prompt 添加一个。",
+        "--runner 只適用於提示詞項目——用 --prompt 加入一個。",
+    ),
+    row!(
         "--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",
         "--ref 在这里无法应用——stdin 会撰写一份全新副本，而 --ref/--exe 需要现成的文件(未添加任何内容)。",
         "--ref 在這裡無法套用——stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案(未加入任何內容)。",

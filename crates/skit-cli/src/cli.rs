@@ -298,26 +298,19 @@ enum Command {
         #[arg(long, short = 'd')]
         description: Option<String>,
         /// Write a new source in the configured editor, then add it.
-        #[arg(
-            long,
-            short = 'e',
-            conflicts_with_all = ["source", "command_template", "prompt", "reference", "exe", "kind", "runner"]
-        )]
+        #[arg(long, short = 'e')]
         edit: bool,
         /// Reference the original instead of storing a copy.
         #[arg(long = "ref", alias = "reference")]
         reference: bool,
         /// Register a command template instead of a file.
-        #[arg(
-            long = "cmd",
-            conflicts_with_all = ["source", "prompt", "exe", "kind", "runner", "no_interpolate"]
-        )]
+        #[arg(long = "cmd")]
         command_template: Option<String>,
         /// Treat the source as a prompt entry.
-        #[arg(long, conflicts_with_all = ["exe", "kind"])]
+        #[arg(long)]
         prompt: bool,
         /// Force executable kind inference.
-        #[arg(long, conflicts_with_all = ["prompt", "kind", "runner", "no_interpolate"])]
+        #[arg(long)]
         exe: bool,
         /// Pin a prompt runner.
         #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
@@ -1049,18 +1042,140 @@ fn validate_explicit_python_flags(options: &AddOptions) -> Result<(), CliError> 
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AddLane {
+    Command,
+    Stdin,
+    Editor,
+    PromptEditor,
+    Path,
+    Bare,
+}
+
+fn validate_add_dispatch(options: &AddOptions, edit: bool) -> Result<AddLane, CliError> {
+    if options.prompt
+        && (edit
+            || options.executable
+            || options.command_template.is_some()
+            || options.kind.is_some())
+    {
+        return Err(CliError::Usage(Message::new(
+            "--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.",
+        )));
+    }
+
+    let mut selectors = Vec::new();
+    if options.command_template.is_some() {
+        selectors.push("--cmd".to_owned());
+    }
+    if edit {
+        selectors.push("--edit".to_owned());
+    }
+    if let Some(source) = options.source.as_deref() {
+        selectors.push(if source == Path::new("-") {
+            text(active_locale(), "stdin ('-')").into_owned()
+        } else {
+            text(active_locale(), "a file path").into_owned()
+        });
+    }
+    if selectors.len() > 1 {
+        return Err(CliError::Usage(
+            Message::new(
+                "{} each pick a different way to add — use exactly one (nothing was added).",
+            )
+            .with(selectors.join(", ")),
+        ));
+    }
+
+    let lane = if options.command_template.is_some() {
+        AddLane::Command
+    } else if edit {
+        AddLane::Editor
+    } else if options.source.as_deref() == Some(Path::new("-")) {
+        AddLane::Stdin
+    } else if options.source.is_some() {
+        AddLane::Path
+    } else if options.prompt {
+        AddLane::PromptEditor
+    } else {
+        AddLane::Bare
+    };
+
+    let dependencies_explicit = options.dependencies_explicit || !options.dependencies.is_empty();
+    let given = [
+        ("--ref", options.reference),
+        ("--exe", options.executable),
+        ("--kind", options.kind.is_some()),
+        ("--runner", options.runner.is_some()),
+        ("--no-interpolate", options.no_interpolate),
+        ("--dep", dependencies_explicit),
+        ("--python", options.requires_python.is_some()),
+    ];
+    let accepts = |flag: &str| match lane {
+        AddLane::Command => false,
+        AddLane::Stdin => matches!(
+            flag,
+            "--kind" | "--runner" | "--no-interpolate" | "--dep" | "--python"
+        ),
+        AddLane::Editor => matches!(flag, "--dep" | "--python"),
+        AddLane::PromptEditor => matches!(flag, "--runner" | "--no-interpolate"),
+        AddLane::Path | AddLane::Bare => true,
+    };
+    let refused = given
+        .into_iter()
+        .filter_map(|(flag, present)| (present && !accepts(flag)).then_some(flag))
+        .collect::<Vec<_>>();
+    if !refused.is_empty() {
+        let hint = match lane {
+            AddLane::Command => "a --cmd template takes only --name/--description",
+            AddLane::Stdin => {
+                "stdin authors a brand-new copy, and --ref/--exe need an existing file"
+            }
+            AddLane::Editor => {
+                "--edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt"
+            }
+            AddLane::PromptEditor => {
+                "a drafted prompt takes only --name/--description/--runner/--no-interpolate"
+            }
+            AddLane::Path | AddLane::Bare => unreachable!("these lanes accept the matrix flags"),
+        };
+        return Err(CliError::Usage(
+            Message::new("{} can't apply here — {} (nothing was added).")
+                .with(refused.join(", "))
+                .with(text(active_locale(), hint)),
+        ));
+    }
+
+    if lane == AddLane::Path
+        && options.no_interpolate
+        && (options.executable || options.kind.as_deref().is_some_and(|kind| kind != "prompt"))
+    {
+        return Err(CliError::Usage(Message::new(
+            "--no-interpolate only applies to prompt entries — add one with --prompt.",
+        )));
+    }
+    if lane == AddLane::Path && options.runner.is_some() && options.executable {
+        return Err(CliError::Usage(Message::new(
+            "--runner only applies to prompt entries — add one with --prompt.",
+        )));
+    }
+
+    Ok(lane)
+}
+
 fn add_command(
     service: &LibraryService<FileStore>,
     mut options: AddOptions,
     edit: bool,
 ) -> Result<(), CliError> {
+    let lane = validate_add_dispatch(&options, edit)?;
     let no_input = options.no_input;
-    if edit && no_input {
+    if lane == AddLane::Editor && no_input {
         return Err(CliError::Usage(Message::new(
             "--edit opens your editor, which --no-input forbids — pipe the script in instead: skit add - -n NAME",
         )));
     }
-    if edit {
+    if lane == AddLane::Editor {
         if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return Err(CliError::Usage(Message::new(
                 "Writing a new script in an editor needs an interactive terminal.",
@@ -1094,8 +1209,8 @@ fn add_command(
         }
         return add_draft(service, options, false);
     }
-    if options.source.is_none() && options.command_template.is_none() {
-        if options.prompt {
+    if matches!(lane, AddLane::PromptEditor | AddLane::Bare) {
+        if lane == AddLane::PromptEditor {
             if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
                 options.source = Some(PathBuf::from("-"));
                 return add(service, options);
