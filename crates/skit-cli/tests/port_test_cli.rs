@@ -463,16 +463,22 @@ fn test_add_directory_path_clean_error_not_traceback() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a bare directory whose name claims no kind CAN be added as a program, so the oracle teaches --exe with exit 2 + \"is a directory\" + \"--exe\" (cli.py:1877). Rust has no such directory-consent lane — add() fails at read with exit 1 + \"could not read <dir>: Is a directory\", offering no --exe hint. Both exit code AND message diverge. Ties to pending task #15."]
 fn test_add_unknown_directory_suggests_exe_and_exits_usage() {
     let root = sandbox();
     let dir = root.path().join("plainbundle");
     fs::create_dir(&dir).unwrap();
+    let data_before = snapshot_tree(&root.path().join("data"));
+    let state_before = snapshot_tree(&root.path().join("state"));
+    let config_before = snapshot_tree(&root.path().join("config"));
     let (code, out) = run(skit(&root).arg("add").arg(&dir));
     assert_eq!(code, 2);
     assert!(out.contains("is a directory"), "{out}");
     assert!(out.contains("--exe"), "{out}");
     assert!(!out.contains("Not a file"), "{out}");
+    assert!(dir.is_dir());
+    assert_eq!(snapshot_tree(&root.path().join("data")), data_before);
+    assert_eq!(snapshot_tree(&root.path().join("state")), state_before);
+    assert_eq!(snapshot_tree(&root.path().join("config")), config_before);
 }
 
 #[test]

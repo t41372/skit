@@ -184,6 +184,25 @@ fn managed_parameter_flip_note_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn bare_directory_add_hint_matches_the_oracle_in_every_locale() {
+    let template = "{} is a directory — pass --exe to add it as a program that runs directly.";
+    assert_eq!(
+        format_text(Locale::En, template, &[&"bundle"]),
+        "bundle is a directory — pass --exe to add it as a program that runs directly."
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&"bundle"]),
+        "bundle 是一个目录——加 --exe 可把它作为直接运行的程序加入。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&"bundle"]),
+        "bundle 是一個目錄——加 --exe 可把它作為直接執行的程式加入。"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&"bundle"]);
+    assert!(pseudo.contains("bundle"), "{pseudo}");
+}
+
+#[test]
 fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
     let template = "Ignored a malformed value: {} (expected NAME=text).";
     let item = "--prompt: [red]bad[/red]";

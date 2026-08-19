@@ -2619,6 +2619,11 @@ const CATALOG: &[Translation] = &[
     row!("Can't read {}: {}", "无法读取 {}：{}", "無法讀取 {}：{}",),
     row!("Not a file: {}", "不是文件：{}", "不是檔案：{}",),
     row!(
+        "{} is a directory — pass --exe to add it as a program that runs directly.",
+        "{} 是一个目录——加 --exe 可把它作为直接运行的程序加入。",
+        "{} 是一個目錄——加 --exe 可把它作為直接執行的程式加入。",
+    ),
+    row!(
         "custom working directory must be absolute: {}",
         "自定义工作目录必须是绝对路径：{}",
         "自訂工作目錄必須是絕對路徑：{}",

@@ -3000,8 +3000,24 @@ fn add_with_config(
     } else {
         let expanded = expand_user_path(input);
         let source = resolve_add_source(&expanded)?;
-        let require_regular = !explicit_executable
-            && (prompt || kind.is_some() || infer_kind(&source, None, false).is_some());
+        let path_inferred = infer_kind(&source, None, false);
+        if source.is_dir()
+            && !explicit_executable
+            && !prompt
+            && kind.is_none()
+            && path_inferred.is_none()
+            && (no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal())
+        {
+            let file = source.file_name().unwrap_or(source.as_os_str());
+            return Err(CliError::Usage(
+                Message::new(
+                    "{} is a directory — pass --exe to add it as a program that runs directly.",
+                )
+                .with(file.to_string_lossy()),
+            ));
+        }
+        let require_regular =
+            !explicit_executable && (prompt || kind.is_some() || path_inferred.is_some());
         let snapshot = read_source(&source, explicit_executable, require_regular)?;
         let source_record = source.display().to_string();
         (
