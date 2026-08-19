@@ -1,4 +1,4 @@
-# skit Rust rewrite — session handoff (2026-08-14)
+# skit Rust rewrite — session handoff (2026-08-19)
 
 **Read this first, then `docs/design/python-test-port-ledger.md` (the authoritative per-module
 record + fix-list).** This file is SELF-CONTAINED: it does not depend on any `.claude` memory (that
@@ -13,14 +13,14 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 99 fix commits landed, 206 FAILING CONTRACTs closed
-(202 removed, translated, or un-ignored + 4 re-labeled architecture closures), 23 cross-crate
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 103 fix commits landed, 210 FAILING CONTRACTs closed
+(206 removed, translated, or un-ignored + 4 re-labeled architecture closures), 23 cross-crate
 stubs promoted,
 2 owed white-box units added. The last fully green recorded baseline was workspace
-3229 pass / 0 fail / 913 ignored. The fixed final PR #44 head was audited as a diff, not by its
-500+ commit history. Twenty-six stronger owners were folded into the existing consolidated targets after
+3237 pass / 0 fail / 909 ignored. The fixed final PR #44 head was audited as a diff, not by its
+500+ commit history. Twenty-eight stronger owners were folded into the existing consolidated targets after
 PR/main/Python body comparison; the raw split files and manifests were rejected.
-80 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+76 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -212,6 +212,10 @@ This session (2026-08-11 through 2026-08-14), in order — each closed the named
 | `c9d78af` | noninteractive prompt edit reconciliation: report body-order unmanaged placeholders with the frozen 20-item preview and localized tail, using the validated snapshot | 2 divergences |
 | `949a51a` | zero-runner prompt TUI: open the shared runner editor, keep normal Ctrl+N cancel semantics, and re-enter the same form after a successful save | 2 cross-crate owners + production parity |
 | `ccec2c6` | malformed prompt tweaks: warn and continue for missing `=` or an empty name without writing payload, metadata, or state; other malformed axes stay fatal | 2 divergences |
+| `0c64921` | source-managed parameter edits: exact post-commit receipt for resync/manage/unmanage/shared tweaks, byte-preserving no-op resync, JSON/normalize exclusions, and frozen three-language copy | 1 divergence |
+| `8eb9b03` | Add Review navigation: true Up/Down and Tab/Shift+Tab focus movement plus bidirectional clickable footer targets, without stealing arrows from Kind or open selects | 1 divergence + stronger PR body fold |
+| `7c37d80` | first managed-reader transition: announce when a modeled reader form is set aside after the first successful human `--manage`; keep JSON, dynamic readers, and later edits silent | 1 divergence |
+| `afeae66` | Preferences navigation: expose shared forward/back commands through the real TUI event fallback and reducer while Input, Radio, and open Select controls keep their own keys | 1 divergence + stronger PR body fold |
 
 PR #44 is complete upstream at fixed head `005bc9b7365fca1cfa7173acb61a2e8629f03bc9`.
 Review only the diff from the previous pin `38260ff881420fbd06f95b5b9243e0caa610e370`;
@@ -233,7 +237,7 @@ stronger owners and dishonest green rewrites: for example, PR moved Python's pub
 `flows.assemble` retyping contract to lower-level `delivery::assemble` with a hand-built
 `PreparedValue`, bypassing the gate under test. Keep folding only a stronger unique body after a
 three-way PR/main/Python comparison. Current accepted final-head folds are `ef5c5a2`, `a219125`,
-`f5423d4`, `0e9f082`, `24e9510`, `f8091da`, `0f76635`, `c9d78af`, `949a51a`, and `ccec2c6`. Runner confirmation exposed and fixed a real
+`f5423d4`, `0e9f082`, `24e9510`, `f8091da`, `0f76635`, `c9d78af`, `949a51a`, `ccec2c6`, `8eb9b03`, and `afeae66`. Runner confirmation exposed and fixed a real
 exit-code divergence, and the PR's seeded-runner fixture itself needed correction before its CAS
 assertion was valid. Prompt editor review likewise found that the PR's untouched test used an empty
 fixture and did not prove the localized starter; the corrected owner now does.
@@ -257,8 +261,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3229 passed / 0 failed / 913 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 80
+# => 3237 passed / 0 failed / 909 ignored
+grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 76
 ```
 
 The full-workspace benchmark target previously had one intermittent timing failure in
@@ -270,10 +274,10 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 80 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 76 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `ccec2c6`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `afeae66`.
 
 - **12 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Remaining work is the params human read/manage view, runner row/remove
@@ -290,12 +294,12 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   fixed in `219a136`; the 88 remaining ignores in that file are classified architecture,
   cross-crate, private-helper, or absent-public-seam ports rather than `FAILING CONTRACT` markers.
   Oracle: langs/javascript/deps.py.
-- **3 port_test_cli.rs — mixed add, run, params, and edit voices.** Missing add-source paths now use the oracle's
+- **2 port_test_cli.rs — mixed add, run, params, and edit voices.** Missing add-source paths now use the oracle's
   localized `File not found` preflight (`22016c2`), and typed directory sources use the exact
   `Not a file` diagnostic (`4fc1659`), and unreadable files use the localized read failure
   (`de754cf`). Explicit passthrough arguments now satisfy only blank required flags (`39f9bd0`);
   the remaining items overlap the add-lane and general CLI clusters.
-- **9 port_test_add_validation_contracts.rs + 5 port_test_add_lane_contracts.rs + 3
+- **9 port_test_add_validation_contracts.rs + 4 port_test_add_lane_contracts.rs + 3
   port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 11
   port_test_add_no_source.rs + 4 port_test_editor.rs (the `-e` lane) — the add-lane cluster
   (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
@@ -326,7 +330,11 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
   region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
   `deps`-clear must sweep node_modules.
-- **TUI: 3 path_tui + 4 tui_nav + 1 draft_and_reader_tui + 1 reset_default_ui.**
+- **TUI: 3 path_tui + 2 tui_nav + 1 draft_and_reader_tui + 1 reset_default_ui.** Add Review and
+  Preferences navigation are green. Add Source still has a real focus-ring blocker because
+  BrowseSource is the visible browse control's only keyboard path between SourcePath and
+  CommandTemplate. Settings arrow navigation conflicts with the current multiline boundary owner
+  and needs an explicit semantic decision before implementation.
 - **Small:** 1 show and 1 flows.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
