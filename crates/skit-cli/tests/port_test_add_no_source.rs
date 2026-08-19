@@ -30,20 +30,18 @@
 //!   exe -> 11, prompt -> 12.
 //!
 //! Bucket disposition (68 Python defs -> 68 `#[test]`, names preserved):
-//! - 19 REAL asserting tests that PASS: 3 pipe tests (the two bare lane-list refusals and the
-//!   `--cmd` secret note) + 16 pty tests (the orphan-flag refusals, the refusal-advice matrix, the
-//!   plain menu's four command/path/cancel lanes, the tui source-step cancel, and the exact
-//!   plain-menu lines).
-//! - 11 FAILING CONTRACT (divergence): full asserting bodies kept, `#[ignore]`d; each verified
+//! - 23 REAL asserting tests that PASS: 3 pipe tests (the two bare lane-list refusals and the
+//!   `--cmd` secret note) + 20 pty tests (the orphan-flag refusals, the refusal-advice matrix, the
+//!   plain menu's four command/path/cancel lanes, the directory-consent lanes, the tui source-step
+//!   cancel, and the exact plain-menu lines).
+//! - 8 FAILING CONTRACTS (divergence): full asserting bodies kept, `#[ignore]`d; each verified
 //!   against the built binary. The six plain unknown-kind picks + the two `_ask_kind_plain` CLI
-//!   layouts (Rust has no plain kind ASK — `add()` answers "could not infer the entry kind; pass
-//!   --kind KIND", cli.rs:2896); the rich `[1/2/3/4] (1)` prompt shape (dialoguer renders `[1]:`);
-//!   and the two plain directory-consent lanes (Rust errors "could not read … Is a directory", no
-//!   Confirm).
+//!   layouts remain because Rust has no plain kind ASK — `add()` answers "could not infer the entry
+//!   kind; pass --kind KIND" (cli.rs:2896).
 //!   Ties to pending task #15.
-//! - 7 ABSENT gaps: the plain-line kind ASK `_ask_kind_plain` (src/skit/cli.py:1370-1400) and the
-//!   plain directory-consent Confirm (src/skit/cli.py:1884) have no Rust twin; the strings live
-//!   only in skit-tui's KindPickModal (skit-tui/src/screens/add.rs:905-910). MUST-FIX stubs.
+//! - 6 ABSENT gaps: the plain-line kind ASK `_ask_kind_plain` (src/skit/cli.py:1370-1400) has no
+//!   Rust twin; the strings live only in skit-tui's KindPickModal
+//!   (skit-tui/src/screens/add.rs:905-910). MUST-FIX stubs.
 //! - 31 cross-crate stubs: the oracle calls a private skit-cli helper directly, or asserts the
 //!   captured kwargs of a monkeypatched internal (`_create_*`, `_print_add_summary`,
 //!   `_hosted_add_summary`, `_command_secret_names`, `_wants_tui_form`, `_cancelled_add`) or a
@@ -52,7 +50,7 @@
 
 use std::fs;
 use std::io::{Read as _, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -214,6 +212,29 @@ fn combined(stdout: &[u8], stderr: &[u8]) -> String {
 /// Collapse whitespace so an assertion on a phrase is not broken by wrapping.
 fn flat(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
 }
 
 // ---------------------------------------------------------------------------
@@ -891,31 +912,53 @@ fn test_ans_no_stray_markup_tokens_in_output() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): under form=plain the oracle collects consent for a directory with a Confirm, then rejoins the exe lane and stores a program. Rust has no directory-consent Confirm — `add()` fails at read with exit 1 \"could not read <dir>: Is a directory (os error 21)\" (a directory is treated as an unreadable file). The delta is code AND message on the pipe lane too: the oracle's non-interactive directory refusal is exit 2 \"<name> is a directory — pass --exe to add it as a program that runs directly.\" (src/skit/cli.py:1877). Ties to pending task #15. Verified against the built binary."]
 fn test_add_unknown_directory_plain_confirm_yes_adds_program() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
     let dir = sandbox.scratch.path().join("bundle.dir");
     fs::create_dir(&dir).unwrap();
+    let directory_before = snapshot_tree(&dir);
     let (code, output) = sandbox.pty(
         &["add", &dir.to_string_lossy()],
-        &[b"y\n", b"toolname\n", b"a dir-shaped tool\n"],
+        &[b"\n", b"toolname\n", b"a dir-shaped tool\n"],
         false,
     );
     assert_eq!(code, 0, "{output}");
     let entry = sandbox.show_json("toolname");
     assert_eq!(entry["kind"], "exe");
+    assert_eq!(entry["mode"], "reference");
+    assert_eq!(
+        entry["source"],
+        dir.canonicalize().unwrap().display().to_string()
+    );
     assert_eq!(entry["description"], "a dir-shaped tool");
+    assert!(dir.is_dir());
+    assert_eq!(snapshot_tree(&dir), directory_before);
+    assert_eq!(
+        snapshot_tree(&sandbox.data.path().join("scripts/toolname"))
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect::<Vec<_>>(),
+        [PathBuf::from("meta.toml")],
+        "a reference directory entry must not acquire a stored payload",
+    );
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle cancels the directory Confirm with 'no' (exit 130, nothing stored). Rust has no such Confirm — `add()` fails at read with exit 1 \"could not read <dir>: Is a directory\". (Non-interactively the oracle refuses a directory with exit 2 \"<name> is a directory — pass --exe …\", src/skit/cli.py:1877.) Ties to pending task #15. Verified against the built binary."]
 fn test_add_unknown_directory_plain_confirm_no_cancels() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
     let dir = sandbox.scratch.path().join("bundle.dir");
     fs::create_dir(&dir).unwrap();
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let directory_before = snapshot_tree(&dir);
     let (code, output) = sandbox.pty(&["add", &dir.to_string_lossy()], &[b"n\n"], false);
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert_eq!(snapshot_tree(&dir), directory_before);
     assert_eq!(code, 130, "{output}");
     assert!(
         output.to_lowercase().contains("nothing was added"),
@@ -925,9 +968,30 @@ fn test_add_unknown_directory_plain_confirm_no_cancels() {
 }
 
 #[test]
-#[ignore = "ABSENT gap: captures the directory Confirm's exact question/default/console. Rust has no directory-consent Confirm at all — a directory add fails at read (exit 1). The oracle's ask \"<name> is a directory. Add it as a program that runs directly?\" default-yes (src/skit/cli.py:1884-1889) has no Rust twin. MUST-FIX: offer the directory-as-exe consent. Owning ref src/skit/cli.py:1884."]
 fn test_add_unknown_directory_plain_confirm_call_contract() {
-    // The directory Confirm names the input's shape and defaults to yes.
+    let sandbox = Sandbox::new();
+    sandbox.form("plain");
+    let dir = sandbox.scratch.path().join("bundle.dir");
+    fs::create_dir(&dir).unwrap();
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let directory_before = snapshot_tree(&dir);
+
+    let (code, output) = sandbox.pty(&["add", &dir.to_string_lossy()], &[b"n\n"], false);
+
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert_eq!(snapshot_tree(&dir), directory_before);
+    assert_eq!(code, 130, "{output}");
+    let shown = flat(&output);
+    assert!(
+        shown.contains("bundle.dir is a directory. Add it as a program that runs directly?"),
+        "{shown}"
+    );
+    assert!(shown.contains("[Y/n]"), "{shown}");
+    assert!(sandbox.list_entries().is_empty());
 }
 
 #[test]

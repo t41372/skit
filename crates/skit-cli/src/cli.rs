@@ -2926,12 +2926,12 @@ fn add_with_config(
     let AddOptions {
         source,
         kind,
-        name,
-        description,
+        mut name,
+        mut description,
         reference,
         command_template,
         prompt,
-        executable,
+        mut executable,
         runner,
         no_interpolate,
         dependencies,
@@ -2962,7 +2962,7 @@ fn add_with_config(
     if prompt {
         validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
     }
-    let explicit_executable = executable || kind.as_deref() == Some("exe");
+    let mut explicit_executable = executable || kind.as_deref() == Some("exe");
 
     if let Some(template) = command_template {
         if template.trim().is_empty() {
@@ -3032,11 +3032,12 @@ fn add_with_config(
         let expanded = expand_user_path(input);
         let source = resolve_add_source(&expanded)?;
         let path_inferred = infer_kind(&source, None, false);
-        if source.is_dir()
+        let unknown_directory = source.is_dir()
             && !explicit_executable
             && !prompt
             && kind.is_none()
-            && path_inferred.is_none()
+            && path_inferred.is_none();
+        if unknown_directory
             && (no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal())
         {
             let file = source.file_name().unwrap_or(source.as_os_str());
@@ -3046,6 +3047,39 @@ fn add_with_config(
                 )
                 .with(file.to_string_lossy()),
             ));
+        }
+        if unknown_directory {
+            if !wants_tui_form(config_dir)? {
+                let file = source.file_name().unwrap_or(source.as_os_str());
+                let question =
+                    Message::new("{} is a directory. Add it as a program that runs directly?")
+                        .with(file.to_string_lossy())
+                        .localize(active_locale());
+                let accepted = Confirm::new()
+                    .with_prompt(question)
+                    .default(true)
+                    .interact_opt()
+                    .map_err(add_dialoguer_error)?
+                    .ok_or(CliError::AddCancelled)?;
+                if !accepted {
+                    return Err(CliError::AddCancelled);
+                }
+                if name.is_none() {
+                    let default = source_default_name(&source, false);
+                    let value = Input::<String>::new()
+                        .with_prompt(text(active_locale(), "Name in skit").into_owned())
+                        .default(default)
+                        .allow_empty(true)
+                        .interact_text()
+                        .map_err(add_dialoguer_error)?;
+                    name = (!value.trim().is_empty()).then(|| value.trim().to_owned());
+                }
+                if description.is_none() {
+                    description = Some(add_plain_text("Description (optional)")?.trim().to_owned());
+                }
+            }
+            executable = true;
+            explicit_executable = true;
         }
         let require_regular =
             !explicit_executable && (prompt || kind.is_some() || path_inferred.is_some());
