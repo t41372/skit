@@ -101,6 +101,8 @@ pub enum AddControlId {
     ToggleFocused,
     /// Move focus to the next field from the footer.
     NextField,
+    /// Move focus to the previous field from the footer.
+    PreviousField,
     /// Cancel.
     Cancel,
 }
@@ -346,6 +348,7 @@ impl AddScreenSession {
                     AddControlId::PickFocusedKind
                         | AddControlId::ToggleFocused
                         | AddControlId::NextField
+                        | AddControlId::PreviousField
                 ) {
                     self.focus.set(target.clone());
                     self.ensure_focus_visible();
@@ -497,6 +500,21 @@ impl AddScreenSession {
                 return self.activate(id, state);
             }
         }
+        if state.stage() == AddStage::Review {
+            match key.code {
+                KeyCode::Down => {
+                    self.focus.next();
+                    self.ensure_focus_visible();
+                    return Some(AddScreenEvent::Changed);
+                }
+                KeyCode::Up => {
+                    self.focus.prev();
+                    self.ensure_focus_visible();
+                    return Some(AddScreenEvent::Changed);
+                }
+                _ => {}
+            }
+        }
         if handle_scrollable_content_key(&mut self.scroll, &key, self.visible_height).is_some() {
             return Some(AddScreenEvent::Changed);
         }
@@ -600,6 +618,11 @@ impl AddScreenSession {
             }
             AddControlId::NextField => {
                 self.focus.next();
+                self.ensure_focus_visible();
+                Some(AddScreenEvent::Changed)
+            }
+            AddControlId::PreviousField => {
+                self.focus.prev();
                 self.ensure_focus_visible();
                 Some(AddScreenEvent::Changed)
             }
@@ -1423,11 +1446,10 @@ fn footer_chips(state: &AddWorkflowState, locale: Locale) -> Vec<AddFooterChip> 
                     AddControlId::EditSource,
                 ));
             }
-            chips.push(chip(
-                "Tab",
-                text(locale, "Next field").into_owned(),
-                AddControlId::NextField,
-            ));
+            chips.extend([
+                chip("Tab/↓", String::new(), AddControlId::NextField),
+                chip("Shift+Tab/↑", String::new(), AddControlId::PreviousField),
+            ]);
             chips
         }
         AddStage::Kind => vec![
