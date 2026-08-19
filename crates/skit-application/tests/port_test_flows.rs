@@ -1282,18 +1282,6 @@ fn test_plan_drift_names_entry_and_keeps_usable_specs() {}
 #[ignore = "cross-crate (skit-form::form_plan): whole-parser subparser degradation (degraded_reason, empty fields, FormPlan.text) is skit-form + skit-language."]
 fn test_plan_subparsers_degrades_with_reason() {}
 
-#[test]
-#[ignore = "cross-crate (skit-form): FormField.from_decl for an inject spec (label from prompt, kind, default/has_default, secret/env_source) is the frontend projection."]
-fn test_field_from_spec_maps_every_field() {}
-
-#[test]
-#[ignore = "cross-crate (skit-form): the inject-type whitelist fallback to free text is FormField.from_decl."]
-fn test_field_from_spec_unknown_type_falls_back_to_text() {}
-
-#[test]
-#[ignore = "cross-crate (skit-form): the inject kind whitelist (int/float/bool) is FormField.from_decl."]
-fn test_field_from_spec_maps_numeric_and_bool_kinds() {}
-
 /// The exact user-facing wording ("gap needs a whole number — you typed 'abc'." etc.) is
 /// rendered in skit-tui/src/session.rs from the ParameterType, not by skit-application's
 /// typed ValuePreparationError. The typed variants themselves are asserted in

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use skit_application::{LibraryScan, form_feedback::GlobCountRequest, tokens::TokenContext};
 use skit_domain::{
     EntryKind, EntrySummary, Slug, StorageMode,
-    parameters::{ParamDecl, ParameterType, ParameterValue},
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
 };
 use skit_ui::{
     Action, CommandContext, Effect, FormControl, FormInputKind, FormPurpose, LibraryState,
@@ -21,6 +21,108 @@ fn entry(slug: &str, name: &str, description: &str) -> EntrySummary {
         mode: StorageMode::Copy,
         description: description.to_owned(),
         target: None,
+    }
+}
+
+fn run_view_for(declaration: &ParamDecl) -> RunFormView {
+    RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        std::slice::from_ref(declaration),
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+}
+
+#[test]
+fn test_field_from_spec_maps_every_field() {
+    let mut declaration = ParamDecl::new("API");
+    declaration.binding = ParameterBinding::Const;
+    declaration.delivery = ParameterDelivery::Inject;
+    declaration.parameter_type = ParameterType::Int;
+    declaration.default = Some(ParameterValue::Integer(7));
+    declaration.prompt = "How many?".to_owned();
+    declaration.secret = true;
+    declaration.env_source = "API_N".to_owned();
+
+    let form = run_view_for(&declaration);
+    let field = &form.fields()[0];
+
+    assert_eq!(field.key, "value:API");
+    assert_eq!(field.label, "How many?");
+    assert_eq!(field.binding, ParameterBinding::Const);
+    assert_eq!(field.delivery, ParameterDelivery::Inject);
+    assert_eq!(field.parameter_type, ParameterType::Int);
+    assert_eq!(field.default.as_deref(), Some("7"));
+    assert!(matches!(
+        &field.control,
+        FormControl::Text(text)
+            if text.kind == FormInputKind::Integer && text.value.is_empty() && text.secret
+    ));
+    assert!(field.secret());
+    assert_eq!(field.environment_source(), Some("API_N"));
+}
+
+#[test]
+fn test_field_from_spec_unknown_type_falls_back_to_text() {
+    let mut declaration = ParamDecl::new("X");
+    declaration.binding = ParameterBinding::Const;
+    declaration.delivery = ParameterDelivery::Inject;
+    declaration.parameter_type = ParameterType::Choice;
+
+    assert!(declaration.choices.is_empty());
+    let form = run_view_for(&declaration);
+    let field = &form.fields()[0];
+    let FormControl::Text(text) = &field.control else {
+        panic!("an inject choice without options must use a text control: {field:?}");
+    };
+
+    assert_eq!(field.binding, ParameterBinding::Const);
+    assert_eq!(field.delivery, ParameterDelivery::Inject);
+    assert_eq!(field.parameter_type, ParameterType::Choice);
+    assert_eq!(text.kind, FormInputKind::Text);
+    assert_eq!(text.value, "");
+    assert_eq!(field.default, None);
+}
+
+#[test]
+fn test_field_from_spec_maps_numeric_and_bool_kinds() {
+    for (name, parameter_type) in [
+        ("R", ParameterType::Float),
+        ("B", ParameterType::Bool),
+        ("I", ParameterType::Int),
+    ] {
+        let mut declaration = ParamDecl::new(name);
+        declaration.binding = ParameterBinding::Const;
+        declaration.delivery = ParameterDelivery::Inject;
+        declaration.parameter_type = parameter_type;
+
+        let form = run_view_for(&declaration);
+        let field = &form.fields()[0];
+        assert_eq!(field.binding, ParameterBinding::Const);
+        assert_eq!(field.delivery, ParameterDelivery::Inject);
+        assert_eq!(field.parameter_type, parameter_type);
+        assert_eq!(field.default, None);
+        match parameter_type {
+            ParameterType::Float => assert!(matches!(
+                &field.control,
+                FormControl::Text(text)
+                    if text.kind == FormInputKind::Float && text.value.is_empty()
+            )),
+            ParameterType::Bool => assert!(matches!(
+                &field.control,
+                FormControl::Checkbox { checked: false }
+            )),
+            ParameterType::Int => assert!(matches!(
+                &field.control,
+                FormControl::Text(text)
+                    if text.kind == FormInputKind::Integer && text.value.is_empty()
+            )),
+            ParameterType::Str | ParameterType::Choice | ParameterType::Path => unreachable!(),
+        }
     }
 }
 
