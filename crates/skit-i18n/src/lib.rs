@@ -2284,6 +2284,11 @@ const CATALOG: &[Translation] = &[
         "--edit 會開啟你的編輯器，而 --no-input 禁止這麼做——請改用管道把腳本傳進來：skit add - -n NAME",
     ),
     row!(
+        "Writing a new script in an editor needs an interactive terminal.",
+        "用编辑器新建脚本需要交互式终端。",
+        "用編輯器新建腳本需要互動式終端機。",
+    ),
+    row!(
         "--interpolate only applies to prompt entries",
         "--interpolate 仅适用于提示词条目",
         "--interpolate 僅適用於提示詞項目",

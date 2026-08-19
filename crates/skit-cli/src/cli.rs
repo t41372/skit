@@ -1061,6 +1061,20 @@ fn add_command(
         )));
     }
     if edit {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err(CliError::Usage(Message::new(
+                "Writing a new script in an editor needs an interactive terminal.",
+            )));
+        }
+        validate_explicit_python_flags(&options)?;
+        if options.name.is_none() {
+            let name = add_plain_text("Name in skit")?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(CliError::Usage(Message::new("A name is required.")));
+            }
+            options.name = Some(name.to_owned());
+        }
         if let Some(name) = options
             .name
             .as_deref()
@@ -1078,7 +1092,6 @@ fn add_command(
                 Err(error) => return Err(error.into()),
             }
         }
-        validate_explicit_python_flags(&options)?;
         return add_draft(service, options, false);
     }
     if options.source.is_none() && options.command_template.is_none() {

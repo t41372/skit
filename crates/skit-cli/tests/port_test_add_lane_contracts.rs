@@ -367,13 +367,8 @@ fn test_editor_lane_versioned_python_shebang_onboards_as_python() {
         sandbox.scratch.path(),
         "#!/usr/bin/env python3.12\nprint('hi')\n",
     );
-    sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "-e", "-n", "vpy"])
-        .assert()
-        .success();
+    let (code, output) = sandbox.run_pty_until(&["add", "-e", "-n", "vpy"], &editor, "Added:");
+    assert_eq!(code, 0, "{output}");
     assert_eq!(sandbox.show_json("vpy")["kind"], "python");
 }
 
@@ -527,13 +522,12 @@ fn test_edit_description_flag_wins_over_python_docstring() {
         sandbox.scratch.path(),
         "\"\"\"Docstring one\"\"\"\nprint(1)\n",
     );
-    sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "-e", "-n", "dpy", "--description", "flag wins"])
-        .assert()
-        .success();
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "-e", "-n", "dpy", "--description", "flag wins"],
+        &editor,
+        "Added:",
+    );
+    assert_eq!(code, 0, "{output}");
     assert_eq!(sandbox.show_json("dpy")["description"], "flag wins");
 }
 
@@ -544,13 +538,12 @@ fn test_edit_description_flag_on_non_python_draft_is_stored() {
     // the description is not a python-only field.
     let sandbox = Sandbox::new();
     let editor = writer_editor(sandbox.scratch.path(), "#!/usr/bin/env bash\necho hi\n");
-    sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "-e", "-n", "dsh", "--description", "shell note"])
-        .assert()
-        .success();
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "-e", "-n", "dsh", "--description", "shell note"],
+        &editor,
+        "Added:",
+    );
+    assert_eq!(code, 0, "{output}");
     let entry = sandbox.show_json("dsh");
     assert_eq!(entry["kind"], "shell");
     assert_eq!(entry["description"], "shell note");
@@ -571,20 +564,17 @@ fn test_edit_post_editor_refusal_keeps_draft_and_announces_short() {
         sandbox.scratch.path(),
         "#!/usr/bin/env bash\necho drafted\n",
     );
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "-e", "-n", "d", "--dep", "foo"])
-        .output()
-        .unwrap();
-    let combined = combined(&output);
-    assert_eq!(output.status.code(), Some(2), "{combined}");
-    assert!(combined.contains("python flags"), "{combined}"); // the --dep refusal
-    assert!(combined.contains("Your draft was kept at"), "{combined}"); // the kept announcement…
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "-e", "-n", "d", "--dep", "foo"],
+        &editor,
+        "Your draft was kept at",
+    );
+    assert_eq!(code, 2, "{output}");
+    assert!(output.contains("python flags"), "{output}"); // the --dep refusal
+    assert!(output.contains("Your draft was kept at"), "{output}"); // the kept announcement…
     assert!(
-        !combined.contains("fix the problem and add it with"),
-        "{combined}"
+        !output.contains("fix the problem and add it with"),
+        "{output}"
     ); // …in its SHORT form
     assert_eq!(drafts(&sandbox).len(), 1, "the draft survived the refusal");
     assert!(!sandbox.entry_exists("d")); // nothing added

@@ -253,6 +253,34 @@ fn combined(output: &std::process::Output) -> String {
     text
 }
 
+fn flat_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
+}
+
 /// Drive the real binary through a PTY (interactive `_is_interactive == True` flows).
 fn run_pty(
     args: &[&str],
@@ -303,6 +331,91 @@ fn run_pty(
     let status = child.wait().unwrap();
     drop(writer);
     let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    (status.exit_code(), output)
+}
+
+/// Drive one real line prompt, but do not send its answer before the prompt is visible.
+///
+/// `editor_marker` makes the pre-authoring order observable: if the editor opens before the name
+/// prompt, fail immediately instead of waiting for a prompt that the broken implementation never
+/// emits.
+fn run_pty_after_prompt(
+    sandbox: &Sandbox,
+    args: &[&str],
+    editor: &Path,
+    editor_marker: &Path,
+    prompt: &str,
+    answer: &[u8],
+) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_LANG", "en");
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("VISUAL", editor);
+    command.env("EDITOR", editor);
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let drain_target = Arc::clone(&captured);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = std::thread::spawn(move || {
+        let mut buffer = [0_u8; 1024];
+        while let Ok(count) = reader.read(&mut buffer) {
+            if count == 0 {
+                break;
+            }
+            drain_target
+                .lock()
+                .unwrap()
+                .extend_from_slice(&buffer[..count]);
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let current = captured.lock().unwrap().clone();
+        if String::from_utf8_lossy(&current).contains(prompt) {
+            break;
+        }
+        assert!(
+            !editor_marker.exists(),
+            "the editor opened before prompt {prompt:?}: {}",
+            String::from_utf8_lossy(&current)
+        );
+        assert!(
+            Instant::now() < deadline,
+            "PTY output never contained {prompt:?}: {}",
+            String::from_utf8_lossy(&current)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut writer = pair.master.take_writer().unwrap();
+    writer.write_all(answer).unwrap();
+    writer.flush().unwrap();
+    let status = child.wait().unwrap();
+    drop(writer);
+    drop(pair.master);
+    drain.join().unwrap();
+    let output = String::from_utf8_lossy(&captured.lock().unwrap())
+        .replace("\r\n", "\n")
+        .replace('\r', "");
     (status.exit_code(), output)
 }
 
@@ -871,13 +984,15 @@ fn test_add_edit_creates_in_editor() {
         "import rich\nprint('x')\n",
         &sentinel,
     );
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "fresh"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "fresh"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
     assert!(sandbox.stored_meta("fresh").contains("kind = \"python\""));
     assert!(sandbox.stored_script("fresh").contains("rich"));
 }
@@ -893,13 +1008,15 @@ fn test_add_edit_bash_shebang_draft_becomes_a_shell_entry() {
         "#!/usr/bin/env bash\n# Ship it\necho drafted\n",
         &sentinel,
     );
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "deploy"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "deploy"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
     assert!(sandbox.stored_meta("deploy").contains("kind = \"shell\""));
     assert!(sandbox.stored_script("deploy").contains("echo drafted"));
 }
@@ -915,13 +1032,15 @@ fn test_add_edit_js_shebang_draft_scans_npm_deps() {
         "#!/usr/bin/env node\nimport chalk from 'chalk'\nconsole.log(chalk)\n",
         &sentinel,
     );
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "colorized"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "colorized"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
     let meta = sandbox.stored_meta("colorized");
     assert!(meta.contains("kind = \"js\""));
     assert!(
@@ -941,12 +1060,15 @@ fn test_add_edit_zsh_draft_records_interpreter_and_dry_run_names_zsh() {
         "#!/usr/bin/env zsh\necho hi\n",
         &sentinel,
     );
-    sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "zjob"])
-        .assert()
-        .success();
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "zjob"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
     let meta = sandbox.stored_meta("zjob");
     assert!(meta.contains("kind = \"shell\""));
     assert!(meta.contains("interpreter = \"zsh\""));
@@ -1006,15 +1128,17 @@ fn test_add_edit_dep_flag_on_non_python_draft_is_refused() {
         "#!/usr/bin/env bash\necho drafted\n",
         &sentinel,
     );
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "d", "--dep", "rich"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(combined(&output).contains("python flags")); // the refusal names the flags…
-    assert!(combined(&output).contains("shell")); // …and the draft's actual kind
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "d", "--dep", "rich"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 2, "{output}");
+    assert!(output.contains("python flags")); // the refusal names the flags…
+    assert!(output.contains("shell")); // …and the draft's actual kind
     assert!(!sandbox.resolvable("d")); // nothing was added
 }
 
@@ -1063,14 +1187,16 @@ fn test_add_edit_python_post_edit_failure_keeps_the_draft() {
         "import sys\nprint('drafted')\n",
         &sentinel,
     );
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "keptpy"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
-    assert!(combined(&output).contains("Your draft was kept at"));
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "keptpy"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[],
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(output.contains("Your draft was kept at"));
     assert!(sentinel.exists(), "the editor ran (post-edit failure)");
     assert!(!sandbox.draft_files().is_empty(), "the draft survived");
     // Nothing was added: the store is still empty (scripts/ stays readable at 0o500, no entry).
@@ -1097,7 +1223,6 @@ fn test_add_edit_rejects_path() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust add -e has no interactivity gate; launches the editor and creates the entry non-interactively"]
 fn test_add_edit_non_interactive_errors() {
     // A non-interactive `add -e` (piped, non-tty stdin/stdout) must refuse (exit 2) and NEVER launch
     // the editor — the oracle gates on `_is_interactive() == False`. `.output()` gives a non-tty
@@ -1105,20 +1230,93 @@ fn test_add_edit_non_interactive_errors() {
     // used, so this exercises the tty gate, not the flag. The editor writes a valid draft, so a Rust
     // that has NO gate runs the whole lane and exits 0 with the entry created (exit-2 fails first,
     // its message carrying the "Added" evidence); the editor sentinel then also proves the launch.
+    // `--no-input` is the first refusal. It keeps its more specific pipe guidance even though this
+    // process also has non-terminal streams.
+    let no_input = Sandbox::new();
+    let no_input_sentinel = no_input.scratch.path().join("no-input.launched");
+    let no_input_editor = writing_editor(
+        no_input.scratch.path(),
+        "no-input",
+        "print('must not run')\n",
+        &no_input_sentinel,
+    );
+    let no_input_data = snapshot_tree(no_input.data.path());
+    let no_input_state = snapshot_tree(no_input.state.path());
+    let no_input_config = snapshot_tree(no_input.config.path());
+    let no_input_output = no_input
+        .command()
+        .env("VISUAL", &no_input_editor)
+        .env("EDITOR", &no_input_editor)
+        .args(["add", "-e", "--name", "x", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(no_input_output.status.code(), Some(2));
+    assert_eq!(
+        flat_text(&combined(&no_input_output)),
+        "--edit opens your editor, which --no-input forbids — pipe the script in instead: skit add - -n NAME"
+    );
+    assert!(!no_input_sentinel.exists());
+    assert_eq!(snapshot_tree(no_input.data.path()), no_input_data);
+    assert_eq!(snapshot_tree(no_input.state.path()), no_input_state);
+    assert_eq!(snapshot_tree(no_input.config.path()), no_input_config);
+
+    // Without `--no-input`, the terminal refusal is exact and happens before the editor or store.
     let sandbox = Sandbox::new();
     let sentinel = sandbox.scratch.path().join("x.launched");
     let editor = writing_editor(sandbox.scratch.path(), "x", "print('x')\n", &sentinel);
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
     let output = sandbox
         .command()
+        .env("VISUAL", &editor)
         .env("EDITOR", &editor)
         .args(["add", "-e", "--name", "x"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
+    assert_eq!(
+        flat_text(&combined(&output)),
+        "Writing a new script in an editor needs an interactive terminal."
+    );
     assert!(
         !sentinel.exists(),
         "the editor must not be launched non-interactively"
     );
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert!(sandbox.draft_files().is_empty());
+
+    // The terminal gate also precedes flag validation and conflict lookup.
+    let ordered = Sandbox::new();
+    ordered.add_python("taken", "print('old')\n");
+    let ordered_sentinel = ordered.scratch.path().join("ordered.launched");
+    let ordered_editor = writing_editor(
+        ordered.scratch.path(),
+        "ordered",
+        "print('must not run')\n",
+        &ordered_sentinel,
+    );
+    let ordered_data = snapshot_tree(ordered.data.path());
+    let ordered_state = snapshot_tree(ordered.state.path());
+    let ordered_config = snapshot_tree(ordered.config.path());
+    let ordered_output = ordered
+        .command()
+        .env("VISUAL", &ordered_editor)
+        .env("EDITOR", &ordered_editor)
+        .args(["add", "-e", "--name", "taken", "--python", "not-a-version"])
+        .output()
+        .unwrap();
+    assert_eq!(ordered_output.status.code(), Some(2));
+    assert_eq!(
+        flat_text(&combined(&ordered_output)),
+        "Writing a new script in an editor needs an interactive terminal."
+    );
+    assert!(!ordered_sentinel.exists());
+    assert_eq!(snapshot_tree(ordered.data.path()), ordered_data);
+    assert_eq!(snapshot_tree(ordered.state.path()), ordered_state);
+    assert_eq!(snapshot_tree(ordered.config.path()), ordered_config);
 }
 
 #[test]
@@ -1246,58 +1444,140 @@ fn test_add_prompt_editor_untouched_starter_unlinks_the_draft() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the -e lane never prompts for a name — with --name omitted Rust auto-derives a machine name from the draft filename (skit-<id>) and exits 0 (add() name derivation), whereas the oracle prompts and uses the answer. Verified against the built binary (name 'skit-<uuid>')."]
 fn test_add_edit_prompts_for_name_when_omitted() {
     // Omitting --name -> the user is prompted and the answer becomes the name.
+    // Explicit flag validation is earlier than that prompt and must not cost an editor session.
+    let invalid = Sandbox::new();
+    let invalid_sentinel = invalid.scratch.path().join("invalid.launched");
+    let invalid_editor = writing_editor(
+        invalid.scratch.path(),
+        "invalid",
+        "print('must not run')\n",
+        &invalid_sentinel,
+    );
+    let invalid_data = snapshot_tree(invalid.data.path());
+    let invalid_state = snapshot_tree(invalid.state.path());
+    let invalid_config = snapshot_tree(invalid.config.path());
+    let (invalid_code, invalid_output) = run_pty(
+        &["add", "-e", "--python", "not-a-version"],
+        invalid.data.path(),
+        invalid.state.path(),
+        invalid.config.path(),
+        Some(&invalid_editor),
+        &[],
+    );
+    assert_eq!(invalid_code, 2, "{invalid_output}");
+    assert!(!invalid_output.contains("Name in skit"), "{invalid_output}");
+    assert!(!invalid_sentinel.exists());
+    assert_eq!(snapshot_tree(invalid.data.path()), invalid_data);
+    assert_eq!(snapshot_tree(invalid.state.path()), invalid_state);
+    assert_eq!(snapshot_tree(invalid.config.path()), invalid_config);
+
     let sandbox = Sandbox::new();
     let sentinel = sandbox.scratch.path().join("noname.launched");
     let editor = writing_editor(sandbox.scratch.path(), "noname", "print('x')\n", &sentinel);
-    sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e"])
-        .assert()
-        .success();
-    // The created entry's name must come from a prompt, not be auto-derived from the draft file.
-    let scripts = fs::read_dir(sandbox.data.path().join("scripts")).unwrap();
-    let names: Vec<String> = scripts
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let (code, output) = run_pty_after_prompt(
+        &sandbox,
+        &["add", "-e"],
+        &editor,
+        &sentinel,
+        "Name in skit",
+        b"prompted\r",
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("Name in skit"), "{output}");
+    assert!(output.contains("Added: prompted"), "{output}");
+    assert!(sentinel.exists(), "the editor must open after the answer");
+    assert_eq!(sandbox.stored_script("prompted"), "print('x')\n");
+    let meta = sandbox.stored_meta("prompted");
+    assert!(meta.contains("name = \"prompted\""), "{meta}");
+    assert!(meta.contains("kind = \"python\""), "{meta}");
+    let names: Vec<String> = fs::read_dir(sandbox.data.path().join("scripts"))
+        .unwrap()
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names.len(), 1, "{names:?}");
-    assert!(
-        !names[0].starts_with("skit-"),
-        "the name must be prompted, not auto-derived: {names:?}"
-    );
+    assert_eq!(names, ["prompted"]);
+    assert!(sandbox.draft_files().is_empty(), "{output}");
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the -e lane has no interactive name prompt, so a missing/blank name is never refused — Rust auto-derives a name and exits 0, whereas the oracle exits 2 on a whitespace-only prompted name. Verified against the built binary."]
 fn test_add_edit_blank_name_errors() {
     // A whitespace-only prompted name -> no name -> exit 2.
     let sandbox = Sandbox::new();
     let sentinel = sandbox.scratch.path().join("blank.launched");
     let editor = writing_editor(sandbox.scratch.path(), "blank", "print('x')\n", &sentinel);
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let (code, output) = run_pty_after_prompt(
+        &sandbox,
+        &["add", "-e"],
+        &editor,
+        &sentinel,
+        "Name in skit",
+        b"   \r",
+    );
+    assert_eq!(code, 2, "{output}");
+    assert!(output.contains("Name in skit"), "{output}");
+    assert!(output.contains("A name is required."), "{output}");
+    assert!(!sentinel.exists(), "a blank name must precede the editor");
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert!(sandbox.draft_files().is_empty());
+
+    // A non-blank prompted name is resolved only after the prompt and before the editor.
+    let conflict = Sandbox::new();
+    conflict.add_python("taken", "print('old')\n");
+    let conflict_sentinel = conflict.scratch.path().join("conflict.launched");
+    let conflict_editor = writing_editor(
+        conflict.scratch.path(),
+        "conflict",
+        "print('must not run')\n",
+        &conflict_sentinel,
+    );
+    let conflict_data = snapshot_tree(conflict.data.path());
+    let conflict_state = snapshot_tree(conflict.state.path());
+    let conflict_config = snapshot_tree(conflict.config.path());
+    let (conflict_code, conflict_output) = run_pty_after_prompt(
+        &conflict,
+        &["add", "-e"],
+        &conflict_editor,
+        &conflict_sentinel,
+        "Name in skit",
+        b"taken\r",
+    );
+    assert_eq!(conflict_code, 1, "{conflict_output}");
+    assert!(
+        flat_text(&conflict_output)
+            .contains("The name taken is already taken — pick another name."),
+        "{conflict_output}"
+    );
+    assert!(!conflict_sentinel.exists());
+    assert_eq!(snapshot_tree(conflict.data.path()), conflict_data);
+    assert_eq!(snapshot_tree(conflict.state.path()), conflict_state);
+    assert_eq!(snapshot_tree(conflict.config.path()), conflict_config);
 }
 
 #[test]
 fn test_add_edit_editor_error_exits_one() {
     // An editor that cannot launch -> exit 1.
     let sandbox = Sandbox::new();
-    let output = sandbox
-        .command()
-        .env("EDITOR", "/nonexistent/skit-no-such-editor")
-        .args(["add", "-e", "--name", "x"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1), "{}", combined(&output));
+    let missing = Path::new("/nonexistent/skit-no-such-editor");
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "x"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(missing),
+        &[],
+    );
+    assert_eq!(code, 1, "{output}");
 }
 
 #[test]
@@ -1344,18 +1624,19 @@ fn test_add_edit_writes_and_reports_managed_and_secret() {
     );
     let sentinel = sandbox.scratch.path().join("sec.launched");
     let editor = writing_editor(sandbox.scratch.path(), "sec", secret_draft, &sentinel);
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .args(["add", "-e", "--name", "fresh"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
-    let text = combined(&output);
-    assert!(text.contains("Managed parameters: API"), "{text}");
+    let (code, output) = run_pty(
+        &["add", "-e", "--name", "fresh"],
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+        Some(&editor),
+        &[b" \r"], // Keep the authored declaration instead of replacing it from detection.
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("Managed parameters: API"), "{output}");
     assert!(
-        text.contains("Secret parameter values are never saved by skit: API"),
-        "{text}"
+        output.contains("Secret parameter values are never saved by skit: API"),
+        "{output}"
     );
 }
 

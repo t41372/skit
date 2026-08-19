@@ -64,6 +64,46 @@ impl Sandbox {
         fs::write(&path, text).unwrap();
         path.to_str().unwrap().to_owned()
     }
+
+    fn editor_pty(
+        &self,
+        args: &[&str],
+        configure: impl FnOnce(&mut portable_pty::CommandBuilder),
+    ) -> (u32, String) {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        use std::io::Read as _;
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(std::path::PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.args(args);
+        command.env("TERM", "xterm-256color");
+        command.env("SKIT_DATA_DIR", self.data.path());
+        command.env("SKIT_STATE_DIR", self.state.path());
+        command.env("SKIT_CONFIG_DIR", self.config.path());
+        command.env("SKIT_LANG", "en");
+        command.env("HOME", self.home.path());
+        command.cwd(self.home.path());
+        configure(&mut command);
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let drain = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            reader.read_to_end(&mut output).unwrap();
+            output
+        });
+        let status = child.wait().unwrap();
+        drop(pair.master);
+        let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+        (status.exit_code(), output)
+    }
 }
 
 #[test]
@@ -735,10 +775,12 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
 fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["config", "editor", "true"]);
-    let untouched = sandbox.ok(&["add", "--edit", "--name", "Empty"]);
+    let (untouched_code, untouched) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Empty"], |_| {});
+    assert_eq!(untouched_code, 0, "{untouched}");
     assert!(
-        String::from_utf8_lossy(&untouched)
-            .contains("Nothing was written, so no script was added.")
+        untouched.contains("Nothing was written, so no script was added."),
+        "{untouched}"
     );
     assert!(
         fs::read_dir(sandbox.data.path().join("drafts"))
@@ -749,11 +791,14 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     );
 
     sandbox.ok(&["config", "editor", "false"]);
-    sandbox.code(&["add", "--edit", "--name", "Failed Editor"], 2);
+    let (failed_code, failed) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Failed Editor"], |_| {});
+    assert_eq!(failed_code, 2, "{failed}");
     // An unbalanced-quote value becomes the program name; the launch failure is a
     // failed operation (exit 1), and the draft is kept like every editor failure.
     sandbox.ok(&["config", "editor", "'"]);
-    sandbox.code(&["add", "--edit", "--name", "Bad Quote"], 1);
+    let (quote_code, quote) = sandbox.editor_pty(&["add", "--edit", "--name", "Bad Quote"], |_| {});
+    assert_eq!(quote_code, 1, "{quote}");
 
     let editor = sandbox.source(
         "draft-editor.sh",
@@ -769,24 +814,24 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     // Every candidate blank resolves the platform default `vi`; an empty PATH turns
     // the launch into the failed-operation refusal (exit 1) with the config hint.
     let empty_path = TempDir::new().unwrap();
-    sandbox
-        .command()
-        .env_remove("VISUAL")
-        .env("EDITOR", "")
-        .env("PATH", empty_path.path())
-        .args(["add", "--edit", "--name", "Empty command"])
-        .assert()
-        .code(1);
-    sandbox
-        .command()
-        .env("VISUAL", &editor)
-        .env_remove("EDITOR")
-        .args(["add", "--edit", "--name", "Visual draft"])
-        .assert()
-        .success();
+    let (empty_code, empty) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Empty command"], |command| {
+            command.env_remove("VISUAL");
+            command.env("EDITOR", "");
+            command.env("PATH", empty_path.path());
+        });
+    assert_eq!(empty_code, 1, "{empty}");
+    let (visual_code, visual) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Visual draft"], |command| {
+            command.env("VISUAL", &editor);
+            command.env_remove("EDITOR");
+        });
+    assert_eq!(visual_code, 0, "{visual}");
     sandbox.ok(&["config", "editor", &editor]);
     sandbox.ok(&["add", "--cmd", "true", "--name", "Duplicate"]);
-    sandbox.code(&["add", "--edit", "--name", "Duplicate"], 1);
+    let (duplicate_code, duplicate) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Duplicate"], |_| {});
+    assert_eq!(duplicate_code, 1, "{duplicate}");
     assert!(
         fs::read_dir(sandbox.data.path().join("drafts"))
             .unwrap()

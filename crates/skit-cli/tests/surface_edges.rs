@@ -233,6 +233,9 @@ fn an_explicit_none_constraint_clears_an_inherited_python_pin() {
 
 #[test]
 fn editing_without_a_configured_editor_falls_back_to_vi_and_reports_a_launch_failure() {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
     // v0.4: nothing configured and no env editor resolves the platform default `vi`
     // (editor.py:30-46). With an empty PATH the launch itself fails, which is a failed
     // operation (exit 1) that names the command and teaches the config key.
@@ -251,15 +254,39 @@ fn editing_without_a_configured_editor_falls_back_to_vi_and_reports_a_launch_fai
         .stderr(predicate::str::contains("Could not launch the editor (vi)"))
         .stderr(predicate::str::contains("skit config editor"));
 
-    sandbox
-        .command()
-        .env_remove("VISUAL")
-        .env_remove("EDITOR")
-        .env("PATH", empty_path.path())
-        .args(["add", "--edit", "--name", "Draft"])
-        .assert()
-        .code(1)
-        .stderr(predicate::str::contains("Could not launch the editor (vi)"));
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(std::path::PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(["add", "--edit", "--name", "Draft"]);
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("SKIT_LANG", "en");
+    command.env_remove("VISUAL");
+    command.env_remove("EDITOR");
+    command.env("PATH", empty_path.path());
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).unwrap();
+        output
+    });
+    let status = child.wait().unwrap();
+    drop(pair.master);
+    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    assert_eq!(status.exit_code(), 1, "{output}");
+    assert!(
+        output.contains("Could not launch the editor (vi)"),
+        "{output}"
+    );
 }
 
 #[test]

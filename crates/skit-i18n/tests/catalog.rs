@@ -239,6 +239,22 @@ fn prompt_editor_no_input_hint_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn script_editor_terminal_requirement_matches_the_oracle_in_every_locale() {
+    let template = "Writing a new script in an editor needs an interactive terminal.";
+    assert_eq!(format_text(Locale::En, template, &[]), template);
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[]),
+        "用编辑器新建脚本需要交互式终端。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[]),
+        "用編輯器新建腳本需要互動式終端機。"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[]);
+    assert!(pseudo.starts_with('⟦'), "{pseudo}");
+}
+
+#[test]
 fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
     let template = "Ignored a malformed value: {} (expected NAME=text).";
     let item = "--prompt: [red]bad[/red]";
