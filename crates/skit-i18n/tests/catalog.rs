@@ -162,6 +162,38 @@ fn non_secret_environment_source_warning_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn prompt_unmanaged_preview_matches_the_oracle_in_every_locale() {
+    let plain = "Detected but not yet managed: {} (use --add to manage them)";
+    assert_eq!(
+        format_text(Locale::En, plain, &[&"a, b"]),
+        "Detected but not yet managed: a, b (use --add to manage them)"
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, plain, &[&"a, b"]),
+        "检测到但尚未管理:a, b(用 --add 管理)"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, plain, &[&"a, b"]),
+        "偵測到但尚未管理:a, b(用 --add 管理)"
+    );
+
+    let singular =
+        "Detected but not yet managed: {} … and {} more candidate (use --add to manage them)";
+    assert_eq!(
+        format_text(Locale::ZhCn, singular, &[&"a, b", &1]),
+        "检测到但尚未管理：a, b……另有 1 个（用 --add 管理）"
+    );
+    let plural =
+        "Detected but not yet managed: {} … and {} more candidates (use --add to manage them)";
+    assert_eq!(
+        format_text(Locale::ZhTw, plural, &[&"a, b", &4]),
+        "偵測到但尚未管理：a, b……另有 4 個（用 --add 管理）"
+    );
+    let pseudo = format_text(Locale::Pseudo, plural, &[&"a, b", &4]);
+    assert!(pseudo.contains("möré"), "{pseudo}");
+}
+
+#[test]
 fn add_onboarding_controls_and_source_facts_are_fully_localized() {
     assert_eq!(
         text(

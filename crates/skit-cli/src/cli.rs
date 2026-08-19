@@ -75,11 +75,12 @@ use skit_ui::{
     Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor, DraftKind,
     DraftSummary, Effect as UiEffect, FieldValue, FormField, FormPurpose, FormView, HealthAction,
     HealthView, HostRequest, LibraryState, PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT,
-    PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext,
-    RunFormOptions, RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView,
-    RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest,
-    RunnerSaveTarget, Screen, SettingsInputs, SettingsSectionId, SettingsView,
-    SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
+    PROMPT_LIST_PREVIEW_LIMIT, PreferencesAction, PreferencesEffect, PreferencesView,
+    ReviewDefaults, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
+    RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity,
+    RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen, SettingsInputs,
+    SettingsSectionId, SettingsView, SourceSnapshot as AddSourceSnapshot, SubmittedValues,
+    TypedValue,
 };
 use thiserror::Error;
 use unicode_width::UnicodeWidthStr as _;
@@ -3495,13 +3496,56 @@ fn launch_editor(argv: &[String], path: &Path) -> Result<std::process::ExitStatu
 ///
 /// A prompt entry reconciles its placeholders instead of printing the generic
 /// drift hint.
-fn report_saved_edit(entry: &Entry) {
+fn report_saved_edit(entry: &Entry, edited: Option<&[u8]>) {
     humanln!("Saved {}.", entry.meta.name);
     if entry.meta.kind.as_str() != "prompt" {
         humanln!(
             "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
             entry.meta.name
         );
+        return;
+    }
+    let settings = EntrySettings::from_meta(&entry.meta);
+    if settings.interpolate
+        && (!io::stdin().is_terminal() || !io::stdout().is_terminal())
+        && let Some(edited) = edited
+    {
+        let text = std::str::from_utf8(edited).expect("prompt bytes were validated before report");
+        let managed = settings
+            .params
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let unmanaged = placeholder_params("prompt", text)
+            .into_iter()
+            .map(|item| item.name)
+            .filter(|name| !managed.contains(name.as_str()))
+            .collect::<Vec<_>>();
+        let visible = unmanaged
+            .iter()
+            .take(PROMPT_LIST_PREVIEW_LIMIT)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let remaining = unmanaged.len().saturating_sub(PROMPT_LIST_PREVIEW_LIMIT);
+        if remaining == 0 && !visible.is_empty() {
+            humanln!(
+                "Detected but not yet managed: {} (use --add to manage them)",
+                visible
+            );
+        } else if remaining == 1 {
+            humanln!(
+                "Detected but not yet managed: {} … and {} more candidate (use --add to manage them)",
+                visible,
+                remaining
+            );
+        } else if remaining > 1 {
+            humanln!(
+                "Detected but not yet managed: {} … and {} more candidates (use --add to manage them)",
+                visible,
+                remaining
+            );
+        }
     }
 }
 
@@ -3591,13 +3635,16 @@ fn edit_with_config(
             source.display()
         );
         launch_editor(&argv, &source)?;
-        if held.meta.kind.as_str() == "prompt" {
+        let edited = if held.meta.kind.as_str() == "prompt" {
             // Keep the editor's bytes in place when validation fails. The next edit is the
             // recovery path.
             let edited = fs::read(&source).map_err(|error| source_error("read", &source, error))?;
             validate_prompt_utf8(&edited, &source.display().to_string())?;
-        }
-        report_saved_edit(&held);
+            Some(edited)
+        } else {
+            None
+        };
+        report_saved_edit(&held, edited.as_deref());
         return Ok(());
     }
 
@@ -3625,7 +3672,7 @@ fn edit_with_config(
     if held.meta.kind.as_str() == "prompt" {
         validate_prompt_utf8(&edited, &target.display().to_string())?;
     }
-    report_saved_edit(&held);
+    report_saved_edit(&held, Some(&edited));
     Ok(())
 }
 

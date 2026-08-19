@@ -1453,6 +1453,21 @@ const CATALOG: &[Translation] = &[
         "偵測到但尚未管理：{}（用 --manage 管理）",
     ),
     row!(
+        "Detected but not yet managed: {} (use --add to manage them)",
+        "检测到但尚未管理:{}(用 --add 管理)",
+        "偵測到但尚未管理:{}(用 --add 管理)",
+    ),
+    row!(
+        "Detected but not yet managed: {} … and {} more candidate (use --add to manage them)",
+        "检测到但尚未管理：{}……另有 {} 个（用 --add 管理）",
+        "偵測到但尚未管理：{}……另有 {} 個（用 --add 管理）",
+    ),
+    row!(
+        "Detected but not yet managed: {} … and {} more candidates (use --add to manage them)",
+        "检测到但尚未管理：{}……另有 {} 个（用 --add 管理）",
+        "偵測到但尚未管理：{}……另有 {} 個（用 --add 管理）",
+    ),
+    row!(
         "Reference mode: skit never writes the original file — manage parameters by editing its [tool.skit] block in the source directly.",
         "参照模式：skit 绝不写入原始文件——请直接编辑源码中的 [tool.skit] 区块来管理参数。",
         "參照模式：skit 絕不寫入原始檔案——請直接編輯原始碼中的 [tool.skit] 區塊來管理參數。",

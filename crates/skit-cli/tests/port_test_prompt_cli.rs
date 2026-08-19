@@ -2986,7 +2986,6 @@ fn test_edit_prompt_interactive_numbers_manage_the_named_ones() {}
 fn test_edit_prompt_preserves_existing_managed_and_adds_the_new_one() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust `edit` prints only 'Edited: greet (greet)' and never the oracle's 'Detected but not yet managed: username' — the non-interactive edit reconcile does not surface new placeholders."]
 fn test_edit_prompt_non_interactive_names_the_unmanaged_variable() {
     let sandbox = Sandbox::new();
     sandbox.added("Say hello.\n", "greet");
@@ -3005,6 +3004,10 @@ fn test_edit_prompt_non_interactive_names_the_unmanaged_variable() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.status.code(), Some(0), "{combined}");
+    assert_eq!(
+        sandbox.body_bytes("greet").unwrap(),
+        b"Say hello.\n\nUser is {{username}}\n"
+    );
     assert!(
         sandbox.json(&["show", "greet", "--json"])["fields"]
             .as_array()
@@ -3019,7 +3022,6 @@ fn test_edit_prompt_non_interactive_names_the_unmanaged_variable() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust `edit` does not surface body-introduced placeholders after an edit — it prints only 'Edited: greet (greet)', never the oracle's flood preview 'and 4 more candidates'. Non-interactive reconcile hint is absent."]
 fn test_edit_prompt_non_interactive_flood_previews_with_a_tail() {
     let sandbox = Sandbox::new();
     sandbox.added("Base.\n", "greet");
@@ -3042,7 +3044,21 @@ fn test_edit_prompt_non_interactive_flood_previews_with_a_tail() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.status.code(), Some(0), "{combined}");
-    assert!(combined.contains("and 4 more candidates"), "{combined}");
+    let flat = combined.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("and 4 more candidates"), "{combined}");
+    assert!(flat.contains("h19"), "{combined}");
+    assert!(!flat.contains("h20"), "{combined}");
+    assert_eq!(
+        sandbox.body_bytes("greet").unwrap(),
+        format!("Base.\n\n{holes}\n").into_bytes()
+    );
+    assert!(
+        sandbox.json(&["show", "greet", "--json"])["fields"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "non-interactive manages nothing"
+    );
 }
 
 #[test]
