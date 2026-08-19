@@ -18,7 +18,7 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 stubs promoted,
 2 owed white-box units added. The last fully green recorded baseline was workspace
 3214 pass / 0 fail / 922 ignored. The fixed final PR #44 head was audited as a diff, not by its
-500+ commit history. Eighteen stronger owners were folded into the existing consolidated targets after
+500+ commit history. Nineteen stronger owners were folded into the existing consolidated targets after
 PR/main/Python body comparison; the raw split files and manifests were rejected.
 84 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
