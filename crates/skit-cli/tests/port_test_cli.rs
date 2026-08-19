@@ -940,19 +940,32 @@ fn test_run_shim_error() {
 #[test]
 fn test_run_bad_typed_value_caught_at_validation() {
     let root = sandbox();
+    let marker = root.path().join("typed-value-child.ran");
     inject_shell(
         &root,
         "j",
         "J",
-        "RETRIES=3\nprintf '%s\\n' \"$RETRIES\"\n",
+        &format!(
+            "RETRIES=3\nprintf child > {}\nprintf '%s\\n' \"$RETRIES\"\n",
+            marker.display()
+        ),
         &[const_int("RETRIES", Some(3))],
     );
     seed_state(&root, "j", "[values]\nRETRIES = \"not-a-number\"\n");
+    let data_before = snapshot_tree(&root.path().join("data"));
+    let state_before = snapshot_tree(&root.path().join("state"));
+    let config_before = snapshot_tree(&root.path().join("config"));
+
     let (code, out) = run(skit(&root).args(["run", "j", "--no-input"]));
+
     assert_eq!(code, 125);
     assert!(out.contains("not-a-number"), "{out}");
     assert!(out.contains("whole number"), "{out}");
     assert!(!out.to_lowercase().contains("resync"), "{out}");
+    assert!(!marker.exists(), "validation reached the child process");
+    assert_eq!(snapshot_tree(&root.path().join("data")), data_before);
+    assert_eq!(snapshot_tree(&root.path().join("state")), state_before);
+    assert_eq!(snapshot_tree(&root.path().join("config")), config_before);
 }
 
 #[test]
