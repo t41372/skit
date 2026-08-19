@@ -754,6 +754,11 @@ const CATALOG: &[Translation] = &[
         "已更新 {}。受管理的參數:{}",
     ),
     row!(
+        "Updated {}. Declared parameters: {}",
+        "已更新 {}。已声明的参数:{}",
+        "已更新 {}。已宣告的參數:{}",
+    ),
+    row!(
         "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).",
         "运行表单现在会询问这些管理的参数——脚本自己的命令行表单（{}）会先搁置，直到它们被移除（--unmanage）为止。",
         "執行表單現在會詢問這些管理的參數——腳本自己的命令列表單（{}）會先擱置，直到它們被移除（--unmanage）為止。",

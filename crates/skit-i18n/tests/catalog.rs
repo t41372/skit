@@ -165,6 +165,26 @@ fn managed_parameter_receipt_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn declared_parameter_receipt_matches_the_oracle_in_every_locale() {
+    let template = "Updated {}. Declared parameters: {}";
+    assert_eq!(
+        format_text(Locale::En, template, &[&"prog", &"width"]),
+        "Updated prog. Declared parameters: width"
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&"prog", &"a, b"]),
+        "已更新 prog。已声明的参数:a, b"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&"prog", &"—"]),
+        "已更新 prog。已宣告的參數:—"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&"prog", &"width"]);
+    assert!(pseudo.contains("prog"), "{pseudo}");
+    assert!(pseudo.contains("width"), "{pseudo}");
+}
+
+#[test]
 fn managed_parameter_flip_note_matches_the_oracle_in_every_locale() {
     let template = "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).";
     assert_eq!(

@@ -4457,6 +4457,19 @@ fn params(
         }
         return Ok(());
     }
+    if has_metadata_schema_operation && !args.json {
+        let names = declarations
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        humanln!(
+            "Updated {}. Declared parameters: {}",
+            held.meta.name,
+            if names.is_empty() { "—" } else { &names }
+        );
+        return Ok(());
+    }
     write_params(&held, &source, &settings, &declarations, args.json)
 }
 

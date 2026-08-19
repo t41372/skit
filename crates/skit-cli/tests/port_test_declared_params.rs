@@ -687,7 +687,6 @@ fn test_exe_with_only_placeholder_rows_falls_through_to_none() {
 // ================================================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle prints the confirmation summary \"Declared parameters: width\" after `params --add` (src/skit/cli.py); the Rust product has no such string (absent from skit-i18n) — it prints the full read-view param table instead. The add+run-delivery behavior itself works (the argv assembles to --width 1024)."]
 fn test_cli_add_flag_param_on_exe_then_run_set() {
     let workspace = lib();
     workspace.add_exe("prog");
@@ -706,7 +705,12 @@ fn test_cli_add_flag_param_on_exe_then_run_set() {
         "width=800",
     ]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("Declared parameters: width"));
+    let receipt = combined(&output);
+    assert!(
+        receipt.contains("Updated prog. Declared parameters: width"),
+        "{receipt}"
+    );
+    assert!(!receipt.contains("Managed parameters:"), "{receipt}");
     let declared = stdout_json(&workspace.run(&["params", "prog", "--json"]));
     let row = &declared["declared"][0];
     assert_eq!(row["name"], "width");
@@ -780,6 +784,11 @@ fn test_cli_declared_edit_with_json_emits_the_final_read_view() {
         "--json",
     ]);
     assert!(output.status.success(), "{}", combined(&output));
+    assert!(
+        !combined(&output).contains("Updated prog. Declared parameters:"),
+        "{}",
+        combined(&output)
+    );
     let payload = stdout_json(&output);
     assert_eq!(payload["declared"][0]["name"], "width");
     assert_eq!(payload["declared"][0]["delivery"], "flag");
@@ -1072,7 +1081,14 @@ fn test_cli_secret_declared_env_purges_prior_plaintext() {
     workspace.seed_values("prog", "[values]\nTOKEN = \"plaintext\"\n");
     let output = workspace.run(&["params", "prog", "--secret", "TOKEN"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("Removed previously stored plaintext"));
+    let shown = combined(&output);
+    let purge = shown
+        .find("Removed previously stored plaintext")
+        .unwrap_or_else(|| panic!("missing purge notice: {shown}"));
+    let receipt = shown
+        .find("Updated prog. Declared parameters: TOKEN")
+        .unwrap_or_else(|| panic!("missing declared receipt: {shown}"));
+    assert!(purge < receipt, "{shown}");
     assert!(!workspace.values_file("prog").contains("TOKEN"));
 }
 
@@ -1152,6 +1168,16 @@ fn test_cli_rm_declared_param() {
         .map(|row| row["name"].as_str().unwrap())
         .collect();
     assert_eq!(remaining, ["b"]);
+
+    let remove_last = workspace.run(&["params", "prog", "--rm", "b"]);
+    assert!(remove_last.status.success(), "{}", combined(&remove_last));
+    assert!(
+        combined(&remove_last).contains("Updated prog. Declared parameters: —"),
+        "{}",
+        combined(&remove_last)
+    );
+    let empty = stdout_json(&workspace.run(&["params", "prog", "--json"]));
+    assert_eq!(empty["declared"], serde_json::json!([]));
 }
 
 #[test]
