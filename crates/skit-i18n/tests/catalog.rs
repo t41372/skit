@@ -165,6 +165,25 @@ fn managed_parameter_receipt_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn managed_parameter_flip_note_matches_the_oracle_in_every_locale() {
+    let template = "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).";
+    assert_eq!(
+        format_text(Locale::En, template, &[&"getopts"]),
+        "The run form now asks for the managed parameters — the script's own command-line form (getopts) is set aside until they are removed (--unmanage)."
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&"getopts"]),
+        "运行表单现在会询问这些管理的参数——脚本自己的命令行表单（getopts）会先搁置，直到它们被移除（--unmanage）为止。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&"getopts"]),
+        "執行表單現在會詢問這些管理的參數——腳本自己的命令列表單（getopts）會先擱置，直到它們被移除（--unmanage）為止。"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&"getopts"]);
+    assert!(pseudo.contains("getopts"), "{pseudo}");
+}
+
+#[test]
 fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
     let template = "Ignored a malformed value: {} (expected NAME=text).";
     let item = "--prompt: [red]bad[/red]";

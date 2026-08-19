@@ -753,6 +753,11 @@ const CATALOG: &[Translation] = &[
         "已更新 {}。受管理的參數:{}",
     ),
     row!(
+        "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).",
+        "运行表单现在会询问这些管理的参数——脚本自己的命令行表单（{}）会先搁置，直到它们被移除（--unmanage）为止。",
+        "執行表單現在會詢問這些管理的參數——腳本自己的命令列表單（{}）會先擱置，直到它們被移除（--unmanage）為止。",
+    ),
+    row!(
         "Variable insertion is off for {} — turn it on first with: skit params {} --interpolate",
         "{} 的变量插入已关闭——请先开启:skit params {} --interpolate",
         "{} 的變量插入已關閉——請先開啟:skit params {} --interpolate",

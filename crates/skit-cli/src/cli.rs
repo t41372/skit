@@ -4106,6 +4106,16 @@ fn params(
         }
         source.ok().flatten().unwrap_or_default()
     };
+    let replaced_reader_frameworks = if source_parameter_kind && !args.manage.is_empty() {
+        let plan = onboarding_plan(held.meta.kind.as_str(), &original_source);
+        (managed_params(held.meta.kind.as_str(), &original_source).is_empty()
+            && plan
+                .modeled_cli_fields()
+                .is_some_and(|fields| !fields.is_empty()))
+        .then(|| plan.frameworks.join(", "))
+    } else {
+        None
+    };
     let (mut source, prepared_managed) = prepare_source_management(
         held.meta.kind.as_str(),
         held.meta.mode,
@@ -4419,6 +4429,16 @@ fn params(
             held.meta.name,
             if names.is_empty() { "—" } else { &names }
         );
+        if let Some(frameworks) = replaced_reader_frameworks.filter(|_| {
+            declarations
+                .iter()
+                .any(|item| item.binding != ParameterBinding::None)
+        }) {
+            humanln!(
+                "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).",
+                frameworks
+            );
+        }
         return Ok(());
     }
     write_params(&held, &source, &settings, &declarations, args.json)

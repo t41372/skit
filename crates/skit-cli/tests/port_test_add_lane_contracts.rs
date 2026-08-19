@@ -702,7 +702,6 @@ fn test_params_python_constants_only_still_offers_manage() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle prints a one-time flip note when a reader-driven-ONLY entry first gets a managed const — 'The run form now asks for the managed parameters …' naming the set-aside reader form (getopts) (src/skit/cli.py:4575). Rust's params has no such note at all. Verified against the built binary."]
 fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
     // A getopts shell entry that ALSO holds a constant: the first `--manage CONST` prints the
     // flip note naming getopts (managed params REPLACE the reader form). A second --manage on the
@@ -725,12 +724,29 @@ fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
         .output()
         .unwrap();
     assert_eq!(first.status.code(), Some(0), "{}", combined(&first));
+    let first_text = combined(&first);
+    let receipt = "Updated both. Managed parameters: CITY";
+    let flip_note = "The run form now asks for the managed parameters — the script's own command-line form (getopts) is set aside until they are removed (--unmanage).";
+    let receipt_at = first_text
+        .find(receipt)
+        .unwrap_or_else(|| panic!("missing receipt: {first_text}"));
+    let note_at = first_text
+        .find(flip_note)
+        .unwrap_or_else(|| panic!("missing flip note: {first_text}"));
+    assert!(receipt_at < note_at, "{first_text}");
+
+    // Repeating an already-managed name changes no form owner and prints no second flip note.
+    let already = sandbox
+        .command()
+        .args(["params", "both", "--manage", "CITY"])
+        .output()
+        .unwrap();
+    assert_eq!(already.status.code(), Some(0), "{}", combined(&already));
     assert!(
-        combined(&first).contains("The run form now asks for the managed parameters"),
+        !combined(&already).contains("The run form now asks for the managed parameters"),
         "{}",
-        combined(&first)
+        combined(&already)
     );
-    assert!(combined(&first).contains("getopts"), "{}", combined(&first)); // the reader form set aside is named
 
     // A constant is already managed now → the entry is no longer reader-driven-only, so a
     // second manage prints no flip note.
@@ -760,6 +776,47 @@ fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
         !combined(&again).contains("The run form now asks for the managed parameters"),
         "{}",
         combined(&again)
+    );
+
+    // A dynamic getopts surface has no modeled fields to set aside. Managing a constant is
+    // additive there, so detecting the framework alone must not trigger the note.
+    let dynamic = sandbox.scratch.path().join("dynamic.sh");
+    fs::write(
+        &dynamic,
+        "#!/usr/bin/env bash\nCITY=Taipei\nOPTS=\"n:v\"\nwhile getopts \"$OPTS\" opt; do :; done\necho $CITY\n",
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            dynamic.to_str().unwrap(),
+            "-n",
+            "dynamic",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+    let dynamic_manage = sandbox
+        .command()
+        .args(["params", "dynamic", "--manage", "CITY"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        dynamic_manage.status.code(),
+        Some(0),
+        "{}",
+        combined(&dynamic_manage)
+    );
+    assert!(
+        combined(&dynamic_manage).contains("Updated dynamic. Managed parameters: CITY"),
+        "{}",
+        combined(&dynamic_manage)
+    );
+    assert!(
+        !combined(&dynamic_manage).contains("The run form now asks for the managed parameters"),
+        "{}",
+        combined(&dynamic_manage)
     );
 }
 
