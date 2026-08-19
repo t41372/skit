@@ -13,12 +13,13 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 93 fix commits landed, 202 FAILING CONTRACTs closed
-(198 removed, translated, or un-ignored + 4 re-labeled architecture closures), 2 stubs promoted,
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 94 fix commits landed, 202 FAILING CONTRACTs closed
+(198 removed, translated, or un-ignored + 4 re-labeled architecture closures), 11 cross-crate
+stubs promoted,
 2 owed white-box units added. The last fully green recorded baseline was workspace
-3196 pass / 0 fail / 938 ignored. Reviewed
-PR #44 waves continue to add executable parity owners and completeness checks after duplicate and
-test-quality review.
+3207 pass / 0 fail / 929 ignored. The fixed final PR #44 head was audited as a diff, not by its
+500+ commit history. Nine stronger owners were folded into the existing consolidated targets after
+PR/main/Python body comparison; the raw split files and manifests were rejected.
 84 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
@@ -201,20 +202,34 @@ This session (2026-08-11 through 2026-08-14), in order — each closed the named
 | `7f7be0d` | untouched editor drafts: safely unlink owned empty script/prompt drafts and report the exact typed success notice | 3 |
 | `4746c36` | params source management: classify reference and command no-copy refusals as operation failures before any source, metadata, or state write | 2 |
 | `623989f` | TUI mouse routing: ignore movement, button release, and drag events over Preferences, Run, and generic Form click targets while preserving left-button and wheel paths | regression fix (+2 tests) |
+| `ef5c5a2` | runner removal confirmation: real PTY yes/no and two confirmation-window CAS races; runner n/EOF use frozen failure exit 1 while entry removal remains abort 130 | 4 cross-crate owners + production parity |
+| `a219125` | JavaScript removal locking: move two exact owners to `skit-store`; prove wait-before-delete, persistent lock inode, and byte-exact no-write on lock-open failure | 2 cross-crate owners |
+| `f5423d4` | inject field projection: move three exact owners to `RunFormView::from_declarations` and retain typed control/default/secret/env/binding assertions | 3 cross-crate owners |
 
-PR #44 is paused at a fixed reviewed checkpoint. Its merge ancestry and complete test snapshot are
-preserved on `integration/pr44-20260812` at tip `a6e0513` (PR pin `38260ff`); do not use the earlier
-`0b36bf7` result,
-which inherited an upstream denominator error (60 instead of 78 `test_store.py` functions and
-3000 instead of 3018 total contracts). The integration workspace passes
-`cargo test --locked --workspace --all-targets --all-features --no-run`. The pinned PR tree's new
-3008 denominator is blocked; integration retains the frozen 3018 count. The complete accounting
-gate remains deliberately red at 68/84 modules and 1526/3018 contracts, with 16 missing modules and
-no broken guards. The latest PR increment still cannot land raw: its Store manifest collapses 82
-owner occurrences into 70 names and hides 12 duplicates; two Atomic lock contracts use the same
-witness and lack separate production seams; two Shim names are strict semantic duplicates; and the
-two JavaScript gate contracts require a real `node --check` production gate and ordering fix on the
-current branch. Reviewed green waves on this branch
+PR #44 is complete upstream at fixed head `005bc9b7365fca1cfa7173acb61a2e8629f03bc9`.
+Review only the diff from the previous pin `38260ff881420fbd06f95b5b9243e0caa610e370`;
+do not replay its 500+ commits or merge its 198 split test/support paths. The previous ancestry
+snapshot remains on `integration/pr44-20260812` at `a6e0513`, but it is not the final PR head.
+The final increment has 1,110 unique `test_*` names: 969 already exist on this branch, 471 of those
+are ignored/ledger owners, and six names are duplicated inside the PR increment itself. The raw
+fixed tree fails `cargo fmt --all --check` and fails workspace `--no-run` at multiple independent
+compile blockers (`TryLockError::kind`, an invalid raw-string delimiter, chained
+`portable_pty::CommandBuilder` setters, and an undeclared `ratatui_core` test dependency). Its
+support files also emit enough dead-code/unreachable-public warnings to fail Clippy `-D warnings`.
+Scratch-only compile probes were discarded.
+
+The final manifests cannot prove completeness: several collect into sets before checking
+multiplicity, most scan only hand-picked split files, and they do not reject ignored/cfg-disabled
+owners or prove that guard tests pass. The `3018` frozen denominator is correct, but the master
+guard only proves that a guard file contains some `#[test]`. Concrete body review also found both
+stronger owners and dishonest green rewrites: for example, PR moved Python's public
+`flows.assemble` retyping contract to lower-level `delivery::assemble` with a hand-built
+`PreparedValue`, bypassing the gate under test. Keep folding only a stronger unique body after a
+three-way PR/main/Python comparison. Current accepted final-head folds are `ef5c5a2`, `a219125`,
+and `f5423d4`; runner confirmation additionally exposed and fixed a real exit-code divergence, and
+the PR's seeded-runner fixture itself needed correction before its CAS assertion was valid.
+
+Earlier reviewed green waves on this branch
 include parser mutation
 contracts (`184726d`), argstate filesystem contracts (`40b6087`), atomic state contracts
 (`817f14c`), two non-duplicate boolean parameter-edit guards (`7fcc177`), and packaging distribution
@@ -233,7 +248,7 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3196 passed / 0 failed / 938 ignored
+# => 3207 passed / 0 failed / 929 ignored
 grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 84
 ```
 
@@ -249,7 +264,7 @@ un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81
 ## 5. REMAINING work — 84 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `4746c36`.
+the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `f5423d4`.
 
 - **14 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs — the
   prompt cluster (#14).** Remaining work is the params human read/manage view, post-edit placeholder
