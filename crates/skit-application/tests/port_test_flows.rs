@@ -995,14 +995,6 @@ fn test_truthy_accepts_every_truthy_spelling() {
     }
 }
 
-#[test]
-#[ignore = "cross-crate (skit-store::path_glob): _expand_glob_piece's real sorted matches, glob-char detection, and literal fallback are the GlobExpander adapter; skit-application only holds the port trait."]
-fn test_expand_glob_piece_globs_only_when_glob_chars_present() {}
-
-#[test]
-#[ignore = "cross-crate (skit-store::path_glob): recursive ** expansion is the filesystem GlobExpander adapter, not skit-application."]
-fn test_expand_glob_piece_supports_recursive_doublestar() {}
-
 /// A values dict that never mentions the checkbox must behave as unchecked, not crash.
 #[test]
 fn test_assemble_tolerates_a_bool_field_missing_from_values() {

@@ -8,7 +8,7 @@ use skit_store::FileGlobExpander;
 use tempfile::TempDir;
 
 #[test]
-fn relative_patterns_match_against_the_configured_cwd_and_return_relative_paths() {
+fn test_expand_glob_piece_globs_only_when_glob_chars_present() {
     let root = TempDir::new().unwrap();
     fs::write(root.path().join("b.txt"), b"").unwrap();
     fs::write(root.path().join("a.txt"), b"").unwrap();
@@ -20,6 +20,8 @@ fn relative_patterns_match_against_the_configured_cwd_and_return_relative_paths(
     assert_eq!(glob.expand_piece("*.txt"), ["a.txt", "b.txt"]);
     assert_eq!(glob.expand_piece("*.md"), ["c.md"]);
     assert_eq!(glob.expand_piece(".*.txt"), [".hidden.txt"]);
+    assert_eq!(glob.expand_piece("[ab]?*"), ["a.txt", "b.txt"]);
+    assert_eq!(glob.expand_piece("a.txt"), ["a.txt"]);
 }
 
 #[test]
@@ -34,18 +36,36 @@ fn an_escaped_bracket_pattern_matches_only_the_literal_file() {
 }
 
 #[test]
-fn recursive_patterns_are_sorted_and_keep_platform_native_relative_spelling() {
+fn test_expand_glob_piece_supports_recursive_doublestar() {
     let root = TempDir::new().unwrap();
-    fs::create_dir_all(root.path().join("nested/deeper")).unwrap();
-    fs::write(root.path().join("nested/b.rs"), b"").unwrap();
-    fs::write(root.path().join("nested/deeper/a.rs"), b"").unwrap();
+    let nested = root.path().join("nested");
+    let deeper = nested.join("deeper");
+    fs::create_dir_all(&deeper).unwrap();
+    fs::write(nested.join("b.rs"), b"").unwrap();
+    fs::write(deeper.join("a.rs"), b"").unwrap();
+    fs::write(deeper.join("x.txt"), b"").unwrap();
     let glob = FileGlobExpander::new(root.path());
 
     let expected = [
-        PathBuf::from("nested/b.rs").display().to_string(),
-        PathBuf::from("nested/deeper/a.rs").display().to_string(),
+        PathBuf::from("nested").join("b.rs").display().to_string(),
+        PathBuf::from("nested")
+            .join("deeper")
+            .join("a.rs")
+            .display()
+            .to_string(),
     ];
-    assert_eq!(glob.expand_piece("**/*.rs"), expected);
+    let rust_pattern = PathBuf::from("**").join("*.rs").display().to_string();
+    assert_eq!(glob.expand_piece(&rust_pattern), expected);
+
+    let text_pattern = PathBuf::from("**").join("x.txt").display().to_string();
+    assert_eq!(
+        glob.expand_piece(&text_pattern),
+        [PathBuf::from("nested")
+            .join("deeper")
+            .join("x.txt")
+            .display()
+            .to_string()]
+    );
 }
 
 #[test]
