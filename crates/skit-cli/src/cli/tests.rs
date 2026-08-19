@@ -3305,6 +3305,74 @@ fn tui_host_submits_every_form_without_global_process_state() {
 }
 
 #[test]
+fn selected_prompt_runner_preflight_mapping_is_typed_and_scoped() {
+    let prompt = health_entry("prompt");
+    let missing = RunError::Launch(LaunchError::ProgramNotFound {
+        name: "missing-agent".to_owned(),
+    });
+    for (locale, expected) in [
+        (
+            Locale::En,
+            "Error: required program was not found: missing-agent",
+        ),
+        (Locale::ZhCn, "错误：找不到所需程序：missing-agent"),
+        (Locale::ZhTw, "錯誤：找不到必要程式：missing-agent"),
+    ] {
+        assert_eq!(
+            selected_prompt_runner_preflight_message(
+                &prompt,
+                Some("missing-agent"),
+                &missing,
+                locale,
+            )
+            .as_deref(),
+            Some(expected),
+        );
+    }
+
+    let command = health_entry("command");
+    assert_eq!(
+        selected_prompt_runner_preflight_message(
+            &command,
+            Some("missing-agent"),
+            &missing,
+            Locale::En,
+        ),
+        None,
+    );
+    assert_eq!(
+        selected_prompt_runner_preflight_message(&prompt, None, &missing, Locale::En),
+        None,
+    );
+    let unknown = RunError::RunnerNotFound {
+        name: "missing-agent".to_owned(),
+        known: "working".to_owned(),
+    };
+    assert_eq!(
+        selected_prompt_runner_preflight_message(
+            &prompt,
+            Some("missing-agent"),
+            &unknown,
+            Locale::En,
+        ),
+        None,
+    );
+    let process = RunError::Launch(LaunchError::Process {
+        operation: "start",
+        source: io::Error::other("late spawn failure"),
+    });
+    assert_eq!(
+        selected_prompt_runner_preflight_message(
+            &prompt,
+            Some("missing-agent"),
+            &process,
+            Locale::En,
+        ),
+        None,
+    );
+}
+
+#[test]
 fn tui_python_dependencies_use_the_same_pep_723_source_as_the_cli() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");

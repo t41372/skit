@@ -571,13 +571,6 @@ fn test_missing_pinned_binary_cannot_block_a_different_pick() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-cli): preflight of the resolved prompt runner and the return-to-library-with-error path live in launcher/flows. tests/test_prompt_tui.py:415."]
-fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
-    // A selected-but-unavailable agent returns to the library with the actionable error and
-    // never hands the terminal to a child process.
-}
-
-#[test]
 #[ignore = "CROSS-CRATE (skit-cli): action_run's zero-runners branch opens the RunnerAddModal instead of the form; that routing is in the composition root. tests/test_prompt_tui.py:446."]
 fn test_run_with_zero_runners_offers_the_new_agent_modal() {
     // An emptied runner list opens the New agent modal rather than dead-ending on a CLI hint.

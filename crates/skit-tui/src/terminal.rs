@@ -429,6 +429,28 @@ mod tests {
     }
 
     #[test]
+    fn an_unrelated_host_error_keeps_its_form_owner() {
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Form(FormView {
+            purpose: skit_ui::FormPurpose::Settings,
+            title: "Edit entry".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: Some("demo".to_owned()),
+            fields: vec![skit_ui::FormField::text("name", "Name", "demo")],
+            focused: 0,
+            submit_label: "Save".to_owned(),
+        })));
+        let effect = state.update(Action::Submit);
+        let mut host = |_effect| -> Result<Action, HostError> { Err(HostError) };
+        let mut locale = Locale::En;
+
+        assert!(!drain_host_effects(&mut state, &mut host, effect, &mut locale).unwrap());
+        assert!(matches!(state.screen(), Screen::Form(_)));
+        assert_eq!(state.status(), Some("entry not found: demo"));
+    }
+
+    #[test]
     fn a_broken_host_cycle_stops_at_a_fixed_boundary() {
         let mut state = LibraryState::default();
         let mut calls = 0;

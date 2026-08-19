@@ -444,6 +444,13 @@ fn strip_terminal_control(input: &str) -> String {
     String::from_utf8_lossy(&output).into_owned()
 }
 
+fn compact_terminal_text(input: &str) -> String {
+    input
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
+}
+
 struct PromptTuiSandbox {
     data: TempDir,
     state: TempDir,
@@ -493,6 +500,18 @@ impl PromptTuiSandbox {
                 PromptRunner {
                     name: name.to_owned(),
                     argv: runner_argv(&program, &marker_path),
+                },
+                false,
+            )
+            .unwrap();
+    }
+
+    fn missing_runner(&self, name: &str) {
+        self.config()
+            .set_runner(
+                PromptRunner {
+                    name: name.to_owned(),
+                    argv: vec![name.to_owned(), "{{prompt}}".to_owned()],
                 },
                 false,
             )
@@ -706,6 +725,60 @@ fn test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin() {
     );
 
     tui.wait_for_after(rerun, "Library");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+}
+
+#[test]
+fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
+    const MISSING_RUNNER: &str = "skit-definitely-missing-selected-runner";
+    const WORKING_CHILD: &str = "CHILD-WORKING-FALLBACK";
+
+    let sandbox = PromptTuiSandbox::new();
+    sandbox.clear_runners();
+    sandbox.missing_runner(MISSING_RUNNER);
+    sandbox.runner("working", WORKING_CHILD);
+    sandbox.prompt("");
+    let working_marker = sandbox.marker_path("working");
+    let form_state = sandbox.state.path().join("values/p.toml");
+
+    let mut tui = sandbox.tui();
+    tui.wait_for("Library");
+    let open = tui.checkpoint();
+    tui.send_effect_key(b"\r");
+    let form = tui.wait_for_after(open, "Run p");
+    assert!(
+        compact_terminal_text(&form).contains(MISSING_RUNNER),
+        "the missing runner was not the form's resolved default: {form}"
+    );
+    tui.send(b"hello");
+
+    assert!(!working_marker.exists());
+    assert!(!form_state.exists());
+    let submit = tui.checkpoint();
+    tui.send_effect_key(&[0x12]);
+    let refused = tui.wait_for_after(submit, "program");
+    let program_error = format!("required program was not found: {MISSING_RUNNER}");
+    assert!(
+        compact_terminal_text(&refused).contains(&compact_terminal_text(&program_error)),
+        "the selected runner refusal lost its exact typed error: {refused}"
+    );
+    assert!(
+        !working_marker.exists(),
+        "the host launched the working fallback after the selected runner failed"
+    );
+    assert!(
+        !form_state.exists(),
+        "a failed preflight wrote last-run or form state"
+    );
+
+    let library = tui.wait_for_after(submit, "Library");
+    let expected = format!("Error: {program_error}");
+    assert!(
+        compact_terminal_text(&library).contains(&compact_terminal_text(&expected)),
+        "the Library lost the exact localized refusal: {library}"
+    );
     let quit = tui.checkpoint();
     tui.send(b"q");
     let _ = tui.wait_for_exit_after(quit);

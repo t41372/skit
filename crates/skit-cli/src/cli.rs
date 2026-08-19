@@ -61,8 +61,8 @@ use skit_language::{
     write_managed_params_bytes, write_uv_metadata,
 };
 use skit_runtime::{
-    DependencyError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe, SystemProbe,
-    clear_javascript_dependencies, managed_uv_path, network_looks_blocked,
+    DependencyError, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe,
+    SystemProbe, clear_javascript_dependencies, managed_uv_path, network_looks_blocked,
     resolve_javascript_runtime, resolve_launch_workdir,
 };
 use skit_store::{
@@ -7558,7 +7558,9 @@ fn tui_submit_run(
     let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
     let run_values = changed_form_values(values, &saved.values);
     let extra_args = split_editable_arguments(&tui_value(values, "_skit_args"))?;
-    let exit = crate::run::run_with_roots(
+    let runner = tui_nonempty_owned(values, "_skit_runner");
+    let runner_was_picked = tui_flag(values, "_skit_runner_picked")?;
+    let result = crate::run::run_with_roots(
         service,
         store,
         state_dir,
@@ -7568,8 +7570,8 @@ fn tui_submit_run(
             values: run_values,
             preset: tui_nonempty_owned(values, "_skit_preset"),
             save_preset: tui_nonempty_owned(values, "_skit_save_preset"),
-            runner: tui_nonempty_owned(values, "_skit_runner"),
-            runner_was_picked: tui_flag(values, "_skit_runner_picked")?,
+            runner: runner.clone(),
+            runner_was_picked,
             dry_run: tui_flag(values, "_skit_dry_run")?,
             no_input: true,
             plain: true,
@@ -7577,7 +7579,21 @@ fn tui_submit_run(
             forget_args: false,
             extra_args,
         },
-    )?;
+    );
+    let exit = match result {
+        Ok(exit) => exit,
+        Err(error) => {
+            if let Some(message) = selected_prompt_runner_preflight_message(
+                &entry,
+                runner.as_deref(),
+                &error,
+                active_locale(),
+            ) {
+                return tui_complete(service, state_dir, &message);
+            }
+            return Err(error.into());
+        }
+    };
     if FileConfigStore::new(config_dir).get("after_run")? == "exit" {
         Ok(UiAction::Quit)
     } else {
@@ -7587,6 +7603,22 @@ fn tui_submit_run(
             &format!("Run finished with exit status {exit}"),
         )
     }
+}
+
+fn selected_prompt_runner_preflight_message(
+    entry: &Entry,
+    runner: Option<&str>,
+    error: &RunError,
+    locale: Locale,
+) -> Option<String> {
+    if entry.meta.kind.as_str() != "prompt"
+        || runner.is_none()
+        || !matches!(error, RunError::Launch(LaunchError::ProgramNotFound { .. }))
+    {
+        return None;
+    }
+    let detail = error.message().localize(locale);
+    Some(format_text(locale, "Error: {}", &[&detail]))
 }
 
 fn tui_submit_settings(
