@@ -300,4 +300,45 @@ fn powershell_takes_declared_riders_because_it_writes_no_schema_into_its_source(
     assert!(meta.contains("API_TOKEN"), "{meta}");
     let stored = fs::read_to_string(sandbox.data.path().join("scripts/ps/script.ps1")).unwrap();
     assert!(!stored.contains("API_TOKEN"), "{stored}");
+    assert_eq!(
+        fs::read_to_string(&original).unwrap(),
+        "param([string]$Name = 'World')\nWrite-Output $Name\n"
+    );
+
+    // The public consumer keeps the reader as the owning source and appends the declared rider.
+    // Reading the plan changes neither metadata nor either source copy.
+    let show = sandbox
+        .command()
+        .args(["show", "ps", "--json"])
+        .output()
+        .unwrap();
+    assert!(show.status.success());
+    assert!(show.stderr.is_empty());
+    let shown: Value = serde_json::from_slice(&show.stdout).unwrap();
+    assert_eq!(shown["param_source"], "argparse");
+    let fields = shown["fields"].as_array().unwrap();
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field["key"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["Name", "API_TOKEN"]
+    );
+    assert_eq!(fields[0]["source"], "flag");
+    assert_eq!(fields[0]["flag"], "-Name");
+    assert_eq!(fields[0]["default"], "World");
+    assert_eq!(fields[1]["source"], "env");
+    assert_eq!(fields[1]["default"], Value::Null);
+    assert_eq!(
+        fs::read_to_string(sandbox.data.path().join("scripts/ps/meta.toml")).unwrap(),
+        meta
+    );
+    assert_eq!(
+        fs::read_to_string(sandbox.data.path().join("scripts/ps/script.ps1")).unwrap(),
+        stored
+    );
+    assert_eq!(
+        fs::read_to_string(&original).unwrap(),
+        "param([string]$Name = 'World')\nWrite-Output $Name\n"
+    );
 }

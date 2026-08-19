@@ -413,6 +413,12 @@ pub fn form_plan(kind: &str, text: &str, settings: &EntrySettings) -> FormPlan {
         return plan;
     }
 
+    // PowerShell is the v0.4 reader-only kind. Its param() block owns the form when present, and
+    // declared flag/environment rows extend that static surface instead of replacing it.
+    if kind == "powershell" {
+        return reader_only_form_plan(kind, text, &settings.parameters);
+    }
+
     let riders = declared_riders(&settings.parameters, &BTreeSet::new());
     if !riders.is_empty() {
         return FormPlan {
@@ -434,6 +440,48 @@ pub fn form_plan(kind: &str, text: &str, settings: &EntrySettings) -> FormPlan {
             ..FormPlan::default()
         },
         CliFormProjection::Absent => FormPlan::default(),
+    }
+}
+
+fn reader_only_form_plan(kind: &str, text: &str, declared: &[ParamDecl]) -> FormPlan {
+    match cli_form_projection(kind, text) {
+        CliFormProjection::Static { fields, .. } => {
+            let mut fields = prepared(fields);
+            append_riders(&mut fields, declared);
+            FormPlan {
+                source: FormSource::Reader,
+                fields,
+                ..FormPlan::default()
+            }
+        }
+        CliFormProjection::Dynamic { reason, .. } => {
+            let riders = declared_riders(declared, &BTreeSet::new());
+            if riders.is_empty() {
+                FormPlan {
+                    source: FormSource::Reader,
+                    degradation: Some(reason),
+                    ..FormPlan::default()
+                }
+            } else {
+                FormPlan {
+                    source: FormSource::Declared,
+                    fields: prepared(riders),
+                    ..FormPlan::default()
+                }
+            }
+        }
+        CliFormProjection::Absent => {
+            let riders = declared_riders(declared, &BTreeSet::new());
+            if riders.is_empty() {
+                FormPlan::default()
+            } else {
+                FormPlan {
+                    source: FormSource::Declared,
+                    fields: prepared(riders),
+                    ..FormPlan::default()
+                }
+            }
+        }
     }
 }
 

@@ -22,7 +22,8 @@
 //!   where the shipping CLI composition and `form_plan` disagree).
 //! - Python `FormField.source` -> `PreparedField.declaration.delivery`; `FormPlan.source`
 //!   -> `FormSource` (`.as_str()` gives the machine spelling `command`/`declared`/`none`/
-//!   `argparse`/`inject`).
+//!   `argparse`/`inject`). The exact reader+rider form contract lives in the existing
+//!   `skit-form/tests/form_params.rs` owner; this target keeps its CLI consumers.
 //! - Python `flows.assemble(plan, values, extra, ...)` -> `skit_application::delivery::assemble(
 //!   &declarations, &prepared_values, &extra)`; the Python cwd/env token pass happens BEFORE
 //!   this Rust boundary, so the token-free oracle values map to `PreparedValue::Scalar`.
@@ -45,8 +46,8 @@
 //!   ("Declared parameters:", "has no managed parameters", "Ignored a malformed value",
 //!   "Removed previously stored plaintext"), the `params` batch
 //!   fault-tolerance gap (a malformed/bad value hard-errors exit 2 instead of warning at
-//!   exit 0), the `add --cmd` placeholder pre-seeding (which makes `--add <placeholder>`
-//!   refuse with exit 2), and the reader-kind env-rider source label ("declared" not "argparse").
+//!   exit 0), and the `add --cmd` placeholder pre-seeding (which makes `--add <placeholder>`
+//!   refuse with exit 2).
 //! - UNMAPPABLE white-box (`#[ignore]` stub): `test_cli_declared_warning_codes_render` drives
 //!   the Python-private `cli._render_declared_warning`; the Rust warnings are localized
 //!   messages with no public renderer to observe, and their observable outcomes are covered
@@ -1350,28 +1351,6 @@ fn test_declared_add_on_interpreted_kind_delivers_at_run() {
     let shown = combined(&output).replace('\n', "");
     assert!(shown.contains("--size"), "{shown}");
     assert!(shown.contains('5'), "{shown}");
-}
-
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): a reader kind (powershell) with a declared env rider must keep source == \"argparse\" while the rider rides along after the reader's fields (src/skit/flows.plan_for_entry). `skit_form::form_plan` returns early on any declared rider and labels the plan \"declared\", dropping the reader's Region field entirely (crates/skit-form/src/lib.rs:409-423). The shipping CLI keeps [Region, LOGLEVEL] but still labels it \"declared\", not \"argparse\"."]
-fn test_reader_kind_declared_env_rider_merges_not_erases() {
-    // A PowerShell entry reads its param() block statically; a declared env row must RIDE ALONG
-    // after the reader's fields, never short-circuit the plan and erase the whole form.
-    let mut loglevel = ParamDecl::new("LOGLEVEL");
-    loglevel.delivery = ParameterDelivery::Env;
-    let settings = EntrySettings {
-        parameters: vec![loglevel],
-        ..EntrySettings::default()
-    };
-    let plan = form_plan("powershell", "param([string]$Region)\n", &settings);
-    assert_eq!(plan.source, FormSource::Reader);
-    assert_eq!(
-        field_sources(&plan),
-        vec![
-            ("Region".to_owned(), ParameterDelivery::Flag),
-            ("LOGLEVEL".to_owned(), ParameterDelivery::Env),
-        ]
-    );
 }
 
 #[test]

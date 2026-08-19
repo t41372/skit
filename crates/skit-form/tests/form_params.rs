@@ -127,7 +127,133 @@ fn prepared_managed_fields_can_skip_a_second_source_parse() {
 }
 
 #[test]
-fn declared_riders_own_the_form_before_a_static_cli_reader() {
+fn test_reader_kind_declared_env_rider_merges_not_erases() {
+    // A PowerShell entry reads its param() block statically; a declared env row must ride after
+    // the reader field, never short-circuit the plan and erase that field.
+    let mut loglevel = ParamDecl::new("LOGLEVEL");
+    loglevel.delivery = ParameterDelivery::Env;
+    let settings = EntrySettings {
+        parameters: vec![loglevel],
+        ..EntrySettings::default()
+    };
+
+    let plan = form_plan("powershell", "param([string]$Region)\n", &settings);
+
+    assert_eq!(plan.source, FormSource::Reader);
+    assert_eq!(plan.source.as_str(), "argparse");
+    assert_eq!(plan.fields.len(), 2);
+    let region = &plan.fields[0].declaration;
+    assert_eq!(region.name, "Region");
+    assert_eq!(region.binding, ParameterBinding::None);
+    assert_eq!(region.delivery, ParameterDelivery::Flag);
+    assert_eq!(region.parameter_type, ParameterType::Str);
+    assert_eq!(region.default, None);
+    assert_eq!(region.flag, "-Region");
+    assert!(!region.required);
+    let loglevel = &plan.fields[1].declaration;
+    assert_eq!(loglevel.name, "LOGLEVEL");
+    assert_eq!(loglevel.binding, ParameterBinding::None);
+    assert_eq!(loglevel.delivery, ParameterDelivery::Env);
+    assert_eq!(loglevel.parameter_type, ParameterType::Str);
+    assert_eq!(loglevel.default, None);
+    assert_eq!(loglevel.env_target, "");
+}
+
+#[test]
+fn powershell_static_reader_keeps_schema_deduplicates_and_filters_riders() {
+    let source = concat!(
+        "param(\n",
+        " [Parameter(Mandatory)][ValidateSet('fast','safe')][string]$Mode = 'fast'\n",
+        ")\n",
+    );
+    let mut duplicate = env("Mode");
+    duplicate.default = Some(ParameterValue::String("wrong".to_owned()));
+    let mut extra = flag("extra");
+    extra.default = Some(ParameterValue::String("tail".to_owned()));
+    let mut loglevel = env("loglevel");
+    loglevel.prompt = "Log level".to_owned();
+    loglevel.default = Some(ParameterValue::String("info".to_owned()));
+    loglevel.env_target = "APP_LOG".to_owned();
+    let mut placeholder = ParamDecl::new("ignored-placeholder");
+    placeholder.delivery = ParameterDelivery::Placeholder;
+    let mut inject = ParamDecl::new("ignored-inject");
+    inject.delivery = ParameterDelivery::Inject;
+    let settings = EntrySettings {
+        parameters: vec![duplicate, extra, loglevel, placeholder, inject],
+        ..EntrySettings::default()
+    };
+
+    let plan = form_plan("powershell", source, &settings);
+
+    assert_eq!(plan.source, FormSource::Reader);
+    assert_eq!(
+        plan.fields
+            .iter()
+            .map(|field| field.declaration.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Mode", "extra", "loglevel"]
+    );
+    let mode = &plan.fields[0].declaration;
+    assert_eq!(mode.parameter_type, ParameterType::Choice);
+    assert_eq!(mode.choices, ["fast", "safe"]);
+    assert_eq!(
+        mode.default,
+        Some(ParameterValue::String("fast".to_owned()))
+    );
+    assert!(mode.required);
+    assert_eq!(mode.flag, "-Mode");
+    assert_eq!(
+        plan.fields[1].declaration.default,
+        settings.parameters[1].default
+    );
+    assert_eq!(plan.fields[2].declaration.prompt, "Log level");
+    assert_eq!(plan.fields[2].declaration.env_target, "APP_LOG");
+}
+
+#[test]
+fn powershell_zero_and_absent_reader_surfaces_keep_distinct_sources() {
+    let mut placeholder = ParamDecl::new("ignored");
+    placeholder.delivery = ParameterDelivery::Placeholder;
+    let settings = EntrySettings {
+        parameters: vec![placeholder, flag("extra"), env("token")],
+        ..EntrySettings::default()
+    };
+
+    let zero = form_plan("powershell", "param()\n", &settings);
+    assert_eq!(zero.source, FormSource::Reader);
+    assert_eq!(
+        zero.declarations()
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["extra", "token"]
+    );
+
+    let absent = form_plan("powershell", "Write-Output 'hi'\n", &settings);
+    assert_eq!(absent.source, FormSource::Declared);
+    assert_eq!(
+        absent
+            .declarations()
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["extra", "token"]
+    );
+
+    let unreadable = form_plan("powershell", "param([string]$Name = )\n", &settings);
+    assert_eq!(unreadable.source, FormSource::Declared);
+    assert_eq!(
+        unreadable
+            .declarations()
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["extra", "token"]
+    );
+}
+
+#[test]
+fn declared_riders_own_an_analyzable_form_before_static_cli_reflection() {
     let source = r#"
 import argparse
 p = argparse.ArgumentParser()
@@ -139,7 +265,9 @@ p.add_argument("--count", type=int)
         ..EntrySettings::default()
     };
 
-    let fields = form_params("python", source, &settings);
+    let plan = form_plan("python", source, &settings);
+    assert_eq!(plan.source, FormSource::Declared);
+    let fields = plan.declarations();
     assert_eq!(
         fields
             .iter()
@@ -149,6 +277,21 @@ p.add_argument("--count", type=int)
     );
     assert_eq!(fields[0].delivery, ParameterDelivery::Env);
     assert_eq!(fields[1].flag, "--count");
+
+    let dynamic = form_plan(
+        "python",
+        "p = argparse.ArgumentParser()\np.add_argument('--name')\np.add_subparsers()\n",
+        &settings,
+    );
+    assert_eq!(dynamic.source, FormSource::Declared);
+    assert_eq!(
+        dynamic
+            .declarations()
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
+        ["token", "count"]
+    );
 }
 
 #[test]
