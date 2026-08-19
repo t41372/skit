@@ -20,7 +20,7 @@ stubs promoted,
 3237 pass / 0 fail / 909 ignored. The fixed final PR #44 head was audited as a diff, not by its
 500+ commit history. Twenty-eight stronger owners were folded into the existing consolidated targets after
 PR/main/Python body comparison; the raw split files and manifests were rejected.
-76 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
+73 FAILING CONTRACT attributes remain (§5 has the per-file map). JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed; next continue prompt/add clusters.** The user
@@ -262,8 +262,12 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
 # => 3237 passed / 0 failed / 909 ignored
-grep -rh '#\[ignore = "FAILING CONTRACT' crates --include='*.rs' | wc -l   # => 76
+rg '^\s*#\[ignore = "FAILING CONTRACT' crates --glob='*.rs' | wc -l   # => 73
 ```
+
+Keep the regex anchored to the start of an attribute line. The previous unanchored `grep` also
+counted three module comments in `port_test_path_tui.rs`, `port_test_editor.rs`, and
+`port_test_add_validation_contracts.rs` that merely showed the ignore spelling.
 
 The full-workspace benchmark target previously had one intermittent timing failure in
 `process_timeout_terminates_the_complete_descendant_tree`; 126 exact/parallel/full-binary reruns
@@ -274,7 +278,7 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 76 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 73 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
 the loop is proven; `edit_declared` (params/edit) last as before. Counts are exact as of `afeae66`.
@@ -299,9 +303,9 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   `Not a file` diagnostic (`4fc1659`), and unreadable files use the localized read failure
   (`de754cf`). Explicit passthrough arguments now satisfy only blank required flags (`39f9bd0`);
   the remaining items overlap the add-lane and general CLI clusters.
-- **9 port_test_add_validation_contracts.rs + 4 port_test_add_lane_contracts.rs + 3
+- **8 port_test_add_validation_contracts.rs + 4 port_test_add_lane_contracts.rs + 3
   port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 11
-  port_test_add_no_source.rs + 4 port_test_editor.rs (the `-e` lane) — the add-lane cluster
+  port_test_add_no_source.rs + 3 port_test_editor.rs (the `-e` lane) — the add-lane cluster
   (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
   cli.py:1894-1933); resumed draft not consumed on success (cli.py:258-266); `kind_for_draft` shebang-first classifier
   (registry.py:442-473 — a `.py` draft with a bash shebang stores kind=shell); `--python -/none/blank`
@@ -330,7 +334,7 @@ the loop is proven; `edit_declared` (params/edit) last as before. Counts are exa
   persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
   region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
   `deps`-clear must sweep node_modules.
-- **TUI: 3 path_tui + 2 tui_nav + 1 draft_and_reader_tui + 1 reset_default_ui.** Add Review and
+- **TUI: 2 path_tui + 2 tui_nav + 1 draft_and_reader_tui + 1 reset_default_ui.** Add Review and
   Preferences navigation are green. Add Source still has a real focus-ring blocker because
   BrowseSource is the visible browse control's only keyboard path between SourcePath and
   CommandTemplate. Settings arrow navigation conflicts with the current multiline boundary owner
