@@ -2366,9 +2366,9 @@ const CATALOG: &[Translation] = &[
         "組態值需要一個鍵",
     ),
     row!(
-        "a prompt body is required; pipe it to `skit add - --prompt --name NAME`",
-        "需要提示词正文；请通过管道传入 `skit add - --prompt --name NAME`",
-        "需要提示詞內容；請透過管道傳入 `skit add - --prompt --name NAME`",
+        "--prompt with no path opens your editor, which --no-input forbids — pipe the body in instead: skit add - --prompt -n NAME",
+        "--prompt 未带路径时会打开你的编辑器，而 --no-input 禁止这么做——请改用管道把正文传进来：skit add - --prompt -n NAME",
+        "--prompt 未帶路徑時會開啟你的編輯器，而 --no-input 禁止這麼做——請改用管道把內文傳進來：skit add - --prompt -n NAME",
     ),
     row!(
         "a prompt runner command needs {{prompt}} exactly once after the program",

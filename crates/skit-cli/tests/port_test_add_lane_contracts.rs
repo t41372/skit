@@ -25,25 +25,29 @@
 //!   a `boom_editor` (touches a marker; the test asserts the marker is absent). The Rust editor
 //!   lane (`add_draft`, cli.rs:1399) does NOT gate on an interactive terminal, so these lanes
 //!   are reachable under `assert_cmd`.
-//! - Python `monkeypatch.setattr(cli, "_is_interactive", lambda: True)` has NO analogue:
-//!   `assert_cmd` is never a terminal. Where a test's contract depends on the forced-terminal
-//!   branch, the divergence note records the actual non-tty Rust behavior.
+//! - Python `monkeypatch.setattr(cli, "_is_interactive", lambda: True)` -> a real PTY for the one
+//!   contract that depends on both streams being terminals. The helper waits for command output;
+//!   it does not use a fixed sleep.
 //!
 //! Bucket disposition (all 21 defs drive the binary and COMPILE; zero absent/cross-crate stubs):
-//! - 15 PASS asserting tests: the 5 versioned/piped/reader-notice lanes, both editor-lane
+//! - 18 PASS asserting tests: the 5 versioned/piped/reader-notice lanes, both editor-lane
 //!   `--description` threads, the versioned-shebang editor lane, the normal-file no-unlink lane,
 //!   the JSON-is-one-document flip lane, both parameter read views, and both unknown-runner
-//!   early-refusal lanes, plus the post-editor Python-flag refusal.
-//! - 6 FAILING CONTRACT (divergence) tests: full asserting bodies kept intact behind
-//!   `#[ignore]`; each label was verified against the built binary. Most tie to pending tasks
-//!   #15 (refuse the add-lane inputs v0.4 refuses) and #16 (params batch fault tolerance). The
-//!   recurring shapes are: no one-voice selector-collision refusal (clap `conflicts_with`
-//!   answers first with a different message), pipe spelling, no resumed-draft cleanup / kept-draft
-//!   `--ref` guard on the plain path lane, and no flip note.
+//!   early-refusal lanes, the post-editor Python-flag refusal, and the managed-form flip note.
+//! - 3 FAILING CONTRACT (divergence) tests: the selector-collision voice and the two plain-path
+//!   draft cleanup/boundary contracts.
 
 use std::fs;
+#[cfg(unix)]
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+#[cfg(unix)]
+use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+use std::thread;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tempfile::TempDir;
@@ -73,6 +77,68 @@ impl Sandbox {
             .env("SKIT_CONFIG_DIR", self.config.path())
             .env("SKIT_LANG", "en");
         command
+    }
+
+    #[cfg(unix)]
+    fn run_pty_until(&self, args: &[&str], editor: &Path, needle: &str) -> (u32, String) {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 200,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.args(args);
+        command.cwd(self.scratch.path());
+        command.env("TERM", "xterm-256color");
+        command.env("SKIT_LANG", "en");
+        command.env("SKIT_DATA_DIR", self.data.path());
+        command.env("SKIT_STATE_DIR", self.state.path());
+        command.env("SKIT_CONFIG_DIR", self.config.path());
+        command.env("VISUAL", editor);
+        command.env("EDITOR", editor);
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let drain_target = Arc::clone(&captured);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let drain = thread::spawn(move || {
+            let mut buffer = [0_u8; 1024];
+            while let Ok(count) = reader.read(&mut buffer) {
+                if count == 0 {
+                    break;
+                }
+                drain_target
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&buffer[..count]);
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let found = String::from_utf8_lossy(&captured.lock().unwrap()).contains(needle);
+            if found {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PTY output never contained {needle:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let status = child.wait().unwrap();
+        drop(pair.master);
+        drain.join().unwrap();
+        let bytes = captured.lock().unwrap().clone();
+        let output = String::from_utf8_lossy(&bytes)
+            .replace("\r\n", "\n")
+            .replace('\r', "");
+        (status.exit_code(), output)
     }
 
     /// Python `store.resolve(name)` via `skit show NAME --json` — parse stdout as one document.
@@ -122,6 +188,29 @@ fn combined(output: &Output) -> String {
     text.push('\n');
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     text
+}
+
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
 }
 
 /// Python `_flat(text)` — collapse rich's soft-wrap so an 80-col-split message matches as one.
@@ -369,27 +458,39 @@ fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle forces an interactive terminal (monkeypatched `_is_interactive`), where `--prompt --no-input` opens an editor no keyboard-stdin can feed and is refused with 'skit add - --prompt -n NAME' (src/skit/cli.py:1216). assert_cmd is never a terminal, so Rust takes the pipe branch (cli.rs:1048-1051), reads (empty) stdin, and ADDS the prompt — exit 0, no refusal. Unreproducible without a PTY, and the spelling differs even then ('--name' vs '-n'). Verified against the built binary."]
 fn test_prompt_editor_no_input_in_a_terminal_is_refused() {
     // --prompt with no path in a terminal opens an editor; --no-input there is refused with
     // the prompt pipe spelling — no body can arrive from a keyboard-attached stdin.
     let sandbox = Sandbox::new();
     let marker = sandbox.scratch.path().join("editor-ran");
     let editor = boom_editor(sandbox.scratch.path(), &marker);
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "--prompt", "-n", "p", "--no-input"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(
-        combined(&output).contains("skit add - --prompt -n NAME"),
-        "{}",
-        combined(&output)
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let drafts_before = snapshot_tree(&sandbox.data.path().join("drafts"));
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "--prompt", "-n", "p", "--no-input"],
+        &editor,
+        "skit add - --prompt",
     );
+    assert_eq!(code, 2, "{output}");
     assert!(!marker.exists());
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert_eq!(
+        snapshot_tree(&sandbox.data.path().join("drafts")),
+        drafts_before
+    );
+    let frozen = "--prompt with no path opens your editor, which --no-input forbids — pipe the body in instead: skit add - --prompt -n NAME";
+    assert!(
+        output
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains(frozen),
+        "{output}"
+    );
 }
 
 #[test]

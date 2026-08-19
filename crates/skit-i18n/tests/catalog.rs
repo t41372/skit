@@ -203,6 +203,22 @@ fn bare_directory_add_hint_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn prompt_editor_no_input_hint_matches_the_oracle_in_every_locale() {
+    let template = "--prompt with no path opens your editor, which --no-input forbids — pipe the body in instead: skit add - --prompt -n NAME";
+    assert_eq!(format_text(Locale::En, template, &[]), template);
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[]),
+        "--prompt 未带路径时会打开你的编辑器，而 --no-input 禁止这么做——请改用管道把正文传进来：skit add - --prompt -n NAME"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[]),
+        "--prompt 未帶路徑時會開啟你的編輯器，而 --no-input 禁止這麼做——請改用管道把內文傳進來：skit add - --prompt -n NAME"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[]);
+    assert!(pseudo.starts_with('⟦'), "{pseudo}");
+}
+
+#[test]
 fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
     let template = "Ignored a malformed value: {} (expected NAME=text).";
     let item = "--prompt: [red]bad[/red]";

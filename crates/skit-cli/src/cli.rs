@@ -1082,7 +1082,7 @@ fn add_command(
     }
     if options.source.is_none() && options.command_template.is_none() {
         if options.prompt {
-            if !io::stdin().is_terminal() {
+            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
                 options.source = Some(PathBuf::from("-"));
                 return add(service, options);
             }
@@ -1093,7 +1093,7 @@ fn add_command(
             )?;
             if no_input {
                 return Err(CliError::Usage(Message::new(
-                    "a prompt body is required; pipe it to `skit add - --prompt --name NAME`",
+                    "--prompt with no path opens your editor, which --no-input forbids — pipe the body in instead: skit add - --prompt -n NAME",
                 )));
             }
             let name = match options
