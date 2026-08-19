@@ -294,16 +294,36 @@ fn test_cli_params_view_no_ops() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle warns and exits 0 (src/skit/cli.py:4018-4029 _parse_kv_opts + :4521-4524 malformed warning); Rust `assignment` returns CliError::Usage -> exit 2 (verified). Ties to pending task #16 (params batch fault tolerance)."]
 fn test_cli_bad_prompt_is_warned_not_fatal() {
     // A malformed --prompt (no `=`) is warned, not fatal — the pass still exits 0.
     let sandbox = Sandbox::new();
     sandbox.add_job();
-    sandbox
-        .command()
-        .args(["params", "job", "--prompt", "no-equals-sign"])
-        .assert()
-        .success();
+    let payload = sandbox.data.path().join("scripts/job/script.py");
+    let meta = sandbox.data.path().join("scripts/job/meta.toml");
+    let payload_before = fs::read(&payload).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+    for malformed in ["no-equals-sign", "=empty-name"] {
+        let output = sandbox
+            .command()
+            .args(["params", "job", "--prompt", malformed])
+            .output()
+            .unwrap();
+        let shown = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(0), "{malformed}: {shown}");
+        assert!(
+            shown.contains(&format!(
+                "Ignored a malformed value: --prompt: {malformed} (expected NAME=text)."
+            )),
+            "{malformed}: {shown}"
+        );
+    }
+    assert_eq!(fs::read(payload).unwrap(), payload_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
+    assert!(!sandbox.state.path().join("values/job.toml").exists());
 }
 
 #[test]

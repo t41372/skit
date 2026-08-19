@@ -1865,7 +1865,6 @@ fn test_edit_params_updated_summary_escapes_markup_in_name() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `--prompt [red]bad[/red]` (no `=`) is a malformed NAME=VALUE that the oracle COLLECTS as a warning and echoes (`--prompt: [red]bad[/red]`), exiting 0. Rust rejects a malformed `--prompt` as a usage error: exit 2 + \"prompt needs NAME=VALUE\", not echoing the bad token. Both exit code (0 vs 2) and the echo diverge."]
 fn test_edit_params_malformed_prompt_escapes_markup() {
     let root = sandbox();
     let block = "# /// script\n# [tool.skit]\n# schema = 1\n#\n# [[tool.skit.params]]\n# name = \"X\"\n# binding = \"const\"\n# type = \"int\"\n# default = 1\n# ///\nX = 1\nprint(X)\n";
@@ -1876,7 +1875,10 @@ fn test_edit_params_malformed_prompt_escapes_markup() {
         .args(["--name", "a", "--kind", "python", "--no-input"]));
     let (code, out) = run(skit(&root).args(["params", "a", "--prompt", "[red]bad[/red]"]));
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("[red]bad[/red]"), "{out}");
+    assert!(
+        out.contains("Ignored a malformed value: --prompt: [red]bad[/red] (expected NAME=text)."),
+        "{out}"
+    );
 }
 
 #[test]

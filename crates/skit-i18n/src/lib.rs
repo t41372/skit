@@ -3428,6 +3428,11 @@ const CATALOG: &[Translation] = &[
         "{}需要 NAME=VALUE",
     ),
     row!(
+        "Ignored a malformed value: {} (expected NAME=text).",
+        "已忽略格式错误的值：{}（应为 NAME=text）。",
+        "已忽略格式錯誤的值：{}（應為 NAME=text）。",
+    ),
+    row!(
         "{} reads from the environment variable {}, but it isn't set.",
         "{} 从环境变量 {} 读取，但该变量未设置。",
         "{} 從環境變數 {} 讀取，但該變數未設定。",

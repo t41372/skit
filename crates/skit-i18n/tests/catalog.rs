@@ -145,6 +145,26 @@ fn secret_purge_notice_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
+    let template = "Ignored a malformed value: {} (expected NAME=text).";
+    let item = "--prompt: [red]bad[/red]";
+    assert_eq!(
+        format_text(Locale::En, template, &[&item]),
+        "Ignored a malformed value: --prompt: [red]bad[/red] (expected NAME=text)."
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&item]),
+        "已忽略格式错误的值：--prompt: [red]bad[/red]（应为 NAME=text）。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&item]),
+        "已忽略格式錯誤的值：--prompt: [red]bad[/red]（應為 NAME=text）。"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&item]);
+    assert!(pseudo.contains(item), "{pseudo}");
+}
+
+#[test]
 fn non_secret_environment_source_warning_matches_the_oracle_in_every_locale() {
     let template = "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).";
     assert_eq!(

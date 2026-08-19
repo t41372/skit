@@ -4250,7 +4250,16 @@ fn params(
         changed = true;
     }
     for spec in args.prompts {
-        let (name, value) = assignment(&spec, "prompt")?;
+        let Some((name, value)) = spec
+            .split_once('=')
+            .filter(|(name, _)| !name.trim().is_empty())
+        else {
+            humanerrln!(
+                "Ignored a malformed value: {} (expected NAME=text).",
+                format!("--prompt: {spec}")
+            );
+            continue;
+        };
         let item = parameter_mut(&mut declarations, name)?;
         if source_parameter_kind && item.binding == ParameterBinding::None {
             return Err(CliError::Usage(
