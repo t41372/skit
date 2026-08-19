@@ -1328,6 +1328,22 @@ fn wants_tui_form(config_dir: &Path) -> Result<bool, CliError> {
     Ok(FileConfigStore::new(config_dir).get("form")? == "tui")
 }
 
+struct AddChoiceTheme;
+
+impl dialoguer::theme::Theme for AddChoiceTheme {
+    fn format_input_prompt(
+        &self,
+        formatter: &mut dyn std::fmt::Write,
+        prompt: &str,
+        default: Option<&str>,
+    ) -> std::fmt::Result {
+        match default {
+            Some(default) => write!(formatter, "{prompt} [1/2/3/4] ({default}): "),
+            None => write!(formatter, "{prompt} [1/2/3/4]: "),
+        }
+    }
+}
+
 fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Result<(), CliError> {
     let locale = active_locale();
     humanln!("What would you like to add?");
@@ -1350,7 +1366,8 @@ fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Res
         "  4. {}",
         text(locale, "A command template (e.g. ffmpeg -i {input})")
     );
-    let choice = Input::<String>::new()
+    let theme = AddChoiceTheme;
+    let choice = Input::<String>::with_theme(&theme)
         .with_prompt(text(locale, "Which one?").into_owned())
         .default("1".to_owned())
         .validate_with(|value: &String| {

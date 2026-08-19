@@ -756,7 +756,6 @@ fn test_ans_choice1_returns_the_typed_path() {
 // --- Real-prompt (rich) CLI tests: the prompt LABELS and choice lists print. ---
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's rich Prompt renders \"Which one? [1/2/3/4] (1):\". Rust's dialoguer renders \"Which one? [1]:\" (cli.rs:1270-1272) — the enumerated-choices/default bracket differs. The Command template / Name for the command / Description (optional) labels DO match (cli.rs:1297-1305). Verified against the built binary."]
 fn test_cli_plain_choice4_prompt_labels_and_choices() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
@@ -766,6 +765,9 @@ fn test_cli_plain_choice4_prompt_labels_and_choices() {
         false,
     );
     assert_eq!(code, 0, "{output}");
+    let stored = sandbox.show_json("enc");
+    assert_eq!(stored["kind"], "command");
+    assert_eq!(stored["template"], "tpl {a} {b}");
     let joined = flat(&output);
     assert!(joined.contains("Which one? [1/2/3/4] (1):"), "{joined}");
     assert!(joined.contains("Command template:"), "{joined}");
