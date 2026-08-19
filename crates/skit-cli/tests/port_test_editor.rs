@@ -228,6 +228,24 @@ fn touch_only_editor(scratch: &Path, tag: &str, sentinel: &Path) -> PathBuf {
     script
 }
 
+fn capturing_touch_only_editor(
+    scratch: &Path,
+    tag: &str,
+    sentinel: &Path,
+    initial: &Path,
+) -> PathBuf {
+    let script = scratch.join(format!("{tag}.capture-touch.sh"));
+    write_exec(
+        &script,
+        &format!(
+            "#!/bin/sh\ntouch '{}'\ncp \"$1\" '{}'\n",
+            sentinel.display(),
+            initial.display()
+        ),
+    );
+    script
+}
+
 /// stdout followed by stderr — the oracle's `CliRunner` merges both into `result.output`.
 fn combined(output: &std::process::Output) -> String {
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -1201,7 +1219,13 @@ fn test_add_prompt_editor_untouched_starter_unlinks_the_draft() {
     // Same for the prompt editor lane: an untouched starter is unlinked, not left behind.
     let sandbox = Sandbox::new();
     let sentinel = sandbox.scratch.path().join("prompt-untouched.launched");
-    let editor = touch_only_editor(sandbox.scratch.path(), "prompt-untouched", &sentinel);
+    let initial = sandbox.scratch.path().join("prompt-untouched.initial");
+    let editor = capturing_touch_only_editor(
+        sandbox.scratch.path(),
+        "prompt-untouched",
+        &sentinel,
+        &initial,
+    );
     let (code, output) = run_pty(
         &["add", "--prompt", "--name", "ghostp"],
         sandbox.data.path(),
@@ -1216,6 +1240,7 @@ fn test_add_prompt_editor_untouched_starter_unlinks_the_draft() {
         "{output}"
     );
     assert!(sentinel.exists(), "the editor must open");
+    assert_eq!(fs::read(initial).unwrap(), b"# New prompt\n\n");
     assert!(!sandbox.resolvable("ghostp"));
     assert!(sandbox.draft_files().is_empty(), "{output}");
 }

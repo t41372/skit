@@ -1095,6 +1095,33 @@ fn add_command(
                     "a prompt body is required; pipe it to `skit add - --prompt --name NAME`",
                 )));
             }
+            let name = match options
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                Some(name) => name.to_owned(),
+                None => {
+                    let name = add_plain_text("Name in skit")?;
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Err(CliError::Usage(Message::new("A name is required.")));
+                    }
+                    name.to_owned()
+                }
+            };
+            match service.show(&name) {
+                Ok(_) | Err(RepositoryError::Ambiguous { .. }) => {
+                    return Err(CliError::Failure(
+                        Message::new("The name {} is already taken — pick another name.")
+                            .with(name.as_str()),
+                    ));
+                }
+                Err(RepositoryError::NotFound { .. }) => {}
+                Err(error) => return Err(error.into()),
+            }
+            options.name = Some(name);
             return add_draft(service, options, true);
         }
         if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -1437,6 +1464,10 @@ fn empty_add_options() -> AddOptions {
     }
 }
 
+fn localized_prompt_starter() -> Vec<u8> {
+    format!("{}\n\n", text(active_locale(), "# New prompt")).into_bytes()
+}
+
 fn add_draft(
     service: &LibraryService<FileStore>,
     mut options: AddOptions,
@@ -1452,9 +1483,16 @@ fn add_draft(
         skit_domain::EntryId::generate().as_str(),
         suffix
     ));
-    fs::write(&draft, [])?;
+    let starter = if prompt {
+        localized_prompt_starter()
+    } else {
+        Vec::new()
+    };
+    fs::write(&draft, &starter)?;
     open_editor(&draft)?;
-    if fs::metadata(&draft)?.len() == 0 {
+    let empty = fs::metadata(&draft)?.len() == 0;
+    let untouched_starter = prompt && !empty && fs::read(&draft)? == starter;
+    if empty || untouched_starter {
         remove_owned_draft(service.repository().data_dir(), &draft)?;
         if prompt {
             humanln!("Nothing was written, so no prompt was added.");
@@ -6209,10 +6247,7 @@ fn tui_author_draft(
     let drafts_dir = create_owned_drafts_dir(data_dir)?;
     let (suffix, starter) = match kind {
         DraftKind::Script => (".py", b"#!/usr/bin/env python3\n".to_vec()),
-        DraftKind::Prompt => (
-            ".prompt.md",
-            format!("{}\n\n", text(active_locale(), "# New prompt")).into_bytes(),
-        ),
+        DraftKind::Prompt => (".prompt.md", localized_prompt_starter()),
     };
     let mut staged = tempfile::Builder::new()
         .prefix("skit-new-")

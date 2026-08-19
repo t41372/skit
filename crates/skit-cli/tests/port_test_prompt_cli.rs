@@ -176,6 +176,19 @@ impl Sandbox {
         self.data.path().join("scripts").join(slug)
     }
 
+    fn entry_exists(&self, slug: &str) -> bool {
+        self.entry_dir(slug).join("meta.toml").is_file()
+    }
+
+    fn draft_files(&self) -> Vec<PathBuf> {
+        fs::read_dir(self.data.path().join("drafts"))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.is_file())
+            .collect()
+    }
+
     fn meta(&self, slug: &str) -> String {
         fs::read_to_string(self.entry_dir(slug).join("meta.toml")).unwrap_or_default()
     }
@@ -281,6 +294,95 @@ fn run_runner_confirmation(
     (status.exit_code(), output)
 }
 
+struct CapturingPromptEditor {
+    executable: PathBuf,
+    initial: PathBuf,
+    launched: PathBuf,
+}
+
+fn capturing_prompt_editor(root: &Path, tag: &str, appended: &[u8]) -> CapturingPromptEditor {
+    let executable = root.join(format!("{tag}-prompt-editor.sh"));
+    let initial = root.join(format!("{tag}-initial"));
+    let launched = root.join(format!("{tag}-launched"));
+    let appended_path = root.join(format!("{tag}-appended"));
+    fs::write(&appended_path, appended).unwrap();
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\ncp \"$1\" {}\ntouch {}\ncat {} >> \"$1\"\n",
+            shell_single_quote(initial.to_str().unwrap()),
+            shell_single_quote(launched.to_str().unwrap()),
+            shell_single_quote(appended_path.to_str().unwrap()),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    CapturingPromptEditor {
+        executable,
+        initial,
+        launched,
+    }
+}
+
+fn run_prompt_editor_pty(
+    sandbox: &Sandbox,
+    args: &[&str],
+    lang: &str,
+    editor: &Path,
+    answers: &[(&str, &[u8])],
+) -> (u32, String) {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.cwd(sandbox.data.path());
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("SKIT_LANG", lang);
+    command.env("VISUAL", "");
+    command.env("EDITOR", editor);
+
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let shared = Arc::new(Mutex::new(Vec::new()));
+    let reader_shared = Arc::clone(&shared);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = thread::spawn(move || {
+        let mut chunk = [0_u8; 512];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => reader_shared
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&chunk[..count]),
+                Err(_) => break,
+            }
+        }
+    });
+    let mut writer = pair.master.take_writer().unwrap();
+    for (prompt, answer) in answers {
+        wait_until_pty_output(&shared, prompt);
+        writer.write_all(answer).unwrap();
+        writer.flush().unwrap();
+    }
+    let status = child.wait().unwrap();
+    drop(writer);
+    drain.join().unwrap();
+    let output = String::from_utf8_lossy(&shared.lock().unwrap())
+        .replace("\r\n", "\n")
+        .replace('\r', "");
+    (status.exit_code(), output)
+}
+
 /// A directory of fake agent binaries for every seed's argv[0] (plus a few named extras). Each
 /// binary captures its own argv into `$SKIT_CAP` (one line per token) and prints nothing, so a
 /// real prompt run can be observed without the rendered body leaking onto skit's own stdout.
@@ -336,8 +438,46 @@ fn shell_single_quote(text: &str) -> String {
 fn test_add_prompt_read_oserror_is_a_clean_store_error() {}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): asserts the cli-internal `cli._starter_prompt()` localized text per locale — a private composition-root helper with no public seam (src/cli.rs); unit-driven by src/cli/tests.rs. The `placeholder_names` half belongs to skit-language's own port."]
-fn test_localized_starter_is_minimal_and_never_creates_its_own_field() {}
+fn test_localized_starter_is_minimal_and_never_creates_its_own_field() {
+    for (locale, expected) in [
+        ("en", b"# New prompt\n\n".as_slice()),
+        ("zh-CN", "# 新提示词\n\n".as_bytes()),
+        ("zh-TW", "# 新提示詞\n\n".as_bytes()),
+    ] {
+        let sandbox = Sandbox::new();
+        let tools = TempDir::new().unwrap();
+        let editor = capturing_prompt_editor(tools.path(), "starter", b"Review text.\n");
+        let (code, output) = run_prompt_editor_pty(
+            &sandbox,
+            &["add", "--prompt", "--name", "starter"],
+            locale,
+            &editor.executable,
+            &[],
+        );
+        assert_eq!(code, 0, "locale={locale}\n{output}");
+        assert!(editor.launched.is_file(), "locale={locale}");
+        assert_eq!(
+            fs::read(&editor.initial).unwrap(),
+            expected,
+            "locale={locale}"
+        );
+        let mut stored = expected.to_vec();
+        stored.extend_from_slice(b"Review text.\n");
+        assert_eq!(
+            sandbox.body_bytes("starter").unwrap(),
+            stored,
+            "locale={locale}"
+        );
+        assert_eq!(
+            sandbox.json(&["show", "starter", "--json"])["fields"],
+            serde_json::json!([])
+        );
+        assert!(
+            sandbox.draft_files().is_empty(),
+            "locale={locale}: {output}"
+        );
+    }
+}
 
 #[test]
 #[ignore = "FAILING CONTRACT (divergence): the prompt name, fields, and managed-parameter summary converge, but `show --json` returns null for an unset runner instead of the oracle's empty string."]
@@ -663,20 +803,114 @@ fn test_add_prompt_editor_lane_routes_to_stdin_when_not_interactive() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): drives the interactive prompt-editor lane via monkeypatched cli.editor.open_in_editor + cli.Prompt.ask; a non-tty binary routes --prompt to stdin instead of opening $EDITOR. Seam: src/cli/tests.rs. Non-interactive twin: test_add_prompt_editor_lane_routes_to_stdin_when_not_interactive."]
-fn test_add_prompt_editor_lane_interactive() {}
+fn test_add_prompt_editor_lane_interactive() {
+    let sandbox = Sandbox::new();
+    let tools = TempDir::new().unwrap();
+    let editor = capturing_prompt_editor(tools.path(), "interactive", b"Edited body {{v}}\n");
+    let (code, output) = run_prompt_editor_pty(
+        &sandbox,
+        &["add", "--prompt", "--name", "note"],
+        "en",
+        &editor.executable,
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(fs::read(&editor.initial).unwrap(), b"# New prompt\n\n");
+    assert_eq!(
+        sandbox.body_bytes("note").unwrap(),
+        b"# New prompt\n\nEdited body {{v}}\n"
+    );
+    assert_eq!(
+        sandbox.json(&["show", "note", "--json"])["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field["key"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["v"]
+    );
+    assert!(output.contains("Managed parameters: v"), "{output}");
+    assert!(sandbox.draft_files().is_empty(), "{output}");
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): an untouched $EDITOR starter adds nothing; the interactive editor lane (cli.editor.open_in_editor) is not opened by a non-tty binary. Seam: src/cli/tests.rs."]
-fn test_add_prompt_editor_lane_untouched_starter_adds_nothing() {}
+fn test_add_prompt_editor_lane_untouched_starter_adds_nothing() {
+    let sandbox = Sandbox::new();
+    let tools = TempDir::new().unwrap();
+    let editor = capturing_prompt_editor(tools.path(), "untouched", b"");
+    let (code, output) = run_prompt_editor_pty(
+        &sandbox,
+        &["add", "--prompt", "--name", "empty"],
+        "en",
+        &editor.executable,
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(fs::read(&editor.initial).unwrap(), b"# New prompt\n\n");
+    assert!(
+        output.contains("Nothing was written, so no prompt was added."),
+        "{output}"
+    );
+    assert!(!sandbox.entry_exists("empty"), "{output}");
+    assert!(sandbox.draft_files().is_empty(), "{output}");
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): the interactive editor lane asks for a name via cli.Prompt.ask; a non-tty binary never opens it. Seam: src/cli/tests.rs."]
-fn test_add_prompt_editor_lane_asks_for_a_name() {}
+fn test_add_prompt_editor_lane_asks_for_a_name() {
+    let sandbox = Sandbox::new();
+    let tools = TempDir::new().unwrap();
+    let editor = capturing_prompt_editor(tools.path(), "must-not-open", b"");
+    let (code, output) = run_prompt_editor_pty(
+        &sandbox,
+        &["add", "--prompt"],
+        "en",
+        &editor.executable,
+        &[("Name in skit", b"\r")],
+    );
+    assert_eq!(code, 2, "{output}");
+    assert!(output.contains("A name is required."), "{output}");
+    assert!(
+        !editor.launched.exists(),
+        "editor opened before name validation: {output}"
+    );
+    assert!(sandbox.draft_files().is_empty(), "{output}");
+    assert!(!sandbox.data.path().join("scripts").exists(), "{output}");
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): asserts the name-conflict is caught BEFORE $EDITOR opens in the interactive editor lane (monkeypatched cli.editor.open_in_editor must not run); not reachable from a non-tty binary. Non-interactive twin: test_add_prompt_stdin_lane_reports_store_errors ('already taken')."]
-fn test_add_prompt_editor_lane_name_taken_refuses_before_the_editor() {}
+fn test_add_prompt_editor_lane_name_taken_refuses_before_the_editor() {
+    let sandbox = Sandbox::new();
+    sandbox.ok(&["add", "--cmd", "echo hi", "--name", "taken"]);
+    let config_before = fs::read(sandbox.config_path()).ok();
+    let meta_path = sandbox.entry_dir("taken").join("meta.toml");
+    let meta_before = fs::read(&meta_path).unwrap();
+    let tools = TempDir::new().unwrap();
+    let editor = capturing_prompt_editor(tools.path(), "taken-must-not-open", b"");
+    let (code, output) = run_prompt_editor_pty(
+        &sandbox,
+        &["add", "--prompt", "--name", "taken"],
+        "en",
+        &editor.executable,
+        &[],
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        output.contains("The name taken is already taken — pick another name."),
+        "{output}"
+    );
+    assert!(
+        !editor.launched.exists(),
+        "editor opened before conflict refusal: {output}"
+    );
+    assert!(sandbox.draft_files().is_empty(), "{output}");
+    assert_eq!(fs::read(sandbox.config_path()).ok(), config_before);
+    assert_eq!(fs::read(meta_path).unwrap(), meta_before);
+    let entries = fs::read_dir(sandbox.data.path().join("scripts"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(entries, [std::ffi::OsString::from("taken")]);
+}
 
 #[test]
 #[ignore = "UNMAPPED (cross-crate): a post-edit failure keeps the temp draft; drives the interactive editor lane plus a monkeypatched cli._onboard_prompt fault. Seam: src/cli/tests.rs."]
