@@ -94,6 +94,37 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
     }
 
     let (terminal, geometry) = draw(&mut session, &state);
+    assert!(
+        text(terminal.backend().buffer()).contains("[Ctrl+O] Select"),
+        "the visible Browse button must advertise its independent keyboard path"
+    );
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL,)),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let (terminal, geometry) = draw(&mut session, &state);
+    let rendered = text(terminal.backend().buffer());
+    assert!(rendered.contains("Source path"), "{rendered}");
+    assert!(rendered.contains("Search"), "{rendered}");
+    assert!(rendered.contains("Cancel"), "{rendered}");
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+
+    let (terminal, geometry) = draw(&mut session, &state);
+    assert!(
+        text(terminal.backend().buffer()).contains("[Ctrl+O] Select"),
+        "Esc must return from the picker to Add Source"
+    );
     assert_eq!(
         session.handle_event(
             Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
@@ -128,7 +159,7 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
     let (_, geometry) = draw(&mut session, &state);
     assert_eq!(
         session.handle_event(
-            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL,)),
             &state,
             &geometry,
         ),

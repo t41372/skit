@@ -195,7 +195,6 @@ impl AddScreenSession {
             AddStage::Source => {
                 let source = state.source();
                 self.insert_input(AddTextField::SourcePath, &source.path);
-                self.focus.register(AddControlId::BrowseSource);
                 self.insert_input(AddTextField::CommandTemplate, &source.command_template);
                 self.insert_input(AddTextField::CommandName, &source.command_name);
                 self.insert_input(
@@ -374,6 +373,9 @@ impl AddScreenSession {
                 );
             if !input_owns_key {
                 return match (key.code, state.stage()) {
+                    (KeyCode::Char('o'), AddStage::Source) => {
+                        self.activate(AddControlId::BrowseSource, state)
+                    }
                     (KeyCode::Char('n'), AddStage::Source) => Some(AddScreenEvent::Action(
                         AddAction::NewDraft(DraftKind::Script),
                     )),
@@ -500,7 +502,7 @@ impl AddScreenSession {
                 return self.activate(id, state);
             }
         }
-        if state.stage() == AddStage::Review {
+        if matches!(state.stage(), AddStage::Source | AddStage::Review) {
             match key.code {
                 KeyCode::Down => {
                     self.focus.next();
@@ -894,7 +896,7 @@ fn source_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         ),
         RenderRow::Button(
             AddControlId::BrowseSource,
-            text(locale, "Select").into_owned(),
+            format!("[Ctrl+O] {}", text(locale, "Select")),
         ),
         RenderRow::Input(
             AddTextField::CommandTemplate,
@@ -1395,11 +1397,10 @@ fn footer_chips(state: &AddWorkflowState, locale: Locale) -> Vec<AddFooterChip> 
                     AddControlId::DeleteDraft,
                 ));
             }
-            chips.push(chip(
-                "Tab",
-                text(locale, "Next field").into_owned(),
-                AddControlId::NextField,
-            ));
+            chips.extend([
+                chip("Tab/↓", String::new(), AddControlId::NextField),
+                chip("Shift+Tab/↑", String::new(), AddControlId::PreviousField),
+            ]);
             chips
         }
         AddStage::Review => {
@@ -1596,7 +1597,7 @@ fn notice_text(notice: &AddNotice, locale: Locale) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use ratatui_core::{backend::TestBackend, terminal::Terminal};
+    use ratatui_core::{backend::TestBackend, layout::Rect, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::KeyEvent;
     use skit_application::SourcePermissions;
     use skit_ui::{AddEffect, ReviewDefaults, ReviewState, SourceSnapshot};
@@ -1629,11 +1630,21 @@ mod tests {
         width: u16,
         height: u16,
     ) -> (Terminal<TestBackend>, AddScreenGeometry) {
+        draw_locale(state, session, width, height, Locale::En)
+    }
+
+    fn draw_locale(
+        state: &AddWorkflowState,
+        session: &mut AddScreenSession,
+        width: u16,
+        height: u16,
+        locale: Locale,
+    ) -> (Terminal<TestBackend>, AddScreenGeometry) {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let mut geometry = AddScreenGeometry::default();
         terminal
             .draw(|frame| {
-                geometry = render_add(frame, frame.area(), state, session, Locale::En);
+                geometry = render_add(frame, frame.area(), state, session, locale);
             })
             .unwrap();
         (terminal, geometry)
@@ -1649,12 +1660,65 @@ mod tests {
             .collect()
     }
 
+    fn hit_text(terminal: &Terminal<TestBackend>, area: Rect) -> String {
+        let buffer = terminal.backend().buffer();
+        (area.y..area.bottom())
+            .flat_map(|row| {
+                (area.x..area.right()).map(move |column| buffer[(column, row)].symbol())
+            })
+            .collect()
+    }
+
     #[test]
     fn source_keyboard_and_browse_mouse_have_positive_typed_paths() {
+        let localized = AddWorkflowState::new(Vec::new());
+        for (locale, expected) in [
+            (Locale::En, "[Ctrl+O] Select"),
+            // Ratatui's TestBackend exposes the continuation cell of each wide glyph as a space.
+            (Locale::ZhCn, "[Ctrl+O] 选 择"),
+            (Locale::ZhTw, "[Ctrl+O] 選 擇"),
+        ] {
+            let mut localized_session = AddScreenSession::default();
+            let (terminal, geometry) =
+                draw_locale(&localized, &mut localized_session, 80, 24, locale);
+            let browse = geometry
+                .hits
+                .iter()
+                .find(|hit| hit.target == AddControlId::BrowseSource)
+                .expect("the visible Browse button is a typed mouse hit");
+            assert_eq!(hit_text(&terminal, browse.area).trim(), expected);
+        }
+
         let mut state = AddWorkflowState::new(Vec::new());
         let mut session = AddScreenSession::default();
         let (terminal, geometry) = draw(&state, &mut session, 80, 24);
         assert!(text_of(&terminal).contains("Command template"));
+        let typed = session.handle_event(
+            key(KeyCode::Char('x'), KeyModifiers::NONE),
+            &state,
+            &geometry,
+        );
+        assert_eq!(
+            typed,
+            Some(AddScreenEvent::Action(AddAction::SetSourcePath(
+                "x".to_owned()
+            )))
+        );
+        if let Some(AddScreenEvent::Action(action)) = typed {
+            let _ = state.reduce(action);
+        }
+        assert!(matches!(
+            session.handle_event(
+                key(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                &state,
+                &geometry,
+            ),
+            Some(AddScreenEvent::OpenPathPicker(_))
+        ));
+        assert_eq!(
+            session.focused(),
+            Some(&AddControlId::Text(AddTextField::SourcePath))
+        );
         assert_eq!(
             session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &state, &geometry,),
             Some(AddScreenEvent::Action(AddAction::Continue)),

@@ -26,13 +26,11 @@
 //!   no `skit` binary is spawned and no store/filesystem is touched.
 //!
 //! Buckets:
-//! - REAL (4): the run form, add-review, Preferences, and Settings tests drive boot focus, the `↓`/`↑`
+//! - REAL (5): the run form, add-source, add-review, Preferences, and Settings tests drive boot focus, the `↓`/`↑`
 //!   arrow twins, both footer direction chips, and `Tab`/`Shift+Tab` exactly as the oracle walks.
-//! - DIVERGENCE (1, full asserting body kept, `#[ignore]`d): Add Source diverges from the oracle at
-//!   one named leg. Fix the impl -> delete the `#[ignore]` line -> green.
-//!     * add source: Rust includes its visible Browse button in the keyboard focus ring between
-//!       path and template. The oracle has no such control and walks directly between the fields,
-//!       so this needs a separate keyboard contract for Browse before the canonical walk can land.
+//!   Add Source keeps its visible Browse button outside the field-navigation ring and gives it a
+//!   separate advertised keyboard path, so the oracle's path-to-template walk loses no capability.
+//! - DIVERGENCE: none.
 //! - CROSS-CRATE / ABSENT: none.
 
 use std::collections::BTreeMap;
@@ -70,6 +68,13 @@ fn key(code: KeyCode) -> Event {
 /// `Shift+Tab` as the oracle presses it (`pilot.press("shift+tab")`).
 fn shift_back_tab() -> Event {
     Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+}
+
+fn control_key(character: char) -> Event {
+    Event::Key(KeyEvent::new(
+        KeyCode::Char(character),
+        KeyModifiers::CONTROL,
+    ))
 }
 
 fn left_click(column: u16, row: u16) -> Event {
@@ -225,7 +230,7 @@ fn test_run_form_boots_typeable_and_arrows_walk_the_fields() {
 }
 
 // ==========================================================================
-// 2. Add source — DIVERGENCE: the Rust add screen has no ↓/↑ field-walk
+// 2. Add source — REAL: field navigation skips the independently reachable Browse button
 // ==========================================================================
 
 /// The add screen's focus lives in the session, not in `LibraryState`, so the add surfaces are
@@ -257,46 +262,124 @@ const ADD_PATH: AddControlId = AddControlId::Text(AddTextField::SourcePath);
 const ADD_TEMPLATE: AddControlId = AddControlId::Text(AddTextField::CommandTemplate);
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's ↓/↑ are Tab/Shift+Tab's arrow twins on the \
-add source screen (test_tui_nav.py:84-101), but Rust registers its visible BrowseSource control \
-between SourcePath and CommandTemplate. A generic focus walk therefore lands on BrowseSource, \
-while skipping it would remove the button's only keyboard path. The source footer also has only a \
-forward nav chip. Give BrowseSource a separate discoverable keyboard contract before making field \
-navigation skip it, then delete this #[ignore]."]
 fn test_add_source_arrows_walk_path_template_name() {
     // The add source screen boots with the path box focused (not the body scroll container); ↓/↑
-    // walk path<->template, the footer chips do the same, and Tab/Shift+Tab agree.
+    // walk path<->template, the footer chips do the same, and Tab/Shift+Tab agree. The visible
+    // Browse button stays outside that field walk and has its own advertised key and mouse path.
     let state = AddWorkflowState::new(Vec::new());
     let mut session = AddScreenSession::default();
-    let (_, geometry) = draw_add(&mut session, &state);
+    let (buffer, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&ADD_PATH)); // add-path, not the body scroll
+    let screen = buffer_text(&buffer);
+    assert!(screen.contains("Tab/↓"), "{screen}");
+    assert!(screen.contains("Shift+Tab/↑"), "{screen}");
+    assert!(screen.contains("[Ctrl+O] Select"), "{screen}");
 
-    // ↓ moves on (this is where Rust diverges: the arrow does not walk the fields).
-    let _ = session.handle_event(key(KeyCode::Down), &state, &geometry);
-    let (_, geometry) = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
-    let _ = session.handle_event(key(KeyCode::Up), &state, &geometry);
-    let (_, geometry) = draw_add(&mut session, &state);
+    // The independent key and the visible button both open the same typed picker contract without
+    // moving the form keyboard away from the path field. Hover and release are inert.
+    assert!(matches!(
+        session.handle_event(control_key('o'), &state, &geometry),
+        Some(AddScreenEvent::OpenPathPicker(_))
+    ));
+    assert_eq!(session.focused(), Some(&ADD_PATH));
+    let browse = geometry
+        .hits
+        .iter()
+        .find(|hit| {
+            hit.target == AddControlId::BrowseSource
+                && region_text(&buffer, hit.area).contains("[Ctrl+O] Select")
+        })
+        .expect("the advertised Browse button is a typed mouse hit");
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(mouse(kind, browse.area.x, browse.area.y), &state, &geometry),
+            None
+        );
+        assert_eq!(session.focused(), Some(&ADD_PATH));
+    }
+    assert!(matches!(
+        session.handle_event(left_click(browse.area.x, browse.area.y), &state, &geometry),
+        Some(AddScreenEvent::OpenPathPicker(_))
+    ));
     assert_eq!(session.focused(), Some(&ADD_PATH));
 
-    // The forward footer chip is the same action, clickable.
-    let next_rect = geometry
+    // ↓ moves on and ↑ comes back. Both paths report their real ephemeral-state change.
+    assert_eq!(
+        session.handle_event(key(KeyCode::Down), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (_, geometry) = draw_add(&mut session, &state);
+    assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
+    assert_eq!(
+        session.handle_event(key(KeyCode::Up), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (buffer, geometry) = draw_add(&mut session, &state);
+    assert_eq!(session.focused(), Some(&ADD_PATH));
+
+    // The forward footer hit ignores pointer motion/release and fires only on a real left down.
+    let next = geometry
         .hits
         .iter()
         .find(|hit| hit.target == AddControlId::NextField)
-        .expect("the add footer advertises a next-field chip")
-        .area;
-    let _ = session.handle_event(left_click(next_rect.x, next_rect.y), &state, &geometry);
-    let (_, geometry) = draw_add(&mut session, &state);
+        .expect("the add footer advertises a typed next-field hit");
+    assert!(region_text(&buffer, next.area).contains("Tab/↓"));
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(mouse(kind, next.area.x, next.area.y), &state, &geometry),
+            None
+        );
+        assert_eq!(session.focused(), Some(&ADD_PATH));
+    }
+    assert_eq!(
+        session.handle_event(left_click(next.area.x, next.area.y), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (buffer, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
 
-    // Tab/Shift+Tab themselves walk the same way.
-    let _ = session.handle_event(shift_back_tab(), &state, &geometry);
+    // The backward footer chip has the same event discipline and returns to the path field.
+    let previous = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == AddControlId::PreviousField)
+        .expect("the add footer advertises a typed previous-field hit");
+    assert!(region_text(&buffer, previous.area).contains("Shift+Tab/↑"));
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(
+                mouse(kind, previous.area.x, previous.area.y),
+                &state,
+                &geometry,
+            ),
+            None
+        );
+        assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
+    }
+    assert_eq!(
+        session.handle_event(
+            left_click(previous.area.x, previous.area.y),
+            &state,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
     let (_, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&ADD_PATH));
-    let _ = session.handle_event(key(KeyCode::Tab), &state, &geometry);
-    let _ = draw_add(&mut session, &state);
+
+    // The advertised keys themselves, not only their mouse twins.
+    assert_eq!(
+        session.handle_event(key(KeyCode::Tab), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (_, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
+    assert_eq!(
+        session.handle_event(shift_back_tab(), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let _ = draw_add(&mut session, &state);
+    assert_eq!(session.focused(), Some(&ADD_PATH));
 }
 
 // ==========================================================================

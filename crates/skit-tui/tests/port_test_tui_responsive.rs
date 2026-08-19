@@ -651,8 +651,20 @@ fn test_add_source_fields_stay_reachable_on_short_terminals() {
         session.focused(),
         Some(&AddControlId::Text(AddTextField::SourcePath))
     );
-    // The Rust focus ring includes the browse button between the path and template fields.
-    for _ in 0..3 {
+    let rendered = text(terminal.backend().buffer());
+    assert!(
+        rendered.contains("[Ctrl+O] Select"),
+        "the short layout must keep Browse's independent keyboard path visible: {rendered}"
+    );
+    let browse = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == AddControlId::BrowseSource)
+        .expect("the short layout keeps the Browse mouse target visible");
+    assert!(browse.area.bottom() <= geometry.body.bottom());
+
+    // Browse has its own key, so two field-navigation steps reach Name: path -> template -> name.
+    for _ in 0..2 {
         if let Some(AddScreenEvent::Action(action)) =
             session.handle_event(key(KeyCode::Tab), &workflow, &geometry)
         {
