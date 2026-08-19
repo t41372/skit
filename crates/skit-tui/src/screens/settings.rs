@@ -1341,7 +1341,7 @@ mod tests {
         };
         let heading = row_of("Parameters (the run form's fields)");
         // The row reads out its name, its type and its default in one line, exactly as v0.4 does.
-        let managed_row = row_of("GREETING  str world");
+        let managed_row = row_of("GREETING  str 'world'");
         let offer = row_of("Detected but not yet managed — tick to manage:");
         let candidate = row_of("WIDTH");
         let resync = row_of("Read the parameter definitions from the script again on save");

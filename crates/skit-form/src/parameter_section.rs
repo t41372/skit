@@ -186,7 +186,7 @@ fn source_managed_row(declaration: &ParamDecl) -> ParameterRow {
     let default = declaration
         .default
         .as_ref()
-        .map_or_else(String::new, render_default);
+        .map_or_else(String::new, render_source_default);
     let summary = if default.is_empty() {
         format!(
             "{}  {}",
@@ -245,7 +245,7 @@ fn declared_row(declaration: &ParamDecl, kind: &str) -> ParameterRow {
                 .default
                 .as_ref()
                 .map_or(FieldValue::Inherit, |value| {
-                    FieldValue::text(render_default(value))
+                    FieldValue::text(render_editable_default(value))
                 }),
         )
         .with_capabilities(FieldCapabilities {
@@ -379,7 +379,7 @@ fn parameter_type_options() -> Vec<crate::field::ChoiceOption> {
 ///
 /// A boolean uses the `true`/`false` words its coercion round-trips
 /// (`src/skit/tui_settings.py:141-148`).
-fn render_default(value: &skit_domain::parameters::ParameterValue) -> String {
+fn render_editable_default(value: &skit_domain::parameters::ParameterValue) -> String {
     use skit_domain::parameters::ParameterValue;
     match value {
         ParameterValue::String(value) => value.clone(),
@@ -387,6 +387,52 @@ fn render_default(value: &skit_domain::parameters::ParameterValue) -> String {
         ParameterValue::Float(value) => value.to_string(),
         ParameterValue::Bool(value) => if *value { "true" } else { "false" }.to_owned(),
     }
+}
+
+/// Render one source-owned default as the read-only representation version 0.4 shows.
+fn render_source_default(value: &skit_domain::parameters::ParameterValue) -> String {
+    use skit_domain::parameters::ParameterValue;
+    match value {
+        ParameterValue::String(value) => python_string_repr(value),
+        ParameterValue::Integer(value) => value.to_string(),
+        ParameterValue::Float(value) => format!("{value:?}"),
+        ParameterValue::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
+    }
+}
+
+fn python_string_repr(value: &str) -> String {
+    let quote = if value.contains('\'') && !value.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut rendered = String::with_capacity(value.len().saturating_add(2));
+    rendered.push(quote);
+    for character in value.chars() {
+        match character {
+            '\\' => rendered.push_str("\\\\"),
+            '\n' => rendered.push_str("\\n"),
+            '\r' => rendered.push_str("\\r"),
+            '\t' => rendered.push_str("\\t"),
+            character if character == quote => {
+                rendered.push('\\');
+                rendered.push(character);
+            }
+            character if character.is_control() => {
+                let codepoint = u32::from(character);
+                if codepoint <= 0xff {
+                    rendered.push_str(&format!("\\x{codepoint:02x}"));
+                } else if codepoint <= 0xffff {
+                    rendered.push_str(&format!("\\u{codepoint:04x}"));
+                } else {
+                    rendered.push_str(&format!("\\U{codepoint:08x}"));
+                }
+            }
+            character => rendered.push(character),
+        }
+    }
+    rendered.push(quote);
+    rendered
 }
 
 /// Apply version 0.4's secrecy rule to one collected row.

@@ -53,12 +53,13 @@ use skit_i18n::{
     render as localize, requested_locale, system_locale, text,
 };
 use skit_language::{
-    LosslessSource, UvMetadata, UvMetadataEditError, cli_params, decode_prompt, detect_candidates,
-    effective_uv_metadata_bytes, external_dependencies_at, has_uv_metadata_block_bytes, infer_kind,
-    managed_params, normalize_shell_default, placeholder_params, plan_uv_metadata_edit,
-    python_version_pin, read_uv_metadata, shebang_program, suggest_description,
-    validate_pep440_specifiers, validate_pep508_requirement, write_managed_params,
-    write_managed_params_bytes, write_uv_metadata,
+    LosslessSource, ParseOutcome, UvMetadata, UvMetadataEditError, cli_params, decode_prompt,
+    detect_candidates, effective_uv_metadata_bytes, external_dependencies_at,
+    has_uv_metadata_block_bytes, infer_kind, managed_params, normalize_shell_default,
+    parse_document, placeholder_params, plan_uv_metadata_edit, python_version_pin,
+    read_uv_metadata, shebang_program, suggest_description, validate_pep440_specifiers,
+    validate_pep508_requirement, write_managed_params, write_managed_params_bytes,
+    write_uv_metadata,
 };
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe,
@@ -5912,7 +5913,7 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
     let managed = if declared_schema {
         EntrySettings::from_meta(&entry.meta).parameters
     } else if source_owned {
-        managed_params(kind, &text)
+        settings_managed_params(kind, &text)
     } else {
         Vec::new()
     };
@@ -5938,6 +5939,25 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
         managed,
         candidates,
     }
+}
+
+/// Build the source-managed rows as a read projection.
+///
+/// The block remains the saved schema. Only the default shown in Settings follows the current
+/// source literal, and only when reconciliation publishes a sound, non-secret value. Source row
+/// defaults are not editable controls, so this display clone never becomes an implicit resync.
+fn settings_managed_params(kind: &str, text: &str) -> Vec<ParamDecl> {
+    let mut managed = managed_params(kind, text);
+    let ParseOutcome::Parsed(document) = parse_document(kind, text) else {
+        return managed;
+    };
+    let current_defaults = document.reconcile(&managed).current_defaults;
+    for declaration in &mut managed {
+        if let Some(current) = current_defaults.get(&declaration.name) {
+            declaration.default = Some(current.clone());
+        }
+    }
+    managed
 }
 
 /// Everything the parameter section decision needs, read once.

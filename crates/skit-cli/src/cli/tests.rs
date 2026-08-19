@@ -1253,6 +1253,79 @@ fn tui_settings_offers_a_declared_row_exactly_the_axes_version_04_makes_editable
     );
 }
 
+#[test]
+fn settings_read_projection_refreshes_only_sound_public_defaults() {
+    let mut name = ParamDecl::new("NAME");
+    name.binding = ParameterBinding::Const;
+    name.delivery = ParameterDelivery::Inject;
+    name.default = Some(ParameterValue::String("hello".to_owned()));
+
+    let mut token = ParamDecl::new("TOKEN");
+    token.binding = ParameterBinding::Const;
+    token.delivery = ParameterDelivery::Inject;
+    token.default = Some(ParameterValue::String("stored-secret".to_owned()));
+    token.secret = true;
+
+    let mut count = ParamDecl::new("COUNT");
+    count.binding = ParameterBinding::Const;
+    count.delivery = ParameterDelivery::Inject;
+    count.parameter_type = ParameterType::Int;
+    count.default = Some(ParameterValue::Integer(3));
+
+    let mut fresh = ParamDecl::new("FRESH");
+    fresh.binding = ParameterBinding::Const;
+    fresh.delivery = ParameterDelivery::Inject;
+
+    let stored = write_managed_params(
+        "python",
+        concat!(
+            "NAME = \"hello\"\n",
+            "TOKEN = \"stored-secret\"\n",
+            "COUNT = 3\n",
+            "FRESH = \"new\"\n",
+        ),
+        &[name, token, count, fresh],
+    )
+    .unwrap();
+    let live = stored
+        .replace("NAME = \"hello\"", "NAME = \"bonjour\"")
+        .replace("TOKEN = \"stored-secret\"", "TOKEN = \"live-secret\"")
+        .replace("COUNT = 3", "COUNT = \"not-an-int\"");
+    let projected = settings_managed_params("python", &live);
+    let default = |name: &str| {
+        projected
+            .iter()
+            .find(|declaration| declaration.name == name)
+            .and_then(|declaration| declaration.default.clone())
+    };
+    assert_eq!(
+        default("NAME"),
+        Some(ParameterValue::String("bonjour".to_owned()))
+    );
+    assert_eq!(
+        default("TOKEN"),
+        Some(ParameterValue::String("stored-secret".to_owned())),
+        "a secret's live source literal must not enter the Settings view"
+    );
+    assert_eq!(default("COUNT"), Some(ParameterValue::Integer(3)));
+    assert_eq!(
+        default("FRESH"),
+        Some(ParameterValue::String("new".to_owned())),
+        "a sound live default must display even when the block has no cached value"
+    );
+
+    let broken = stored.replace("NAME = \"hello\"", "if (");
+    let fallback = settings_managed_params("python", &broken);
+    assert_eq!(
+        fallback
+            .iter()
+            .find(|declaration| declaration.name == "NAME")
+            .and_then(|declaration| declaration.default.clone()),
+        Some(ParameterValue::String("hello".to_owned())),
+        "syntax failure must keep the stored fallback"
+    );
+}
+
 /// A row's edits merge onto the declaration that owns it, and nothing else moves.
 ///
 /// Version 0.4 merges onto the row's own declaration rather than re-deriving it

@@ -1,8 +1,11 @@
 use skit_domain::{
     EntrySettings,
-    parameters::{ParamDecl, ParameterBinding, ParameterDelivery},
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
 };
-use skit_form::{FormDrift, FormSource, form_params, form_params_from_managed, form_plan};
+use skit_form::{
+    FormDrift, FormSource, form_params, form_params_from_managed, form_plan,
+    parameter_section::{ParameterSection, ParameterSectionContext, parameter_section},
+};
 
 fn env(name: &str) -> ParamDecl {
     let mut value = ParamDecl::new(name);
@@ -336,4 +339,67 @@ if (
         plan.drift.as_slice(),
         [FormDrift::Missing { declaration }] if declaration.name == "VALUE"
     ));
+}
+
+#[test]
+fn source_summaries_and_declared_defaults_keep_distinct_display_grammars() {
+    let context = |declared_schema| ParameterSectionContext {
+        kind: if declared_schema { "exe" } else { "python" },
+        reference_mode: false,
+        declared_schema,
+        has_analyzer: !declared_schema,
+        reader_fields: 0,
+    };
+    let declaration = |value: ParameterValue| {
+        let mut declaration = ParamDecl::new("VALUE");
+        declaration.parameter_type = match &value {
+            ParameterValue::String(_) => ParameterType::Str,
+            ParameterValue::Integer(_) => ParameterType::Int,
+            ParameterValue::Float(_) => ParameterType::Float,
+            ParameterValue::Bool(_) => ParameterType::Bool,
+        };
+        declaration.default = Some(value);
+        declaration
+    };
+    let source_summary = |value| {
+        let section = parameter_section(context(false), &[declaration(value)], &[]);
+        let ParameterSection::SourceManaged { rows, .. } = section else {
+            panic!("expected the source-managed section");
+        };
+        rows[0].summary.clone()
+    };
+    assert_eq!(
+        source_summary(ParameterValue::String("World".to_owned())),
+        "VALUE  str 'World'"
+    );
+    assert_eq!(
+        source_summary(ParameterValue::String("O'Reilly".to_owned())),
+        "VALUE  str \"O'Reilly\""
+    );
+    assert_eq!(
+        source_summary(ParameterValue::String("line\\break\n".to_owned())),
+        "VALUE  str 'line\\\\break\\n'"
+    );
+    assert_eq!(source_summary(ParameterValue::Integer(3)), "VALUE  int 3");
+    assert_eq!(
+        source_summary(ParameterValue::Float(3.0)),
+        "VALUE  float 3.0"
+    );
+    assert_eq!(
+        source_summary(ParameterValue::Bool(true)),
+        "VALUE  bool True"
+    );
+
+    let declared_default = |value| {
+        let section = parameter_section(context(true), &[declaration(value)], &[]);
+        let ParameterSection::Declared { rows } = section else {
+            panic!("expected the declared section");
+        };
+        rows[0].field("default").unwrap().value().as_text()
+    };
+    assert_eq!(
+        declared_default(ParameterValue::String("World".to_owned())),
+        "World"
+    );
+    assert_eq!(declared_default(ParameterValue::Bool(true)), "true");
 }

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
@@ -9,11 +10,16 @@ use std::{
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use skit_application::{
-    EntryMutationRepository as _, EntryRepository as _, SourcePermissions,
+    CreateEntry, EntryMutationRepository as _, EntryPayload, EntryRepository as _,
+    SourcePermissions,
     form_state::FormStateRepository as _,
     runner_management::{EditableArgvDialect, join_editable_argv},
 };
-use skit_domain::Slug;
+use skit_domain::{
+    EntryKind, EntrySettings, Slug, StorageMode,
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
+};
+use skit_language::write_managed_params;
 use skit_store::{FileConfigStore, FileFormStateStore, FileStore, PromptRunner};
 use skit_ui::{KnownEntryKind, ReviewDefaults, ReviewState, SourceSnapshot};
 use tempfile::TempDir;
@@ -118,6 +124,74 @@ fn write_pinned_prompt_entry(data: &Path) {
     )
     .unwrap();
     FileStore::new(data).rebuild_registry().unwrap();
+}
+
+fn write_stale_default_entry(data: &Path, home: &Path) -> (PathBuf, PathBuf) {
+    let mut name = ParamDecl::new("NAME");
+    name.binding = ParameterBinding::Const;
+    name.delivery = ParameterDelivery::Inject;
+    name.parameter_type = ParameterType::Str;
+    name.default = Some(ParameterValue::String("hello".to_owned()));
+    let mut count = ParamDecl::new("COUNT");
+    count.binding = ParameterBinding::Const;
+    count.delivery = ParameterDelivery::Inject;
+    count.parameter_type = ParameterType::Int;
+    count.default = Some(ParameterValue::Integer(3));
+
+    let original = "NAME = \"hello\"\nCOUNT = 3\nprint(NAME, COUNT)\n";
+    let managed = write_managed_params("python", original, &[name, count]).unwrap();
+    let source = home.join("greet.py");
+    fs::write(&source, managed.as_bytes()).unwrap();
+    let store = FileStore::new(data);
+    let entry = store
+        .create(CreateEntry {
+            name: "greet".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: source.display().to_string(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: managed.into_bytes(),
+                stored_name: Some("script.py".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let payload = store.payload_path(&entry).unwrap();
+    let current = fs::read_to_string(&payload).unwrap();
+    assert!(current.contains("default = \"hello\""));
+    fs::write(
+        &payload,
+        current.replace("NAME = \"hello\"", "NAME = \"bonjour\""),
+    )
+    .unwrap();
+    let metadata = payload.parent().unwrap().join("meta.toml");
+    (payload, metadata)
+}
+
+fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn visit(root: &Path, path: &Path, snapshot: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+        let mut children = fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        children.sort();
+        for child in children {
+            let relative = child.strip_prefix(root).unwrap().to_path_buf();
+            if child.is_dir() {
+                snapshot.insert(relative, None);
+                visit(root, &child, snapshot);
+            } else {
+                snapshot.insert(relative, Some(fs::read(&child).unwrap()));
+            }
+        }
+    }
+
+    let mut snapshot = BTreeMap::new();
+    visit(root, root, &mut snapshot);
+    snapshot
 }
 
 fn run_in_pty(
@@ -1381,6 +1455,53 @@ fn the_terminal_library_shows_host_projected_detail_facts() {
     ] {
         assert!(output.contains(fact), "missing {fact}: {output}");
     }
+}
+
+/// The Settings parameter summary must use the source's live default without changing any stored
+/// data merely because the user inspected it.
+#[test]
+fn test_settings_param_row_shows_the_sources_live_default() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let (payload, metadata) = write_stale_default_entry(data.path(), home.path());
+    let payload_before = fs::read(&payload).unwrap();
+    let metadata_before = fs::read(&metadata).unwrap();
+    let state_before = tree_snapshot(state.path());
+    let config_before = tree_snapshot(config.path());
+
+    let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("greet");
+    let settings_checkpoint = tui.checkpoint();
+    tui.send_effect_key(b"p");
+    let settings = tui.wait_for_after(settings_checkpoint, "NAME");
+    assert!(
+        settings.contains("Entry settings · greet"),
+        "Settings did not open: {settings}"
+    );
+    let compact = compact_terminal_text(&settings);
+    assert!(
+        compact.contains("NAMEstr'bonjour'"),
+        "the NAME row did not show the exact live-source repr: {settings}"
+    );
+    assert!(
+        !compact.contains("hello"),
+        "the stale managed-block default leaked into Settings: {settings}"
+    );
+
+    let library_checkpoint = tui.checkpoint();
+    tui.send(b"\x1b");
+    tui.wait_for_after(library_checkpoint, "greet");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+    drop(tui);
+
+    assert_eq!(fs::read(&payload).unwrap(), payload_before);
+    assert_eq!(fs::read(&metadata).unwrap(), metadata_before);
+    assert_eq!(tree_snapshot(state.path()), state_before);
+    assert_eq!(tree_snapshot(config.path()), config_before);
 }
 
 #[test]
