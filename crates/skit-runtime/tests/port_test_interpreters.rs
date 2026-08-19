@@ -770,19 +770,9 @@ fn test_cli_add_command_kind_rejected() {}
 // ==========================================================================
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit deps --need` is a CliRunner surface owned by \
-skit-cli-rs."]
-fn test_deps_need_sets_the_list() {}
-
-#[test]
 #[ignore = "CROSS-CRATE (skit-cli-rs): `skit deps --need` replacing the whole list is a CliRunner \
 surface owned by skit-cli-rs."]
 fn test_deps_need_replaces_whole_list() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit deps --clear-needs` is a CliRunner surface owned by \
-skit-cli-rs."]
-fn test_deps_clear_needs() {}
 
 #[test]
 #[ignore = "CROSS-CRATE (skit-cli-rs): the `--need` + `--clear-needs` conflict (exit 2, \"not \

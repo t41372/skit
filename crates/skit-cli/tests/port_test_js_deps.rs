@@ -1513,7 +1513,16 @@ fn test_deps_command_write_emits_json_when_asked() {
         .assert();
     let output = assert.get_output();
     assert_eq!(output.status.code(), Some(0));
-    assert!(combine(output).contains("\"dependencies\":[\"chalk@^5\"]"));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "dependencies": ["chalk@^5"],
+            "requires_python": "",
+            "needs": [],
+        })
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("updated"));
 }
 
 #[test]
@@ -1533,9 +1542,18 @@ fn test_deps_command_needs_write_emits_json_and_skips_the_human_line() {
         .skit()
         .args(["deps", "t", "--need", "jq", "--json"])
         .assert();
-    let text = combine(assert.get_output());
-    assert!(text.contains("\"needs\":[\"jq\"]"));
-    assert!(!text.contains("updated"));
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "dependencies": [],
+            "requires_python": "",
+            "needs": ["jq"],
+        })
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("updated"));
 }
 
 #[test]
@@ -1550,15 +1568,26 @@ fn test_deps_command_applies_both_deps_and_needs() {
         .arg("--no-input")
         .assert()
         .success();
-    sandbox
+    let output = sandbox
         .skit()
         .args(["deps", "t", "--dep", "chalk", "--need", "jq"])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Dependencies of t updated: chalk\nNeeds of t updated: jq\n"
+    );
+    assert!(output.stderr.is_empty());
     let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
-    let text = combine(view.get_output());
-    assert!(text.contains("\"chalk\""));
-    assert!(text.contains("\"jq\""));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&view.get_output().stdout).unwrap(),
+        serde_json::json!({
+            "dependencies": ["chalk"],
+            "requires_python": "",
+            "needs": ["jq"],
+        })
+    );
 }
 
 #[test]

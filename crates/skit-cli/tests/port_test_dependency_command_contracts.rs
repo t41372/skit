@@ -26,18 +26,21 @@
 //! - Python `drafts_dir()` -> `<SKIT_DATA_DIR>/drafts`.
 //!
 //! Buckets (recorded per test in the structured result):
-//! - REAL asserting `#[test]` (API exists, behavior agrees): the npm refusal spellings (3–5),
-//!   the uv-flavor '-'/'none' normalization (6, 8), the deps-only npm edit (10), and the
-//!   add_python belt's validation, strip-and-drop, and no-deps transparency (11–14). 10 tests.
+//! - REAL asserting `#[test]` (API exists, behavior agrees): 15 contracts from this oracle plus
+//!   `test_deps_need_sets_the_list` and `test_deps_clear_needs`, rehomed here from the runtime
+//!   target because the real binary/store write door is owned by skit-cli-rs. 17 tests.
 //! - FAILING CONTRACT (divergence) — full oracle-faithful body, `#[ignore]`d because the
 //!   Rust behavior diverges (verified against the built binary): the wholly-unimplemented
-//!   drafts-boundary guard (1, 2) and the deps confirmation-line shape (15–19). 7 tests.
+//!   drafts-boundary guard (1, 2). 2 tests.
 //! - CLOSURE — 3 ignored exact names: the Python public-store refusal cases (7, 9) have no
 //!   equivalent Rust public store seam, and their closest CLI mappings duplicate stronger
 //!   executable owners; the language `registry.spec_for(...).deps_flavor` premise (20) is a
 //!   cross-crate compiling stub because the Rust rewrite disperses that surface.
 
-use std::path::PathBuf;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use tempfile::TempDir;
 
@@ -64,12 +67,16 @@ impl Sandbox {
     }
 
     fn skit(&self) -> assert_cmd::Command {
+        self.skit_locale("en")
+    }
+
+    fn skit_locale(&self, locale: &str) -> assert_cmd::Command {
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
         command
             .env("SKIT_DATA_DIR", self.data.path())
             .env("SKIT_STATE_DIR", self.state.path())
             .env("SKIT_CONFIG_DIR", self.config.path())
-            .env("SKIT_LANG", "en");
+            .env("SKIT_LANG", locale);
         command
     }
 
@@ -98,6 +105,10 @@ impl Sandbox {
         std::fs::read_to_string(self.entry_dir(slug).join("meta.toml")).unwrap()
     }
 
+    fn payload_bytes(&self, slug: &str, name: &str) -> Vec<u8> {
+        std::fs::read(self.entry_dir(slug).join(name)).unwrap()
+    }
+
     /// Write a file into skit's OWN drafts home (`drafts_dir()`), returning its path.
     fn draft(&self, name: &str, body: &str) -> PathBuf {
         let dir = self.data.path().join("drafts");
@@ -120,6 +131,33 @@ fn flatten(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn assert_human_output(output: &std::process::Output, expected: &str) {
+    assert_eq!(output.status.code(), Some(0), "{}", combine(output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+    assert!(output.stderr.is_empty(), "{}", combine(output));
+}
+
+fn tree_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn collect(root: &Path, path: &Path, rows: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                collect(root, &path, rows);
+            } else {
+                rows.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    std::fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut rows = BTreeMap::new();
+    collect(root, root, &mut rows);
+    rows
+}
+
 /// Add a python copy entry named `name` from a fresh `print(1)` source (the oracle's `_py` +
 /// `store.add_python`). The temp source may drop at once: copy mode copies its bytes now.
 fn add_py(sandbox: &Sandbox, name: &str) {
@@ -140,6 +178,20 @@ fn add_js(sandbox: &Sandbox, name: &str) {
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("t.js");
     std::fs::write(&source, "console.log(1)\n").unwrap();
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["-n", name, "--no-input"])
+        .assert()
+        .success();
+}
+
+/// Add the oracle's shell copy entry. Needs apply without enabling package-dependency axes.
+fn add_shell(sandbox: &Sandbox, name: &str) {
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("d.sh");
+    std::fs::write(&source, "#!/bin/sh\necho hi\n").unwrap();
     sandbox
         .skit()
         .arg("add")
@@ -480,25 +532,33 @@ fn test_deps_python_only_dash_reports_the_dash_placeholder() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the deps edit lands (exit 0), but Rust prints the unconditional three-line view — never the per-axis 'Dependencies of a updated: requests', and it always prints a 'Python constraint' line (cli.py:4980-4991). Verified against the built binary."]
 fn test_deps_dep_only_prints_the_deps_line() {
     // --dep alone edited only the dependency axis, so the confirmation is the deps line — the
     // constraint line is absent because its gate (`python is not None`) never fired.
     let sandbox = Sandbox::new();
     add_py(&sandbox, "a");
+    let before_config = tree_bytes(sandbox.config.path());
+    let before_state = tree_bytes(sandbox.state.path());
     let assert = sandbox
         .skit()
         .args(["deps", "a", "--dep", "requests"])
         .assert();
     let output = assert.get_output();
-    assert_eq!(output.status.code(), Some(0));
-    let flat = flatten(&combine(output));
-    assert!(flat.contains("Dependencies of a updated: requests"));
-    assert!(!flat.contains("Python constraint of"));
+    assert_human_output(output, "Dependencies of a updated: requests\n");
+    assert_eq!(
+        sandbox.deps_json("a"),
+        serde_json::json!({
+            "dependencies": ["requests"],
+            "requires_python": "",
+            "needs": [],
+        })
+    );
+    assert!(sandbox.stored_copy("a").contains("requests"));
+    assert_eq!(tree_bytes(sandbox.config.path()), before_config);
+    assert_eq!(tree_bytes(sandbox.state.path()), before_state);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): both axes land (the constraint reaches meta, `deps a --json` shows requires_python >=3.12), but Rust prints the unconditional three-line view — never the per-axis 'Dependencies of a updated: rich' / 'Python constraint of a updated: >=3.12' (cli.py:4980-4991). Verified against the built binary."]
 fn test_deps_dep_and_python_together_prints_both_axis_lines() {
     // --dep AND --python moved BOTH axes, so BOTH confirmation lines print — each naming its own
     // axis. The per-axis rule (deps line when `dep is not None or clear`, constraint line when
@@ -511,16 +571,77 @@ fn test_deps_dep_and_python_together_prints_both_axis_lines() {
         .args(["deps", "a", "--dep", "rich", "--python", ">=3.12"])
         .assert();
     let output = assert.get_output();
-    assert_eq!(output.status.code(), Some(0));
-    let flat = flatten(&combine(output));
-    assert!(flat.contains("Dependencies of a updated: rich")); // the deps axis moved
-    assert!(flat.contains("Python constraint of a updated: >=3.12")); // and so did the constraint axis
-    let view = sandbox.skit().args(["deps", "a", "--json"]).assert();
-    assert!(combine(view.get_output()).contains("\"requires_python\":\">=3.12\"")); // the constraint landed
+    assert_human_output(
+        output,
+        concat!(
+            "Dependencies of a updated: rich\n",
+            "Python constraint of a updated: >=3.12\n",
+        ),
+    );
+    assert_eq!(
+        sandbox.deps_json("a"),
+        serde_json::json!({
+            "dependencies": ["rich"],
+            "requires_python": ">=3.12",
+            "needs": [],
+        })
+    );
+
+    // All requested axes report in stable Dependencies -> Python -> Needs order. Repeating the
+    // same request localizes the receipt but does not rewrite metadata or the source payload.
+    add_py(&sandbox, "ordered");
+    let args = [
+        "deps", "ordered", "--dep", "httpx", "--python", ">=3.12", "--need", "jq",
+    ];
+    let english = sandbox.skit().args(args).output().unwrap();
+    assert_human_output(
+        &english,
+        concat!(
+            "Dependencies of ordered updated: httpx\n",
+            "Python constraint of ordered updated: >=3.12\n",
+            "Needs of ordered updated: jq\n",
+        ),
+    );
+    assert_eq!(
+        sandbox.deps_json("ordered"),
+        serde_json::json!({
+            "dependencies": ["httpx"],
+            "requires_python": ">=3.12",
+            "needs": ["jq"],
+        })
+    );
+    let meta = sandbox.meta_toml("ordered");
+    let source = sandbox.stored_copy("ordered");
+    let config = tree_bytes(sandbox.config.path());
+    let state = tree_bytes(sandbox.state.path());
+    for (locale, expected) in [
+        (
+            "zh-CN",
+            concat!(
+                "ordered 的依赖已更新:httpx\n",
+                "ordered 的 Python 版本约束已更新:>=3.12\n",
+                "ordered 所需的命令已更新：jq\n",
+            ),
+        ),
+        (
+            "zh-TW",
+            concat!(
+                "ordered 的依賴已更新:httpx\n",
+                "ordered 的 Python 版本約束已更新:>=3.12\n",
+                "ordered 所需的命令已更新：jq\n",
+            ),
+        ),
+    ] {
+        let output = sandbox.skit_locale(locale).args(args).output().unwrap();
+        assert_human_output(&output, expected);
+        assert_eq!(sandbox.meta_toml("ordered"), meta);
+        assert_eq!(sandbox.stored_copy("ordered"), source);
+        assert_eq!(tree_bytes(sandbox.config.path()), config);
+        assert_eq!(tree_bytes(sandbox.state.path()), state);
+    }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the clear lands (exit 0), but Rust prints the unconditional three-line view — never the per-axis 'Dependencies of a updated: —', and it always prints a 'Python constraint' line (cli.py:4980-4991). Verified against the built binary."]
 fn test_deps_clear_prints_the_deps_line() {
     // --clear is a dependency edit (to empty), so it takes the deps line too — and with no
     // --python given, the constraint line's own gate (`python is not None`) stays silent.
@@ -528,19 +649,115 @@ fn test_deps_clear_prints_the_deps_line() {
     add_py(&sandbox, "a");
     sandbox
         .skit()
-        .args(["deps", "a", "--dep", "requests"])
+        .args(["deps", "a", "--dep", "requests", "--python", ">=3.11"])
         .assert()
         .success();
+    let seeded = sandbox.stored_copy("a");
+    let before_config = tree_bytes(sandbox.config.path());
+    let before_state = tree_bytes(sandbox.state.path());
     let assert = sandbox.skit().args(["deps", "a", "--clear"]).assert();
     let output = assert.get_output();
-    assert_eq!(output.status.code(), Some(0));
-    let flat = flatten(&combine(output));
-    assert!(flat.contains("Dependencies of a updated: —"));
-    assert!(!flat.contains("Python constraint of"));
+    assert_human_output(output, "Dependencies of a updated: —\n");
+    assert_eq!(
+        sandbox.deps_json("a"),
+        serde_json::json!({
+            "dependencies": [],
+            "requires_python": ">=3.11",
+            "needs": [],
+        })
+    );
+    let cleared = sandbox.stored_copy("a");
+    assert_ne!(cleared, seeded);
+    assert!(!cleared.contains("requests"));
+    assert!(cleared.contains("requires-python = \">=3.11\""));
+    assert_eq!(tree_bytes(sandbox.config.path()), before_config);
+    assert_eq!(tree_bytes(sandbox.state.path()), before_state);
 }
 
 // ==========================================================================
-// 5. registry sanity — js is the npm flavor this whole gate keys on
+// 5. Interpreter-oracle needs receipts — rehomed from the wrong runtime crate
+// ==========================================================================
+
+#[test]
+fn test_deps_need_sets_the_list() {
+    let sandbox = Sandbox::new();
+    add_shell(&sandbox, "d");
+    let payload = sandbox.payload_bytes("d", "script.sh");
+    let before_config = tree_bytes(sandbox.config.path());
+    let before_state = tree_bytes(sandbox.state.path());
+
+    let output = sandbox
+        .skit()
+        .args(["deps", "d", "--need", "jq", "--need", "ffmpeg"])
+        .output()
+        .unwrap();
+
+    assert_human_output(&output, "Needs of d updated: jq, ffmpeg\n");
+    assert_eq!(
+        sandbox.deps_json("d"),
+        serde_json::json!({
+            "dependencies": [],
+            "requires_python": "",
+            "needs": ["jq", "ffmpeg"],
+        })
+    );
+    let meta = toml::from_str::<toml::Table>(&sandbox.meta_toml("d")).unwrap();
+    assert_eq!(
+        meta["needs"],
+        toml::Value::Array(vec!["jq".into(), "ffmpeg".into()])
+    );
+    assert_eq!(sandbox.payload_bytes("d", "script.sh"), payload);
+    assert_eq!(tree_bytes(sandbox.config.path()), before_config);
+    assert_eq!(tree_bytes(sandbox.state.path()), before_state);
+}
+
+#[test]
+fn test_deps_clear_needs() {
+    let sandbox = Sandbox::new();
+    add_shell(&sandbox, "d");
+    sandbox
+        .skit()
+        .args(["deps", "d", "--need", "jq"])
+        .assert()
+        .success();
+    let payload = sandbox.payload_bytes("d", "script.sh");
+    let before_config = tree_bytes(sandbox.config.path());
+    let before_state = tree_bytes(sandbox.state.path());
+
+    let output = sandbox
+        .skit()
+        .args(["deps", "d", "--clear-needs"])
+        .output()
+        .unwrap();
+
+    assert_human_output(&output, "Needs of d updated: —\n");
+    assert_eq!(
+        sandbox.deps_json("d"),
+        serde_json::json!({
+            "dependencies": [],
+            "requires_python": "",
+            "needs": [],
+        })
+    );
+    assert!(!sandbox.meta_toml("d").contains("needs"));
+    assert_eq!(sandbox.payload_bytes("d", "script.sh"), payload);
+    assert_eq!(tree_bytes(sandbox.config.path()), before_config);
+    assert_eq!(tree_bytes(sandbox.state.path()), before_state);
+
+    // A requested clear still reports its axis, but a successful no-op rewrites no bytes.
+    let meta = sandbox.meta_toml("d");
+    let output = sandbox
+        .skit()
+        .args(["deps", "d", "--clear-needs"])
+        .output()
+        .unwrap();
+    assert_human_output(&output, "Needs of d updated: —\n");
+    assert_eq!(sandbox.meta_toml("d"), meta);
+    assert_eq!(sandbox.payload_bytes("d", "script.sh"), payload);
+}
+
+// ==========================================================================
+// 6. registry sanity — js is the npm flavor this whole gate keys on
 // ==========================================================================
 
 #[test]

@@ -269,9 +269,18 @@ fn test_deps_refused_write_leaves_needs_untouched() {
     let sandbox = Sandbox::new();
     sandbox.add_python_print("a");
     sandbox.ok(&["deps", "a", "--need", "jq"]);
+    let before_meta = sandbox.stored_meta("a");
+    let before_block = sandbox.stored_block("a");
     let output = sandbox.run(&["deps", "a", "--dep", "@@@", "--need", "ffmpeg"]);
     assert_eq!(output.status.code(), Some(2), "{}", flat(&output));
+    assert!(
+        output.stdout.is_empty(),
+        "a refusal printed a success receipt"
+    );
+    assert!(!flat(&output).contains("updated:"));
     let meta = sandbox.stored_meta("a");
+    assert_eq!(meta, before_meta);
+    assert_eq!(sandbox.stored_block("a"), before_block);
     assert!(meta.contains("\"jq\"")); // the needs write never ran
     assert!(!meta.contains("ffmpeg"));
 }

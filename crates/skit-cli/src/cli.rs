@@ -3921,20 +3921,62 @@ fn deps(
     output.dependencies = plan.effective.dependencies;
     output.requires_python = plan.effective.requires_python;
     output.needs = settings.needs;
-    if !args.json && python_edit.is_some() && dependencies_edit.is_none() && !needs_edit {
-        let value = if output.requires_python.is_empty() {
-            "—"
-        } else {
-            &output.requires_python
-        };
+    if args.json {
+        return write_deps(&output, true);
+    }
+    if dependencies_edit.is_none() && python_edit.is_none() && !needs_edit {
+        return write_deps(&output, false);
+    }
+    write_deps_receipts(
+        &held.meta.name,
+        &output,
+        dependencies_edit.is_some(),
+        python_edit.is_some(),
+        needs_edit,
+    );
+    Ok(())
+}
+
+fn write_deps_receipts(
+    name: &str,
+    settings: &EntrySettings,
+    dependencies: bool,
+    python: bool,
+    needs: bool,
+) {
+    if dependencies {
+        humanln!(
+            "Dependencies of {} updated: {}",
+            name,
+            list_or_dash(&settings.dependencies)
+        );
+    }
+    if python {
         humanln!(
             "Python constraint of {} updated: {}",
-            &held.meta.name,
-            value
+            name,
+            value_or_dash(&settings.requires_python)
         );
-        return Ok(());
     }
-    write_deps(&output, args.json)
+    if needs {
+        humanln!(
+            "Needs of {} updated: {}",
+            name,
+            list_or_dash(&settings.needs)
+        );
+    }
+}
+
+fn list_or_dash(values: &[String]) -> String {
+    if values.is_empty() {
+        "—".to_owned()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn value_or_dash(value: &str) -> &str {
+    if value.is_empty() { "—" } else { value }
 }
 
 fn write_deps(settings: &EntrySettings, json: bool) -> Result<(), CliError> {

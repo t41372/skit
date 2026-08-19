@@ -1150,6 +1150,11 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Dependencies: {}", "依赖:{}", "依賴:{}"),
     row!(
+        "Dependencies of {} updated: {}",
+        "{} 的依赖已更新:{}",
+        "{} 的依賴已更新:{}",
+    ),
+    row!(
         "Python constraint of {} updated: {}",
         "{} 的 Python 版本约束已更新:{}",
         "{} 的 Python 版本約束已更新:{}",
@@ -1160,6 +1165,11 @@ const CATALOG: &[Translation] = &[
         "Python 版本約束:{}",
     ),
     row!("Required commands: {}", "所需命令：{}", "必要命令：{}"),
+    row!(
+        "Needs of {} updated: {}",
+        "{} 所需的命令已更新：{}",
+        "{} 所需的命令已更新：{}",
+    ),
     row!(
         "First run — downloading uv {}…",
         "首次运行:正在下载 uv {}…",
