@@ -145,6 +145,26 @@ fn secret_purge_notice_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn managed_parameter_receipt_matches_the_oracle_in_every_locale() {
+    let template = "Updated {}. Managed parameters: {}";
+    let name = "[blue]a[/blue]";
+    assert_eq!(
+        format_text(Locale::En, template, &[&name, &"CITY, RETRIES"]),
+        "Updated [blue]a[/blue]. Managed parameters: CITY, RETRIES"
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&name, &"CITY, RETRIES"]),
+        "已更新 [blue]a[/blue]。受管理的参数:CITY, RETRIES"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&name, &"—"]),
+        "已更新 [blue]a[/blue]。受管理的參數:—"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&name, &"CITY"]);
+    assert!(pseudo.contains(name), "{pseudo}");
+}
+
+#[test]
 fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
     let template = "Ignored a malformed value: {} (expected NAME=text).";
     let item = "--prompt: [red]bad[/red]";

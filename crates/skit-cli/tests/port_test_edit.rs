@@ -44,7 +44,11 @@
 
 use std::fs;
 #[cfg(unix)]
+use std::io::Read as _;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::{managed_params, write_managed_params};
@@ -94,6 +98,39 @@ impl Sandbox {
             state: TempDir::new().unwrap(),
             config: TempDir::new().unwrap(),
         }
+    }
+
+    #[cfg(unix)]
+    fn run_pty(&self, args: &[&str]) -> (u32, String) {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 200,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.args(args);
+        command.env("TERM", "xterm-256color");
+        command.env("SKIT_LANG", "en");
+        command.env("SKIT_DATA_DIR", self.data.path());
+        command.env("SKIT_STATE_DIR", self.state.path());
+        command.env("SKIT_CONFIG_DIR", self.config.path());
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let drain = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = reader.read_to_end(&mut bytes);
+            bytes
+        });
+        let status = child.wait().unwrap();
+        let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+        (status.exit_code(), output)
     }
 
     fn command(&self) -> assert_cmd::Command {
@@ -320,6 +357,21 @@ fn test_cli_bad_prompt_is_warned_not_fatal() {
             )),
             "{malformed}: {shown}"
         );
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains("Updated job. Managed parameters: CITY, RETRIES, GONE"),
+            "{malformed}: {shown}"
+        );
+    }
+    #[cfg(unix)]
+    {
+        let (code, shown) = sandbox.run_pty(&["params", "job", "--prompt", "no-equals-sign"]);
+        assert_eq!(code, 0, "{shown}");
+        let warning = shown.find("Ignored a malformed value").unwrap();
+        let receipt = shown
+            .find("Updated job. Managed parameters: CITY, RETRIES, GONE")
+            .unwrap_or_else(|| panic!("missing receipt: {shown}"));
+        assert!(warning < receipt, "{shown}");
     }
     assert_eq!(fs::read(payload).unwrap(), payload_before);
     assert_eq!(fs::read(meta).unwrap(), meta_before);

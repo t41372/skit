@@ -3987,6 +3987,11 @@ fn params(
         || !args.secret.is_empty()
         || !args.no_secret.is_empty();
     let source_parameter_kind = source_owned_schema(kind);
+    let has_managed_edit_operation = source_parameter_kind
+        && (args.resync
+            || !args.manage.is_empty()
+            || !args.unmanage.is_empty()
+            || has_shared_parameter_tweaks);
     if source_parameter_kind && has_declared_schema_operation {
         // A kind whose schema lives in its own file cannot take a declared-schema flag. Version 0.4
         // names the two flags that do apply and treats it as a failed operation, not a malformed
@@ -4367,8 +4372,15 @@ fn params(
             .filter(|item| item.binding != ParameterBinding::None)
             .cloned()
             .collect::<Vec<_>>();
-        source = write_managed_params(held.meta.kind.as_str(), &source, &managed)
-            .map_err(|error| CliError::Usage(error.message()))?;
+        // The frozen writer is byte-idempotent when resync keeps the same declarations. Keep the
+        // original bytes and avoid a needless compare-and-swap in that case.
+        let managed_changed = managed != managed_params(held.meta.kind.as_str(), &original_source);
+        source = if managed_changed || !args.normalize.is_empty() {
+            write_managed_params(held.meta.kind.as_str(), &source, &managed)
+                .map_err(|error| CliError::Usage(error.message()))?
+        } else {
+            original_source.clone()
+        };
         if source != original_source {
             let claimed = service.claim_identity(&held)?;
             held = service.commit_copy_edit(&claimed, source.as_bytes(), &held.meta.source_hash)?;
@@ -4394,6 +4406,20 @@ fn params(
             let purged = state.purge_secrets(&held.slug, &declarations)?;
             report_purged_secrets(purged, args.json);
         }
+    }
+    if has_managed_edit_operation && !args.json {
+        let names = declarations
+            .iter()
+            .filter(|item| item.binding != ParameterBinding::None)
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        humanln!(
+            "Updated {}. Managed parameters: {}",
+            held.meta.name,
+            if names.is_empty() { "—" } else { &names }
+        );
+        return Ok(());
     }
     write_params(&held, &source, &settings, &declarations, args.json)
 }

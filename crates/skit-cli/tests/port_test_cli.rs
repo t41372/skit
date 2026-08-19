@@ -52,7 +52,7 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -108,6 +108,29 @@ fn write_src(root: &TempDir, name: &str, body: &str) -> PathBuf {
     }
     fs::write(&path, body).unwrap();
     path
+}
+
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
 }
 
 /// Register one hand-built entry directory in the authoritative membership index.
@@ -1847,7 +1870,6 @@ fn test_edit_missing_reference_source_escapes_markup_in_path() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `skit params <name> --resync` must print an updated-summary naming the ENTRY (oracle echoes the entry name so markup renders literally). Rust's --resync prints only the refreshed parameter table (\"Parameter: X ...\"), never the entry name, so `[blue]a[/blue]` never appears. Owning ref src/skit/cli.py params resync summary."]
 fn test_edit_params_updated_summary_escapes_markup_in_name() {
     let root = sandbox();
     let block = "# /// script\n# [tool.skit]\n# schema = 1\n#\n# [[tool.skit.params]]\n# name = \"X\"\n# binding = \"const\"\n# type = \"int\"\n# default = 1\n# ///\nX = 1\nprint(X)\n";
@@ -1859,9 +1881,25 @@ fn test_edit_params_updated_summary_escapes_markup_in_name() {
         "python",
         "--no-input",
     ]));
+    let entry = root.path().join("data").join("scripts").join("blue-a-blue");
+    let payload = entry.join("script.py");
+    let meta = entry.join("meta.toml");
+    let registry = root.path().join("data").join("registry.toml");
+    let payload_before = fs::read(&payload).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+    let registry_before = fs::read(&registry).unwrap();
+    let state_before = snapshot_tree(&root.path().join("state"));
     let (code, out) = run(skit(&root).args(["params", "[blue]a[/blue]", "--resync"]));
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("[blue]a[/blue]"), "{out}");
+    assert!(
+        out.contains("Updated [blue]a[/blue]. Managed parameters: X"),
+        "{out}"
+    );
+    assert!(!out.contains("Parameter: X"), "{out}");
+    assert_eq!(fs::read(payload).unwrap(), payload_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
+    assert_eq!(fs::read(registry).unwrap(), registry_before);
+    assert_eq!(snapshot_tree(&root.path().join("state")), state_before);
 }
 
 #[test]

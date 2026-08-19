@@ -41,11 +41,21 @@ fn manage_and_unmanage_write_only_the_stored_copy() {
         .assert()
         .success();
 
-    sandbox
+    let managed = sandbox
         .command()
         .args(["params", "tool", "--manage", "WIDTH"])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert!(managed.status.success());
+    let managed_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&managed.stdout),
+        String::from_utf8_lossy(&managed.stderr)
+    );
+    assert!(
+        managed_output.contains("Updated Tool. Managed parameters: WIDTH"),
+        "{managed_output}"
+    );
     let stored = sandbox.data.path().join("scripts/tool/script.py");
     let text = fs::read_to_string(&stored).unwrap();
     assert!(text.contains("[[tool.skit.params]]"));
@@ -64,11 +74,21 @@ fn manage_and_unmanage_write_only_the_stored_copy() {
     assert_eq!(params["parameters"][0]["name"], "WIDTH");
     assert_eq!(params["parameters"][0]["binding"], "const");
 
-    sandbox
+    let unmanaged = sandbox
         .command()
         .args(["params", "tool", "--unmanage", "WIDTH"])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert!(unmanaged.status.success());
+    let unmanaged_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&unmanaged.stdout),
+        String::from_utf8_lossy(&unmanaged.stderr)
+    );
+    assert!(
+        unmanaged_output.contains("Updated Tool. Managed parameters: —"),
+        "{unmanaged_output}"
+    );
     assert!(
         !fs::read_to_string(stored)
             .unwrap()
@@ -145,11 +165,21 @@ fn shell_normalize_is_explicit_and_never_changes_the_original() {
         .args(["add", original.to_str().unwrap(), "--name", "Tool"])
         .assert()
         .success();
-    sandbox
+    let normalized = sandbox
         .command()
         .args(["params", "tool", "--normalize", "NAME"])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert!(normalized.status.success());
+    let normalized_output = format!(
+        "{}{}",
+        String::from_utf8_lossy(&normalized.stdout),
+        String::from_utf8_lossy(&normalized.stderr)
+    );
+    assert!(
+        !normalized_output.contains("Updated "),
+        "{normalized_output}"
+    );
     // The canonical form keeps the expansion inside double quotes, so a default that holds
     // spaces or globs stays one word (`src/skit/langs/shell/normalize.py:125` emits
     // `f'"${{{name}:-{literal}}}"'`).
