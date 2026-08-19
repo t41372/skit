@@ -2748,21 +2748,28 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
     let service = LibraryService::new(FileStore::new(root.path().join("data")));
     let config = FileConfigStore::new(&config_dir);
     config.set("editor", "vi").unwrap();
+    let config_path = config_dir.join("config.toml");
+    let config_before_refusal = fs::read(&config_path).unwrap();
 
-    let refused = skit_application::preferences::PreferencesChangeSet {
-        settings: BTreeMap::from([
-            ("editor".to_owned(), "micro".to_owned()),
-            (
-                "shell.bash_path".to_owned(),
-                root.path().join("missing-bash").display().to_string(),
-            ),
-        ]),
-    };
-    assert!(matches!(
-        tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(refused)).unwrap(),
-        UiAction::Preferences(PreferencesAction::ValidationFailed(_))
-    ));
-    assert_eq!(config.get("editor").unwrap(), "vi");
+    let missing_bash = root.path().join("missing-bash");
+    let directory = root.path().join("bash-directory");
+    fs::create_dir(&directory).unwrap();
+    for invalid in [&missing_bash, &directory] {
+        let refused = skit_application::preferences::PreferencesChangeSet {
+            settings: BTreeMap::from([
+                ("editor".to_owned(), "micro".to_owned()),
+                ("shell.bash_path".to_owned(), invalid.display().to_string()),
+            ]),
+        };
+        assert!(matches!(
+            tui_preferences_effect(&service, &config_dir, PreferencesEffect::Save(refused))
+                .unwrap(),
+            UiAction::Preferences(PreferencesAction::ValidationFailed(_))
+        ));
+        assert_eq!(config.get("editor").unwrap(), "vi");
+        assert_eq!(fs::read(&config_path).unwrap(), config_before_refusal);
+        assert!(!config_dir.join("config.toml.bak").exists());
+    }
 
     let accepted = skit_application::preferences::PreferencesChangeSet {
         settings: BTreeMap::from([
@@ -3087,6 +3094,36 @@ fn tui_host_submits_every_form_without_global_process_state() {
         UiAction::Complete { .. }
     ));
     let renamed = service.show("Renamed Tool").unwrap();
+
+    let config = FileConfigStore::new(&config_dir);
+    config.set("editor", "nano").unwrap();
+    let config_path = config_dir.join("config.toml");
+    let config_before_refusal = fs::read(&config_path).unwrap();
+    let missing_bash = root.path().join("missing-legacy-bash");
+    let invalid_preferences = BTreeMap::from([
+        ("editor".to_owned(), FieldValue::text("micro")),
+        (
+            "shell.bash_path".to_owned(),
+            FieldValue::text(missing_bash.display().to_string()),
+        ),
+    ]);
+    let error = tui_submit(
+        &service,
+        &store,
+        &state_dir,
+        &config_dir,
+        FormPurpose::Preferences,
+        None,
+        &invalid_preferences,
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.message().localize(Locale::En),
+        format!("No such file: {}", missing_bash.display())
+    );
+    assert_eq!(fs::read(&config_path).unwrap(), config_before_refusal);
+    assert_eq!(config.get("editor").unwrap(), "nano");
+    assert!(!config_dir.join("config.toml.bak").exists());
 
     let preferences = BTreeMap::from([
         ("lang".to_owned(), FieldValue::text("en")),

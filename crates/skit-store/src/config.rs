@@ -856,18 +856,7 @@ fn normalize_setting(key: &str, value: &str) -> Result<String, ConfigError> {
         "after_run" => Err(ConfigError::Usage(
             Message::new("Unknown after-run behavior: {}. Choose from: exit, stay").with(value),
         )),
-        "shell.bash_path" => {
-            let path = value.trim();
-            if path.is_empty() {
-                Ok(String::new())
-            } else if crate::expand_user_path(Path::new(path)).is_file() {
-                Ok(path.to_owned())
-            } else {
-                Err(ConfigError::Usage(
-                    Message::new("No such file: {}").with(path),
-                ))
-            }
-        }
+        "shell.bash_path" => Ok(value.trim().to_owned()),
         "js.runner" if value.trim().is_empty() => Ok(String::new()),
         "js.runner" if matches!(value, "deno" | "bun" | "node") => Ok(value.to_owned()),
         "js.runner" => Err(ConfigError::Usage(

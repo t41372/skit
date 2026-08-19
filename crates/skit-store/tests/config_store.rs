@@ -196,32 +196,59 @@ fn clearing_the_last_nested_scalar_removes_only_its_now_empty_section() {
 }
 
 #[test]
-fn a_nonempty_bash_path_must_name_a_regular_file_before_any_write() {
+fn low_level_bash_path_persists_trimmed_values_without_frontend_policy() {
     let root = TempDir::new().unwrap();
     let path = root.path().join("config.toml");
-    let source = "future = \"keep\"\n";
-    fs::write(&path, source).unwrap();
+    let hand_edited = root.path().join("hand-edited-missing");
+    let source = format!(
+        concat!(
+            "future = \"keep\" # preserve this comment\n",
+            "[shell]\n",
+            "other = \"keep too\"\n",
+            "bash_path = {:?}\n",
+        ),
+        hand_edited.display().to_string(),
+    );
+    fs::write(&path, &source).unwrap();
     let store = FileConfigStore::new(root.path());
 
-    for invalid in [root.path().join("missing"), root.path().join("directory")] {
-        if invalid.ends_with("directory") {
-            fs::create_dir(&invalid).unwrap();
-        }
-        let error = store
-            .set("shell.bash_path", invalid.to_str().unwrap())
-            .unwrap_err();
-        assert!(matches!(error, ConfigError::Usage(_)));
-        for locale in [
-            skit_i18n::Locale::En,
-            skit_i18n::Locale::ZhCn,
-            skit_i18n::Locale::ZhTw,
-        ] {
-            let localized = skit_i18n::Localize::message(&error).localize(locale);
-            assert!(localized.contains(invalid.to_str().unwrap()));
-            assert!(!localized.contains("{}"));
-        }
-        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    // A read projects the hand-edited string without checking the live filesystem or rewriting.
+    assert_eq!(
+        store.get("shell.bash_path").unwrap(),
+        hand_edited.display().to_string()
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    assert!(!root.path().join("config.toml.bak").exists());
+
+    let missing = root.path().join("missing");
+    let directory = root.path().join("directory");
+    fs::create_dir(&directory).unwrap();
+    for value in [&missing, &directory] {
+        store
+            .set("shell.bash_path", &format!("  {}  ", value.display()))
+            .unwrap();
+        assert_eq!(
+            store.get("shell.bash_path").unwrap(),
+            value.display().to_string()
+        );
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("future = \"keep\" # preserve this comment"));
+        assert!(text.contains("other = \"keep too\""));
     }
+
+    store.set("shell.bash_path", " \t ").unwrap();
+    assert_eq!(store.get("shell.bash_path").unwrap(), "");
+    let text = fs::read_to_string(&path).unwrap();
+    let document = text.parse::<toml::Table>().unwrap();
+    assert!(
+        !document["shell"]
+            .as_table()
+            .unwrap()
+            .contains_key("bash_path")
+    );
+    assert_eq!(document["shell"]["other"].as_str(), Some("keep too"));
+    assert_eq!(document["future"].as_str(), Some("keep"));
+    assert!(text.contains("# preserve this comment"));
 }
 
 #[test]

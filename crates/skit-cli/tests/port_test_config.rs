@@ -832,11 +832,6 @@ fn test_bash_path_round_trip() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's low-level save_bash_path only strips and \
-    stores, with no existence check (config.py:510-523), so '/opt/bash' persists; the Rust store `set` \
-    requires an EXISTING file (skit-store/src/config.rs:838) and refuses. NB: the oracle's CLI layer \
-    validates identically (cli.py:5454-5463), so this is a module-function-layer difference, not a lost \
-    gate."]
 fn test_bash_path_strips_and_clears() {
     let (dir, store) = fixture();
     store.set("shell.bash_path", "  /opt/bash  ").unwrap();
@@ -861,11 +856,6 @@ fn test_bash_path_garbage_section_normalizes_to_empty() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's low-level save_bash_path only strips and \
-    stores, with no existence check (config.py:510-523), so '/opt/bash' persists; the Rust store `set` \
-    requires an EXISTING file (skit-store/src/config.rs:838) and refuses. NB: the oracle's CLI layer \
-    validates identically (cli.py:5454-5463), so this is a module-function-layer difference, not a lost \
-    gate."]
 fn test_bash_path_save_preserves_other_keys() {
     let (dir, store) = fixture();
     write_config(&dir, "language = \"zh-CN\"\n");

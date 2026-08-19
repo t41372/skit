@@ -882,10 +882,39 @@ fn test_set_bash_path_to_existing_file() {
 #[test]
 fn test_set_bash_path_to_missing_file_is_usage_error() {
     let sandbox = Sandbox::new();
+    let original = concat!(
+        "future = \"keep\" # preserve this comment\n",
+        "[shell]\n",
+        "other = \"keep too\"\n",
+    );
+    sandbox.write_config(original);
     let ghost = sandbox.data.path().join("nope"); // never created
-    let result = sandbox.run(&["config", "shell.bash_path", ghost.to_str().unwrap()]);
-    assert_eq!(result.code, 2);
-    assert_eq!(read_key(&sandbox, "shell.bash_path"), ""); // nothing written on the rejection
+    let directory = sandbox.data.path().join("directory");
+    fs::create_dir(&directory).unwrap();
+    for invalid in [&ghost, &directory] {
+        let result = sandbox.run(&["config", "shell.bash_path", invalid.to_str().unwrap()]);
+        assert_eq!(result.code, 2, "{}", result.both());
+        assert!(result.both().contains("No such file"), "{}", result.both());
+        assert!(
+            result.both().contains(invalid.to_str().unwrap()),
+            "{}",
+            result.both()
+        );
+        assert_eq!(sandbox.read_config(), original); // no partial write or recovery
+        assert!(!sandbox.config_path().with_extension("toml.bak").exists());
+    }
+    assert_eq!(read_key(&sandbox, "shell.bash_path"), "");
+    assert_eq!(sandbox.read_config(), original); // reads also do not normalize or rewrite
+
+    let corrupt = Sandbox::new();
+    let corrupt_source = b"[shell\nbash_path = broken\n";
+    fs::write(corrupt.config_path(), corrupt_source).unwrap();
+    let missing = corrupt.data.path().join("missing");
+    let result = corrupt.run(&["config", "shell.bash_path", missing.to_str().unwrap()]);
+    assert_eq!(result.code, 2, "{}", result.both());
+    assert!(result.both().contains(missing.to_str().unwrap()));
+    assert_eq!(fs::read(corrupt.config_path()).unwrap(), corrupt_source);
+    assert!(!corrupt.config_path().with_extension("toml.bak").exists());
 }
 
 #[test]

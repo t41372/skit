@@ -152,21 +152,28 @@ fn paused_mirror_urls_remain_visible_and_the_master_stays_off() {
 
 #[test]
 fn windows_bash_path_uses_the_same_preflight_and_never_half_submits() {
-    let mut source = snapshot(MirrorConfiguration::default());
-    source.bash_path = Some(String::new());
-    let mut draft = PreferencesDraft::from_snapshot(source);
-    draft.editor = "micro".to_owned();
-    draft.bash_path = Some("C:/missing/bash.exe".to_owned());
+    for invalid in ["C:/missing/bash.exe", "C:/directory"] {
+        let mut source = snapshot(MirrorConfiguration::default());
+        source.bash_path = Some(String::new());
+        let mut draft = PreferencesDraft::from_snapshot(source);
+        draft.editor = "micro".to_owned();
+        draft.bash_path = Some(invalid.to_owned());
 
-    let error = draft
-        .resolve(|path| path == std::path::Path::new("C:/valid/bash.exe"))
-        .unwrap_err();
-    assert_eq!(error.field(), PreferencesField::BashPath);
-    assert_eq!(
-        error.message().localize(Locale::En),
-        "No such file: C:/missing/bash.exe"
-    );
-    assert!(matches!(error, PreferencesError::BashPathMissing { .. }));
+        let error = draft
+            .resolve(|path| path == std::path::Path::new("C:/valid/bash.exe"))
+            .unwrap_err();
+        assert_eq!(error.field(), PreferencesField::BashPath);
+        assert_eq!(
+            error.message().localize(Locale::En),
+            format!("No such file: {invalid}")
+        );
+        assert_eq!(
+            error,
+            PreferencesError::BashPathMissing {
+                path: invalid.to_owned()
+            }
+        );
+    }
 }
 
 #[test]
@@ -188,6 +195,18 @@ fn a_host_can_repeat_file_validation_after_the_reducer_preflight() {
         })
     );
     assert!(change.validate_files(|_| true).is_ok());
+
+    let clear = PreferencesChangeSet {
+        settings: BTreeMap::from([
+            ("editor".to_owned(), "micro".to_owned()),
+            ("shell.bash_path".to_owned(), " \t ".to_owned()),
+        ]),
+    };
+    assert!(
+        clear
+            .validate_files(|_| panic!("empty clear must not query the filesystem"))
+            .is_ok()
+    );
 }
 
 #[test]

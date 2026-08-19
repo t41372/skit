@@ -29,8 +29,8 @@ use skit_application::{
     payload_stored_name, plan_agent_install,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot, github_preset_names, npm_preset_names,
-        pypi_preset_names,
+        PreferencesChangeSet, PreferencesDraft, PreferencesSnapshot, github_preset_names,
+        npm_preset_names, pypi_preset_names,
     },
     prompt_selection::PromptSelectionService,
     supports_storage_modes,
@@ -4885,6 +4885,7 @@ fn config_in(
 ) -> Result<(), CliError> {
     match (key, value) {
         (Some(key), Some(value)) => {
+            validate_preference_files(&BTreeMap::from([(key.to_owned(), value.to_owned())]))?;
             if let Some(recovery) = store.set_with_recovery(key, value)? {
                 if let Some(backup_path) = recovery.backup_path {
                     humanerrln!(
@@ -6646,6 +6647,14 @@ fn expanded_preference_path_is_file(path: &Path) -> bool {
     expand_user_path(path).is_file()
 }
 
+fn validate_preference_files(settings: &BTreeMap<String, String>) -> Result<(), CliError> {
+    PreferencesChangeSet {
+        settings: settings.clone(),
+    }
+    .validate_files(expanded_preference_path_is_file)
+    .map_err(|error| CliError::Usage(error.message()))
+}
+
 fn tui_rerunnable(scan: &LibraryScan, state_dir: &Path) -> Vec<Slug> {
     let state = FormStateService::new(FileFormStateStore::new(state_dir));
     scan.entries
@@ -7730,12 +7739,12 @@ fn tui_submit(
         }
         FormPurpose::Preferences => {
             let config = FileConfigStore::new(config_dir);
-            config.set_many(
-                &values
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.as_text()))
-                    .collect(),
-            )?;
+            let settings = values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.as_text()))
+                .collect();
+            validate_preference_files(&settings)?;
+            config.set_many(&settings)?;
             tui_complete(service, state_dir, "Preferences saved")
         }
         FormPurpose::Runners => {
