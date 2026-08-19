@@ -1,5 +1,7 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
+    path::{Path, PathBuf},
     sync::mpsc,
     sync::{Arc, Barrier},
     thread,
@@ -33,6 +35,40 @@ fn request(name: &str, bytes: &[u8]) -> CreateEntry {
         }),
         settings: EntrySettings::default(),
     }
+}
+
+fn javascript_request(name: &str, bytes: &[u8]) -> CreateEntry {
+    let mut request = request(name, bytes);
+    request.kind = EntryKind::parse("js").unwrap();
+    request.source = format!("/original/{name}.js");
+    request.payload.as_mut().unwrap().stored_name = Some("script.js".to_owned());
+    request.settings.dependencies = vec!["chalk".to_owned()];
+    request
+}
+
+fn directory_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        let mut entries = fs::read_dir(directory)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
 }
 
 fn write_legacy_meta(root: &TempDir, slug: &str, name: &str) {
@@ -428,12 +464,13 @@ fn concurrent_copy_edits_allow_exactly_one_source_cas_winner() {
 }
 
 #[test]
-fn removal_waits_for_the_dependency_transaction_lock() {
+fn test_store_remove_waits_for_a_live_js_install_lock() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     let claimed = store
-        .claim_identity(&store.create(request("Locked", b"base")).unwrap())
+        .create(javascript_request("Locked", b"console.log(1);\n"))
         .unwrap();
+    let entry_dir = store.entry_dir_path(&claimed.slug);
     let lock_path = root.path().join(".locks/locked.skit-deps.lock");
     fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
     let lock = OpenOptions::new()
@@ -441,7 +478,7 @@ fn removal_waits_for_the_dependency_transaction_lock() {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(lock_path)
+        .open(&lock_path)
         .unwrap();
     lock.lock().unwrap();
     let (started_tx, started_rx) = mpsc::channel();
@@ -462,6 +499,46 @@ fn removal_waits_for_the_dependency_transaction_lock() {
         "Locked"
     );
     worker.join().unwrap();
+    assert!(!entry_dir.exists());
+    assert!(
+        lock_path.is_file(),
+        "the persistent dependency lock inode was removed with the entry"
+    );
+}
+
+#[test]
+fn test_store_remove_surfaces_install_lock_failure_without_deleting_entry() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store
+        .create(javascript_request("Locked", b"console.log(1);\n"))
+        .unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    let meta = entry_dir.join("meta.toml");
+    let payload = store.payload_path(&entry).unwrap();
+    let registry = root.path().join("registry.toml");
+    let lock_path = root.path().join(".locks/locked.skit-deps.lock");
+    fs::create_dir_all(&lock_path).unwrap();
+
+    let entry_before = directory_bytes(&entry_dir);
+    let meta_before = fs::read(&meta).unwrap();
+    let payload_before = fs::read(&payload).unwrap();
+    let registry_before = fs::read(&registry).unwrap();
+
+    let error = store.remove(&entry).unwrap_err();
+
+    assert!(error.to_string().contains("skit-deps.lock"), "{error}");
+    assert!(entry_dir.is_dir());
+    assert_eq!(directory_bytes(&entry_dir), entry_before);
+    assert_eq!(fs::read(&meta).unwrap(), meta_before);
+    assert_eq!(fs::read(&payload).unwrap(), payload_before);
+    assert_eq!(fs::read(&registry).unwrap(), registry_before);
+    assert!(
+        lock_path.is_dir(),
+        "the refusing dependency-lock directory was replaced"
+    );
+    let fresh = store.resolve(entry.slug.as_str()).unwrap();
+    assert_eq!(fresh.meta, entry.meta);
 }
 
 #[test]

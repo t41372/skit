@@ -1102,14 +1102,6 @@ fn test_install_lock_uses_a_persistent_inode_outside_the_entry() {}
 fn test_install_lock_waits_for_a_live_holder() {}
 
 #[test]
-#[ignore = "CROSS-CRATE (store.remove + install lock): store.remove waits for a live JS install lock before deleting the entry. The lock is private and the store's removal surface is skit-store's typed CAS, not the oracle's store.remove(slug). Owner: skit-store remove + skit-runtime lock. Python ref test_js_deps.py:1100-1124."]
-fn test_store_remove_waits_for_a_live_js_install_lock() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (store.remove + install lock): a JS dependency lock refusal surfaces as a clean store error and leaves the entry intact. Private lock, different store surface. Owner: skit-store remove + skit-runtime lock. Python ref test_js_deps.py:1127-1145."]
-fn test_store_remove_surfaces_install_lock_failure_without_deleting_entry() {}
-
-#[test]
 #[ignore = "PRIVATE HELPER (white-box): ensure_installed runs the installer while the per-entry lock is held. The Rust dependency_lock is private with no observable held-during-run surface. Python ref deps.py:371-414, test_js_deps.py:1148-1161."]
 fn test_ensure_installed_serializes_under_the_entry_lock() {}
 
