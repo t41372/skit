@@ -42,8 +42,8 @@ use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandl
 
 use crate::{
     session::{
-        checkbox_style, edit_textarea, new_textarea, render_line_input, render_textarea,
-        textarea_text,
+        TextAreaEventHandling, checkbox_style, edit_textarea, new_textarea, render_line_input,
+        render_textarea, textarea_text,
     },
     theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel},
 };
@@ -425,9 +425,10 @@ impl SettingsScreenSession {
     fn edit_body(&mut self, key: &str, event: KeyEvent) -> Option<SettingsScreenEvent> {
         let body = self.bodies.get_mut(key)?;
         let before = textarea_text(body);
-        let consumed = edit_textarea(body, event, &mut self.undo_group, &mut self.redo_group);
-        if !consumed {
-            return None;
+        match edit_textarea(body, event, &mut self.undo_group, &mut self.redo_group) {
+            TextAreaEventHandling::Ignored => return None,
+            TextAreaEventHandling::VerticalBoundary => return nav(event),
+            TextAreaEventHandling::Consumed => {}
         }
         let after = textarea_text(body);
         Some(if before == after {
@@ -1521,8 +1522,12 @@ mod tests {
     }
 
     fn click(area: Rect) -> Event {
+        mouse(area, MouseEventKind::Down(MouseButton::Left))
+    }
+
+    fn mouse(area: Rect, kind: MouseEventKind) -> Event {
         Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
+            kind,
             column: area.x,
             row: area.y,
             modifiers: KeyModifiers::NONE,
@@ -1621,10 +1626,12 @@ mod tests {
     /// arrows when it needs them (`src/skit/tui_footer.py:72-94`).
     #[test]
     fn tab_always_moves_focus_and_a_choice_keeps_the_arrows_for_its_options() {
+        // A real multiline value keeps vertical arrows while the cursor can move, then yields Up
+        // at the top boundary to the same previous-field action as Shift+Tab.
         let mut session = SettingsScreenSession::default();
         let mut view = prompt_view();
+        view.set_value(DESCRIPTION_KEY, FieldValue::text("first\nmiddle\nlast"));
         let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
-
         assert_eq!(view.focused(), NAME_KEY);
         dispatch(
             &mut session,
@@ -1633,29 +1640,97 @@ mod tests {
             key(KeyCode::Tab, KeyModifiers::NONE),
         );
         assert_eq!(view.focused(), DESCRIPTION_KEY);
-        // A multi-line box owns the vertical arrows, so Tab is the way out of it.
-        dispatch(
-            &mut session,
-            &mut view,
-            &geometry,
-            key(KeyCode::Down, KeyModifiers::NONE),
-        );
-        assert_eq!(view.focused(), DESCRIPTION_KEY, "the body took the arrow");
-        dispatch(
-            &mut session,
-            &mut view,
-            &geometry,
-            key(KeyCode::BackTab, KeyModifiers::SHIFT),
+        assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, 2);
+        for row in [1, 0] {
+            assert_eq!(
+                dispatch(
+                    &mut session,
+                    &mut view,
+                    &geometry,
+                    key(KeyCode::Up, KeyModifiers::NONE),
+                ),
+                Some(SettingsScreenEvent::Changed)
+            );
+            assert_eq!(view.focused(), DESCRIPTION_KEY);
+            assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, row);
+        }
+        assert_eq!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                key(KeyCode::Up, KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::FocusPrevious))
         );
         assert_eq!(view.focused(), NAME_KEY);
-        // A single-line box does not use them, so they move the keyboard.
-        dispatch(
-            &mut session,
-            &mut view,
-            &geometry,
-            key(KeyCode::Down, KeyModifiers::NONE),
+        assert_eq!(
+            view.field(DESCRIPTION_KEY).unwrap().value().as_text(),
+            "first\nmiddle\nlast"
+        );
+
+        // The initial cursor is at Bottom+End. Down at that boundary yields the next form field.
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+        view.set_value(DESCRIPTION_KEY, FieldValue::text("first\nmiddle\nlast"));
+        view.update(SettingsAction::Focus {
+            key: DESCRIPTION_KEY.to_owned(),
+        });
+        let focusable = view.focusable_keys();
+        let next = focusable
+            .iter()
+            .position(|key| *key == DESCRIPTION_KEY)
+            .and_then(|index| focusable.get(index + 1))
+            .expect("description has a next focus stop")
+            .to_string();
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, 2);
+        assert_eq!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                key(KeyCode::Down, KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::FocusNext))
+        );
+        assert_eq!(view.focused(), next);
+
+        // Shift owns selection even at a vertical boundary. A plain boundary arrow also stays in
+        // the textarea while a selection is active, so focus cannot leave with a latent selection.
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+        view.set_value(DESCRIPTION_KEY, FieldValue::text("first\nmiddle\nlast"));
+        view.update(SettingsAction::Focus {
+            key: DESCRIPTION_KEY.to_owned(),
+        });
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        for row in [1, 0, 0] {
+            assert_eq!(
+                dispatch(
+                    &mut session,
+                    &mut view,
+                    &geometry,
+                    key(KeyCode::Up, KeyModifiers::SHIFT),
+                ),
+                Some(SettingsScreenEvent::Changed)
+            );
+            assert_eq!(view.focused(), DESCRIPTION_KEY);
+            assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, row);
+            assert!(session.bodies[DESCRIPTION_KEY].selection_range().is_some());
+        }
+        let selection = session.bodies[DESCRIPTION_KEY].selection_range();
+        assert_eq!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                key(KeyCode::Up, KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Changed)
         );
         assert_eq!(view.focused(), DESCRIPTION_KEY);
+        assert_eq!(session.bodies[DESCRIPTION_KEY].selection_range(), selection);
 
         // On a closed option set the arrows walk the options and clamp at both ends.
         view.update(SettingsAction::Focus {
@@ -1722,6 +1797,32 @@ mod tests {
         let mut session = SettingsScreenSession::default();
         let mut view = prompt_view();
         let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+
+        // A field reacts to the button press only. Hover and release neither move focus nor edit.
+        let description = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.target == SettingsControlId::Field(DESCRIPTION_KEY.to_owned()))
+            .expect("the description box is clickable");
+        let description_value = view
+            .field(DESCRIPTION_KEY)
+            .unwrap()
+            .value()
+            .as_text()
+            .to_owned();
+        for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+            assert_eq!(
+                session.handle_event(mouse(description.area, kind), &view, &geometry),
+                None
+            );
+            assert_eq!(view.focused(), NAME_KEY);
+            assert_eq!(
+                view.field(DESCRIPTION_KEY).unwrap().value().as_text(),
+                description_value
+            );
+        }
+        dispatch(&mut session, &mut view, &geometry, click(description.area));
+        assert_eq!(view.focused(), DESCRIPTION_KEY);
 
         // Clicking a text box moves the keyboard to it.
         let needs = geometry

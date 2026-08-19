@@ -1177,9 +1177,9 @@ impl TuiSession {
                 ..
             } => {
                 let before = textarea_text(state);
-                let consumed = edit_textarea(state, key, undo_group, redo_group);
-                if !consumed {
-                    return EventHandling::Ignored;
+                match edit_textarea(state, key, undo_group, redo_group) {
+                    TextAreaEventHandling::Ignored => return EventHandling::Ignored,
+                    TextAreaEventHandling::Consumed | TextAreaEventHandling::VerticalBoundary => {}
                 }
                 let after = textarea_text(state);
                 if before == after {
@@ -1485,8 +1485,9 @@ impl TuiSession {
                 ..
             } => {
                 let before = textarea_text(state);
-                if !edit_textarea(state, key, undo_group, redo_group) {
-                    return EventHandling::Ignored;
+                match edit_textarea(state, key, undo_group, redo_group) {
+                    TextAreaEventHandling::Ignored => return EventHandling::Ignored,
+                    TextAreaEventHandling::Consumed | TextAreaEventHandling::VerticalBoundary => {}
                 }
                 let after = textarea_text(state);
                 if before == after {
@@ -1948,12 +1949,19 @@ fn widget_control(field: &RunField) -> WidgetControl {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TextAreaEventHandling {
+    Ignored,
+    Consumed,
+    VerticalBoundary,
+}
+
 pub(crate) fn edit_textarea(
     state: &mut RichTextArea<'static>,
     key: KeyEvent,
     undo_group: &mut usize,
     redo_group: &mut usize,
-) -> bool {
+) -> TextAreaEventHandling {
     if key.code == KeyCode::Char('z') && key.modifiers == KeyModifiers::CONTROL {
         let count = (*undo_group).max(1);
         for _ in 0..count {
@@ -1961,7 +1969,7 @@ pub(crate) fn edit_textarea(
         }
         *redo_group = count;
         *undo_group = 0;
-        return true;
+        return TextAreaEventHandling::Consumed;
     }
     if (key.code == KeyCode::Char('z')
         && key
@@ -1975,10 +1983,11 @@ pub(crate) fn edit_textarea(
         }
         *undo_group = count;
         *redo_group = 0;
-        return true;
+        return TextAreaEventHandling::Consumed;
     }
     let before = textarea_text(state);
     let selected = state.is_selecting();
+    let cursor = state.cursor();
     let _ = state.input(key);
     if textarea_text(state) != before {
         let inserts_after_delete =
@@ -1986,7 +1995,17 @@ pub(crate) fn edit_textarea(
         *undo_group = 1 + usize::from(inserts_after_delete);
         *redo_group = 0;
     }
-    textarea_accepts(key)
+    if !textarea_accepts(key) {
+        TextAreaEventHandling::Ignored
+    } else if matches!(key.code, KeyCode::Up | KeyCode::Down)
+        && key.modifiers.is_empty()
+        && !selected
+        && state.cursor() == cursor
+    {
+        TextAreaEventHandling::VerticalBoundary
+    } else {
+        TextAreaEventHandling::Consumed
+    }
 }
 
 fn textarea_accepts(key: KeyEvent) -> bool {
