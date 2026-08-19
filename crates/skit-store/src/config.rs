@@ -1215,14 +1215,20 @@ fn explicit_runner_rows_mut(document: &mut Table) -> Option<&mut Vec<Value>> {
 }
 
 fn runner_array_mut(document: &mut Table) -> Result<&mut Vec<Value>, ConfigError> {
-    let prompt = table_mut(document, "prompt")?;
+    if !document.contains_key("prompt") {
+        document.insert("prompt".to_owned(), Value::Table(Table::new()));
+    }
+    let prompt = document
+        .get_mut("prompt")
+        .and_then(Value::as_table_mut)
+        .ok_or_else(|| ConfigError::Invalid(PromptRunnerIssue::PromptSectionNotTable.message()))?;
     if !prompt.contains_key("runners") {
         prompt.insert("runners".to_owned(), Value::Array(Vec::new()));
     }
     prompt
         .get_mut("runners")
         .and_then(Value::as_array_mut)
-        .ok_or_else(|| ConfigError::Invalid(Message::new("prompt runners is not an array")))
+        .ok_or_else(|| ConfigError::Invalid(PromptRunnerIssue::RunnersNotList.message()))
 }
 
 fn runner_rows_from_document(document: &Table) -> Vec<PromptRunnerRow> {

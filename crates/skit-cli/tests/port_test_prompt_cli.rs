@@ -2118,22 +2118,31 @@ fn test_runner_add_duplicate_name_refused() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 1 matches, config preserved. Oracle says 'isn't a table' / 'isn't a list'; Rust says 'configuration section is not a table: prompt' (and the list variant likewise reworded)."]
 fn test_runner_add_reports_malformed_config_container() {
-    let sandbox = Sandbox::new();
-    // prompt is a scalar, not a table.
-    sandbox.set_config("prompt = \"broken\"\n");
-    let (code, combined) = sandbox.out(&["runner", "add", "new", "new", "{{prompt}}"]);
-    assert_eq!(code, 1, "{combined}");
-    assert!(combined.contains("isn't a table"), "{combined}");
-    assert_eq!(sandbox.read_config().trim(), "prompt = \"broken\"");
+    for (config, message) in [
+        (
+            "prompt = \"broken\"\n",
+            "the prompt value isn't a table; repair it before runner management",
+        ),
+        (
+            "[prompt]\nrunners = \"broken\"\n",
+            "the prompt.runners value isn't a list; repair it before runner management",
+        ),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.set_config(config);
+        let before = sandbox.read_config();
 
-    let sandbox = Sandbox::new();
-    // prompt.runners is a scalar, not a list.
-    sandbox.set_config("[prompt]\nrunners = \"broken\"\n");
-    let (code, combined) = sandbox.out(&["runner", "add", "new", "new", "{{prompt}}"]);
-    assert_eq!(code, 1, "{combined}");
-    assert!(combined.contains("isn't a list"), "{combined}");
+        let (code, combined) = sandbox.out(&["runner", "add", "new", "new", "{{prompt}}"]);
+
+        assert_eq!(code, 1, "{combined}");
+        assert_eq!(
+            sandbox.read_config(),
+            before,
+            "malformed config was modified"
+        );
+        assert!(combined.contains(message), "{combined}");
+    }
 }
 
 #[test]
