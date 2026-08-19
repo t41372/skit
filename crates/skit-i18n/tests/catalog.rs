@@ -335,6 +335,40 @@ fn prompt_unmanaged_preview_matches_the_oracle_in_every_locale() {
     );
     let pseudo = format_text(Locale::Pseudo, plural, &[&"a, b", &4]);
     assert!(pseudo.contains("möré"), "{pseudo}");
+
+    let heading = "Prompt placeholders (the run form asks for them):";
+    assert_eq!(
+        text(Locale::ZhCn, heading),
+        "提示词的占位符(运行表单会询问):"
+    );
+    assert_eq!(
+        text(Locale::ZhTw, heading),
+        "提示詞的佔位符(執行表單會詢問):"
+    );
+    let environment = "Declared environment variables (set on the run):";
+    assert_eq!(
+        text(Locale::ZhCn, environment),
+        "声明的环境变量（运行时设置）："
+    );
+    assert_eq!(
+        text(Locale::ZhTw, environment),
+        "宣告的環境變數（執行時設定）："
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, "default {}", &[&"•••"]),
+        "默认 •••"
+    );
+    assert_eq!(text(Locale::ZhTw, "optional"), "選填");
+    assert_eq!(text(Locale::ZhCn, "secret"), "机密");
+    let gone = "No longer in the prompt (the value would be ignored): {} — remove with --rm, or edit the body.";
+    assert_eq!(
+        format_text(Locale::ZhCn, gone, &[&"a"]),
+        "提示词中已不存在(其值会被忽略):a——用 --rm 移除,或编辑正文。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, gone, &[&"a"]),
+        "提示詞中已不存在(其值會被忽略):a——用 --rm 移除,或編輯內文。"
+    );
 }
 
 #[test]

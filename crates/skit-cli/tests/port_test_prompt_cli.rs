@@ -220,6 +220,30 @@ impl Sandbox {
     }
 }
 
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
+}
+
 fn wait_until_pty_output(shared: &Arc<Mutex<Vec<u8>>>, needle: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -1625,21 +1649,85 @@ fn test_real_run_transparency_and_amp_note_use_the_prepared_runner_row() {}
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust human `params` read view omits the unmanaged/gone listing entirely (only 'Parameter: a / Type / Delivery / Interpolation'); the oracle's 'Prompt placeholders', 'Detected but not yet managed: b, c', and 'No longer in the prompt' are absent. The --json 'unmanaged' array carries the data."]
 fn test_params_read_view_shows_unmanaged_and_gone() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}} {{b}}\n", "p"); // auto-manages a, b
     sandbox.ok(&["params", "p", "--rm", "b"]); // managed → [a]
+    sandbox.ok(&[
+        "params",
+        "p",
+        "--default",
+        "a=plaintext-default",
+        "--secret",
+        "a",
+    ]);
+    sandbox.ok(&[
+        "params",
+        "p",
+        "--add",
+        "EXTRA",
+        "--default",
+        "EXTRA=visible-default",
+    ]);
+    let values_dir = sandbox.state.path().join("values");
+    fs::create_dir_all(&values_dir).unwrap();
+    fs::write(
+        values_dir.join("p.toml"),
+        "[values]\na = \"plaintext-last\"\n",
+    )
+    .unwrap();
     // The stored body file may have any name; overwrite whatever body file exists.
     overwrite_body(&sandbox, "p", "{{b}} {{c}} only\n");
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
     let combined = sandbox.ok(&["params", "p"]);
+    let payload = sandbox.json(&["params", "p", "--json"]);
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert_eq!(payload["placeholders"], serde_json::json!(["a"]));
+    assert_eq!(payload["unmanaged"], serde_json::json!(["b", "c"]));
+    let stored = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "a")
+        .expect("the stored managed declaration remains visible");
+    assert_eq!(stored["secret"], true);
+    assert_eq!(stored["default"], "plaintext-default");
+    assert_eq!(payload["last_values"]["a"], "plaintext-last");
+    let environment = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "EXTRA")
+        .expect("the declared environment rider remains visible");
+    assert_eq!(environment["delivery"], "env");
+    assert_eq!(environment["default"], "visible-default");
+    assert_eq!(combined.matches("•••").count(), 2, "{combined}");
+    assert!(!combined.contains("plaintext-default"), "{combined}");
+    assert!(!combined.contains("plaintext-last"), "{combined}");
     assert!(combined.contains("Prompt placeholders"), "{combined}");
+    assert!(combined.contains("  a = •••"), "{combined}");
+    assert!(
+        combined.contains("Declared environment variables (set on the run):"),
+        "{combined}"
+    );
+    assert!(
+        combined.contains("  EXTRA = —  str · default visible-default · optional"),
+        "{combined}"
+    );
     assert!(
         combined.contains("Detected but not yet managed: b, c"),
         "{combined}"
     );
-    assert!(combined.contains("No longer in the prompt"), "{combined}");
-    assert!(combined.contains('a'), "{combined}");
+    assert!(
+        combined.contains(
+            "No longer in the prompt (the value would be ignored): a — remove with --rm, or edit the body."
+        ),
+        "{combined}"
+    );
 }
 
 /// Overwrite the stored body file (whatever its name) under an entry dir.
@@ -2664,15 +2752,21 @@ fn test_add_prompt_stdin_lane_reports_store_errors() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the vanished reference body does not prevent a successful parameter view, but Rust prints `Parameter: a` instead of the oracle's managed-record line `a = ...`."]
 fn test_params_view_survives_an_unreadable_reference_body() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
     sandbox.ok(&["add", &src, "--ref", "--no-input"]);
     fs::remove_file(&src).unwrap(); // the original vanished
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
     let (code, combined) = sandbox.out(&["params", "p"]);
     assert_eq!(code, 0, "{combined}");
-    assert!(combined.contains("a = "), "{combined}"); // the managed record still lists
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert!(!Path::new(&src).exists());
+    assert!(combined.contains("  a = —"), "{combined}"); // the managed record still lists
 }
 
 #[test]
@@ -2823,7 +2917,6 @@ fn test_params_interpolate_refused_on_non_prompt() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the --json 'unmanaged' full-list contract converges, but the human params view omits the capped preview tail ('and N more candidate(s)') — Rust's human read view lists no unmanaged candidates."]
 fn test_params_unmanaged_listing_is_flood_capped_and_localizable() {
     // Parametrized over (extra, tail): 1 → "and 1 more candidate", 7 → "and 7 more candidates".
     for (extra, tail) in [
@@ -2841,24 +2934,23 @@ fn test_params_unmanaged_listing_is_flood_capped_and_localizable() {
             .collect::<Vec<_>>()
             .join(" ");
         overwrite_body(&sandbox, "p", &format!("{{{{a}}}} {many}\n"));
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
         let combined = sandbox.ok(&["params", "p"]);
+        let payload = sandbox.json(&["params", "p", "--json"]);
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+        assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+        assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+        assert_eq!(payload["unmanaged"], serde_json::json!(names)); // machine contract is full data
         let flat = combined.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(flat.contains(tail), "extra={extra}: {combined}");
-        assert!(
-            flat.contains(&names[LIST_PREVIEW_LIMIT - 1]),
-            "extra={extra}: {combined}"
-        );
-        assert!(
-            !flat.contains(&names[LIST_PREVIEW_LIMIT]),
-            "extra={extra}: {combined}"
-        );
-        let payload = sandbox.json(&["params", "p", "--json"]);
-        assert_eq!(payload["unmanaged"], serde_json::json!(names)); // machine contract is full data
+        assert!(flat.contains("u19"), "extra={extra}: {combined}");
+        assert!(!flat.contains("u20"), "extra={extra}: {combined}");
     }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the x-pseudo locale itself works (output is bracketed), but the human params view carries no unmanaged tail, so the pseudo-transformed 'möré' never appears — same missing-listing root as the read-view divergence."]
 fn test_params_unmanaged_tail_passes_through_the_i18n_boundary() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -2871,6 +2963,9 @@ fn test_params_unmanaged_tail_passes_through_the_i18n_boundary() {
         .collect::<Vec<_>>()
         .join(" ");
     overwrite_body(&sandbox, "p", &format!("{{{{a}}}} {many}"));
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
     let output = sandbox
         .command()
         .env("SKIT_LANG", "x-pseudo")
@@ -2883,6 +2978,9 @@ fn test_params_unmanaged_tail_passes_through_the_i18n_boundary() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.status.code(), Some(0), "{combined}");
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
     assert!(combined.contains('⟦'), "{combined}");
     assert!(combined.contains("möré"), "{combined}"); // pseudo-transformed tail
     assert!(!combined.contains("and 3 more"), "{combined}");

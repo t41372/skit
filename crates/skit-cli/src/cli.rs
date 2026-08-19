@@ -3573,6 +3573,34 @@ fn launch_editor(argv: &[String], path: &Path) -> Result<std::process::ExitStatu
         })
 }
 
+fn report_unmanaged_prompt_candidates(unmanaged: &[String]) {
+    let visible = unmanaged
+        .iter()
+        .take(PROMPT_LIST_PREVIEW_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remaining = unmanaged.len().saturating_sub(PROMPT_LIST_PREVIEW_LIMIT);
+    if remaining == 0 && !visible.is_empty() {
+        humanln!(
+            "Detected but not yet managed: {} (use --add to manage them)",
+            visible
+        );
+    } else if remaining == 1 {
+        humanln!(
+            "Detected but not yet managed: {} … and {} more candidate (use --add to manage them)",
+            visible,
+            remaining
+        );
+    } else if remaining > 1 {
+        humanln!(
+            "Detected but not yet managed: {} … and {} more candidates (use --add to manage them)",
+            visible,
+            remaining
+        );
+    }
+}
+
 /// Print the edit lane's success report (cli.py:2731-2741).
 ///
 /// A prompt entry reconciles its placeholders instead of printing the generic
@@ -3602,31 +3630,7 @@ fn report_saved_edit(entry: &Entry, edited: Option<&[u8]>) {
             .map(|item| item.name)
             .filter(|name| !managed.contains(name.as_str()))
             .collect::<Vec<_>>();
-        let visible = unmanaged
-            .iter()
-            .take(PROMPT_LIST_PREVIEW_LIMIT)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let remaining = unmanaged.len().saturating_sub(PROMPT_LIST_PREVIEW_LIMIT);
-        if remaining == 0 && !visible.is_empty() {
-            humanln!(
-                "Detected but not yet managed: {} (use --add to manage them)",
-                visible
-            );
-        } else if remaining == 1 {
-            humanln!(
-                "Detected but not yet managed: {} … and {} more candidate (use --add to manage them)",
-                visible,
-                remaining
-            );
-        } else if remaining > 1 {
-            humanln!(
-                "Detected but not yet managed: {} … and {} more candidates (use --add to manage them)",
-                visible,
-                remaining
-            );
-        }
+        report_unmanaged_prompt_candidates(&unmanaged);
     }
 }
 
@@ -4116,6 +4120,7 @@ fn params(
     .into_iter()
     .filter(|present| *present)
     .count();
+    let human_prompt_read = kind == "prompt" && !args.json && exclusive_operations == 0;
     if exclusive_operations > 1 {
         return Err(CliError::Usage(Message::new(
             "run source, schema, launch, runner, and interpolation changes as separate params operations",
@@ -4572,7 +4577,11 @@ fn params(
         );
         return Ok(());
     }
-    write_params(&held, &source, &settings, &declarations, args.json)
+    if human_prompt_read && settings.interpolate {
+        write_human_prompt_params(&held, &source, &settings, &declarations)
+    } else {
+        write_params(&held, &source, &settings, &declarations, args.json)
+    }
 }
 
 fn report_purged_secrets(purged: BTreeSet<String>, json: bool) {
@@ -4620,6 +4629,104 @@ fn human_parameter_declarations(
             .cloned(),
     );
     stored
+}
+
+fn prompt_schema_suffix(declaration: Option<&ParamDecl>) -> String {
+    let Some(declaration) = declaration else {
+        return String::new();
+    };
+    let mut parts = vec![declaration.parameter_type.as_str().to_owned()];
+    if let Some(default) = &declaration.default {
+        let shown = if declaration.secret {
+            text(active_locale(), "•••").into_owned()
+        } else {
+            tui_parameter_value(default)
+        };
+        parts.push(format_text(active_locale(), "default {}", &[&shown]));
+    }
+    if !declaration.required {
+        parts.push(text(active_locale(), "optional").into_owned());
+    }
+    if declaration.secret {
+        parts.push(text(active_locale(), "secret").into_owned());
+    }
+    format!("  {}", parts.join(" · "))
+}
+
+fn write_prompt_parameter(
+    name: &str,
+    declaration: Option<&ParamDecl>,
+    last_values: &BTreeMap<String, String>,
+) {
+    let shown = if declaration.is_some_and(|item| item.secret) {
+        if last_values.contains_key(name) {
+            text(active_locale(), "•••").into_owned()
+        } else {
+            "—".to_owned()
+        }
+    } else {
+        last_values
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| "—".to_owned())
+    };
+    println!("  {name} = {shown}{}", prompt_schema_suffix(declaration));
+}
+
+fn write_human_prompt_params(
+    entry: &Entry,
+    source: &str,
+    settings: &EntrySettings,
+    declarations: &[ParamDecl],
+) -> Result<(), CliError> {
+    let state =
+        FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
+    let fresh = placeholder_params("prompt", source)
+        .into_iter()
+        .map(|item| item.name)
+        .collect::<Vec<_>>();
+    let unmanaged = fresh
+        .iter()
+        .filter(|name| !settings.params.contains(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let gone = settings
+        .params
+        .iter()
+        .filter(|name| !fresh.contains(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let env_riders = declarations
+        .iter()
+        .filter(|item| {
+            item.delivery == ParameterDelivery::Env && !settings.params.contains(&item.name)
+        })
+        .collect::<Vec<_>>();
+    if settings.params.is_empty() && env_riders.is_empty() && unmanaged.is_empty() {
+        humanln!("{} has no managed parameters.", entry.meta.name);
+        return Ok(());
+    }
+    if !settings.params.is_empty() {
+        humanln!("Prompt placeholders (the run form asks for them):");
+        for name in &settings.params {
+            let declaration = declarations.iter().find(|item| item.name == *name);
+            write_prompt_parameter(name, declaration, &state.values);
+        }
+    }
+    if !env_riders.is_empty() {
+        humanln!("Declared environment variables (set on the run):");
+        for declaration in env_riders {
+            write_prompt_parameter(&declaration.name, Some(declaration), &state.values);
+        }
+    }
+    report_unmanaged_prompt_candidates(&unmanaged);
+    if !gone.is_empty() {
+        humanln!(
+            "No longer in the prompt (the value would be ignored): {} — remove with --rm, or edit the body.",
+            gone.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn write_params(
