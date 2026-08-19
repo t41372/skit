@@ -4552,6 +4552,42 @@ fn report_purged_secrets(purged: BTreeSet<String>, json: bool) {
     );
 }
 
+fn human_parameter_declarations(
+    kind: &str,
+    source: &str,
+    declarations: &[ParamDecl],
+) -> Vec<ParamDecl> {
+    if !source_owned_schema(kind) {
+        return declarations.to_vec();
+    }
+    let mut stored = managed_params(kind, source);
+    if stored.is_empty() {
+        return declarations.to_vec();
+    }
+    let current_defaults = match parse_document(kind, source) {
+        ParseOutcome::Parsed(document) => document.reconcile(&stored).current_defaults,
+        ParseOutcome::ParserUnavailable(_) | ParseOutcome::SyntaxError(_) => BTreeMap::new(),
+    };
+    for declaration in &mut stored {
+        if declaration.default.is_some()
+            && let Some(current) = current_defaults.get(&declaration.name)
+        {
+            declaration.default = Some(current.clone());
+        }
+    }
+    let managed_names = stored
+        .iter()
+        .map(|declaration| declaration.name.clone())
+        .collect::<BTreeSet<_>>();
+    stored.extend(
+        declarations
+            .iter()
+            .filter(|declaration| !managed_names.contains(&declaration.name))
+            .cloned(),
+    );
+    stored
+}
+
 fn write_params(
     entry: &Entry,
     source: &str,
@@ -4692,6 +4728,8 @@ fn write_params(
                 );
             }
         }
+        let declarations =
+            human_parameter_declarations(entry.meta.kind.as_str(), source, declarations);
         let declared_names = declarations
             .iter()
             .map(|item| item.name.as_str())
@@ -4705,7 +4743,7 @@ fn write_params(
                 .filter(|name| !declared_names.contains(name.as_str()))
                 .collect::<Vec<_>>()
         };
-        for item in declarations {
+        for item in &declarations {
             humanln!("Parameter: {}", item.name);
             humanln!("Type: {}", item.parameter_type.as_str());
             humanln!("Delivery: {}", item.delivery.as_str());

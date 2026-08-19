@@ -1691,18 +1691,51 @@ fn test_not_found_error_escapes_markup_in_argument() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a hand-edited [tool.skit] const carries markup in its name/default and the `skit params` table must render it (the oracle lists every managed definition verbatim). Rust's `params` view reconciles managed const definitions against the CURRENT source and hides any whose assignment is absent — a `[red]NAME[/red]` const the body never assigns (it is not a valid identifier, so it cannot be) renders nothing at all (verified: empty stdout, exit 0). The markup-escaping behavior is unobservable because the row is dropped before rendering. Owning ref: params source-reconcile step."]
 fn test_params_table_escapes_markup_in_name_and_default() {
-    // A hand-edited [tool.skit] block can carry markup in a param name/default; the table shows it.
+    // A canonical [tool.skit] block can carry markup in a param name/default; the table shows it.
     let root = sandbox();
-    let block = "# /// script\n# [tool.skit]\n# schema = 1\n#\n# [[tool.skit.params]]\n# name = \"[red]NAME[/red]\"\n# binding = \"const\"\n# type = \"str\"\n# default = \"[blue]hi[/blue]\"\n# ///\nprint(1)\n";
-    let path = write_src(&root, "a.py", block);
+    let source = write_managed_params(
+        "python",
+        "print(1)\n",
+        &[const_str("[red]NAME[/red]", Some("[blue]hi[/blue]"))],
+    )
+    .unwrap();
+    let path = write_src(&root, "a.py", &source);
     run(skit(&root)
         .arg("add")
         .arg(&path)
         .args(["--name", "a", "--kind", "python", "--no-input"]));
+
+    let data = root.path().join("data");
+    let entry = data.join("scripts/a");
+    let payload_path = entry.join("script.py");
+    let meta_path = entry.join("meta.toml");
+    let registry_path = data.join("registry.toml");
+    let payload_before = fs::read(&payload_path).unwrap();
+    let meta_before = fs::read(&meta_path).unwrap();
+    let registry_before = fs::read(&registry_path).unwrap();
+    let state_before = snapshot_tree(&root.path().join("state"));
+
+    let output = skit(&root)
+        .args(["params", "a", "--json"])
+        .output()
+        .expect("skit runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(record["params"][0]["name"], "[red]NAME[/red]");
+    assert_eq!(record["params"][0]["kind"], "const");
+    assert_eq!(record["params"][0]["default"], "[blue]hi[/blue]");
+
     let (code, out) = run(skit(&root).args(["params", "a"]));
     assert_eq!(code, 0, "{out}");
+    assert_eq!(fs::read(payload_path).unwrap(), payload_before);
+    assert_eq!(fs::read(meta_path).unwrap(), meta_before);
+    assert_eq!(fs::read(registry_path).unwrap(), registry_before);
+    assert_eq!(snapshot_tree(&root.path().join("state")), state_before);
     assert!(out.contains("[red]NAME[/red]"), "{out}");
     assert!(out.contains("[blue]hi[/blue]"), "{out}");
 }
