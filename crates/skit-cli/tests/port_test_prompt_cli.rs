@@ -43,10 +43,16 @@
 #![cfg(unix)]
 
 use std::fs;
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::Value;
+use skit_store::{FileConfigStore, PromptRunner};
 use tempfile::TempDir;
 
 // AUTO_MANAGE_LIMIT (langs/prompt/analyzer.py:40) — above this many detections nothing is
@@ -132,6 +138,18 @@ impl Sandbox {
         fs::read_to_string(self.config_path()).unwrap_or_default()
     }
 
+    fn config_store(&self) -> FileConfigStore {
+        FileConfigStore::new(self.config.path())
+    }
+
+    fn runner_exists(&self, name: &str) -> bool {
+        self.config_store()
+            .runners()
+            .unwrap()
+            .iter()
+            .any(|runner| runner.name == name)
+    }
+
     /// The oracle's `argstate.save_last_runner` — seed `state/prompt.toml`.
     fn set_last_runner(&self, name: &str) {
         fs::create_dir_all(self.state.path()).unwrap();
@@ -187,6 +205,80 @@ impl Sandbox {
         self.added(text, name);
         self.ok(&["params", name, "--runner", pin]);
     }
+}
+
+fn wait_until_pty_output(shared: &Arc<Mutex<Vec<u8>>>, needle: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let text = {
+            let bytes = shared.lock().unwrap();
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        if text.contains(needle) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "PTY did not print {needle:?}; current output: {text}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn run_runner_confirmation(
+    sandbox: &Sandbox,
+    args: &[&str],
+    prompt_needle: &str,
+    before_answer: impl FnOnce(),
+    answer: &[u8],
+) -> (u32, String) {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.cwd(sandbox.data.path());
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("SKIT_LANG", "en");
+
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let shared = Arc::new(Mutex::new(Vec::new()));
+    let reader_shared = Arc::clone(&shared);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = thread::spawn(move || {
+        let mut chunk = [0_u8; 512];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => reader_shared
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&chunk[..count]),
+                Err(_) => break,
+            }
+        }
+    });
+    let mut writer = pair.master.take_writer().unwrap();
+    wait_until_pty_output(&shared, prompt_needle);
+    before_answer();
+    writer.write_all(answer).unwrap();
+    writer.flush().unwrap();
+    let status = child.wait().unwrap();
+    drop(writer);
+    drain.join().unwrap();
+    let output = String::from_utf8_lossy(&shared.lock().unwrap())
+        .replace("\r\n", "\n")
+        .replace('\r', "");
+    (status.exit_code(), output)
 }
 
 /// A directory of fake agent binaries for every seed's argv[0] (plus a few named extras). Each
@@ -1875,12 +1967,46 @@ fn test_removing_every_runner_stays_empty() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): a name remove without -y asks typer.confirm(abort=True) and honors 'y'; the confirmation is an interactive seam a non-tty binary cannot drive (it refuses with 'pass --yes' instead of asking). Seam: src/cli/tests.rs. Non-interactive twin: test_runner_remove_and_unknown (with -y)."]
-fn test_runner_remove_confirms_unless_yes() {}
+fn test_runner_remove_confirms_unless_yes() {
+    let sandbox = Sandbox::new();
+    let (code, output) = run_runner_confirmation(
+        &sandbox,
+        &["runner", "remove", "amp"],
+        "Remove the agent",
+        || {},
+        b"y\n",
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("Remove the agent \"amp\"?"), "{output}");
+    assert!(!sandbox.runner_exists("amp"));
+    assert!(output.contains("Runner amp removed."), "{output}");
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): answering 'n'/EOF to typer.confirm aborts (exit 1, nothing removed); the interactive confirmation seam is not reachable from a non-tty binary. Seam: src/cli/tests.rs."]
-fn test_runner_remove_abort_keeps_the_runner() {}
+fn test_runner_remove_abort_keeps_the_runner() {
+    let sandbox = Sandbox::new();
+    let config_before_answer = Mutex::new(Vec::new());
+    let (code, output) = run_runner_confirmation(
+        &sandbox,
+        &["runner", "remove", "amp"],
+        "Remove the agent",
+        || {
+            *config_before_answer.lock().unwrap() = fs::read(sandbox.config_path()).unwrap();
+        },
+        b"n\n",
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        sandbox.runner_exists("amp"),
+        "negative confirmation still removed amp: {output}"
+    );
+    assert!(!output.contains("Runner amp removed."), "{output}");
+    assert_eq!(
+        fs::read(sandbox.config_path()).unwrap(),
+        *config_before_answer.lock().unwrap(),
+        "negative confirmation changed the config"
+    );
+}
 
 #[test]
 fn test_runner_remove_warns_and_preserves_affected_prompt_pins() {
@@ -1970,12 +2096,89 @@ fn test_runner_remove_raw_valid_row_requires_stable_name_path() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): the raw-row remove must refuse if the index SHIFTED during the interactive typer.confirm (a monkeypatched confirm that mutates config mid-prompt). The confirmation seam is not reachable from a non-tty binary. Seam: src/cli/tests.rs."]
-fn test_runner_remove_raw_row_refuses_if_index_shifted_during_confirmation() {}
+fn test_runner_remove_raw_row_refuses_if_index_shifted_during_confirmation() {
+    let sandbox = Sandbox::new();
+    let original = concat!(
+        "[prompt]\n",
+        "runners_seeded = true\n",
+        "runners = [",
+        "{ name = \"good\", argv = [\"good\", \"{{prompt}}\"] }, ",
+        "{ name = \"target\", argv = [\"target\"] }, ",
+        "{ name = \"other\", argv = [\"other\", \"{{prompt}}\"] }",
+        "]\n",
+    );
+    sandbox.set_config(original);
+    let shifted = concat!(
+        "[prompt]\n",
+        "runners_seeded = true\n",
+        "runners = [",
+        "{ name = \"inserted\", argv = [\"inserted\", \"{{prompt}}\"] }, ",
+        "{ name = \"good\", argv = [\"good\", \"{{prompt}}\"] }, ",
+        "{ name = \"target\", argv = [\"target\"] }, ",
+        "{ name = \"other\", argv = [\"other\", \"{{prompt}}\"] }",
+        "]\n",
+    );
+    let (code, output) = run_runner_confirmation(
+        &sandbox,
+        &["runner", "remove", "--row", "1"],
+        "Remove runner row row 1 (\"target\")?",
+        || sandbox.set_config(shifted),
+        b"y\n",
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        output.contains("changed before it could be removed"),
+        "{output}"
+    );
+    assert_eq!(fs::read(sandbox.config_path()).unwrap(), shifted.as_bytes());
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): the name remove must refuse if the key was replaced during the interactive typer.confirm (a monkeypatched confirm that swaps the row mid-prompt). The confirmation seam is not reachable from a non-tty binary. Seam: src/cli/tests.rs."]
-fn test_runner_remove_name_refuses_if_key_is_replaced_during_confirmation() {}
+fn test_runner_remove_name_refuses_if_key_is_replaced_during_confirmation() {
+    let sandbox = Sandbox::new();
+    sandbox.set_config(concat!(
+        "[prompt]\n",
+        "runners_seeded = true\n",
+        "runners = [{ name = \"victim\", argv = [\"old\", \"{{prompt}}\"] }]\n",
+    ));
+    let replacement = PromptRunner {
+        name: "victim".to_owned(),
+        argv: vec![
+            "new".to_owned(),
+            "--important".to_owned(),
+            "{{prompt}}".to_owned(),
+        ],
+    };
+    let config_after_replacement = Mutex::new(Vec::new());
+    let (code, output) = run_runner_confirmation(
+        &sandbox,
+        &["runner", "remove", "victim"],
+        "Remove the agent",
+        || {
+            sandbox
+                .config_store()
+                .set_runner(replacement.clone(), true)
+                .unwrap();
+            *config_after_replacement.lock().unwrap() = fs::read(sandbox.config_path()).unwrap();
+        },
+        b"y\n",
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        output.contains("changed before it could be removed"),
+        "{output}"
+    );
+    assert_eq!(
+        fs::read(sandbox.config_path()).unwrap(),
+        *config_after_replacement.lock().unwrap(),
+        "compare-and-swap refusal rewrote the replacement config"
+    );
+    assert_eq!(
+        sandbox.config_store().runners().unwrap(),
+        [replacement],
+        "replacement runner was incorrectly deleted"
+    );
+}
 
 #[test]
 fn test_runner_remove_container_repairs_only_targeted_prompt_value() {

@@ -8,7 +8,7 @@ use std::{
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use skit_application::EntryRepository as _;
-use skit_store::FileStore;
+use skit_store::{FileConfigStore, FileStore};
 use tempfile::TempDir;
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
@@ -843,7 +843,33 @@ fn terminal_authoring_and_confirmation_paths_need_no_hidden_cli_knowledge() {
         config.path(),
         &[b"n\n"],
     );
-    assert_eq!(code, 130, "{output}");
+    assert_eq!(code, 1, "{output}");
+    assert!(output.contains("operation cancelled"), "{output}");
+    assert!(
+        FileConfigStore::new(config.path())
+            .runners()
+            .unwrap()
+            .iter()
+            .any(|runner| runner.name == "claude"),
+        "negative confirmation removed claude: {output}"
+    );
+    let (code, output) = run_plain_in_pty(
+        &["runner", "remove", "amp"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\x04"],
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(output.contains("operation cancelled"), "{output}");
+    assert!(
+        FileConfigStore::new(config.path())
+            .runners()
+            .unwrap()
+            .iter()
+            .any(|runner| runner.name == "amp"),
+        "end of input removed amp: {output}"
+    );
 
     let values = state.path().join("values");
     fs::create_dir_all(&values).unwrap();

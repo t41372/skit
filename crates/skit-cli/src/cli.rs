@@ -4995,8 +4995,12 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                     )
                     .into_owned(),
                 };
-                if !prompt_confirmation(&question, false)? {
-                    return Err(CliError::Aborted);
+                match prompt_confirmation(&question, false) {
+                    Ok(true) => {}
+                    Ok(false) | Err(CliError::Aborted) => {
+                        return Err(CliError::Failure(Message::new("operation cancelled")));
+                    }
+                    Err(error) => return Err(error),
                 }
             }
             let removed = match &selection {
