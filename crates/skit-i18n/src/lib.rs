@@ -1150,6 +1150,11 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Dependencies: {}", "依赖:{}", "依賴:{}"),
     row!(
+        "Python constraint of {} updated: {}",
+        "{} 的 Python 版本约束已更新:{}",
+        "{} 的 Python 版本約束已更新:{}",
+    ),
+    row!(
         "Python constraint: {}",
         "Python 版本约束:{}",
         "Python 版本約束:{}",

@@ -73,6 +73,16 @@ impl Sandbox {
         command
     }
 
+    fn deps_json(&self, selector: &str) -> serde_json::Value {
+        let output = self
+            .skit()
+            .args(["deps", selector, "--json"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+
     /// The `scripts/<slug>` entry directory (the oracle's `entry.dir`).
     fn entry_dir(&self, slug: &str) -> PathBuf {
         self.data.path().join("scripts").join(slug)
@@ -428,7 +438,6 @@ fn test_add_python_belt_with_no_deps_is_unchanged() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the constraint edit lands (exit 0), but Rust prints the unconditional three-line view 'Dependencies: … / Python constraint: >=3.11 / Required commands: …' — never the per-axis 'Python constraint of a updated: >=3.11', and it always prints a 'Dependencies' line (cli.py:4980-4991). Verified against the built binary."]
 fn test_deps_python_only_prints_the_constraint_line_not_the_deps_line() {
     // --python alone edited only the constraint, so the confirmation says so — and does NOT
     // claim "Dependencies … updated", which would describe an edit that never happened.
@@ -440,13 +449,15 @@ fn test_deps_python_only_prints_the_constraint_line_not_the_deps_line() {
         .assert();
     let output = assert.get_output();
     assert_eq!(output.status.code(), Some(0));
+    let view = sandbox.deps_json("a");
+    assert_eq!(view["requires_python"], ">=3.11");
+    assert_eq!(view["dependencies"], serde_json::json!([]));
     let flat = flatten(&combine(output));
-    assert!(flat.contains("Python constraint of a updated: >=3.11"));
+    assert_eq!(flat, "Python constraint of a updated: >=3.11");
     assert!(!flat.contains("Dependencies")); // the edit that didn't happen isn't reported
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the clear lands (exit 0), but Rust prints 'Python constraint: ' (empty) in its unconditional view — never the per-axis 'Python constraint of a updated: —', and it always prints a 'Dependencies' line (cli.py:4980-4991). Verified against the built binary."]
 fn test_deps_python_only_dash_reports_the_dash_placeholder() {
     // --python - clears to automatic; the constraint line shows the em-dash placeholder for
     // "no constraint recorded" (the `escape(...) or '—'` fallback).
@@ -460,8 +471,11 @@ fn test_deps_python_only_dash_reports_the_dash_placeholder() {
     let assert = sandbox.skit().args(["deps", "a", "--python", "-"]).assert();
     let output = assert.get_output();
     assert_eq!(output.status.code(), Some(0));
+    let view = sandbox.deps_json("a");
+    assert_eq!(view["requires_python"], "");
+    assert_eq!(view["dependencies"], serde_json::json!(["requests"]));
     let flat = flatten(&combine(output));
-    assert!(flat.contains("Python constraint of a updated: —"));
+    assert_eq!(flat, "Python constraint of a updated: —");
     assert!(!flat.contains("Dependencies"));
 }
 

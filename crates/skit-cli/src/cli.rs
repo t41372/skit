@@ -3812,6 +3812,7 @@ fn deps(
         plan.effective = effective_uv_metadata_bytes(source.as_deref(), &stored_uv);
         plan.rewritten_source = None;
     }
+    let needs_edit = args.clear_needs || !args.needs.is_empty();
     if args.clear_needs {
         settings.needs.clear();
     } else if !args.needs.is_empty() {
@@ -3852,6 +3853,19 @@ fn deps(
     output.dependencies = plan.effective.dependencies;
     output.requires_python = plan.effective.requires_python;
     output.needs = settings.needs;
+    if !args.json && python_edit.is_some() && dependencies_edit.is_none() && !needs_edit {
+        let value = if output.requires_python.is_empty() {
+            "—"
+        } else {
+            &output.requires_python
+        };
+        humanln!(
+            "Python constraint of {} updated: {}",
+            &held.meta.name,
+            value
+        );
+        return Ok(());
+    }
     write_deps(&output, args.json)
 }
 
