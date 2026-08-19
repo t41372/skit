@@ -364,12 +364,13 @@ impl TuiSession {
             };
         }
         if let Screen::Preferences(view) = state.screen() {
-            return match self.preferences.handle_event(event, view) {
+            return match self.preferences.handle_event(event.clone(), view) {
                 PreferencesEventHandling::Action(action) => {
                     EventHandling::Action(Action::Preferences(action))
                 }
                 PreferencesEventHandling::Consumed => EventHandling::Consumed,
-                PreferencesEventHandling::Ignored => EventHandling::Ignored,
+                PreferencesEventHandling::Ignored => map_event(event, state, geometry)
+                    .map_or(EventHandling::Ignored, EventHandling::Action),
             };
         }
         if let Screen::Run(form) = state.screen() {

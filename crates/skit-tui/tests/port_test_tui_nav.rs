@@ -26,19 +26,13 @@
 //!   no `skit` binary is spawned and no store/filesystem is touched.
 //!
 //! Buckets:
-//! - REAL (2): the run form and add-review tests drive boot focus, the `↓`/`↑` arrow twins, both
-//!   footer direction chips, and `Tab`/`Shift+Tab` exactly as the oracle walks.
-//! - DIVERGENCE (3, full asserting body kept, `#[ignore]`d): the other surfaces each diverge
+//! - REAL (3): the run form, add-review, and Preferences tests drive boot focus, the `↓`/`↑`
+//!   arrow twins, both footer direction chips, and `Tab`/`Shift+Tab` exactly as the oracle walks.
+//! - DIVERGENCE (2, full asserting body kept, `#[ignore]`d): the other surfaces each diverge
 //!   from the oracle at one named leg. Fix the impl -> delete the `#[ignore]` line -> green.
 //!     * add source: Rust includes its visible Browse button in the keyboard focus ring between
 //!       path and template. The oracle has no such control and walks directly between the fields,
 //!       so this needs a separate keyboard contract for Browse before the canonical walk can land.
-//!     * preferences: the arrow behavior MATCHES (boot on the language picker; `↓` off the editor
-//!       input steps into the form-style radio; a second `↓` stays inside the radio's options;
-//!       `Shift+Tab`/`Tab` walk out and back). Only the two chip legs diverge: `CommandContext::
-//!       Preferences` declares no `FocusNext`/`FocusPrevious` footer specs (`skit-ui/src/lib.rs`
-//!       ~844-870) and the preferences branch has no `map_event` fallback (`session.rs:366-374`),
-//!       so the nav pill is both absent and unroutable.
 //!     * settings: `↓` off the name field reaches the description, but the description is a
 //!       Multiline box and `edit_body` hands `↑` to the textarea, which consumes it unconditionally
 //!       (`session.rs` `textarea_accepts` includes `Up`/`Down`), so `↑` cannot return focus to the
@@ -51,7 +45,7 @@ use ratatui_core::{backend::TestBackend, buffer::Buffer, layout::Rect, terminal:
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use skit_application::SourcePermissions;
+use skit_application::{SourcePermissions, preferences::InteractiveFormChoice};
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
@@ -62,8 +56,8 @@ use skit_tui::{
 };
 use skit_ui::{
     Action, AddAction, AddEffect, AddStage, AddWorkflowState, KnownEntryKind, LibraryState,
-    PreferencesControlId, ReviewDefaults, ReviewState, RunFormView, Screen, SettingsInputs,
-    SettingsView, SourceSnapshot, UiCommand,
+    PreferencesAction, PreferencesControlId, ReviewDefaults, ReviewState, RunFormView, Screen,
+    SettingsInputs, SettingsView, SourceSnapshot, UiCommand,
 };
 
 // The oracle drives every form at size (130, 40); the render size is load-bearing for the footer
@@ -509,7 +503,7 @@ fn add_kind_and_open_select_keep_their_arrow_ownership() {
 }
 
 // ==========================================================================
-// 4. Preferences — DIVERGENCE: the arrows match, but the nav chip is absent + unroutable
+// 4. Preferences — REAL: widget-owned keys and both shared footer hits agree
 // ==========================================================================
 
 fn prefs_focus(state: &LibraryState) -> PreferencesControlId {
@@ -523,8 +517,8 @@ fn prefs_focus(state: &LibraryState) -> PreferencesControlId {
 /// choice section a ↓ steps into.
 fn preferences_view() -> skit_ui::PreferencesView {
     use skit_application::preferences::{
-        AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot,
+        AfterRunChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
+        PreferencesSnapshot,
     };
     skit_ui::PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
         language: String::new(),
@@ -542,47 +536,179 @@ fn preferences_view() -> skit_ui::PreferencesView {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the arrow legs MATCH the oracle (boot on the language \
-picker; ↓ off the editor steps into the form-style radio; a second ↓ stays inside the radio's \
-options; Shift+Tab/Tab walk out and back — test_tui_nav.py:125-147). Only the two footer-chip legs \
-diverge: CommandContext::Preferences declares no FocusNext/FocusPrevious specs (crates/skit-ui/\
-src/lib.rs ~844-870), and the preferences branch has no map_event fallback \
-(crates/skit-tui/src/session.rs:366-374), so the '#pf-keys' nav pill is both absent and \
-unroutable. Add the preferences nav chips + routing -> delete this #[ignore]."]
 fn test_prefs_boots_on_language_and_arrows_move() {
     // Boots on the language dropdown (not the scroll); moving into the RadioSet, the arrows belong
     // to its OPTIONS — leaving it is Tab's (or the chip's) job, and the shared bindings must not
     // steal them; the chip walks on and the back chip returns.
     let mut state = present(Screen::Preferences(Box::new(preferences_view())));
     let mut session = TuiSession::default();
-    let (_, _) = draw(&mut session, &state);
+    let (screen, geometry) = draw(&mut session, &state);
     assert_eq!(prefs_focus(&state), PreferencesControlId::Language); // the language dropdown
+    assert!(
+        screen.contains("Tab/↓"),
+        "missing forward navigation chip:\n{screen}"
+    );
+    assert!(
+        screen.contains("Shift+Tab/↑"),
+        "missing backward navigation chip:\n{screen}"
+    );
+    for command in [UiCommand::FocusNext, UiCommand::FocusPrevious] {
+        assert_eq!(
+            geometry
+                .hits
+                .iter()
+                .filter(|hit| hit.action == HitTarget::Command(command))
+                .count(),
+            1,
+            "the rendered Preferences footer needs one typed {command:?} hit"
+        );
+    }
 
     // Focus the editor input (the oracle's `query_one("#pf-editor").focus()`): one Tab, since
     // Language and Editor are adjacent stops.
-    press(&mut session, &mut state, KeyCode::Tab);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Tab)),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(
+            PreferencesControlId::Editor,
+        )))
+    );
     assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
 
     // ↓ off the input moves into the form-style radio section.
-    press(&mut session, &mut state, KeyCode::Down);
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Down)),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(
+            PreferencesControlId::InteractiveForm,
+        )))
+    );
     let radio = prefs_focus(&state);
     assert_eq!(radio, PreferencesControlId::InteractiveForm);
     // Inside the RadioSet the arrows belong to the OPTIONS: another ↓ stays on the same widget.
-    press(&mut session, &mut state, KeyCode::Down);
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Down)),
+        EventHandling::Action(Action::Preferences(PreferencesAction::SetInteractiveForm(
+            InteractiveFormChoice::Plain
+        ),))
+    );
     assert_eq!(prefs_focus(&state), radio); // still the same widget…
 
-    // …and the chip moves on to the next section, then the back chip returns to the radio.
-    click_chip(&mut session, &mut state, UiCommand::FocusNext);
-    assert_ne!(prefs_focus(&state), radio);
-    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
+    // …and only a real left down on the typed footer hit moves to the next section.
+    let (_, geometry) = draw(&mut session, &state);
+    let next = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::FocusNext))
+        .expect("the Preferences footer exposes FocusNext")
+        .rect;
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            drive(
+                &mut session,
+                &mut state,
+                &geometry,
+                mouse(kind, next.x, next.y),
+            ),
+            EventHandling::Ignored
+        );
+        assert_eq!(prefs_focus(&state), radio);
+    }
+    assert_eq!(
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            left_click(next.x, next.y),
+        ),
+        EventHandling::Action(Action::FocusNext)
+    );
+    assert_eq!(prefs_focus(&state), PreferencesControlId::AfterRun);
+
+    // The backward chip has the same pointer-event discipline and returns to the radio.
+    let (_, geometry) = draw(&mut session, &state);
+    let previous = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::FocusPrevious))
+        .expect("the Preferences footer exposes FocusPrevious")
+        .rect;
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            drive(
+                &mut session,
+                &mut state,
+                &geometry,
+                mouse(kind, previous.x, previous.y),
+            ),
+            EventHandling::Ignored
+        );
+        assert_eq!(prefs_focus(&state), PreferencesControlId::AfterRun);
+    }
+    assert_eq!(
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            left_click(previous.x, previous.y),
+        ),
+        EventHandling::Action(Action::FocusPrevious)
+    );
     assert_eq!(prefs_focus(&state), radio);
 
     // The advertised keys themselves, not just the chips.
     let (_, geometry) = draw(&mut session, &state);
-    drive(&mut session, &mut state, &geometry, shift_back_tab());
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, shift_back_tab()),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(
+            PreferencesControlId::Editor,
+        )))
+    );
     assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
-    press(&mut session, &mut state, KeyCode::Tab);
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Tab)),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(radio)))
+    );
     assert_eq!(prefs_focus(&state), radio);
+}
+
+#[test]
+fn preferences_widgets_claim_their_own_keys_before_shared_navigation() {
+    let mut state = present(Screen::Preferences(Box::new(preferences_view())));
+    let mut session = TuiSession::default();
+
+    // Down opens the focused language picker instead of moving to the next Preferences control.
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Down)),
+        EventHandling::Consumed
+    );
+    assert_eq!(prefs_focus(&state), PreferencesControlId::Language);
+    let (_, geometry) = draw(&mut session, &state);
+    let _ = drive(&mut session, &mut state, &geometry, key(KeyCode::Up));
+    assert_eq!(prefs_focus(&state), PreferencesControlId::Language);
+
+    // A fresh input keeps printable and horizontal cursor keys; only its unused vertical arrows
+    // move through the form.
+    state = present(Screen::Preferences(Box::new(preferences_view())));
+    session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state);
+    let _ = drive(&mut session, &mut state, &geometry, key(KeyCode::Tab));
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Char('x')),),
+        EventHandling::Action(Action::Preferences(PreferencesAction::SetEditor(
+            "x".to_owned(),
+        )))
+    );
+    assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Left)),
+        EventHandling::Consumed
+    );
+    assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
 }
 
 // ==========================================================================

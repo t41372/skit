@@ -877,6 +877,28 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         false,
     ),
     spec(
+        UiCommand::FocusNext,
+        CommandContext::Preferences,
+        &[
+            UiBinding::plain(UiKey::Tab, "Tab", "Tab"),
+            UiBinding::plain(UiKey::Down, "Down", "↓"),
+        ],
+        "Next field",
+        true,
+        false,
+    ),
+    spec(
+        UiCommand::FocusPrevious,
+        CommandContext::Preferences,
+        &[
+            UiBinding::shift(UiKey::BackTab, "Shift+Tab", "⇧Tab"),
+            UiBinding::plain(UiKey::Up, "Up", "↑"),
+        ],
+        "Previous field",
+        true,
+        false,
+    ),
+    spec(
         UiCommand::Back,
         CommandContext::Report,
         &[
@@ -2721,8 +2743,14 @@ impl LibraryState {
             // stops. The shared nav commands still drive it: a footer chip that no-ops is the dead
             // chord version 0.4 refuses to advertise (`src/skit/tui_settings.py:408-415`).
             Screen::Settings(view) => view.move_focus(delta > 0),
+            Screen::Preferences(view) => {
+                let _ = view.update(if delta > 0 {
+                    PreferencesAction::Next
+                } else {
+                    PreferencesAction::Previous
+                });
+            }
             Screen::Library
-            | Screen::Preferences(_)
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
