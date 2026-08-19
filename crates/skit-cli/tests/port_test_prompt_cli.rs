@@ -33,12 +33,13 @@
 //! - FAILING CONTRACT (divergence): the full asserting body is kept intact and `#[ignore]`d with
 //!   the observed-vs-oracle evidence; deleting the `#[ignore]` after the impl is fixed turns it
 //!   green. Never softened to match Rust output.
-//! - UNMAPPED (cross-crate): the observable itself needs an interactive/internal seam a non-tty
-//!   binary cannot drive or intercept — the `Prompt.ask`/`Confirm.ask` answers, the `$EDITOR`
-//!   *interactive* reconcile, the `tui_add` panels/pickers, `inlineform.collect`, the
-//!   `PromptLaunch._read_body` / `prepare_entry` TOCTOU seams, `config.gettext` wrapping, or a
-//!   store-fault injection. Compiling `#[ignore]` stub naming the seam (`src/cli/tests.rs`) and
-//!   its non-interactive twin when one exists.
+//! - UNMAPPED (cross-crate/private representation): the observable itself needs an
+//!   interactive/internal seam a non-tty binary cannot drive or intercept — the
+//!   `Prompt.ask`/`Confirm.ask` answers, the `$EDITOR` *interactive* reconcile, the `tui_add`
+//!   panels/pickers, `inlineform.collect`, the `PromptLaunch._read_body` / `prepare_entry` TOCTOU
+//!   seams, `config.gettext` wrapping, or a store-fault injection. Python-private storage
+//!   sentinels also stay ignored when Rust has the same internal state but a different stable
+//!   public representation. The active owner keeps each executable public clause.
 
 #![cfg(unix)]
 
@@ -504,7 +505,7 @@ fn test_localized_starter_is_minimal_and_never_creates_its_own_field() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the prompt name, fields, and managed-parameter summary converge, but `show --json` returns null for an unset runner instead of the oracle's empty string."]
+#[ignore = "UNMAPPED (private representation): frozen reads Python's private store-resolved `meta.runner == \"\"`. Rust also keeps an unset runner internally empty, but its stable public `show/params --json` contract is null. Public file/--no-input kind, ordered fields, receipt, and null projection are owned by test_add_prompt_interactive_tick_subset_and_runner_pick; pin/clear and params-null reverses remain active."]
 fn test_add_prompt_file_no_input_manages_everything() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file(
@@ -551,8 +552,9 @@ fn test_add_prompt_interactive_tick_subset_and_runner_pick() {
     // the interactive tick path is covered by the cross-crate stubs below.
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}} {{b}} {{c}}\n");
-    sandbox.ok(&["add", &src, "-n", "picky", "--no-input"]);
+    let combined = sandbox.ok(&["add", &src, "-n", "picky", "--no-input"]);
     let show = sandbox.json(&["show", "picky", "--json"]);
+    assert_eq!(show["kind"], "prompt");
     let keys: Vec<&str> = show["fields"]
         .as_array()
         .unwrap()
@@ -560,6 +562,11 @@ fn test_add_prompt_interactive_tick_subset_and_runner_pick() {
         .map(|field| field["key"].as_str().unwrap())
         .collect();
     assert_eq!(keys, ["a", "b", "c"]);
+    assert_eq!(show["runner"], Value::Null);
+    assert!(
+        combined.contains("Managed parameters: a, b, c"),
+        "{combined}"
+    );
 }
 
 #[test]
