@@ -32,6 +32,9 @@
 //!   `assert_cmd`. Human-string assertions read Python's `result.output`; because the exact
 //!   stdout/stderr split is not what those tests measure, they are checked against the
 //!   COMBINED stream. The explicit `--json` purity tests keep the streams separate.
+//! - Python `store.write_parameters` / `read_parameters` -> the real `FileStore`
+//!   create/resolve/update-settings transaction in `skit-store/tests/mutations.rs`. It is a store
+//!   persistence contract, not the CLI's broader `params --rm` product action.
 //!
 //! Buckets:
 //! - REAL asserting `#[test]` (API exists): the pure-schema, form-plan, assemble, meta-model,
@@ -531,46 +534,6 @@ fn test_transparency_shows_masked_env_prefix() {
         arrow.contains("GREETING='hello world'") || arrow.contains("GREETING=\"hello world\""),
         "{arrow}"
     );
-}
-
-// ================================================================================================
-// store round-trip  (skit binary + meta.toml)
-// ================================================================================================
-
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): the placeholder-name cache (meta.params) must stay the template's truth independent of declared schema — downgrade safety (src/skit/store.write_parameters leaves `params` untouched). In Rust, `params --rm b` also strips \"b\" from the params cache even though the template still contains {b} (crates/skit-cli/src/cli.rs / skit-store mutations). Entangled with the `add --cmd` placeholder pre-seeding: the oracle's add_command stores no [[parameters]], so there is no b row to remove."]
-fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
-    // The placeholder-name cache stays the template's truth (downgrade safety), independent of
-    // which subset carries declared schema; clearing the declared rows removes the whole
-    // `[[parameters]]` table while the cache survives.
-    let workspace = lib();
-    workspace
-        .cmd()
-        .args(["add", "--cmd", "run {a} {b}", "--name", "rt", "--no-input"])
-        .assert()
-        .success();
-    let meta_path = workspace.data.path().join("scripts/rt/meta.toml");
-    let read_meta = || std::fs::read_to_string(&meta_path).unwrap();
-    assert!(read_meta().contains("params = [\n    \"a\",\n    \"b\",\n]"));
-
-    // Reduce the declared rows to a single int/optional `a` (the oracle's write_parameters([a])).
-    workspace.run(&["params", "rt", "--rm", "b"]);
-    workspace.run(&["params", "rt", "--type", "a=int", "--optional", "a"]);
-    let back = stdout_json(&workspace.run(&["params", "rt", "--json"]));
-    let declared = back["declared"].as_array().unwrap();
-    assert_eq!(declared.len(), 1);
-    assert_eq!(declared[0]["name"], "a");
-    assert_eq!(declared[0]["type"], "int");
-    // the placeholder-name cache is still the template's truth
-    assert!(read_meta().contains("\"a\""));
-    assert!(read_meta().contains("\"b\""));
-
-    // clearing works: no [[parameters]] table remains
-    workspace.run(&["params", "rt", "--rm", "a"]);
-    let cleared = stdout_json(&workspace.run(&["params", "rt", "--json"]));
-    assert!(cleared["declared"].as_array().unwrap().is_empty());
-    assert!(!read_meta().contains("[[parameters]]"));
-    assert!(read_meta().contains("params = ["));
 }
 
 // ================================================================================================

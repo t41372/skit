@@ -8,11 +8,15 @@ use std::{
     time::Duration,
 };
 
+use serde_json::json;
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, RepositoryError,
     SourcePermissions, UpdateEntry,
 };
-use skit_domain::{EntryKind, EntrySettings, StorageMode};
+use skit_domain::{
+    EntryKind, EntrySettings, StorageMode,
+    parameters::{ParamDecl, ParameterDelivery, ParameterType},
+};
 use skit_store::{FileStore, content_hash};
 use tempfile::TempDir;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -142,6 +146,137 @@ fn create_is_atomic_mints_identity_and_preserves_payload_bytes() {
             0o755
         );
     }
+}
+
+#[test]
+fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let mut create = request("rt", b"");
+    create.kind = EntryKind::parse("command").unwrap();
+    create.mode = StorageMode::Reference;
+    create.source.clear();
+    create.payload = None;
+    create.settings = EntrySettings {
+        template: "run {a} {b}".to_owned(),
+        params: vec!["a".to_owned(), "b".to_owned()],
+        ..EntrySettings::default()
+    };
+    let created = store.create(create).unwrap();
+    let entry_dir = root.path().join("scripts/rt");
+    let meta_path = entry_dir.join("meta.toml");
+
+    // A future root field is not part of EntrySettings, but every settings write must retain it.
+    let mut source = fs::read_to_string(&meta_path).unwrap();
+    source.push_str("\n[future]\nkeep = true\n");
+    fs::write(&meta_path, source).unwrap();
+    let held = store.resolve(created.slug.as_str()).unwrap();
+    assert_eq!(held.meta.extra["future"], json!({"keep": true}));
+    assert!(!held.meta.extra.contains_key("parameters"));
+    let registry_before_write = fs::read(root.path().join("registry.toml")).unwrap();
+
+    let mut a = ParamDecl::new("a");
+    a.delivery = ParameterDelivery::Placeholder;
+    a.parameter_type = ParameterType::Int;
+    a.required = false;
+    let mut settings = EntrySettings::from_meta(&held.meta);
+    assert_eq!(settings.params, ["a", "b"]);
+    assert_eq!(settings.template, "run {a} {b}");
+    assert!(settings.parameters.is_empty());
+    settings.parameters = vec![a.clone()];
+
+    let updated = store
+        .update_settings(&held, &settings, &held.meta.workdir)
+        .unwrap();
+    let back = EntrySettings::from_meta(&updated.meta);
+    assert_eq!(back.parameters, [a.clone()]);
+    assert_eq!(back.params, ["a", "b"]);
+    assert_eq!(back.template, "run {a} {b}");
+    assert_eq!(updated.meta.extra["future"], json!({"keep": true}));
+
+    let resolved = store.resolve(created.slug.as_str()).unwrap();
+    assert_eq!(EntrySettings::from_meta(&resolved.meta), back);
+    assert_eq!(resolved.meta.extra["future"], json!({"keep": true}));
+    let document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert_eq!(
+        document["params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    let rows = document["parameters"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"].as_str(), Some("a"));
+    assert_eq!(rows[0]["delivery"].as_str(), Some("placeholder"));
+    assert_eq!(rows[0]["type"].as_str(), Some("int"));
+    assert!(rows[0].get("required").is_none());
+    assert_eq!(document["future"]["keep"].as_bool(), Some(true));
+
+    let registry_after_write = fs::read(root.path().join("registry.toml")).unwrap();
+    assert_ne!(registry_after_write, registry_before_write);
+    let scan = store.scan().unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    assert!(scan.diagnostics.is_empty());
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        registry_after_write,
+        "the settings write must publish a fresh registry projection"
+    );
+
+    let mut cleared = EntrySettings::from_meta(&resolved.meta);
+    cleared.parameters.clear();
+    let cleared = store
+        .update_settings(&resolved, &cleared, &resolved.meta.workdir)
+        .unwrap();
+    let expected_after = EntrySettings::from_meta(&cleared.meta);
+    assert!(expected_after.parameters.is_empty());
+    assert_eq!(expected_after.params, ["a", "b"]);
+    assert_eq!(expected_after.template, "run {a} {b}");
+    assert_eq!(cleared.meta.extra["future"], json!({"keep": true}));
+    let resolved_after = store.resolve(created.slug.as_str()).unwrap();
+    assert_eq!(
+        EntrySettings::from_meta(&resolved_after.meta),
+        expected_after
+    );
+    assert_eq!(resolved_after.meta.extra["future"], json!({"keep": true}));
+    let document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!document.contains_key("parameters"));
+    assert_eq!(
+        document["params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(document["future"]["keep"].as_bool(), Some(true));
+    let registry_after_clear = fs::read(root.path().join("registry.toml")).unwrap();
+    assert_ne!(registry_after_clear, registry_after_write);
+    let scan = store.scan().unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    assert!(scan.diagnostics.is_empty());
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        registry_after_clear,
+        "the clear must publish a fresh registry projection"
+    );
+
+    let mut files = fs::read_dir(entry_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(files, ["meta.toml".to_owned()]);
 }
 
 #[test]

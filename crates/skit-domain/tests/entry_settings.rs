@@ -105,6 +105,15 @@ fn writing_settings_preserves_unknown_extension_fields_and_legacy_omission_rules
     assert!(!meta.extra.contains_key("interpolate"));
     assert_eq!(meta.extra["parameters"][0]["name"], json!("count"));
     assert_eq!(meta.extra["parameters"][0]["type"], json!("int"));
+
+    let mut cleared = EntrySettings::from_meta(&meta);
+    cleared.parameters.clear();
+    cleared.write_to_meta(&mut meta);
+    let after = EntrySettings::from_meta(&meta);
+    assert!(after.parameters.is_empty());
+    assert_eq!(after.params, ["count"]);
+    assert_eq!(meta.extra["future"], json!({"keep": true}));
+    assert!(!meta.extra.contains_key("parameters"));
 }
 
 #[test]
