@@ -30,11 +30,12 @@
 //!   the "no shebang -> nothing to pin" rule: the first line is not a `#!`, so the add path's
 //!   `shebang.and_then(shebang_program).and_then(python_version_pin)` yields `None` -> `""`.
 //!
-//! Bucket disposition (16 oracle defs):
-//! - PASS asserting tests: the whole set the built binary already honors (assigned by the run).
-//! - FAILING CONTRACT (divergence): full asserting bodies kept intact behind `#[ignore]`; every
-//!   label was verified against the built binary.
-//! - 3 absent gaps: `cli._resolve_python_metadata`'s INTERACTIVE python-metadata ask
+//! Bucket disposition (16 oracle defs; 9 active, 7 ignored):
+//! - 9 active asserting contracts include the owned-draft prompt canonical.
+//! - One active owned-draft prompt contract. The reference and `.py`/bash twins remain as
+//!   semantic-duplicate closures with their stronger boundary and CLI classifier owners named.
+//! - 2 semantic-duplicate owned-draft closures, 3 absent interactive-metadata gaps, and 2
+//!   cross-crate hint-helper closures. `cli._resolve_python_metadata`'s INTERACTIVE ask
 //!   (deps/python `Prompt.ask` with the pin-aware label switch, src/skit/cli.py:224-261) has no
 //!   equivalent anywhere in the Rust workspace — the add flow resolves deps/python
 //!   non-interactively (`external_dependencies_at`, cli.rs:2920) and never asks. The label
@@ -128,6 +129,17 @@ impl Sandbox {
             .join("script.py");
         fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}"))
     }
+
+    fn stored_prompt(&self, name: &str) -> Vec<u8> {
+        fs::read(
+            self.data
+                .path()
+                .join("scripts")
+                .join(name.to_lowercase())
+                .join("prompt.md"),
+        )
+        .unwrap()
+    }
 }
 
 /// Python `result.output` — the merged streams a CliRunner user would see (stdout then stderr).
@@ -151,7 +163,7 @@ fn flat(output: &Output) -> String {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle refuses --ref against its OWN kept draft (a reference into drafts/ would list a live entry's file as a resumable/deletable draft) with exit 2 '… one of skit's own kept drafts … Drop --ref.' (src/skit/cli.py:1917-1933). Rust's plain path lane has no kept-draft guard — it ADDS the reference ('Added: linky (reference mode)', exit 0) and the draft remains. Ties to pending task #15. Verified against the built binary."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger canonical three-locale, real-PTY guard-before-question, full-tree no-write owner is port_test_add_validation_contracts::test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref. Keep this frozen body for oracle accounting."]
 fn test_ref_on_kept_draft_is_refused_and_keeps_it() {
     // --ref into drafts/ would leave a live entry's file resumable — refuse it: exit 2, the
     // 'kept drafts' message naming Drop --ref, the draft kept, and NO entry created.
@@ -205,28 +217,41 @@ fn test_ref_on_a_normal_file_still_works() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the kind half HOLDS (infer_kind maps `.prompt.md` to prompt, cli.rs → skit-language lib.rs:220, so exit 0 and kind == prompt), but the consume-on-success unlink is MISSING: Rust's plain path lane never calls remove_owned_draft (only the authoring lanes do), so the resumed draft SURVIVES — `!draft.exists()` fails. Ties to pending task #15, same shape as the sibling port_test_add_lane_contracts.rs. Verified against the built binary."]
 fn test_prompt_draft_with_shebang_body_resumes_as_prompt() {
     // A `skit-new-*.prompt.md` draft whose body opens `#!/usr/bin/env bash` resumes as a
     // PROMPT, not shell — the .prompt.md suffix is the user's lane choice, and a prompt body may
     // legitimately quote a shebang line. The consumed draft is unlinked on success.
-    let sandbox = Sandbox::new();
-    let draft = sandbox.draft(
-        "skit-new-summ.prompt.md",
-        "#!/usr/bin/env bash\nSummarize {{text}}.\n",
-    );
-    let output = sandbox
-        .command()
-        .args(["add", draft.to_str().unwrap(), "-n", "summ", "--no-input"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
-    assert_eq!(sandbox.show_json("summ")["kind"], "prompt"); // compound suffix wins over the shebang
-    assert!(!draft.exists()); // consumed on success
+    const BODY: &[u8] = b"#!/usr/bin/env bash\nSummarize {{text}}.\n";
+    for (suffix, name) in [("prompt", "summ-single"), ("prompt.md", "summ-compound")] {
+        let sandbox = Sandbox::new();
+        let draft = sandbox.draft(
+            &format!("skit-new-summ.{suffix}"),
+            std::str::from_utf8(BODY).unwrap(),
+        );
+        let output = sandbox
+            .command()
+            .args(["add", draft.to_str().unwrap(), "-n", name, "--no-input"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "suffix={suffix}: {}",
+            combined(&output)
+        );
+        let shown = sandbox.show_json(name);
+        assert_eq!(shown["kind"], "prompt", "suffix={suffix}");
+        assert_eq!(shown["mode"], "copy", "suffix={suffix}");
+        assert_eq!(sandbox.stored_prompt(name), BODY, "suffix={suffix}");
+        assert!(
+            !draft.exists(),
+            "suffix={suffix}: consumed only after the copy committed"
+        );
+    }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle classifies a KEPT draft shebang-FIRST — store.infer_kind delegates to registry.kind_for_draft for is_draft paths (src/skit/store.py:308-309, src/skit/langs/registry.py:442-457), so a bash-shebang `.py` draft resumes as shell (the mkstemp suffix is skit's artifact, not a user signal). Rust has no draft-specific classifier: its infer_kind is extension-FIRST (skit-language lib.rs:223 before the shebang branch at 226), so a `.py` file is always python — the add succeeds as kind == 'python', not 'shell'. Ties to pending task #15. Verified against the built binary."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger real CLI classifier+cleanup owner is port_test_draft_inference_and_reader_cli::test_cli_add_bash_shebang_draft_lands_as_shell_and_unlinks. Keep this frozen body for oracle accounting."]
 fn test_py_draft_with_shebang_body_still_resumes_as_shell() {
     // The complement / regression pin: a SCRIPT-starter `.py` draft is still shebang-first,
     // so a bash body resumes as shell (only the compound prompt suffix outranks the shebang).

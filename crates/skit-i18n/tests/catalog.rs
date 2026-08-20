@@ -135,6 +135,44 @@ fn formatted_messages_translate_the_template_without_translating_user_values() {
 }
 
 #[test]
+fn owned_draft_cleanup_warning_is_complete_in_every_locale() {
+    let source = "The kept draft changed before cleanup. skit kept it at {}.";
+    let path = "/data/drafts/skit-new-task.py";
+    assert_eq!(
+        format_text(Locale::En, source, &[&path]),
+        format!("The kept draft changed before cleanup. skit kept it at {path}.")
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, source, &[&path]),
+        format!("保留的草稿在清理前发生了更改。skit 将它保留在 {path}。")
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, source, &[&path]),
+        format!("保留的草稿在清理前發生了變更。skit 將它保留在 {path}。")
+    );
+}
+
+#[test]
+fn owned_draft_quarantine_restore_error_is_complete_in_every_locale() {
+    let source = "could not restore quarantined draft {} to {}: {}";
+    let quarantine = "/data/drafts/.skit-quarantine-1";
+    let original = "/data/drafts/skit-new-task.py";
+    let reason = "already exists";
+    assert_eq!(
+        format_text(Locale::En, source, &[&quarantine, &original, &reason]),
+        format!("could not restore quarantined draft {quarantine} to {original}: {reason}")
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, source, &[&quarantine, &original, &reason]),
+        format!("无法将隔离的草稿 {quarantine} 恢复到 {original}：{reason}")
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, source, &[&quarantine, &original, &reason]),
+        format!("無法將隔離的草稿 {quarantine} 還原到 {original}：{reason}")
+    );
+}
+
+#[test]
 fn secret_purge_notice_matches_the_oracle_in_every_locale() {
     let template = "Removed previously stored plaintext value(s) for now-secret parameter(s): {}";
     assert_eq!(

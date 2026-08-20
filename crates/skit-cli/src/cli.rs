@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     fs::{self, File, Metadata},
-    io::{self, IsTerminal as _, Read as _, Write as _},
+    io::{self, IsTerminal as _, Read as _, Seek as _, Write as _},
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     time::UNIX_EPOCH,
@@ -1750,9 +1750,7 @@ fn add_plain_draft(
             ..empty_add_options()
         },
     );
-    if result.is_ok() {
-        remove_owned_draft(service.repository().data_dir(), &path)?;
-    } else {
+    if result.is_err() {
         humanerrln!("Your draft was kept at {}", path.display());
     }
     result
@@ -1826,7 +1824,8 @@ fn add_draft(
     let empty = fs::metadata(&draft)?.len() == 0;
     let untouched_starter = prompt && !empty && fs::read(&draft)? == starter;
     if empty || untouched_starter {
-        remove_owned_draft(service.repository().data_dir(), &draft)?;
+        let snapshot = tui_add_source(service.repository().data_dir(), &draft)?;
+        let _ = consume_owned_draft(service.repository().data_dir(), &snapshot)?;
         if prompt {
             humanln!("Nothing was written, so no prompt was added.");
         } else {
@@ -1867,9 +1866,7 @@ fn add_draft(
     } else {
         add(service, options)
     };
-    if result.is_ok() {
-        fs::remove_file(&draft)?;
-    } else {
+    if result.is_err() {
         humanerrln!("Your draft was kept at {}", draft.display());
     }
     result
@@ -3320,81 +3317,85 @@ fn add_with_config(
         )));
     }
     let from_stdin = input == Path::new("-");
-    let (source, source_record, mut bytes, permissions, source_is_regular) = if from_stdin {
-        let mut bytes = Vec::new();
-        io::stdin().read_to_end(&mut bytes)?;
-        (
-            PathBuf::from("stdin"),
-            String::new(),
-            bytes,
-            SourcePermissions::default(),
-            true,
-        )
-    } else {
-        let expanded = expand_user_path(input);
-        let source = resolve_add_source(&expanded)?;
-        let path_inferred = infer_kind(&source, None, false);
-        let unknown_directory = source.is_dir()
-            && !explicit_executable
-            && !prompt
-            && kind.is_none()
-            && path_inferred.is_none();
-        if unknown_directory
-            && (no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal())
-        {
-            let file = source.file_name().unwrap_or(source.as_os_str());
-            return Err(CliError::Usage(
-                Message::new(
-                    "{} is a directory — pass --exe to add it as a program that runs directly.",
-                )
-                .with(file.to_string_lossy()),
-            ));
-        }
-        if unknown_directory {
-            if !wants_tui_form(config_dir)? {
+    let (source, source_record, mut bytes, permissions, source_is_regular, source_identity) =
+        if from_stdin {
+            let mut bytes = Vec::new();
+            io::stdin().read_to_end(&mut bytes)?;
+            (
+                PathBuf::from("stdin"),
+                String::new(),
+                bytes,
+                SourcePermissions::default(),
+                true,
+                None,
+            )
+        } else {
+            let expanded = expand_user_path(input);
+            let source = resolve_add_source(&expanded)?;
+            let path_inferred = infer_kind(&source, None, false);
+            let unknown_directory = source.is_dir()
+                && !explicit_executable
+                && !prompt
+                && kind.is_none()
+                && path_inferred.is_none();
+            if unknown_directory
+                && (no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal())
+            {
                 let file = source.file_name().unwrap_or(source.as_os_str());
-                let question =
-                    Message::new("{} is a directory. Add it as a program that runs directly?")
-                        .with(file.to_string_lossy())
-                        .localize(active_locale());
-                let accepted = Confirm::new()
-                    .with_prompt(question)
-                    .default(true)
-                    .interact_opt()
-                    .map_err(add_dialoguer_error)?
-                    .ok_or(CliError::AddCancelled)?;
-                if !accepted {
-                    return Err(CliError::AddCancelled);
-                }
-                if name.is_none() {
-                    let default = source_default_name(&source, false);
-                    let value = Input::<String>::new()
-                        .with_prompt(text(active_locale(), "Name in skit").into_owned())
-                        .default(default)
-                        .allow_empty(true)
-                        .interact_text()
-                        .map_err(add_dialoguer_error)?;
-                    name = (!value.trim().is_empty()).then(|| value.trim().to_owned());
-                }
-                if description.is_none() {
-                    description = Some(add_plain_text("Description (optional)")?.trim().to_owned());
-                }
+                return Err(CliError::Usage(
+                    Message::new(
+                        "{} is a directory — pass --exe to add it as a program that runs directly.",
+                    )
+                    .with(file.to_string_lossy()),
+                ));
             }
-            executable = true;
-            explicit_executable = true;
-        }
-        let require_regular =
-            !explicit_executable && (prompt || kind.is_some() || path_inferred.is_some());
-        let snapshot = read_source(&source, explicit_executable, require_regular)?;
-        let source_record = source.display().to_string();
-        (
-            source,
-            source_record,
-            snapshot.bytes,
-            snapshot.permissions,
-            snapshot.is_regular,
-        )
-    };
+            if unknown_directory {
+                if !wants_tui_form(config_dir)? {
+                    let file = source.file_name().unwrap_or(source.as_os_str());
+                    let question =
+                        Message::new("{} is a directory. Add it as a program that runs directly?")
+                            .with(file.to_string_lossy())
+                            .localize(active_locale());
+                    let accepted = Confirm::new()
+                        .with_prompt(question)
+                        .default(true)
+                        .interact_opt()
+                        .map_err(add_dialoguer_error)?
+                        .ok_or(CliError::AddCancelled)?;
+                    if !accepted {
+                        return Err(CliError::AddCancelled);
+                    }
+                    if name.is_none() {
+                        let default = source_default_name(&source, false);
+                        let value = Input::<String>::new()
+                            .with_prompt(text(active_locale(), "Name in skit").into_owned())
+                            .default(default)
+                            .allow_empty(true)
+                            .interact_text()
+                            .map_err(add_dialoguer_error)?;
+                        name = (!value.trim().is_empty()).then(|| value.trim().to_owned());
+                    }
+                    if description.is_none() {
+                        description =
+                            Some(add_plain_text("Description (optional)")?.trim().to_owned());
+                    }
+                }
+                executable = true;
+                explicit_executable = true;
+            }
+            let require_regular =
+                !explicit_executable && (prompt || kind.is_some() || path_inferred.is_some());
+            let snapshot = read_source(&source, explicit_executable, require_regular)?;
+            let source_record = source.display().to_string();
+            (
+                source,
+                source_record,
+                snapshot.bytes,
+                snapshot.permissions,
+                snapshot.is_regular,
+                snapshot.identity,
+            )
+        };
     let mut source_text = LosslessSource::from_bytes(&bytes)
         .normalized_text()
         .to_owned();
@@ -3404,6 +3405,16 @@ fn add_with_config(
         .filter(|line| line.starts_with("#!"));
     let file_is_executable = permissions.unix_mode.is_some_and(|mode| mode & 0o111 != 0);
     let owned_draft = !from_stdin && is_owned_draft(service.repository().data_dir(), &source);
+    let source_claim = owned_draft.then(|| AddSourceSnapshot {
+        path: source.clone(),
+        source_record: source_record.clone(),
+        bytes: bytes.clone(),
+        permissions: permissions.clone(),
+        is_regular: source_is_regular,
+        is_directory: !source_is_regular,
+        is_draft: true,
+        identity: source_identity,
+    });
     let inferred = if prompt {
         Some("prompt")
     } else if executable {
@@ -3688,7 +3699,7 @@ fn add_with_config(
         };
     }
     let workdir = add_workdir(&kind, mode).to_owned();
-    let entry = service.add(CreateEntry {
+    let create = CreateEntry {
         name,
         kind,
         mode,
@@ -3697,9 +3708,62 @@ fn add_with_config(
         description,
         payload,
         settings,
-    })?;
+    };
+    let (entry, cleanup) = commit_add_source(service, create, source_claim)?;
     print_add_summary(service.repository(), &entry)?;
+    if let Some(cleanup) = cleanup {
+        match cleanup {
+            Ok(DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing) => {}
+            Ok(DraftConsumeOutcome::Changed) => humanerrln!(
+                "warning: The kept draft changed before cleanup. skit kept it at {}.",
+                source.display()
+            ),
+            Err(error) => humanerrln!("warning: {}", error.message().localize(active_locale())),
+        }
+    }
     Ok(())
+}
+
+type DraftCleanupResult = Option<Result<DraftConsumeOutcome, CliError>>;
+
+fn commit_add_source(
+    service: &LibraryService<FileStore>,
+    create: CreateEntry,
+    source_claim: Option<AddSourceSnapshot>,
+) -> Result<(Entry, DraftCleanupResult), CliError> {
+    commit_add_source_after(service, create, source_claim, || {})
+}
+
+#[cfg(test)]
+fn commit_add_source_with_hook(
+    service: &LibraryService<FileStore>,
+    create: CreateEntry,
+    source_claim: Option<AddSourceSnapshot>,
+    after_commit: impl FnOnce(),
+) -> Result<(Entry, Option<DraftConsumeOutcome>), CliError> {
+    let (entry, cleanup) = commit_add_source_after(service, create, source_claim, after_commit)?;
+    Ok((entry, cleanup.transpose()?))
+}
+
+fn commit_add_source_after(
+    service: &LibraryService<FileStore>,
+    create: CreateEntry,
+    source_claim: Option<AddSourceSnapshot>,
+    after_commit: impl FnOnce(),
+) -> Result<(Entry, DraftCleanupResult), CliError> {
+    if let Some(expected) = &source_claim {
+        verify_tui_add_source(service.repository().data_dir(), expected)?;
+    }
+    let consume = source_claim
+        .as_ref()
+        .filter(|_| create.mode == StorageMode::Copy)
+        .cloned();
+    let entry = service.add(create)?;
+    after_commit();
+    let cleanup = consume
+        .as_ref()
+        .map(|expected| consume_owned_draft(service.repository().data_dir(), expected));
+    Ok((entry, cleanup))
 }
 
 fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
@@ -7338,8 +7402,17 @@ fn tui_add_effect(
                 return Ok(UiAction::Add(AddAction::DraftEdited { request, result }));
             }
             AddEffect::DeleteDraft { request, draft } => {
-                let result = remove_owned_draft(store.data_dir(), &draft.path)
-                    .map(|()| DraftDeleteOutcome::Removed)
+                let result = consume_draft_summary(store.data_dir(), &draft)
+                    .and_then(|outcome| match outcome {
+                        DraftConsumeOutcome::Removed => Ok(DraftDeleteOutcome::Removed),
+                        DraftConsumeOutcome::AlreadyMissing => {
+                            Ok(DraftDeleteOutcome::AlreadyMissing)
+                        }
+                        DraftConsumeOutcome::Changed => {
+                            refreshed_draft(store.data_dir(), &draft.path)
+                                .map(DraftDeleteOutcome::Changed)
+                        }
+                    })
                     .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::DraftDeleted { request, result }));
             }
@@ -7365,8 +7438,14 @@ fn tui_add_effect(
                 return Ok(UiAction::Add(AddAction::CommitFinished { request, result }));
             }
             AddEffect::ConsumeDraft(source) => {
-                if let Err(error) = remove_owned_draft(store.data_dir(), &source.path) {
-                    warnings.push(error.message().localize(locale));
+                match consume_owned_draft(store.data_dir(), &source) {
+                    Ok(DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing) => {}
+                    Ok(DraftConsumeOutcome::Changed) => warnings.push(
+                        Message::new("The kept draft changed before cleanup. skit kept it at {}.")
+                            .with(source.path.display())
+                            .localize(locale),
+                    ),
+                    Err(error) => warnings.push(error.message().localize(locale)),
                 }
             }
             AddEffect::DraftKept(_) => {}
@@ -7497,23 +7576,38 @@ fn tui_author_draft(
         .keep()
         .map_err(|error| source_error("keep", &drafts_dir, error.error))?
         .1;
+    let initial = tui_add_source(data_dir, &path)?;
 
     if let Err(error) = open_editor_in(config_dir, &path) {
-        if fs::read(&path).ok().as_deref() == Some(starter.as_slice()) {
-            let _ = fs::remove_file(&path);
-        }
-        return Err(error);
+        return match discard_authored_draft(data_dir, &initial) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(CliError::Failure(
+                Message::new("{}; warning: {}")
+                    .nested(error.message())
+                    .nested(cleanup.message()),
+            )),
+        };
     }
-    let edited = fs::read(&path).map_err(|error| source_error("read", &path, error))?;
-    let unchanged = std::str::from_utf8(&edited).is_ok_and(|text| {
+    let current = tui_add_source(data_dir, &path)?;
+    let unchanged = std::str::from_utf8(&current.bytes).is_ok_and(|text| {
         let text = text.trim();
         text.is_empty() || std::str::from_utf8(&starter).is_ok_and(|starter| text == starter.trim())
     });
     if unchanged {
-        fs::remove_file(&path).map_err(|error| source_error("remove", &path, error))?;
+        discard_authored_draft(data_dir, &current)?;
         return Ok(None);
     }
-    tui_add_source(data_dir, &path).map(Some)
+    Ok(Some(current))
+}
+
+fn discard_authored_draft(data_dir: &Path, expected: &AddSourceSnapshot) -> Result<(), CliError> {
+    match consume_owned_draft(data_dir, expected)? {
+        DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing => Ok(()),
+        DraftConsumeOutcome::Changed => Err(CliError::Failure(
+            Message::new("The kept draft changed before cleanup. skit kept it at {}.")
+                .with(expected.path.display()),
+        )),
+    }
 }
 
 fn is_owned_draft(data_dir: &Path, path: &Path) -> bool {
@@ -7526,6 +7620,15 @@ fn is_owned_draft(data_dir: &Path, path: &Path) -> bool {
             .parent()
             .and_then(|parent| fs::canonicalize(parent).ok())
             .is_some_and(|parent| parent == drafts_dir)
+}
+
+fn has_owned_draft_shape(data_dir: &Path, path: &Path) -> bool {
+    let Some(data_dir) = fs::canonicalize(data_dir).ok() else {
+        return false;
+    };
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with("skit-"))
+        && path.parent() == Some(data_dir.join("drafts").as_path())
 }
 
 fn existing_owned_drafts_dir(data_dir: &Path) -> Option<PathBuf> {
@@ -7556,17 +7659,232 @@ fn create_owned_drafts_dir(data_dir: &Path) -> Result<PathBuf, CliError> {
     })
 }
 
-fn remove_owned_draft(data_dir: &Path, path: &Path) -> Result<(), CliError> {
-    if !is_owned_draft(data_dir, path) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DraftConsumeOutcome {
+    Removed,
+    AlreadyMissing,
+    Changed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DraftConsumeTestPoint {
+    Quarantined,
+    Verified,
+    BeforeRestore,
+}
+
+fn consume_owned_draft(
+    data_dir: &Path,
+    expected: &AddSourceSnapshot,
+) -> Result<DraftConsumeOutcome, CliError> {
+    consume_owned_draft_with(data_dir, expected, |_, _| {})
+}
+
+#[cfg(test)]
+fn consume_owned_draft_with_test_hook(
+    data_dir: &Path,
+    expected: &AddSourceSnapshot,
+    hook: impl FnMut(DraftConsumeTestPoint, &Path),
+) -> Result<DraftConsumeOutcome, CliError> {
+    consume_owned_draft_with(data_dir, expected, hook)
+}
+
+fn consume_owned_draft_with(
+    data_dir: &Path,
+    expected: &AddSourceSnapshot,
+    hook: impl FnMut(DraftConsumeTestPoint, &Path),
+) -> Result<DraftConsumeOutcome, CliError> {
+    consume_owned_draft_claim(
+        data_dir,
+        &expected.path,
+        expected.is_draft,
+        expected.identity.as_ref(),
+        None,
+        None,
+        Some(expected),
+        hook,
+    )
+}
+
+fn consume_draft_summary(
+    data_dir: &Path,
+    expected: &DraftSummary,
+) -> Result<DraftConsumeOutcome, CliError> {
+    consume_owned_draft_claim(
+        data_dir,
+        &expected.path,
+        true,
+        expected.identity.as_ref(),
+        Some(expected.modified),
+        Some(&expected.permissions),
+        None,
+        |_, _| {},
+    )
+}
+
+fn consume_owned_draft_claim(
+    data_dir: &Path,
+    path: &Path,
+    claimed_as_draft: bool,
+    expected_identity: Option<&SourceIdentity>,
+    expected_modified: Option<u64>,
+    expected_permissions: Option<&SourcePermissions>,
+    expected_source: Option<&AddSourceSnapshot>,
+    mut hook: impl FnMut(DraftConsumeTestPoint, &Path),
+) -> Result<DraftConsumeOutcome, CliError> {
+    if !claimed_as_draft || !has_owned_draft_shape(data_dir, path) {
         return Err(CliError::Failure(Message::new(
             "refusing to remove a file outside skit's drafts directory",
         )));
     }
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(source_error("remove", path, error)),
+    let Some(expected_identity) = expected_identity else {
+        return Err(CliError::Failure(
+            Message::new("the kept draft has no filesystem identity: {}").with(path.display()),
+        ));
+    };
+    let drafts_dir = existing_owned_drafts_dir(data_dir).ok_or_else(|| {
+        CliError::Failure(
+            Message::new("skit's drafts path is not an owned directory: {}")
+                .with(data_dir.join("drafts").display()),
+        )
+    })?;
+    if path.parent() != Some(drafts_dir.as_path()) {
+        return Err(CliError::Failure(Message::new(
+            "refusing to remove a file outside skit's drafts directory",
+        )));
     }
+    let path_metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(DraftConsumeOutcome::AlreadyMissing);
+        }
+        Err(error) => return Err(source_error("inspect", path, error)),
+    };
+
+    let mut opened = (!path_metadata.file_type().is_symlink() && path_metadata.is_file())
+        .then(|| File::open(path))
+        .transpose()
+        .map_err(|error| source_error("open", path, error))?;
+    let opened_identity = opened
+        .as_ref()
+        .and_then(|file| file.metadata().ok())
+        .and_then(|metadata| source_identity(&metadata));
+    let claim_matches_before = opened_identity.as_ref() == Some(expected_identity)
+        && expected_modified.is_none_or(|expected| {
+            opened
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .and_then(|metadata| modified_ns(&metadata))
+                == Some(expected)
+        })
+        && expected_permissions.is_none_or(|expected| {
+            opened
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .is_some_and(|metadata| source_permissions(&metadata) == *expected)
+        })
+        && expected_source.is_none_or(|source| {
+            opened
+                .as_mut()
+                .is_some_and(|file| source_file_matches(file, source).unwrap_or(false))
+        });
+
+    let quarantine_dir = tempfile::Builder::new()
+        .prefix(".skit-quarantine-")
+        .tempdir_in(&drafts_dir)
+        .map_err(|error| source_error("create", &drafts_dir, error))?
+        .keep();
+    let quarantine = quarantine_dir.join("draft");
+    if let Err(error) = fs::rename(path, &quarantine) {
+        let _ = fs::remove_dir(&quarantine_dir);
+        if error.kind() == io::ErrorKind::NotFound {
+            return Ok(DraftConsumeOutcome::AlreadyMissing);
+        }
+        return Err(source_error("move", path, error));
+    }
+    hook(DraftConsumeTestPoint::Quarantined, &quarantine);
+
+    let quarantine_identity = fs::symlink_metadata(&quarantine)
+        .ok()
+        .filter(|metadata| !metadata.file_type().is_symlink() && metadata.is_file())
+        .and_then(|metadata| source_identity(&metadata));
+    let same_open_file = opened_identity
+        .as_ref()
+        .zip(quarantine_identity.as_ref())
+        .is_some_and(|(before, after)| before.same_file(after));
+    let verified = claim_matches_before
+        && same_open_file
+        && expected_modified.is_none_or(|expected| {
+            opened
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .and_then(|metadata| modified_ns(&metadata))
+                == Some(expected)
+        })
+        && expected_permissions.is_none_or(|expected| {
+            opened
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .is_some_and(|metadata| source_permissions(&metadata) == *expected)
+        })
+        && expected_source.is_none_or(|source| {
+            opened
+                .as_mut()
+                .is_some_and(|file| source_file_matches(file, source).unwrap_or(false))
+        });
+    if !verified {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(CliError::Failure(
+                    Message::new("could not restore quarantined draft {} to {}: {}")
+                        .with(quarantine.display())
+                        .with(path.display())
+                        .with(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "the destination already exists",
+                        )),
+                ));
+            }
+            Err(error) => {
+                return Err(CliError::Failure(
+                    Message::new("could not restore quarantined draft {} to {}: {}")
+                        .with(quarantine.display())
+                        .with(path.display())
+                        .with(error),
+                ));
+            }
+        }
+        hook(DraftConsumeTestPoint::BeforeRestore, &quarantine);
+        if let Err(error) = fs::hard_link(&quarantine, path) {
+            return Err(CliError::Failure(
+                Message::new("could not restore quarantined draft {} to {}: {}")
+                    .with(quarantine.display())
+                    .with(path.display())
+                    .with(error),
+            ));
+        }
+        fs::remove_file(&quarantine).map_err(|error| source_error("remove", &quarantine, error))?;
+        fs::remove_dir(&quarantine_dir)
+            .map_err(|error| source_error("remove", &quarantine_dir, error))?;
+        return Ok(DraftConsumeOutcome::Changed);
+    }
+    hook(DraftConsumeTestPoint::Verified, &quarantine);
+    fs::remove_file(&quarantine).map_err(|error| source_error("remove", &quarantine, error))?;
+    fs::remove_dir(&quarantine_dir)
+        .map_err(|error| source_error("remove", &quarantine_dir, error))?;
+    Ok(DraftConsumeOutcome::Removed)
+}
+
+fn source_file_matches(file: &mut File, expected: &AddSourceSnapshot) -> Result<bool, io::Error> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || source_permissions(&metadata) != expected.permissions {
+        return Ok(false);
+    }
+    file.rewind()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes == expected.bytes)
 }
 
 fn tui_preferences_effect(
@@ -7977,18 +8295,35 @@ fn tui_drafts(data_dir: &Path) -> Vec<DraftSummary> {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return None;
             }
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map_or(0, |value| value.as_nanos().min(u128::from(u64::MAX)) as u64);
+            let modified = modified_ns(&metadata).unwrap_or(0);
             Some(DraftSummary {
                 path: item.path(),
                 modified,
                 identity: source_identity(&metadata),
+                permissions: source_permissions(&metadata),
             })
         })
         .collect()
+}
+
+fn modified_ns(metadata: &Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos().min(u128::from(u64::MAX)) as u64)
+}
+
+fn refreshed_draft(data_dir: &Path, path: &Path) -> Result<DraftSummary, CliError> {
+    tui_drafts(data_dir)
+        .into_iter()
+        .find(|draft| draft.path == path)
+        .ok_or_else(|| {
+            CliError::Failure(
+                Message::new("the kept draft changed and could not be inspected at {}")
+                    .with(path.display()),
+            )
+        })
 }
 
 fn tui_preferences_screen(config_dir: &Path) -> Result<Screen, CliError> {
@@ -9280,6 +9615,7 @@ struct SourceSnapshot {
     bytes: Vec<u8>,
     permissions: SourcePermissions,
     is_regular: bool,
+    identity: Option<SourceIdentity>,
 }
 
 fn read_source(
@@ -9298,6 +9634,7 @@ fn read_source(
             bytes: Vec::new(),
             permissions: source_permissions(&metadata),
             is_regular: false,
+            identity: source_identity(&metadata),
         });
     }
     let mut file = File::open(path).map_err(|error| source_read_error(path, error))?;
@@ -9311,6 +9648,7 @@ fn read_source(
         bytes,
         permissions: source_permissions(&metadata),
         is_regular: metadata.is_file(),
+        identity: source_identity(&metadata),
     })
 }
 

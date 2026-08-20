@@ -1149,6 +1149,26 @@ const CATALOG: &[Translation] = &[
         "skit 的草稿路徑不是其自有目錄：{}",
     ),
     row!(
+        "the kept draft has no filesystem identity: {}",
+        "保留的草稿没有文件系统标识：{}",
+        "保留的草稿沒有檔案系統識別：{}",
+    ),
+    row!(
+        "The kept draft changed before cleanup. skit kept it at {}.",
+        "保留的草稿在清理前发生了更改。skit 将它保留在 {}。",
+        "保留的草稿在清理前發生了變更。skit 將它保留在 {}。",
+    ),
+    row!(
+        "could not restore quarantined draft {} to {}: {}",
+        "无法将隔离的草稿 {} 恢复到 {}：{}",
+        "無法將隔離的草稿 {} 還原到 {}：{}",
+    ),
+    row!(
+        "the kept draft changed and could not be inspected at {}",
+        "保留的草稿已更改，无法在 {} 检查它",
+        "保留的草稿已變更，無法在 {} 檢查它",
+    ),
+    row!(
         "{} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {}.",
         "{} 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序项目做不到这点。请去掉 {}。",
         "{} 是 skit 自己保留的草稿——恢復草稿一律以副本加入(成功後即消耗),而 reference 或程式項目做不到這點。請拿掉 {}。",
@@ -1357,6 +1377,7 @@ const CATALOG: &[Translation] = &[
     ),
     row!("→ {}", "→ {}", "→ {}"),
     row!("warning: {}", "警告：{}", "警告：{}"),
+    row!("{}; warning: {}", "{}；警告：{}", "{}；警告：{}",),
     row!(
         "No entries yet. Add one with: skit add <path>",
         "还没有任何条目。用 skit add <path> 添加一个。",

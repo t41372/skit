@@ -8,8 +8,8 @@ use skit_domain::{
 };
 use skit_store::FileStore;
 use skit_ui::{
-    FormControl, FormField, FormPurpose, FormView, KnownEntryKind, Screen, SettingsSectionId,
-    SettingsView,
+    DraftDeleteOutcome, FormControl, FormField, FormPurpose, FormView, KnownEntryKind, Screen,
+    SettingsSectionId, SettingsView,
 };
 use tempfile::TempDir;
 
@@ -1128,18 +1128,73 @@ fn tui_add_refuses_a_source_that_changed_after_review_without_writing_an_entry()
     assert!(workflow.problem().is_some());
 }
 
+#[cfg(any(unix, windows))]
 #[test]
-fn tui_add_cleanup_refusals_keep_the_committed_entry_and_the_unowned_file() {
+fn tui_add_refuses_a_same_bytes_identity_replacement_without_any_write() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("reviewed.sh");
+    const BYTES: &[u8] = b"#!/bin/sh\necho unchanged\n";
+    fs::write(&source, BYTES).unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let mut workflow = AddWorkflowState::new(Vec::new());
+    let _ = workflow.reduce(AddAction::SetSourcePath(source.display().to_string()));
+    let inspect = workflow.reduce(AddAction::Continue);
+    let UiAction::Add(AddAction::SourceInspected {
+        request,
+        result: Ok(expected),
+    }) = tui_add_effect(&service, &store, &state_dir, &config_dir, inspect).unwrap()
+    else {
+        panic!("source inspection must return a snapshot");
+    };
+    let old_identity = expected.identity.clone();
+    let _ = workflow.reduce(AddAction::SourceInspected {
+        request,
+        result: Ok(expected),
+    });
+
+    let staged = root.path().join("replacement.sh");
+    fs::write(&staged, BYTES).unwrap();
+    fs::remove_file(&source).unwrap();
+    fs::rename(&staged, &source).unwrap();
+    let replacement = tui_add_source(&data_dir, &source).unwrap();
+    assert_eq!(replacement.bytes, BYTES);
+    assert_ne!(replacement.identity, old_identity);
+    let before = test_tree_snapshot(root.path());
+
+    let commit = workflow.reduce(AddAction::Save);
+    let UiAction::Add(AddAction::CommitFinished {
+        result: Err(reason),
+        ..
+    }) = tui_add_effect(&service, &store, &state_dir, &config_dir, commit).unwrap()
+    else {
+        panic!("a replaced source must return a typed commit refusal");
+    };
+    assert!(reason.contains("source changed while the add review was open"));
+    assert_eq!(test_tree_snapshot(root.path()), before);
+    assert_eq!(fs::read(&source).unwrap(), BYTES);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn tui_add_cleanup_refusals_keep_the_committed_entry_and_the_replacement() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
     let config_dir = root.path().join("config");
     let unusable_state = root.path().join("state-is-a-file");
     fs::write(&unusable_state, "not a directory").unwrap();
-    let outside = root.path().join("skit-outside.py");
-    fs::write(&outside, "print('keep me')\n").unwrap();
+    let drafts = data_dir.join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let draft = drafts.join("skit-new-replaced.py");
+    fs::write(&draft, "print('reviewed')\n").unwrap();
     let store = FileStore::new(&data_dir);
     let service = LibraryService::new(store.clone());
+    let expected = tui_add_source(&data_dir, &draft).unwrap();
     let created = add_command(&service, "Kept", "printf kept");
+    fs::write(&draft, "print('replacement')\n").unwrap();
 
     let action = tui_add_effect(
         &service,
@@ -1147,7 +1202,7 @@ fn tui_add_cleanup_refusals_keep_the_committed_entry_and_the_unowned_file() {
         &unusable_state,
         &config_dir,
         vec![
-            AddEffect::ConsumeDraft(outside.clone()),
+            AddEffect::ConsumeDraft(expected),
             AddEffect::RememberRunner("agent".to_owned()),
             AddEffect::Complete(created.slug.as_str().to_owned()),
         ],
@@ -1158,9 +1213,103 @@ fn tui_add_cleanup_refusals_keep_the_committed_entry_and_the_unowned_file() {
     };
     assert_eq!(slug, created.slug);
     assert!(message.starts_with("Entry added\nwarning: "));
-    assert!(message.contains("drafts directory"));
-    assert!(outside.exists());
+    assert_eq!(message.matches("warning: ").count(), 2);
+    assert!(message.contains("changed"));
+    assert!(message.contains("skit-new-replaced.py"));
+    assert_eq!(fs::read(&draft).unwrap(), b"print('replacement')\n");
     assert_eq!(service.show("Kept").unwrap().slug, created.slug);
+}
+
+fn complete_after_draft_cleanup(root: &TempDir, expected: AddSourceSnapshot) -> String {
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let created = add_command(&service, "Committed", "printf committed");
+    let action = tui_add_effect(
+        &service,
+        &store,
+        &state_dir,
+        &config_dir,
+        vec![
+            AddEffect::ConsumeDraft(expected),
+            AddEffect::Complete(created.slug.as_str().to_owned()),
+        ],
+    )
+    .unwrap();
+    let UiAction::AddCompleted { message, slug, .. } = action else {
+        panic!("cleanup outcomes must not roll back a committed add");
+    };
+    assert_eq!(slug, created.slug);
+    assert_eq!(service.show("Committed").unwrap().slug, created.slug);
+    message
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn tui_add_maps_every_draft_cleanup_outcome_without_rolling_back_the_entry() {
+    let removed = TempDir::new().unwrap();
+    let removed_data = removed.path().join("data");
+    let removed_source = removed_data.join("drafts/skit-new-removed.py");
+    fs::create_dir_all(removed_source.parent().unwrap()).unwrap();
+    fs::write(&removed_source, b"print(1)\n").unwrap();
+    let removed_claim = tui_add_source(&removed_data, &removed_source).unwrap();
+    assert_eq!(
+        complete_after_draft_cleanup(&removed, removed_claim),
+        "Entry added"
+    );
+    assert!(!removed_source.exists());
+
+    let missing = TempDir::new().unwrap();
+    let missing_data = missing.path().join("data");
+    let missing_source = missing_data.join("drafts/skit-new-missing.py");
+    fs::create_dir_all(missing_source.parent().unwrap()).unwrap();
+    fs::write(&missing_source, b"print(1)\n").unwrap();
+    let missing_claim = tui_add_source(&missing_data, &missing_source).unwrap();
+    fs::remove_file(&missing_source).unwrap();
+    assert_eq!(
+        complete_after_draft_cleanup(&missing, missing_claim),
+        "Entry added"
+    );
+
+    let changed = TempDir::new().unwrap();
+    let changed_data = changed.path().join("data");
+    let changed_source = changed_data.join("drafts/skit-new-changed.py");
+    fs::create_dir_all(changed_source.parent().unwrap()).unwrap();
+    fs::write(&changed_source, b"print('old')\n").unwrap();
+    let changed_claim = tui_add_source(&changed_data, &changed_source).unwrap();
+    fs::write(&changed_source, b"print('new')\n").unwrap();
+    let message = complete_after_draft_cleanup(&changed, changed_claim);
+    assert_eq!(
+        message,
+        format!(
+            "Entry added\nwarning: The kept draft changed before cleanup. skit kept it at {}.",
+            changed_source.display()
+        )
+    );
+    assert_eq!(fs::read(&changed_source).unwrap(), b"print('new')\n");
+
+    let failed = TempDir::new().unwrap();
+    let failed_data = failed.path().join("data");
+    let failed_source = failed_data.join("drafts/skit-new-error.py");
+    fs::create_dir_all(failed_source.parent().unwrap()).unwrap();
+    fs::write(&failed_source, b"print(1)\n").unwrap();
+    let failed_claim = tui_add_source(&failed_data, &failed_source).unwrap();
+    fs::rename(failed_data.join("drafts"), failed_data.join("drafts-old")).unwrap();
+    fs::write(failed_data.join("drafts"), b"not a directory").unwrap();
+    let message = complete_after_draft_cleanup(&failed, failed_claim);
+    assert_eq!(
+        message,
+        format!(
+            "Entry added\nwarning: skit's drafts path is not an owned directory: {}",
+            failed_data.join("drafts").display()
+        )
+    );
+    assert_eq!(
+        fs::read(failed_data.join("drafts-old/skit-new-error.py")).unwrap(),
+        b"print(1)\n"
+    );
 }
 
 #[cfg(unix)]
@@ -1177,9 +1326,145 @@ fn tui_add_never_treats_a_symlinked_drafts_directory_as_owned_storage() {
     let victim = outside.join("skit-victim.py");
     fs::write(&victim, "print('keep me')\n").unwrap();
 
-    assert!(remove_owned_draft(&data_dir, &data_dir.join("drafts/skit-victim.py")).is_err());
+    let snapshot = tui_add_source(&data_dir, &data_dir.join("drafts/skit-victim.py")).unwrap();
+    assert!(!snapshot.is_draft);
+    assert!(consume_owned_draft(&data_dir, &snapshot).is_err());
     assert_eq!(fs::read(&victim).unwrap(), b"print('keep me')\n");
     assert!(tui_drafts(&data_dir).is_empty());
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn tui_draft_rows_change_identity_when_a_path_is_replaced() {
+    let root = TempDir::new().unwrap();
+    let drafts = root.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let path = drafts.join("skit-new-row.py");
+    fs::write(&path, b"print(1)\n").unwrap();
+    let first = tui_drafts(root.path());
+    assert_eq!(first.len(), 1);
+    assert_application_identity(first[0].identity.clone());
+
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, b"print(1)\n").unwrap();
+    let second = tui_drafts(root.path());
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].path, first[0].path);
+    assert_ne!(second[0].identity, first[0].identity);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn tui_delete_changed_outcome_returns_a_refreshed_draft_claim() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let drafts = data.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let path = drafts.join("skit-new-refresh.py");
+    fs::write(&path, b"print('reviewed')\n").unwrap();
+    let initial = tui_drafts(data.path());
+    assert_eq!(initial.len(), 1);
+    assert!(initial[0].identity.is_some());
+    let mut workflow = AddWorkflowState::new(initial.clone());
+    let _ = workflow.reduce(AddAction::SelectDraft(0));
+    let _ = workflow.reduce(AddAction::DeleteSelectedDraft);
+    let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
+
+    let staged = drafts.join("replacement.tmp");
+    fs::write(&staged, b"print('replacement')\n").unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::rename(&staged, &path).unwrap();
+    let store = FileStore::new(data.path());
+    let service = LibraryService::new(store.clone());
+    let UiAction::Add(AddAction::DraftDeleted {
+        request,
+        result: Ok(DraftDeleteOutcome::Changed(refreshed)),
+    }) = tui_add_effect(&service, &store, state.path(), config.path(), effects).unwrap()
+    else {
+        panic!("an identity mismatch must return the new row, not stale success");
+    };
+    assert_eq!(refreshed.path, path);
+    assert_ne!(refreshed.identity, initial[0].identity);
+    let _ = workflow.reduce(AddAction::DraftDeleted {
+        request,
+        result: Ok(DraftDeleteOutcome::Changed(refreshed.clone())),
+    });
+    assert_eq!(workflow.source().listed_drafts(), &[refreshed]);
+    assert_eq!(fs::read(&path).unwrap(), b"print('replacement')\n");
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn tui_delete_in_place_content_and_permission_changes_return_refreshed_claims() {
+    let content = TempDir::new().unwrap();
+    let content_state = TempDir::new().unwrap();
+    let content_config = TempDir::new().unwrap();
+    let content_drafts = content.path().join("drafts");
+    fs::create_dir_all(&content_drafts).unwrap();
+    let content_path = content_drafts.join("skit-new-content.py");
+    fs::write(&content_path, b"print('old')\n").unwrap();
+    let initial = tui_drafts(content.path()).pop().unwrap();
+    let mut workflow = AddWorkflowState::new(vec![initial.clone()]);
+    let _ = workflow.reduce(AddAction::SelectDraft(0));
+    let _ = workflow.reduce(AddAction::DeleteSelectedDraft);
+    let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
+    fs::write(&content_path, b"print('new')\n").unwrap();
+    let store = FileStore::new(content.path());
+    let service = LibraryService::new(store.clone());
+    let result = tui_add_effect(
+        &service,
+        &store,
+        content_state.path(),
+        content_config.path(),
+        effects,
+    )
+    .unwrap();
+    let UiAction::Add(AddAction::DraftDeleted {
+        result: Ok(DraftDeleteOutcome::Changed(refreshed)),
+        ..
+    }) = result
+    else {
+        panic!("an in-place content edit must refresh instead of deleting");
+    };
+    assert_eq!(refreshed.path, content_path);
+    assert!(refreshed.modified != initial.modified || refreshed.identity != initial.identity);
+    assert_eq!(fs::read(&content_path).unwrap(), b"print('new')\n");
+
+    let permissions = TempDir::new().unwrap();
+    let permission_state = TempDir::new().unwrap();
+    let permission_config = TempDir::new().unwrap();
+    let permission_drafts = permissions.path().join("drafts");
+    fs::create_dir_all(&permission_drafts).unwrap();
+    let permission_path = permission_drafts.join("skit-new-permissions.py");
+    fs::write(&permission_path, b"print(1)\n").unwrap();
+    let initial = tui_drafts(permissions.path()).pop().unwrap();
+    let mut workflow = AddWorkflowState::new(vec![initial.clone()]);
+    let _ = workflow.reduce(AddAction::SelectDraft(0));
+    let _ = workflow.reduce(AddAction::DeleteSelectedDraft);
+    let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
+    let mut mode = fs::metadata(&permission_path).unwrap().permissions();
+    mode.set_readonly(!mode.readonly());
+    fs::set_permissions(&permission_path, mode).unwrap();
+    let store = FileStore::new(permissions.path());
+    let service = LibraryService::new(store.clone());
+    let result = tui_add_effect(
+        &service,
+        &store,
+        permission_state.path(),
+        permission_config.path(),
+        effects,
+    )
+    .unwrap();
+    let UiAction::Add(AddAction::DraftDeleted {
+        result: Ok(DraftDeleteOutcome::Changed(refreshed)),
+        ..
+    }) = result
+    else {
+        panic!("an in-place permission edit must refresh instead of deleting");
+    };
+    assert_ne!(refreshed.permissions, initial.permissions);
+    assert!(permission_path.exists());
 }
 
 #[cfg(unix)]
@@ -1247,6 +1532,58 @@ printf "print('written')\n" >> "$1"
         unchanged.notice(),
         Some(&skit_ui::AddNotice::NothingWritten)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_author_draft_launch_error_cleanup_keeps_an_editor_replacement() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let config_dir = root.path().join("config");
+    let editor = root.path().join("replace-and-fail.sh");
+    fs::write(
+        &editor,
+        "#!/bin/sh\nprintf \"print('replacement')\\n\" > \"$1.replacement\"\nmv \"$1.replacement\" \"$1\"\nexit 7\n",
+    )
+    .unwrap();
+    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    FileConfigStore::new(&config_dir)
+        .set("editor", editor.to_str().unwrap())
+        .unwrap();
+
+    let error = tui_author_draft(&data_dir, &config_dir, DraftKind::Script).unwrap_err();
+    let message = error.message().localize(Locale::En);
+    assert!(message.contains("warning:"), "{message}");
+    assert!(message.contains("changed before cleanup"), "{message}");
+    let drafts = tui_drafts(&data_dir);
+    assert_eq!(drafts.len(), 1);
+    assert_eq!(
+        fs::read(&drafts[0].path).unwrap(),
+        b"print('replacement')\n"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn tui_author_draft_unchanged_cleanup_keeps_a_postinspection_replacement() {
+    let root = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&root, "skit-new-unchanged.py", b"");
+    let staged = root.path().join("drafts/replacement.tmp");
+    fs::write(&staged, b"").unwrap();
+    fs::remove_file(&snapshot.path).unwrap();
+    fs::rename(&staged, &snapshot.path).unwrap();
+
+    let error = discard_authored_draft(root.path(), &snapshot).unwrap_err();
+    assert!(
+        error
+            .message()
+            .localize(Locale::En)
+            .contains("changed before cleanup")
+    );
+    assert!(snapshot.path.is_file());
+    assert!(owned_draft_quarantines(root.path()).is_empty());
 }
 
 #[test]
@@ -5686,4 +6023,381 @@ fn a_typed_submission_is_read_as_its_type_and_never_re_split() {
     );
     assert!(tui_value(&cleared, "needs").is_empty());
     assert!(!cleared.contains_key("template"));
+}
+
+fn test_tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn visit(root: &Path, path: &Path, rows: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+        let mut entries = fs::read_dir(path)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            let relative = path.strip_prefix(root).unwrap().to_owned();
+            if metadata.is_dir() {
+                rows.insert(relative, None);
+                visit(root, &path, rows);
+            } else if metadata.file_type().is_symlink() {
+                rows.insert(
+                    relative,
+                    Some(
+                        fs::read_link(&path)
+                            .unwrap()
+                            .to_string_lossy()
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                );
+            } else {
+                rows.insert(relative, Some(fs::read(&path).unwrap()));
+            }
+        }
+    }
+
+    let mut rows = BTreeMap::new();
+    visit(root, root, &mut rows);
+    rows
+}
+
+fn owned_draft_quarantines(root: &Path) -> Vec<PathBuf> {
+    let drafts = root.join("drafts");
+    let Ok(entries) = fs::read_dir(drafts) else {
+        return Vec::new();
+    };
+    let mut paths = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".skit-quarantine-"))
+        })
+        .map(|path| {
+            if path.is_dir() {
+                path.join("draft")
+            } else {
+                path
+            }
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn assert_application_identity(_: Option<skit_application::SourceIdentity>) {}
+
+fn owned_draft_snapshot(root: &TempDir, name: &str, bytes: &[u8]) -> AddSourceSnapshot {
+    let drafts = root.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let path = drafts.join(name);
+    fs::write(&path, bytes).unwrap();
+    let snapshot = tui_add_source(root.path(), &path).unwrap();
+    assert!(snapshot.is_draft);
+    #[cfg(any(unix, windows))]
+    assert!(
+        snapshot.identity.is_some(),
+        "a supported host gives every owned draft a CAS identity"
+    );
+    #[cfg(not(any(unix, windows)))]
+    assert!(
+        snapshot.identity.is_none(),
+        "unsupported hosts keep drafts but do not invent weak identities"
+    );
+    assert_application_identity(snapshot.identity.clone());
+    assert_eq!(
+        serde_json::from_slice::<AddSourceSnapshot>(&serde_json::to_vec(&snapshot).unwrap())
+            .unwrap(),
+        snapshot,
+        "a real host identity survives the serialized UI seam"
+    );
+    snapshot
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn owned_draft_consume_is_idempotent_and_requires_the_exact_snapshot() {
+    let root = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&root, "skit-new-exact.py", b"print(1)\n");
+
+    assert_eq!(
+        consume_owned_draft(root.path(), &snapshot).unwrap(),
+        DraftConsumeOutcome::Removed
+    );
+    assert!(!snapshot.path.exists());
+    assert_eq!(
+        consume_owned_draft(root.path(), &snapshot).unwrap(),
+        DraftConsumeOutcome::AlreadyMissing,
+        "a repeated successful completion is harmless"
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn owned_draft_consume_keeps_in_place_content_and_permission_changes() {
+    let changed_bytes = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&changed_bytes, "skit-new-content.py", b"print('old')\n");
+    fs::write(&snapshot.path, b"print('new')\n").unwrap();
+    assert_eq!(
+        consume_owned_draft(changed_bytes.path(), &snapshot).unwrap(),
+        DraftConsumeOutcome::Changed
+    );
+    assert_eq!(fs::read(&snapshot.path).unwrap(), b"print('new')\n");
+
+    let changed_permissions = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(
+        &changed_permissions,
+        "skit-new-permissions.py",
+        b"print(1)\n",
+    );
+    let mut permissions = fs::metadata(&snapshot.path).unwrap().permissions();
+    permissions.set_readonly(!permissions.readonly());
+    let replacement_readonly = permissions.readonly();
+    fs::set_permissions(&snapshot.path, permissions).unwrap();
+    assert_eq!(
+        consume_owned_draft(changed_permissions.path(), &snapshot).unwrap(),
+        DraftConsumeOutcome::Changed
+    );
+    assert!(snapshot.path.exists());
+    assert_eq!(
+        fs::metadata(&snapshot.path)
+            .unwrap()
+            .permissions()
+            .readonly(),
+        replacement_readonly
+    );
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn owned_draft_identity_rejects_a_same_bytes_replacement() {
+    let root = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&root, "skit-new-replaced.py", b"print(1)\n");
+    let old_identity = snapshot.identity.clone();
+    let replacement_path = snapshot.path.with_extension("replacement");
+    fs::write(&replacement_path, &snapshot.bytes).unwrap();
+    fs::remove_file(&snapshot.path).unwrap();
+    fs::rename(&replacement_path, &snapshot.path).unwrap();
+    let replacement = tui_add_source(root.path(), &snapshot.path).unwrap();
+
+    assert_ne!(
+        replacement.identity, old_identity,
+        "a new file incarnation needs a new identity"
+    );
+    assert_eq!(
+        replacement.bytes, snapshot.bytes,
+        "bytes alone cannot prove identity"
+    );
+    assert_eq!(
+        consume_owned_draft(root.path(), &snapshot).unwrap(),
+        DraftConsumeOutcome::Changed
+    );
+    assert!(snapshot.path.exists(), "the replacement is not consumed");
+    assert!(owned_draft_quarantines(root.path()).is_empty());
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn cli_commit_carries_the_initial_claim_through_postcommit_cleanup() {
+    let root = TempDir::new().unwrap();
+    const ORIGINAL: &[u8] = b"print('original')\n";
+    const REPLACEMENT: &[u8] = b"print('replacement')\n";
+    let claim = owned_draft_snapshot(&root, "skit-new-claimed.py", ORIGINAL);
+    let store = FileStore::new(root.path());
+    let service = LibraryService::new(store.clone());
+    let create = skit_application::CreateEntry {
+        name: "Claimed".to_owned(),
+        kind: EntryKind::parse("python").unwrap(),
+        mode: StorageMode::Copy,
+        source: claim.source_record.clone(),
+        workdir: "invoke".to_owned(),
+        description: String::new(),
+        payload: Some(skit_application::EntryPayload {
+            bytes: claim.bytes.clone(),
+            stored_name: Some("script.py".to_owned()),
+            permissions: claim.permissions.clone(),
+        }),
+        settings: EntrySettings::default(),
+    };
+    let source = claim.path.clone();
+    let staged = source.with_extension("postcommit");
+
+    let (created, outcome) = commit_add_source_with_hook(&service, create, Some(claim), || {
+        fs::write(&staged, REPLACEMENT).unwrap();
+        fs::remove_file(&source).unwrap();
+        fs::rename(&staged, &source).unwrap();
+    })
+    .unwrap();
+
+    assert_eq!(outcome, Some(DraftConsumeOutcome::Changed));
+    assert_eq!(fs::read(&source).unwrap(), REPLACEMENT);
+    assert_eq!(
+        fs::read(store.payload_path(&created).unwrap()).unwrap(),
+        ORIGINAL
+    );
+    assert_eq!(service.show("Claimed").unwrap().slug, created.slug);
+}
+
+#[test]
+fn owned_draft_consume_refuses_outside_and_parked_files() {
+    let root = TempDir::new().unwrap();
+    let valid = owned_draft_snapshot(&root, "skit-new-claim.py", b"print(0)\n");
+    let outside = root.path().join("skit-new-outside.py");
+    fs::write(&outside, b"print(1)\n").unwrap();
+    let mut outside_snapshot = tui_add_source(root.path(), &outside).unwrap();
+    assert!(!outside_snapshot.is_draft);
+    outside_snapshot.is_draft = true;
+    outside_snapshot.identity = valid.identity.clone();
+    assert!(consume_owned_draft(root.path(), &outside_snapshot).is_err());
+    assert!(outside.exists());
+
+    let drafts = root.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let parked = drafts.join("mine.py");
+    fs::write(&parked, b"print(2)\n").unwrap();
+    let mut parked_snapshot = tui_add_source(root.path(), &parked).unwrap();
+    assert!(!parked_snapshot.is_draft);
+    parked_snapshot.is_draft = true;
+    parked_snapshot.identity = valid.identity;
+    assert!(consume_owned_draft(root.path(), &parked_snapshot).is_err());
+    assert!(parked.exists());
+}
+
+#[cfg(not(any(unix, windows)))]
+#[test]
+fn unsupported_platform_keeps_owned_drafts_without_an_identity() {
+    let root = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&root, "skit-new-portable.py", b"print(1)\n");
+    assert!(snapshot.identity.is_none());
+    assert!(consume_owned_draft(root.path(), &snapshot).is_err());
+    assert!(snapshot.path.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn owned_draft_consume_never_follows_a_replacement_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let root = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&root, "skit-new-link.py", b"print('draft')\n");
+    let target = outside.path().join("target.py");
+    fs::write(&target, b"print('outside')\n").unwrap();
+    fs::remove_file(&snapshot.path).unwrap();
+    symlink(&target, &snapshot.path).unwrap();
+
+    assert_eq!(
+        consume_owned_draft(root.path(), &snapshot).unwrap(),
+        DraftConsumeOutcome::Changed
+    );
+    assert!(
+        fs::symlink_metadata(&snapshot.path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"print('outside')\n");
+    assert!(owned_draft_quarantines(root.path()).is_empty());
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn owned_draft_quarantine_closes_the_final_verify_remove_race() {
+    let root = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&root, "skit-new-final.py", b"print('reviewed')\n");
+    let staged = root.path().join("drafts/replacement.tmp");
+    fs::write(&staged, b"print('replacement')\n").unwrap();
+    let original = snapshot.path.clone();
+
+    let outcome =
+        consume_owned_draft_with_test_hook(root.path(), &snapshot, |point, quarantine| {
+            if point == DraftConsumeTestPoint::Verified {
+                assert!(quarantine.is_file());
+                assert!(!original.exists(), "the claimed inode is quarantined");
+                fs::rename(&staged, &original).unwrap();
+            }
+        })
+        .unwrap();
+
+    assert_eq!(outcome, DraftConsumeOutcome::Removed);
+    assert_eq!(fs::read(&original).unwrap(), b"print('replacement')\n");
+    assert!(owned_draft_quarantines(root.path()).is_empty());
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn owned_draft_quarantine_restores_a_mismatch() {
+    let root = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&root, "skit-new-restore.py", b"print('reviewed')\n");
+    let staged = root.path().join("drafts/replacement.tmp");
+    fs::write(&staged, b"print('replacement')\n").unwrap();
+    fs::remove_file(&snapshot.path).unwrap();
+    fs::rename(&staged, &snapshot.path).unwrap();
+
+    assert_eq!(
+        consume_owned_draft(root.path(), &snapshot).unwrap(),
+        DraftConsumeOutcome::Changed
+    );
+    assert_eq!(fs::read(&snapshot.path).unwrap(), b"print('replacement')\n");
+    assert!(owned_draft_quarantines(root.path()).is_empty());
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn owned_draft_quarantine_restore_failure_keeps_every_file() {
+    let root = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&root, "skit-new-restore-error.py", b"print('reviewed')\n");
+    let staged = root.path().join("drafts/replacement.tmp");
+    fs::write(&staged, b"print('replacement')\n").unwrap();
+    fs::remove_file(&snapshot.path).unwrap();
+    fs::rename(&staged, &snapshot.path).unwrap();
+    let original = snapshot.path.clone();
+
+    let error = consume_owned_draft_with_test_hook(root.path(), &snapshot, |point, quarantine| {
+        if point == DraftConsumeTestPoint::BeforeRestore {
+            // The helper already observed that the original path is absent. Inject a new arrival
+            // immediately before the no-clobber restore syscall. An exists-then-rename restore
+            // would overwrite this file and fail the assertions below.
+            assert_eq!(fs::read(quarantine).unwrap(), b"print('replacement')\n");
+            fs::write(&original, b"print('new arrival')\n").unwrap();
+        }
+    })
+    .unwrap_err();
+
+    assert!(error.message().localize(Locale::En).contains("restore"));
+    assert_eq!(fs::read(&original).unwrap(), b"print('new arrival')\n");
+    let quarantines = owned_draft_quarantines(root.path());
+    assert_eq!(quarantines.len(), 1);
+    assert_eq!(
+        fs::read(&quarantines[0]).unwrap(),
+        b"print('replacement')\n"
+    );
+    let visible = tui_drafts(root.path());
+    assert_eq!(
+        visible.len(),
+        1,
+        "quarantine files are never resumable rows"
+    );
+    assert_eq!(visible[0].path, original);
+}
+
+#[cfg(unix)]
+#[test]
+fn owned_draft_consume_rejects_a_replaced_drafts_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(&root, "skit-new-dir-race.py", b"print('draft')\n");
+    fs::rename(root.path().join("drafts"), root.path().join("drafts-old")).unwrap();
+    let outside_target = outside.path().join("skit-new-dir-race.py");
+    fs::write(&outside_target, b"print('outside')\n").unwrap();
+    symlink(outside.path(), root.path().join("drafts")).unwrap();
+
+    assert!(consume_owned_draft(root.path(), &snapshot).is_err());
+    assert_eq!(fs::read(&outside_target).unwrap(), b"print('outside')\n");
+    assert_eq!(
+        fs::read(root.path().join("drafts-old/skit-new-dir-race.py")).unwrap(),
+        b"print('draft')\n"
+    );
 }

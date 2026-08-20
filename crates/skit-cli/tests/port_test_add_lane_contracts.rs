@@ -29,13 +29,16 @@
 //!   contract that depends on both streams being terminals. The helper waits for command output;
 //!   it does not use a fixed sleep.
 //!
-//! Bucket disposition (all 21 defs drive the binary and COMPILE; zero absent/cross-crate stubs):
-//! - 19 PASS asserting tests: the selector-collision contract, the 5
+//! Bucket disposition (all 21 oracle defs plus one Rust-additive commit-failure reverse drive the
+//! binary; zero absent/cross-crate stubs):
+//! - 20 active oracle contracts plus the Rust-additive failed-commit reverse: the
+//!   selector-collision contract, the 5
 //!   versioned/piped/reader-notice lanes, both editor-lane
 //!   `--description` threads, the versioned-shebang editor lane, the normal-file no-unlink lane,
 //!   the JSON-is-one-document flip lane, both parameter read views, and both unknown-runner
 //!   early-refusal lanes, the post-editor Python-flag refusal, and the managed-form flip note.
-//! - 2 FAILING CONTRACT (divergence) tests: the two plain-path draft cleanup/boundary contracts.
+//! - 1 semantic-duplicate closure: the path-lane reference refusal is owned by the stronger
+//!   all-flags boundary matrix in `port_test_add_validation_contracts`.
 
 use std::fs;
 #[cfg(unix)]
@@ -609,7 +612,6 @@ fn test_edit_post_editor_refusal_keeps_draft_and_announces_short() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's path lane consumes a resumed draft (a file under skit's OWN drafts home) on a successful copy. Rust's plain path lane never calls remove_owned_draft (only cli.rs:1353/5633/5659 do, all off the plain path) — the copy succeeds (mode copy) but the source draft SURVIVES. Verified against the built binary."]
 fn test_path_add_of_a_drafts_home_file_unlinks_it_on_copy() {
     // A resumed draft (a file living in skit's OWN drafts home) added in copy mode reaches
     // the store, then the source is unlinked — the same 'the store holds the copy' cleanup the
@@ -618,18 +620,76 @@ fn test_path_add_of_a_drafts_home_file_unlinks_it_on_copy() {
     let drafts_dir = sandbox.data.path().join("drafts");
     fs::create_dir_all(&drafts_dir).unwrap();
     let draft = drafts_dir.join("skit-new-resumeme.py");
-    fs::write(&draft, "print('resume')\n").unwrap();
+    const SOURCE: &[u8] = b"print('resume')\n";
+    fs::write(&draft, SOURCE).unwrap();
     sandbox
         .command()
         .args(["add", draft.to_str().unwrap(), "-n", "res", "--no-input"])
         .assert()
         .success();
-    assert_eq!(sandbox.show_json("res")["mode"], "copy");
+    let shown = sandbox.show_json("res");
+    assert_eq!(shown["mode"], "copy");
+    assert_eq!(shown["kind"], "python");
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/res/script.py")).unwrap(),
+        SOURCE,
+        "the durable stored copy exists before source cleanup can count as success"
+    );
+    assert!(
+        sandbox.data.path().join("scripts/res/meta.toml").is_file(),
+        "metadata committed"
+    );
+    assert!(
+        sandbox.data.path().join("registry.toml").is_file(),
+        "registry committed"
+    );
     assert!(!draft.exists()); // the resumed draft was cleaned up
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle refuses --ref against its OWN kept draft (a reference into drafts/ would list a live entry's file as a resumable/deletable draft) with exit 2 '… one of skit's own kept drafts … Drop --ref.' (src/skit/cli.py:1917-1933). Rust has no kept-draft guard on the path lane — it ADDS the reference (exit 0) and the draft remains. Ties to pending task #15. Verified against the built binary."]
+fn rust_additive_failed_copy_commit_keeps_the_owned_draft() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.scratch.path().join("original.py");
+    fs::write(&original, b"print('original')\n").unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            original.to_str().unwrap(),
+            "-n",
+            "taken",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+    let entry = sandbox.data.path().join("scripts/taken");
+    let payload_before = fs::read(entry.join("script.py")).unwrap();
+    let meta_before = fs::read(entry.join("meta.toml")).unwrap();
+    let registry_before = fs::read(sandbox.data.path().join("registry.toml")).unwrap();
+
+    let drafts = sandbox.data.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let draft = drafts.join("skit-new-conflict.py");
+    let draft_bytes = b"print('only copy')\n";
+    fs::write(&draft, draft_bytes).unwrap();
+    let output = sandbox
+        .command()
+        .args(["add", draft.to_str().unwrap(), "-n", "taken", "--no-input"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{}", combined(&output));
+    assert_eq!(fs::read(&draft).unwrap(), draft_bytes);
+    assert_eq!(fs::read(entry.join("script.py")).unwrap(), payload_before);
+    assert_eq!(fs::read(entry.join("meta.toml")).unwrap(), meta_before);
+    assert_eq!(
+        fs::read(sandbox.data.path().join("registry.toml")).unwrap(),
+        registry_before
+    );
+}
+
+#[test]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger canonical three-locale, real-PTY guard-before-question, full-tree no-write owner is port_test_add_validation_contracts::test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref. Keep this frozen path-lane body for oracle accounting."]
 fn test_path_add_of_a_drafts_home_file_refuses_reference() {
     // --ref on skit's OWN kept draft is refused: a reference entry pointing into drafts/ would
     // leave a live entry's file listed as a resumable draft — offered for re-adding and for

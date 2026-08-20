@@ -87,6 +87,47 @@ impl SourceIdentity {
             creation_time,
         })
     }
+
+    /// Report whether two observations name the same filesystem object.
+    ///
+    /// A rename can update Unix change time. Cleanup uses this narrower comparison only after it
+    /// has atomically moved a fully verified claim into skit's private quarantine.
+    #[must_use]
+    pub fn same_file(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (
+                SourceIdentityKind::Unix {
+                    device: left_device,
+                    inode: left_inode,
+                    ..
+                },
+                SourceIdentityKind::Unix {
+                    device: right_device,
+                    inode: right_inode,
+                    ..
+                },
+            ) => left_device == right_device && left_inode == right_inode,
+            (
+                SourceIdentityKind::Windows {
+                    volume_serial_number: left_volume,
+                    file_index: left_index,
+                    creation_time: left_creation,
+                    ..
+                },
+                SourceIdentityKind::Windows {
+                    volume_serial_number: right_volume,
+                    file_index: right_index,
+                    creation_time: right_creation,
+                    ..
+                },
+            ) => {
+                left_volume == right_volume
+                    && left_index == right_index
+                    && left_creation == right_creation
+            }
+            _ => false,
+        }
+    }
 }
 
 /// Stable non-child exit classifications used by every frontend.
@@ -488,5 +529,16 @@ mod source_identity_tests {
         ] {
             assert_ne!(baseline, different);
         }
+    }
+
+    #[test]
+    fn same_file_ignores_rename_time_but_not_platform_file_id() {
+        let before = SourceIdentity::unix(1, 2, 3, 4);
+        let renamed = SourceIdentity::unix(1, 2, 30, 40);
+        let replacement = SourceIdentity::unix(1, 9, 30, 40);
+        assert!(before.same_file(&renamed));
+        assert!(!before.same_file(&replacement));
+        assert!(!before.same_file(&SourceIdentity::windows(1, 2, 3)));
+        assert!(!SourceIdentity::windows(1, 2, 3).same_file(&SourceIdentity::windows(1, 2, 4)));
     }
 }
