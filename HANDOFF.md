@@ -13,14 +13,14 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 124 fix commits landed, 253 FAILING CONTRACTs closed
-(245 removed, translated, or un-ignored + 8 re-labeled architecture closures), 27 cross-crate
+**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 125 fix commits landed, 261 FAILING CONTRACTs closed
+(253 removed, translated, or un-ignored + 8 re-labeled architecture closures), 32 cross-crate
 stubs promoted,
 2 owed white-box units added. The last fully green recorded baseline was workspace
-3288 pass / 0 fail / 866 ignored. The fixed final PR #44 head was audited as a diff, not by its
+3306 pass / 0 fail / 853 ignored. The fixed final PR #44 head was audited as a diff, not by its
 500+ commit history. Stronger bodies were folded into the existing consolidated targets only after
 PR/main/Python body comparison; the raw split files and manifests were rejected.
-29 FAILING CONTRACT attributes remain (§5 has the per-file map). General CLI, prompt CLI, config,
+21 FAILING CONTRACT attributes remain (§5 has the per-file map). General CLI, prompt CLI, config,
 editor, JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
@@ -243,6 +243,7 @@ This session (2026-08-11 through 2026-08-14), in order — each closed the named
 | `7510454` | placeholder metadata layering: separate implicit `params` names from explicit `parameters` rows across CLI/UI creation, params edit, and Settings touched-row projection | 4 divergences |
 | `2d78043` | help taxonomy: exact root plus eight subcommand descriptions in all three locales, backed by 27 real-binary probes and an exact command-tree matrix | 1 divergence |
 | `8f0c038` | raw/typed metadata rows: reclassify the frozen mixed seam as architecture-closed and strengthen executable raw projection, typed writer, and store no-rewrite owners | 1 re-labeled closure |
+| `d1a6678` | unknown-kind selector: one typed plain-CLI adapter, 8 public PTY owners, 5 production helper owners, exact three-language layout, invalid/cancel/race/TUI separation, and no surrogate reducer ownership | 8 divergences + 5 absent owners promoted |
 
 PR #44 is complete upstream at fixed head `005bc9b7365fca1cfa7173acb61a2e8629f03bc9`.
 Review only the diff from the previous pin `38260ff881420fbd06f95b5b9243e0caa610e370`;
@@ -288,8 +289,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3288 passed / 0 failed / 866 ignored
-rg '^\s*#\[ignore = "FAILING CONTRACT' crates --glob='*.rs' | wc -l   # => 29
+# => 3306 passed / 0 failed / 853 ignored
+rg '^\s*#\[ignore = "FAILING CONTRACT' crates --glob='*.rs' | wc -l   # => 21
 ```
 
 Keep the regex anchored to the start of an attribute line. The previous unanchored `grep` also
@@ -305,10 +306,10 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 29 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. REMAINING work — 21 FAILING CONTRACTs by file (fix-pass backlog)
 
 Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven. Counts are exact as of `8f0c038`.
+the loop is proven. Counts are exact as of `d1a6678`.
 
 - **0 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs.** All
   implementation markers in the prompt CLI cluster are closed. Remaining ignores are explicit
@@ -330,7 +331,7 @@ the loop is proven. Counts are exact as of `8f0c038`.
   (`de754cf`). Explicit passthrough arguments now satisfy only blank required flags (`39f9bd0`);
   the remaining items overlap the add-lane and general CLI clusters.
 - **8 port_test_add_validation_contracts.rs + 2 port_test_add_lane_contracts.rs + 3
-  port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 8
+  port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 0
   port_test_add_no_source.rs + 0 port_test_editor.rs — the add-lane cluster
   (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
   cli.py:1894-1933); resumed draft not consumed on success (cli.py:258-266); `kind_for_draft` shebang-first classifier
@@ -366,10 +367,9 @@ the loop is proven. Counts are exact as of `8f0c038`.
 - **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 
-The remaining 29 markers are three real roots: 8 unknown-kind plain selector contracts, 2 CLI
-markers backed by the 36-owner missing declared-edit engine, and 19 owned-draft
-classifier/boundary/safe-unlink contracts across CLI/TUI/dependency targets. Do not split any of
-these roots merely to lower the marker count.
+The remaining 21 markers are two real roots: 2 CLI markers backed by the 36-owner missing
+declared-edit engine, and 19 owned-draft classifier/boundary/safe-unlink contracts across
+CLI/TUI/dependency targets. Do not split either root merely to lower the marker count.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
   port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job
