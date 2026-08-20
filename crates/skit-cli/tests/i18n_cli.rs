@@ -17,8 +17,8 @@ fn help_uses_the_requested_traditional_chinese_catalog() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("程式、提示詞、執行檔與命令程式庫"))
-        .stdout(predicate::str::contains("列出工具庫中的項目"))
+        .stdout(predicate::str::contains("腳本、提示詞、程式和命令"))
+        .stdout(predicate::str::contains("已登記的條目"))
         .stdout(predicate::str::contains("選項"));
 }
 
@@ -273,9 +273,9 @@ fn scalar_report_labels_translate_in_every_supported_locale() {
 
     // Hong Kong, Macau, and Singapore resolve to a Chinese catalog, not to English.
     for (locale, expected) in [
-        ("zh-HK", "程式、提示詞、執行檔與命令程式庫"),
-        ("zh-MO", "程式、提示詞、執行檔與命令程式庫"),
-        ("zh-SG", "脚本、提示词、程序与命令库"),
+        ("zh-HK", "腳本、提示詞、程式和命令"),
+        ("zh-MO", "腳本、提示詞、程式和命令"),
+        ("zh-SG", "脚本、提示词、程序和命令"),
     ] {
         command(locale)
             .arg("--help")

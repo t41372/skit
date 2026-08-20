@@ -3860,29 +3860,113 @@ fn every_cli_error_localizes_and_keeps_its_values() {
 
 #[test]
 fn the_localized_command_tree_translates_every_description() {
+    fn assert_descriptions(locale: Locale, expected: &[(&str, &str)]) {
+        let command = translate_command(Cli::command(), locale);
+        for (name, expected) in expected {
+            let about = if *name == "skit" {
+                command.get_about()
+            } else {
+                command
+                    .get_subcommands()
+                    .find(|subcommand| subcommand.get_name() == *name)
+                    .unwrap_or_else(|| panic!("the {name} subcommand exists"))
+                    .get_about()
+            };
+            assert_eq!(
+                about.map(ToString::to_string).as_deref(),
+                Some(*expected),
+                "locale={locale:?} command={name}"
+            );
+        }
+    }
+
+    assert_descriptions(
+        Locale::En,
+        &[
+            (
+                "skit",
+                "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
+            ),
+            ("list", "List every registered entry"),
+            (
+                "show",
+                "Show everything about one entry: metadata, dependencies, parameters, presets",
+            ),
+            (
+                "remove",
+                "Remove a registered entry (an original source file is left untouched)",
+            ),
+            (
+                "rename",
+                "Rename an entry (presets, remembered values and history survive)",
+            ),
+            (
+                "describe",
+                "Set an entry's description (shown in the Library and skit list)",
+            ),
+            (
+                "params",
+                "Show or edit an entry's managed or declared parameters",
+            ),
+            (
+                "deps",
+                "View or update an entry's package dependencies, Python constraint, and needed commands",
+            ),
+            (
+                "doctor",
+                "Check that uv is available and the entry library is intact",
+            ),
+        ],
+    );
+    assert_descriptions(
+        Locale::ZhCn,
+        &[
+            (
+                "skit",
+                "skit——用于脚本、提示词、程序和命令的启动器与参数管理器。不带子命令运行即可打开主菜单",
+            ),
+            ("list", "列出所有已登记的条目"),
+            (
+                "show",
+                "显示一个条目的全部信息：元数据、依赖、参数和参数组合",
+            ),
+            ("remove", "移除一个已登记的条目（原始来源文件不受影响）"),
+            ("rename", "重命名条目（参数组合、记住的值与历史都会保留）"),
+            ("describe", "设置条目的说明（显示在工具库和 skit list 中）"),
+            ("params", "查看或编辑条目的管理参数或声明参数"),
+            ("deps", "查看或更新条目的包依赖、Python 版本约束和所需命令"),
+            ("doctor", "检查 uv 是否可用以及工具库是否完好"),
+        ],
+    );
+    assert_descriptions(
+        Locale::ZhTw,
+        &[
+            (
+                "skit",
+                "skit——用於腳本、提示詞、程式和命令的啟動器與參數管理器。不帶子命令執行即可開啟主選單",
+            ),
+            ("list", "列出所有已登記的條目"),
+            (
+                "show",
+                "顯示一個條目的全部資訊：中繼資料、依賴、參數和參數組合",
+            ),
+            ("remove", "移除一個已登記的條目（原始來源檔案不受影響）"),
+            ("rename", "重新命名條目（參數組合、記住的值與歷史都會保留）"),
+            ("describe", "設定條目的說明（顯示在工具庫和 skit list 中）"),
+            ("params", "檢視或編輯條目的管理參數或宣告參數"),
+            (
+                "deps",
+                "檢視或更新條目的套件依賴、Python 版本限制和所需命令",
+            ),
+            ("doctor", "檢查 uv 是否可用以及工具庫是否完好"),
+        ],
+    );
+
     let command = translate_command(Cli::command(), Locale::ZhTw);
-    assert_eq!(
-        command.get_about().map(ToString::to_string).unwrap(),
-        "程式、提示詞、執行檔與命令程式庫"
-    );
-    let list = command
-        .get_subcommands()
-        .find(|sub| sub.get_name() == "list")
-        .expect("the list subcommand exists");
-    assert_eq!(
-        list.get_about().map(ToString::to_string).unwrap(),
-        "列出工具庫中的項目"
-    );
     // A Clap token such as `--help` must never change.
     let rendered = command.clone().render_help().to_string();
     assert!(rendered.contains("--help"));
     assert!(!rendered.contains("--說明"));
-
-    let english = translate_command(Cli::command(), Locale::En);
-    assert_eq!(
-        english.get_about().map(ToString::to_string).unwrap(),
-        "A script, prompt, program, and command library"
-    );
 }
 
 #[test]
@@ -3965,7 +4049,9 @@ fn the_command_translator_is_total_over_every_clap_field() {
     let command = translate_command(
         clap::Command::new("probe")
             .about("Library")
-            .long_about("A script, prompt, program, and command library")
+            .long_about(
+                "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
+            )
             .arg(clap::Arg::new("bare"))
             .arg(clap::Arg::new("described").help("Entry slug or display name")),
         Locale::ZhTw,
@@ -3977,7 +4063,7 @@ fn the_command_translator_is_total_over_every_clap_field() {
     );
     assert_eq!(
         command.get_long_about().map(ToString::to_string).unwrap(),
-        "程式、提示詞、執行檔與命令程式庫"
+        "skit——用於腳本、提示詞、程式和命令的啟動器與參數管理器。不帶子命令執行即可開啟主選單"
     );
     let arguments = command.get_arguments().collect::<Vec<_>>();
     assert!(

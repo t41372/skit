@@ -82,10 +82,10 @@ fn test_env_override_wins() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let expected = text(
         Locale::ZhTw,
-        "A script, prompt, program, and command library",
+        "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
     );
     assert!(stdout.contains(expected.as_ref()), "{stdout}");
-    assert!(!stdout.contains("A script, prompt, program, and command library"));
+    assert!(!stdout.contains("scripts, prompts, programs, and commands"));
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn test_lang_env() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let expected = text(
         Locale::ZhCn,
-        "A script, prompt, program, and command library",
+        "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
     );
     assert!(stdout.contains(expected.as_ref()), "{stdout}");
 }

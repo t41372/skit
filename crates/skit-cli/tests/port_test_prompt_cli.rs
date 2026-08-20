@@ -1022,10 +1022,10 @@ fn test_add_prompt_no_path_with_ref_is_refused() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the umbrella --help taxonomy wording differs — Rust 'A script, prompt, program, and command library' vs oracle 'scripts, prompts, programs, and commands' — and clap-generated help does not carry the oracle's per-command zh-TW phrasings."]
 fn test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale() {
-    // Parametrized (en, zh-TW): the umbrella help uses the entry taxonomy in the child's locale.
-    let cases: [(&str, [(&str, &str); 9]); 2] = [
+    // The public binary owns all nine help surfaces. Whitespace can wrap differently at each
+    // terminal width, but the entry taxonomy and output stream do not change.
+    let cases: [(&str, [(&str, &str); 9]); 3] = [
         (
             "en",
             [
@@ -1038,6 +1038,20 @@ fn test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale() {
                 ("params", "an entry's managed or declared parameters"),
                 ("deps", "an entry's package dependencies"),
                 ("doctor", "entry library"),
+            ],
+        ),
+        (
+            "zh-CN",
+            [
+                ("--help", "脚本、提示词、程序和命令"),
+                ("list", "已登记的条目"),
+                ("show", "一个条目"),
+                ("remove", "已登记的条目"),
+                ("rename", "重命名条目"),
+                ("describe", "条目的说明"),
+                ("params", "条目的管理参数或声明参数"),
+                ("deps", "条目的包依赖"),
+                ("doctor", "工具库"),
             ],
         ),
         (
@@ -1069,18 +1083,16 @@ fn test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale() {
                 .args(&args)
                 .output()
                 .unwrap();
-            let combined = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(
                 output.status.code(),
                 Some(0),
-                "{locale} {command}: {combined}"
+                "{locale} {command}: stdout={stdout:?} stderr={stderr:?}"
             );
-            let flat = combined.split_whitespace().collect::<Vec<_>>().join(" ");
-            assert!(flat.contains(phrase), "{locale} {command}: {combined}");
+            assert!(stderr.is_empty(), "{locale} {command}: {stderr}");
+            let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains(phrase), "{locale} {command}: {stdout}");
         }
     }
 }

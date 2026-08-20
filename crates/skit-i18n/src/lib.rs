@@ -84,19 +84,19 @@ macro_rules! composable {
 
 const CATALOG: &[Translation] = &[
     row!(
-        "A script, prompt, program, and command library",
-        "脚本、提示词、程序与命令库",
-        "程式、提示詞、執行檔與命令程式庫",
+        "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
+        "skit——用于脚本、提示词、程序和命令的启动器与参数管理器。不带子命令运行即可打开主菜单",
+        "skit——用於腳本、提示詞、程式和命令的啟動器與參數管理器。不帶子命令執行即可開啟主選單",
     ),
     row!(
-        "List entries in the library",
-        "列出工具库中的条目",
-        "列出工具庫中的項目",
+        "List every registered entry",
+        "列出所有已登记的条目",
+        "列出所有已登記的條目",
     ),
     row!(
-        "Show one entry by exact slug or exact display name",
-        "按准确短名或准确显示名称显示一个条目",
-        "依完整短名或完整顯示名稱顯示一個項目",
+        "Show everything about one entry: metadata, dependencies, parameters, presets",
+        "显示一个条目的全部信息：元数据、依赖、参数和参数组合",
+        "顯示一個條目的全部資訊：中繼資料、依賴、參數和參數組合",
     ),
     row!(
         "Add one file as a copied or referenced entry",
@@ -109,25 +109,29 @@ const CATALOG: &[Translation] = &[
         "執行一個工具庫項目",
     ),
     row!(
-        "Replace one entry description",
-        "替换一个条目的说明",
-        "取代一個項目的說明",
+        "Set an entry's description (shown in the Library and skit list)",
+        "设置条目的说明（显示在工具库和 skit list 中）",
+        "設定條目的說明（顯示在工具庫和 skit list 中）",
     ),
     row!(
-        "Rename one entry without changing its slug",
-        "重命名一个条目，但不更改其短名",
-        "重新命名一個項目，但不變更其短名",
+        "Rename an entry (presets, remembered values and history survive)",
+        "重命名条目（参数组合、记住的值与历史都会保留）",
+        "重新命名條目（參數組合、記住的值與歷史都會保留）",
     ),
-    row!("Remove one entry", "删除一个条目", "移除一個項目"),
+    row!(
+        "Remove a registered entry (an original source file is left untouched)",
+        "移除一个已登记的条目（原始来源文件不受影响）",
+        "移除一個已登記的條目（原始來源檔案不受影響）",
+    ),
     row!(
         "Open an entry source in the configured editor",
         "在配置的编辑器中打开条目源文件",
         "在設定的編輯器中開啟項目原始檔",
     ),
     row!(
-        "Read or edit managed and declared parameters",
-        "读取或编辑受管和声明的参数",
-        "讀取或編輯受管與宣告的參數",
+        "Show or edit an entry's managed or declared parameters",
+        "查看或编辑条目的管理参数或声明参数",
+        "檢視或編輯條目的管理參數或宣告參數",
     ),
     row!(
         "Set source binding as NAME=BINDING",
@@ -176,14 +180,14 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Show version", "显示版本", "顯示版本"),
     row!(
-        "Read or update dependencies and required commands",
-        "读取或更新依赖项和所需命令",
-        "讀取或更新相依套件與必要命令",
+        "View or update an entry's package dependencies, Python constraint, and needed commands",
+        "查看或更新条目的包依赖、Python 版本约束和所需命令",
+        "檢視或更新條目的套件依賴、Python 版本限制和所需命令",
     ),
     row!(
-        "Check runtime and library health",
-        "检查运行环境与工具库健康状态",
-        "檢查執行環境與工具庫健康狀態",
+        "Check that uv is available and the entry library is intact",
+        "检查 uv 是否可用以及工具库是否完好",
+        "檢查 uv 是否可用以及工具庫是否完好",
     ),
     row!(
         "Read or set skit configuration",

@@ -312,9 +312,7 @@ fn locale_fallbacks_use_config_then_environment_without_changing_json() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
-            "程式、提示詞、執行檔與命令程式庫",
-        ));
+        .stdout(predicates::str::contains("腳本、提示詞、程式和命令"));
 
     let empty_config = TempDir::new().unwrap();
     sandbox
@@ -325,7 +323,7 @@ fn locale_fallbacks_use_config_then_environment_without_changing_json() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains("脚本、提示词、程序与命令库"));
+        .stdout(predicates::str::contains("脚本、提示词、程序和命令"));
     sandbox
         .command()
         .env_remove("SKIT_LANG")
@@ -336,9 +334,7 @@ fn locale_fallbacks_use_config_then_environment_without_changing_json() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
-            "程式、提示詞、執行檔與命令程式庫",
-        ));
+        .stdout(predicates::str::contains("腳本、提示詞、程式和命令"));
 }
 
 #[test]

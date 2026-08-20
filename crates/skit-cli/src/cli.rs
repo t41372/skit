@@ -243,7 +243,7 @@ pub(crate) fn active_locale() -> Locale {
 #[derive(Debug, Parser)]
 #[command(
     name = "skit",
-    about = "A script, prompt, program, and command library",
+    about = "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -269,13 +269,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// List entries in the library.
+    /// List every registered entry.
     List {
         /// Emit stable machine-readable output.
         #[arg(long)]
         json: bool,
     },
-    /// Show one entry by exact slug or exact display name.
+    /// Show everything about one entry: metadata, dependencies, parameters, presets.
     Show {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -330,7 +330,7 @@ enum Command {
     },
     /// Run one library entry.
     Run(RunArgs),
-    /// Replace one entry description.
+    /// Set an entry's description (shown in the Library and skit list).
     Describe {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -338,7 +338,7 @@ enum Command {
         /// Replacement description.
         description: String,
     },
-    /// Rename one entry without changing its slug.
+    /// Rename an entry (presets, remembered values and history survive).
     Rename {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -346,7 +346,7 @@ enum Command {
         /// Replacement display name.
         name: String,
     },
-    /// Remove one entry.
+    /// Remove a registered entry (an original source file is left untouched).
     Remove {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -367,11 +367,11 @@ enum Command {
         #[arg(long)]
         no_input: bool,
     },
-    /// Read or edit managed and declared parameters.
+    /// Show or edit an entry's managed or declared parameters.
     Params(Box<ParamsArgs>),
-    /// Read or update dependencies and required commands.
+    /// View or update an entry's package dependencies, Python constraint, and needed commands.
     Deps(DepsArgs),
-    /// Check runtime and library health.
+    /// Check that uv is available and the entry library is intact.
     Doctor {
         /// Emit stable machine-readable output.
         #[arg(long)]
