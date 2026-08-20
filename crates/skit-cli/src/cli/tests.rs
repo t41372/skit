@@ -6215,7 +6215,7 @@ fn cli_commit_carries_the_initial_claim_through_postcommit_cleanup() {
         payload: Some(skit_application::EntryPayload {
             bytes: claim.bytes.clone(),
             stored_name: Some("script.py".to_owned()),
-            permissions: claim.permissions.clone(),
+            permissions: claim.permissions,
         }),
         settings: EntrySettings::default(),
     };

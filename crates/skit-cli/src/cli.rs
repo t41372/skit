@@ -3409,7 +3409,7 @@ fn add_with_config(
         path: source.clone(),
         source_record: source_record.clone(),
         bytes: bytes.clone(),
-        permissions: permissions.clone(),
+        permissions,
         is_regular: source_is_regular,
         is_directory: !source_is_regular,
         is_draft: true,
@@ -7696,12 +7696,14 @@ fn consume_owned_draft_with(
 ) -> Result<DraftConsumeOutcome, CliError> {
     consume_owned_draft_claim(
         data_dir,
-        &expected.path,
-        expected.is_draft,
-        expected.identity.as_ref(),
-        None,
-        None,
-        Some(expected),
+        DraftConsumeClaim {
+            path: &expected.path,
+            claimed_as_draft: expected.is_draft,
+            identity: expected.identity.as_ref(),
+            modified: None,
+            permissions: None,
+            source: Some(expected),
+        },
         hook,
     )
 }
@@ -7712,26 +7714,40 @@ fn consume_draft_summary(
 ) -> Result<DraftConsumeOutcome, CliError> {
     consume_owned_draft_claim(
         data_dir,
-        &expected.path,
-        true,
-        expected.identity.as_ref(),
-        Some(expected.modified),
-        Some(&expected.permissions),
-        None,
+        DraftConsumeClaim {
+            path: &expected.path,
+            claimed_as_draft: true,
+            identity: expected.identity.as_ref(),
+            modified: Some(expected.modified),
+            permissions: Some(&expected.permissions),
+            source: None,
+        },
         |_, _| {},
     )
 }
 
+struct DraftConsumeClaim<'a> {
+    path: &'a Path,
+    claimed_as_draft: bool,
+    identity: Option<&'a SourceIdentity>,
+    modified: Option<u64>,
+    permissions: Option<&'a SourcePermissions>,
+    source: Option<&'a AddSourceSnapshot>,
+}
+
 fn consume_owned_draft_claim(
     data_dir: &Path,
-    path: &Path,
-    claimed_as_draft: bool,
-    expected_identity: Option<&SourceIdentity>,
-    expected_modified: Option<u64>,
-    expected_permissions: Option<&SourcePermissions>,
-    expected_source: Option<&AddSourceSnapshot>,
+    claim: DraftConsumeClaim<'_>,
     mut hook: impl FnMut(DraftConsumeTestPoint, &Path),
 ) -> Result<DraftConsumeOutcome, CliError> {
+    let DraftConsumeClaim {
+        path,
+        claimed_as_draft,
+        identity: expected_identity,
+        modified: expected_modified,
+        permissions: expected_permissions,
+        source: expected_source,
+    } = claim;
     if !claimed_as_draft || !has_owned_draft_shape(data_dir, path) {
         return Err(CliError::Failure(Message::new(
             "refusing to remove a file outside skit's drafts directory",

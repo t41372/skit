@@ -2033,7 +2033,10 @@ mod tests {
                 .is_empty()
         );
         assert!(deleted.notice().is_none());
-        assert_eq!(deleted.source().listed_drafts(), &[draft.clone()]);
+        assert_eq!(
+            deleted.source().listed_drafts(),
+            std::slice::from_ref(&draft)
+        );
         let _ = deleted.reduce(AddAction::DraftDeleted {
             request,
             result: Ok(DraftDeleteOutcome::Removed),
