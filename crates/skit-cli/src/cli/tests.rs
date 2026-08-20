@@ -3637,25 +3637,89 @@ fn tui_template_updates_reconcile_the_placeholder_schema() {
     let store = FileStore::new(&data_dir);
     let service = LibraryService::new(store.clone());
     add_command(&service, "Template form", "echo {old}");
+    let initial = service.show("template-form").unwrap();
+    let initial_settings = EntrySettings::from_meta(&initial.meta);
+    assert_eq!(initial_settings.params, ["old"]);
+    assert!(
+        initial_settings.parameters.is_empty(),
+        "template slots are implicit before a schema edit"
+    );
+    assert_eq!(
+        entry_parameters(&store, &initial)
+            .into_iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        ["old"]
+    );
+
+    let description = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "template-form",
+        &[("description", "Kept")],
+    );
+    tui_submit_settings(&service, &store, &state_dir, "template-form", &description).unwrap();
+    let renamed_axis = service.show("template-form").unwrap();
+    let renamed_settings = EntrySettings::from_meta(&renamed_axis.meta);
+    assert_eq!(renamed_settings.params, ["old"]);
+    assert!(
+        renamed_settings.parameters.is_empty(),
+        "an unrelated Settings save must not promote an implicit slot"
+    );
+
     let values = settings_edits(
         &service,
         &store,
         &state_dir,
         "template-form",
-        &[("template", "echo {new}")],
+        &[("template", "echo {new} {other}")],
     );
 
     tui_submit_settings(&service, &store, &state_dir, "template-form", &values).unwrap();
 
     let updated = service.show("template-form").unwrap();
     let settings = EntrySettings::from_meta(&updated.meta);
-    assert_eq!(settings.params, ["new"]);
+    assert_eq!(settings.params, ["new", "other"]);
+    assert!(
+        settings.parameters.is_empty(),
+        "a template edit changes implicit truth without declaring every slot"
+    );
     assert_eq!(
         entry_parameters(&store, &updated)
             .into_iter()
             .map(|field| field.name)
             .collect::<Vec<_>>(),
-        ["new"]
+        ["new", "other"]
+    );
+
+    let promote = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "template-form",
+        &[("parameter:new:default", "value")],
+    );
+    tui_submit_settings(&service, &store, &state_dir, "template-form", &promote).unwrap();
+    let promoted = service.show("template-form").unwrap();
+    let promoted_settings = EntrySettings::from_meta(&promoted.meta);
+    assert_eq!(promoted_settings.params, ["new", "other"]);
+    assert_eq!(promoted_settings.parameters.len(), 1);
+    assert_eq!(promoted_settings.parameters[0].name, "new");
+    assert_eq!(
+        promoted_settings.parameters[0].delivery,
+        ParameterDelivery::Placeholder
+    );
+    assert_eq!(
+        promoted_settings.parameters[0].default,
+        Some(ParameterValue::String("value".to_owned()))
+    );
+    assert_eq!(
+        entry_parameters(&store, &promoted)
+            .into_iter()
+            .map(|field| field.name)
+            .collect::<Vec<_>>(),
+        ["new", "other"]
     );
 }
 

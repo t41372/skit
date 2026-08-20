@@ -399,6 +399,15 @@ fn prompt_unmanaged_preview_matches_the_oracle_in_every_locale() {
         text(Locale::ZhTw, heading),
         "提示詞的佔位符(執行表單會詢問):"
     );
+    let command_heading = "Command template placeholders (the run form asks for them):";
+    assert_eq!(
+        text(Locale::ZhCn, command_heading),
+        "命令模板的占位符（运行表单会询问）："
+    );
+    assert_eq!(
+        text(Locale::ZhTw, command_heading),
+        "命令樣板的佔位符（執行表單會詢問）："
+    );
     let environment = "Declared environment variables (set on the run):";
     assert_eq!(
         text(Locale::ZhCn, environment),

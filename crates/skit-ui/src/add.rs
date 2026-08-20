@@ -1025,21 +1025,11 @@ impl ReviewState {
                 settings.runner = self.runner.trim().to_owned();
                 settings.interpolate = self.interpolate;
                 if self.interpolate {
-                    settings.parameters = self
+                    settings.params = self
                         .prompt_candidates
                         .iter()
                         .filter(|candidate| candidate.selected)
-                        .map(|candidate| {
-                            let mut declaration =
-                                skit_domain::parameters::synthesized_placeholder(&candidate.name);
-                            declaration.secret = candidate.secret;
-                            declaration
-                        })
-                        .collect();
-                    settings.params = settings
-                        .parameters
-                        .iter()
-                        .map(|declaration| declaration.name.clone())
+                        .map(|candidate| candidate.name.clone())
                         .collect();
                 }
             }
@@ -1741,7 +1731,6 @@ impl AddWorkflowState {
                     .iter()
                     .map(|parameter| parameter.name.clone())
                     .collect(),
-                parameters,
                 ..EntrySettings::default()
             },
         };
@@ -2215,6 +2204,10 @@ mod tests {
         assert_eq!(entry.settings.runner, "Agent");
         assert!(entry.settings.interpolate);
         assert_eq!(entry.settings.params, vec!["topic"]);
+        assert!(
+            entry.settings.parameters.is_empty(),
+            "detected prompt placeholders stay implicit"
+        );
 
         assert_eq!(
             workflow.reduce(AddAction::CommitFinished {
@@ -2306,6 +2299,10 @@ mod tests {
         };
         assert_eq!(entry.kind.as_str(), "command");
         assert_eq!(entry.settings.params, vec!["name"]);
+        assert!(
+            entry.settings.parameters.is_empty(),
+            "template slots stay implicit until a schema edit"
+        );
         assert!(entry.payload.is_none());
     }
 

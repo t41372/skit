@@ -171,8 +171,7 @@ fn add_infers_source_kinds_and_supports_command_and_prompt_entries() {
     let command_meta =
         fs::read_to_string(sandbox.data.path().join("scripts/print/meta.toml")).unwrap();
     assert!(command_meta.contains("params = [\"value\"]"));
-    assert!(command_meta.contains("[[parameters]]"));
-    assert!(command_meta.contains("delivery = \"placeholder\""));
+    assert!(!command_meta.contains("[[parameters]]"));
     assert_eq!(
         fs::read(sandbox.data.path().join("scripts/python-tool/script.py")).unwrap(),
         b"print('hello')\n"

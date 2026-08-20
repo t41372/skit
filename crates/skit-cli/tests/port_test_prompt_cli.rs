@@ -1802,14 +1802,62 @@ fn test_params_json_carries_runner_and_unmanaged() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): CLI flag semantics. Oracle `params --add b` MANAGES the body placeholder (placeholders -> [a,b], delivery placeholder). Rust `--add` DECLARES a new param with delivery 'flag' (placeholders stays [a]); managing a placeholder is Rust's separate `--manage`."]
 fn test_params_add_manages_a_body_placeholder() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}} {{b}}\n", "p");
+    let initial = sandbox.json(&["params", "p", "--json"]);
+    assert_eq!(initial["placeholders"], serde_json::json!(["a", "b"]));
+    assert_eq!(initial["declared"], serde_json::json!([]));
+    let initial_effective = initial["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["name"].as_str().unwrap(),
+                row["delivery"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        initial_effective,
+        [("a", "placeholder"), ("b", "placeholder")]
+    );
     sandbox.ok(&["params", "p", "--rm", "b"]); // managed → [a]
+    let after_remove = sandbox.json(&["params", "p", "--json"]);
+    assert_eq!(after_remove["placeholders"], serde_json::json!(["a"]));
+    assert_eq!(after_remove["declared"], serde_json::json!([]));
+    assert_eq!(after_remove["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(after_remove["parameters"][0]["name"], "a");
+    let body_before = sandbox.body_bytes("p");
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
     sandbox.ok(&["params", "p", "--add", "b"]);
     let payload = sandbox.json(&["params", "p", "--json"]);
     assert_eq!(payload["placeholders"], serde_json::json!(["a", "b"])); // body order
+    let effective = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["name"].as_str().unwrap(),
+                row["delivery"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(effective, [("a", "placeholder"), ("b", "placeholder")]);
+    let declared = payload["declared"].as_array().unwrap();
+    assert_eq!(
+        declared.len(),
+        1,
+        "only b is an explicit schema row: {payload}"
+    );
+    assert_eq!(declared[0]["name"], "b");
+    assert_eq!(declared[0]["delivery"], "placeholder");
+    assert_eq!(sandbox.body_bytes("p"), body_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 #[test]

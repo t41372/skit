@@ -46,8 +46,7 @@
 //!   ("Declared parameters:", "has no managed parameters", "Ignored a malformed value",
 //!   "Removed previously stored plaintext"), the `params` batch
 //!   fault-tolerance gap (a malformed/bad value hard-errors exit 2 instead of warning at
-//!   exit 0), and the `add --cmd` placeholder pre-seeding (which makes `--add <placeholder>`
-//!   refuse with exit 2).
+//!   exit 0).
 //! - UNMAPPABLE white-box (`#[ignore]` stub): `test_cli_declared_warning_codes_render` drives
 //!   the Python-private `cli._render_declared_warning`; the Rust warnings are localized
 //!   messages with no public renderer to observe, and their observable outcomes are covered
@@ -57,7 +56,7 @@
 //! run the Unix `#!/bin/sh` fixtures only.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use serde_json::{Value, json};
@@ -140,6 +139,30 @@ fn lib() -> Lib {
     }
 }
 
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    std::fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
+}
+
 impl Lib {
     fn cmd(&self) -> assert_cmd::Command {
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
@@ -195,6 +218,17 @@ impl Lib {
                 .join(format!("{slug}.toml")),
         )
         .unwrap_or_default()
+    }
+
+    fn meta(&self, slug: &str) -> String {
+        std::fs::read_to_string(
+            self.data
+                .path()
+                .join("scripts")
+                .join(slug)
+                .join("meta.toml"),
+        )
+        .unwrap()
     }
 }
 
@@ -829,7 +863,6 @@ fn test_cli_python_manage_with_json_emits_the_final_read_view() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `--add <placeholder-name>` on a command must create the declared placeholder row and exit 0 (src/skit/params.py edit_declared add branch); the Rust `add --cmd` pre-seeds a `[[parameters]]` placeholder row per template slot, so `--add size` reports \"parameter already exists: size\" and exits 2, aborting the batch (crates/skit-cli/src/cli.rs)."]
 fn test_cli_add_choice_placeholder_on_command_then_run() {
     let workspace = lib();
     workspace
@@ -844,6 +877,15 @@ fn test_cli_add_choice_placeholder_on_command_then_run() {
         ])
         .assert()
         .success();
+    let initial = stdout_json(&workspace.run(&["params", "conv", "--json"]));
+    assert_eq!(initial["placeholders"], json!(["size"]));
+    assert_eq!(initial["declared"], json!([]));
+    assert_eq!(initial["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(initial["parameters"][0]["name"], "size");
+    assert_eq!(initial["parameters"][0]["delivery"], "placeholder");
+    assert_eq!(initial["parameters"][0]["required"], true);
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
     let output = workspace.run(&[
         "params",
         "conv",
@@ -865,16 +907,33 @@ fn test_cli_add_choice_placeholder_on_command_then_run() {
     assert_eq!(decl["type"], "choice");
     assert_eq!(decl["choices"], json!(["s", "m", "l"]));
     assert_eq!(decl["default"], "m");
-    assert_eq!(decl["required"], false);
+    assert!(decl.get("required").is_none()); // false is omitted from the raw explicit row
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["parameters"][0]["delivery"], "placeholder");
+    assert_eq!(payload["parameters"][0]["type"], "choice");
+    assert_eq!(payload["parameters"][0]["choices"], json!(["s", "m", "l"]));
+    assert_eq!(payload["parameters"][0]["default"], "m");
+    assert_eq!(payload["placeholders"], json!(["size"]));
+    let show = stdout_json(&workspace.run(&["show", "conv", "--json"]));
+    assert_eq!(show["fields"][0]["required"], false); // effective machine field is total
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
+    assert!(
+        workspace
+            .meta("conv")
+            .contains("template = \"convert {size}\"")
+    );
 
     // run --no-input: the declared default fills the placeholder without prompting
     let run = workspace.run(&["run", "conv", "--no-input", "--dry-run"]);
     assert!(run.status.success(), "{}", combined(&run));
     assert!(combined(&run).contains("convert m"), "{}", combined(&run));
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the enriched command show must carry the schema `optional` marker for `msg`, but reaching it requires `--add msg` (a placeholder) to succeed — the Rust pre-seeded-placeholder + exit-2 abort (see test_cli_add_choice_placeholder_on_command_then_run) prevents the msg tweaks from applying, and a non-placeholder `--add RETRIES` on a template defaults to flag, not env."]
 fn test_cli_command_show_enriched_and_env_rider() {
     let workspace = lib();
     workspace
@@ -882,7 +941,14 @@ fn test_cli_command_show_enriched_and_env_rider() {
         .args(["add", "--cmd", "echo {msg}", "--name", "c", "--no-input"])
         .assert()
         .success();
-    workspace.run(&[
+    let initial = stdout_json(&workspace.run(&["params", "c", "--json"]));
+    assert_eq!(initial["placeholders"], json!(["msg"]));
+    assert_eq!(initial["declared"], json!([]));
+    assert_eq!(initial["parameters"][0]["name"], "msg");
+    assert_eq!(initial["parameters"][0]["delivery"], "placeholder");
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
+    let first = workspace.run(&[
         "params",
         "c",
         "--add",
@@ -894,7 +960,8 @@ fn test_cli_command_show_enriched_and_env_rider() {
         "--optional",
         "msg",
     ]);
-    workspace.run(&[
+    assert!(first.status.success(), "{}", combined(&first));
+    let second = workspace.run(&[
         "params",
         "c",
         "--add",
@@ -902,6 +969,10 @@ fn test_cli_command_show_enriched_and_env_rider() {
         "--deliver",
         "RETRIES=env",
     ]);
+    assert!(second.status.success(), "{}", combined(&second));
+    let data_before_reads = snapshot_tree(workspace.data.path());
+    let state_before_reads = snapshot_tree(workspace.state.path());
+    let config_before_reads = snapshot_tree(workspace.config.path());
     let human = workspace.run(&["params", "c"]);
     assert!(human.status.success(), "{}", combined(&human));
     assert!(combined(&human).contains("msg"));
@@ -914,8 +985,38 @@ fn test_cli_command_show_enriched_and_env_rider() {
         .iter()
         .map(|row| row["name"].as_str().unwrap())
         .collect();
-    assert!(declared_names.contains(&"msg"));
-    assert!(declared_names.contains(&"RETRIES"));
+    assert_eq!(declared_names, ["msg", "RETRIES"]);
+    assert_eq!(payload["declared"][0]["delivery"], "placeholder");
+    assert_eq!(payload["declared"][0]["default"], "hi");
+    assert!(payload["declared"][0].get("required").is_none());
+    assert_eq!(payload["declared"][1]["delivery"], "env");
+    assert_eq!(payload["placeholders"], json!(["msg"]));
+    let effective_names = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(effective_names, ["msg", "RETRIES"]);
+    let show = stdout_json(&workspace.run(&["show", "c", "--json"]));
+    let shown_fields = show["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| {
+            (
+                field["key"].as_str().unwrap(),
+                field["source"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(shown_fields, [("msg", "placeholder"), ("RETRIES", "env")]);
+    assert_eq!(show["template"], "echo {msg}");
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before_reads);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before_reads);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before_reads);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
@@ -996,7 +1097,6 @@ fn test_cli_bad_type_warns_and_skips() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the {token_file} secret-override end-to-end needs `--add token_file` (a pre-seeded command placeholder) to succeed so `--no-secret` un-secrets it; the Rust pre-seeded-placeholder path makes `--add token_file` report \"parameter already exists\" and exit 2, aborting before --no-secret applies (secret stays true). Same seam as test_cli_add_choice_placeholder_on_command_then_run."]
 fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
     let workspace = lib();
     workspace
@@ -1004,13 +1104,21 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
         .args([
             "add",
             "--cmd",
-            "auth {token_file}",
+            "printf '%s' {token_file}",
             "--name",
             "auth",
             "--no-input",
         ])
         .assert()
         .success();
+    let initial = stdout_json(&workspace.run(&["params", "auth", "--json"]));
+    assert_eq!(initial["placeholders"], json!(["token_file"]));
+    assert_eq!(initial["declared"], json!([]));
+    assert_eq!(initial["parameters"][0]["name"], "token_file");
+    assert_eq!(initial["parameters"][0]["delivery"], "placeholder");
+    assert_eq!(initial["parameters"][0]["secret"], true);
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
     let output = workspace.run(&[
         "params",
         "auth",
@@ -1021,7 +1129,22 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
     ]);
     assert!(output.status.success(), "{}", combined(&output));
     let payload = stdout_json(&workspace.run(&["params", "auth", "--json"]));
-    assert_eq!(payload["declared"][0]["secret"], false); // overridden away from the heuristic
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["declared"][0]["name"], "token_file");
+    assert_eq!(payload["declared"][0]["delivery"], "placeholder");
+    assert!(payload["declared"][0].get("secret").is_none()); // false is the sparse raw row
+    assert_eq!(payload["parameters"].as_array().unwrap().len(), 1);
+    assert!(payload["parameters"][0].get("secret").is_none());
+    assert_eq!(payload["placeholders"], json!(["token_file"]));
+    let show = stdout_json(&workspace.run(&["show", "auth", "--json"]));
+    assert_eq!(show["fields"][0]["secret"], false); // effective machine field is total
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
+    assert!(
+        workspace
+            .meta("auth")
+            .contains("template = \"printf '%s' {token_file}\"")
+    );
 
     let run = workspace.run(&[
         "run",
@@ -1034,6 +1157,10 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
     // Now that it isn't secret, the value IS remembered (the old behavior scrubbed it).
     assert!(workspace.values_file("auth").contains("token_file"));
     assert!(workspace.values_file("auth").contains("creds.json"));
+    let after_run = stdout_json(&workspace.run(&["params", "auth", "--json"]));
+    assert_eq!(after_run["last_values"]["token_file"], "creds.json");
+    assert!(after_run["declared"][0].get("secret").is_none());
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
@@ -1283,7 +1410,7 @@ fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
         ])
         .assert()
         .success();
-    // password is a pre-declared secret placeholder; give it a secret default.
+    // password is an implicit secret placeholder; the schema edit promotes only that row.
     workspace.run(&[
         "params",
         "lg",
@@ -1299,9 +1426,14 @@ fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
     assert_eq!(text.matches("•••").count(), 2, "{text}");
     assert!(!text.contains("Current default: seed"), "{text}");
     assert!(!text.contains("Last value: stale"), "{text}");
-    assert_eq!(text.matches("Current default:").count(), 1, "{text}");
-    assert_eq!(text.matches("Last value:").count(), 1, "{text}");
-    assert!(text.contains("other")); // the undeclared placeholder is still listed
+    assert!(
+        text.contains("  password = •••  str · default ••• · secret"),
+        "{text}"
+    );
+    assert!(text.contains("  other = —  str"), "{text}"); // implicit sibling remains listed
+    let payload = stdout_json(&workspace.run(&["params", "lg", "--json"]));
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["declared"][0]["name"], "password");
 }
 
 // ---- Delivery capability honesty ---------------------------------------------------------------

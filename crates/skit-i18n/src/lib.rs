@@ -1469,6 +1469,11 @@ const CATALOG: &[Translation] = &[
         "提示詞的佔位符(執行表單會詢問):",
     ),
     row!(
+        "Command template placeholders (the run form asks for them):",
+        "命令模板的占位符（运行表单会询问）：",
+        "命令樣板的佔位符（執行表單會詢問）：",
+    ),
+    row!(
         "Declared environment variables (set on the run):",
         "声明的环境变量（运行时设置）：",
         "宣告的環境變數（執行時設定）：",

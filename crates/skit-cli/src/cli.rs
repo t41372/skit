@@ -40,7 +40,7 @@ use skit_domain::{
     Entry, EntryKind, EntrySettings, EntrySummary, Slug, StorageMode,
     parameters::{
         ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-        coerce_default,
+        coerce_default, synthesized_placeholder,
     },
 };
 use skit_form::{
@@ -3098,7 +3098,6 @@ fn add_with_config(
         let parameters = placeholder_params("command", &template);
         let settings = EntrySettings {
             params: parameters.iter().map(|item| item.name.clone()).collect(),
-            parameters,
             template,
             ..EntrySettings::default()
         };
@@ -3430,16 +3429,11 @@ fn add_with_config(
     };
     if kind_name == "prompt" && settings.interpolate {
         let detected = placeholder_params("prompt", &source_text);
-        settings.parameters = if detected.len() <= 30 {
-            detected
+        settings.params = if detected.len() <= 30 {
+            detected.into_iter().map(|item| item.name).collect()
         } else {
             Vec::new()
         };
-        settings.params = settings
-            .parameters
-            .iter()
-            .map(|item| item.name.clone())
-            .collect();
     }
     let workdir = add_workdir(&kind, mode).to_owned();
     let entry = service.add(CreateEntry {
@@ -4278,6 +4272,7 @@ fn params(
     .filter(|present| *present)
     .count();
     let human_prompt_read = kind == "prompt" && !args.json && exclusive_operations == 0;
+    let human_command_read = kind == "command" && !args.json && exclusive_operations == 0;
     if exclusive_operations > 1 {
         return Err(CliError::Usage(Message::new(
             "run source, schema, launch, runner, and interpolation changes as separate params operations",
@@ -4330,6 +4325,7 @@ fn params(
         )));
     }
     let mut settings = EntrySettings::from_meta(&held.meta);
+    let prompt_schema_was_hidden = kind == "prompt" && !settings.interpolate;
     if kind == "prompt" && !settings.interpolate && has_metadata_schema_operation {
         return Err(CliError::Failure(
             Message::new(
@@ -4392,23 +4388,27 @@ fn params(
             declarations.push(item.clone());
         }
     }
-    let template_placeholder_names = match held.meta.kind.as_str() {
-        "command" => settings
-            .params
-            .iter()
-            .cloned()
-            .chain(
-                placeholder_params("command", &settings.template)
-                    .into_iter()
-                    .map(|item| item.name),
-            )
-            .collect::<BTreeSet<_>>(),
+    let template_placeholder_order = match held.meta.kind.as_str() {
+        "command" => placeholder_params("command", &settings.template)
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>(),
         "prompt" => placeholder_params("prompt", &source)
             .into_iter()
             .map(|item| item.name)
             .collect(),
-        _ => BTreeSet::new(),
+        _ => Vec::new(),
     };
+    let template_placeholder_names = template_placeholder_order
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut explicit_names = settings
+        .parameters
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<BTreeSet<_>>();
+    let original_explicit_names = explicit_names.clone();
     let original_declarations = declarations.clone();
     let mut tweaked_names = BTreeSet::new();
     for specification in args
@@ -4445,23 +4445,36 @@ fn params(
     let mut changed = false;
 
     for name in args.add {
-        if declarations.iter().any(|item| item.name == name) {
+        if explicit_names.contains(&name) {
             return Err(CliError::Usage(
                 Message::new("parameter already exists: {}").with(name),
             ));
         }
-        let mut declaration = ParamDecl::new(name);
-        if matches!(held.meta.kind.as_str(), "command" | "prompt")
-            && !template_placeholder_names.contains(&declaration.name)
-        {
-            declaration.delivery = ParameterDelivery::Env;
+        if template_placeholder_names.contains(&name) {
+            if let Some(declaration) = declarations.iter_mut().find(|item| item.name == name) {
+                declaration.delivery = ParameterDelivery::Placeholder;
+            } else {
+                declarations.push(synthesized_placeholder(&name));
+            }
+        } else {
+            if declarations.iter().any(|item| item.name == name) {
+                return Err(CliError::Usage(
+                    Message::new("parameter already exists: {}").with(name),
+                ));
+            }
+            let mut declaration = ParamDecl::new(name.clone());
+            if matches!(held.meta.kind.as_str(), "command" | "prompt") {
+                declaration.delivery = ParameterDelivery::Env;
+            }
+            declarations.push(declaration);
         }
-        declarations.push(declaration);
+        explicit_names.insert(name);
         changed = true;
     }
     if !args.remove.is_empty() {
         let before = declarations.len();
         declarations.retain(|item| !args.remove.contains(&item.name));
+        explicit_names.retain(|name| !args.remove.contains(name));
         changed |= declarations.len() != before;
     }
     let tweak_baseline = declarations.clone();
@@ -4628,10 +4641,13 @@ fn params(
         if let Err(error) = finish_parameter_edit(item) {
             *item = previous.clone();
             eprintln!("{}", error.message().localize(active_locale()));
+        } else {
+            explicit_names.insert(name);
         }
     }
     if has_metadata_schema_operation {
-        changed = declarations != original_declarations;
+        changed =
+            declarations != original_declarations || explicit_names != original_explicit_names;
     }
 
     let mut workdir = held.meta.workdir.clone();
@@ -4681,13 +4697,42 @@ fn params(
             report_purged_secrets(purged, args.json);
         }
     } else if changed {
-        settings.parameters = declarations.clone();
-        if matches!(held.meta.kind.as_str(), "command" | "prompt") {
-            settings.params = declarations
+        if !(prompt_schema_was_hidden && has_interpolation_policy) {
+            settings.parameters = declarations
+                .iter()
+                .filter(|item| explicit_names.contains(&item.name))
+                .cloned()
+                .collect();
+        }
+        if matches!(held.meta.kind.as_str(), "command" | "prompt")
+            && !(prompt_schema_was_hidden && has_interpolation_policy)
+        {
+            let current_order = match held.meta.kind.as_str() {
+                "command" => placeholder_params("command", &settings.template)
+                    .into_iter()
+                    .map(|item| item.name)
+                    .collect::<Vec<_>>(),
+                "prompt" => template_placeholder_order.clone(),
+                _ => unreachable!(),
+            };
+            let placeholder_names = declarations
                 .iter()
                 .filter(|item| item.delivery == ParameterDelivery::Placeholder)
                 .map(|item| item.name.clone())
+                .collect::<BTreeSet<_>>();
+            settings.params = current_order
+                .into_iter()
+                .filter(|name| placeholder_names.contains(name))
                 .collect();
+            let remaining = declarations
+                .iter()
+                .filter(|item| {
+                    item.delivery == ParameterDelivery::Placeholder
+                        && !settings.params.contains(&item.name)
+                })
+                .map(|item| item.name.clone())
+                .collect::<Vec<_>>();
+            settings.params.extend(remaining);
         }
         let claimed = service.claim_identity(&held)?;
         held = service.update_settings(&claimed, &settings, &workdir)?;
@@ -4736,6 +4781,8 @@ fn params(
     }
     if human_prompt_read && settings.interpolate {
         write_human_prompt_params(&held, &source, &settings, &declarations)
+    } else if human_command_read {
+        write_human_command_params(&held, &settings, &declarations)
     } else {
         write_params(&held, &source, &settings, &declarations, args.json)
     }
@@ -4828,6 +4875,39 @@ fn write_prompt_parameter(
             .unwrap_or_else(|| "—".to_owned())
     };
     println!("  {name} = {shown}{}", prompt_schema_suffix(declaration));
+}
+
+fn write_human_command_params(
+    entry: &Entry,
+    settings: &EntrySettings,
+    declarations: &[ParamDecl],
+) -> Result<(), CliError> {
+    let state =
+        FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
+    let env_riders = declarations
+        .iter()
+        .filter(|item| {
+            item.delivery == ParameterDelivery::Env && !settings.params.contains(&item.name)
+        })
+        .collect::<Vec<_>>();
+    if settings.params.is_empty() && env_riders.is_empty() {
+        humanln!("{} has no managed parameters.", entry.meta.name);
+        return Ok(());
+    }
+    if !settings.params.is_empty() {
+        humanln!("Command template placeholders (the run form asks for them):");
+        for name in &settings.params {
+            let declaration = declarations.iter().find(|item| item.name == *name);
+            write_prompt_parameter(name, declaration, &state.values);
+        }
+    }
+    if !env_riders.is_empty() {
+        humanln!("Declared environment variables (set on the run):");
+        for declaration in env_riders {
+            write_prompt_parameter(&declaration.name, Some(declaration), &state.values);
+        }
+    }
+    Ok(())
 }
 
 fn write_human_prompt_params(
@@ -6283,6 +6363,7 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
     let kind = entry.meta.kind.as_str();
     let source_owned = source_owned_schema(kind);
     let declared_schema = known_entry_kind(kind) && !source_owned;
+    let settings = EntrySettings::from_meta(&entry.meta);
     let source = source_path(store, entry)
         .and_then(|path| fs::read(path).ok())
         .map(|bytes| {
@@ -6292,7 +6373,19 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
         });
     let text = source.clone().unwrap_or_default();
     let managed = if declared_schema {
-        EntrySettings::from_meta(&entry.meta).parameters
+        if matches!(kind, "command" | "prompt") {
+            let mut effective = form_params(kind, &text, &settings);
+            for explicit in &settings.parameters {
+                if let Some(row) = effective.iter_mut().find(|row| row.name == explicit.name) {
+                    *row = explicit.clone();
+                } else {
+                    effective.push(explicit.clone());
+                }
+            }
+            effective
+        } else {
+            settings.parameters.clone()
+        }
     } else if source_owned {
         settings_managed_params(kind, &text)
     } else {
@@ -7952,6 +8045,14 @@ fn tui_apply_parameter_edits(
     Ok(())
 }
 
+fn tui_touched_parameter_names(values: &SubmittedValues) -> BTreeSet<String> {
+    values
+        .keys()
+        .filter_map(|key| key.strip_prefix("parameter:"))
+        .filter_map(|suffix| suffix.split_once(':').map(|(name, _)| name.to_owned()))
+        .collect()
+}
+
 /// Apply one row's edits, or report that the row was unticked.
 fn tui_parameter_row(
     values: &SubmittedValues,
@@ -8304,25 +8405,68 @@ fn tui_submit_settings(
     if values.contains_key("interpolate") {
         settings.interpolate = tui_flag(values, "interpolate")?;
     }
+    let original_source = source_path(store, &entry).and_then(|path| fs::read(path).ok());
+    let source_text = original_source
+        .as_deref()
+        .map(LosslessSource::from_bytes)
+        .map(|source| source.normalized_text().to_owned())
+        .unwrap_or_default();
+    let placeholder_order = match entry.meta.kind.as_str() {
+        "command" => placeholder_params("command", &settings.template)
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>(),
+        "prompt" => placeholder_params("prompt", &source_text)
+            .into_iter()
+            .map(|item| item.name)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let placeholder_truth = placeholder_order.iter().cloned().collect::<BTreeSet<_>>();
     // The stored declarations are the set a save keeps, and the form carries only the axes a person
     // moved. A screen with no parameter section carries none, so nothing here changes — reading the
     // absent rows as an empty set would delete every one of them.
-    let mut declarations = stored_settings.parameters.clone();
+    let placeholder_kind = matches!(entry.meta.kind.as_str(), "command" | "prompt");
+    let mut explicit_names = stored_settings
+        .parameters
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut declarations = if placeholder_kind {
+        entry_parameters(store, &entry)
+    } else {
+        stored_settings.parameters.clone()
+    };
+    let touched_names = tui_touched_parameter_names(values);
     tui_apply_parameter_edits(values, &mut declarations)?;
+    explicit_names.extend(
+        touched_names
+            .into_iter()
+            .filter(|name| declarations.iter().any(|item| item.name == *name)),
+    );
     let removed = tui_list(values, "parameter:remove");
     declarations.retain(|parameter| !removed.contains(&parameter.name));
+    explicit_names.retain(|name| !removed.contains(name));
     for name in tui_list(values, "parameter:add") {
         if declarations.iter().any(|parameter| parameter.name == name) {
             return Err(CliError::Usage(
                 Message::new("parameter already exists: {}").with(name),
             ));
         }
-        declarations.push(ParamDecl::new(name));
+        let mut declaration = if placeholder_truth.contains(&name) {
+            synthesized_placeholder(&name)
+        } else {
+            ParamDecl::new(name.clone())
+        };
+        if placeholder_kind && !placeholder_truth.contains(&name) {
+            declaration.delivery = ParameterDelivery::Env;
+        }
+        declarations.push(declaration);
+        explicit_names.insert(name);
     }
     if entry.meta.kind.as_str() == "command" && settings.template != previous_template {
         declarations = reconcile_template_parameters(&settings.template, &declarations);
     }
-    let original_source = source_path(store, &entry).and_then(|path| fs::read(path).ok());
     // No submit-time filter. A source-owned row is never offered as an editable declaration, so
     // there is nothing here to take back out — and with it go both races the filter carried: a
     // concurrent source edit changing which rows survive, and an unreadable source silently
@@ -8330,15 +8474,39 @@ fn tui_submit_settings(
     settings.parameters = if source_owned_schema(entry.meta.kind.as_str()) {
         Vec::new()
     } else {
-        declarations.clone()
+        declarations
+            .iter()
+            .filter(|item| explicit_names.contains(&item.name))
+            .cloned()
+            .collect()
     };
-    if matches!(entry.meta.kind.as_str(), "command" | "prompt") {
-        settings.params = settings
-            .parameters
+    if placeholder_kind {
+        let placeholder_names = declarations
             .iter()
             .filter(|parameter| parameter.delivery == ParameterDelivery::Placeholder)
             .map(|parameter| parameter.name.clone())
+            .collect::<BTreeSet<_>>();
+        let current_order = match entry.meta.kind.as_str() {
+            "command" => placeholder_params("command", &settings.template)
+                .into_iter()
+                .map(|item| item.name)
+                .collect::<Vec<_>>(),
+            "prompt" => placeholder_order,
+            _ => unreachable!(),
+        };
+        settings.params = current_order
+            .into_iter()
+            .filter(|name| placeholder_names.contains(name))
             .collect();
+        let remaining = declarations
+            .iter()
+            .filter(|item| {
+                item.delivery == ParameterDelivery::Placeholder
+                    && !settings.params.contains(&item.name)
+            })
+            .map(|item| item.name.clone())
+            .collect::<Vec<_>>();
+        settings.params.extend(remaining);
     }
     let mut rewritten_source = None;
     if entry.meta.kind.as_str() == "python" && entry.meta.mode == StorageMode::Copy {

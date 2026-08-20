@@ -496,6 +496,7 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     sandbox.ok(&["params", "demo"]);
     sandbox.ok(&["params", "demo", "--json"]);
     sandbox.code(&["params", "demo", "--resync", "--add", "other"], 2);
+    sandbox.ok(&["params", "demo", "--add", "name"]); // implicit -> explicit
     sandbox.code(&["params", "demo", "--add", "name"], 2);
     sandbox.code(&["params", "demo", "--type", "bad"], 2);
     sandbox.code(&["params", "demo", "--type", "missing=int"], 2);
