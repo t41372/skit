@@ -12,7 +12,7 @@ mod secrets;
 pub use declarations::{declared_for_template, declared_from_meta};
 pub use edit::{
     DeclaredEditContext, DeclaredEditRequest, DeclaredEditResult, DeclaredEditWarning, NamedEdit,
-    as_param_type, edit_declared,
+    as_param_type, edit_declared, finish_declared_parameter_edit,
 };
 pub use secrets::{is_secret_name, synthesized_placeholder};
 

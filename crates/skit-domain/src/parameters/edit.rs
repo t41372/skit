@@ -2,7 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
+use super::{
+    ParamDecl, ParameterBinding, ParameterDelivery, ParameterInvariant, ParameterType,
+    ParameterValue, coerce_default,
+};
 
 /// One name-keyed edit value.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -224,16 +227,101 @@ pub fn edit_declared(
         output.push(declaration);
     }
 
-    for name in named_order(&request.parameter_types) {
+    for name in tweak_order(request) {
         let Some(row) = output.iter_mut().find(|row| row.name == name) else {
             warnings.push(DeclaredEditWarning::NotDeclared { name });
             continue;
         };
-        let value = last_named(&request.parameter_types, &name).expect("name came from this list");
-        if let Some(parameter_type) = as_param_type(value) {
-            row.parameter_type = parameter_type;
-        } else {
-            warnings.push(DeclaredEditWarning::BadType { name });
+        let before = row.clone();
+
+        if let Some(value) = last_named(&request.deliveries, &name) {
+            match as_delivery(value) {
+                Some(delivery) if !context.allows(delivery) => {
+                    warnings.push(DeclaredEditWarning::BadDelivery { name: name.clone() });
+                }
+                Some(ParameterDelivery::Placeholder) if !context.is_placeholder(&name) => {
+                    warnings.push(DeclaredEditWarning::NotAPlaceholder { name: name.clone() });
+                }
+                Some(delivery) => row.delivery = delivery,
+                None => warnings.push(DeclaredEditWarning::BadDelivery { name: name.clone() }),
+            }
+        }
+        if let Some(value) = last_named(&request.parameter_types, &name) {
+            if let Some(parameter_type) = as_param_type(value) {
+                row.parameter_type = parameter_type;
+            } else {
+                warnings.push(DeclaredEditWarning::BadType { name: name.clone() });
+            }
+        }
+        if let Some(value) = last_named(&request.choices, &name) {
+            row.choices.clone_from(value);
+        }
+        if let Some(value) = last_named(&request.defaults, &name) {
+            match coerce_default(value, row.parameter_type) {
+                Ok(value) => row.default = Some(value),
+                Err(_) => warnings.push(DeclaredEditWarning::BadDefault { name: name.clone() }),
+            }
+        }
+        if let Some(value) = last_named(&request.flags, &name) {
+            row.flag = value.trim().to_owned();
+        }
+        if let Some(value) = last_named(&request.bindings, &name) {
+            row.binding = *value;
+        }
+        if request.multiple.contains(&name) {
+            row.multiple = true;
+        }
+        if request.no_multiple.contains(&name) {
+            row.multiple = false;
+        }
+        if request.repeat.contains(&name) {
+            row.repeat = true;
+        }
+        if request.no_repeat.contains(&name) {
+            row.repeat = false;
+        }
+        if let Some(value) = last_named(&request.env_targets, &name) {
+            row.env_target.clone_from(value);
+        }
+        if let Some(value) = last_named(&request.actions, &name) {
+            row.action.clone_from(value);
+        }
+        if let Some(value) = last_named(&request.help, &name) {
+            row.help.clone_from(value);
+        }
+        if let Some(value) = last_named(&request.prompts, &name) {
+            row.prompt.clone_from(value);
+        }
+        if request.required.contains(&name) {
+            row.required = true;
+        }
+        if request.optional.contains(&name) {
+            row.required = false;
+        }
+        if request.secret.contains(&name) {
+            row.secret = true;
+        }
+        if request.no_secret.contains(&name) {
+            row.secret = false;
+            row.env_source.clear();
+        }
+        if let Some(value) = last_named(&request.env_sources, &name) {
+            if row.secret {
+                row.env_source = value.trim().to_owned();
+            } else {
+                warnings.push(DeclaredEditWarning::EnvSourceNotSecret { name: name.clone() });
+            }
+        }
+
+        *row = row.clone().normalized();
+        if let Err(warning) = finish_declared_parameter_edit(row) {
+            warnings.push(warning);
+            *row = before;
+            continue;
+        }
+        if row.validate() == Some(ParameterInvariant::ChoiceWithoutChoices) {
+            warnings.push(DeclaredEditWarning::ChoiceWithoutChoices { name });
+            *row = before;
         }
     }
 
@@ -242,6 +330,47 @@ pub fn edit_declared(
         declarations: output,
         warnings,
         changed,
+    }
+}
+
+/// Finish one edited row without inventing a form control that cannot change the program.
+pub fn finish_declared_parameter_edit(
+    declaration: &mut ParamDecl,
+) -> Result<(), DeclaredEditWarning> {
+    if declaration.parameter_type == ParameterType::Bool
+        && declaration.delivery == ParameterDelivery::Flag
+        && !declaration.flag.is_empty()
+        && declaration.action.is_empty()
+    {
+        if declaration.default.as_ref().is_some_and(value_truthy) {
+            return Err(DeclaredEditWarning::BoolFlagOnByDefault {
+                name: declaration.name.clone(),
+            });
+        }
+        declaration.action = "store_true".to_owned();
+    }
+    if declaration.parameter_type != ParameterType::Bool {
+        declaration.action.clear();
+    }
+    Ok(())
+}
+
+fn value_truthy(value: &ParameterValue) -> bool {
+    match value {
+        ParameterValue::String(value) => !value.is_empty(),
+        ParameterValue::Integer(value) => *value != 0,
+        ParameterValue::Float(value) => *value != 0.0,
+        ParameterValue::Bool(value) => *value,
+    }
+}
+
+fn as_delivery(value: &str) -> Option<ParameterDelivery> {
+    match value {
+        "inject" => Some(ParameterDelivery::Inject),
+        "env" => Some(ParameterDelivery::Env),
+        "flag" => Some(ParameterDelivery::Flag),
+        "placeholder" => Some(ParameterDelivery::Placeholder),
+        _ => None,
     }
 }
 
@@ -266,6 +395,49 @@ fn named_order<T>(edits: &[NamedEdit<T>]) -> Vec<String> {
         .filter(|edit| seen.insert(edit.name.clone()))
         .map(|edit| edit.name.clone())
         .collect()
+}
+
+fn tweak_order(request: &DeclaredEditRequest) -> Vec<String> {
+    let mut output = Vec::new();
+    let mut seen = BTreeSet::new();
+    macro_rules! named {
+        ($field:ident) => {
+            for name in named_order(&request.$field) {
+                if seen.insert(name.clone()) {
+                    output.push(name);
+                }
+            }
+        };
+    }
+    macro_rules! names {
+        ($field:ident) => {
+            for name in &request.$field {
+                if seen.insert(name.clone()) {
+                    output.push(name.clone());
+                }
+            }
+        };
+    }
+    named!(deliveries);
+    named!(parameter_types);
+    named!(choices);
+    named!(defaults);
+    named!(flags);
+    named!(help);
+    named!(prompts);
+    named!(env_sources);
+    names!(required);
+    names!(optional);
+    names!(secret);
+    names!(no_secret);
+    named!(bindings);
+    names!(multiple);
+    names!(no_multiple);
+    names!(repeat);
+    names!(no_repeat);
+    named!(env_targets);
+    named!(actions);
+    output
 }
 
 fn last_named<'a, T>(edits: &'a [NamedEdit<T>], name: &str) -> Option<&'a T> {

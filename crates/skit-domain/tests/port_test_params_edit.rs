@@ -185,7 +185,6 @@ fn test_inputs_are_never_mutated() {
 // tweaks
 
 #[test]
-#[ignore = "Stage 2 RED: delivery tweak support is not implemented yet"]
 fn test_delivery_tweak_within_allowed_set() {
     let result = run(
         &[ParamDecl::new("a")],
@@ -198,7 +197,6 @@ fn test_delivery_tweak_within_allowed_set() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: bad delivery must warn and keep the field"]
 fn test_delivery_outside_allowed_set_warns_bad_delivery() {
     let result = run(
         &[ParamDecl::new("a")],
@@ -217,7 +215,6 @@ fn test_delivery_outside_allowed_set_warns_bad_delivery() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: placeholder membership validation is not implemented yet"]
 fn test_placeholder_delivery_on_a_non_placeholder_name_warns() {
     let declaration = ParamDecl {
         delivery: ParameterDelivery::Env,
@@ -241,7 +238,6 @@ fn test_placeholder_delivery_on_a_non_placeholder_name_warns() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: placeholder delivery tweak is not implemented yet"]
 fn test_placeholder_delivery_on_a_matching_placeholder_name_is_allowed() {
     let declaration = ParamDecl {
         delivery: ParameterDelivery::Env,
@@ -290,7 +286,6 @@ fn test_type_tweak_invalid_warns_bad_type() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: choices tweak is not implemented yet"]
 fn test_choices_tweak_sets_the_tuple() {
     let declaration = ParamDecl {
         parameter_type: ParameterType::Choice,
@@ -307,7 +302,6 @@ fn test_choices_tweak_sets_the_tuple() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: typed default tweak is not implemented yet"]
 fn test_default_coerced_to_the_declared_type() {
     let declaration = ParamDecl {
         parameter_type: ParameterType::Int,
@@ -327,7 +321,6 @@ fn test_default_coerced_to_the_declared_type() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: type must apply before default coercion"]
 fn test_default_type_set_in_same_call_applies_before_coercion() {
     let result = run(
         &[ParamDecl::new("a")],
@@ -344,7 +337,6 @@ fn test_default_type_set_in_same_call_applies_before_coercion() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: bad default must warn and keep the old field"]
 fn test_default_bad_value_warns_bad_default_and_keeps_old() {
     let declaration = ParamDecl {
         parameter_type: ParameterType::Int,
@@ -371,7 +363,6 @@ fn test_default_bad_value_warns_bad_default_and_keeps_old() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: flag trimming is not implemented yet"]
 fn test_flag_tweak_strips_and_sets_empty_for_positional() {
     let first = run(
         &[ParamDecl::new("a")],
@@ -395,7 +386,6 @@ fn test_flag_tweak_strips_and_sets_empty_for_positional() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: required and optional tweaks are not implemented yet"]
 fn test_required_and_optional_tweaks() {
     let required = run(
         &[ParamDecl::new("a")],
@@ -419,7 +409,6 @@ fn test_required_and_optional_tweaks() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: help and prompt tweaks are not implemented yet"]
 fn test_help_text_and_prompt_tweaks() {
     let result = run(
         &[ParamDecl::new("a")],
@@ -434,7 +423,6 @@ fn test_help_text_and_prompt_tweaks() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: secret and env-source tweaks are not implemented yet"]
 fn test_secret_and_env_source_together() {
     let result = run(
         &[ParamDecl::new("tok")],
@@ -449,7 +437,6 @@ fn test_secret_and_env_source_together() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: non-secret env-source warning is not implemented yet"]
 fn test_env_source_on_a_non_secret_param_warns_and_leaves_it_unset() {
     let result = run(
         &[ParamDecl::new("a")],
@@ -468,7 +455,6 @@ fn test_env_source_on_a_non_secret_param_warns_and_leaves_it_unset() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: no-secret must clear env-source"]
 fn test_no_secret_clears_the_env_source() {
     let result = run(
         &[ParamDecl {
@@ -486,7 +472,6 @@ fn test_no_secret_clears_the_env_source() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: unknown tweaks must warn and continue"]
 fn test_tweak_on_unknown_name_warns_not_declared() {
     let result = run(
         &[ParamDecl::new("a")],
@@ -504,7 +489,6 @@ fn test_tweak_on_unknown_name_warns_not_declared() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: one touched row must apply all of its tweaks"]
 fn test_a_name_touched_by_two_ops_is_listed_once_and_both_apply() {
     let result = run(
         &[ParamDecl::new("a")],
@@ -526,7 +510,6 @@ fn test_a_name_touched_by_two_ops_is_listed_once_and_both_apply() {
 // rollback on invalid
 
 #[test]
-#[ignore = "Stage 2 RED: invalid choice must roll back the complete row"]
 fn test_choice_type_without_choices_reverts_and_warns() {
     let original = ParamDecl {
         help: "keep me".to_owned(),
@@ -550,7 +533,6 @@ fn test_choice_type_without_choices_reverts_and_warns() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: a same-call choice list must satisfy the invariant"]
 fn test_choice_type_with_choices_in_the_same_call_is_valid() {
     let result = run(
         &[ParamDecl::new("a")],
@@ -568,7 +550,6 @@ fn test_choice_type_with_choices_in_the_same_call_is_valid() {
 // bool flag action hygiene
 
 #[test]
-#[ignore = "Stage 2 RED: off-by-default bool flag action is not implemented yet"]
 fn test_type_tweak_to_bool_on_a_flag_sets_store_true() {
     let result = run(
         &[ParamDecl {
@@ -584,7 +565,6 @@ fn test_type_tweak_to_bool_on_a_flag_sets_store_true() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: positional bool must keep an empty action"]
 fn test_type_tweak_to_bool_on_a_positional_keeps_empty_action() {
     let result = run(
         &[ParamDecl::new("b")],
@@ -597,7 +577,6 @@ fn test_type_tweak_to_bool_on_a_positional_keeps_empty_action() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: env-delivered bool must keep an empty action"]
 fn test_type_tweak_to_bool_on_env_delivery_keeps_empty_action() {
     let result = run(
         &[ParamDecl {
@@ -614,7 +593,6 @@ fn test_type_tweak_to_bool_on_env_delivery_keeps_empty_action() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: moving off bool must clear a stale action"]
 fn test_type_tweak_off_bool_sheds_stale_action() {
     let result = run(
         &[ParamDecl {
@@ -632,7 +610,6 @@ fn test_type_tweak_off_bool_sheds_stale_action() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: an explicit bool action must survive unrelated tweaks"]
 fn test_non_type_tweak_on_a_bool_leaves_its_action_alone() {
     let result = run(
         &[ParamDecl {
@@ -650,7 +627,6 @@ fn test_non_type_tweak_on_a_bool_leaves_its_action_alone() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: stale non-bool actions must clear on any tweak"]
 fn test_non_type_tweak_on_a_str_with_stale_action_clears_it() {
     let result = run(
         &[ParamDecl {
@@ -738,7 +714,6 @@ fn test_as_param_type_rejects_others() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: on-by-default bool flag must roll back"]
 fn test_bool_flag_that_is_on_by_default_is_refused_not_stamped() {
     let original = ParamDecl {
         flag: "--verbose".to_owned(),
@@ -762,7 +737,6 @@ fn test_bool_flag_that_is_on_by_default_is_refused_not_stamped() {
 }
 
 #[test]
-#[ignore = "Stage 2 RED: off-by-default bool flag must get store_true"]
 fn test_bool_flag_that_is_off_by_default_still_gets_store_true() {
     let result = run(
         &[ParamDecl {
