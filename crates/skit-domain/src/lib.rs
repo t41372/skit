@@ -347,6 +347,7 @@ impl EntrySettings {
 
     /// Write the typed fields without changing unknown extension fields.
     pub fn write_to_meta(&self, meta: &mut EntryMeta) {
+        let parameter_extensions = parameter_extensions(meta);
         for key in [
             "template",
             "dependencies",
@@ -379,18 +380,55 @@ impl EntrySettings {
                     self.parameters
                         .iter()
                         .map(|parameter| {
-                            Value::Object(
-                                parameter
-                                    .to_meta_map()
-                                    .into_iter()
-                                    .collect::<Map<String, Value>>(),
-                            )
+                            let mut row = parameter_extensions
+                                .get(&parameter.name)
+                                .cloned()
+                                .unwrap_or_default();
+                            row.extend(parameter.to_meta_map());
+                            Value::Object(row)
                         })
                         .collect(),
                 ),
             );
         }
     }
+}
+
+const PARAMETER_ROW_KEYS: &[&str] = &[
+    "name",
+    "binding",
+    "delivery",
+    "type",
+    "default",
+    "required",
+    "multiple",
+    "repeat",
+    "choices",
+    "prompt",
+    "help",
+    "secret",
+    "env_source",
+    "flag",
+    "action",
+    "order",
+    "env_target",
+];
+
+fn parameter_extensions(meta: &EntryMeta) -> BTreeMap<String, Map<String, Value>> {
+    let mut output = BTreeMap::<String, Map<String, Value>>::new();
+    let Some(rows) = meta.extra.get("parameters").and_then(Value::as_array) else {
+        return output;
+    };
+    for row in rows.iter().filter_map(Value::as_object) {
+        let declaration = ParamDecl::from_meta_map(&row.clone().into_iter().collect());
+        let extensions = output.entry(declaration.name).or_default();
+        for (key, value) in row {
+            if !PARAMETER_ROW_KEYS.contains(&key.as_str()) {
+                extensions.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    output
 }
 
 fn extra_string(meta: &EntryMeta, key: &str) -> String {

@@ -60,6 +60,49 @@ fn legacy_extra_fields_decode_to_one_typed_runtime_view() {
     assert_eq!(settings.parameters[0].parameter_type, ParameterType::Str);
     assert_eq!(settings.parameters[1].name, "second");
     assert_eq!(settings.parameters[1].delivery, ParameterDelivery::Flag);
+
+    let mut edited = settings;
+    edited.parameters[0].env_target = "RENAMED".to_owned();
+    edited.parameters[1].help = "kept in order".to_owned();
+    edited.write_to_meta(&mut meta);
+    let rows = meta.extra["parameters"].as_array().unwrap();
+    assert_eq!(
+        rows.len(),
+        2,
+        "non-object garbage is dropped on an authorized write"
+    );
+    assert_eq!(rows[0]["name"], "name");
+    assert_eq!(rows[0]["env_target"], "RENAMED");
+    assert_eq!(rows[0]["future_axis"], json!({"keep": true}));
+    assert_eq!(rows[1]["name"], "second");
+    assert_eq!(rows[1]["help"], "kept in order");
+    assert_eq!(rows[1]["future_order"], 2);
+
+    let mut duplicates = EntryMeta::minimal("Duplicates", EntryKind::parse("command").unwrap());
+    duplicates.extra.insert(
+        "parameters".to_owned(),
+        json!([
+            {"name": "same", "delivery": "env", "left": 1, "shared": "old"},
+            {"name": "same", "delivery": "env", "type": "int", "right": 2, "shared": "new"}
+        ]),
+    );
+    let mut deduplicated = EntrySettings::from_meta(&duplicates);
+    let mut winner = deduplicated.parameters.pop().unwrap();
+    winner.parameter_type = ParameterType::Float;
+    deduplicated.parameters = vec![winner];
+    deduplicated.write_to_meta(&mut duplicates);
+    assert_eq!(
+        duplicates.extra["parameters"],
+        json!([{
+            "name": "same",
+            "delivery": "env",
+            "type": "float",
+            "left": 1,
+            "right": 2,
+            "shared": "new"
+        }]),
+        "a normalized duplicate keeps every extension and lets the last raw value win"
+    );
 }
 
 #[test]

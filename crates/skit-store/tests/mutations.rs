@@ -241,10 +241,34 @@ fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
         "the settings write must publish a fresh registry projection"
     );
 
-    let mut cleared = EntrySettings::from_meta(&resolved.meta);
+    let mut hand_edit = fs::read_to_string(&meta_path).unwrap();
+    hand_edit = hand_edit.replace(
+        "type = \"int\"\n",
+        "type = \"int\"\nfuture_axis = \"keep\"\n",
+    );
+    fs::write(&meta_path, hand_edit).unwrap();
+    let mut stale_settings = EntrySettings::from_meta(&resolved.meta);
+    stale_settings.parameters[0].help = "edited through the typed API".to_owned();
+    let merged = store
+        .update_settings(&resolved, &stale_settings, &resolved.meta.workdir)
+        .unwrap();
+    let document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert_eq!(
+        document["parameters"][0]["future_axis"].as_str(),
+        Some("keep")
+    );
+    assert_eq!(
+        document["parameters"][0]["help"].as_str(),
+        Some("edited through the typed API")
+    );
+
+    let mut cleared = EntrySettings::from_meta(&merged.meta);
     cleared.parameters.clear();
     let cleared = store
-        .update_settings(&resolved, &cleared, &resolved.meta.workdir)
+        .update_settings(&merged, &cleared, &merged.meta.workdir)
         .unwrap();
     let expected_after = EntrySettings::from_meta(&cleared.meta);
     assert!(expected_after.parameters.is_empty());
