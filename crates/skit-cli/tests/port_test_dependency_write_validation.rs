@@ -36,20 +36,17 @@
 //! - Python `drafts_dir()` / `is_draft(path)` -> `<SKIT_DATA_DIR>/drafts` + the `skit-` name prefix
 //!   (Rust `is_owned_draft`, cli.rs:5803).
 //!
-//! Buckets (recorded per test in the structured result):
-//! - REAL asserting `#[test]` (API exists, behavior agrees): the unpin/preserve/clear/valid deps
+//! Buckets (21 tests; 18 active, 3 semantic-duplicate closures):
+//! - Active asserting `#[test]`: the unpin/preserve/clear/valid deps
 //!   writes, the deps-before-needs abort order, the npm-skip, the whitespace strip-and-drop, the
 //!   `-`/`none` normalization, the oracle PEP 440/508 refusal copy, and the suggest filter +
 //!   no-block add, plus the complete escape for an unclassifiable file outside the drafts directory.
-//! - ABSENT / GAP (full asserting body, `#[ignore]`d, MUST-FIX): the drafts guard and the
-//!   draft-aware "can't classify" variant (Python cli.py:1894-1933, cli.py:2053-2066) are not
-//!   built in `add_with_config`, so a draft added as exe/ref SUCCEEDS instead of being refused,
-//!   and a shebang-less draft gets the generic `could not infer the entry kind` message. Pending
-//!   task #15 ("Refuse the add-lane inputs version 0.4 refuses") corroborates this is a known gap,
-//!   not a mistranslation. The bodies are full assertions (the CLI call compiles), not stubs.
+//! - The unique shebang-less draft voice is active. The inferred-exe, explicit-exe, and
+//!   ref-before-prompt exact names remain frozen closures and name their stronger canonical owner.
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use assert_cmd::Command;
@@ -78,12 +75,16 @@ impl Sandbox {
     }
 
     fn command(&self) -> Command {
+        self.command_in("en")
+    }
+
+    fn command_in(&self, language: &str) -> Command {
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
         command
             .env("SKIT_DATA_DIR", self.data.path())
             .env("SKIT_STATE_DIR", self.state.path())
             .env("SKIT_CONFIG_DIR", self.config.path())
-            .env("SKIT_LANG", "en")
+            .env("SKIT_LANG", language)
             .env("HOME", self.home.path())
             .current_dir(self.home.path());
         command
@@ -92,6 +93,10 @@ impl Sandbox {
     /// Run `skit <args>` and return the raw process output (exit code + streams).
     fn run(&self, args: &[&str]) -> Output {
         self.command().args(args).output().unwrap()
+    }
+
+    fn run_in(&self, language: &str, args: &[&str]) -> Output {
+        self.command_in(language).args(args).output().unwrap()
     }
 
     /// Run `skit <args>`, assert exit 0, and return stdout as text.
@@ -149,6 +154,26 @@ impl Sandbox {
             "--no-input",
         ]);
     }
+}
+
+fn tree_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn collect(root: &Path, path: &Path, rows: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(root, &path, rows);
+            } else {
+                rows.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut rows = BTreeMap::new();
+    collect(root, root, &mut rows);
+    rows
 }
 
 /// Python `_flat(text)`: collapse every run of whitespace to one space.
@@ -425,11 +450,7 @@ const DRAFT_HEAD: &str = "one of skit's own kept drafts";
 
 #[cfg(unix)]
 #[test]
-#[ignore = "ABSENT (GAP, MUST-FIX): the drafts guard (Python cli.py:1894-1933) is not built in \
-`add_with_config`, so an inferred-exe kept draft is ADDED as an exe reference (exit 0) instead of \
-being refused (exit 2) with the --kind variant. The body is a full assertion (the CLI call \
-compiles). Pending task #15 corroborates the add-lane gap. Python ref \
-test_dependency_write_validation.py:281-293."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger canonical inferred-executable/no-write owner is port_test_add_validation_contracts::test_inferred_exe_on_a_kept_draft_is_refused_and_keeps_it. Keep this frozen body for oracle accounting."]
 fn test_inferred_exe_draft_gets_the_kind_variant() {
     use std::os::unix::fs::PermissionsExt;
     // A hand-planted +x on an extensionless draft INFERS exe with no flag passed — the refusal
@@ -447,9 +468,7 @@ fn test_inferred_exe_draft_gets_the_kind_variant() {
 }
 
 #[test]
-#[ignore = "ABSENT (GAP, MUST-FIX): with the drafts guard absent (Python cli.py:1894-1933), --exe \
-on a kept draft is ADDED as an exe reference (exit 0) instead of being refused (exit 2) with `Drop \
---exe.`. The body is a full assertion. Python ref test_dependency_write_validation.py:296-308."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger canonical explicit-executable/no-write owner is port_test_add_validation_contracts::test_exe_flag_on_a_kept_draft_is_refused_naming_only_exe. Keep this frozen body for oracle accounting."]
 fn test_exe_flag_on_the_same_draft_gets_the_drop_variant_naming_only_exe() {
     // The flag route on the same kind of file: --exe WAS passed, so the message tells the user to
     // drop it — and names ONLY --exe, since that is the only flag passed.
@@ -473,24 +492,42 @@ fn test_exe_flag_on_the_same_draft_gets_the_drop_variant_naming_only_exe() {
 }
 
 #[test]
-#[ignore = "ABSENT (GAP, MUST-FIX): the draft-aware `can't classify` variant (Python \
-cli.py:2053-2066) is not built — a shebang-less kept draft gets the GENERIC `could not infer the \
-entry kind; pass --kind KIND` refusal (exit 2) that names none of --kind/--prompt-for-a-draft. \
-The body is a full assertion. Python ref test_dependency_write_validation.py:311-324."]
 fn test_shebang_less_unclassifiable_draft_gets_the_classify_variant() {
     // A weird-extension, shebang-less kept draft infers 'unknown' with no #! — the classify variant
     // offers only --kind / --prompt (never --exe or --cmd).
-    let sandbox = Sandbox::new();
-    let draft = sandbox.draft("skit-new-weird.xyz", "just some content\n");
-    let output = sandbox.run(&["add", draft.to_str().unwrap(), "--name", "w1", "--no-input"]);
-    assert_eq!(output.status.code(), Some(2), "{}", flat(&output));
-    let flat = flat(&output);
-    assert!(flat.contains("kept draft skit can't classify"));
-    assert!(flat.contains("--kind <language> to add it as a script"));
-    assert!(flat.contains("--prompt for an AI-agent prompt"));
-    assert!(!flat.contains("--exe")); // the draft variant never offers the program escape
-    assert!(!flat.contains("--cmd")); // nor the command-template escape
-    assert!(draft.exists());
+    let expected = [
+        (
+            "en",
+            "skit-new-weird.xyz is a kept draft skit can't classify — pass --kind <language> to add it as a script, or --prompt for an AI-agent prompt.",
+        ),
+        (
+            "zh-CN",
+            "skit-new-weird.xyz 是 skit 无法分类的保留草稿——请用 --kind <语言> 将它加入为脚本,或用 --prompt 加入为 AI agent 提示词。",
+        ),
+        (
+            "zh-TW",
+            "skit-new-weird.xyz 是 skit 無法分類的保留草稿——請用 --kind <語言> 將它加入為腳本,或用 --prompt 加入為 AI agent 提示詞。",
+        ),
+    ];
+    for (language, expected) in expected {
+        let sandbox = Sandbox::new();
+        let draft = sandbox.draft("skit-new-weird.xyz", "just some content\n");
+        let data_before = tree_bytes(sandbox.data.path());
+        let state_before = tree_bytes(sandbox.state.path());
+        let config_before = tree_bytes(sandbox.config.path());
+        let output = sandbox.run_in(
+            language,
+            &["add", draft.to_str().unwrap(), "--name", "w1", "--no-input"],
+        );
+        assert_eq!(output.status.code(), Some(2), "{}", flat(&output));
+        let flat = flat(&output);
+        assert!(flat.contains(expected), "language={language}: {flat}");
+        assert!(!flat.contains("--exe"));
+        assert!(!flat.contains("--cmd"));
+        assert_eq!(tree_bytes(sandbox.data.path()), data_before);
+        assert_eq!(tree_bytes(sandbox.state.path()), state_before);
+        assert_eq!(tree_bytes(sandbox.config.path()), config_before);
+    }
 }
 
 #[test]
@@ -513,12 +550,7 @@ fn test_same_unclassifiable_file_outside_drafts_gets_the_full_escape() {
 // ==========================================================================
 
 #[test]
-#[ignore = "ABSENT (GAP, MUST-FIX): the drafts guard (Python cli.py:1894-1933) is absent, so a \
-.md kept draft with --ref reaches the generic `could not infer the entry kind` refusal (exit 2) \
-instead of the draft-head `Drop --ref.` guard. The oracle's Confirm.ask monkeypatch (proving the \
-guard precedes the prompt ask) is an untranslatable in-process mechanism; this asserts the \
-observable refusal contract. The body is a full assertion. Python ref \
-test_dependency_write_validation.py:346-364."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): guard-before-question ordering is folded into port_test_add_validation_contracts::test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref, the stronger canonical three-locale, real-PTY, full-tree no-write owner. Keep this frozen body for oracle accounting."]
 fn test_ref_on_an_md_draft_is_refused_before_the_prompt_ask() {
     // A .md kept draft with --ref must be refused at the drafts guard BEFORE the 'looks like a
     // prompt' ask. Only --ref was passed — only --ref is named.

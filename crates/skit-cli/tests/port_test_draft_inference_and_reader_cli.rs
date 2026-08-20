@@ -29,26 +29,25 @@
 //!   Python `""` result maps to Rust `None` (`unwrap_or_default()` in the row loop). The oracle's
 //!   `(None, "")` row has no analogue in the typed `&str` signature and is recorded in a comment.
 //!
-//! Bucket disposition (27 oracle defs; 21 pass, 6 `#[ignore]`):
-//! - 21 PASS asserting tests: `python_version_pin` rows, `cli_params` reader rows, the
+//! Bucket disposition (27 oracle defs; 26 remain here and one shared classifier owner moved to
+//! `skit-language/tests/port_test_store_inference.rs`; 23 pass, 3 `#[ignore]` here):
+//! - 21 previously passing tests: `python_version_pin` rows, `cli_params` reader rows, the
 //!   bash-shebang-.py-outside-drafts / parked-file lanes, both python2 refusals, both
 //!   silently-beats pin overrides, all three shebang-pin announcement paths, both no-flip-note
 //!   manages, both reference-add voices, and the singular/plural field-count notices.
-//! - 3 FAILING CONTRACT (divergence) tests: full asserting bodies kept intact behind `#[ignore]`;
-//!   every label was verified against the built binary. The recurring shapes are: no shebang-first
-//!   / no consume-on-success unlink on the plain path lane (Rust classifies a `.py` draft by its
-//!   extension and never unlinks — ties to pending task #15, same diagnosis as the sibling
-//!   `port_test_add_lane_contracts.rs`).
+//! - 2 active draft-root contracts: bash/shebang reclassification plus consume, and unknown
+//!   shebang refusal plus keep. The no-shebang row remains as a semantic-duplicate closure owned by
+//!   the shared classifier and generic path cleanup contracts.
 //! - 2 cross-crate stubs: `is_draft` and `_onboard_script_params` are crate-private helpers in
 //!   `skit-cli` (`is_owned_draft` cli.rs:5803, the analyzerless guard in `_onboard_script_params`
 //!   cli.py:603), unreachable from an integration test. `is_owned_draft` DOES implement both halves
 //!   correctly — that stub is a reachability gap, not a behavior gap.
-//! - 1 absent gap: `kind_for_draft` has no public equivalent in any crate (`infer_kind` is a
-//!   different, extension-first contract), and the binary does not apply the shebang-first rule at
-//!   all — see the section-2 divergence tests for the CLI-level evidence.
+//! - The former absent `kind_for_draft` exact owner is rehomed to `skit-language`, where the shared
+//!   classifier belongs. It is not a CLI surrogate.
 
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use serde_json::{Value, json};
@@ -73,12 +72,16 @@ impl Sandbox {
     }
 
     fn command(&self) -> assert_cmd::Command {
+        self.command_in("en")
+    }
+
+    fn command_in(&self, language: &str) -> assert_cmd::Command {
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
         command
             .env("SKIT_DATA_DIR", self.data.path())
             .env("SKIT_STATE_DIR", self.state.path())
             .env("SKIT_CONFIG_DIR", self.config.path())
-            .env("SKIT_LANG", "en");
+            .env("SKIT_LANG", language);
         command
     }
 
@@ -150,6 +153,26 @@ impl Sandbox {
     }
 }
 
+fn tree_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn collect(root: &Path, path: &Path, rows: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        for entry in fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                collect(root, &path, rows);
+            } else {
+                rows.insert(
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut rows = BTreeMap::new();
+    collect(root, root, &mut rows);
+    rows
+}
+
 /// Python `result.output` — the merged streams a CliRunner user would see (stdout then stderr).
 fn combined(output: &Output) -> String {
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
@@ -206,15 +229,6 @@ fn test_python_version_pin_rows() {
 }
 
 #[test]
-#[ignore = "ABSENT gap: no public `kind_for_draft` exists in any crate. `skit_language::infer_kind` is a different, extension-first contract, and the binary does not apply the shebang-first rule for skit's OWN drafts at all (a bash-shebang `skit-new-*.py` lands as python — see `test_cli_add_bash_shebang_draft_lands_as_shell_and_unlinks`). MUST-FIX: port `registry.py:442-473 kind_for_draft` (shebang outranks the mkstemp `.py` suffix for owned drafts; placeholder-bodied extensions like `.prompt.md` outrank the shebang; unregistered shebang -> 'unknown'; no shebang -> plain infer_kind)."]
-fn test_kind_for_draft_shebang_first() {
-    // skit's OWN drafts are classified by shebang, not the mkstemp .py suffix:
-    //   kind_for_draft("skit-new-a.py", "#!/usr/bin/env bash\necho hi\n") == "shell"
-    //   kind_for_draft("skit-new-b.py", "#!/usr/bin/awk -f\nBEGIN{print 1}\n") == "unknown"
-    //   kind_for_draft("skit-new-c.py", "print('x')\n") == "python"  # no shebang: suffix
-}
-
-#[test]
 #[ignore = "CROSS-CRATE: `is_draft` maps to the crate-private `skit_cli::cli::is_owned_draft` (cli.rs:5803), unreachable from an integration test without exporting it. That helper already checks BOTH halves correctly — `name.starts_with(\"skit-\")` AND `parent == drafts_dir` — so this is a reachability gap, not a behavior gap."]
 fn test_is_draft_needs_both_dir_and_prefix() {
     // is_draft(drafts_dir()/"skit-new-x.py") is True
@@ -242,54 +256,77 @@ fn test_reader_fields_predicate_rows() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle classifies skit's OWN `.py` draft shebang-first (bash shebang -> shell) and unlinks it on a successful copy (registry.py:442 kind_for_draft + is_draft consume). Rust's plain path lane classifies by extension (the draft lands as PYTHON, not shell) and never calls remove_owned_draft (only cli.rs:1353/5633/5659 do, all off the plain path — the draft SURVIVES). Ties to pending task #15. Verified against the built binary."]
 fn test_cli_add_bash_shebang_draft_lands_as_shell_and_unlinks() {
     // A bash-shebang draft named `skit-new-*.py` (mkstemp's suffix, not a user signal) resumes as
     // a SHELL entry — never a broken python entry with a bash body — and the consumed draft is
     // unlinked.
     let sandbox = Sandbox::new();
-    let draft = sandbox.draft_file("skit-new-ship.py", "#!/usr/bin/env bash\necho drafted\n");
+    const SOURCE: &[u8] = b"#!/usr/bin/env bash\necho drafted\n";
+    let draft = sandbox.draft_file("skit-new-ship.py", std::str::from_utf8(SOURCE).unwrap());
+    let state_before = tree_bytes(sandbox.state.path());
+    let config_before = tree_bytes(sandbox.config.path());
     sandbox
         .command()
         .args(["add", draft.to_str().unwrap(), "-n", "ship", "--no-input"])
         .assert()
         .success();
-    assert_eq!(sandbox.show_json("ship")["kind"], "shell"); // reclassified by shebang
+    let shown = sandbox.show_json("ship");
+    assert_eq!(shown["kind"], "shell"); // reclassified by shebang
+    assert_eq!(shown["mode"], "copy");
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/ship/script.sh")).unwrap(),
+        SOURCE
+    );
     assert!(!draft.exists()); // consumed on success
+    assert_eq!(tree_bytes(sandbox.state.path()), state_before);
+    assert_eq!(tree_bytes(sandbox.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle refuses an unregistered awk shebang with exit 2, the `--kind` escape, and the shebang-aware voice, and KEEPS the draft (registry.py:442 -> 'unknown' -> refusal). Rust classifies the draft by its `.py` extension and ADDS it (exit 0, kind python) — no refusal at all. Ties to pending task #15. Verified against the built binary."]
 fn test_cli_add_awk_shebang_draft_is_unknown_kept_with_kind_escape() {
     // An awk shebang is unregistered: the draft is "unknown", refused with exit 2 and the --kind
     // escape (never a fabricated entry), and KEPT because the add never reached the
     // consume-on-success unlink. The draft carries a #!, so the refusal is the shebang-aware voice
     // ("names no interpreter"), not the shebang-less "isn't a script" line.
-    let sandbox = Sandbox::new();
-    let draft = sandbox.draft_file("skit-new-awk.py", "#!/usr/bin/awk -f\nBEGIN{print 1}\n");
-    let output = sandbox
-        .command()
-        .args(["add", draft.to_str().unwrap(), "-n", "awky", "--no-input"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(
-        combined(&output).contains("--kind"),
-        "{}",
-        combined(&output)
-    ); // the escape is named
-    let flat = flat(&output);
-    assert!(
-        flat.contains("The #! in skit-new-awk.py names no interpreter skit knows"),
-        "{flat}"
-    );
-    assert!(!flat.contains("isn't a script or an executable"), "{flat}"); // not the shebang-less voice
-    assert!(draft.exists()); // a refused add consumes nothing
-    assert!(!sandbox.entry_exists("awky"));
+    let expected = [
+        (
+            "en",
+            "The #! in skit-new-awk.py names no interpreter skit knows — pass --kind <language> to choose one.",
+        ),
+        (
+            "zh-CN",
+            "skit-new-awk.py 的 #! 指定了 skit 不认识的解释器——请用 --kind <语言> 指定一个。",
+        ),
+        (
+            "zh-TW",
+            "skit-new-awk.py 的 #! 指定了 skit 不認識的直譯器——請用 --kind <語言> 指定一個。",
+        ),
+    ];
+    for (language, expected) in expected {
+        let sandbox = Sandbox::new();
+        let draft = sandbox.draft_file("skit-new-awk.py", "#!/usr/bin/awk -f\nBEGIN{print 1}\n");
+        let data_before = tree_bytes(sandbox.data.path());
+        let state_before = tree_bytes(sandbox.state.path());
+        let config_before = tree_bytes(sandbox.config.path());
+        let output = sandbox
+            .command_in(language)
+            .args(["add", draft.to_str().unwrap(), "-n", "awky", "--no-input"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
+        let flat = flat(&output);
+        assert!(flat.contains(expected), "language={language}: {flat}");
+        assert!(!flat.contains("--exe"), "{flat}");
+        assert!(!flat.contains("isn't a script or an executable"), "{flat}");
+        assert_eq!(tree_bytes(sandbox.data.path()), data_before);
+        assert_eq!(tree_bytes(sandbox.state.path()), state_before);
+        assert_eq!(tree_bytes(sandbox.config.path()), config_before);
+        assert!(!sandbox.entry_exists("awky"));
+    }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the kind (python) half holds, but the oracle unlinks the resumed draft on a successful copy (is_draft consume) and Rust's plain path lane never calls remove_owned_draft — the draft SURVIVES, so `!draft.exists()` fails. Ties to pending task #15. Verified against the built binary."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): no-shebang fallback is owned by skit-language::test_kind_for_draft_shebang_first, and successful path-copy cleanup is owned by port_test_add_lane_contracts::test_path_add_of_a_drafts_home_file_unlinks_it_on_copy. Keep this frozen body for oracle accounting; do not create a second cleanup owner."]
 fn test_cli_add_no_shebang_draft_falls_back_to_python() {
     // No shebang at all: the suffix is all there is, so a `skit-new-*.py` draft is python (the
     // fallback branch of kind_for_draft).

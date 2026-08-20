@@ -1149,6 +1149,26 @@ const CATALOG: &[Translation] = &[
         "skit 的草稿路徑不是其自有目錄：{}",
     ),
     row!(
+        "{} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {}.",
+        "{} 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序项目做不到这点。请去掉 {}。",
+        "{} 是 skit 自己保留的草稿——恢復草稿一律以副本加入(成功後即消耗),而 reference 或程式項目做不到這點。請拿掉 {}。",
+    ),
+    row!(
+        "{} is one of skit's own kept drafts, and a draft is always added as a script or prompt copy — pass --kind <language> to name its language.",
+        "{} 是 skit 自己保留的草稿,而草稿一律以脚本或提示词副本加入——请用 --kind <语言> 指定它的语言。",
+        "{} 是 skit 自己保留的草稿,而草稿一律以腳本或提示詞副本加入——請用 --kind <語言> 指定它的語言。",
+    ),
+    row!(
+        "The #! in {} names no interpreter skit knows — pass --kind <language> to choose one.",
+        "{} 的 #! 指定了 skit 不认识的解释器——请用 --kind <语言> 指定一个。",
+        "{} 的 #! 指定了 skit 不認識的直譯器——請用 --kind <語言> 指定一個。",
+    ),
+    row!(
+        "{} is a kept draft skit can't classify — pass --kind <language> to add it as a script, or --prompt for an AI-agent prompt.",
+        "{} 是 skit 无法分类的保留草稿——请用 --kind <语言> 将它加入为脚本,或用 --prompt 加入为 AI agent 提示词。",
+        "{} 是 skit 無法分類的保留草稿——請用 --kind <語言> 將它加入為腳本,或用 --prompt 加入為 AI agent 提示詞。",
+    ),
+    row!(
         "source changed while the add review was open; review it again",
         "源文件在添加审核期间发生了变化；请重新审核",
         "來源檔案在新增檢查期間已變更；請重新檢查",

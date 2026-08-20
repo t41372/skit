@@ -18,7 +18,7 @@ use dialoguer::{Confirm, Input, MultiSelect, Password};
 use skit_application::{
     AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope, AgentTarget, CreateEntry,
     EntryPayload, ExitClass, LibraryScan, LibraryService, RepositoryError, RepositoryOperation,
-    SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
+    SourceIdentity, SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
     form_feedback::GlobCountPort,
     form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill},
     health::{
@@ -56,11 +56,11 @@ use skit_i18n::{
 use skit_language::{
     LosslessSource, ParseOutcome, UvMetadata, UvMetadataEditError, cli_params, decode_prompt,
     detect_candidates, effective_uv_metadata_bytes, external_dependencies_at,
-    has_uv_metadata_block_bytes, infer_kind, managed_params, normalize_shell_default,
-    parse_document, placeholder_params, plan_uv_metadata_edit, python_version_pin,
-    read_uv_metadata, shebang_program, suggest_description, validate_pep440_specifiers,
-    validate_pep508_requirement, write_managed_params, write_managed_params_bytes,
-    write_uv_metadata,
+    has_uv_metadata_block_bytes, infer_draft_kind, infer_kind, managed_params,
+    normalize_shell_default, parse_document, placeholder_params, plan_uv_metadata_edit,
+    python_version_pin, read_uv_metadata, shebang_program, suggest_description,
+    validate_pep440_specifiers, validate_pep508_requirement, write_managed_params,
+    write_managed_params_bytes, write_uv_metadata,
 };
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe,
@@ -74,15 +74,15 @@ use skit_store::{
 };
 use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
-    Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor, DraftKind,
-    DraftSummary, Effect as UiEffect, FieldValue, FormField, FormPurpose, FormView, HealthAction,
-    HealthView, HostRequest, KnownEntryKind, LibraryState, PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT,
-    PROMPT_LIST_PREVIEW_LIMIT, PreferencesAction, PreferencesEffect, PreferencesView,
-    ReviewDefaults, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
-    RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity,
-    RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen, SettingsInputs,
-    SettingsSectionId, SettingsView, SourceSnapshot as AddSourceSnapshot, SubmittedValues,
-    TypedValue,
+    Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor,
+    DraftDeleteOutcome, DraftKind, DraftSummary, Effect as UiEffect, FieldValue, FormField,
+    FormPurpose, FormView, HealthAction, HealthView, HostRequest, KnownEntryKind, LibraryState,
+    PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_LIST_PREVIEW_LIMIT, PreferencesAction,
+    PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext, RunFormOptions,
+    RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest,
+    RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
+    SettingsInputs, SettingsSectionId, SettingsView, SourceSnapshot as AddSourceSnapshot,
+    SubmittedValues, TypedValue,
 };
 use thiserror::Error;
 use unicode_width::UnicodeWidthStr as _;
@@ -1170,6 +1170,7 @@ fn add_command(
     edit: bool,
 ) -> Result<(), CliError> {
     let lane = validate_add_dispatch(&options, edit)?;
+    preflight_owned_draft_boundary(service.repository().data_dir(), &options)?;
     let no_input = options.no_input;
     if lane == AddLane::Editor && no_input {
         return Err(CliError::Usage(Message::new(
@@ -1291,6 +1292,78 @@ fn add_command(
         }
     }
     add(service, options)
+}
+
+fn preflight_owned_draft_boundary(data_dir: &Path, options: &AddOptions) -> Result<(), CliError> {
+    let Some(input) = options
+        .source
+        .as_deref()
+        .filter(|path| *path != Path::new("-"))
+    else {
+        return Ok(());
+    };
+    let Ok(snapshot) = tui_add_source(data_dir, input) else {
+        return Ok(());
+    };
+    if !snapshot.is_draft {
+        return Ok(());
+    }
+    let text = LosslessSource::from_bytes(&snapshot.bytes);
+    let shebang = text
+        .normalized_text()
+        .lines()
+        .next()
+        .filter(|line| line.starts_with("#!"));
+    let inferred = infer_draft_kind(
+        &snapshot.path,
+        shebang,
+        snapshot
+            .permissions
+            .unix_mode
+            .is_some_and(|mode| mode & 0o111 != 0),
+    );
+    refuse_owned_draft_boundary(
+        &snapshot.path,
+        options.reference,
+        options.executable,
+        options.kind.as_deref() == Some("exe"),
+        options.kind.is_none() && !options.prompt && inferred == Some("exe"),
+    )
+}
+
+fn refuse_owned_draft_boundary(
+    source: &Path,
+    reference: bool,
+    executable_flag: bool,
+    kind_executable_flag: bool,
+    inferred_executable: bool,
+) -> Result<(), CliError> {
+    if !reference && !executable_flag && !kind_executable_flag && !inferred_executable {
+        return Ok(());
+    }
+    let mut flags = Vec::new();
+    if reference {
+        flags.push("--ref");
+    }
+    if executable_flag {
+        flags.push("--exe");
+    }
+    if kind_executable_flag {
+        flags.push("--kind exe");
+    }
+    let file = source.file_name().unwrap_or(source.as_os_str());
+    Err(CliError::Usage(if flags.is_empty() {
+        Message::new(
+            "{} is one of skit's own kept drafts, and a draft is always added as a script or prompt copy — pass --kind <language> to name its language.",
+        )
+        .with(file.to_string_lossy())
+    } else {
+        Message::new(
+            "{} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {}.",
+        )
+        .with(file.to_string_lossy())
+        .with(flags.join("/"))
+    }))
 }
 
 /// Report the source path an interactive add should review before it writes.
@@ -3168,6 +3241,8 @@ fn add_with_config(
         no_input,
     } = options;
     let dependencies_explicit = dependencies_explicit || !dependencies.is_empty();
+    let executable_flag = executable;
+    let kind_executable_flag = kind.as_deref() == Some("exe");
     let mut dependencies = dependencies
         .into_iter()
         .map(|item| item.trim().to_owned())
@@ -3328,13 +3403,25 @@ fn add_with_config(
         .next()
         .filter(|line| line.starts_with("#!"));
     let file_is_executable = permissions.unix_mode.is_some_and(|mode| mode & 0o111 != 0);
+    let owned_draft = !from_stdin && is_owned_draft(service.repository().data_dir(), &source);
     let inferred = if prompt {
         Some("prompt")
     } else if executable {
         Some("exe")
+    } else if owned_draft {
+        infer_draft_kind(&source, shebang, file_is_executable)
     } else {
         infer_kind(&source, shebang, file_is_executable)
     };
+    if owned_draft {
+        refuse_owned_draft_boundary(
+            &source,
+            reference,
+            executable_flag,
+            kind_executable_flag,
+            kind.is_none() && inferred == Some("exe"),
+        )?;
+    }
     let picked_kind = if kind.is_none()
         && inferred.is_none()
         && !from_stdin
@@ -3370,6 +3457,14 @@ fn add_with_config(
         && shebang.is_some()
     {
         let file = source.file_name().unwrap_or(source.as_os_str());
+        if owned_draft {
+            return Err(CliError::Usage(
+                Message::new(
+                    "The #! in {} names no interpreter skit knows — pass --kind <language> to choose one.",
+                )
+                .with(file.to_string_lossy()),
+            ));
+        }
         return Err(CliError::Usage(
             Message::new(
                 "The #! in {} names no interpreter skit knows — pass --kind <language> to choose one, or --exe to run it directly.",
@@ -3388,6 +3483,20 @@ fn add_with_config(
         return Err(CliError::Usage(
             Message::new(
                 "{} isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.",
+            )
+            .with(file.to_string_lossy()),
+        ));
+    }
+    if kind.is_none()
+        && inferred.is_none()
+        && picked_kind.is_none()
+        && owned_draft
+        && shebang.is_none()
+    {
+        let file = source.file_name().unwrap_or(source.as_os_str());
+        return Err(CliError::Usage(
+            Message::new(
+                "{} is a kept draft skit can't classify — pass --kind <language> to add it as a script, or --prompt for an AI-agent prompt.",
             )
             .with(file.to_string_lossy()),
         ));
@@ -7228,8 +7337,9 @@ fn tui_add_effect(
                     .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::DraftEdited { request, result }));
             }
-            AddEffect::DeleteDraft { request, path } => {
-                let result = remove_owned_draft(store.data_dir(), &path)
+            AddEffect::DeleteDraft { request, draft } => {
+                let result = remove_owned_draft(store.data_dir(), &draft.path)
+                    .map(|()| DraftDeleteOutcome::Removed)
                     .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::DraftDeleted { request, result }));
             }
@@ -7254,8 +7364,8 @@ fn tui_add_effect(
                     .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::CommitFinished { request, result }));
             }
-            AddEffect::ConsumeDraft(path) => {
-                if let Err(error) = remove_owned_draft(store.data_dir(), &path) {
+            AddEffect::ConsumeDraft(source) => {
+                if let Err(error) = remove_owned_draft(store.data_dir(), &source.path) {
                     warnings.push(error.message().localize(locale));
                 }
             }
@@ -7316,7 +7426,7 @@ fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, Cl
     let path = resolve_add_source(&expanded)?;
     let metadata = fs::metadata(&path).map_err(|error| source_error("inspect", &path, error))?;
     let is_directory = metadata.is_dir();
-    let (bytes, permissions, is_regular) = if metadata.is_file() {
+    let (bytes, permissions, is_regular, identity) = if metadata.is_file() {
         let mut file = File::open(&path).map_err(|error| source_error("open", &path, error))?;
         let metadata = file
             .metadata()
@@ -7324,9 +7434,19 @@ fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, Cl
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
             .map_err(|error| source_error("read", &path, error))?;
-        (bytes, source_permissions(&metadata), true)
+        (
+            bytes,
+            source_permissions(&metadata),
+            true,
+            source_identity(&metadata),
+        )
     } else {
-        (Vec::new(), source_permissions(&metadata), false)
+        (
+            Vec::new(),
+            source_permissions(&metadata),
+            false,
+            source_identity(&metadata),
+        )
     };
     let is_draft = is_owned_draft(data_dir, &path);
     Ok(AddSourceSnapshot {
@@ -7337,6 +7457,7 @@ fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, Cl
         is_regular,
         is_directory,
         is_draft,
+        identity,
     })
 }
 
@@ -7852,8 +7973,8 @@ fn tui_drafts(data_dir: &Path) -> Vec<DraftSummary> {
         .filter_map(Result::ok)
         .filter(|item| item.file_name().to_string_lossy().starts_with("skit-"))
         .filter_map(|item| {
-            let metadata = item.metadata().ok()?;
-            if !metadata.is_file() {
+            let metadata = fs::symlink_metadata(item.path()).ok()?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return None;
             }
             let modified = metadata
@@ -7864,6 +7985,7 @@ fn tui_drafts(data_dir: &Path) -> Vec<DraftSummary> {
             Some(DraftSummary {
                 path: item.path(),
                 modified,
+                identity: source_identity(&metadata),
             })
         })
         .collect()
@@ -9240,6 +9362,34 @@ fn source_permissions(metadata: &Metadata) -> SourcePermissions {
         readonly: metadata.permissions().readonly(),
         unix_mode: Some(metadata.permissions().mode() & 0o777),
     }
+}
+
+#[cfg(unix)]
+fn source_identity(metadata: &Metadata) -> Option<SourceIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    Some(SourceIdentity::unix(
+        metadata.dev(),
+        metadata.ino(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    ))
+}
+
+#[cfg(windows)]
+fn source_identity(metadata: &Metadata) -> Option<SourceIdentity> {
+    use std::os::windows::fs::MetadataExt as _;
+
+    Some(SourceIdentity::windows(
+        metadata.volume_serial_number()?,
+        metadata.file_index()?,
+        metadata.creation_time(),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn source_identity(_metadata: &Metadata) -> Option<SourceIdentity> {
+    None
 }
 
 #[cfg(not(unix))]

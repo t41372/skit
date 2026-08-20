@@ -25,14 +25,13 @@
 //!   requires_python) and the entry's `meta.toml` (test 14's `dependencies is None`).
 //! - Python `drafts_dir()` -> `<SKIT_DATA_DIR>/drafts`.
 //!
-//! Buckets (recorded per test in the structured result):
-//! - REAL asserting `#[test]` (API exists, behavior agrees): 15 contracts from this oracle plus
+//! Buckets (22 tests; 18 active, 4 ignored):
+//! - Active asserting `#[test]`: 16 contracts from this oracle plus
 //!   `test_deps_need_sets_the_list` and `test_deps_clear_needs`, rehomed here from the runtime
-//!   target because the real binary/store write door is owned by skit-cli-rs. 17 tests.
-//! - FAILING CONTRACT (divergence) — full oracle-faithful body, `#[ignore]`d because the
-//!   Rust behavior diverges (verified against the built binary): the wholly-unimplemented
-//!   drafts-boundary guard (1, 2). 2 tests.
-//! - CLOSURE — 3 ignored exact names: the Python public-store refusal cases (7, 9) have no
+//!   target because the real binary/store write door is owned by skit-cli-rs. The two-flags draft
+//!   boundary is the active multi-flag ordering owner.
+//! - CLOSURE — 4 ignored exact names: the kind-exe draft twin names the stronger canonical owner;
+//!   the Python public-store refusal cases (7, 9) have no
 //!   equivalent Rust public store seam, and their closest CLI mappings duplicate stronger
 //!   executable owners; the language `registry.spec_for(...).deps_flavor` premise (20) is a
 //!   cross-crate compiling stub because the Rust rewrite disperses that surface.
@@ -206,29 +205,49 @@ fn add_shell(sandbox: &Sandbox, name: &str) {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the drafts-boundary guard (oracle cli.py:1894-1933) is wholly unimplemented. `skit add <draft> --ref --exe --no-input` should exit 2 naming 'one of skit's own kept drafts' and 'Drop --ref/--exe.'; Rust adds successfully (exit 0, entry created, draft kept). Verified against the built binary."]
 fn test_two_flags_together_are_both_named_and_joined() {
     // --ref AND --exe together -> both are named, joined with "/" in passing order
     // ("Drop --ref/--exe."). --kind (never passed) stays out of the message.
-    let sandbox = Sandbox::new();
-    let draft = sandbox.draft("skit-new-both.py", "print('x')\n");
-    let assert = sandbox
-        .skit()
-        .arg("add")
-        .arg(&draft)
-        .args(["-n", "both", "--ref", "--exe", "--no-input"])
-        .assert();
-    let output = assert.get_output();
-    assert_eq!(output.status.code(), Some(2));
-    let flat = flatten(&combine(output));
-    assert!(flat.contains("one of skit's own kept drafts"));
-    assert!(flat.contains("Drop --ref/--exe.")); // both named, joined in passing order
-    assert!(!flat.contains("--kind")); // never passed — never named
-    assert!(draft.exists()); // a refused add consumes nothing
+    let expected = [
+        (
+            "en",
+            "skit-new-both.py is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop --ref/--exe.",
+        ),
+        (
+            "zh-CN",
+            "skit-new-both.py 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序项目做不到这点。请去掉 --ref/--exe。",
+        ),
+        (
+            "zh-TW",
+            "skit-new-both.py 是 skit 自己保留的草稿——恢復草稿一律以副本加入(成功後即消耗),而 reference 或程式項目做不到這點。請拿掉 --ref/--exe。",
+        ),
+    ];
+    for (locale, expected) in expected {
+        let sandbox = Sandbox::new();
+        let draft = sandbox.draft("skit-new-both.py", "print('x')\n");
+        let data_before = tree_bytes(sandbox.data.path());
+        let state_before = tree_bytes(sandbox.state.path());
+        let config_before = tree_bytes(sandbox.config.path());
+        let output = sandbox
+            .skit_locale(locale)
+            .arg("add")
+            .arg(&draft)
+            .args(["-n", "both", "--ref", "--exe", "--no-input"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "locale={locale}");
+        let flat = flatten(&combine(&output));
+        assert!(flat.contains(expected), "locale={locale}: {flat}");
+        assert!(!flat.contains("--kind"));
+        assert_eq!(tree_bytes(sandbox.data.path()), data_before);
+        assert_eq!(tree_bytes(sandbox.state.path()), state_before);
+        assert_eq!(tree_bytes(sandbox.config.path()), config_before);
+        assert!(!sandbox.entry_dir("both").exists());
+    }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the drafts-boundary guard (oracle cli.py:1894-1933) is wholly unimplemented. `skit add <draft> --kind exe --no-input` should exit 2 naming 'Drop --kind exe.'; Rust adds successfully (exit 0, entry created, draft kept). Verified against the built binary."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger canonical single-flag/no-write owner is port_test_add_validation_contracts::test_kind_exe_on_a_kept_draft_is_refused_naming_only_kind_exe. Keep this frozen body for oracle accounting."]
 fn test_kind_exe_alone_names_only_kind_exe() {
     // --kind exe alone -> the refusal names ONLY "--kind exe"; the "--ref"/"--exe" flag
     // literals (neither passed) are absent — the honest-naming rule end to end.

@@ -16,23 +16,26 @@
 //!   prompts for dependencies; see the two stubs in section 3).
 //! - Python `runner.invoke(cli.app, ...)` -> the real `skit` binary via `assert_cmd`, sandboxed by
 //!   the three `SKIT_*` temp dirs.
-//! - Python `registry.kind_for_draft(path)` has NO Rust function; a draft's kind is decided by the
-//!   generic, extension-first `infer_kind` inside `add`, so section 6 observes the contract through
-//!   `skit add` on a kept draft under `<SKIT_DATA_DIR>/drafts/`.
+//! - Python `registry.kind_for_draft(path)` -> the shared `skit_language::infer_draft_kind` owner;
+//!   section 6 keeps only CLI consequences that are not owned more strongly elsewhere.
 //! - Python `cli._create_python_in_editor(...)` -> the `skit add --edit` lane (`add_draft`).
 //!
-//! Bucket disposition (31 Python defs -> 31 `#[test]`):
-//! - PASSING contract tests: sections 1 and 2; section 5's stdin validation, dash, and valid-python
-//!   cases; and section 6's prompt and extensionless-kind cases.
-//! - DIVERGENCE (`#[ignore = "FAILING CONTRACT (divergence): ..."]`, full asserting body kept): the
-//!   entire drafts boundary refusal, which is not implemented in the CLI add path (4);
-//!   validate-before-editor (5 editor lane); the draft shebang-outranks-script-suffix rule and
-//!   draft-consume-on-success (6); the unknown-shebang refusal copy (7).
-//! - ABSENT gap stubs (`kind="absent"`): the interactive deps/python re-ask loop (3).
+//! Bucket disposition (31 Python defs -> 31 `#[test]`; 25 active, 6 ignored):
+//! - 25 active contracts include sections 1, 2, and 5 plus all four canonical drafts-boundary
+//!   faces and the already-owned classifier complements.
+//! - The four drafts-boundary faces are active canonical contracts. The normal resume,
+//!   script-suffix, prompt-resume, and unknown-shebang twins remain as semantic-duplicate closures
+//!   with their stronger owners named in each reason.
+//! - 4 semantic-duplicate closures name their stronger owned-draft owner.
+//! - 2 ABSENT gap stubs (`kind="absent"`): the interactive deps/python re-ask loop (3).
 
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
 use skit_i18n::{Locale, Localize};
 use skit_language::{validate_pep440_specifiers, validate_pep508_requirement};
@@ -53,14 +56,112 @@ impl Sandbox {
         }
     }
 
-    fn command(&self) -> assert_cmd::Command {
+    fn command_in(&self, language: &str) -> assert_cmd::Command {
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
         command
             .env("SKIT_DATA_DIR", self.data.path())
             .env("SKIT_STATE_DIR", self.state.path())
             .env("SKIT_CONFIG_DIR", self.config.path())
-            .env("SKIT_LANG", "en");
+            .env("SKIT_LANG", language);
         command
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct TreeItem {
+    path: PathBuf,
+    kind: &'static str,
+    bytes: Vec<u8>,
+    readonly: bool,
+    unix_mode: Option<u32>,
+}
+
+#[cfg(unix)]
+fn unix_mode(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt as _;
+    Some(metadata.permissions().mode())
+}
+
+#[cfg(not(unix))]
+fn unix_mode(_metadata: &fs::Metadata) -> Option<u32> {
+    None
+}
+
+fn snapshot_tree(root: &Path, prefix: &str) -> Vec<TreeItem> {
+    fn walk(root: &Path, path: &Path, prefix: &str, items: &mut Vec<TreeItem>) {
+        let mut entries = fs::read_dir(path)
+            .unwrap_or_else(|error| panic!("read {path:?}: {error}"))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).unwrap();
+            let relative = PathBuf::from(prefix).join(path.strip_prefix(root).unwrap());
+            let (kind, bytes) = if metadata.file_type().is_symlink() {
+                (
+                    "symlink",
+                    fs::read_link(&path)
+                        .unwrap()
+                        .to_string_lossy()
+                        .as_bytes()
+                        .to_vec(),
+                )
+            } else if metadata.is_dir() {
+                ("directory", Vec::new())
+            } else {
+                ("file", fs::read(&path).unwrap())
+            };
+            items.push(TreeItem {
+                path: relative,
+                kind,
+                bytes,
+                readonly: metadata.permissions().readonly(),
+                unix_mode: unix_mode(&metadata),
+            });
+            if metadata.is_dir() {
+                walk(root, &path, prefix, items);
+            }
+        }
+    }
+
+    let mut items = Vec::new();
+    walk(root, root, prefix, &mut items);
+    items
+}
+
+fn snapshot_sandbox(sandbox: &Sandbox) -> Vec<TreeItem> {
+    let mut items = snapshot_tree(sandbox.data.path(), "data");
+    items.extend(snapshot_tree(sandbox.state.path(), "state"));
+    items.extend(snapshot_tree(sandbox.config.path(), "config"));
+    items
+}
+
+fn explicit_boundary_message(language: &str, file: &str, flags: &str) -> String {
+    match language {
+        "zh-CN" => format!(
+            "{file} 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序项目做不到这点。请去掉 {flags}。"
+        ),
+        "zh-TW" => format!(
+            "{file} 是 skit 自己保留的草稿——恢復草稿一律以副本加入(成功後即消耗),而 reference 或程式項目做不到這點。請拿掉 {flags}。"
+        ),
+        _ => format!(
+            "{file} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {flags}."
+        ),
+    }
+}
+
+fn inferred_boundary_message(language: &str, file: &str) -> String {
+    match language {
+        "zh-CN" => format!(
+            "{file} 是 skit 自己保留的草稿,而草稿一律以脚本或提示词副本加入——请用 --kind <语言> 指定它的语言。"
+        ),
+        "zh-TW" => format!(
+            "{file} 是 skit 自己保留的草稿,而草稿一律以腳本或提示詞副本加入——請用 --kind <語言> 指定它的語言。"
+        ),
+        _ => format!(
+            "{file} is one of skit's own kept drafts, and a draft is always added as a script or prompt copy — pass --kind <language> to name its language."
+        ),
     }
 }
 
@@ -72,7 +173,16 @@ fn flat(text: &str) -> String {
 
 /// Run `skit <args>` with optional piped stdin and return (exit code, flattened combined output).
 fn run(sandbox: &Sandbox, args: &[&str], stdin: Option<&str>) -> (Option<i32>, String) {
-    let mut command = sandbox.command();
+    run_in(sandbox, "en", args, stdin)
+}
+
+fn run_in(
+    sandbox: &Sandbox,
+    language: &str,
+    args: &[&str],
+    stdin: Option<&str>,
+) -> (Option<i32>, String) {
+    let mut command = sandbox.command_in(language);
     command.args(args);
     if let Some(text) = stdin {
         command.write_stdin(text.to_owned());
@@ -118,6 +228,65 @@ fn run_pty(sandbox: &Sandbox, args: &[&str], editor: &Path) -> (u32, String) {
     });
     let status = child.wait().unwrap();
     let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    (status.exit_code(), flat(&output))
+}
+
+/// Run an interactive request that must be rejected before it can ask a question.
+#[cfg(unix)]
+fn run_pty_to_exit(sandbox: &Sandbox, args: &[&str]) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 160,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_LANG", "en");
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let reader_capture = Arc::clone(&captured);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = std::thread::spawn(move || {
+        let mut chunk = [0_u8; 1024];
+        while let Ok(read) = reader.read(&mut chunk) {
+            if read == 0 {
+                break;
+            }
+            reader_capture
+                .lock()
+                .unwrap()
+                .extend_from_slice(&chunk[..read]);
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (status, timed_out) = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break (status, false);
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            break (child.wait().unwrap(), true);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    drop(pair.master);
+    drain.join().unwrap();
+    let output = String::from_utf8_lossy(&captured.lock().unwrap()).into_owned();
+    assert!(
+        !timed_out,
+        "the drafts guard reached an interactive question: {output}"
+    );
     (status.exit_code(), flat(&output))
 }
 
@@ -353,133 +522,249 @@ fn test_interactive_valid_deps_accepted_first_try() {
 // (cli.py:1894-1933). MUST-FIX tracked as "Refuse the add-lane inputs version 0.4 refuses".
 // ==========================================================================
 
-const DRAFT_HEAD: &str = "one of skit's own kept drafts";
-
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the drafts boundary guard is absent — `add` has no \
-is_draft check (cli.rs:2857-2905), so --exe on a kept draft is accepted (exit 0) instead of \
-refused with 'Drop --exe.' (oracle cli.py:1894-1933)."]
 fn test_exe_flag_on_a_kept_draft_is_refused_naming_only_exe() {
     // --exe alone → the refusal tells the user to drop --exe and NOTHING else: naming a flag
     // the user never passed (--ref) would be its own small lie. The honest-naming rule is the
     // point, so the other flag names must be absent.
-    let sandbox = Sandbox::new();
-    let source = draft(&sandbox, "skit-new-prog.py", "print('run me')\n");
-    let (code, out) = run(
-        &sandbox,
-        &[
-            "add",
-            source.to_str().unwrap(),
-            "-n",
-            "p1",
-            "--exe",
-            "--no-input",
-        ],
-        None,
-    );
-    assert_eq!(code, Some(2), "{out}");
-    assert!(out.contains(DRAFT_HEAD), "{out}");
-    assert!(out.contains("Drop --exe."), "{out}");
-    assert!(!out.contains("--ref"), "{out}"); // never passed — never named
-    assert!(!out.contains("--kind"), "{out}");
-    assert!(source.exists()); // a refused add consumes nothing
-    assert!(!entry_dir(&sandbox, "p1").exists());
+    for language in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        let source = draft(&sandbox, "skit-new-prog.py", "print('run me')\n");
+        let before = snapshot_sandbox(&sandbox);
+        let (code, out) = run_in(
+            &sandbox,
+            language,
+            &[
+                "add",
+                source.to_str().unwrap(),
+                "-n",
+                "p1",
+                "--exe",
+                "--no-input",
+            ],
+            None,
+        );
+        assert_eq!(code, Some(2), "language={language}: {out}");
+        assert!(
+            out.contains(&explicit_boundary_message(
+                language,
+                "skit-new-prog.py",
+                "--exe"
+            )),
+            "language={language}: {out}"
+        );
+        assert!(!out.contains("--ref"), "{out}");
+        assert!(!out.contains("--kind"), "{out}");
+        assert_eq!(snapshot_sandbox(&sandbox), before, "language={language}");
+        assert!(!entry_dir(&sandbox, "p1").exists());
+    }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the drafts boundary guard is absent — --kind exe on a \
-kept draft is accepted (exit 0) instead of refused with 'Drop --kind exe.' (oracle \
-cli.py:1894-1933)."]
 fn test_kind_exe_on_a_kept_draft_is_refused_naming_only_kind_exe() {
     // --kind exe alone → the refusal names only "--kind exe"; --ref and --exe (neither passed)
     // stay out of the message.
-    let sandbox = Sandbox::new();
-    let source = draft(&sandbox, "skit-new-prog2.py", "print('run me')\n");
-    let (code, out) = run(
-        &sandbox,
-        &[
-            "add",
-            source.to_str().unwrap(),
-            "-n",
-            "p2",
-            "--kind",
-            "exe",
-            "--no-input",
-        ],
-        None,
-    );
-    assert_eq!(code, Some(2), "{out}");
-    assert!(out.contains("Drop --kind exe."), "{out}");
-    assert!(!out.contains("--ref"), "{out}"); // never passed — never named
-    assert!(!out.contains("--exe"), "{out}"); // "--kind exe" is not the "--exe" flag literal
-    assert!(source.exists());
-    assert!(!entry_dir(&sandbox, "p2").exists());
+    for language in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        let source = draft(&sandbox, "skit-new-prog2.py", "print('run me')\n");
+        let before = snapshot_sandbox(&sandbox);
+        let (code, out) = run_in(
+            &sandbox,
+            language,
+            &[
+                "add",
+                source.to_str().unwrap(),
+                "-n",
+                "p2",
+                "--kind",
+                "exe",
+                "--no-input",
+            ],
+            None,
+        );
+        assert_eq!(code, Some(2), "language={language}: {out}");
+        assert!(
+            out.contains(&explicit_boundary_message(
+                language,
+                "skit-new-prog2.py",
+                "--kind exe"
+            )),
+            "language={language}: {out}"
+        );
+        assert!(!out.contains("--ref"), "{out}");
+        assert!(!out.contains("--exe"), "{out}");
+        assert_eq!(snapshot_sandbox(&sandbox), before, "language={language}");
+        assert!(!entry_dir(&sandbox, "p2").exists());
+    }
 }
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the drafts boundary guard is absent — an inferred +x \
-exe on a kept draft is accepted (exit 0) instead of refused with '...pass --kind <language> to \
-name its language.' (oracle cli.py:1894-1933, 1925-1930)."]
 fn test_inferred_exe_on_a_kept_draft_is_refused_and_keeps_it() {
     use std::os::unix::fs::PermissionsExt as _;
     // A hand-planted +x bit on an extensionless draft INFERS exe — the widened guard covers the
     // inferred route just like the explicit flags. The INFERRED route (the user passed no flag)
     // gets the --kind message, not the Drop-flags one: there is no flag to drop, so it points at
     // the escape a draft can actually take.
-    let sandbox = Sandbox::new();
-    let source = draft(&sandbox, "skit-new-binish", "opaque program bytes\n");
-    let mut permissions = fs::metadata(&source).unwrap().permissions();
-    permissions.set_mode(0o755); // POSIX infer_kind classifies +x as exe
-    fs::set_permissions(&source, permissions).unwrap();
-    let (code, out) = run(
-        &sandbox,
-        &["add", source.to_str().unwrap(), "-n", "b1", "--no-input"],
-        None,
-    );
-    assert_eq!(code, Some(2), "{out}");
-    assert!(out.contains(DRAFT_HEAD), "{out}"); // still names the drafts boundary
-    assert!(
-        out.contains("pass --kind <language> to name its language"),
-        "{out}"
-    );
-    assert!(!out.contains("Drop"), "{out}"); // NOT the flag-route message
-    assert!(source.exists());
-    assert!(!entry_dir(&sandbox, "b1").exists());
+    for language in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        let source = draft(&sandbox, "skit-new-binish", "opaque program bytes\n");
+        let mut permissions = fs::metadata(&source).unwrap().permissions();
+        permissions.set_mode(0o755); // POSIX infer_kind classifies +x as exe
+        fs::set_permissions(&source, permissions).unwrap();
+        let before = snapshot_sandbox(&sandbox);
+        let (code, out) = run_in(
+            &sandbox,
+            language,
+            &["add", source.to_str().unwrap(), "-n", "b1", "--no-input"],
+            None,
+        );
+        assert_eq!(code, Some(2), "language={language}: {out}");
+        assert!(
+            out.contains(&inferred_boundary_message(language, "skit-new-binish")),
+            "language={language}: {out}"
+        );
+        assert!(!out.contains("Drop"), "{out}");
+        assert_eq!(snapshot_sandbox(&sandbox), before, "language={language}");
+        assert!(!entry_dir(&sandbox, "b1").exists());
+    }
 }
 
+#[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the drafts boundary guard is absent — --ref on a kept \
-draft is accepted (exit 0) instead of refused with 'Drop --ref.' (oracle cli.py:1894-1933)."]
-fn test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref() {
-    // --ref alone keeps refusing, naming ONLY --ref — --exe (never passed) stays out of the
-    // message.
+fn rust_additive_explicit_language_overrides_inferred_draft_executable() {
+    use std::os::unix::fs::PermissionsExt as _;
+
     let sandbox = Sandbox::new();
-    let source = draft(&sandbox, "skit-new-linkme.py", "print('link me')\n");
+    let source = draft(
+        &sandbox,
+        "skit-new-typed",
+        "#!/usr/bin/env bash\necho typed\n",
+    );
+    let mut permissions = fs::metadata(&source).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&source, permissions).unwrap();
     let (code, out) = run(
         &sandbox,
         &[
             "add",
             source.to_str().unwrap(),
             "-n",
-            "lk",
-            "--ref",
+            "typed",
+            "--kind",
+            "shell",
             "--no-input",
         ],
         None,
     );
-    assert_eq!(code, Some(2), "{out}");
-    assert!(out.contains(DRAFT_HEAD), "{out}");
-    assert!(out.contains("Drop --ref."), "{out}");
-    assert!(!out.contains("--exe"), "{out}"); // never passed — never named
-    assert!(!out.contains("--kind"), "{out}");
-    assert!(source.exists());
+    assert_eq!(code, Some(0), "{out}");
+    assert!(!out.contains("one of skit's own kept drafts"), "{out}");
+    assert!(read_meta(&sandbox, "typed").contains("kind = \"shell\""));
+    assert!(read_meta(&sandbox, "typed").contains("mode = \"copy\""));
+    assert!(!source.exists(), "the successful copy consumes the draft");
+}
+
+#[cfg(unix)]
+#[test]
+fn rust_additive_prompt_flag_overrides_inferred_draft_executable() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let sandbox = Sandbox::new();
+    let source = draft(&sandbox, "skit-new-prompt", "Summarize {{text}}.\n");
+    let mut permissions = fs::metadata(&source).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&source, permissions).unwrap();
+    let (code, out) = run(
+        &sandbox,
+        &[
+            "add",
+            source.to_str().unwrap(),
+            "-n",
+            "typed-prompt",
+            "--prompt",
+            "--no-input",
+        ],
+        None,
+    );
+    assert_eq!(code, Some(0), "{out}");
+    assert!(!out.contains("one of skit's own kept drafts"), "{out}");
+    assert!(read_meta(&sandbox, "typed-prompt").contains("kind = \"prompt\""));
+    assert!(read_meta(&sandbox, "typed-prompt").contains("mode = \"copy\""));
+    assert!(
+        !source.exists(),
+        "the successful prompt copy consumes the draft"
+    );
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a resumed draft is not consumed on success — the path \
-add lane copies bytes but never removes the source draft (cli.rs:2857-2905 has no is_draft/consume \
-step), so the draft still exists (oracle cli.py:258-266)."]
+fn test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref() {
+    // --ref alone keeps refusing, naming ONLY --ref — --exe (never passed) stays out of the
+    // message.
+    for language in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        let source = draft(&sandbox, "skit-new-linkme.py", "print('link me')\n");
+        let before = snapshot_sandbox(&sandbox);
+        let (code, out) = run_in(
+            &sandbox,
+            language,
+            &[
+                "add",
+                source.to_str().unwrap(),
+                "-n",
+                "lk",
+                "--ref",
+                "--no-input",
+            ],
+            None,
+        );
+        assert_eq!(code, Some(2), "language={language}: {out}");
+        assert!(
+            out.contains(&explicit_boundary_message(
+                language,
+                "skit-new-linkme.py",
+                "--ref"
+            )),
+            "language={language}: {out}"
+        );
+        assert!(!out.contains("--exe"), "{out}");
+        assert!(!out.contains("--kind"), "{out}");
+        assert_eq!(snapshot_sandbox(&sandbox), before, "language={language}");
+    }
+
+    // The guard also owns ordering. A `.md` draft must not reach the interactive "looks like a
+    // prompt" question when `--ref` already makes the request invalid.
+    let sandbox = Sandbox::new();
+    let source = draft(&sandbox, "skit-new-note.md", "# Summarize {{text}}.\n");
+    let before = snapshot_sandbox(&sandbox);
+    #[cfg(unix)]
+    let (code, out) = run_pty_to_exit(
+        &sandbox,
+        &["add", source.to_str().unwrap(), "-n", "md1", "--ref"],
+    );
+    #[cfg(not(unix))]
+    let (code, out) = {
+        let (code, out) = run(
+            &sandbox,
+            &["add", source.to_str().unwrap(), "-n", "md1", "--ref"],
+            None,
+        );
+        (code.unwrap_or_default() as u32, out)
+    };
+    assert_eq!(code, 2, "{out}");
+    assert!(
+        out.contains(&explicit_boundary_message(
+            "en",
+            "skit-new-note.md",
+            "--ref"
+        )),
+        "{out}"
+    );
+    assert!(!out.contains("looks like"), "{out}");
+    assert_eq!(snapshot_sandbox(&sandbox), before);
+}
+
+#[test]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger canonical path-copy success and post-commit consume contract is port_test_add_lane_contracts::test_path_add_of_a_drafts_home_file_unlinks_it_on_copy. Keep this frozen body for oracle accounting."]
 fn test_a_normal_draft_resume_still_adds_as_a_copy() {
     // The complement: a draft added with NO exe/ref flag resumes normally (copy, consumed on
     // success) — the guard fires only for the two forbidden shapes.
@@ -667,10 +952,7 @@ fn test_kind_for_draft_extensionless_falls_through_to_the_shebang() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the draft shebang-outranks-script-suffix rule is absent \
-— `add` uses the generic extension-first infer_kind (cli.rs:2885), so a `.py` draft with a bash \
-shebang stores kind = \"python\"; the oracle kind_for_draft (registry.py:442-473) makes the draft's \
-shebang win, storing shell."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): shared classifier precedence is owned by skit-language::test_kind_for_draft_shebang_first and its real CLI consequence by port_test_draft_inference_and_reader_cli::test_cli_add_bash_shebang_draft_lands_as_shell_and_unlinks. Keep this frozen body for oracle accounting."]
 fn test_kind_for_draft_script_suffix_stays_shebang_first() {
     // A `.py` script suffix is NOT placeholder-bodied, so the shebang still outranks it.
     let sandbox = Sandbox::new();
@@ -695,9 +977,7 @@ fn test_kind_for_draft_script_suffix_stays_shebang_first() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a resumed draft is not consumed on success — the kind is \
-inferred as prompt correctly, but the path add lane never removes the source draft \
-(cli.rs:2857-2905), so it still exists (oracle cli.py:356-363)."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger single+compound suffix, exact stored bytes, and post-commit cleanup owner is port_test_add_feedback_contracts::test_prompt_draft_with_shebang_body_resumes_as_prompt. Keep this frozen body for oracle accounting."]
 fn test_prompt_single_extension_draft_resumes_as_prompt_end_to_end() {
     // The CLI face of the single-extension prompt rule: the draft resumes as a prompt entry and
     // is consumed on success.
@@ -737,9 +1017,7 @@ fn test_nondraft_awk_shebang_refusal_offers_the_exe_escape() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a `.py` kept draft with an awk shebang is classified \
-python by the extension-first infer_kind and added (exit 0); the oracle refuses it as unclassifiable \
-and offers only '--kind <language> to choose one', never --exe (cli.py:2040-2052)."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger exact shebang voice, keep/no-write, and no-entry owner is port_test_draft_inference_and_reader_cli::test_cli_add_awk_shebang_draft_is_unknown_kept_with_kind_escape. Keep this frozen body for oracle accounting."]
 fn test_kept_draft_awk_shebang_refusal_offers_only_kind() {
     // The same awk shebang, but as a KEPT DRAFT: --exe is refused at the boundary, so the hint
     // must NOT offer it — only --kind.
