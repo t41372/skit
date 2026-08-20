@@ -13,20 +13,20 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass WELL UNDERWAY: 129 fix commits landed, 263 FAILING CONTRACTs closed
-(255 removed, translated, or un-ignored + 8 re-labeled architecture closures). Cross-crate and
+**Port COMPLETE. Impl-fix pass COMPLETE: 135 fix commits landed, 282 FAILING CONTRACTs closed
+(265 removed, translated, or un-ignored + 17 re-labeled architecture closures). Cross-crate and
 absent stubs are promoted only at their real owners;
 2 owed white-box units added. The last fully green recorded baseline was workspace
-3348 pass / 0 fail / 811 ignored. The fixed final PR #44 head was audited as a diff, not by its
+3388 pass / 0 fail / 799 ignored. The fixed final PR #44 head was audited as a diff, not by its
 500+ commit history. Stronger bodies were folded into the existing consolidated targets only after
 PR/main/Python body comparison; the raw split files and manifests were rejected.
-19 FAILING CONTRACT attributes remain (§5 has the per-file map). General CLI, prompt CLI, config,
+0 FAILING CONTRACT attributes remain (§5). General CLI, prompt CLI, config,
 editor, JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
-implementation divergences are closed; next continue prompt/add clusters.** The user
+implementation divergences are closed; next run the Phase 3 release gates.** The user
 chose plan **A**:
-finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (in progress).
+finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (done).
 
 ---
 
@@ -248,6 +248,12 @@ This session (2026-08-11 through 2026-08-14), in order — each closed the named
 | `0c8b975` | declared-edit semantics: all tweak axes, partial success, row rollback, bool hygiene, and application helper convergence | second declared-engine stage |
 | `bcc1eae` | declared row extensions: merge unknown keys on authorized typed writes, preserve reads byte-for-byte, and keep fresh-meta CAS semantics | third declared-engine stage |
 | `aad6f42` | declared CLI adapter: collect malformed inputs, render nine typed warnings in three locales, write once, purge only after CAS, preserve JSON purity, and activate path type | final declared-engine stage; 2 divergences + 40 absent/cross-crate owners promoted |
+| `99a4a7c` | draft foundation: typed cross-platform source identity plus shared prompt/shebang-first draft-kind inference | owned-draft stage A |
+| `98e75e9` | owned-draft boundary: exact explicit/inferred guard priority, three-language recovery, explicit language/prompt escape, and no-write contracts | owned-draft stage B |
+| `7aab925` | post-commit consume: initial claim through commit, open-handle identity checks, atomic quarantine, no-clobber restore, symlink/outside/race protection, and localized non-rollback outcomes | owned-draft stage C |
+| `6b5c6f0` | terminal workflow: carry snapshot and delete identities through CLI/TUI effects, refresh Changed rows, remove direct unlink surrogates, and prove the real live-host draft resume | owned-draft stage D |
+| `7f163eb` | consume claim cleanup: group identity/modified/permissions/source facts in one private claim and satisfy hard Clippy gates | owned-draft refinement |
+| `86f54a4` | cleanup warning localization: compose the localized warning prefix with the localized changed-draft message and satisfy the catalog scanner | final fix-pass cleanup |
 
 PR #44 is complete upstream at fixed head `005bc9b7365fca1cfa7173acb61a2e8629f03bc9`.
 Review only the diff from the previous pin `38260ff881420fbd06f95b5b9243e0caa610e370`;
@@ -293,8 +299,8 @@ reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to imp
 ```
 git status --short          # only stray .coverage (untracked, leave it)
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 3348 passed / 0 failed / 811 ignored
-rg '^\s*#\[ignore = "FAILING CONTRACT' crates --glob='*.rs' | wc -l   # => 19
+# => 3388 passed / 0 failed / 799 ignored
+rg '^\s*#\[ignore = "FAILING CONTRACT' crates --glob='*.rs' | wc -l   # => 0
 ```
 
 Keep the regex anchored to the start of an attribute line. The previous unanchored `grep` also
@@ -310,10 +316,12 @@ The product workspace excluding
 `skit-benchmarks` most recently passed 2878 / 0 / 1134 before the six JS-deps contracts were
 un-ignored. The language/runtime suites and `port_test_js_deps` are green at `81c99e7`.
 
-## 5. REMAINING work — 19 FAILING CONTRACTs by file (fix-pass backlog)
+## 5. Implementation fix pass — COMPLETE (0 FAILING CONTRACTs)
 
-Recommended: keep banking coherent clusters, one commit per cluster. Biggest-first is fine now that
-the loop is proven. Counts are exact as of `aad6f42`.
+Counts are exact as of `86f54a4`. Every former divergence is active at its strongest executable
+owner or carries an explicit architecture/private/version/semantic-duplicate closure. The final
+owned-draft root has 12 active canonical owners and 12 closures across its 24 frozen names, with
+typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanup coverage.
 
 - **0 port_test_prompt_cli.rs + 0 port_test_prompt_kind.rs + 0 port_test_prompt_utf8.rs.** All
   implementation markers in the prompt CLI cluster are closed. Remaining ignores are explicit
@@ -334,19 +342,10 @@ the loop is proven. Counts are exact as of `aad6f42`.
   `Not a file` diagnostic (`4fc1659`), and unreadable files use the localized read failure
   (`de754cf`). Explicit passthrough arguments now satisfy only blank required flags (`39f9bd0`);
   the remaining items overlap the add-lane and general CLI clusters.
-- **8 port_test_add_validation_contracts.rs + 2 port_test_add_lane_contracts.rs + 3
-  port_test_add_feedback_contracts.rs + 3 port_test_draft_inference_and_reader_cli.rs + 0
-  port_test_add_no_source.rs + 0 port_test_editor.rs — the add-lane cluster
-  (#15), the biggest.** Drafts-boundary guard (refuse `--exe/--ref/--kind exe` on a kept draft,
-  cli.py:1894-1933); resumed draft not consumed on success (cli.py:258-266); `kind_for_draft` shebang-first classifier
-  (registry.py:442-473 — a `.py` draft with a bash shebang stores kind=shell); `--python -/none/blank`
-  normalization (case-insensitive, blank→auto, cli.py:279-281); unknown-kind refusal voices
-  ("isn't a script..." / "names no interpreter..." — cli.py:2040-2070); interactive deps/python
-  re-ask loop (cli.py:224-261); `-e` lane name prompt/interactivity gate; awk-shebang → ask, not
-  python-fallback; and interactive name collection. Explicit edit-create decline, explicit flag
-  preflight, and untouched script/prompt draft cleanup are green.
-- **2 port_test_dependency_command_contracts.rs** — both are owned-draft boundary refusals and
-  belong to the final owned-draft cluster. All dependency/Python/needs receipt axes are green.
+- **0 owned-draft implementation divergences.** Shared prompt/shebang-first classification,
+  boundary recovery, post-commit consume, CLI/TUI identity claims, atomic quarantine/no-clobber
+  restore, symlink/outside/replacement races, and refreshed manual-delete claims are green in
+  `99a4a7c`..`86f54a4`.
 - **0 port_test_declared_params.rs / port_test_params_edit.rs implementation divergences.** The
   shared pure domain engine, 41 domain owners, typed warnings, partial success/rollback, raw row
   extension merge, CLI JSON/write/purge/receipt order, and path type are green in
@@ -361,24 +360,22 @@ the loop is proven. Counts are exact as of `aad6f42`.
   persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
   region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
   `deps`-clear must sweep node_modules.
-- **TUI: 0 path_tui + 0 tui_nav + 1 draft_and_reader_tui + 0 reset_default_ui.** Path and field
-  navigation, Settings boundaries, and reset-default display are green. The remaining draft/TUI
-  owner belongs to the shared owned-draft classifier/unlink cluster.
+- **TUI: 0 path_tui + 0 tui_nav + 0 draft_and_reader_tui + 0 reset_default_ui.** Path, field,
+  Settings, reset-default, and real-host draft workflows are green.
 - **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 
-The remaining 19 markers are one real root: owned-draft classifier/boundary/safe-unlink behavior
-across CLI/TUI/dependency targets. It requires a shared draft classifier plus identity-checked
-post-commit consume; do not split it merely to lower the marker count.
+There is no per-file implementation backlog. The remaining ignored rows are frozen-name records
+with explicit non-divergence classifications; do not turn them into fake REAL owners merely to
+reduce the ignored count.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
   port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job
   per the §7 port mode).
 
-Each contract's `#[ignore]` reason carries the oracle line refs + what Rust does. The ledger has
-the per-module adjudication log.
+The ledger has the authoritative per-module adjudication log.
 
-## 6. After the fix pass (Phase 3–5, do NOT start early)
+## 6. After the fix pass (Phase 3–5 — START HERE)
 
 - Phase 3 gates: 100% executable-source line coverage (`cargo llvm-cov` + `scripts/check_coverage.sh`
   — do NOT relax it), i18n completeness (3 locales), ASD-STE100 English, cargo deny/audit, zizmor,
