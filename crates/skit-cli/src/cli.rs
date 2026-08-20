@@ -49,8 +49,8 @@ use skit_form::{
     onboarding_plan, parameter_section::apply_secrecy_rule,
 };
 use skit_i18n::{
-    Locale, Localize, Message, available_locale_tags, detect_locale, format_text, kind_label,
-    render as localize, requested_locale, system_locale, text,
+    Locale, Localize, Message, available_locale_tags, detect_locale, format_text,
+    kind_choice_label, kind_label, render as localize, requested_locale, system_locale, text,
 };
 use skit_language::{
     LosslessSource, ParseOutcome, UvMetadata, UvMetadataEditError, cli_params, decode_prompt,
@@ -75,7 +75,7 @@ use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
     Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor, DraftKind,
     DraftSummary, Effect as UiEffect, FieldValue, FormField, FormPurpose, FormView, HealthAction,
-    HealthView, HostRequest, LibraryState, PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT,
+    HealthView, HostRequest, KnownEntryKind, LibraryState, PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT,
     PROMPT_LIST_PREVIEW_LIMIT, PreferencesAction, PreferencesEffect, PreferencesView,
     ReviewDefaults, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
     RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity,
@@ -1441,6 +1441,118 @@ fn wants_tui_form(config_dir: &Path) -> Result<bool, CliError> {
         return Ok(false);
     }
     Ok(FileConfigStore::new(config_dir).get("form")? == "tui")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlainKindSelection {
+    Pick(KnownEntryKind),
+    Cancel,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PlainKindSelector {
+    filename: String,
+    has_shebang: bool,
+    choices: Vec<KnownEntryKind>,
+}
+
+impl PlainKindSelector {
+    fn new(filename: impl Into<String>, has_shebang: bool, offer_executable: bool) -> Self {
+        Self {
+            filename: filename.into(),
+            has_shebang,
+            choices: KnownEntryKind::picker_choices(offer_executable),
+        }
+    }
+
+    fn question(&self) -> Message {
+        if self.has_shebang {
+            Message::new("The #! in {} names no interpreter skit knows. What is it?")
+                .with(&self.filename)
+        } else {
+            Message::new("What is {}? skit can't tell from the name.").with(&self.filename)
+        }
+    }
+
+    fn choices(&self) -> &[KnownEntryKind] {
+        &self.choices
+    }
+
+    fn parse(&self, answer: &str) -> Option<PlainKindSelection> {
+        let answer = answer.trim();
+        if answer == "-" {
+            return Some(PlainKindSelection::Cancel);
+        }
+        let index = answer.parse::<usize>().ok()?.checked_sub(1)?;
+        self.choices
+            .get(index)
+            .copied()
+            .map(PlainKindSelection::Pick)
+    }
+
+    fn choice_bracket(&self) -> String {
+        self.choices
+            .iter()
+            .enumerate()
+            .map(|(index, _)| (index + 1).to_string())
+            .chain(std::iter::once("-".to_owned()))
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+}
+
+struct PlainKindChoiceTheme {
+    choices: String,
+}
+
+impl dialoguer::theme::Theme for PlainKindChoiceTheme {
+    fn format_input_prompt(
+        &self,
+        formatter: &mut dyn std::fmt::Write,
+        prompt: &str,
+        _default: Option<&str>,
+    ) -> std::fmt::Result {
+        write!(formatter, "{prompt} [{}]: ", self.choices)
+    }
+}
+
+fn ask_plain_kind(selector: &PlainKindSelector) -> Result<KnownEntryKind, CliError> {
+    let locale = active_locale();
+    println!("{}", selector.question().localize(locale));
+    for (index, kind) in selector.choices().iter().enumerate() {
+        println!(
+            "  {}. {}",
+            index + 1,
+            kind_choice_label(locale, kind.as_str())
+        );
+    }
+    humanln!("- = cancel");
+    let theme = PlainKindChoiceTheme {
+        choices: selector.choice_bracket(),
+    };
+    let answer = Input::<String>::with_theme(&theme)
+        .with_prompt(text(locale, "Which one?").into_owned())
+        .validate_with(|value: &String| {
+            selector.parse(value).map_or_else(
+                || {
+                    Err(format_text(
+                        locale,
+                        "Choose a number from 1 to {}.",
+                        &[&selector.choices().len()],
+                    ))
+                },
+                |_| Ok(()),
+            )
+        })
+        .interact_text()
+        .map_err(add_dialoguer_error)?;
+    match selector
+        .parse(&answer)
+        .expect("the dialoguer validator accepts only typed selector answers")
+    {
+        PlainKindSelection::Pick(kind) => Ok(kind),
+        PlainKindSelection::Cancel => Err(CliError::AddCancelled),
+    }
 }
 
 struct AddChoiceTheme;
@@ -3222,12 +3334,40 @@ fn add_with_config(
     } else {
         infer_kind(&source, shebang, file_is_executable)
     };
-    if kind.is_none() && inferred.is_none() && from_stdin && shebang.is_some() {
+    let picked_kind = if kind.is_none()
+        && inferred.is_none()
+        && !from_stdin
+        && !no_input
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+        && !wants_tui_form(config_dir)?
+    {
+        let filename = source.file_name().unwrap_or(source.as_os_str());
+        let selector = PlainKindSelector::new(
+            filename.to_string_lossy(),
+            shebang.is_some(),
+            !is_owned_draft(service.repository().data_dir(), &source),
+        );
+        Some(ask_plain_kind(&selector)?)
+    } else {
+        None
+    };
+    if kind.is_none()
+        && inferred.is_none()
+        && picked_kind.is_none()
+        && from_stdin
+        && shebang.is_some()
+    {
         return Err(CliError::Usage(Message::new(
             "The piped text's #! names no interpreter skit knows — pass --kind <language> to choose one.",
         )));
     }
-    if kind.is_none() && inferred.is_none() && !from_stdin && shebang.is_some() {
+    if kind.is_none()
+        && inferred.is_none()
+        && picked_kind.is_none()
+        && !from_stdin
+        && shebang.is_some()
+    {
         let file = source.file_name().unwrap_or(source.as_os_str());
         return Err(CliError::Usage(
             Message::new(
@@ -3238,6 +3378,7 @@ fn add_with_config(
     }
     if kind.is_none()
         && inferred.is_none()
+        && picked_kind.is_none()
         && !from_stdin
         && shebang.is_none()
         && !is_owned_draft(service.repository().data_dir(), &source)
@@ -3253,6 +3394,7 @@ fn add_with_config(
     let kind = kind
         .as_deref()
         .or(inferred)
+        .or(picked_kind.map(KnownEntryKind::as_str))
         .or(from_stdin.then_some("python"))
         .ok_or_else(|| {
             CliError::Usage(Message::new(

@@ -29,20 +29,15 @@
 //!   [fish, js, lua, perl, powershell, python, r, ruby, shell, ts] (10), so shell -> menu index 9,
 //!   exe -> 11, prompt -> 12.
 //!
-//! Bucket disposition (68 Python defs -> 68 `#[test]`, names preserved):
-//! - 23 REAL asserting tests that PASS: 3 pipe tests (the two bare lane-list refusals and the
-//!   `--cmd` secret note) + 20 pty tests (the orphan-flag refusals, the refusal-advice matrix, the
-//!   plain menu's four command/path/cancel lanes, the directory-consent lanes, the tui source-step
-//!   cancel, and the exact plain-menu lines).
-//! - 8 FAILING CONTRACTS (divergence): full asserting bodies kept, `#[ignore]`d; each verified
-//!   against the built binary. The six plain unknown-kind picks + the two `_ask_kind_plain` CLI
-//!   layouts remain because Rust has no plain kind ASK — `add()` answers "could not infer the entry
-//!   kind; pass --kind KIND" (cli.rs:2896).
-//!   Ties to pending task #15.
-//! - 6 ABSENT gaps: the plain-line kind ASK `_ask_kind_plain` (src/skit/cli.py:1370-1400) has no
-//!   Rust twin; the strings live only in skit-tui's KindPickModal
-//!   (skit-tui/src/screens/add.rs:905-910). MUST-FIX stubs.
-//! - 31 cross-crate stubs: the oracle calls a private skit-cli helper directly, or asserts the
+//! Bucket disposition (68 Python defs -> 68 exact names across the workspace, plus 5 Rust
+//! regressions for non-interactive refusal, invalid input, terminal cancellation, snapshot order,
+//! and TUI separation):
+//! - 36 REAL owners: 31 public integration tests in this file, including the eight plain
+//!   unknown-kind PTY contracts, plus five typed selector owners in `src/cli/tests.rs`.
+//! - 1 FRAMEWORK-CALL closure: Python captures private Typer `Prompt.ask` kwargs and console
+//!   identity. Rust owns the observable question, legal choices, bracket, cancellation, and typed
+//!   return mapping instead; it does not recreate Typer callback data.
+//! - 31 cross-crate closures: the oracle calls a private skit-cli helper directly, or asserts the
 //!   captured kwargs of a monkeypatched internal (`_create_*`, `_print_add_summary`,
 //!   `_hosted_add_summary`, `_command_secret_names`, `_wants_tui_form`, `_cancelled_add`) or a
 //!   skit-tui review/kind-pick seam (`run_kind_pick`/`run_exe_review`/`run_add_review`/
@@ -52,8 +47,9 @@ use std::fs;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::Value;
@@ -101,6 +97,16 @@ impl Sandbox {
     /// the canned line answers the oracle fed through monkeypatched `Prompt.ask`/`Confirm.ask`.
     /// `answer_cursor` replies to a Ratatui cursor-position query (needed only for tui-form paths).
     fn pty(&self, args: &[&str], inputs: &[&[u8]], answer_cursor: bool) -> (u32, String) {
+        self.pty_in_locale(args, inputs, answer_cursor, "en")
+    }
+
+    fn pty_in_locale(
+        &self,
+        args: &[&str],
+        inputs: &[&[u8]],
+        answer_cursor: bool,
+        locale: &str,
+    ) -> (u32, String) {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 24,
@@ -112,7 +118,7 @@ impl Sandbox {
         let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
         command.args(args);
         command.env("TERM", "xterm-256color");
-        command.env("SKIT_LANG", "en");
+        command.env("SKIT_LANG", locale);
         command.env("SKIT_DATA_DIR", self.data.path());
         command.env("SKIT_STATE_DIR", self.state.path());
         command.env("SKIT_CONFIG_DIR", self.config.path());
@@ -143,11 +149,114 @@ impl Sandbox {
         let raw = drain.join().unwrap();
         // Python `capsys`/`result.output`: keep newlines, drop ESC/`\r` and other control bytes so
         // SGR/cursor residue cannot masquerade as text. `contains` on full phrases is unaffected.
-        let text = String::from_utf8_lossy(&raw)
-            .chars()
-            .filter(|character| !character.is_control() || *character == '\n')
-            .collect();
-        (status.exit_code(), text)
+        (status.exit_code(), terminal_text(&raw))
+    }
+
+    /// Wait for one real rendered prompt, change external state, then answer it.
+    ///
+    /// The synchronization makes a source-snapshot race deterministic: the source has already
+    /// been inspected when the kind question appears, and the mutation happens before the answer
+    /// can reach the add continuation.
+    fn pty_after_output<F>(
+        &self,
+        args: &[&str],
+        wait_for: &str,
+        inputs: &[&[u8]],
+        answer_cursor: bool,
+        before_input: F,
+    ) -> (portable_pty::ExitStatus, String)
+    where
+        F: FnOnce(),
+    {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.args(args);
+        command.env("TERM", "xterm-256color");
+        command.env("SKIT_LANG", "en");
+        command.env("SKIT_DATA_DIR", self.data.path());
+        command.env("SKIT_STATE_DIR", self.state.path());
+        command.env("SKIT_CONFIG_DIR", self.config.path());
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let reader_capture = Arc::clone(&captured);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let drain = thread::spawn(move || {
+            let mut chunk = [0_u8; 1024];
+            loop {
+                match reader.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => reader_capture
+                        .lock()
+                        .unwrap()
+                        .extend_from_slice(&chunk[..read]),
+                }
+            }
+        });
+        let mut writer = pair.master.take_writer().unwrap();
+        if answer_cursor {
+            writer.write_all(b"\x1b[1;1R").unwrap();
+            writer.flush().unwrap();
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let early_status = loop {
+            let shown = {
+                let bytes = captured.lock().unwrap();
+                terminal_text(bytes.as_slice())
+            };
+            if shown.contains(wait_for) {
+                break None;
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {wait_for:?}: {shown}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        if early_status.is_none() {
+            before_input();
+            for input in inputs {
+                writer.write_all(input).unwrap();
+                writer.flush().unwrap();
+                thread::sleep(Duration::from_millis(80));
+            }
+        }
+        let mut timed_out = false;
+        let status = match early_status {
+            Some(status) => status,
+            None => {
+                let exit_deadline = Instant::now() + Duration::from_secs(5);
+                loop {
+                    if let Some(status) = child.try_wait().unwrap() {
+                        break status;
+                    }
+                    if Instant::now() >= exit_deadline {
+                        timed_out = true;
+                        child.kill().unwrap();
+                        break child.wait().unwrap();
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
+        drop(writer);
+        drain.join().unwrap();
+        let raw = captured.lock().unwrap().clone();
+        let shown = terminal_text(&raw);
+        assert!(!timed_out, "child did not exit after input: {shown}");
+        (status, shown)
     }
 
     /// Python `store.resolve(name)` via `skit show NAME --json`.
@@ -201,6 +310,13 @@ impl Sandbox {
     }
 }
 
+fn terminal_text(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw)
+        .chars()
+        .filter(|character| !character.is_control() || *character == '\n')
+        .collect()
+}
+
 /// Python `result.output` — the merged streams a CliRunner user sees (stdout then stderr).
 fn combined(stdout: &[u8], stderr: &[u8]) -> String {
     let mut text = String::from_utf8_lossy(stdout).into_owned();
@@ -235,6 +351,20 @@ fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     visit(root, root, &mut output);
     output.sort_by(|left, right| left.0.cmp(&right.0));
     output
+}
+
+type RootSnapshots = (
+    Vec<(PathBuf, Vec<u8>)>,
+    Vec<(PathBuf, Vec<u8>)>,
+    Vec<(PathBuf, Vec<u8>)>,
+);
+
+fn root_snapshots(sandbox: &Sandbox) -> RootSnapshots {
+    (
+        snapshot_tree(sandbox.data.path()),
+        snapshot_tree(sandbox.state.path()),
+        snapshot_tree(sandbox.config.path()),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -445,90 +575,93 @@ fn test_bare_add_tui_form_cancel_exits_130() {
 // 5. Unknown-kind plain ask (_ask_kind_plain): contents, order, routing, cancel.
 // ---------------------------------------------------------------------------
 
-#[test]
-#[ignore = "ABSENT gap: no plain-line kind ASK exists in Rust. `_ask_kind_plain` (src/skit/cli.py:1370-1400) prints \"What is <file>? skit can't tell from the name.\", the sorted interpreted labels + \"A program (run it directly)\" + \"A prompt for an AI agent\", and \"- = cancel\". Rust's `add()` refuses an unclassifiable file with \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896); the question strings live ONLY in skit-tui's KindPickModal (skit-tui/src/screens/add.rs:905-910). MUST-FIX: add a plain-line twin of the modal. Owning ref src/skit/cli.py:1370."]
-fn test_ask_kind_plain_lists_sorted_interpreted_plus_exe_and_prompt() {
-    // Expected numbered layout: fish, JavaScript, Lua, Perl, PowerShell, Python, R, Ruby, Shell,
-    // TypeScript, then "A program (run it directly)", then "A prompt for an AI agent" (no dupe).
-}
-
-#[test]
-#[ignore = "ABSENT gap: same missing `_ask_kind_plain` (src/skit/cli.py:1370-1400). With offer_exe=False the list omits \"A program (run it directly)\" but keeps \"A prompt for an AI agent\" — no Rust plain twin. MUST-FIX."]
-fn test_ask_kind_plain_no_exe_when_offer_exe_false() {
-    // offer_exe=False drops the program option, keeps the prompt option.
-}
-
-#[test]
-#[ignore = "ABSENT gap: same missing `_ask_kind_plain` (src/skit/cli.py:1384-1388). The has_shebang variant asks \"The #! in <file> names no interpreter skit knows. What is it?\" instead of \"… can't tell from the name.\" — no Rust plain twin. MUST-FIX."]
-fn test_ask_kind_plain_shebang_question_variant() {
-    // has_shebang=True selects the shebang question wording.
-}
-
-#[test]
-#[ignore = "ABSENT gap: same missing `_ask_kind_plain` (src/skit/cli.py:1398-1400). Picking the shell index returns \"shell\" — no Rust plain twin returns a kind. MUST-FIX."]
-fn test_ask_kind_plain_returns_the_picked_language() {
-    // The picked interpreted index maps back to its kind id (shell).
-}
-
-#[test]
-#[ignore = "ABSENT gap: same missing `_ask_kind_plain` (src/skit/cli.py:1398-1400). Index n+1 -> \"exe\", n+2 -> \"prompt\" — no Rust plain twin. MUST-FIX."]
-fn test_ask_kind_plain_returns_exe_and_prompt() {
-    // The trailing two indexes map to exe and prompt.
-}
+// The five direct helper/model owners live beside the private production
+// `PlainKindSelector` in `src/cli/tests.rs`. The public layout and routing remain here.
 
 // ---------------------------------------------------------------------------
 // 6. Unknown-kind ask end to end: routing + picked-kind-rejoins-dispatch.
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle asks the kind of an unclassifiable file under form=plain and adds the picked language. Rust's `add()` never asks — an unclassifiable file exits 2 with \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896), so nothing named `mystery` is stored. Ties to pending task #15. Verified against the built binary."]
 fn test_unknown_plain_pick_language_adds_it() {
     // shell is menu index 9 among [fish, js, lua, perl, powershell, python, r, ruby, shell, ts].
     let sandbox = Sandbox::new();
     sandbox.form("plain");
     let source = sandbox.scratch.path().join("mystery.xyz");
-    fs::write(&source, "echo hi\n").unwrap();
+    let source_bytes = b"echo hi\n";
+    fs::write(&source, source_bytes).unwrap();
+    let (_, state_before, config_before) = root_snapshots(&sandbox);
     let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"9\n"], false);
     assert_eq!(code, 0, "{output}");
-    assert_eq!(sandbox.show_json("mystery")["kind"], "shell");
+    assert!(
+        output.contains("What is mystery.xyz? skit can't tell from the name."),
+        "{output}"
+    );
+    let shown = sandbox.show_json("mystery");
+    assert_eq!(shown["kind"], "shell");
+    assert_eq!(shown["mode"], "copy");
+    assert_eq!(shown["source"], source.display().to_string());
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/mystery/script.sh")).unwrap(),
+        source_bytes
+    );
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): same as test_unknown_plain_pick_language_adds_it — Rust refuses \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896) instead of offering the exe index. Ties to pending task #15. Verified against the built binary."]
 fn test_unknown_plain_pick_exe_adds_it() {
     // exe is menu index 11 (n=10 interpreted + 1).
     let sandbox = Sandbox::new();
     sandbox.form("plain");
     let source = sandbox.scratch.path().join("mystery.xyz");
-    fs::write(&source, "some opaque text\n").unwrap();
+    let source_bytes = b"some opaque text\n";
+    fs::write(&source, source_bytes).unwrap();
+    let (_, state_before, config_before) = root_snapshots(&sandbox);
     let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"11\n"], false);
     assert_eq!(code, 0, "{output}");
-    assert_eq!(sandbox.show_json("mystery")["kind"], "exe");
+    let shown = sandbox.show_json("mystery");
+    assert_eq!(shown["kind"], "exe");
+    assert_eq!(shown["mode"], "reference");
+    assert_eq!(shown["source"], source.display().to_string());
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    let entry_files = fs::read_dir(sandbox.data.path().join("scripts/mystery"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(entry_files, [std::ffi::OsString::from("meta.toml")]);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle cancels the plain kind ask on '-' (exit 130). Rust never opens the ask — an unclassifiable file exits 2 \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896). Ties to pending task #15. Verified against the built binary."]
 fn test_unknown_plain_cancel_exits_130() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
     let source = sandbox.scratch.path().join("mystery.xyz");
-    fs::write(&source, "some opaque text\n").unwrap();
+    let source_bytes = b"some opaque text\n";
+    fs::write(&source, source_bytes).unwrap();
+    let roots_before = root_snapshots(&sandbox);
     let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"-\n"], false);
     assert_eq!(code, 130, "{output}");
     assert!(
-        output.to_lowercase().contains("nothing was added"),
+        output.contains("Cancelled — nothing was added."),
         "{output}"
     );
     assert!(sandbox.list_entries().is_empty());
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(root_snapshots(&sandbox), roots_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's picked kind rejoins ordinary dispatch, so picking a language while --runner rode along fires \"--runner only applies to prompt entries\" (exit 2). Rust never reaches that check — an unclassifiable file exits 2 first with \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896, before the runner guard at cli.rs:2961). Verified against the built binary."]
 fn test_unknown_plain_pick_language_with_runner_hits_prompt_only_refusal() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
     let source = sandbox.scratch.path().join("mystery.xyz");
-    fs::write(&source, "echo hi\n").unwrap();
+    let source_bytes = b"echo hi\n";
+    fs::write(&source, source_bytes).unwrap();
+    let roots_before = root_snapshots(&sandbox);
     let (code, output) = sandbox.pty(
         &["add", &source.to_string_lossy(), "--runner", "claude"],
         &[b"9\n"],
@@ -539,27 +672,41 @@ fn test_unknown_plain_pick_language_with_runner_hits_prompt_only_refusal() {
         output.contains("--runner only applies to prompt entries"),
         "{output}"
     );
+    assert!(sandbox.list_entries().is_empty());
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(root_snapshots(&sandbox), roots_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): picking the prompt index should run prompt onboarding and store a prompt. Rust never opens the ask — an unclassifiable file exits 2 \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896). Ties to pending task #15. Verified against the built binary."]
 fn test_unknown_plain_pick_prompt_runs_prompt_onboarding() {
     // prompt is menu index 12 (n=10 + 2); the runner ask answers '-' (no pin).
     let sandbox = Sandbox::new();
     sandbox.form("plain");
     let source = sandbox.scratch.path().join("mystery.xyz");
-    fs::write(&source, "do {{thing}}\n").unwrap();
+    let source_bytes = b"do {{thing}}\n";
+    fs::write(&source, source_bytes).unwrap();
+    let (_, state_before, config_before) = root_snapshots(&sandbox);
     let (code, output) = sandbox.pty(
         &["add", &source.to_string_lossy()],
         &[b"12\n", b"-\n"],
         false,
     );
     assert_eq!(code, 0, "{output}");
-    assert_eq!(sandbox.show_json("mystery")["kind"], "prompt");
+    let shown = sandbox.show_json("mystery");
+    assert_eq!(shown["kind"], "prompt");
+    assert_eq!(shown["mode"], "copy");
+    assert_eq!(shown["runner"], Value::Null);
+    assert_eq!(shown["fields"][0]["key"], "thing");
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/mystery/prompt.md")).unwrap(),
+        source_bytes
+    );
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a kept draft passes offer_exe=False so the ask omits the program option; the oracle cancels on '-' (exit 130). Rust never opens the ask — the extensionless draft exits 2 \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896). Ties to pending task #15. Verified against the built binary."]
 fn test_unknown_plain_kept_draft_offers_no_program_option() {
     // A kept draft lives under skit's OWN drafts home; the drafts boundary forbids exe.
     let sandbox = Sandbox::new();
@@ -567,10 +714,15 @@ fn test_unknown_plain_kept_draft_offers_no_program_option() {
     let drafts = sandbox.data.path().join("drafts");
     fs::create_dir_all(&drafts).unwrap();
     let draft = drafts.join("skit-new-mystery");
-    fs::write(&draft, "some opaque text\n").unwrap();
+    let draft_bytes = b"some opaque text\n";
+    fs::write(&draft, draft_bytes).unwrap();
+    let roots_before = root_snapshots(&sandbox);
     let (code, output) = sandbox.pty(&["add", &draft.to_string_lossy()], &[b"-\n"], false);
     assert_eq!(code, 130, "{output}");
     assert!(!output.contains("A program (run it directly)"), "{output}");
+    assert!(output.contains("A prompt for an AI agent"), "{output}");
+    assert_eq!(fs::read(&draft).unwrap(), draft_bytes);
+    assert_eq!(root_snapshots(&sandbox), roots_before);
 }
 
 // ---------------------------------------------------------------------------
@@ -820,20 +972,8 @@ fn test_cli_plain_choice1_path_label() {
 // --- _ask_kind_plain: exact question, options, cancel hint, choice list. ---
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's `runner.invoke(add, <unknown>)` under form=plain opens the plain kind ask (\"What is mystery.xyz? skit can't tell from the name.\", the numbered options, \"- = cancel\", the [1/…/-] bracket). Rust's `add()` has no plain kind ASK and exits 2 \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896); the question strings live only in skit-tui's modal (screens/add.rs:909). Ties to pending task #15. Verified against the built binary."]
 fn test_cli_ask_kind_plain_full_layout() {
-    let sandbox = Sandbox::new();
-    sandbox.form("plain");
-    let source = sandbox.scratch.path().join("mystery.xyz");
-    fs::write(&source, "opaque text\n").unwrap();
-    let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"-\n"], false);
-    assert_eq!(code, 130, "{output}");
-    assert!(
-        output.contains("What is mystery.xyz? skit can't tell from the name."),
-        "{output}"
-    );
-    // sorted interpreted labels, then program, then prompt.
-    let expected = [
+    let interpreted = [
         "fish",
         "JavaScript",
         "Lua",
@@ -844,43 +984,285 @@ fn test_cli_ask_kind_plain_full_layout() {
         "Ruby",
         "Shell",
         "TypeScript",
-        "A program (run it directly)",
-        "A prompt for an AI agent",
     ];
-    for (index, label) in expected.iter().enumerate() {
-        assert!(
-            output.contains(&format!("  {}. {label}", index + 1)),
-            "{output}"
+    for (locale, question, executable, prompt, cancel, which) in [
+        (
+            "en",
+            "What is mystery.xyz? skit can't tell from the name.",
+            "A program (run it directly)",
+            "A prompt for an AI agent",
+            "- = cancel",
+            "Which one?",
+        ),
+        (
+            "zh-CN",
+            "mystery.xyz 是什么？skit 无法从名称判断。",
+            "一个程序（直接运行）",
+            "给 AI agent 的提示词",
+            "- = 取消",
+            "选哪个？",
+        ),
+        (
+            "zh-TW",
+            "mystery.xyz 是什麼？skit 無法從名稱判斷。",
+            "一個程式（直接執行）",
+            "給 AI agent 的提示詞",
+            "- = 取消",
+            "選哪個？",
+        ),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.form("plain");
+        let source = sandbox.scratch.path().join("mystery.xyz");
+        fs::write(&source, "opaque text\n").unwrap();
+        let roots_before = root_snapshots(&sandbox);
+        let (code, output) = sandbox.pty_in_locale(
+            &["add", &source.to_string_lossy()],
+            &[b"-\n"],
+            false,
+            locale,
         );
+        assert_eq!(code, 130, "locale={locale}: {output}");
+        assert!(
+            output.lines().any(|line| line.trim() == question),
+            "locale={locale}: {output}"
+        );
+        for (index, label) in interpreted.iter().enumerate() {
+            assert!(
+                output
+                    .lines()
+                    .any(|line| line.trim() == format!("{}. {label}", index + 1)),
+                "locale={locale}, label={label}: {output}"
+            );
+        }
+        for (index, label) in [(11, executable), (12, prompt)] {
+            assert!(
+                output
+                    .lines()
+                    .any(|line| line.trim() == format!("{index}. {label}")),
+                "locale={locale}, label={label}: {output}"
+            );
+        }
+        assert!(
+            output.lines().any(|line| line.trim() == cancel),
+            "locale={locale}: {output}"
+        );
+        let flat = flat(&output);
+        assert!(flat.contains(which), "locale={locale}: {output}");
+        assert!(
+            flat.contains("[1/2/3/4/5/6/7/8/9/10/11/12/-]"),
+            "locale={locale}: {output}"
+        );
+        assert_eq!(root_snapshots(&sandbox), roots_before, "locale={locale}");
     }
-    assert!(output.contains("- = cancel"), "{output}");
-    assert!(
-        flat(&output).contains("[1/2/3/4/5/6/7/8/9/10/11/12/-]"),
-        "{output}"
-    );
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's shebang variant asks \"The #! in mystery.xyz names no interpreter skit knows. What is it?\". Rust's `add()` has no plain kind ASK and exits 2 \"could not infer the entry kind; pass --kind KIND\" (cli.rs:2896); the shebang question lives only in skit-tui's modal (screens/add.rs:907). Ties to pending task #15. Verified against the built binary."]
 fn test_cli_ask_kind_plain_shebang_question() {
+    for (locale, question) in [
+        (
+            "en",
+            "The #! in mystery.xyz names no interpreter skit knows. What is it?",
+        ),
+        (
+            "zh-CN",
+            "mystery.xyz 的 #! 指定了 skit 不认识的解释器。这是什么?",
+        ),
+        (
+            "zh-TW",
+            "mystery.xyz 的 #! 指定了 skit 不認識的直譯器。這是什麼?",
+        ),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.form("plain");
+        let source = sandbox.scratch.path().join("mystery.xyz");
+        fs::write(&source, "#!/usr/bin/env florblang\ncode\n").unwrap();
+        let roots_before = root_snapshots(&sandbox);
+        let (code, output) = sandbox.pty_in_locale(
+            &["add", &source.to_string_lossy()],
+            &[b"-\n"],
+            false,
+            locale,
+        );
+        assert_eq!(code, 130, "locale={locale}: {output}");
+        assert!(
+            output.lines().any(|line| line.trim() == question),
+            "locale={locale}: {output}"
+        );
+        assert_eq!(root_snapshots(&sandbox), roots_before, "locale={locale}");
+    }
+}
+
+#[test]
+fn unknown_plain_kind_selector_reprompts_invalid_answers_without_writing() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
     let source = sandbox.scratch.path().join("mystery.xyz");
-    fs::write(&source, "#!/usr/bin/env florblang\ncode\n").unwrap();
-    let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"-\n"], false);
+    let source_bytes = b"opaque text\n";
+    fs::write(&source, source_bytes).unwrap();
+    let roots_before = root_snapshots(&sandbox);
+
+    let (code, output) = sandbox.pty(
+        &["add", &source.to_string_lossy()],
+        &[b"0\n", b"13\n", b"not-a-number\n", b"-\n"],
+        false,
+    );
+
     assert_eq!(code, 130, "{output}");
     assert!(
-        output.contains("The #! in mystery.xyz names no interpreter skit knows. What is it?"),
+        output.matches("Choose a number from 1 to 12.").count() >= 3,
         "{output}"
     );
+    assert!(
+        output.contains("Cancelled — nothing was added."),
+        "{output}"
+    );
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(root_snapshots(&sandbox), roots_before);
+}
+
+#[test]
+fn unknown_kind_noninteractive_paths_refuse_without_rendering_a_selector_or_writing() {
+    let run = |terminal: bool, no_input: bool| {
+        let sandbox = Sandbox::new();
+        sandbox.form("plain");
+        let source = sandbox.scratch.path().join("mystery.xyz");
+        let source_bytes = b"opaque text\n";
+        fs::write(&source, source_bytes).unwrap();
+        let roots_before = root_snapshots(&sandbox);
+        let mut args = vec!["add", source.to_str().unwrap()];
+        if no_input {
+            args.push("--no-input");
+        }
+        let (code, output) = if terminal {
+            sandbox.pty(&args, &[], false)
+        } else {
+            let output = sandbox
+                .bin()
+                .args(&args)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            (
+                output.status.code().unwrap_or_default() as u32,
+                combined(&output.stdout, &output.stderr),
+            )
+        };
+
+        assert_eq!(
+            code, 2,
+            "terminal={terminal}, no_input={no_input}: {output}"
+        );
+        assert!(
+            output.contains("isn't a script or an executable"),
+            "terminal={terminal}, no_input={no_input}: {output}"
+        );
+        assert!(
+            !output.contains("Which one?") && !output.contains("- = cancel"),
+            "terminal={terminal}, no_input={no_input}: {output}"
+        );
+        assert_eq!(fs::read(&source).unwrap(), source_bytes);
+        assert_eq!(root_snapshots(&sandbox), roots_before);
+    };
+
+    run(false, false); // redirected/non-TTY streams
+    run(true, true); // a real terminal whose --no-input contract forbids questions
+}
+
+#[cfg(unix)]
+#[test]
+fn unknown_plain_kind_selector_ctrl_c_cancels_without_writing() {
+    let sandbox = Sandbox::new();
+    sandbox.form("plain");
+    let source = sandbox.scratch.path().join("mystery.xyz");
+    let source_bytes = b"opaque text\n";
+    fs::write(&source, source_bytes).unwrap();
+    let roots_before = root_snapshots(&sandbox);
+
+    let (status, output) = sandbox.pty_after_output(
+        &["add", &source.to_string_lossy()],
+        "What is mystery.xyz? skit can't tell from the name.",
+        &[b"\x03"],
+        false,
+        || {},
+    );
+
+    assert_eq!(status.signal(), Some("Interrupt"), "{status:?}: {output}");
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(root_snapshots(&sandbox), roots_before);
+}
+
+#[test]
+fn unknown_plain_kind_selector_uses_the_pre_question_source_snapshot() {
+    let sandbox = Sandbox::new();
+    sandbox.form("plain");
+    let source = sandbox.scratch.path().join("mystery.xyz");
+    let inspected = b"echo before\n";
+    let changed = b"echo after\n";
+    fs::write(&source, inspected).unwrap();
+    let (_, state_before, config_before) = root_snapshots(&sandbox);
+
+    let (status, output) = sandbox.pty_after_output(
+        &["add", &source.to_string_lossy()],
+        "What is mystery.xyz? skit can't tell from the name.",
+        &[b"9\n"],
+        false,
+        || fs::write(&source, changed).unwrap(),
+    );
+
+    assert!(status.success(), "{status:?}: {output}");
+    assert!(
+        output.contains("What is mystery.xyz? skit can't tell from the name."),
+        "{output}"
+    );
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/mystery/script.sh")).unwrap(),
+        inspected
+    );
+    assert_eq!(fs::read(&source).unwrap(), changed);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+}
+
+#[test]
+fn unknown_tui_form_keeps_kind_selection_inside_the_hosted_workflow() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.scratch.path().join("mystery.xyz");
+    let source_bytes = b"opaque text\n";
+    fs::write(&source, source_bytes).unwrap();
+    let roots_before = root_snapshots(&sandbox);
+
+    let (status, output) = sandbox.pty_after_output(
+        &["add", &source.to_string_lossy()],
+        "What is mystery.xyz? skit can't tell from the name.",
+        &[b"\x1b", b"\x1b"],
+        true,
+        || {},
+    );
+
+    assert_eq!(status.exit_code(), 130, "{status:?}: {output}");
+    assert!(
+        output.contains("What is mystery.xyz? skit can't tell from the name."),
+        "the hosted kind stage never rendered: {output}"
+    );
+    assert!(
+        !output.contains("- = cancel"),
+        "line selector leaked into TUI: {output}"
+    );
+    assert!(
+        !flat(&output).contains("[1/2/3/4/5/6/7/8/9/10/11/12/-]"),
+        "line selector leaked into TUI: {output}"
+    );
+    assert_eq!(fs::read(&source).unwrap(), source_bytes);
+    assert_eq!(root_snapshots(&sandbox), roots_before);
 }
 
 // --- Call contracts: capture Prompt.ask / store.add_command / _print_add_summary kwargs. ---
 
 #[test]
-#[ignore = "ABSENT gap: calls the private `cli._ask_kind_plain(...)` and captures its `Prompt.ask` args (\"Which one?\", choices=[1..n, \"-\"], console=console). The plain kind ASK does not exist in Rust (src/skit/cli.py:1393-1397); only skit-tui's modal does. MUST-FIX: add the plain twin. Owning ref src/skit/cli.py:1370."]
+#[ignore = "FRAMEWORK-CALL CLOSURE: the frozen body captures private Typer `Prompt.ask` kwargs and asserts `console is cli.console`. Rust uses dialoguer, so those callback values do not exist. The active public PTY layout owner pins `Which one?`, the exact `[1/../-]` choices and cancellation; the internal `PlainKindSelector` owners pin the same typed legal inputs and return mapping. Do not recreate Typer call data."]
 fn test_ask_kind_plain_prompt_call_contract() {
-    // The plain kind ask calls Prompt.ask with the numbered choices + cancel.
+    // Typer's callback identity is closed; public layout and typed parsing remain executable.
 }
 
 #[test]

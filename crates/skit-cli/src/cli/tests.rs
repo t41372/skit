@@ -8,7 +8,8 @@ use skit_domain::{
 };
 use skit_store::FileStore;
 use skit_ui::{
-    FormControl, FormField, FormPurpose, FormView, Screen, SettingsSectionId, SettingsView,
+    FormControl, FormField, FormPurpose, FormView, KnownEntryKind, Screen, SettingsSectionId,
+    SettingsView,
 };
 use tempfile::TempDir;
 
@@ -474,6 +475,92 @@ fn bare_add_refuses_every_unapplied_flag_and_lists_only_compatible_lanes() {
     let mut empty_name = empty_add_options();
     empty_name.name = Some(String::new());
     assert!(refuse_bare_add_flags(&empty_name).is_ok());
+}
+
+#[test]
+fn test_ask_kind_plain_lists_sorted_interpreted_plus_exe_and_prompt() {
+    let selector = PlainKindSelector::new("weird.xyz", false, true);
+    assert_eq!(
+        selector.choices(),
+        [
+            KnownEntryKind::Fish,
+            KnownEntryKind::JavaScript,
+            KnownEntryKind::Lua,
+            KnownEntryKind::Perl,
+            KnownEntryKind::PowerShell,
+            KnownEntryKind::Python,
+            KnownEntryKind::R,
+            KnownEntryKind::Ruby,
+            KnownEntryKind::Shell,
+            KnownEntryKind::TypeScript,
+            KnownEntryKind::Executable,
+            KnownEntryKind::Prompt,
+        ]
+    );
+}
+
+#[test]
+fn test_ask_kind_plain_no_exe_when_offer_exe_false() {
+    let selector = PlainKindSelector::new("skit-new-draft", false, false);
+    assert!(!selector.choices().contains(&KnownEntryKind::Executable));
+    assert_eq!(selector.choices().last(), Some(&KnownEntryKind::Prompt));
+    assert_eq!(
+        selector.parse("11"),
+        Some(PlainKindSelection::Pick(KnownEntryKind::Prompt))
+    );
+    assert_eq!(selector.parse("12"), None);
+}
+
+#[test]
+fn test_ask_kind_plain_shebang_question_variant() {
+    let plain = PlainKindSelector::new("tool.xyz", false, true);
+    assert_eq!(
+        plain.question().localize(Locale::En),
+        "What is tool.xyz? skit can't tell from the name."
+    );
+    let shebang = PlainKindSelector::new("tool.xyz", true, true);
+    let question = shebang.question().localize(Locale::En);
+    assert_eq!(
+        question,
+        "The #! in tool.xyz names no interpreter skit knows. What is it?"
+    );
+    assert!(!question.contains("can't tell from the name"));
+}
+
+#[test]
+fn test_ask_kind_plain_returns_the_picked_language() {
+    let selector = PlainKindSelector::new("x.xyz", false, true);
+    assert_eq!(
+        selector.parse("9"),
+        Some(PlainKindSelection::Pick(KnownEntryKind::Shell))
+    );
+    assert_eq!(
+        selector.parse(" 9 "),
+        Some(PlainKindSelection::Pick(KnownEntryKind::Shell))
+    );
+    assert_eq!(selector.parse("-"), Some(PlainKindSelection::Cancel));
+    for invalid in ["", "0", "13", "shell"] {
+        assert_eq!(selector.parse(invalid), None, "answer={invalid:?}");
+    }
+    for kind in [io::ErrorKind::UnexpectedEof, io::ErrorKind::Interrupted] {
+        assert!(matches!(
+            add_dialoguer_error(dialoguer::Error::from(io::Error::from(kind))),
+            CliError::AddCancelled
+        ));
+    }
+}
+
+#[test]
+fn test_ask_kind_plain_returns_exe_and_prompt() {
+    let selector = PlainKindSelector::new("x.xyz", false, true);
+    assert_eq!(
+        selector.parse("11"),
+        Some(PlainKindSelection::Pick(KnownEntryKind::Executable))
+    );
+    assert_eq!(
+        selector.parse("12"),
+        Some(PlainKindSelection::Pick(KnownEntryKind::Prompt))
+    );
 }
 
 #[test]

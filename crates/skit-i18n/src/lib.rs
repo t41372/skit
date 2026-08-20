@@ -1109,7 +1109,8 @@ const CATALOG: &[Translation] = &[
         "命令模板（例如 ffmpeg -i {input}）",
         "指令範本（例如 ffmpeg -i {input}）",
     ),
-    row!("Which one?", "选择哪一个？", "選擇哪一個？"),
+    row!("Which one?", "选哪个？", "選哪個？"),
+    row!("- = cancel", "- = 取消", "- = 取消"),
     row!(
         "Choose a number from 1 to 4.",
         "请选择 1 到 4 之间的数字。",
@@ -3629,8 +3630,8 @@ const CATALOG: &[Translation] = &[
     row!("…and {} more", "…以及另外 {} 个", "…以及另外 {} 個"),
     row!(
         "The #! in {} names no interpreter skit knows. What is it?",
-        "{} 中的 #! 指定了 skit 不认识的解释器。它是什么？",
-        "{} 中的 #! 指定了 skit 不認識的直譯器。它是什麼？",
+        "{} 的 #! 指定了 skit 不认识的解释器。这是什么?",
+        "{} 的 #! 指定了 skit 不認識的直譯器。這是什麼?",
     ),
     row!(
         "What is {}? skit can't tell from the name.",
