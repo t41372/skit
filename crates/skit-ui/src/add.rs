@@ -8,15 +8,16 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use skit_application::{
-    CreateEntry, EntryPayload, SourcePermissions, add_workdir, payload_stored_name,
+    CreateEntry, EntryPayload, SourceIdentity, SourcePermissions, add_workdir, payload_stored_name,
 };
 use skit_domain::{EntryKind, EntrySettings, StorageMode, parameters::ParamDecl};
 use skit_form::{CliFormProjection, OnboardingPlan, onboarding_plan};
 use skit_language::{
     BindingIdentity, LosslessSource, UvMetadata, external_dependencies_at,
-    has_uv_metadata_block_bytes, infer_kind, placeholder_params, python_version_pin,
-    read_uv_metadata, shebang_program, suggest_description, validate_pep440_specifiers,
-    validate_pep508_requirement, write_managed_params_bytes, write_uv_metadata_bytes,
+    has_uv_metadata_block_bytes, infer_draft_kind, infer_kind, placeholder_params,
+    python_version_pin, read_uv_metadata, shebang_program, suggest_description,
+    validate_pep440_specifiers, validate_pep508_requirement, write_managed_params_bytes,
+    write_uv_metadata_bytes,
 };
 
 use crate::picker::{ChoicePicker, PickerItem, PickerMode};
@@ -128,6 +129,24 @@ pub struct DraftSummary {
     pub path: PathBuf,
     /// Last-modified timestamp as a sortable host value.
     pub modified: u64,
+    /// Host-captured file incarnation. Legacy state and unsupported hosts have no identity.
+    #[serde(default)]
+    pub identity: Option<SourceIdentity>,
+    /// Permissions captured with the row so deletion detects an in-place mode change.
+    #[serde(default)]
+    pub permissions: SourcePermissions,
+}
+
+/// Result of one identity-checked kept-draft deletion.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DraftDeleteOutcome {
+    /// The exact claimed file was removed.
+    Removed,
+    /// The claimed path was already absent.
+    AlreadyMissing,
+    /// The path now names a different file. The host returns its refreshed row.
+    Changed(DraftSummary),
 }
 
 /// A byte-exact source snapshot captured before review.
@@ -147,6 +166,9 @@ pub struct SourceSnapshot {
     pub is_directory: bool,
     /// Whether this is skit's only kept copy of authored work.
     pub is_draft: bool,
+    /// Host-captured file incarnation. Legacy state and unsupported hosts have no identity.
+    #[serde(default)]
+    pub identity: Option<SourceIdentity>,
 }
 
 impl SourceSnapshot {
@@ -155,7 +177,7 @@ impl SourceSnapshot {
     }
 
     fn inferred_kind(&self) -> Option<KnownEntryKind> {
-        if self.is_directory {
+        if self.is_directory && !self.is_draft {
             return Some(KnownEntryKind::Executable);
         }
         let text = self.text();
@@ -164,7 +186,12 @@ impl SourceSnapshot {
             .lines()
             .next()
             .filter(|line| line.starts_with("#!"));
-        infer_kind(&self.path, shebang, self.is_executable())
+        let inferred = if self.is_draft {
+            infer_draft_kind(&self.path, shebang, self.is_executable())
+        } else {
+            infer_kind(&self.path, shebang, self.is_executable())
+        };
+        inferred
             .and_then(KnownEntryKind::from_registry_str)
             .filter(|kind| !(self.is_draft && *kind == KnownEntryKind::Executable))
     }
@@ -236,6 +263,8 @@ pub enum AddProblem {
     EditFailed { reason: String },
     /// Draft deletion failed.
     DraftDeleteFailed { reason: String },
+    /// The selected draft changed and the host refreshed its row.
+    DraftChanged { path: PathBuf },
 }
 
 /// Non-error feedback from one completed add or draft action.
@@ -368,6 +397,16 @@ impl AddSourceState {
         self.selected_draft = self
             .selected_draft
             .filter(|index| *index < self.drafts.len());
+    }
+
+    fn replace_draft(&mut self, path: &Path, refreshed: DraftSummary) {
+        self.remove_draft(path);
+        self.drafts.push(refreshed.clone());
+        self.drafts.sort_by_key(|draft| Reverse(draft.modified));
+        self.selected_draft = self
+            .drafts
+            .iter()
+            .position(|draft| draft.path == refreshed.path);
     }
 }
 
@@ -1235,7 +1274,7 @@ pub enum AddAction {
         /// Matching operation identity.
         request: AddRequestId,
         /// Host result.
-        result: Result<(), String>,
+        result: Result<DraftDeleteOutcome, String>,
     },
     /// Replace review name.
     SetReviewName(String),
@@ -1298,7 +1337,7 @@ pub enum AddEffect {
     /// Delete one confirmed kept draft.
     DeleteDraft {
         request: AddRequestId,
-        path: PathBuf,
+        draft: DraftSummary,
     },
     /// Open the current source and return replacement bytes.
     EditSource {
@@ -1313,7 +1352,7 @@ pub enum AddEffect {
         source: Option<SourceSnapshot>,
     },
     /// Delete a draft only after a copy entry committed successfully.
-    ConsumeDraft(PathBuf),
+    ConsumeDraft(SourceSnapshot),
     /// Tell the host that cancelled authored work remains in the draft list.
     DraftKept(PathBuf),
     /// Remember an actively selected prompt runner for the next interactive picker.
@@ -1339,8 +1378,8 @@ pub struct AddWorkflowState {
     pending_inspection: Option<AddRequestId>,
     pending_edit: Option<AddRequestId>,
     pending_draft: Option<AddRequestId>,
-    pending_delete: Option<(AddRequestId, PathBuf)>,
-    delete_candidate: Option<PathBuf>,
+    pending_delete: Option<(AddRequestId, DraftSummary)>,
+    delete_candidate: Option<DraftSummary>,
     pending_commit: Option<AddRequestId>,
     standalone_review: bool,
 }
@@ -1524,11 +1563,10 @@ impl AddWorkflowState {
                 }
             }
             AddAction::DeleteSelectedDraft => {
-                let Some(path) = self.source.selected_draft().map(|draft| draft.path.clone())
-                else {
+                let Some(draft) = self.source.selected_draft().cloned() else {
                     return Vec::new();
                 };
-                self.delete_candidate = Some(path);
+                self.delete_candidate = Some(draft);
                 self.stage = AddStage::ConfirmDraftDelete;
             }
             AddAction::ConfirmDraftDelete(false) => {
@@ -1536,26 +1574,33 @@ impl AddWorkflowState {
                 self.stage = AddStage::Source;
             }
             AddAction::ConfirmDraftDelete(true) => {
-                let Some(path) = self.delete_candidate.take() else {
+                let Some(draft) = self.delete_candidate.take() else {
                     return Vec::new();
                 };
                 let request = self.request();
-                self.pending_delete = Some((request, path.clone()));
-                return vec![AddEffect::DeleteDraft { request, path }];
+                self.pending_delete = Some((request, draft.clone()));
+                return vec![AddEffect::DeleteDraft { request, draft }];
             }
             AddAction::DraftDeleted { request, result } => {
-                let Some((pending, path)) = self.pending_delete.take() else {
+                let Some((pending, draft)) = self.pending_delete.take() else {
                     return Vec::new();
                 };
                 if request != pending {
-                    self.pending_delete = Some((pending, path));
+                    self.pending_delete = Some((pending, draft));
                     return Vec::new();
                 }
                 self.stage = AddStage::Source;
                 match result {
-                    Ok(()) => {
-                        self.source.remove_draft(&path);
-                        self.notice = Some(AddNotice::DraftDeleted(path));
+                    Ok(DraftDeleteOutcome::Removed | DraftDeleteOutcome::AlreadyMissing) => {
+                        self.problem = None;
+                        self.source.remove_draft(&draft.path);
+                        self.notice = Some(AddNotice::DraftDeleted(draft.path));
+                    }
+                    Ok(DraftDeleteOutcome::Changed(refreshed)) => {
+                        self.notice = None;
+                        let path = refreshed.path.clone();
+                        self.source.replace_draft(&draft.path, refreshed);
+                        self.problem = Some(AddProblem::DraftChanged { path });
                     }
                     Err(reason) => self.problem = Some(AddProblem::DraftDeleteFailed { reason }),
                 }
@@ -1663,7 +1708,7 @@ impl AddWorkflowState {
                         let mut effects = Vec::new();
                         if let Some(review) = &self.review {
                             if review.source.is_draft && review.storage == StorageMode::Copy {
-                                effects.push(AddEffect::ConsumeDraft(review.source.path.clone()));
+                                effects.push(AddEffect::ConsumeDraft(review.source.clone()));
                             }
                             if review.lane == ReviewLane::Prompt
                                 && review.runner_was_picked
@@ -1813,6 +1858,7 @@ mod tests {
             is_regular: true,
             is_directory: false,
             is_draft: false,
+            identity: None,
         }
     }
 
@@ -1967,6 +2013,8 @@ mod tests {
         let draft = DraftSummary {
             path: PathBuf::from("skit-new-old.py"),
             modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
         };
         let mut deleted = AddWorkflowState::new(vec![draft.clone()]);
         let _ = deleted.reduce(AddAction::SelectDraft(0));
@@ -1976,22 +2024,43 @@ mod tests {
             panic!("confirmed delete must ask the host to delete");
         };
         let request = *request;
+        assert!(
+            deleted
+                .reduce(AddAction::DraftDeleted {
+                    request: AddRequestId(request.0.saturating_add(1)),
+                    result: Ok(DraftDeleteOutcome::Removed),
+                })
+                .is_empty()
+        );
+        assert!(deleted.notice().is_none());
+        assert_eq!(deleted.source().listed_drafts(), &[draft.clone()]);
         let _ = deleted.reduce(AddAction::DraftDeleted {
             request,
-            result: Ok(()),
+            result: Ok(DraftDeleteOutcome::Removed),
         });
         assert_eq!(deleted.notice(), Some(&AddNotice::DraftDeleted(draft.path)));
     }
 
     #[test]
     fn kept_draft_deletion_requires_confirmation_and_only_removes_the_confirmed_row() {
+        let legacy: DraftSummary =
+            serde_json::from_str(r#"{"path":"skit-new-legacy.py","modified":0}"#).unwrap();
+        assert!(
+            legacy.identity.is_none(),
+            "legacy UI state has no identity field"
+        );
+
         let first = DraftSummary {
             path: PathBuf::from("skit-new-first.py"),
             modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
         };
         let second = DraftSummary {
             path: PathBuf::from("skit-new-second.py"),
             modified: 2,
+            identity: None,
+            permissions: SourcePermissions::default(),
         };
         let mut workflow = AddWorkflowState::new(vec![first.clone(), second.clone()]);
         let _ = workflow.reduce(AddAction::SelectDraft(0));
@@ -2006,20 +2075,97 @@ mod tests {
 
         let _ = workflow.reduce(AddAction::DeleteSelectedDraft);
         let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
-        let [AddEffect::DeleteDraft { request, path }] = effects.as_slice() else {
+        let [AddEffect::DeleteDraft { request, draft }] = effects.as_slice() else {
             panic!("confirmed deletion must emit one typed host request");
         };
-        assert_eq!(path, &second.path);
+        assert_eq!(draft, &second);
         let request = *request;
+        let refreshed = DraftSummary {
+            path: second.path.clone(),
+            modified: 3,
+            identity: None,
+            permissions: SourcePermissions::default(),
+        };
         assert!(
             workflow
                 .reduce(AddAction::DraftDeleted {
                     request,
-                    result: Ok(()),
+                    result: Ok(DraftDeleteOutcome::Changed(refreshed.clone())),
+                })
+                .is_empty()
+        );
+        assert_eq!(
+            workflow.source().listed_drafts(),
+            &[refreshed.clone(), first.clone()]
+        );
+        assert!(matches!(
+            workflow.problem(),
+            Some(AddProblem::DraftChanged { .. })
+        ));
+
+        let _ = workflow.reduce(AddAction::SelectDraft(0));
+        let _ = workflow.reduce(AddAction::DeleteSelectedDraft);
+        let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
+        let [AddEffect::DeleteDraft { request, draft }] = effects.as_slice() else {
+            panic!("a retry must use the refreshed draft claim");
+        };
+        assert_eq!(draft, &refreshed);
+        assert!(
+            workflow
+                .reduce(AddAction::DraftDeleted {
+                    request: *request,
+                    result: Ok(DraftDeleteOutcome::AlreadyMissing),
                 })
                 .is_empty()
         );
         assert_eq!(workflow.source().listed_drafts(), &[first]);
+        assert!(
+            workflow.problem().is_none(),
+            "successful AlreadyMissing completion clears the earlier Changed warning"
+        );
+        assert_eq!(
+            workflow.notice(),
+            Some(&AddNotice::DraftDeleted(refreshed.path)),
+            "AlreadyMissing is an idempotent successful deletion"
+        );
+    }
+
+    #[test]
+    fn draft_delete_error_keeps_the_row_and_never_fabricates_success() {
+        let draft = DraftSummary {
+            path: PathBuf::from("skit-new-error.py"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+        };
+        let mut workflow = AddWorkflowState::new(vec![draft.clone()]);
+        let _ = workflow.reduce(AddAction::SelectDraft(0));
+        let _ = workflow.reduce(AddAction::DeleteSelectedDraft);
+        let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
+        let [
+            AddEffect::DeleteDraft {
+                request,
+                draft: claimed,
+            },
+        ] = effects.as_slice()
+        else {
+            panic!("confirmed deletion must carry one claim");
+        };
+        assert_eq!(claimed, &draft);
+        assert!(
+            workflow
+                .reduce(AddAction::DraftDeleted {
+                    request: *request,
+                    result: Err("could not quarantine the draft".into()),
+                })
+                .is_empty()
+        );
+        assert_eq!(workflow.source().listed_drafts(), &[draft]);
+        assert!(matches!(
+            workflow.problem(),
+            Some(AddProblem::DraftDeleteFailed { .. })
+        ));
+        assert!(workflow.notice().is_none());
     }
 
     #[test]
@@ -2225,6 +2371,21 @@ mod tests {
     fn save_emits_one_complete_create_request_and_only_success_consumes_a_draft() {
         let mut draft = source("skit-new-tool.py", b"VALUE = 1\nprint(VALUE)\n");
         draft.is_draft = true;
+        let encoded = serde_json::to_vec(&draft).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<SourceSnapshot>(&encoded).unwrap(),
+            draft,
+            "the host identity survives the serialized UI seam"
+        );
+        let mut legacy = serde_json::to_value(&draft).unwrap();
+        legacy.as_object_mut().unwrap().remove("identity");
+        assert!(
+            serde_json::from_value::<SourceSnapshot>(legacy)
+                .unwrap()
+                .identity
+                .is_none(),
+            "a snapshot serialized before identity existed still decodes"
+        );
         let mut workflow = AddWorkflowState::from_review(ReviewState::from_source(
             draft.clone(),
             KnownEntryKind::Python,
@@ -2237,6 +2398,16 @@ mod tests {
         };
         assert_create_is_complete(entry);
         let request = *request;
+        assert!(
+            workflow
+                .reduce(AddAction::CommitFinished {
+                    request: AddRequestId(request.0.saturating_add(1)),
+                    result: Ok("stale".into()),
+                })
+                .is_empty(),
+            "a stale host completion must not consume the current draft"
+        );
+        assert_eq!(workflow.stage(), AddStage::Review);
         assert!(
             workflow
                 .reduce(AddAction::CommitFinished {
@@ -2259,7 +2430,7 @@ mod tests {
         assert_eq!(
             effects,
             vec![
-                AddEffect::ConsumeDraft(draft.path),
+                AddEffect::ConsumeDraft(draft),
                 AddEffect::Complete("tool".into()),
             ]
         );

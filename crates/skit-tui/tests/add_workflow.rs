@@ -195,6 +195,7 @@ fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
             is_regular: true,
             is_directory: false,
             is_draft: false,
+            identity: None,
         },
         KnownEntryKind::Prompt,
         ReviewDefaults::default(),

@@ -104,6 +104,7 @@ fn snapshot(path: &str, bytes: &[u8], is_draft: bool) -> SourceSnapshot {
         is_regular: true,
         is_directory: false,
         is_draft,
+        identity: None,
     }
 }
 

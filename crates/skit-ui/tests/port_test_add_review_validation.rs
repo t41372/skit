@@ -68,6 +68,7 @@ fn snapshot(path: &str, bytes: &[u8], unix_mode: u32, is_draft: bool) -> SourceS
         is_regular: true,
         is_directory: false,
         is_draft,
+        identity: None,
     }
 }
 
@@ -165,6 +166,27 @@ fn test_draft_resume_inferred_exe_routes_to_ask_without_program_option() {
     assert!(!picker.offers(KnownEntryKind::Executable)); // no "A program" option for a draft
 }
 
+#[test]
+fn rust_additive_owned_draft_shaped_directory_never_routes_to_program_review() {
+    let mut workflow = AddWorkflowState::new(Vec::new());
+    let _ = workflow.reduce(AddAction::SetSourcePath("skit-new-directory".to_owned()));
+    let effects = workflow.reduce(AddAction::Continue);
+    let request = request_of(&effects, inspect_request);
+    let mut directory = snapshot("skit-new-directory", b"", 0o755, true);
+    directory.is_regular = false;
+    directory.is_directory = true;
+    let _ = workflow.reduce(AddAction::SourceInspected {
+        request,
+        result: Ok(directory),
+    });
+
+    assert_eq!(workflow.stage(), AddStage::Kind);
+    let picker = workflow
+        .kind_picker()
+        .expect("owned directory needs a safe kind choice");
+    assert!(!picker.offers(KnownEntryKind::Executable));
+}
+
 // ==========================================================================
 // 2. The fresh success-unlink is MODE-GATED
 // ==========================================================================
@@ -174,6 +196,7 @@ fn test_fresh_draft_copy_flow_unlinks_the_file() {
     // The copy arc (pin): a normal fresh draft lands as a copy, so the draft is consumed.
     let mut workflow = authored_draft("skit-new-copied.py", b"import sys\nprint('drafted')\n");
     let _ = workflow.reduce(AddAction::SetReviewName("copied".to_owned()));
+    let expected = workflow.review().unwrap().source().clone();
 
     let saved = workflow.reduce(AddAction::Save);
     assert_eq!(committed_entry(&saved).mode, StorageMode::Copy); // copy: the store holds it
@@ -184,9 +207,7 @@ fn test_fresh_draft_copy_flow_unlinks_the_file() {
         result: Ok("copied".to_owned()),
     });
     // copy: the store holds it, so the draft is unlinked, and the slug completes.
-    assert!(done.contains(&AddEffect::ConsumeDraft(PathBuf::from(
-        "skit-new-copied.py"
-    ))));
+    assert!(done.contains(&AddEffect::ConsumeDraft(expected)));
     assert!(done.contains(&AddEffect::Complete("copied".to_owned())));
 }
 

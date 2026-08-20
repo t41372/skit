@@ -47,17 +47,13 @@
 //! - Python `#add-draft-actions` Ctrl+D chip -> the source-stage footer "Delete draft…" chip,
 //!   rendered only when a draft is listed.
 //!
-//! Bucket disposition (16 oracle defs; 15 real asserting tests, 1 divergence):
-//! - 15 real: the review pin/rescan/explicit trio, the dynamic-vs-modeled review ticks + Space
+//! Bucket disposition (16 oracle defs; 15 remain here and the resume exact owner is rehomed to
+//! `skit-cli/tests/terminal_pty.rs` so it can drive the real filesystem host):
+//! - 15 real oracle contracts plus one Rust-additive reducer support test here: the review
+//!   pin/rescan/explicit trio, the dynamic-vs-modeled review ticks + Space
 //!   chip, both settings-gate tests, the singular/plural notices, and every draft-delete flow.
-//! - 1 FAILING CONTRACT (divergence), full asserting body kept behind `#[ignore]`:
-//!   * `test_resume_bash_shebang_draft_lands_as_shell` — Rust's `infer_kind` is extension-first
-//!     (`.py` -> python) and there is no `kind_for_draft` shebang-first rule for skit's OWN
-//!     drafts (registry.py:442, store.py:308), so the bash-shebang `skit-new-*.py` draft resumes
-//!     as PYTHON, not shell. The TUI reducer DOES wire the consume-on-copy unlink (unlike the CLI
-//!     lane), so the divergence here is the kind alone. Same diagnosis as the CLI twin
-//!     `port_test_draft_inference_and_reader_cli.rs::test_cli_add_bash_shebang_draft_lands_as_shell_and_unlinks`.
-//! - 0 cross-crate, 0 absent.
+//! - 0 ignored, 0 absent. The renamed reducer support test proves the typed classifier/consume
+//!   plan; it is not a second frozen owner.
 
 use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{
@@ -70,9 +66,9 @@ use skit_tui::{
     AddControlId, AddScreenEvent, AddScreenGeometry, AddScreenSession, AddTextField, render_add,
 };
 use skit_ui::{
-    AddAction, AddEffect, AddNotice, AddStage, AddWorkflowState, DraftSummary, KnownEntryKind,
-    MANAGE_KEY, ReviewDefaults, ReviewState, SettingsInputs, SettingsItem, SettingsSectionId,
-    SettingsView, SourceSnapshot,
+    AddAction, AddEffect, AddNotice, AddStage, AddWorkflowState, DraftDeleteOutcome, DraftSummary,
+    KnownEntryKind, MANAGE_KEY, ReviewDefaults, ReviewState, SettingsInputs, SettingsItem,
+    SettingsSectionId, SettingsView, SourceSnapshot,
 };
 use std::path::PathBuf;
 
@@ -102,6 +98,7 @@ fn snap(path: &str, bytes: &[u8], draft: bool) -> SourceSnapshot {
         is_regular: true,
         is_directory: false,
         is_draft: draft,
+        identity: None,
     }
 }
 
@@ -214,16 +211,16 @@ fn parameter_notes(view: &SettingsView) -> Vec<String> {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle classifies skit's OWN `.py` draft shebang-first (a bash shebang -> shell, registry.kind_for_draft registry.py:442 / store.py:308). Rust's `infer_kind` is extension-first (`.py` -> python) and `SourceSnapshot::inferred_kind` has no draft shebang-first path, so the resumed draft lands as PYTHON, not shell — `review.kind()` is Python and the first assert fails. The TUI reducer DOES wire ConsumeDraft on a copy commit, so the divergence here is the kind alone (unlike the CLI lane). Same diagnosis as the CLI twin `port_test_draft_inference_and_reader_cli.rs`."]
-fn test_resume_bash_shebang_draft_lands_as_shell() {
+fn rust_additive_draft_resume_uses_the_shared_classifier_and_snapshot_consume() {
     // Resuming `skit-new-*.py` with a bash body opens the review panel as SHELL (kind_for_draft
     // reads the shebang, not the mkstemp suffix), the stored entry is shell, and the draft is
     // consumed on accept.
-    let mut workflow = route_source(snap(
+    let expected = snap(
         "skit-new-ship.py",
         b"#!/usr/bin/env bash\necho drafted\n",
         true,
-    ));
+    );
+    let mut workflow = route_source(expected.clone());
     let review = workflow.review().expect("the draft resumes into a review");
     assert_eq!(review.kind(), KnownEntryKind::Shell); // reclassified by shebang, not the .py suffix
     // The stored entry is a shell entry.
@@ -240,13 +237,27 @@ fn test_resume_bash_shebang_draft_lands_as_shell() {
     let request = *request;
     let effects = workflow.reduce(AddAction::CommitFinished {
         request,
+        result: Err("disk full".to_owned()),
+    });
+    assert!(
+        effects.is_empty(),
+        "a failed commit must never consume a draft"
+    );
+    assert_eq!(workflow.stage(), AddStage::Review);
+
+    let effects = workflow.reduce(AddAction::Save);
+    let AddEffect::Commit { request, .. } = &effects[0] else {
+        panic!("retry must commit");
+    };
+    let effects = workflow.reduce(AddAction::CommitFinished {
+        request: *request,
         result: Ok("shipit".to_owned()),
     });
     assert!(
         effects
             .iter()
-            .any(|effect| matches!(effect, AddEffect::ConsumeDraft(path) if path == &PathBuf::from("skit-new-ship.py"))),
-        "the resumed draft that reached the store must be consumed"
+            .any(|effect| matches!(effect, AddEffect::ConsumeDraft(source) if source == &expected)),
+        "only the exact resumed snapshot that reached the store may be consumed"
     );
 }
 
@@ -408,10 +419,14 @@ fn test_ctrl_d_deletes_the_highlighted_draft_after_confirm() {
     let keep = DraftSummary {
         path: PathBuf::from("skit-new-keep.py"),
         modified: 1,
+        identity: None,
+        permissions: SourcePermissions::default(),
     };
     let doomed = DraftSummary {
         path: PathBuf::from("skit-new-doomed.py"),
         modified: 2,
+        identity: None,
+        permissions: SourcePermissions::default(),
     };
     let mut workflow = AddWorkflowState::new(vec![keep.clone(), doomed.clone()]);
     let doomed_index = workflow
@@ -457,14 +472,14 @@ fn test_ctrl_d_deletes_the_highlighted_draft_after_confirm() {
 
     // Confirm (the oracle's `y`; Enter/ConfirmDraftDelete(true) in Rust) deletes the highlight.
     let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
-    let [AddEffect::DeleteDraft { request, path }] = effects.as_slice() else {
+    let [AddEffect::DeleteDraft { request, draft }] = effects.as_slice() else {
         panic!("a confirmed delete must ask the host to delete");
     };
-    assert_eq!(path, &doomed.path); // the highlighted draft is the unlink target
+    assert_eq!(draft, &doomed); // path and identity belong to the highlighted row
     let request = *request;
     let _ = workflow.reduce(AddAction::DraftDeleted {
         request,
-        result: Ok(()),
+        result: Ok(DraftDeleteOutcome::Removed),
     });
     // Notified, and recomposed: exactly the surviving draft remains listed.
     assert_eq!(
@@ -482,6 +497,8 @@ fn test_ctrl_d_confirm_esc_keeps_the_draft() {
     let draft = DraftSummary {
         path: PathBuf::from("skit-new-safe.py"),
         modified: 1,
+        identity: None,
+        permissions: SourcePermissions::default(),
     };
     let mut workflow = AddWorkflowState::new(vec![draft]);
     let _ = workflow.reduce(AddAction::SelectDraft(0));
@@ -512,6 +529,8 @@ fn test_ctrl_d_while_editing_a_field_is_the_inputs_delete_right() {
     let draft = DraftSummary {
         path: PathBuf::from("skit-new-edit.py"),
         modified: 1,
+        identity: None,
+        permissions: SourcePermissions::default(),
     };
     let mut workflow = AddWorkflowState::new(vec![draft.clone()]);
     let _ = workflow.reduce(AddAction::SetSourcePath("abc".to_owned())); // typing in the path field
@@ -580,6 +599,8 @@ fn test_delete_draft_action_is_a_noop_when_nothing_highlighted() {
     let draft = DraftSummary {
         path: PathBuf::from("skit-new-none.py"),
         modified: 1,
+        identity: None,
+        permissions: SourcePermissions::default(),
     };
     let mut workflow = AddWorkflowState::new(vec![draft]);
     // Nothing selected (the `if highlighted is None: return` guard).
@@ -600,6 +621,8 @@ fn test_delete_draft_chip_only_renders_when_drafts_exist() {
     let mut present = AddWorkflowState::new(vec![DraftSummary {
         path: PathBuf::from("skit-new-present.py"),
         modified: 1,
+        identity: None,
+        permissions: SourcePermissions::default(),
     }]);
     let _ = present.reduce(AddAction::SelectDraft(0));
     let mut session = AddScreenSession::default();

@@ -1572,6 +1572,11 @@ fn problem_text(problem: &AddProblem, locale: Locale) -> String {
         | AddProblem::CommitFailed { reason }
         | AddProblem::EditFailed { reason }
         | AddProblem::DraftDeleteFailed { reason } => reason.clone(),
+        AddProblem::DraftChanged { path } => format_text(
+            locale,
+            "The kept draft changed before cleanup. skit kept it at {}.",
+            &[&path.display()],
+        ),
     }
 }
 
@@ -1614,6 +1619,7 @@ mod tests {
                 is_regular: true,
                 is_directory: false,
                 is_draft: false,
+                identity: None,
             },
             kind,
             ReviewDefaults::default(),

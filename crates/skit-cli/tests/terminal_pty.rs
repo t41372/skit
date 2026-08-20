@@ -476,6 +476,58 @@ impl Drop for LiveTui {
     }
 }
 
+#[test]
+fn test_resume_bash_shebang_draft_lands_as_shell() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let drafts = data.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let draft = drafts.join("skit-new-ship.py");
+    const SOURCE: &[u8] = b"#!/usr/bin/env bash\necho drafted\n";
+    fs::write(&draft, SOURCE).unwrap();
+
+    let mut tui = LiveTui::spawn(data.path(), state.path(), config.path(), home.path());
+    tui.wait_for("Library");
+    let open = tui.checkpoint();
+    tui.send_effect_key(b"a");
+    tui.wait_for_after(open, "Add an entry");
+
+    // Enter the real kept-draft path in the focused Source path field. This uses the same
+    // keyboard route as `skit add <path>` without a direct reducer action surrogate.
+    let draft_input = draft.display().to_string();
+    let typing = tui.checkpoint();
+    tui.send(draft_input.as_bytes());
+    tui.wait_for_after(typing, &draft_input);
+    let resume = tui.checkpoint();
+    tui.send(b"\r\x1b[1;1R");
+    tui.wait_for_after(resume, "Add skit-new-ship.py");
+
+    let submit = tui.checkpoint();
+    tui.send(&[0x13]);
+    tui.send(b"\x1b[1;1R");
+    let receipt = tui.wait_for_after(submit, "Entryadded");
+    assert!(receipt.contains("Library"), "{receipt}");
+
+    let store = FileStore::new(data.path());
+    let entry = store.resolve("skit-new-ship").unwrap();
+    assert_eq!(entry.meta.kind.as_str(), "shell");
+    assert_eq!(entry.meta.mode, StorageMode::Copy);
+    assert_eq!(
+        fs::read(store.payload_path(&entry).unwrap()).unwrap(),
+        SOURCE
+    );
+    assert!(
+        !draft.exists(),
+        "the exact reviewed draft was consumed after commit"
+    );
+
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let _ = tui.wait_for_exit_after(quit);
+}
+
 fn strip_terminal_control(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
@@ -621,6 +673,7 @@ impl PromptTuiSandbox {
                 is_regular: true,
                 is_directory: false,
                 is_draft: false,
+                identity: None,
             },
             KnownEntryKind::Prompt,
             ReviewDefaults {

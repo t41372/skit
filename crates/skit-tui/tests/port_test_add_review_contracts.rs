@@ -89,6 +89,7 @@ fn snap(path: &str, bytes: &[u8], draft: bool) -> SourceSnapshot {
         is_regular: true,
         is_directory: false,
         is_draft: draft,
+        identity: None,
     }
 }
 

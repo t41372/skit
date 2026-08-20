@@ -403,6 +403,7 @@ fn snapshot(path: &str, bytes: &[u8]) -> SourceSnapshot {
         is_regular: true,
         is_directory: false,
         is_draft: false,
+        identity: None,
     }
 }
 
