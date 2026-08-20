@@ -3715,8 +3715,10 @@ fn add_with_config(
         match cleanup {
             Ok(DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing) => {}
             Ok(DraftConsumeOutcome::Changed) => humanerrln!(
-                "warning: The kept draft changed before cleanup. skit kept it at {}.",
-                source.display()
+                "warning: {}",
+                Message::new("The kept draft changed before cleanup. skit kept it at {}.")
+                    .with(source.display())
+                    .localize(active_locale())
             ),
             Err(error) => humanerrln!("warning: {}", error.message().localize(active_locale())),
         }
