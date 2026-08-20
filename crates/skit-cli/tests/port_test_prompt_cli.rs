@@ -1916,7 +1916,7 @@ fn test_params_deliver_placeholder_is_allowed_on_prompts() {
     // real work to do — otherwise it would pass even if --deliver were a no-op (a placeholder's
     // default delivery is already "placeholder").
     let delivery = |sandbox: &Sandbox| -> String {
-        sandbox.json(&["params", "p", "--json"])["parameters"]
+        sandbox.json(&["params", "p", "--json"])["declared"]
             .as_array()
             .unwrap()
             .iter()

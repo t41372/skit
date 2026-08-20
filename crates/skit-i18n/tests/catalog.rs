@@ -1,7 +1,14 @@
+use std::fmt::Display;
+
 use skit_i18n::{
     Locale, available_locale_tags, catalog, detect_locale, format_text, kind_label, render,
     requested_locale, text,
 };
+
+fn assert_zh(template: &str, args: &[&dyn Display], simplified: &str, traditional: &str) {
+    assert_eq!(format_text(Locale::ZhCn, template, args), simplified);
+    assert_eq!(format_text(Locale::ZhTw, template, args), traditional);
+}
 
 #[test]
 fn locale_detection_accepts_existing_and_standard_spellings() {
@@ -326,6 +333,67 @@ fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
     );
     let pseudo = format_text(Locale::Pseudo, template, &[&item]);
     assert!(pseudo.contains(item), "{pseudo}");
+
+    assert_zh(
+        "Ignored a malformed value: {} (expected NAME=VALUE).",
+        &[&"--type: bad"],
+        "已忽略格式错误的值：--type: bad（应为 NAME=VALUE）。",
+        "已忽略格式錯誤的值：--type: bad（應為 NAME=VALUE）。",
+    );
+    assert_zh(
+        "{} isn't a declared parameter; skipped.",
+        &[&"x"],
+        "x 不是已声明的参数，已跳过。",
+        "x 不是已宣告的參數，已跳過。",
+    );
+    assert_zh(
+        "{} is already declared; skipped.",
+        &[&"x"],
+        "x 已经声明过，已跳过。",
+        "x 已經宣告過，已跳過。",
+    );
+    assert_zh(
+        "{}: that delivery isn't available for this kind; skipped.",
+        &[&"x"],
+        "x：该传递方式不适用于此类型，已跳过。",
+        "x：該傳遞方式不適用於此類型，已跳過。",
+    );
+    assert_zh(
+        "{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",
+        &[&"x"],
+        "x 不是模板占位符，无法使用 placeholder 传递方式，已跳过。",
+        "x 不是模板佔位符，無法使用 placeholder 傳遞方式，已跳過。",
+    );
+    assert_zh(
+        "{}: unknown type; skipped (use str, int, float, bool, choice, or path).",
+        &[&"x"],
+        "x：未知类型，已跳过(可用 str、int、float、bool、choice 或 path)。",
+        "x：未知類型，已跳過(可用 str、int、float、bool、choice 或 path)。",
+    );
+    assert_zh(
+        "{}: the default doesn't fit its type; skipped.",
+        &[&"x"],
+        "x：默认值与其类型不符，已跳过。",
+        "x：預設值與其類型不符，已跳過。",
+    );
+    assert_zh(
+        "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+        &[&"x"],
+        "x 不是机密参数；--env-source 只适用于机密参数（先用 --secret 标记）。",
+        "x 不是機密參數；--env-source 只適用於機密參數（先用 --secret 標記）。",
+    );
+    assert_zh(
+        "{}: a choice parameter needs choices; set --choices {}=a,b,c.",
+        &[&"x", &"x"],
+        "x：choice 参数需要可选值，请设置 --choices x=a,b,c。",
+        "x：choice 參數需要可選值，請設定 --choices x=a,b,c。",
+    );
+    assert_zh(
+        "{} is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-{} and the like), with default false.",
+        &[&"x", &"x"],
+        "x 默认就是开的，它的标志只会再开一次。请改成声明用来关掉它的那个标志(--no-x 之类)，默认 false。",
+        "x 預設就是開的，它的旗標只會再開一次。請改成宣告用來關掉它的那個旗標(--no-x 之類)，預設 false。",
+    );
 }
 
 #[test]

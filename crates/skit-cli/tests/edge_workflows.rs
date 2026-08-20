@@ -55,6 +55,16 @@ impl Sandbox {
         );
     }
 
+    fn warn(&self, args: &[&str], needle: &str) {
+        let output = self.command().args(args).output().unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stderr).contains(needle),
+            "args={args:?}\nstdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
     fn json(&self, args: &[&str]) -> Value {
         serde_json::from_slice(&self.ok(args)).unwrap()
     }
@@ -493,15 +503,27 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     sandbox.ok(&["params", "demo", "--json"]);
     sandbox.code(&["params", "demo", "--resync", "--add", "other"], 2);
     sandbox.ok(&["params", "demo", "--add", "name"]); // implicit -> explicit
-    sandbox.code(&["params", "demo", "--add", "name"], 2);
-    sandbox.code(&["params", "demo", "--type", "bad"], 2);
-    sandbox.code(&["params", "demo", "--type", "missing=int"], 2);
-    sandbox.code(&["params", "demo", "--type", "name=future"], 2);
-    sandbox.code(&["params", "demo", "--deliver", "name=future"], 2);
+    sandbox.warn(&["params", "demo", "--add", "name"], "already declared");
+    sandbox.warn(
+        &["params", "demo", "--type", "bad"],
+        "Ignored a malformed value",
+    );
+    sandbox.warn(
+        &["params", "demo", "--type", "missing=int"],
+        "isn't a declared parameter",
+    );
+    sandbox.warn(&["params", "demo", "--type", "name=future"], "unknown type");
+    sandbox.warn(
+        &["params", "demo", "--deliver", "name=future"],
+        "delivery isn't available",
+    );
     for flag in ["--required", "--optional", "--secret", "--no-secret"] {
-        sandbox.code(&["params", "demo", flag, "missing"], 2);
+        sandbox.warn(
+            &["params", "demo", flag, "missing"],
+            "isn't a declared parameter",
+        );
     }
-    sandbox.code(
+    sandbox.warn(
         &[
             "params",
             "demo",
@@ -510,33 +532,39 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
             "--type",
             "name=int",
         ],
-        2,
+        "default doesn't fit its type",
     );
+    let partially_updated = sandbox.json(&["params", "demo", "--json"]);
+    assert_eq!(partially_updated["declared"][0]["type"], "int");
+    assert!(partially_updated["declared"][0].get("default").is_none());
 
-    sandbox.ok(&[
-        "params",
-        "demo",
-        "--add",
-        "count",
-        "--type",
-        "count=int",
-        "--default",
-        "count=2",
-        "--deliver",
-        "count=flag",
-        "--flag",
-        "count=--count",
-        "--help-text",
-        "count=Count help",
-        "--prompt",
-        "count=Count",
-        "--env-source",
-        "count=COUNT_SOURCE",
-        "--required",
-        "count",
-        "--secret",
-        "count",
-    ]);
+    sandbox.warn(
+        &[
+            "params",
+            "demo",
+            "--add",
+            "count",
+            "--type",
+            "count=int",
+            "--default",
+            "count=2",
+            "--deliver",
+            "count=flag",
+            "--flag",
+            "count=--count",
+            "--help-text",
+            "count=Count help",
+            "--prompt",
+            "count=Count",
+            "--env-source",
+            "count=COUNT_SOURCE",
+            "--required",
+            "count",
+            "--secret",
+            "count",
+        ],
+        "delivery isn't available",
+    );
     let params = sandbox.json(&["params", "demo", "--json"]);
     let count = params["parameters"]
         .as_array()
@@ -546,7 +574,7 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
         .unwrap();
     assert_eq!(count["type"], "int");
     assert_eq!(count["default"], 2);
-    assert_eq!(count["delivery"], "flag");
+    assert_eq!(count["delivery"], "env");
     assert_eq!(count["flag"], "--count");
     assert_eq!(count["help"], "Count help");
     assert_eq!(count["prompt"], "Count");
@@ -640,7 +668,7 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
         serde_json::json!([])
     );
 
-    sandbox.ok(&["run", "demo", "--set", "name=value", "--no-input"]);
+    sandbox.ok(&["run", "demo", "--set", "name=5", "--no-input"]);
     sandbox.ok(&["preset", "save", "demo", "current"]);
     sandbox.ok(&["preset", "save", "demo", "last", "--from-last"]);
     sandbox.ok(&["preset", "list", "demo"]);

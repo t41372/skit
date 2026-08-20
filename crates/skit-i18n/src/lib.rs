@@ -1549,9 +1549,44 @@ const CATALOG: &[Translation] = &[
         "環境變數來源：{}",
     ),
     row!(
+        "{} isn't a declared parameter; skipped.",
+        "{} 不是已声明的参数，已跳过。",
+        "{} 不是已宣告的參數，已跳過。",
+    ),
+    row!(
+        "{} is already declared; skipped.",
+        "{} 已经声明过，已跳过。",
+        "{} 已經宣告過，已跳過。",
+    ),
+    row!(
+        "{}: that delivery isn't available for this kind; skipped.",
+        "{}：该传递方式不适用于此类型，已跳过。",
+        "{}：該傳遞方式不適用於此類型，已跳過。",
+    ),
+    row!(
+        "{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",
+        "{} 不是模板占位符，无法使用 placeholder 传递方式，已跳过。",
+        "{} 不是模板佔位符，無法使用 placeholder 傳遞方式，已跳過。",
+    ),
+    row!(
+        "{}: unknown type; skipped (use str, int, float, bool, choice, or path).",
+        "{}：未知类型，已跳过(可用 str、int、float、bool、choice 或 path)。",
+        "{}：未知類型，已跳過(可用 str、int、float、bool、choice 或 path)。",
+    ),
+    row!(
+        "{}: the default doesn't fit its type; skipped.",
+        "{}：默认值与其类型不符，已跳过。",
+        "{}：預設值與其類型不符，已跳過。",
+    ),
+    row!(
         "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
         "{} 不是机密参数；--env-source 只适用于机密参数（先用 --secret 标记）。",
         "{} 不是機密參數；--env-source 只適用於機密參數（先用 --secret 標記）。",
+    ),
+    row!(
+        "{}: a choice parameter needs choices; set --choices {}=a,b,c.",
+        "{}：choice 参数需要可选值，请设置 --choices {}=a,b,c。",
+        "{}：choice 參數需要可選值，請設定 --choices {}=a,b,c。",
     ),
     row!("Secret: yes", "敏感值：是", "敏感值：是"),
     row!(
@@ -3317,8 +3352,8 @@ const CATALOG: &[Translation] = &[
     row!("{} is required.", "{} 为必填项。", "{} 為必填欄位。",),
     row!(
         "{} is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-{} and the like), with default false.",
-        "{} 默认已开启，因此它的选项只能再次开启它。请改为声明关闭它的选项（例如 --no-{}），并将默认值设为 false。",
-        "{} 預設已開啟，因此它的選項只能再次開啟它。請改為宣告關閉它的選項（例如 --no-{}），並將預設值設為 false。",
+        "{} 默认就是开的，它的标志只会再开一次。请改成声明用来关掉它的那个标志(--no-{} 之类)，默认 false。",
+        "{} 預設就是開的，它的旗標只會再開一次。請改成宣告用來關掉它的那個旗標(--no-{} 之類)，預設 false。",
     ),
     row!(
         "{} manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block.",
@@ -3552,6 +3587,11 @@ const CATALOG: &[Translation] = &[
         "Ignored a malformed value: {} (expected NAME=text).",
         "已忽略格式错误的值：{}（应为 NAME=text）。",
         "已忽略格式錯誤的值：{}（應為 NAME=text）。",
+    ),
+    row!(
+        "Ignored a malformed value: {} (expected NAME=VALUE).",
+        "已忽略格式错误的值：{}（应为 NAME=VALUE）。",
+        "已忽略格式錯誤的值：{}（應為 NAME=VALUE）。",
     ),
     row!(
         "{} reads from the environment variable {}, but it isn't set.",

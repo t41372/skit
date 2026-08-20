@@ -345,8 +345,10 @@ runners = [
     command()
         .args(["params", "fields", "--env-target", "broken"])
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains("环境目标需要 NAME=VALUE"))
+        .success()
+        .stderr(predicate::str::contains(
+            "已忽略格式错误的值：--env-target: broken（应为 NAME=VALUE）。",
+        ))
         .stderr(predicate::str::contains("environment target").not());
     // Version 0.4 resolves the row before it asks anything, so an absent row refuses with
     // exit 1 and the same wording with or without a confirmation flag

@@ -2,6 +2,8 @@
 //!
 //! The declared-schema editor is one pure domain operation. Frontends collect input and render
 //! its typed warnings; the engine owns operation order, partial success, and row rollback.
+//! All 41 frozen owners are executable: 36 edit contracts, two type-parser contracts, and three
+//! default-coercion contracts.
 
 use skit_domain::parameters::{
     DeclaredEditContext, DeclaredEditRequest, DeclaredEditWarning, NamedEdit, ParamDecl,

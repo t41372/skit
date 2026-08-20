@@ -39,23 +39,12 @@
 //!   persistence contract, not the CLI's broader `params --rm` product action.
 //!
 //! Buckets:
-//! - REAL asserting `#[test]` (API exists): the pure-schema, form-plan, assemble, meta-model,
-//!   and the CLI tests whose behavior the Rust product reproduces.
-//! - DIVERGENCE (full asserting body, `#[ignore]`d): the assertion is faithful to the oracle
-//!   and compiles; it fails because Rust diverges. Fixing the impl and deleting the `#[ignore]`
-//!   line turns it green. These capture: the absent confirmation/warning strings
-//!   ("Declared parameters:", "has no managed parameters", "Ignored a malformed value",
-//!   "Removed previously stored plaintext"), the `params` batch
-//!   fault-tolerance gap (a malformed/bad value hard-errors exit 2 instead of warning at
-//!   exit 0).
+//! - REAL asserting `#[test]`: pure schema, form plans, assembly, metadata, typed domain edits,
+//!   and CLI warning/partial-success behavior are executable through public APIs or the real binary.
 //! - ARCHITECTURE-CLOSED / SPLIT-SEAM (`#[ignore]`): the Python `ScriptMeta` owner combines raw
 //!   row pass-through and typed row filtering in one class. Rust keeps raw rows in
 //!   `EntryMeta::extra` and projects typed rows through `EntrySettings`; both executable legs live
 //!   in the active `skit-domain` and `skit-store` owners.
-//! - UNMAPPABLE white-box (`#[ignore]` stub): `test_cli_declared_warning_codes_render` drives
-//!   the Python-private `cli._render_declared_warning`; the Rust warnings are localized
-//!   messages with no public renderer to observe, and their observable outcomes are covered
-//!   (or recorded as divergences) by the CLI tests here.
 //!
 //! Windows note: the oracle's `sys.platform == "win32"` fixture arms are dropped; these tests
 //! run the Unix `#!/bin/sh` fixtures only.
@@ -1066,24 +1055,115 @@ fn test_cli_python_declared_op_is_refused() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a malformed `--type NOEQUALS` (no `=`) must be tolerated — the oracle warns \"Ignored a malformed value\" and exits 0 (src/skit/cli.py batch fault tolerance). The Rust product hard-errors exit 2 with \"type needs NAME=VALUE\" on stderr and applies nothing (pending task: params batch fault tolerance)."]
 fn test_cli_declared_malformed_value_warns() {
     let workspace = lib();
     workspace.add_exe("prog");
+    let data_before = snapshot_tree(workspace.data.path());
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
     let output = workspace.run(&["params", "prog", "--type", "NOEQUALS"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("Ignored a malformed value"));
+    assert!(
+        stderr_text(&output)
+            .contains("Ignored a malformed value: --type: NOEQUALS (expected NAME=VALUE)."),
+        "{}",
+        combined(&output)
+    );
+    assert!(
+        combined(&output).contains("Updated prog. Declared parameters: —"),
+        "{}",
+        combined(&output)
+    );
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "UNMAPPABLE white-box: the oracle drives the Python-private `cli._render_declared_warning(code)` for the 7 closed warning codes (not-declared/already-declared/bad-delivery/not-a-placeholder/bad-type/bad-default/choice-without-choices). The Rust warnings are localized messages with no public renderer to call, and their observable outcomes are covered (or recorded as divergences) by the CLI tests in this file. Not a MUST-FIX feature."]
 fn test_cli_declared_warning_codes_render() {
-    // for code in the 7 closed warning codes: line = cli._render_declared_warning(code);
-    // assert "x" in line and the code prefix isn't leaked into the message.
+    let workspace = lib();
+    workspace.add_exe("prog");
+    for args in [
+        &["params", "prog", "--add", "a", "--flag", "a=--a"][..],
+        &["params", "prog", "--add", "number", "--type", "number=int"][..],
+        &["params", "prog", "--add", "choice"][..],
+        &[
+            "params",
+            "prog",
+            "--add",
+            "verbose",
+            "--flag",
+            "verbose=--verbose",
+        ][..],
+    ] {
+        let output = workspace.run(args);
+        assert!(output.status.success(), "{}", combined(&output));
+    }
+    workspace
+        .cmd()
+        .args(["add", "--cmd", "echo hi", "--name", "cmd", "--no-input"])
+        .assert()
+        .success();
+    workspace.run(&["params", "cmd", "--add", "rider"]);
+
+    let cases = [
+        (
+            workspace.run(&["params", "prog", "--rm", "ghost"]),
+            "ghost isn't a declared parameter; skipped.",
+        ),
+        (
+            workspace.run(&["params", "prog", "--add", "a"]),
+            "a is already declared; skipped.",
+        ),
+        (
+            workspace.run(&["params", "prog", "--deliver", "a=placeholder"]),
+            "a: that delivery isn't available for this kind; skipped.",
+        ),
+        (
+            workspace.run(&["params", "cmd", "--deliver", "rider=placeholder"]),
+            "rider isn't a template placeholder, so it can't use placeholder delivery; skipped.",
+        ),
+        (
+            workspace.run(&["params", "prog", "--type", "a=integer"]),
+            "a: unknown type; skipped (use str, int, float, bool, choice, or path).",
+        ),
+        (
+            workspace.run(&["params", "prog", "--default", "number=bad"]),
+            "number: the default doesn't fit its type; skipped.",
+        ),
+        (
+            workspace.run(&["params", "prog", "--env-source", "a=TOKEN"]),
+            "a isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+        ),
+        (
+            workspace.run(&["params", "prog", "--type", "choice=choice"]),
+            "choice: a choice parameter needs choices; set --choices choice=a,b,c.",
+        ),
+        (
+            workspace.run(&[
+                "params",
+                "prog",
+                "--type",
+                "verbose=bool",
+                "--default",
+                "verbose=true",
+            ]),
+            "verbose is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-verbose and the like), with default false.",
+        ),
+    ];
+    for (output, expected) in cases {
+        assert!(output.status.success(), "{}", combined(&output));
+        assert!(
+            stderr_text(&output).contains(expected),
+            "{}",
+            combined(&output)
+        );
+        assert!(!stderr_text(&output).contains("bad-type:"));
+        assert!(!stderr_text(&output).contains("not-declared:"));
+    }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a bad `--type w=integer` must be tolerated — the oracle warns \"unknown type\" (exit 0) and leaves the type unchanged (src/skit/cli.py batch fault tolerance). The Rust product hard-errors exit 2 with \"unknown parameter type: integer\" on stderr (pending task: params batch fault tolerance)."]
 fn test_cli_bad_type_warns_and_skips() {
     let workspace = lib();
     workspace.add_exe("prog");
@@ -1097,11 +1177,31 @@ fn test_cli_bad_type_warns_and_skips() {
         "--type",
         "w=str",
     ]);
+    let data_before = snapshot_tree(workspace.data.path());
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
     let output = workspace.run(&["params", "prog", "--type", "w=integer"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("unknown type"));
+    assert!(
+        stderr_text(&output)
+            .contains("w: unknown type; skipped (use str, int, float, bool, choice, or path)."),
+        "{}",
+        combined(&output)
+    );
     let payload = stdout_json(&workspace.run(&["params", "prog", "--json"]));
     assert_eq!(payload["declared"][0]["type"], "str"); // unchanged
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
+
+    let json_warning = workspace.run(&["params", "prog", "--type", "w=integer", "--json"]);
+    assert!(json_warning.status.success(), "{}", combined(&json_warning));
+    assert_eq!(stdout_json(&json_warning)["declared"][0]["type"], "str");
+    assert!(stderr_text(&json_warning).contains("w: unknown type; skipped"));
+    assert!(!String::from_utf8_lossy(&json_warning.stdout).contains("unknown type"));
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]

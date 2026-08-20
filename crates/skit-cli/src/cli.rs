@@ -39,8 +39,9 @@ use skit_application::{
 use skit_domain::{
     Entry, EntryKind, EntrySettings, EntrySummary, Slug, StorageMode,
     parameters::{
-        ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-        coerce_default, synthesized_placeholder,
+        DeclaredEditContext, DeclaredEditRequest, DeclaredEditWarning, NamedEdit, ParamDecl,
+        ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, as_param_type,
+        coerce_default, edit_declared, synthesized_placeholder,
     },
 };
 use skit_form::{
@@ -4501,6 +4502,9 @@ fn params(
         }
         source.ok().flatten().unwrap_or_default()
     };
+    if has_metadata_schema_operation {
+        return edit_declared_params(service, held, settings, &original_source, args);
+    }
     let replaced_reader_frameworks = if source_parameter_kind && !args.manage.is_empty() {
         let plan = onboarding_plan(held.meta.kind.as_str(), &original_source);
         (managed_params(held.meta.kind.as_str(), &original_source).is_empty()
@@ -4927,6 +4931,315 @@ fn params(
         write_human_command_params(&held, &settings, &declarations)
     } else {
         write_params(&held, &source, &settings, &declarations, args.json)
+    }
+}
+
+fn edit_declared_params(
+    service: &LibraryService<FileStore>,
+    mut held: Entry,
+    mut settings: EntrySettings,
+    source: &str,
+    args: ParamsArgs,
+) -> Result<(), CliError> {
+    let kind = held.meta.kind.as_str().to_owned();
+    let (parameter_types, mut malformed) = collect_named_values(&args.parameter_types, "--type");
+    let (defaults, bad) = collect_named_values(&args.defaults, "--default");
+    malformed.extend(bad);
+    let (choice_values, bad) = collect_named_values(&args.choices, "--choices");
+    malformed.extend(bad);
+    let (deliveries, bad) = collect_named_values(&args.delivery, "--deliver");
+    malformed.extend(bad);
+    let (binding_values, bad) = collect_named_values(&args.bindings, "--binding");
+    malformed.extend(bad);
+    let (flags, bad) = collect_named_values(&args.flags, "--flag");
+    malformed.extend(bad);
+    let (env_targets, bad) = collect_named_values(&args.env_targets, "--env-target");
+    malformed.extend(bad);
+    let (actions, bad) = collect_named_values(&args.actions, "--action");
+    malformed.extend(bad);
+    let (help, bad) = collect_named_values(&args.help_text, "--help-text");
+    malformed.extend(bad);
+    let (prompts, bad) = collect_named_values(&args.prompts, "--prompt");
+    malformed.extend(bad);
+    let (env_sources, bad) = collect_named_values(&args.env_sources, "--env-source");
+    malformed.extend(bad);
+
+    let bindings = binding_values
+        .into_iter()
+        .map(|edit| {
+            Ok(NamedEdit {
+                name: edit.name,
+                value: parse_binding(&edit.value)?,
+            })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    let choices = choice_values
+        .into_iter()
+        .map(|edit| NamedEdit {
+            name: edit.name,
+            value: edit.value.split(',').map(str::to_owned).collect(),
+        })
+        .collect();
+
+    let placeholder_order = match kind.as_str() {
+        "command" => placeholder_params("command", &settings.template)
+            .into_iter()
+            .map(|row| row.name)
+            .collect::<Vec<_>>(),
+        "prompt" => placeholder_params("prompt", source)
+            .into_iter()
+            .map(|row| row.name)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut placeholder_truth = placeholder_order.clone();
+    if kind == "prompt" {
+        for name in &settings.params {
+            if !placeholder_truth.contains(name) {
+                placeholder_truth.push(name.clone());
+            }
+        }
+    }
+    let context = if matches!(kind.as_str(), "command" | "prompt") {
+        DeclaredEditContext::new(
+            ParameterDelivery::Env,
+            [ParameterDelivery::Placeholder],
+            placeholder_truth,
+        )
+    } else {
+        DeclaredEditContext::new(
+            ParameterDelivery::Flag,
+            [ParameterDelivery::Env],
+            Vec::<String>::new(),
+        )
+    };
+    let original_explicit = settings.parameters.clone();
+    let original_explicit_names = original_explicit
+        .iter()
+        .map(|row| row.name.clone())
+        .collect::<BTreeSet<_>>();
+    let implicit_order = if matches!(kind.as_str(), "command" | "prompt") {
+        settings.params.clone()
+    } else {
+        Vec::new()
+    };
+    let mut engine_input = implicit_order
+        .iter()
+        .map(|name| {
+            original_explicit
+                .iter()
+                .find(|row| row.name == *name)
+                .cloned()
+                .unwrap_or_else(|| synthesized_placeholder(name))
+        })
+        .collect::<Vec<_>>();
+    engine_input.extend(
+        original_explicit
+            .iter()
+            .filter(|row| !implicit_order.contains(&row.name))
+            .cloned(),
+    );
+    engine_input
+        .retain(|row| original_explicit_names.contains(&row.name) || !args.add.contains(&row.name));
+
+    let request = DeclaredEditRequest {
+        add: args.add.clone(),
+        remove: args.remove.clone(),
+        parameter_types,
+        defaults,
+        choices,
+        deliveries,
+        flags,
+        required: args.required.clone(),
+        optional: args.optional.clone(),
+        help,
+        prompts,
+        secret: args.secret.clone(),
+        no_secret: args.no_secret.clone(),
+        env_sources,
+        bindings,
+        multiple: args.multiple.clone(),
+        no_multiple: args.no_multiple.clone(),
+        repeat: args.repeat.clone(),
+        no_repeat: args.no_repeat.clone(),
+        env_targets,
+        actions,
+    };
+    let mut result = edit_declared(&engine_input, &request, &context);
+
+    let previous_managed = settings.params.clone();
+    if kind == "prompt" {
+        let removed = args
+            .remove
+            .iter()
+            .filter(|name| previous_managed.contains(name))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut keep = previous_managed
+            .iter()
+            .filter(|name| !removed.contains(*name))
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in &args.add {
+            if placeholder_order.contains(name)
+                && !args.remove.contains(name)
+                && !keep.contains(name)
+            {
+                keep.push(name.clone());
+            }
+        }
+        settings.params = placeholder_order
+            .iter()
+            .filter(|name| keep.contains(*name))
+            .cloned()
+            .collect();
+        settings.params.extend(
+            keep.into_iter()
+                .filter(|name| !placeholder_order.contains(name)),
+        );
+        result.warnings.retain(|warning| {
+            !matches!(warning, DeclaredEditWarning::NotDeclared { name } if removed.contains(name))
+        });
+    }
+
+    for item in malformed {
+        humanerrln!("Ignored a malformed value: {} (expected NAME=VALUE).", item);
+    }
+    for warning in &result.warnings {
+        eprintln!(
+            "{}",
+            declared_edit_warning_message(warning).localize(active_locale())
+        );
+    }
+
+    let mut explicit_names = original_explicit_names;
+    explicit_names.retain(|name| !args.remove.contains(name));
+    for name in &args.add {
+        if result.declarations.iter().any(|row| row.name == *name) {
+            explicit_names.insert(name.clone());
+        }
+    }
+    for name in &implicit_order {
+        if explicit_names.contains(name) {
+            continue;
+        }
+        let baseline = synthesized_placeholder(name);
+        if result
+            .declarations
+            .iter()
+            .find(|row| row.name == *name)
+            .is_some_and(|row| row != &baseline)
+        {
+            explicit_names.insert(name.clone());
+        }
+    }
+    let managed_changed = settings.params != previous_managed;
+    settings.parameters = result
+        .declarations
+        .iter()
+        .filter(|row| explicit_names.contains(&row.name))
+        .cloned()
+        .collect();
+    let declared_changed = settings.parameters != original_explicit;
+    if declared_changed || managed_changed {
+        let claimed = service.claim_identity(&held)?;
+        let workdir = held.meta.workdir.clone();
+        held = service.update_settings(&claimed, &settings, &workdir)?;
+    }
+
+    let should_purge = args.secret.iter().any(|name| {
+        settings
+            .parameters
+            .iter()
+            .any(|row| row.name == *name && row.secret)
+    });
+    if should_purge {
+        let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
+        let purged = state.purge_secrets(&held.slug, &settings.parameters)?;
+        report_purged_secrets(purged, args.json);
+    }
+
+    if !args.json {
+        let names = settings
+            .parameters
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        humanln!(
+            "Updated {}. Declared parameters: {}",
+            held.meta.name,
+            if names.is_empty() { "—" } else { &names }
+        );
+        return Ok(());
+    }
+
+    let mut effective = form_params(&kind, source, &settings);
+    for row in &settings.parameters {
+        if !effective.iter().any(|current| current.name == row.name) {
+            effective.push(row.clone());
+        }
+    }
+    write_params(&held, source, &settings, &effective, true)
+}
+
+fn collect_named_values(raw: &[String], flag: &str) -> (Vec<NamedEdit<String>>, Vec<String>) {
+    let mut edits = Vec::<NamedEdit<String>>::new();
+    let mut malformed = Vec::new();
+    for item in raw {
+        let Some((name, value)) = item
+            .split_once('=')
+            .map(|(name, value)| (name.trim(), value))
+            .filter(|(name, _)| !name.is_empty())
+        else {
+            malformed.push(format!("{flag}: {item}"));
+            continue;
+        };
+        if let Some(edit) = edits.iter_mut().find(|edit| edit.name == name) {
+            edit.value = value.to_owned();
+        } else {
+            edits.push(NamedEdit::new(name, value));
+        }
+    }
+    (edits, malformed)
+}
+
+fn declared_edit_warning_message(warning: &DeclaredEditWarning) -> Message {
+    match warning {
+        DeclaredEditWarning::NotDeclared { name } => {
+            Message::new("{} isn't a declared parameter; skipped.").with(name)
+        }
+        DeclaredEditWarning::AlreadyDeclared { name } => {
+            Message::new("{} is already declared; skipped.").with(name)
+        }
+        DeclaredEditWarning::BadDelivery { name } => {
+            Message::new("{}: that delivery isn't available for this kind; skipped.").with(name)
+        }
+        DeclaredEditWarning::NotAPlaceholder { name } => Message::new(
+            "{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",
+        )
+        .with(name),
+        DeclaredEditWarning::BadType { name } => Message::new(
+            "{}: unknown type; skipped (use str, int, float, bool, choice, or path).",
+        )
+        .with(name),
+        DeclaredEditWarning::BadDefault { name } => {
+            Message::new("{}: the default doesn't fit its type; skipped.").with(name)
+        }
+        DeclaredEditWarning::EnvSourceNotSecret { name } => Message::new(
+            "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+        )
+        .with(name),
+        DeclaredEditWarning::ChoiceWithoutChoices { name } => Message::new(
+            "{}: a choice parameter needs choices; set --choices {}=a,b,c.",
+        )
+        .with(name)
+        .with(name),
+        DeclaredEditWarning::BoolFlagOnByDefault { name } => Message::new(
+            "{} is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-{} and the like), with default false.",
+        )
+        .with(name)
+        .with(name),
     }
 }
 
@@ -5393,17 +5706,8 @@ fn parameter_mut<'a>(
 }
 
 fn parse_parameter_type(value: &str) -> Result<ParameterType, CliError> {
-    match value {
-        "str" => Ok(ParameterType::Str),
-        "int" => Ok(ParameterType::Int),
-        "float" => Ok(ParameterType::Float),
-        "bool" => Ok(ParameterType::Bool),
-        "choice" => Ok(ParameterType::Choice),
-        "path" => Ok(ParameterType::Path),
-        _ => Err(CliError::Usage(
-            Message::new("unknown parameter type: {}").with(value),
-        )),
-    }
+    as_param_type(value)
+        .ok_or_else(|| CliError::Usage(Message::new("unknown parameter type: {}").with(value)))
 }
 
 fn parse_delivery(value: &str) -> Result<ParameterDelivery, CliError> {
