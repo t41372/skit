@@ -6,9 +6,14 @@
 //! domain crate remains independent of storage adapters.
 
 mod declarations;
+mod edit;
 mod secrets;
 
 pub use declarations::{declared_for_template, declared_from_meta};
+pub use edit::{
+    DeclaredEditContext, DeclaredEditRequest, DeclaredEditResult, DeclaredEditWarning, NamedEdit,
+    as_param_type, edit_declared,
+};
 pub use secrets::{is_secret_name, synthesized_placeholder};
 
 use std::collections::BTreeMap;
