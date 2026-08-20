@@ -229,6 +229,31 @@ pub fn infer_kind(path: &Path, shebang: Option<&str>, executable: bool) -> Optio
     executable.then_some("exe")
 }
 
+/// Infer one owned draft kind without treating skit's synthetic script suffix as user intent.
+///
+/// Prompt extensions identify placeholder-bodied input and keep priority. For every other draft,
+/// a present shebang is authoritative, including an unknown shebang. A draft without a shebang
+/// falls back to ordinary path and executable inference.
+#[must_use]
+pub fn infer_draft_kind(
+    path: &Path,
+    shebang: Option<&str>,
+    executable: bool,
+) -> Option<&'static str> {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if name.ends_with(".prompt.md") || name.ends_with(".prompt") {
+        return Some("prompt");
+    }
+    if let Some(shebang) = shebang {
+        return shebang_kind(shebang);
+    }
+    infer_kind(path, None, executable)
+}
+
 fn extension_kind(name: &str) -> Option<&'static str> {
     [
         (".py", "python"),

@@ -38,6 +38,57 @@ use skit_domain::{Entry, EntrySummary};
 use skit_i18n::{Locale, Localize, Message};
 use thiserror::Error;
 
+/// Stable identity of one filesystem object captured by a host adapter.
+///
+/// Source bytes and permissions remain separate transaction facts. This value identifies the file
+/// incarnation so a same-bytes replacement cannot inherit an earlier destructive claim.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceIdentity(SourceIdentityKind);
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "platform")]
+enum SourceIdentityKind {
+    Unix {
+        device: u64,
+        inode: u64,
+        change_time_seconds: i64,
+        change_time_nanoseconds: i64,
+    },
+    Windows {
+        volume_serial_number: u32,
+        file_index: u64,
+        creation_time: u64,
+    },
+}
+
+impl SourceIdentity {
+    /// Construct an identity from Unix `stat` values captured from an open file.
+    #[must_use]
+    pub const fn unix(
+        device: u64,
+        inode: u64,
+        change_time_seconds: i64,
+        change_time_nanoseconds: i64,
+    ) -> Self {
+        Self(SourceIdentityKind::Unix {
+            device,
+            inode,
+            change_time_seconds,
+            change_time_nanoseconds,
+        })
+    }
+
+    /// Construct an identity from Windows file metadata captured from an open file.
+    #[must_use]
+    pub const fn windows(volume_serial_number: u32, file_index: u64, creation_time: u64) -> Self {
+        Self(SourceIdentityKind::Windows {
+            volume_serial_number,
+            file_index,
+            creation_time,
+        })
+    }
+}
+
 /// Stable non-child exit classifications used by every frontend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[repr(u8)]
@@ -370,5 +421,72 @@ where
     #[must_use]
     pub const fn repository(&self) -> &R {
         &self.repository
+    }
+}
+
+#[cfg(test)]
+mod source_identity_tests {
+    use super::{SourceIdentity, SourceIdentityKind};
+
+    #[test]
+    fn source_identity_is_typed_by_platform_and_roundtrips() {
+        let unix = SourceIdentity(SourceIdentityKind::Unix {
+            device: 7,
+            inode: 11,
+            change_time_seconds: 13,
+            change_time_nanoseconds: 17,
+        });
+        let windows = SourceIdentity(SourceIdentityKind::Windows {
+            volume_serial_number: 19,
+            file_index: 23,
+            creation_time: 29,
+        });
+        assert_ne!(unix, windows);
+
+        for identity in [unix, windows] {
+            let bytes = serde_json::to_vec(&identity).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<SourceIdentity>(&bytes).unwrap(),
+                identity
+            );
+        }
+    }
+
+    #[test]
+    fn every_identity_component_participates_in_equality() {
+        let baseline = SourceIdentity(SourceIdentityKind::Unix {
+            device: 1,
+            inode: 2,
+            change_time_seconds: 3,
+            change_time_nanoseconds: 4,
+        });
+        for different in [
+            SourceIdentity(SourceIdentityKind::Unix {
+                device: 9,
+                inode: 2,
+                change_time_seconds: 3,
+                change_time_nanoseconds: 4,
+            }),
+            SourceIdentity(SourceIdentityKind::Unix {
+                device: 1,
+                inode: 9,
+                change_time_seconds: 3,
+                change_time_nanoseconds: 4,
+            }),
+            SourceIdentity(SourceIdentityKind::Unix {
+                device: 1,
+                inode: 2,
+                change_time_seconds: 9,
+                change_time_nanoseconds: 4,
+            }),
+            SourceIdentity(SourceIdentityKind::Unix {
+                device: 1,
+                inode: 2,
+                change_time_seconds: 3,
+                change_time_nanoseconds: 9,
+            }),
+        ] {
+            assert_ne!(baseline, different);
+        }
     }
 }
