@@ -170,9 +170,15 @@ fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
     let mut source = fs::read_to_string(&meta_path).unwrap();
     source.push_str("\n[future]\nkeep = true\n");
     fs::write(&meta_path, source).unwrap();
+    let metadata_before_read = fs::read(&meta_path).unwrap();
     let held = store.resolve(created.slug.as_str()).unwrap();
     assert_eq!(held.meta.extra["future"], json!({"keep": true}));
     assert!(!held.meta.extra.contains_key("parameters"));
+    assert_eq!(
+        fs::read(&meta_path).unwrap(),
+        metadata_before_read,
+        "resolving and projecting settings must not rewrite metadata"
+    );
     let registry_before_write = fs::read(root.path().join("registry.toml")).unwrap();
 
     let mut a = ParamDecl::new("a");
@@ -194,9 +200,15 @@ fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
     assert_eq!(back.template, "run {a} {b}");
     assert_eq!(updated.meta.extra["future"], json!({"keep": true}));
 
+    let metadata_before_reread = fs::read(&meta_path).unwrap();
     let resolved = store.resolve(created.slug.as_str()).unwrap();
     assert_eq!(EntrySettings::from_meta(&resolved.meta), back);
     assert_eq!(resolved.meta.extra["future"], json!({"keep": true}));
+    assert_eq!(
+        fs::read(&meta_path).unwrap(),
+        metadata_before_reread,
+        "reading typed parameter rows must not rewrite their stored bytes"
+    );
     let document = fs::read_to_string(&meta_path)
         .unwrap()
         .parse::<toml::Table>()

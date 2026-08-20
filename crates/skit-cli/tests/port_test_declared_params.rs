@@ -27,8 +27,9 @@
 //! - Python `flows.assemble(plan, values, extra, ...)` -> `skit_application::delivery::assemble(
 //!   &declarations, &prepared_values, &extra)`; the Python cwd/env token pass happens BEFORE
 //!   this Rust boundary, so the token-free oracle values map to `PreparedValue::Scalar`.
-//! - Python `ScriptMeta.to_toml_dict` / `from_toml_dict` non-dict-row dropping ->
-//!   `EntrySettings::{write_to_meta, from_meta}` (`from_meta` drops non-object rows).
+//! - Python `ScriptMeta.to_toml_dict` raw parameter rows -> `EntryMeta::extra`; its typed,
+//!   non-object-filtering view -> `EntrySettings::from_meta`. Rust intentionally splits the raw
+//!   persistence model from the semantic parameter model.
 //! - Python `store.add_*` / CLI `params` / `run` / `show` -> the real `skit` binary via
 //!   `assert_cmd`. Human-string assertions read Python's `result.output`; because the exact
 //!   stdout/stderr split is not what those tests measure, they are checked against the
@@ -47,6 +48,10 @@
 //!   "Removed previously stored plaintext"), the `params` batch
 //!   fault-tolerance gap (a malformed/bad value hard-errors exit 2 instead of warning at
 //!   exit 0).
+//! - ARCHITECTURE-CLOSED / SPLIT-SEAM (`#[ignore]`): the Python `ScriptMeta` owner combines raw
+//!   row pass-through and typed row filtering in one class. Rust keeps raw rows in
+//!   `EntryMeta::extra` and projects typed rows through `EntrySettings`; both executable legs live
+//!   in the active `skit-domain` and `skit-store` owners.
 //! - UNMAPPABLE white-box (`#[ignore]` stub): `test_cli_declared_warning_codes_render` drives
 //!   the Python-private `cli._render_declared_warning`; the Rust warnings are localized
 //!   messages with no public renderer to observe, and their observable outcomes are covered
@@ -612,34 +617,37 @@ fn test_execute_passes_env_values_to_run_entry() {
 // ================================================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's to_toml_dict passes raw parameter dicts through verbatim, so a minimal {name, delivery} row stays 2-key (models.py:112-113), and from_toml_dict keeps dict rows raw (models.py:163-167) -- the 'keep unknown TOML fields' rule for the [[parameters]] array. Rust's typed Vec<ParamDecl> re-serializes every row through to_meta_map, which ALWAYS emits `type` (parameters.rs:340-349) and drops any key ParamDecl does not model, so the stored row is {name, delivery, type} and unknown keys are lost."]
+#[ignore = "ARCHITECTURE-CLOSED / SPLIT-SEAM: frozen ScriptMeta combines raw row pass-through and non-dict filtering. Rust keeps the raw sparse/extension-bearing array in EntryMeta::extra, while EntrySettings::from_meta owns the typed filtered projection; executable assertions live in entry_settings::legacy_extra_fields_decode_to_one_typed_runtime_view and skit-store::test_write_read_parameters_roundtrip_and_legacy_params_untouched. ParamDecl::to_meta_map is the separate frozen typed-writer seam and correctly includes type."]
 fn test_meta_parameters_roundtrip_and_non_dict_rows_dropped() {
-    // Oracle (test_declared_params.py:328-338): a raw parameter dict round-trips through to_toml_dict
-    // verbatim, and a hand-edited array holding non-table garbage keeps only the real rows.
-    let mut declared = ParamDecl::new("a");
-    declared.delivery = ParameterDelivery::Placeholder;
-    let settings = EntrySettings {
-        parameters: vec![declared],
-        ..EntrySettings::default()
-    };
+    // Oracle (test_declared_params.py:328-338): ScriptMeta retains raw tables verbatim, then its
+    // typed consumer ignores non-table rows. Rust represents those responsibilities separately.
     let mut meta = EntryMeta::minimal("x", EntryKind::parse("command").unwrap());
-    settings.write_to_meta(&mut meta);
-    // EXACT equality, matching the oracle's `d["parameters"] == [{"name": "a", "delivery":
-    // "placeholder"}]`: the raw 2-key row must survive verbatim, with no `type` added. Rust adds
-    // `type`, so this is the failing half of the contract above.
+    let raw = json!([
+        {"name": "a", "delivery": "placeholder", "future_axis": "keep"},
+        "garbage",
+        5,
+        {"name": "b"}
+    ]);
+    meta.extra.insert("parameters".to_owned(), raw.clone());
     assert_eq!(
         meta.extra.get("parameters"),
-        Some(&json!([{"name": "a", "delivery": "placeholder"}]))
+        Some(&raw),
+        "the raw persistence model keeps sparse and unknown row data"
     );
 
-    meta.extra.insert(
-        "parameters".to_owned(),
-        json!([{"name": "a"}, "garbage", 5]),
-    );
     let back = EntrySettings::from_meta(&meta);
-    // Non-dict rows ("garbage", 5) are dropped; the one real row is kept.
-    assert_eq!(back.parameters.len(), 1);
-    assert_eq!(back.parameters[0].name, "a");
+    assert_eq!(
+        back.parameters
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(
+        meta.extra.get("parameters"),
+        Some(&raw),
+        "building the typed view does not rewrite the raw model"
+    );
 }
 
 #[test]

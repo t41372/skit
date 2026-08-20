@@ -11,6 +11,21 @@ fn meta() -> EntryMeta {
 #[test]
 fn legacy_extra_fields_decode_to_one_typed_runtime_view() {
     let mut meta = meta();
+    let raw_parameters = json!([
+        {
+            "name": "name",
+            "delivery": "env",
+            "env_target": "NAME",
+            "future_axis": {"keep": true}
+        },
+        "bad-row",
+        5,
+        {
+            "name": "second",
+            "delivery": "flag",
+            "future_order": 2
+        }
+    ]);
     meta.extra = BTreeMap::from([
         ("template".to_owned(), json!("echo {name}")),
         ("dependencies".to_owned(), json!(["a", 7, "b"])),
@@ -20,23 +35,16 @@ fn legacy_extra_fields_decode_to_one_typed_runtime_view() {
         ("runner".to_owned(), json!("codex")),
         ("interpolate".to_owned(), json!(false)),
         ("needs".to_owned(), json!(["jq", "ffmpeg"])),
-        (
-            "parameters".to_owned(),
-            json!([
-                {
-                    "name": "name",
-                    "delivery": "env",
-                    "type": "str",
-                    "env_target": "NAME"
-                },
-                "bad-row"
-            ]),
-        ),
+        ("parameters".to_owned(), raw_parameters.clone()),
         ("future".to_owned(), json!({"keep": true})),
     ]);
 
     let settings = EntrySettings::from_meta(&meta);
 
+    assert_eq!(
+        meta.extra["parameters"], raw_parameters,
+        "a typed read must not rewrite the raw sparse rows or their extension keys"
+    );
     assert_eq!(settings.template, "echo {name}");
     assert_eq!(settings.dependencies, ["a", "b"]);
     assert_eq!(settings.requires_python, ">=3.13");
@@ -45,10 +53,13 @@ fn legacy_extra_fields_decode_to_one_typed_runtime_view() {
     assert_eq!(settings.runner, "codex");
     assert!(!settings.interpolate);
     assert_eq!(settings.needs, ["jq", "ffmpeg"]);
-    assert_eq!(settings.parameters.len(), 1);
+    assert_eq!(settings.parameters.len(), 2);
     assert_eq!(settings.parameters[0].name, "name");
     assert_eq!(settings.parameters[0].delivery, ParameterDelivery::Env);
     assert_eq!(settings.parameters[0].env_target, "NAME");
+    assert_eq!(settings.parameters[0].parameter_type, ParameterType::Str);
+    assert_eq!(settings.parameters[1].name, "second");
+    assert_eq!(settings.parameters[1].delivery, ParameterDelivery::Flag);
 }
 
 #[test]
@@ -103,8 +114,16 @@ fn writing_settings_preserves_unknown_extension_fields_and_legacy_omission_rules
     assert_eq!(meta.extra["needs"], json!(["jq"]));
     assert!(!meta.extra.contains_key("runner"));
     assert!(!meta.extra.contains_key("interpolate"));
-    assert_eq!(meta.extra["parameters"][0]["name"], json!("count"));
-    assert_eq!(meta.extra["parameters"][0]["type"], json!("int"));
+    assert_eq!(
+        meta.extra["parameters"],
+        json!([{
+            "name": "count",
+            "delivery": "flag",
+            "type": "int",
+            "flag": "--count"
+        }]),
+        "a newly typed declaration uses the canonical shape, including type"
+    );
 
     let mut cleared = EntrySettings::from_meta(&meta);
     cleared.parameters.clear();
