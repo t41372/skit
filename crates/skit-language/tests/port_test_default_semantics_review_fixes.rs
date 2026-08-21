@@ -1,6 +1,6 @@
 //! Mechanical port of the Python oracle module `tests/test_default_semantics_review_fixes.py`
 //! (`origin/main@206f9ef`): the seven review-fix regressions on the source-default change set —
-//! every case where "don't re-deliver a value equal to the default" dropped a value the form had
+//! every case where "do not re-deliver a value equal to the default" dropped a value the form had
 //! already shown. Each `#[test]` keeps its Python `def test_*` name; each Python "WHY" comment is
 //! preserved above it.
 //!

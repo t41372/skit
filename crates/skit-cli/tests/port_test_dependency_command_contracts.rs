@@ -273,7 +273,7 @@ fn test_kind_exe_alone_names_only_kind_exe() {
 
 #[test]
 fn test_js_deps_python_dash_is_refused_as_inapplicable() {
-    // `skit deps <js> --python -` is REFUSED (exit 2, "doesn't apply"), NOT silently accepted:
+    // `skit deps <js> --python -` is REFUSED (exit 2, "does not apply"), NOT silently accepted:
     // normalizing '-' to "" first would make a kind-inapplicable flag succeed for some spellings
     // (— / none) and fail for others (>=3.11) — value-dependent acceptance.
     let sandbox = Sandbox::new();
@@ -305,8 +305,8 @@ fn test_js_deps_python_none_is_refused_as_inapplicable() {
 #[test]
 fn test_js_deps_python_empty_string_is_refused_as_inapplicable() {
     // The missing spelling: `--python ''` (empty) is a spelling too, and is REFUSED identically
-    // to '-'/'none'/a real constraint (exit 2, "doesn't apply") — nothing is written. The npm
-    // predicate keys on `requires_python is not None`, not truthiness, so the empty string can't
+    // to '-'/'none'/a real constraint (exit 2, "does not apply") — nothing is written. The npm
+    // predicate keys on `requires_python is not None`, not truthiness, so the empty string cannot
     // slip through as a green "Python constraint updated: —"; add and deps answer it the same.
     let sandbox = Sandbox::new();
     add_js(&sandbox, "jsx");
@@ -353,7 +353,7 @@ fn test_python_deps_python_dash_is_still_automatic() {
 #[ignore = "ARCHITECTURE-CLOSED / SEMANTIC DUPLICATE: the Python oracle calls public store.update_dependencies and observes StoreUsageError, but Rust has no public store dependency-update seam. This closest Rust body drives the CLI and is strictly duplicated by the stronger executable owner test_js_deps_python_dash_is_refused_as_inapplicable, which pins the exact message. Keep this exact name as a closure; do not count it as REAL."]
 fn test_store_npm_spec_plus_dash_reaches_the_npm_refusal() {
     // The store unit: an npm-flavor entry + '-' is NOT normalized before the npm branch, so it
-    // reaches the 'doesn't apply' refusal (StoreUsageError) instead of a silent accept.
+    // reaches the 'does not apply' refusal (StoreUsageError) instead of a silent accept.
     let sandbox = Sandbox::new();
     add_js(&sandbox, "jsx");
     let assert = sandbox
@@ -524,7 +524,7 @@ fn test_deps_python_only_prints_the_constraint_line_not_the_deps_line() {
     assert_eq!(view["dependencies"], serde_json::json!([]));
     let flat = flatten(&combine(output));
     assert_eq!(flat, "Python constraint of a updated: >=3.11");
-    assert!(!flat.contains("Dependencies")); // the edit that didn't happen isn't reported
+    assert!(!flat.contains("Dependencies")); // the edit that did not happen is not reported
 }
 
 #[test]

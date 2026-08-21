@@ -215,7 +215,7 @@ fn test_fresh_draft_copy_flow_unlinks_the_file() {
 #[test]
 fn test_fresh_draft_keeps_the_file_when_the_entry_is_not_a_copy() {
     // The non-copy arc: the mode-gate reads mode, so a dismissal that resolves to a non-copy
-    // entry keeps the file (no lane deletes what the store doesn't hold). Real fresh authoring
+    // entry keeps the file (no lane deletes what the store does not hold). Real fresh authoring
     // always copies, so the arc is exercised by forcing the review's stored mode to reference —
     // the serde-seam analog of the oracle's `monkeypatch.setattr(store, "resolve", ...)`, because
     // `set_storage` force-copies a draft (add.rs:793) and no public setter reaches this state.
@@ -267,7 +267,7 @@ fn test_candidate_tick_survives_a_noop_edit_rescan() {
 fn test_edit_source_capture_skips_a_candidate_with_no_checkbox() {
     // A getopts (modeled-reader) shell with a bare const has a candidate in analysis but NO tick
     // checkbox rendered — the modeled form replaces the list. The rescan capture never queries a
-    // checkbox that isn't mounted: no crash, no phantom override (the guarded arc).
+    // checkbox that is not mounted: no crash, no phantom override (the guarded arc).
     let source = b"#!/usr/bin/env bash\nREGION=us-east-1\nwhile getopts \"n:\" o; do case $o in n) NAME=$OPTARG;; esac; done\necho \"$REGION $NAME\"\n";
     let mut screen = review("opt.sh", source, KnownEntryKind::Shell);
     // REGION is a candidate in the analysis...

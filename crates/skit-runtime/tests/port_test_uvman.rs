@@ -152,13 +152,13 @@ fn test_triples_covers_every_pinned_and_producible_triple() {
     // TRIPLES is exactly what the two network tests below iterate over. If it ever drifts from the
     // full set of pinned / producible triples, the live cross-check would silently stop covering the
     // missing triple(s), and a bad pin could ship undetected. This test is offline but proves the
-    // drift can't happen silently: any future producible triple must also be added here.
+    // drift cannot happen silently: any future producible triple must also be added here.
     let produced = producible_triples();
     let declared: BTreeSet<String> = TRIPLES.iter().map(|t| (*t).to_owned()).collect();
     assert_eq!(declared, produced);
     // Every producible triple resolves to a pinned asset: `uv_asset` fails closed on a missing
     // pin, so an Ok for each target proves the producible -> pinned direction (Python's
-    // `== _UV_SHA256`). The reverse (no EXTRA stale pin) can't be checked here — `CHECKSUMS` is
+    // `== _UV_SHA256`). The reverse (no EXTRA stale pin) cannot be checked here — `CHECKSUMS` is
     // private to skit-runtime.
     for target in all_targets() {
         assert!(uv_asset(&target, None).is_ok());
@@ -184,7 +184,7 @@ fn test_pinned_uv_release_exists() {
 fn test_pinned_sha256_matches_live_sidecar() {
     // A future UV_VERSION bump that forgets to refresh the pinned table must fail loudly here: every
     // pinned hash must equal the official `.sha256` sidecar. Built from the canonical GitHub base
-    // (mirror_base = None) so a configured mirror can't skew the check.
+    // (mirror_base = None) so a configured mirror cannot skew the check.
     let agent = ureq_agent();
     for target in all_targets() {
         let asset = uv_asset(&target, None).unwrap();

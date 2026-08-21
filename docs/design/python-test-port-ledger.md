@@ -443,7 +443,7 @@ clean, with a careful one-way-superset note. No hidden mismatches. Two agents st
   shebang→kind contracts now run at the public language seams. Config, store, and CLI rows moved to
   their consolidated owners; the one unreadable-path split remains an explicit architecture closure.
 - **uvman "no orphan checksum pin" → skit-runtime UNIT test (CLOSED in `76aaab1`).** The oracle's three-way
-  set(TRIPLES)==set(_UV_SHA256)==produced can't assert the "_UV_SHA256 has no stale pin" direction
+  set(TRIPLES)==set(_UV_SHA256)==produced cannot assert the "_UV_SHA256 has no stale pin" direction
   from an integration test (private CHECKSUMS). Re-home that one direction to a white-box unit test.
 
 Divergences recorded at this historical wave: the interpreter refusal message and bun `run`

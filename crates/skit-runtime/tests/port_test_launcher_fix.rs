@@ -33,7 +33,7 @@
 //!   (single-quote wrapping); the two agree byte-for-byte on every value asserted here.
 //!
 //! Divergence NOTE (not a gap): the oracle's missing-script error message is
-//! "The script file doesn't exist: …" and asserts `match="script"`; the Rust
+//! the script-missing message and asserts `match="script"`; the Rust
 //! `LaunchError::TargetMissing` message is "launch target does not exist: …". Because
 //! `match="script"` is a discriminator (not a full-string contract), the port asserts the
 //! `TargetMissing` VARIANT with a path-identity check (a stronger discriminator), not the word
@@ -247,7 +247,7 @@ fn run_command_entry(template: &str, values: &[(&str, &str)], cwd: &Path) -> i32
 fn test_placeholder_value_with_double_braces_round_trips() {
     // A value containing a literal "{{"/"}}" (e.g. a Jinja/Go-template fragment) must survive
     // substitution unchanged — the old two-pass implementation (substitute, then str.replace the
-    // whole string) collapsed these to single braces because it couldn't tell a template-level
+    // whole string) collapsed these to single braces because it could not tell a template-level
     // escape from characters that came from the injected value.
     let cmd =
         render_command_template("run --q {q}", &map(&[("q", "{{ .name }}")])).expect("renders");

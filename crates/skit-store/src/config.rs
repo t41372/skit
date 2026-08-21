@@ -170,10 +170,10 @@ impl PromptRunnerIssue {
     fn message(self) -> Message {
         match self {
             Self::PromptSectionNotTable => {
-                Message::new("the prompt value isn't a table; repair it before runner management")
+                Message::new("the prompt value is not a table; repair it before runner management")
             }
             Self::RunnersNotList => Message::new(
-                "the prompt.runners value isn't a list; repair it before runner management",
+                "the prompt.runners value is not a list; repair it before runner management",
             ),
             Self::Empty => Message::new(
                 "A runner needs a command — e.g. skit runner add mycli mycli run {{prompt}}",
@@ -1646,7 +1646,7 @@ mod tests {
         );
         assert_eq!(
             expected.localized_reason(Locale::En).as_deref(),
-            Some("the prompt.runners value isn't a list; repair it before runner management")
+            Some("the prompt.runners value is not a list; repair it before runner management")
         );
         assert_eq!(
             expected.localized_descriptor(Locale::ZhTw),

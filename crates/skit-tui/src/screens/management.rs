@@ -1019,10 +1019,10 @@ fn runner_row_label(row: &RunnerRow, locale: Locale) -> String {
 fn runner_reason(code: &str, locale: Locale) -> String {
     let message = match code {
         "prompt-section-not-table" => {
-            "the prompt value isn't a table; repair it before runner management"
+            "the prompt value is not a table; repair it before runner management"
         }
         "runners-not-list" => {
-            "the prompt.runners value isn't a list; repair it before runner management"
+            "the prompt.runners value is not a list; repair it before runner management"
         }
         "empty" => "Type the agent's command, e.g. mycli run {{prompt}}",
         "prompt-slot-count" => {

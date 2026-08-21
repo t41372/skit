@@ -456,7 +456,7 @@ fn test_prompt_editor_bogus_runner_refused_before_the_editor() {
 #[cfg(unix)]
 #[test]
 fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
-    // --edit opens an editor — interaction — so --no-input can't keep the never-prompt
+    // --edit opens an editor — interaction — so --no-input cannot keep the never-prompt
     // promise: it is refused up front, pointing at the stdin spelling. (The oracle forces
     // interactive True to prove the no_input check fires first, not the interactivity gate;
     // Rust's check is unconditional.)

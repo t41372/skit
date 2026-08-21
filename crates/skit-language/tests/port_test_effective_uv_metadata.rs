@@ -102,7 +102,7 @@ axis travel as None lives in skit-ui's SettingsView::requires_python_edit \
 (skit-ui/src/settings.rs:571)."]
 fn test_settings_deps_only_edit_preserves_the_block_pin() {
     // WHY: editing ONLY the deps field must not unpin. #st-python was prefilled from the block, so
-    // it equals its baseline and travels as None (don't-touch) — the pin survives while the new dep
+    // it equals its baseline and travels as None (no change) — the pin survives while the new dep
     // lands.
 }
 
@@ -406,7 +406,7 @@ fn test_effective_js_entry_reads_meta_only() {
 
 #[test]
 fn test_effective_missing_stored_copy_reads_meta_only() {
-    // WHY: the `script_path.exists()` guard: a block-only entry whose copy is gone can't be read,
+    // WHY: the `script_path.exists()` guard: a block-only entry whose copy is gone cannot be read,
     // so the helper reports the (blank) meta rather than crashing. At the pure tier a missing copy
     // is `source: None`.
     assert_eq!(

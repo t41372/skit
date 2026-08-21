@@ -178,7 +178,7 @@ fn test_const_type_changed_still_usable() {
 
 #[test]
 fn test_input_matched_by_order_not_position_in_file() {
-    // Code was inserted before the script; the input() line number changed but it's still call 0 —
+    // Code was inserted before the script; the input() line number changed but it is still call 0 —
     // not considered drift.
     let text = format!("import os\nprint(os.name)\n{SCRIPT}");
     let report = reconcile(
@@ -319,7 +319,7 @@ fn test_input_deleted_earlier_call_flags_rebind_instead_of_silent_ok() {
 
 #[test]
 fn test_input_rebind_flagged_when_prompt_can_no_longer_disambiguate() {
-    // When the prompt genuinely can't resolve the call site any more (renamed prompt, but a call
+    // When the prompt genuinely cannot resolve the call site any more (renamed prompt, but a call
     // still exists at the old bare position), the match must fall back to position AND be flagged
     // as `rebind` -- still usable (no silent drop), but visibly warned (no silent trust either).
     let text = "value = input(\"New label: \")\nprint(value)\n";
@@ -428,7 +428,7 @@ fn test_input_duplicate_prompt_surplus_is_missing_not_ok_on_delete() {
 #[test]
 fn test_input_duplicate_prompt_surplus_is_rebind_not_ok_when_position_edited() {
     // Same duplicate-prompt setup, but the call at the loser's bare position (1) still exists --
-    // its prompt was just edited to something else. The loser can't win an exact match (its
+    // its prompt was just edited to something else. The loser cannot win an exact match (its
     // candidate was already claimed), so it falls back to position 1, which now answers a
     // *different* question: that must surface as `rebind` (still usable, but warned), never a
     // silent "ok" and never the winner's call site.
@@ -484,7 +484,7 @@ fn test_drift_lines_mention_old_and_new_type() {
 
 #[test]
 fn test_edit_specs_not_managed_in_secret_warning() {
-    // Passing a name that isn't managed into secret= must record a warning, not crash.
+    // Passing a name that is not managed into secret= must record a warning, not crash.
     let result = edit(
         "CITY = \"Taipei\"\n",
         &[const_spec("CITY")],
@@ -542,8 +542,8 @@ fn test_edit_specs_not_managed_in_prompts_warning() {
 #[test]
 fn test_resync_on_unparseable_script_leaves_definitions_untouched() {
     // A copy-mode script left mid-edit with a syntax error must not have its entire
-    // managed-parameter set dropped by --resync. reconcile() can't distinguish "really
-    // gone" from "can't parse right now", so _apply_resync must consult report.syntax_error itself.
+    // managed-parameter set dropped by --resync. reconcile() cannot distinguish "really
+    // gone" from "cannot parse right now", so _apply_resync must consult report.syntax_error itself.
     let mut api_key = const_spec("API_KEY");
     api_key.secret = true;
     let specs = vec![

@@ -131,7 +131,7 @@ fn test_missing_value_leaves_script_untouched() {
 #[test]
 fn test_shadowed_input_is_not_rewritten_and_surfaces_as_drift() {
     // A script that binds `input` itself (a def) has NO managed call sites, so `_input_calls`
-    // returns [] and a stored input spec can't resolve — it must surface as drift (ShimError)
+    // returns [] and a stored input spec cannot resolve — it must surface as drift (ShimError)
     // rather than the shim splicing a stdin-fallback wrapper over the script's OWN function call.
     let src = "def input(prompt=''):\n    return 'HARDCODED'\ny = input('Q: ')\nprint(y)\n";
     let mut declaration = input_spec("input-1", 0);
@@ -166,7 +166,7 @@ fn test_bad_type_coercion_raises() {
 #[test]
 fn test_bad_type_coercion_raises_the_value_subclass_not_plain_shim_error() {
     // A bad value is a distinct failure mode from a missing/drifted target: the target (RETRIES)
-    // WAS found; only the supplied value doesn't fit its declared int type. Callers (the CLI) need
+    // WAS found; only the supplied value does not fit its declared int type. Callers (the CLI) need
     // to tell the two apart to avoid misdiagnosing a bad input as source drift, so this must raise
     // the ShimValueError subclass specifically, carrying the value/type/param for the caller's
     // message -- not just the generic base ShimError raised for a genuinely missing target.

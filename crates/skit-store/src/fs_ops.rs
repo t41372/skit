@@ -7,7 +7,7 @@ use std::{
 
 use skit_domain::EntryId;
 
-// Windows can't replace a file another handle has open (sharing violation -> PermissionError);
+// Windows cannot replace a file another handle has open (sharing violation -> PermissionError);
 // concurrent readers of registry.toml hold it for microseconds, so a bounded exponential backoff is
 // the standard idiom (total worst-case wait ~= 1.3 s). POSIX replaces open files freely, so this
 // path never fires there. Faithful translation of skit.atomic._REPLACE_RETRIES / _replace_with_retry.

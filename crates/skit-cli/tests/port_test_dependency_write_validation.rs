@@ -290,7 +290,7 @@ fn test_deps_valid_dep_and_python_still_write() {
 #[test]
 fn test_deps_refused_write_leaves_needs_untouched() {
     // The deps-before-needs abort order: a --dep refusal raises before ANY write, so a --need in
-    // the same call never lands (a partial apply a --json/CI caller couldn't detect).
+    // the same call never lands (a partial apply a --json/CI caller could not detect).
     let sandbox = Sandbox::new();
     sandbox.add_python_print("a");
     sandbox.ok(&["deps", "a", "--need", "jq"]);

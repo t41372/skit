@@ -629,8 +629,8 @@ fn test_read_payload_is_inert() {
 fn test_quote_in_a_read_prompt_survives() {
     // The PROMPT is re-emitted as an argument, so it goes through the same escaper: an apostrophe in
     // the script's own prompt text must not break out of the single-quoted argument.
-    // PORTED AS BYTE ASSERTION: the prompt is emitted single-quoted with `'` escaped; Python's run
-    // (`It's here: x`) confirms it echoes intact.
+    // PORTED AS BYTE ASSERTION: the prompt is emitted single-quoted with `'` escaped. The Python
+    // runtime owner confirms that the exact prompt text echoes intact.
     let src = "#!/usr/bin/env bash\nread -p \"It's here: \" who\necho \"[$who]\"\n";
     let out = inject(src, &[("input-1", "x")]).unwrap();
     let call = format!(
@@ -915,7 +915,7 @@ fn test_normalize_refuses_and_leaves_the_source_untouched() {
 
 #[test]
 fn test_normalize_ignores_array_and_valueless_assignments() {
-    // Same agreement as the injector: a subscript target isn't a const, so it can't be normalized
+    // Same agreement as the injector: a subscript target is not a const, so it cannot be normalized
     // (`--normalize ARR` reports it rather than rewriting an array element). Python normalizes the
     // batch ["WIDTH", "ARR"]; here each name is a single call (batch aggregation is Tier 3/4).
     let src = "#!/usr/bin/env bash\nARR[0]=1\nWIDTH=800\n";

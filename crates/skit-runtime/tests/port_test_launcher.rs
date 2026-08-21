@@ -42,11 +42,11 @@
 //! - ABSENT gaps: NONE. DIVERGENCE (failing-contract) tests: NONE.
 //!
 //! Error-string note: the oracle matches substrings of localized English messages (e.g.
-//! `match="exe"` inside "The executable doesn't exist"). The Rust ports assert the TYPED
+//! `match="exe"` inside the executable-missing message). The Rust ports assert the TYPED
 //! variant and its payload path instead (`TargetMissing { path }`, `TargetNotExecutable
 //! { path }`, `WorkdirMissing { path }`, `UnknownKind`), matching the established port
 //! convention in `crates/skit-runtime/tests/launch_plan.rs`. The English wording differs
-//! ("launch target does not exist" vs "The script/executable doesn't exist") but the
+//! (`launch target does not exist` vs the script/executable-missing messages) but the
 //! 127/126/125 exit contract and the offending path are preserved.
 
 use std::{

@@ -851,7 +851,7 @@ fn test_bash_path_garbage_normalizes_to_empty() {
 #[test]
 fn test_bash_path_garbage_section_normalizes_to_empty() {
     let (dir, store) = fixture();
-    write_config(&dir, "shell = \"not-a-table\"\n"); // section isn't a dict
+    write_config(&dir, "shell = \"not-a-table\"\n"); // section is not a dict
     assert_eq!(store.get("shell.bash_path").unwrap(), "");
 }
 

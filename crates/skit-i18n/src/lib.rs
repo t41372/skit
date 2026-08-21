@@ -527,12 +527,12 @@ const CATALOG: &[Translation] = &[
         "執行將被拒絕啟動——{}",
     ),
     row!(
-        "the prompt value isn't a table; repair it before runner management",
+        "the prompt value is not a table; repair it before runner management",
         "prompt 值不是表；请先修复再管理运行器",
         "prompt 值不是表格；請先修復再管理執行器",
     ),
     row!(
-        "the prompt.runners value isn't a list; repair it before runner management",
+        "the prompt.runners value is not a list; repair it before runner management",
         "prompt.runners 值不是列表；请先修复再管理运行器",
         "prompt.runners 值不是清單；請先修復再管理執行器",
     ),
@@ -3079,7 +3079,7 @@ const CATALOG: &[Translation] = &[
         "需要提示詞內容",
     ),
     row!(
-        "prompt body doesn't exist: {}",
+        "prompt body does not exist: {}",
         "提示词正文不存在：{}",
         "提示詞內容不存在：{}",
     ),

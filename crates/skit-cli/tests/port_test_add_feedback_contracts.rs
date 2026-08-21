@@ -455,7 +455,7 @@ fn test_micro_versioned_shebang_lands_in_stored_pep723() {
 
 #[test]
 fn test_shebangless_unknown_uses_the_isnt_a_script_voice() {
-    // A shebang-LESS unknown file keeps the original 'isn't a script or an executable' message
+    // A shebang-LESS unknown file keeps the original unclassifiable-file message
     // (the registered-shebang complement has its own test).
     let sandbox = Sandbox::new();
     let src = sandbox.scratch.path().join("mystery");

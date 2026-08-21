@@ -319,7 +319,7 @@ fn test_declared_flag_row_is_dropped_for_templates() {
 
 #[test]
 fn test_declared_row_with_wrong_delivery_for_its_placeholder_is_replaced_by_synth() {
-    // A row named like a placeholder but declared env can't fill the {slot}; the
+    // A row named like a placeholder but declared env cannot fill the {slot}; the
     // placeholder still needs a value, so the synthesized field steps back in.
     let row = meta_row(|decl| {
         decl.name = "file".to_owned();
@@ -1315,7 +1315,7 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
         "--no-input",
     ]);
     assert!(run.status.success(), "{}", combined(&run));
-    // Now that it isn't secret, the value IS remembered (the old behavior scrubbed it).
+    // Now that it is not secret, the value IS remembered (the old behavior scrubbed it).
     assert!(workspace.values_file("auth").contains("token_file"));
     assert!(workspace.values_file("auth").contains("creds.json"));
     let after_run = stdout_json(&workspace.run(&["params", "auth", "--json"]));

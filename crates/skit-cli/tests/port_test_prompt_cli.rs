@@ -1000,7 +1000,7 @@ fn test_add_prompt_editor_lane_name_taken_refuses_before_the_editor() {
 fn test_add_prompt_editor_lane_post_edit_failure_keeps_the_draft() {}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): a deleted draft after the interactive edit is a clean 'Can't read' failure; drives the interactive editor lane (cli.editor.open_in_editor) a non-tty binary never opens. Seam: src/cli/tests.rs."]
+#[ignore = "UNMAPPED (cross-crate): a deleted draft after the interactive edit is a clean read failure; drives the interactive editor lane (cli.editor.open_in_editor) a non-tty binary never opens. Seam: src/cli/tests.rs."]
 fn test_add_prompt_editor_lane_deleted_draft_is_a_clean_honest_failure() {}
 
 #[test]
@@ -1364,7 +1364,7 @@ fn test_run_prompt_dry_run_missing_body_is_127_before_output() {
     }
     let (code, combined) = sandbox.out(&["run", "p", "--no-input", "--dry-run"]);
     assert_eq!(code, 127, "{combined}");
-    assert!(combined.contains("doesn't exist"), "{combined}");
+    assert!(combined.contains("does not exist"), "{combined}");
     assert!(!combined.contains('→'), "{combined}");
 }
 
@@ -2431,11 +2431,11 @@ fn test_runner_add_reports_malformed_config_container() {
     for (config, message) in [
         (
             "prompt = \"broken\"\n",
-            "the prompt value isn't a table; repair it before runner management",
+            "the prompt value is not a table; repair it before runner management",
         ),
         (
             "[prompt]\nrunners = \"broken\"\n",
-            "the prompt.runners value isn't a list; repair it before runner management",
+            "the prompt.runners value is not a list; repair it before runner management",
         ),
     ] {
         let sandbox = Sandbox::new();

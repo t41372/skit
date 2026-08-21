@@ -243,7 +243,7 @@ fn test_reader_fields_predicate_rows() {
         "import argparse\np=argparse.ArgumentParser()\np.add_argument('--n')\np.parse_args()\n";
     let getopts2 = "#!/usr/bin/env bash\nwhile getopts \"n:v\" o; do :; done\n";
     let dyn_sh = "#!/usr/bin/env bash\nOPTS=\"n:v\"\nwhile getopts \"$OPTS\" o; do :; done\n";
-    assert_eq!(reader_fields("python", docopt), 0); // self-parses but skit can't model it
+    assert_eq!(reader_fields("python", docopt), 0); // self-parses but skit cannot model it
     assert_eq!(reader_fields("python", modeled), 1); // one add_argument -> one modeled field
     assert_eq!(reader_fields("shell", getopts2), 2);
     assert_eq!(reader_fields("shell", dyn_sh), 0); // dynamic optstring: ok=False -> 0
@@ -287,7 +287,7 @@ fn test_cli_add_awk_shebang_draft_is_unknown_kept_with_kind_escape() {
     // An awk shebang is unregistered: the draft is "unknown", refused with exit 2 and the --kind
     // escape (never a fabricated entry), and KEPT because the add never reached the
     // consume-on-success unlink. The draft carries a #!, so the refusal is the shebang-aware voice
-    // ("names no interpreter"), not the shebang-less "isn't a script" line.
+    // ("names no interpreter"), not the shebang-less refusal.
     let expected = [
         (
             "en",
@@ -556,7 +556,7 @@ fn test_onboard_script_params_returns_empty_for_analyzerless_kind() {
 
 #[test]
 fn test_docopt_python_read_view_offers_manage() {
-    // docopt self-parses but skit can't MODEL it: the run form is passthrough-only, so the read
+    // docopt self-parses but skit cannot MODEL it: the run form is passthrough-only, so the read
     // view still lists the unmanaged constant AND advertises --manage (additive, not a
     // source-flip trap).
     let sandbox = Sandbox::new();
@@ -728,7 +728,7 @@ fn test_reference_constants_read_view_names_unmanaged_with_teaching() {
 #[test]
 fn test_reference_reader_add_prints_the_read_notice() {
     // A reference-mode add whose script models a form says so — the reader works in reference mode,
-    // so 'setup was skipped' alone would read as 'the form is lost' (it isn't).
+    // so 'setup was skipped' alone would read as 'the form is lost' (it is not).
     let sandbox = Sandbox::new();
     let sh = sandbox.scratch_file(
         "refadd.sh",

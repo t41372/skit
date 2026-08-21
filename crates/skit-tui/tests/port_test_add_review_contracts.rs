@@ -183,7 +183,7 @@ fn stored_copy(review: &ReviewState) -> String {
 
 #[test]
 fn test_high_unmodeled_self_parser_writes_ticked_candidate() {
-    // A dynamic-optstring shell self-parses (uses_cli_framework) but can't be modeled, so the
+    // A dynamic-optstring shell self-parses (uses_cli_framework) but cannot be modeled, so the
     // candidate ticks render and are actually collected on accept: the stored copy's [tool.skit]
     // block holds the ticked constant. The old gate (not uses_cli_framework) dropped it silently.
     let mut review = review_of(
@@ -214,7 +214,7 @@ fn test_high_unmodeled_self_parser_writes_ticked_candidate() {
 #[test]
 fn test_high_modeled_form_collects_nothing_without_crashing() {
     // The complement: a MODELED getopts form has no checkboxes, so the collection gate skips —
-    // accept commits the entry and never queries a candidate that doesn't exist (the crash the
+    // accept commits the entry and never queries a candidate that does not exist (the crash the
     // gate must not cause).
     let mut review = review_of(
         "mod.sh",
@@ -329,7 +329,7 @@ fn test_reference_note_unmodeled_folds_and_keeps_old_line() {
 
 #[test]
 fn test_kind_pick_modal_label_switches_on_shebang() {
-    // With a #! present, "can't tell from the name" is false — the label instead explains the
+    // With a #! present, the unknown-name label is wrong — the label instead explains the
     // unknown interpreter. Without one, the name told skit nothing.
     let with_shebang = route_source(snap(
         "foo.xyz",
@@ -443,7 +443,7 @@ fn test_rv_python_typed_value_survives_an_edit_rescan() {
 
 #[test]
 fn test_resumed_draft_has_no_storage_section() {
-    // Resuming a kept draft is fresh authoring (fresh=True): there's no original to link, so the
+    // Resuming a kept draft is fresh authoring (fresh=True): there is no original to link, so the
     // Storage radio set is absent — a --ref there would have made the delete-confirm's "only copy"
     // a lie.
     let draft = snap("skit-new-fresh.py", b"print('fresh')\n", true);

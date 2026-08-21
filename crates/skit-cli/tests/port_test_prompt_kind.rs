@@ -1445,7 +1445,7 @@ fn test_ensure_seeded_materializes_once_and_empty_stays_empty() {
 #[test]
 #[ignore = "white-box (concurrency): the threading-barrier probe that forces two old-snapshot \
             save_config writers to meet, with a monkeypatched save_config, has no seam from an \
-            integration test. The observable CAS coverage (targeted mutations don't clobber \
+            integration test. The observable CAS coverage (targeted mutations do not clobber \
             unrelated rows) lives in the *_if_unchanged tests below. Oracle: test_prompt_kind.py:909."]
 fn test_runner_targeted_transactions_do_not_lose_concurrent_distinct_adds() {}
 
@@ -1571,12 +1571,12 @@ fn test_runner_container_rows_have_localized_human_recovery_reason() {
         (
             "prompt = \"bad\"\n",
             "prompt-section-not-table",
-            "isn't a table",
+            "is not a table",
         ),
         (
             "[prompt]\nrunners = \"bad\"\n",
             "runners-not-list",
-            "isn't a list",
+            "is not a list",
         ),
     ] {
         write_config(&config, document);
@@ -1975,9 +1975,9 @@ fn test_last_runner_roundtrip_and_corruption_degrades() {
 
 #[test]
 #[ignore = "UNMAPPED (absent): an unreadable prompt body (a directory where the file was) surfacing \
-            a clean 'Can't read' LaunchError has no isolated CLI observation — the run pipeline's \
+            a clean launch-read error has no isolated CLI observation — the run pipeline's \
             byte read is entangled with the stored-payload check (see \
-            test_build_missing_body_is_exit_127), so the specific IsADirectory 'Can't read' mapping \
+            test_build_missing_body_is_exit_127), so the specific IsADirectory mapping \
             is not distinguishable from the CLI. Oracle: test_prompt_kind.py:1347."]
 fn test_build_unreadable_body_is_a_clean_launch_error() {}
 

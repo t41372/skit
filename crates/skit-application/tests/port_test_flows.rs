@@ -459,7 +459,7 @@ fn test_validate_choice() {
     );
 }
 
-/// "{env:N}" can't be type-checked before expansion; validate defers to assembly.
+/// "{env:N}" cannot be type-checked before expansion; validate defers to assembly.
 #[test]
 fn test_validate_token_values_deferred() {
     let decls = argparse_decls();
@@ -644,7 +644,7 @@ fn test_assemble_secret_env_source_reads_environment() {
     assert_eq!(asm.inject_values["API_KEY"], "from-env");
 }
 
-/// Pin the exact sentence (field label + env-var name), so a corrupted message can't
+/// Pin the exact sentence (field label + env-var name), so a corrupted message cannot
 /// survive behind a bare substring check.
 #[test]
 fn test_assemble_secret_env_source_missing_is_named_error() {
@@ -834,7 +834,7 @@ fn test_assemble_empty_field_does_not_stop_later_flags() {
     assert!(asm.args.contains(&"--mode".to_owned()));
 }
 
-/// A multi-value field whose text can't be shlex-split (unbalanced quote) falls back to
+/// A multi-value field whose text cannot be shlex-split (unbalanced quote) falls back to
 /// the whole raw value instead of crashing.
 #[test]
 fn test_split_multi_falls_back_on_unbalanced_quote() {
@@ -1332,7 +1332,7 @@ fn test_assemble_display_order_and_masking() {
             ("API_KEY", "sekret"),
         ])
     );
-    assert_eq!(asm.masked_args, asm.args); // inject: values aren't in argv, nothing to mask
+    assert_eq!(asm.masked_args, asm.args); // inject: values are not in argv, nothing to mask
 }
 
 #[test]
@@ -1403,7 +1403,7 @@ fn test_save_after_run_purges_secret_placeholder_from_presets() {
     let decls = vec![synthesized_placeholder("api_key")];
     let service = service();
     let slug = slug("c3");
-    // Plaintext saved back when the placeholder wasn't treated as secret yet.
+    // Plaintext saved back when the placeholder was not treated as secret yet.
     service
         .repository()
         .update(&slug, |state| {
@@ -1434,7 +1434,7 @@ fn test_save_after_run_purges_secret_placeholder_from_presets() {
 }
 
 /// The CLI's argv already went through the user's shell: no re-glob, no token pass, and
-/// an unset {env:...} is NOT an error — it's just text the script will receive.
+/// an unset {env:...} is NOT an error — it is just text the script will receive.
 #[test]
 fn test_assemble_expand_extra_false_passes_argv_untouched() {
     let asm = run(

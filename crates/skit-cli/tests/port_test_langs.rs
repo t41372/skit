@@ -341,7 +341,7 @@ fn test_unknown_kind_run_entry_raises_before_spawning() {
 #[test]
 fn test_unknown_kind_describe_returns_template_and_never_raises() {
     // describe_command is contracted side-effect-free and total: for a kind this skit
-    // version doesn't know, the template is the only launch material meta carries.
+    // version does not know, the template is the only launch material meta carries.
     let mut with_template = entry("martian");
     with_template.meta.workdir = "invoke".to_owned();
     EntrySettings {

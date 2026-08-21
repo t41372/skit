@@ -149,7 +149,7 @@ pub(crate) enum RunError {
         #[source]
         source: io::Error,
     },
-    #[error("prompt body doesn't exist: {path}")]
+    #[error("prompt body does not exist: {path}")]
     PromptBodyMissing { path: String },
     #[error(transparent)]
     Encoding(#[from] PromptEncodingError),
@@ -222,7 +222,7 @@ impl Localize for RunError {
                 .with(path)
                 .with(source),
             Self::PromptBodyMissing { path } => {
-                Message::new("prompt body doesn't exist: {}").with(path)
+                Message::new("prompt body does not exist: {}").with(path)
             }
             Self::Encoding(error) => error.message(),
             Self::Stage { path, source } => Message::new("could not write staged source {}: {}")

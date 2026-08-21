@@ -501,7 +501,7 @@ fn test_unknown_axis_value_exits_2() {
 
 #[test]
 fn test_npm_axis_rejects_pypi_vendor_name() {
-    // The old single-axis grammar's core lie, now a hard error: PyPI vendors aren't npm vendors.
+    // The old single-axis grammar's core lie, now a hard error: PyPI vendors are not npm vendors.
     let sandbox = Sandbox::new();
     let result = sandbox.run(&["config", "mirror.npm", "tsinghua"]);
     assert_eq!(result.code, 2);

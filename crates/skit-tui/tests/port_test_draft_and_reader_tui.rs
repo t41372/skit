@@ -317,7 +317,7 @@ fn test_review_explicit_python_is_not_overwritten_by_the_shebang() {
 
 #[test]
 fn test_review_dynamic_optstring_keeps_ticks_and_space_chip() {
-    // A dynamic optstring shell self-parses but can't be modeled: the panel prints the passthrough
+    // A dynamic optstring shell self-parses but cannot be modeled: the panel prints the passthrough
     // hint AND keeps the candidate ticks, and the Space/Toggle chip is advertised.
     let review = review_of(
         "dyn.sh",

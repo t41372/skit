@@ -20,7 +20,7 @@
 //!   INJECTION half (the exemplar-blessed mapping; see `port_test_metawriter.rs`). The oracle's
 //!   final IDEMPOTENCY assertion (`inject_block(out, …) == out` when a block already exists) has no
 //!   idempotent standalone function in the rewrite: the injection is folded into `write_uv_metadata`
-//!   (the `set_dependencies` analog — always replaces), and the "don't re-inject when a block
+//!   (the `set_dependencies` analog — always replaces), and the "do not re-inject when a block
 //!   exists" guard is `has_uv_metadata_block_bytes` at the add orchestration (skit-ui/add.rs:519,
 //!   skit-cli/cli.rs:2912). So `test_inject_block_roundtrip` asserts the injection round-trip AND
 //!   asserts `has_uv_metadata_block(&out)` — the exact predicate that makes the oracle's idempotency
@@ -115,7 +115,7 @@ fn test_suggest_syntax_error_returns_empty() {
 #[test]
 fn test_suggest_dependencies_maps_import_name_to_pypi_package() {
     // The failure the mapping fixes: `from PIL import Image` must suggest the installable `Pillow`,
-    // not the import name `PIL` (which uv can't resolve).
+    // not the import name `PIL` (which uv cannot resolve).
     assert_eq!(
         external_dependencies("python", "from PIL import Image\n"),
         ["Pillow"]
@@ -136,7 +136,7 @@ fn test_suggest_dependencies_dedupes_after_mapping() {
 
 #[test]
 fn test_suggest_dependencies_unmapped_name_unchanged() {
-    // Names not in the table pass through verbatim (we only rewrite the ones we're sure about).
+    // Names not in the table pass through verbatim (we only rewrite the ones we are sure about).
     assert_eq!(
         external_dependencies("python", "import requests\n"),
         ["requests"]
@@ -352,7 +352,7 @@ fn test_add_python_copy_injects_pep723() {
     let stored = sandbox.script_text(&slug);
     let meta_in_copy = read_uv_metadata(&stored).expect("the copy carries a PEP 723 block");
     assert_eq!(meta_in_copy.dependencies, ["requests"]);
-    // After injecting into the copy, meta.toml doesn't duplicate the info (single source of truth).
+    // After injecting into the copy, meta.toml does not duplicate the info (single source of truth).
     let meta = sandbox.meta_text(&slug);
     assert!(!meta.contains("dependencies"), "{meta}");
     assert!(!meta.contains("requires_python"), "{meta}");

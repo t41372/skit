@@ -293,7 +293,7 @@ fn test_add_interactive_plain_form_keeps_line_prompts() {
 }
 
 #[test]
-#[ignore = "cross-crate: TERM=dumb can't host a Textual panel, so the line-prompt path runs — same interactive tty seam as test_add_interactive_plain_form_keeps_line_prompts."]
+#[ignore = "cross-crate: TERM=dumb cannot host a Textual panel, so the line-prompt path runs — same interactive tty seam as test_add_interactive_plain_form_keeps_line_prompts."]
 fn test_add_term_dumb_keeps_line_prompts() {
     // TERM=dumb -> line prompts, not the panel.
 }
@@ -499,7 +499,7 @@ fn test_add_unknown_directory_with_exe_is_accepted() {
 
 #[test]
 fn test_add_unreadable_file_clean_error_not_traceback() {
-    // An existing-but-unreadable file must be reported cleanly ("Can't read", distinct from
+    // An existing-but-unreadable file must report a clean read failure, distinct from
     // "File not found" since the path exists). Skipped when the euid bypasses perms — root reads
     // through chmod 0o000, exactly the oracle's `skipif(geteuid() == 0)`.
     let root = sandbox();
@@ -517,7 +517,7 @@ fn test_add_unreadable_file_clean_error_not_traceback() {
 #[test]
 #[ignore = "cross-crate: the oracle monkeypatches Path.read_text to raise PermissionError mid-add, exercising cli.py's `except OSError` read guard regardless of euid. A black-box binary harness cannot inject a read fault into skit's own process; the guard is cli.rs's read-error branch. Owning seam: cli.rs add read guard."]
 fn test_add_read_error_reports_clean_message() {
-    // A mid-add read failure surfaces as a localized "Can't read", never a traceback.
+    // A mid-add read failure surfaces as a localized read error, never a traceback.
 }
 
 #[test]
@@ -1468,7 +1468,7 @@ fn test_parse_kv_opts() {
 }
 
 #[test]
-#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` (cli.py:171). An existing PEP 723 block is the source of truth: don't ask, don't fill -> ([], \"\"). Private in cli.rs add lane; no `pub` surface."]
+#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` (cli.py:171). An existing PEP 723 block is the source of truth: do not ask, do not fill -> ([], \"\"). Private in cli.rs add lane; no `pub` surface."]
 fn test_resolve_metadata_existing_block_not_asked() {
     // A script with its own block -> ([], "").
 }

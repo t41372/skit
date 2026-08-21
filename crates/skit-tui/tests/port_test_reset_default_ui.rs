@@ -397,8 +397,8 @@ fn test_footer_advertises_ctrl_o_only_when_some_field_is_resettable() {
 
 #[test]
 fn test_ctrl_o_on_field_without_default_leaves_value_unchanged() {
-    // Ctrl+O from a field with no default does nothing (the row isn't resettable) — the typed value
-    // survives, and nothing crashes. A reset naming a field index that isn't on the form is likewise
+    // Ctrl+O from a field with no default does nothing (the row is not resettable) — the typed value
+    // survives, and nothing crashes. A reset naming a field index that is not on the form is likewise
     // a safe no-op (reset_field's get_mut guard). Rust's focus is always a valid field index, so the
     // Python "no focused control" branch has no analog; the same guard is reset_field's resettable
     // and bounds check.
@@ -411,7 +411,7 @@ fn test_ctrl_o_on_field_without_default_leaves_value_unchanged() {
     state.update(Action::FocusField(0));
     state.update(Action::ResetFocusedRunField); // no default → the field is left exactly as typed
     assert_eq!(field_value(&state, 0), "typed");
-    state.update(Action::ResetRunField(99)); // a field index that isn't on the form: no row, no crash
+    state.update(Action::ResetRunField(99)); // a field index that is not on the form: no row, no crash
     assert_eq!(field_value(&state, 0), "typed");
 }
 

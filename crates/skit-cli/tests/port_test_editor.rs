@@ -1168,7 +1168,7 @@ fn test_edit_unknown_declined_creates_nothing() {
 
 #[test]
 fn test_edit_unknown_non_interactive_errors() {
-    // A non-interactive shell can't be offered the create -> exit 1.
+    // A non-interactive shell cannot be offered the create -> exit 1.
     let sandbox = Sandbox::new();
     let output = sandbox
         .command()
@@ -1555,7 +1555,7 @@ fn test_add_edit_empty_content_adds_nothing() {
 
 #[test]
 fn test_add_edit_unregistered_shebang_refused_keeps_draft() {
-    // An unregistered-interpreter shebang can't be honored: refuse (exit 2), keep the draft, add
+    // An unregistered-interpreter shebang cannot be honored: refuse (exit 2), keep the draft, add
     // nothing — never fabricate a python entry.
     let sandbox = Sandbox::new();
     let sentinel = sandbox.scratch.path().join("aw.launched");

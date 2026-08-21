@@ -2655,7 +2655,7 @@ fn test_ensure_module_manifest_rewrites_only_on_change() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (launch + run composition): a deps-free CommonJS (.cjs/.cts) entry gets a minimal '{private, type: commonjs}' package.json from RunnerLaunch.build so deno doesn't run it as ESM. The private Rust builder has the exact manifest, but this integration test cannot intercept the run composition. Owner: skit-runtime launch. Python ref deps.py:134-155, test_js_deps.py:2310-2322."]
+#[ignore = "CROSS-CRATE (launch + run composition): a deps-free CommonJS (.cjs/.cts) entry gets a minimal '{private, type: commonjs}' package.json from RunnerLaunch.build so deno does not run it as ESM. The private Rust builder has the exact manifest, but this integration test cannot intercept the run composition. Owner: skit-runtime launch. Python ref deps.py:134-155, test_js_deps.py:2310-2322."]
 fn test_build_writes_a_module_manifest_for_a_deps_free_module_typed_entry() {}
 
 #[test]
