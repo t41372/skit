@@ -22,9 +22,9 @@
 //!   `input_spec(name, order)` for input bindings. Const and Input both imply
 //!   `ParameterDelivery::Inject`, which is what `plan_python_injection` selects on.
 //!
-//! Batch A keeps eighteen portable semantic owners here and moves fifteen real-runtime owners to
-//! the composition target. Two Python-only writer/helper contracts are structured closures in the
-//! Batch A manifest. Three staged-copy owners remain ignored here until CLI staging Batch B.
+//! Eighteen portable semantic owners stay here. Fifteen real-runtime owners live in the CLI
+//! composition target, and three staged-copy owners live at the CLI staging/composition seam. The
+//! final manifest records two Python-only helper/ownership closures.
 
 use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::{LanguageError, inject_values};
@@ -304,35 +304,4 @@ fn test_preamble_inserted_at_end_for_no_docstring_no_future() {
     assert!(out.contains("# skit:shim"));
     // The preamble must be the very first line (index 0).
     assert!(out.lines().next().unwrap().ends_with("# skit:shim"));
-}
-
-// ---------- _apply: multi-line (cross-line) span replacement ----------
-
-// ---------- _physical_lines: AST-line-boundary characters str.splitlines() over-splits on ----------
-
-// ---------- write_injected: exception during write cleans up the temp file ----------
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli tier): oracle rewrite.write_injected monkeypatches os.fdopen to force an OSError and asserts no orphan .injected-* file remains. The Rust analogue is skit-cli's private stage_injected_source (crates/skit-cli/src/run/command.rs:667); it is unreachable from a skit-language integration test and this fault-injection has no non-mock equivalent."]
-fn test_write_injected_cleanup_on_error() {
-    // Oracle: with a failing os.fdopen, rewrite.write_injected(tmp_path, "print(1)\n", suffix=".py")
-    // raises OSError("disk full") and leaves no .injected-*.py file behind.
-}
-
-// ---------- write_injected: 3b — the temp file no longer lives in the persistent store ----------
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli tier) + DIVERGENCE: oracle rewrite.write_injected lands the plaintext-secret-bearing copy in the OS temp dir, NOT entry_dir (crates ref: skit-oracle rewrite.py:176-180). Rust's stage_injected_source writes entry_dir.join('.run-<id>') unconditionally (crates/skit-cli/src/run/command.rs:686-693), mitigated only by sweep_staged_sources. Unreachable from skit-language; owning tier is skit-cli."]
-fn test_write_injected_lands_outside_entry_dir() {
-    // Oracle: path = write_injected(tmp_path, "print(1)\n", suffix=".py"); path.parent != tmp_path;
-    // (tmp_path / path.name) does not exist; path.name starts with ".injected-"; content preserved.
-    // Rust diverges here: the injected copy lands inside entry_dir. See notes for the skit-cli
-    // decision this needs.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli tier): oracle asserts write_injected falls back to entry_dir when the OS temp dir is unavailable (monkeypatched mkstemp). Rust's stage_injected_source already writes entry_dir directly (crates/skit-cli/src/run/command.rs:686-693); there is no OS-temp-first path to fall back FROM, and it is unreachable from skit-language regardless."]
-fn test_write_injected_falls_back_to_entry_dir_if_os_temp_unavailable() {
-    // Oracle: with the primary (OS-temp) mkstemp attempt forced to OSError, write_injected returns
-    // a path whose parent == entry_dir.
 }

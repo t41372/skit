@@ -940,10 +940,7 @@ fn stage_injected_source(
         && entry.meta.mode == skit_domain::StorageMode::Copy
         && !settings.dependencies.is_empty();
     let file = new_injected_file(&entry_dir, &suffix, adjacent_to_modules)?;
-    finish_staged_source(file, rewritten.as_bytes(), |file, bytes| {
-        file.write_all(bytes).and_then(|()| file.sync_all())
-    })
-    .map(Some)
+    finish_staged_source(file, rewritten.as_bytes(), write_and_sync_staged_source).map(Some)
 }
 
 fn sweep_injected_launch_sources(store: &FileStore, entry: &Entry) {
@@ -1003,6 +1000,65 @@ fn finish_staged_source(
         source,
     })?;
     Ok(StagedSource { path, _file: file })
+}
+
+fn write_and_sync_staged_source(file: &mut fs::File, bytes: &[u8]) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        let current = std::thread::current().id();
+        let must_fail = STAGE_WRITE_FAULT
+            .lock()
+            .expect("stage-write fault mutex must not be poisoned")
+            .as_ref()
+            .is_some_and(|fault| fault.owner == current);
+        if must_fail {
+            file.write_all(&bytes[..bytes.len().min(6)])?;
+            return Err(io::Error::other("injected staged-source write failure"));
+        }
+    }
+    file.write_all(bytes).and_then(|()| file.sync_all())
+}
+
+#[cfg(test)]
+struct StageWriteFault {
+    owner: std::thread::ThreadId,
+}
+
+#[cfg(test)]
+static STAGE_WRITE_FAULT: std::sync::Mutex<Option<StageWriteFault>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+struct StageWriteFaultGuard {
+    owner: std::thread::ThreadId,
+}
+
+#[cfg(test)]
+impl StageWriteFaultGuard {
+    fn for_current_thread() -> Self {
+        let owner = std::thread::current().id();
+        let mut fault = STAGE_WRITE_FAULT
+            .lock()
+            .expect("stage-write fault mutex must not be poisoned");
+        assert!(fault.is_none(), "only one stage-write fault can be active");
+        *fault = Some(StageWriteFault { owner });
+        Self { owner }
+    }
+}
+
+#[cfg(test)]
+impl Drop for StageWriteFaultGuard {
+    fn drop(&mut self) {
+        let mut fault = STAGE_WRITE_FAULT
+            .lock()
+            .expect("stage-write fault mutex must not be poisoned");
+        assert!(
+            fault
+                .as_ref()
+                .is_some_and(|fault| fault.owner == self.owner),
+            "stage-write fault ownership changed"
+        );
+        *fault = None;
+    }
 }
 
 /// Ask for consent, announce the first private uv download, then pin the installed path.
@@ -1273,7 +1329,10 @@ fn platform_state_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skit_application::{RepositoryError, run_inputs::RunInputError, tokens::TokenError};
+    use skit_application::{
+        CreateEntry, EntryMutationRepository as _, EntryPayload, RepositoryError,
+        SourcePermissions, payload_stored_name, run_inputs::RunInputError, tokens::TokenError,
+    };
     use skit_domain::{
         EntryKind, EntryMeta, Slug,
         parameters::{ParamDecl, ParameterBinding, ParameterDelivery},
@@ -1766,6 +1825,111 @@ mod tests {
             read_bytes(&directory.join("missing")),
             Err(RunError::Read { .. })
         ));
+    }
+
+    #[test]
+    fn test_write_injected_cleanup_on_error() {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        fs::write(
+            config.path().join("config.toml"),
+            "[mirror]\nenabled = false\n",
+        )
+        .unwrap();
+        let marker = data.path().join("child-launched");
+        let marker_literal = serde_json::to_string(&marker.display().to_string()).unwrap();
+        let source = format!(
+            "from pathlib import Path\nPath({marker_literal}).write_text('launched')\nCITY = 'Taipei'\nprint(CITY)\n"
+        );
+        let mut city = ParamDecl::new("CITY");
+        city.binding = ParameterBinding::Const;
+        city.delivery = ParameterDelivery::Inject;
+        let managed =
+            skit_language::write_managed_params("python", &source, std::slice::from_ref(&city))
+                .unwrap();
+        let kind = EntryKind::parse("python").unwrap();
+        let python = SystemProbe
+            .find_program("python3")
+            .or_else(|| SystemProbe.find_program("python"))
+            .expect("the frozen Shim cleanup contract requires Python on this platform");
+        let store = FileStore::new(data.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "Cleanup".to_owned(),
+                kind: kind.clone(),
+                mode: skit_domain::StorageMode::Copy,
+                source: "cleanup.py".to_owned(),
+                workdir: "invoke".to_owned(),
+                description: String::new(),
+                payload: Some(EntryPayload {
+                    bytes: managed.into_bytes(),
+                    stored_name: Some(payload_stored_name(&kind, Path::new("cleanup.py"))),
+                    permissions: SourcePermissions::default(),
+                }),
+                settings: EntrySettings {
+                    interpreter: python.display().to_string(),
+                    ..EntrySettings::default()
+                },
+            })
+            .unwrap();
+        let entry_dir = store.entry_dir_path(&entry.slug);
+        let source_path = store.payload_path(&entry).unwrap();
+        let source_before = fs::read(&source_path).unwrap();
+        let meta_before = fs::read(entry_dir.join("meta.toml")).unwrap();
+        let config_before = fs::read(config.path().join("config.toml")).unwrap();
+        assert!(fs::read_dir(state.path()).unwrap().next().is_none());
+
+        let _fault = StageWriteFaultGuard::for_current_thread();
+        let service = LibraryService::new(store.clone());
+        let error = run_with_roots(
+            &service,
+            &store,
+            state.path(),
+            config.path(),
+            RunArgs {
+                selector: "cleanup".to_owned(),
+                values: vec!["CITY=Kaohsiung".to_owned()],
+                preset: None,
+                save_preset: None,
+                runner: None,
+                runner_was_picked: false,
+                dry_run: false,
+                no_input: true,
+                plain: true,
+                raw: false,
+                forget_args: false,
+                extra_args: Vec::new(),
+            },
+        )
+        .unwrap_err();
+        let failed_path = match &error {
+            RunError::Stage { path, source }
+                if source.to_string() == "injected staged-source write failure" =>
+            {
+                PathBuf::from(path)
+            }
+            other => panic!("expected the injected stage fault, got {other:?}"),
+        };
+        assert_eq!(error.exit_code(), 125);
+        assert!(
+            !marker.exists(),
+            "the Python child launched after a stage failure"
+        );
+        assert!(!failed_path.exists(), "the failed staged source survived");
+        assert!(
+            fs::read_dir(&entry_dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|item| !item.file_name().to_string_lossy().starts_with(".injected-"))
+        );
+        assert_eq!(fs::read(source_path).unwrap(), source_before);
+        assert_eq!(fs::read(entry_dir.join("meta.toml")).unwrap(), meta_before);
+        assert_eq!(
+            fs::read(config.path().join("config.toml")).unwrap(),
+            config_before
+        );
+        assert!(fs::read_dir(state.path()).unwrap().next().is_none());
     }
 
     #[test]
