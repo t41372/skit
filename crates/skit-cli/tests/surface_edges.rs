@@ -342,7 +342,7 @@ fn template_changes_apply_only_to_command_entries_and_need_a_value() {
 }
 
 #[test]
-fn a_declared_row_without_a_source_binding_refuses_source_only_edits() {
+fn a_declared_row_without_a_source_binding_warns_and_skips_source_only_edits() {
     // v0.4 data can hold a declared row that the stored source does not manage.
     let sandbox = Sandbox::new();
     let source = sandbox.data.path().join("shell.sh");
@@ -362,28 +362,42 @@ fn a_declared_row_without_a_source_binding_refuses_source_only_edits() {
     let mut text = fs::read_to_string(&meta).unwrap();
     text.push_str("\n[[parameters]]\nname = \"extra\"\nkind = \"none\"\ntype = \"str\"\n");
     fs::write(&meta, text).unwrap();
+    let stored = sandbox.data.path().join("scripts/shell/script.sh");
+    let source_before = fs::read(&stored).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
 
-    for arguments in [
-        vec!["params", "shell", "--prompt", "extra=Label"],
-        vec!["params", "shell", "--env-source", "extra=VAR"],
-        vec!["params", "shell", "--secret", "extra"],
+    for (arguments, warning) in [
+        (
+            vec!["params", "shell", "--prompt", "extra=Label"],
+            "extra isn't a managed parameter; skipped.",
+        ),
+        (
+            vec!["params", "shell", "--env-source", "extra=VAR"],
+            "extra isn't a managed parameter; --env-source skipped.",
+        ),
+        (
+            vec!["params", "shell", "--secret", "extra"],
+            "extra isn't a managed parameter; skipped.",
+        ),
     ] {
         sandbox
             .command()
             .args(&arguments)
             .assert()
-            .code(2)
-            .stderr(predicate::str::contains(
-                "parameter extra is not managed in the stored source",
-            ));
+            .success()
+            .stderr(predicate::str::contains(warning));
     }
 
     sandbox
         .command()
         .args(["params", "shell", "--prompt", "missing=Label"])
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains("unknown parameter: missing"));
+        .success()
+        .stderr(predicate::str::contains(
+            "missing isn't a managed parameter; skipped.",
+        ));
+    assert_eq!(fs::read(stored).unwrap(), source_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
 }
 
 #[test]

@@ -1611,6 +1611,31 @@ const CATALOG: &[Translation] = &[
         "{} 在當前腳本中偵測不到;已略過。",
     ),
     row!(
+        "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.",
+        "无法解析脚本（语法错误）；已跳过重新同步。参数定义未更改。",
+        "無法剖析指令稿（語法錯誤）；已略過重新同步。參數定義未變更。",
+    ),
+    row!(
+        "Dropped {}: it no longer exists in the script.",
+        "已移除 {}：它已不存在于脚本中。",
+        "已移除 {}：它已不存在於指令稿中。",
+    ),
+    row!(
+        "{}: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct.",
+        "{}：提示不再唯一匹配后，已重新绑定到当前位置；请再次检查提示和秘密设置是否仍然正确。",
+        "{}：提示不再唯一相符後，已重新繫結到目前位置；請再次檢查提示和秘密設定是否仍然正確。",
+    ),
+    row!(
+        "{} isn't a managed parameter; skipped.",
+        "{} 不是受管理的参数；已跳过。",
+        "{} 不是受管理的參數；已略過。",
+    ),
+    row!(
+        "{} isn't a managed parameter; --env-source skipped.",
+        "{} 不是受管理的参数；已跳过 --env-source。",
+        "{} 不是受管理的參數；已略過 --env-source。",
+    ),
+    row!(
         "{}: that delivery isn't available for this kind; skipped.",
         "{}：该传递方式不适用于此类型，已跳过。",
         "{}：該傳遞方式不適用於此類型，已跳過。",

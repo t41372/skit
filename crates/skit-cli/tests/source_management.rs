@@ -156,7 +156,7 @@ fn managed_parameter_tweaks_stay_in_source_and_declared_schema_flags_refuse() {
 }
 
 #[test]
-fn source_shared_edits_validate_the_complete_batch_before_writing_or_purging() {
+fn source_shared_edits_warn_and_commit_valid_siblings_without_persisting_secrets() {
     let sandbox = Sandbox::new();
     let original = sandbox.data.path().join("managed.py");
     fs::write(&original, "TOKEN = 'value'\nprint(TOKEN)\n").unwrap();
@@ -186,12 +186,24 @@ fn source_shared_edits_validate_the_complete_batch_before_writing_or_purging() {
             "TOKEN",
         ])
         .assert()
-        .code(2)
-        .stderr(predicate_str::contains("unknown parameter: missing"));
+        .success()
+        .stderr(predicate_str::contains(
+            "missing isn't a managed parameter; skipped.",
+        ));
 
-    assert_eq!(fs::read(stored).unwrap(), source_before);
-    assert_eq!(fs::read(meta).unwrap(), meta_before);
-    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+    let source_after = fs::read(&stored).unwrap();
+    assert_ne!(source_after, source_before);
+    let source_after = String::from_utf8(source_after).unwrap();
+    assert!(source_after.contains("secret = true"));
+    assert!(!source_after.contains("Label"));
+    assert_ne!(fs::read(meta).unwrap(), meta_before);
+    assert_eq!(
+        fs::read(&original).unwrap(),
+        b"TOKEN = 'value'\nprint(TOKEN)\n"
+    );
+    let state = fs::read_to_string(sandbox.state.path().join("values/managed.toml")).unwrap();
+    assert!(!state.contains("TOKEN"), "{state}");
+    assert!(!state.contains("value"), "{state}");
     assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
 }
 

@@ -2390,8 +2390,17 @@ fn tui_source_controls_change_only_the_stored_copy() {
         .commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)
         .unwrap();
     let source = fs::read_to_string(&stored).unwrap();
-    let (source, managed, warnings) =
-        prepare_source_management("shell", StorageMode::Copy, source, true, &[], &[], &[]).unwrap();
+    let (source, managed, warnings) = prepare_source_management(
+        "shell",
+        StorageMode::Copy,
+        source,
+        &SourceEditRequest {
+            resync: true,
+            ..SourceEditRequest::default()
+        },
+        &[],
+    )
+    .unwrap();
     assert!(warnings.is_empty());
     let rewritten = write_managed_params("shell", &source, &managed).unwrap();
     let claimed = service.claim_identity(&entry).unwrap();
@@ -2408,9 +2417,7 @@ fn tui_source_controls_change_only_the_stored_copy() {
         "shell",
         StorageMode::Copy,
         source,
-        false,
-        &[],
-        &[],
+        &SourceEditRequest::default(),
         &["NAME".to_owned()],
     )
     .unwrap();
@@ -5904,6 +5911,44 @@ fn tui_settings_resync_returns_a_localized_warning_for_the_completion_receipt() 
         settings_saved_message(&warnings, Locale::ZhTw),
         "設定已儲存\n已移除 GONE：它已不存在於指令稿中。"
     );
+}
+
+#[test]
+fn source_edit_warning_renderer_is_total_and_localized() {
+    let warnings = [
+        SourceEditWarning::ResyncSkipped,
+        SourceEditWarning::ResyncDropped {
+            name: "NAME".to_owned(),
+        },
+        SourceEditWarning::ResyncRebound {
+            name: "NAME".to_owned(),
+        },
+        SourceEditWarning::AlreadyManaged {
+            name: "NAME".to_owned(),
+        },
+        SourceEditWarning::NotCandidate {
+            name: "NAME".to_owned(),
+        },
+        SourceEditWarning::NotManaged {
+            name: "NAME".to_owned(),
+        },
+        SourceEditWarning::EnvSourceNotManaged {
+            name: "NAME".to_owned(),
+        },
+        SourceEditWarning::EnvSourceNotSecret {
+            name: "NAME".to_owned(),
+        },
+    ];
+    for warning in warnings {
+        let english = source_edit_warning_message(&warning).localize(Locale::En);
+        let simplified = source_edit_warning_message(&warning).localize(Locale::ZhCn);
+        let traditional = source_edit_warning_message(&warning).localize(Locale::ZhTw);
+        assert!(!english.is_empty());
+        assert!(!simplified.is_empty());
+        assert!(!traditional.is_empty());
+        assert_ne!(english, simplified);
+        assert_ne!(english, traditional);
+    }
 }
 
 #[test]
