@@ -1929,8 +1929,10 @@ mod localization_tests {
         assert_localized(
             &RunError::Dependencies(DependencyError::InstallFailed {
                 program: "npm".to_owned(),
+                exit_code: Some(23),
+                detail: "package missing".to_owned(),
             }),
-            &["npm"],
+            &["npm", "package missing"],
         );
         assert_localized(
             &RunError::Uv(UvBootstrapError::Checksum {

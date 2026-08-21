@@ -56,8 +56,10 @@ fn every_dependency_error_localizes_and_keeps_its_values() {
     assert_localized(
         &DependencyError::InstallFailed {
             program: "npm".to_owned(),
+            exit_code: Some(23),
+            detail: "package missing".to_owned(),
         },
-        &["npm"],
+        &["npm", "package missing"],
     );
     assert_localized(
         &DependencyError::Rollback {

@@ -36,8 +36,8 @@
 //!   transaction and contracts in other owning crates).
 //! - ABSENT (compiling `#[ignore]` stub, MUST-FIX + Python ref): library seams the Rust
 //!   surface never exposes — `split_requirement(s)`, `require_installer`, `needs_install`,
-//!   `_failure_detail` (the runner discards stderr), `sweep_stale_injected`, a
-//!   manifest-with-module-type, the install-announce line.
+//!   `_failure_detail` helper-only edge shapes (the real-binary stderr owner is active below),
+//!   `sweep_stale_injected`, a manifest-with-module-type, and the install-announce line.
 //! - CROSS-CRATE / TOOLING (compiling `#[ignore]` stub naming the owning tier): the TUI
 //!   screens (`skit-tui`/`skit-ui`), the injection temp-file placement (`rewrite`), the
 //!   `RunnerLaunch.build`/`preflight` install wiring (`skit-runtime` launch + `skit-cli`
@@ -52,14 +52,18 @@ use std::sync::Mutex;
 
 use tempfile::TempDir;
 
+use skit_application::{
+    CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions, payload_stored_name,
+};
+use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_language::external_dependencies;
 use skit_runtime::{
-    DependencyCommand, DependencyCommandRunner, JavaScriptModuleType, ProgramProbe,
-    clear_javascript_dependencies, ensure_javascript_dependencies_for_module,
+    DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, JavaScriptModuleType,
+    ProgramProbe, clear_javascript_dependencies, ensure_javascript_dependencies_for_module,
     ensure_javascript_dependencies_with_environment, javascript_dependency_manifest,
     javascript_module_type,
 };
-use skit_store::FileConfigStore;
+use skit_store::{FileConfigStore, FileStore};
 
 // ============================================================================
 // Self-contained fixtures (no shared helper is edited or imported).
@@ -123,11 +127,19 @@ impl RecordingRunner {
 }
 
 impl DependencyCommandRunner for RecordingRunner {
-    fn run(&self, command: &DependencyCommand) -> std::io::Result<bool> {
+    fn run(&self, command: &DependencyCommand) -> std::io::Result<DependencyCommandOutput> {
         self.calls.lock().unwrap().push(command.clone());
         match &self.outcome {
-            Outcome::Success => Ok(true),
-            Outcome::Failure => Ok(false),
+            Outcome::Success => Ok(DependencyCommandOutput {
+                success: true,
+                exit_code: Some(0),
+                stderr: Vec::new(),
+            }),
+            Outcome::Failure => Ok(DependencyCommandOutput {
+                success: false,
+                exit_code: Some(1),
+                stderr: Vec::new(),
+            }),
             Outcome::IoError(message) => Err(std::io::Error::other(message.clone())),
         }
     }
@@ -432,8 +444,101 @@ fn test_ensure_installed_stale_marker_rebuilds_from_scratch() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): the installer's stderr detail ('Not Found - GET …/pkg') is surfaced on failure via _failure_detail; the Rust DependencyCommandRunner returns io::Result<bool> and DISCARDS stderr, so InstallFailed carries only the program path. MUST-FIX: give the runner a stderr channel and port _failure_detail. Python ref deps.py:293-313, 408-412."]
-fn test_ensure_installed_installer_failure_carries_its_stderr() {}
+#[cfg(unix)]
+fn test_ensure_installed_installer_failure_carries_its_stderr() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let bin = TempDir::new().unwrap();
+    for (name, body) in [
+        ("node", "#!/bin/sh\nexit 0\n"),
+        (
+            "npm",
+            concat!(
+                "#!/bin/sh\n",
+                "printf '%s\\n' 'npm error code E404' >&2\n",
+                "printf '%s\\n' 'npm error 404 Not Found - GET https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz - Not found' >&2\n",
+                "printf '%s\\n' 'npm error A complete log of this run can be found in: /tmp/debug.log' >&2\n",
+                "exit 23\n",
+            ),
+        ),
+    ] {
+        let path = bin.path().join(name);
+        fs::write(&path, body).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    let store = FileStore::new(data.path());
+    let kind = EntryKind::parse("js").unwrap();
+    let entry = store
+        .create(CreateEntry {
+            name: "t".to_owned(),
+            kind: kind.clone(),
+            mode: StorageMode::Copy,
+            source: "t.js".to_owned(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"console.log(1);\n".to_vec(),
+                stored_name: Some(payload_stored_name(&kind, Path::new("t.js"))),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                dependencies: vec!["skit-no-such-pkg-e2e-xyz".to_owned()],
+                interpreter: "node".to_owned(),
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    let source_path = store.payload_path(&entry).unwrap();
+    let source_before = fs::read(&source_path).unwrap();
+    let meta_before = fs::read(entry_dir.join("meta.toml")).unwrap();
+    let registry_before = fs::read(data.path().join("registry.toml")).unwrap();
+
+    let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+    let output = command
+        .env("SKIT_DATA_DIR", data.path())
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_CONFIG_DIR", config.path())
+        .env("SKIT_LANG", "en")
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("xdg-config"))
+        .env("XDG_DATA_HOME", home.path().join("xdg-data"))
+        .env("XDG_STATE_HOME", home.path().join("xdg-state"))
+        .env("PATH", bin.path())
+        .current_dir(home.path())
+        .args(["run", "t", "--no-input"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert_eq!(output.status.code(), Some(126), "{stderr}");
+    assert!(
+        output.stdout.is_empty(),
+        "installer output leaked to stdout"
+    );
+    assert!(stderr.contains("Not Found - GET"), "{stderr}");
+    assert!(stderr.contains("skit-no-such-pkg-e2e-xyz"), "{stderr}");
+    assert!(!stderr.contains("A complete log"), "{stderr}");
+    assert_eq!(fs::read(&source_path).unwrap(), source_before);
+    assert_eq!(fs::read(entry_dir.join("meta.toml")).unwrap(), meta_before);
+    assert_eq!(
+        fs::read(data.path().join("registry.toml")).unwrap(),
+        registry_before
+    );
+    assert!(fs::read_dir(state.path()).unwrap().next().is_none());
+    assert!(fs::read_dir(config.path()).unwrap().next().is_none());
+    assert!(!entry_dir.join("node_modules/.skit-deps-ok").exists());
+    assert!(!entry_dir.join(".skit-deps").exists());
+    assert!(!entry_dir.join("package.json").exists());
+}
 
 #[test]
 fn test_ensure_installed_failure_without_stderr_still_reports() {

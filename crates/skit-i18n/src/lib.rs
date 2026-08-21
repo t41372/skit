@@ -2461,9 +2461,9 @@ const CATALOG: &[Translation] = &[
         "--template 僅適用於命令項目",
     ),
     row!(
-        "JavaScript package installation failed with {}",
-        "JavaScript 软件包安装失败，使用的是 {}",
-        "JavaScript 套件安裝失敗，使用的是 {}",
+        "JavaScript package installation failed with {}: {}",
+        "JavaScript 软件包安装失败，使用的是 {}：{}",
+        "JavaScript 套件安裝失敗，使用的是 {}：{}",
     ),
     row!(
         "The environment variable {} isn't set (needed by {}).",

@@ -6,11 +6,11 @@ use std::{
 };
 
 use skit_runtime::{
-    DependencyCommand, DependencyCommandRunner, DependencyError, JavaScriptModuleType,
-    ProgramProbe, SystemDependencyCommandRunner, clear_javascript_dependencies,
-    ensure_javascript_dependencies, ensure_javascript_dependencies_for_module,
-    ensure_javascript_dependencies_with_environment, javascript_dependency_manifest,
-    javascript_module_type,
+    DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
+    JavaScriptModuleType, ProgramProbe, SystemDependencyCommandRunner,
+    clear_javascript_dependencies, ensure_javascript_dependencies,
+    ensure_javascript_dependencies_for_module, ensure_javascript_dependencies_with_environment,
+    javascript_dependency_manifest, javascript_module_type,
 };
 use tempfile::TempDir;
 
@@ -49,7 +49,7 @@ struct PartialFailureRunner {
 }
 
 impl DependencyCommandRunner for PartialFailureRunner {
-    fn run(&self, command: &DependencyCommand) -> std::io::Result<bool> {
+    fn run(&self, command: &DependencyCommand) -> std::io::Result<DependencyCommandOutput> {
         assert_eq!(command.cwd, self.expected_cwd);
         fs::write(command.cwd.join("package-lock.json"), b"partial lock\n")?;
         fs::create_dir_all(command.cwd.join("node_modules"))?;
@@ -57,17 +57,25 @@ impl DependencyCommandRunner for PartialFailureRunner {
             command.cwd.join("node_modules/partial"),
             b"partial module\n",
         )?;
-        Ok(false)
+        Ok(DependencyCommandOutput {
+            success: false,
+            exit_code: Some(1),
+            stderr: b"partial install failed".to_vec(),
+        })
     }
 }
 
 impl DependencyCommandRunner for Runner {
-    fn run(&self, command: &DependencyCommand) -> std::io::Result<bool> {
+    fn run(&self, command: &DependencyCommand) -> std::io::Result<DependencyCommandOutput> {
         self.commands.borrow_mut().push(command.clone());
         if self.succeeds {
             fs::create_dir_all(command.cwd.join("node_modules"))?;
         }
-        Ok(self.succeeds)
+        Ok(DependencyCommandOutput {
+            success: self.succeeds,
+            exit_code: Some(i32::from(!self.succeeds)),
+            stderr: Vec::new(),
+        })
     }
 }
 
@@ -332,7 +340,14 @@ fn installer_lookup_and_failure_are_typed_refusals_without_a_success_stamp() {
     let failed =
         ensure_javascript_dependencies(root.path(), "node", &["chalk".to_owned()], &probe, &runner)
             .unwrap_err();
-    assert!(matches!(failed, DependencyError::InstallFailed { .. }));
+    assert!(matches!(
+        failed,
+        DependencyError::InstallFailed {
+            exit_code: Some(1),
+            ref detail,
+            ..
+        } if detail == "?"
+    ));
     assert!(!root.path().join("package.json").exists());
     assert!(!root.path().join(".skit-deps").exists());
 }
@@ -544,7 +559,7 @@ fn a_failed_update_keeps_the_last_complete_dependency_environment() {
 struct ErrorRunner;
 
 impl DependencyCommandRunner for ErrorRunner {
-    fn run(&self, _command: &DependencyCommand) -> std::io::Result<bool> {
+    fn run(&self, _command: &DependencyCommand) -> std::io::Result<DependencyCommandOutput> {
         Err(std::io::Error::other("cannot spawn"))
     }
 }
@@ -689,26 +704,31 @@ fn crash_left_backup_index_temp_does_not_block_recovery() {
 fn system_dependency_runner_reports_real_child_status() {
     let root = TempDir::new().unwrap();
     let runner = SystemDependencyCommandRunner;
-    assert!(
-        runner
-            .run(&DependencyCommand {
-                program: PathBuf::from("/bin/sh"),
-                args: vec!["-c".to_owned(), "exit 0".to_owned()],
-                cwd: root.path().to_owned(),
-                environment: BTreeMap::new(),
-            })
-            .unwrap()
-    );
-    assert!(
-        !runner
-            .run(&DependencyCommand {
-                program: PathBuf::from("/bin/sh"),
-                args: vec!["-c".to_owned(), "exit 1".to_owned()],
-                cwd: root.path().to_owned(),
-                environment: BTreeMap::new(),
-            })
-            .unwrap()
-    );
+    let success = runner
+        .run(&DependencyCommand {
+            program: PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".to_owned(),
+                "printf ignored; printf diagnostic >&2; exit 0".to_owned(),
+            ],
+            cwd: root.path().to_owned(),
+            environment: BTreeMap::new(),
+        })
+        .unwrap();
+    assert!(success.success);
+    assert_eq!(success.exit_code, Some(0));
+    assert_eq!(success.stderr, b"diagnostic");
+    let failure = runner
+        .run(&DependencyCommand {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_owned(), "printf actionable >&2; exit 23".to_owned()],
+            cwd: root.path().to_owned(),
+            environment: BTreeMap::new(),
+        })
+        .unwrap();
+    assert!(!failure.success);
+    assert_eq!(failure.exit_code, Some(23));
+    assert_eq!(failure.stderr, b"actionable");
 }
 
 /// Build one crash backup directory with the given items.
@@ -852,9 +872,13 @@ fn an_installer_cannot_make_the_success_marker_escape_through_a_node_modules_sym
     }
 
     impl DependencyCommandRunner for SymlinkRunner {
-        fn run(&self, command: &DependencyCommand) -> std::io::Result<bool> {
+        fn run(&self, command: &DependencyCommand) -> std::io::Result<DependencyCommandOutput> {
             symlink(&self.target, command.cwd.join("node_modules"))?;
-            Ok(true)
+            Ok(DependencyCommandOutput {
+                success: true,
+                exit_code: Some(0),
+                stderr: Vec::new(),
+            })
         }
     }
 

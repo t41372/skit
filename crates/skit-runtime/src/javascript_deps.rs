@@ -78,8 +78,19 @@ pub struct DependencyCommand {
 
 /// Start one package-manager command.
 pub trait DependencyCommandRunner: std::fmt::Debug {
-    /// Return true only when the child exits successfully.
-    fn run(&self, command: &DependencyCommand) -> io::Result<bool>;
+    /// Return the child's status and captured diagnostic stream.
+    fn run(&self, command: &DependencyCommand) -> io::Result<DependencyCommandOutput>;
+}
+
+/// Captured result of one package-manager process.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DependencyCommandOutput {
+    /// Whether the process exited successfully.
+    pub success: bool,
+    /// Numeric exit code, or `None` when a signal or platform event ended the process.
+    pub exit_code: Option<i32>,
+    /// Exact stderr bytes. Decoding belongs to the failure presenter.
+    pub stderr: Vec<u8>,
 }
 
 /// Start dependency commands on the local machine.
@@ -87,13 +98,17 @@ pub trait DependencyCommandRunner: std::fmt::Debug {
 pub struct SystemDependencyCommandRunner;
 
 impl DependencyCommandRunner for SystemDependencyCommandRunner {
-    fn run(&self, command: &DependencyCommand) -> io::Result<bool> {
+    fn run(&self, command: &DependencyCommand) -> io::Result<DependencyCommandOutput> {
         Command::new(&command.program)
             .args(&command.args)
             .current_dir(&command.cwd)
             .envs(&command.environment)
-            .status()
-            .map(|status| status.success())
+            .output()
+            .map(|output| DependencyCommandOutput {
+                success: output.status.success(),
+                exit_code: output.status.code(),
+                stderr: output.stderr,
+            })
     }
 }
 
@@ -133,8 +148,15 @@ pub enum DependencyError {
         rollback: Box<Self>,
     },
     /// The package manager returned a failure status.
-    #[error("JavaScript package installation failed with {program}")]
-    InstallFailed { program: String },
+    #[error("JavaScript package installation failed with {program}: {detail}")]
+    InstallFailed {
+        /// Resolved package-manager executable.
+        program: String,
+        /// Numeric status when the platform supplied one.
+        exit_code: Option<i32>,
+        /// Most useful trusted line from the package manager's stderr.
+        detail: String,
+    },
 }
 
 impl Localize for DependencyError {
@@ -168,9 +190,11 @@ impl Localize for DependencyError {
                 .with(path)
                 .nested(primary.message())
                 .nested(rollback.message()),
-            Self::InstallFailed { program } => {
-                Message::new("JavaScript package installation failed with {}").with(program)
-            }
+            Self::InstallFailed {
+                program, detail, ..
+            } => Message::new("JavaScript package installation failed with {}: {}")
+                .with(program)
+                .with(detail),
         }
     }
 }
@@ -312,12 +336,14 @@ where
     begin_dependency_backup(entry_dir)?;
     let install = (|| {
         atomic_write(&entry_dir.join("package.json"), manifest.as_bytes())?;
-        let success = runner
+        let output = runner
             .run(&command)
             .map_err(|error| io_error("start package manager in", entry_dir, error))?;
-        if !success {
+        if !output.success {
             return Err(DependencyError::InstallFailed {
                 program: command.program.display().to_string(),
+                exit_code: output.exit_code,
+                detail: failure_detail(&output.stderr),
             });
         }
         ensure_real_node_modules(entry_dir)?;
@@ -473,6 +499,94 @@ fn installer_for_runtime(runtime: &str) -> (&'static str, &'static [&'static str
             &["install", "--no-audit", "--no-fund", "--ignore-scripts"],
         ),
     }
+}
+
+const INSTALLER_NOISE: &[&str] = &[
+    "A complete log of this run",
+    "Note that you can also install",
+    "tarball, folder, http url",
+    "For a full report see",
+    "If you are behind a proxy",
+];
+
+fn failure_detail(stderr: &[u8]) -> String {
+    let text = strip_ansi(&String::from_utf8_lossy(stderr));
+    let informative = text
+        .lines()
+        .filter(|raw| !npm_line_is_noise(raw))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !INSTALLER_NOISE.iter().any(|marker| line.contains(marker)))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    informative
+        .iter()
+        .rev()
+        .find(|line| is_cause_line(line))
+        .or_else(|| informative.last())
+        .cloned()
+        .unwrap_or_else(|| "?".to_owned())
+}
+
+fn npm_line_is_noise(line: &str) -> bool {
+    let Some(mut remainder) = ["npm error", "npm warn", "npm ERR!"]
+        .into_iter()
+        .find_map(|prefix| line.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    if let Some(after_space) = remainder.strip_prefix(' ') {
+        remainder = after_space;
+    }
+    if let Some((token, rest)) = remainder.split_once(' ')
+        && !token.is_empty()
+        && token.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        remainder = rest;
+    }
+    remainder.is_empty()
+        || remainder.starts_with([' ', '/', '{', '}'])
+        || remainder.starts_with("at ")
+        || is_windows_path(remainder)
+}
+
+fn is_windows_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+}
+
+fn is_cause_line(line: &str) -> bool {
+    let folded = line.to_ascii_lowercase();
+    [
+        "not found",
+        "does not exist",
+        "could not be found",
+        "failed",
+        "unable to",
+        "refused",
+        "denied",
+        "conflict",
+    ]
+    .iter()
+    .any(|marker| folded.contains(marker))
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for escaped in chars.by_ref() {
+                if escaped.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            output.push(character);
+        }
+    }
+    output
 }
 
 fn dependency_stamp(installer: &str, manifest: &str) -> String {
@@ -916,6 +1030,25 @@ mod transaction_tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn installer_failure_detail_keeps_the_last_cause_and_drops_noise() {
+        let stderr = concat!(
+            "npm error code E404\n",
+            "npm error     at ignored stack frame\n",
+            "npm error 404 \u{1b}[31mNot Found\u{1b}[0m - GET /missing\n",
+            "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+        );
+        assert_eq!(
+            failure_detail(stderr.as_bytes()),
+            "npm error 404 Not Found - GET /missing"
+        );
+        assert_eq!(failure_detail(&[]), "?");
+        assert_eq!(
+            failure_detail(b"detail \xff failed\n"),
+            "detail \u{fffd} failed"
+        );
+    }
 
     #[test]
     fn injected_sweep_uses_a_strict_one_hour_cutoff() {
