@@ -20,7 +20,7 @@ use skit_domain::{
     Entry, EntrySettings,
     parameters::{ParamDecl, ParameterDelivery},
 };
-use skit_form::form_params;
+use skit_form::{FormDrift, form_plan};
 use skit_i18n::{Localize, Message};
 use skit_language::{
     LanguageError, PromptEncodingError, decode_prompt, inject_values_for_interpreter,
@@ -29,11 +29,12 @@ use skit_language::{
 use skit_runtime::{
     DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
     InterpreterPolicy, LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
-    SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, UvDownloadConsent,
-    build_launch_plan_with_interpreter_policy, build_launch_preview,
+    SystemDependencyCommandRunner, SystemJavaScriptSyntaxGateRunner, SystemProbe, UvBootstrapError,
+    UvDownloadConsent, build_launch_plan_with_interpreter_policy, build_launch_preview,
     ensure_javascript_dependencies_for_module, ensure_managed_uv, execute_launch,
     javascript_dependency_install_announcement, javascript_module_type, managed_uv_path,
-    resolve_javascript_runtime, sweep_stale_injected_sources,
+    resolve_javascript_runtime_program, retain_javascript_source_if_valid,
+    sweep_stale_injected_sources,
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
@@ -182,6 +183,16 @@ pub(crate) enum RunError {
     Config(#[from] ConfigError),
     #[error("could not determine the platform configuration directory; set SKIT_CONFIG_DIR")]
     ConfigDirectoryUnavailable,
+    #[error(
+        "The script and its form definitions don't match anymore: {parameter}. Run `skit params {entry} --resync` to fix it."
+    )]
+    InjectionDrift { parameter: String, entry: String },
+    #[error(
+        "The script and its form definitions don't match anymore: {detail}. Run `skit params {entry} --resync` to fix it."
+    )]
+    InjectionSemanticDrift { detail: Message, entry: String },
+    #[error("skit refused to run its own injected copy: {detail}")]
+    InjectedCopy { detail: Message },
 }
 
 impl Localize for RunError {
@@ -244,6 +255,19 @@ impl Localize for RunError {
             Self::ConfigDirectoryUnavailable => Message::new(
                 "could not determine the platform configuration directory; set SKIT_CONFIG_DIR",
             ),
+            Self::InjectionDrift { parameter, entry } => Message::new(
+                "The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",
+            )
+            .with(parameter)
+            .with(entry),
+            Self::InjectionSemanticDrift { detail, entry } => Message::new(
+                "The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",
+            )
+            .nested(detail.clone())
+            .with(entry),
+            Self::InjectedCopy { detail } => {
+                Message::new("skit refused to run its own injected copy: {}").nested(detail.clone())
+            }
         }
     }
 }
@@ -280,6 +304,9 @@ impl RunError {
             | Self::Read { .. }
             | Self::Encoding(_)
             | Self::Stage { .. }
+            | Self::InjectionDrift { .. }
+            | Self::InjectionSemanticDrift { .. }
+            | Self::InjectedCopy { .. }
             | Self::StateDirectoryUnavailable
             | Self::Config(_)
             | Self::ConfigDirectoryUnavailable
@@ -335,11 +362,10 @@ pub(crate) fn run_with_roots(
     let mirror_environment = config.mirror_environment(&base_environment)?;
 
     let (source, expected_source_hash) = source_snapshot(data_store, &entry, &settings)?;
-    let declarations = if args.raw {
-        Vec::new()
-    } else {
-        form_params(entry.meta.kind.as_str(), &source, &settings)
-    };
+    let form = (!args.raw).then(|| form_plan(entry.meta.kind.as_str(), &source, &settings));
+    let declarations = form
+        .as_ref()
+        .map_or_else(Vec::new, skit_form::FormPlan::declarations);
     if args.save_preset.is_some() && declarations.is_empty() {
         return Err(RunError::PresetWithoutFields {
             name: entry.meta.name.clone(),
@@ -361,6 +387,15 @@ pub(crate) fn run_with_roots(
     } else {
         prefill(&declarations, &saved.values, preset)
     };
+    if let Some(parameter) = form
+        .as_ref()
+        .and_then(|plan| requested_drifted_parameter(&args.values, &plan.drift))
+    {
+        return Err(RunError::InjectionDrift {
+            parameter,
+            entry: entry.meta.name.clone(),
+        });
+    }
     apply_sets(&declarations, &args.values, &mut raw_values)?;
 
     let (extra_args, expand_extra, new_tail) = if args.raw {
@@ -446,6 +481,14 @@ pub(crate) fn run_with_roots(
         return Err(DependencyError::CopyStorageRequired.into());
     }
 
+    let javascript_runtime = if !args.dry_run && matches!(entry.meta.kind.as_str(), "js" | "ts") {
+        let runtime = resolve_javascript_runtime_program(&settings, &SystemProbe)?;
+        pin_interpreter(&mut settings, &mut entry, &runtime.program);
+        Some(runtime)
+    } else {
+        None
+    };
+
     let needs_uv_bootstrap = entry.meta.kind.as_str() == "python"
         && settings.interpreter.is_empty()
         && SystemProbe.find_program("uv").is_none()
@@ -526,32 +569,49 @@ pub(crate) fn run_with_roots(
         )?;
     }
 
-    if !args.dry_run {
-        sweep_injected_launch_sources(data_store, &entry);
-    }
-
-    if !args.dry_run
-        && matches!(entry.meta.kind.as_str(), "js" | "ts")
-        && entry.meta.mode == skit_domain::StorageMode::Copy
-    {
-        let runtime = resolve_javascript_runtime(&settings, &SystemProbe)?;
-        let entry_dir = data_store.entry_dir_path(&entry.slug);
-        ensure_javascript_dependencies_for_module(
-            &entry_dir,
-            &runtime,
-            &settings.dependencies,
-            javascript_module_type(&entry.meta.source),
-            &mirror_environment,
-            &SystemProbe,
-            &CliDependencyCommandRunner,
-        )?;
-    }
-
     let staged = if args.dry_run {
         None
     } else {
         stage_injected_source(data_store, &entry, &source, &declarations, &assembly)?
     };
+    let staged = match staged {
+        Some(source) => {
+            let path = source.path.clone();
+            Some(
+                retain_javascript_source_if_valid(
+                    source,
+                    javascript_runtime.as_ref(),
+                    &path,
+                    &SystemJavaScriptSyntaxGateRunner,
+                )
+                .map_err(|error| RunError::InjectedCopy {
+                    detail: error.message(),
+                })?,
+            )
+        }
+        None => None,
+    };
+    if !args.dry_run {
+        let entry_dir = data_store.entry_dir_path(&entry.slug);
+        sweep_injected_launch_sources(data_store, &entry);
+        sweep_stale_launch_snapshots(&entry_dir, !assembly.inject_values.is_empty());
+        if matches!(entry.meta.kind.as_str(), "js" | "ts")
+            && entry.meta.mode == skit_domain::StorageMode::Copy
+        {
+            let runtime = javascript_runtime
+                .as_ref()
+                .expect("a non-dry JavaScript launch has a resolved runtime");
+            ensure_javascript_dependencies_for_module(
+                &entry_dir,
+                runtime.kind.name(),
+                &settings.dependencies,
+                javascript_module_type(&entry.meta.source),
+                &mirror_environment,
+                &SystemProbe,
+                &CliDependencyCommandRunner,
+            )?;
+        }
+    }
     let script = if let Some(staged) = staged.as_ref() {
         staged.path.clone()
     } else if entry.meta.kind.as_str() == "command" {
@@ -675,7 +735,7 @@ pub(crate) fn run_with_roots(
             let current = service.show(slug.as_str())?;
             let settings = EntrySettings::from_meta(&current.meta);
             let (source, _) = source_snapshot(data_store, &current, &settings)?;
-            Ok(form_params(current.meta.kind.as_str(), &source, &settings))
+            Ok(form_plan(current.meta.kind.as_str(), &source, &settings).declarations())
         },
     )??;
     Ok(exit)
@@ -691,6 +751,28 @@ fn prompt_sends_secret(entry: &Entry, declarations: &[ParamDecl], assembly: &Ass
                     .get(&field.name)
                     .is_some_and(|value| !value.is_empty())
         })
+}
+
+fn requested_drifted_parameter(sets: &[String], drift: &[FormDrift]) -> Option<String> {
+    if sets.iter().any(|item| {
+        item.split_once('=')
+            .is_none_or(|(name, _)| name.trim().is_empty())
+    }) {
+        return None;
+    }
+    let requested = sets
+        .iter()
+        .filter_map(|item| item.split_once('=').map(|(name, _)| name.trim()))
+        .collect::<BTreeSet<_>>();
+    drift.iter().find_map(|item| match item {
+        FormDrift::Missing { declaration } if requested.contains(declaration.name.as_str()) => {
+            Some(declaration.name.clone())
+        }
+        FormDrift::Missing { .. }
+        | FormDrift::TypeChanged { .. }
+        | FormDrift::Rebound { .. }
+        | FormDrift::PromptMissing { .. } => None,
+    })
 }
 
 pub(crate) fn apply_sets(
@@ -835,7 +917,6 @@ fn stage_injected_source(
     assembly: &skit_application::delivery::Assembly,
 ) -> Result<Option<StagedSource>, RunError> {
     let entry_dir = store.entry_dir_path(&entry.slug);
-    sweep_stale_launch_snapshots(&entry_dir, !assembly.inject_values.is_empty());
     if assembly.inject_values.is_empty() {
         return Ok(None);
     }
@@ -848,7 +929,8 @@ fn stage_injected_source(
         declarations,
         &assembly.inject_values,
         (!interpreter.is_empty()).then_some(interpreter),
-    )?;
+    )
+    .map_err(|error| map_injection_language_error(error, &entry.meta.name))?;
     let original = launch_payload_path(store, entry)?;
     let suffix = original
         .extension()
@@ -876,11 +958,13 @@ fn new_injected_file(
     let mut builder = tempfile::Builder::new();
     builder.prefix(".injected-").suffix(suffix);
     let file = if adjacent_to_modules {
-        builder.tempfile_in(entry_dir)
+        builder
+            .tempfile_in(entry_dir)
+            .or_else(|_| builder.tempfile())
     } else {
         // The OS temp directory is the normal home for a source that can contain plaintext secret
-        // values. Keep the oracle's entry-directory fallback for a broken TMPDIR; the aged sweep
-        // above makes that fallback recoverable after an abnormal process exit.
+        // values. Keep the oracle's entry-directory fallback for a broken TMPDIR. A later
+        // successful run removes an aged fallback after an abnormal process exit.
         builder
             .tempfile()
             .or_else(|_| builder.tempfile_in(entry_dir))
@@ -889,6 +973,23 @@ fn new_injected_file(
         path: entry_dir.display().to_string(),
         source,
     })
+}
+
+fn map_injection_language_error(error: LanguageError, entry: &str) -> RunError {
+    match error {
+        LanguageError::BindingNotFound { name } => RunError::InjectionDrift {
+            parameter: name,
+            entry: entry.to_owned(),
+        },
+        error @ LanguageError::InjectedSourceInvalid { .. } => RunError::InjectedCopy {
+            detail: error.message(),
+        },
+        LanguageError::SourceChanged => RunError::InjectionSemanticDrift {
+            detail: LanguageError::SourceChanged.message(),
+            entry: entry.to_owned(),
+        },
+        error => RunError::Language(error),
+    }
 }
 
 fn finish_staged_source(
@@ -1344,6 +1445,26 @@ mod tests {
             ),
             (RunError::StateDirectoryUnavailable, 125),
             (RunError::ConfigDirectoryUnavailable, 125),
+            (
+                RunError::InjectionDrift {
+                    parameter: "WIDTH".to_owned(),
+                    entry: "demo".to_owned(),
+                },
+                125,
+            ),
+            (
+                RunError::InjectedCopy {
+                    detail: Message::new("invalid copy"),
+                },
+                125,
+            ),
+            (
+                RunError::InjectionSemanticDrift {
+                    detail: LanguageError::SourceChanged.message(),
+                    entry: "demo".to_owned(),
+                },
+                125,
+            ),
         ];
         for (error, expected) in errors {
             assert_eq!(error.exit_code(), expected, "error={error}");
@@ -1371,6 +1492,41 @@ mod tests {
             RunError::InvalidSet { items } if items == "broken"
         ));
         assert_eq!(values, unchanged);
+
+        assert!(matches!(
+            map_injection_language_error(
+                LanguageError::BindingNotFound {
+                    name: "WIDTH".to_owned(),
+                },
+                "demo",
+            ),
+            RunError::InjectionDrift { parameter, entry }
+                if parameter == "WIDTH" && entry == "demo"
+        ));
+        assert!(matches!(
+            map_injection_language_error(
+                LanguageError::InjectedSourceInvalid {
+                    kind: skit_language::InjectedSourceKind::JavaScript,
+                },
+                "demo",
+            ),
+            RunError::InjectedCopy { .. }
+        ));
+        assert!(matches!(
+            map_injection_language_error(LanguageError::SourceChanged, "demo"),
+            RunError::InjectionSemanticDrift { entry, .. } if entry == "demo"
+        ));
+        assert!(matches!(
+            map_injection_language_error(
+                LanguageError::InvalidValue {
+                    name: "WIDTH".to_owned(),
+                    value: "bad".to_owned(),
+                    parameter_type: skit_domain::parameters::ParameterType::Int,
+                },
+                "demo",
+            ),
+            RunError::Language(LanguageError::InvalidValue { .. })
+        ));
 
         let unknown = apply_sets(
             &declarations,
@@ -1438,6 +1594,7 @@ mod tests {
         declaration.binding = ParameterBinding::Const;
         declaration.delivery = ParameterDelivery::Inject;
         sweep_injected_launch_sources(&store, &shell);
+        sweep_stale_launch_snapshots(&directory, true);
         let staged = stage_injected_source(
             &store,
             &shell,
@@ -1758,7 +1915,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_context_and_staging_failure_paths_are_explicit() {
+    fn platform_context_paths_are_explicit() {
         assert!(platform_state_dir().is_some());
         assert!(platform_config_dir().is_some());
         assert!(resolve_state_dir().is_ok());
@@ -1768,42 +1925,6 @@ mod tests {
         assert!(!context.cwd.is_empty());
         assert!(!context.today.is_empty());
         assert!(!context.now.is_empty());
-
-        let root = TempDir::new().unwrap();
-        let store = FileStore::new(root.path());
-        let mut javascript = entry("js", "node");
-        let mut settings = EntrySettings::from_meta(&javascript.meta);
-        settings.dependencies = vec!["chalk".to_owned()];
-        settings.write_to_meta(&mut javascript.meta);
-        let entry_dir = store.entry_dir_path(&javascript.slug);
-        fs::create_dir_all(&entry_dir).unwrap();
-        fs::write(entry_dir.join("script.js"), "const NAME = 'old';\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&entry_dir, fs::Permissions::from_mode(0o555)).unwrap();
-        }
-        let mut declaration = ParamDecl::new("NAME");
-        declaration.binding = ParameterBinding::Const;
-        declaration.delivery = ParameterDelivery::Inject;
-        let mut assembly = skit_application::delivery::Assembly::default();
-        assembly
-            .inject_values
-            .insert("NAME".to_owned(), "updated".to_owned());
-        let error = stage_injected_source(
-            &store,
-            &javascript,
-            "const NAME = 'old';\n",
-            &[declaration],
-            &assembly,
-        )
-        .unwrap_err();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            fs::set_permissions(&entry_dir, fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        assert!(matches!(error, RunError::Stage { .. }), "{error:?}");
     }
 }
 
@@ -2116,5 +2237,39 @@ mod localization_tests {
         );
         assert_localized(&RunError::RawConflict, &[]);
         assert_localized(&RunError::ConfigDirectoryUnavailable, &[]);
+        assert_localized(
+            &RunError::InjectionDrift {
+                parameter: "WIDTH".to_owned(),
+                entry: "demo".to_owned(),
+            },
+            &["WIDTH", "demo"],
+        );
+        assert_localized(
+            &RunError::InjectedCopy {
+                detail: Message::new("invalid copy"),
+            },
+            &["invalid copy"],
+        );
+        let semantic_drift = RunError::InjectionSemanticDrift {
+            detail: LanguageError::SourceChanged.message(),
+            entry: "demo".to_owned(),
+        };
+        assert_localized(&semantic_drift, &["demo"]);
+        for (locale, expected) in [
+            (
+                Locale::En,
+                "The script and its form definitions don't match anymore: source changed after semantic edit planning. Run `skit params demo --resync` to fix it.",
+            ),
+            (
+                Locale::ZhCn,
+                "脚本内容和表单定义对不上了：源文件在语义编辑规划后已更改。运行 `skit params demo --resync` 即可修复。",
+            ),
+            (
+                Locale::ZhTw,
+                "腳本內容和表單定義對不上了：來源在語義編輯規劃後已變更。執行 `skit params demo --resync` 即可修復。",
+            ),
+        ] {
+            assert_eq!(semantic_drift.message().localize(locale), expected);
+        }
     }
 }

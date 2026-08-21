@@ -3214,6 +3214,16 @@ const CATALOG: &[Translation] = &[
         "node 拒絕了注入副本：{}",
     ),
     row!(
+        "skit refused to run its own injected copy: {}",
+        "skit 拒绝运行自己注入出来的副本：{}",
+        "skit 拒絕執行自己注入出來的副本：{}",
+    ),
+    row!(
+        "The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",
+        "脚本内容和表单定义对不上了：{}。运行 `skit params {} --resync` 即可修复。",
+        "腳本內容和表單定義對不上了：{}。執行 `skit params {} --resync` 即可修復。",
+    ),
+    row!(
         "source management applies only to a stored copy",
         "来源管理仅适用于存储的副本",
         "來源管理僅適用於儲存的副本",
