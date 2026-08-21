@@ -9,6 +9,7 @@ use skit_application::{
 };
 use skit_domain::{EntrySettings, parameters::ParameterDelivery};
 use skit_form::{FormSource, form_plan};
+use skit_runtime::{ProgramProbe as _, SystemProbe};
 use skit_store::FileStore;
 use tempfile::TempDir;
 
@@ -125,4 +126,35 @@ fn test_manage_then_plan_and_assemble_env_delivery() {
         assembly.env_values,
         BTreeMap::from([("PORT".to_owned(), "9090".to_owned())])
     );
+}
+
+#[test]
+fn test_env_overlay_overrides_default_in_real_fish() {
+    let Some(fish) = SystemProbe.find_program("fish") else {
+        assert!(
+            cfg!(windows) || std::env::var_os("CI").is_none(),
+            "the non-Windows CI test job must install Fish before it runs the workspace"
+        );
+        eprintln!("Fish is not installed; the frozen Python owner has the same availability gate");
+        return;
+    };
+    assert!(
+        SystemProbe.is_executable(&fish),
+        "SystemProbe must return an executable Fish path"
+    );
+
+    let sandbox = Sandbox::new();
+    sandbox.add_port_entry("realcfg");
+    let output = sandbox
+        .command()
+        .args(["run", "realcfg", "--set", "PORT=9090", "--no-input"])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "skit failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "9090");
 }

@@ -21,6 +21,25 @@ expect_text .github/workflows/codspeed.yml 'run: cargo codspeed run'
 expect_text .github/workflows/release.yml 'pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2'
 expect_text pyproject.toml '{ path = "tests/corpus/**/*", format = "sdist" }'
 expect_text .github/workflows/ci.yml 'cargo test --locked -p skit-language --test corpus'
+expect_text .github/workflows/ci.yml 'fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0'
+fish_action_line="$(
+  grep -Fn 'uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0' \
+    .github/workflows/ci.yml | cut -d: -f1
+)"
+test "$(printf '%s\n' "$fish_action_line" | sed '/^$/d' | wc -l)" -eq 1 || {
+  echo '.github/workflows/ci.yml must install Fish exactly once' >&2
+  exit 1
+}
+fish_step_start=$((fish_action_line - 2))
+sed -n "${fish_step_start},${fish_action_line}p" .github/workflows/ci.yml |
+  grep -Fq "if: runner.os != 'Windows'" || {
+    echo 'the pinned Fish action must be limited to supported non-Windows test hosts' >&2
+    exit 1
+  }
+test "$fish_action_line" -lt "$(grep -Fn 'run: cargo test --locked --workspace --all-targets --all-features' .github/workflows/ci.yml | cut -d: -f1)" || {
+  echo 'Fish must be installed before the workspace test step' >&2
+  exit 1
+}
 expect_text CONTRIBUTING.md 'Node.js 26.7.0 and npm 12.0.2 or later'
 expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
 expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'

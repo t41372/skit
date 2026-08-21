@@ -75,6 +75,9 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
+      - name: Install Fish for runtime parity
+        if: runner.os != 'Windows'
+        uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0
       - name: Run all tests
         run: cargo test --locked --workspace --all-targets --all-features
       - name: Compile every Python benchmark subject with CPython 3.13
