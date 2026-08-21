@@ -675,6 +675,21 @@ mod tests {
             session.handle_mouse(&scroll_down(1, 0)),
             ActionFooterMouse::Scrolled
         );
+        let bottom = session.scroll.scroll_offset();
+        assert_eq!(
+            session.handle_mouse(&MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            ActionFooterMouse::Scrolled
+        );
+        assert!(session.scroll.scroll_offset() < bottom);
+        assert_eq!(
+            session.handle_mouse(&scroll_down(1, 0)),
+            ActionFooterMouse::Scrolled
+        );
         terminal
             .draw(|frame| {
                 session.render(frame, frame.area(), &items, ActionFooterStyle::default());

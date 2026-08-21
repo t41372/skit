@@ -1527,10 +1527,6 @@ fn render_footer(
     session.footer_visible_height = usize::from(area.height);
     session.footer_viewport = Rect::new(area.x, area.y, content_width, area.height);
     session.footer_scroll.set_lines(vec![String::new(); rows]);
-    let maximum_offset = rows.saturating_sub(session.footer_visible_height);
-    if session.footer_scroll.scroll_offset() > maximum_offset {
-        session.footer_scroll.set_scroll_offset(maximum_offset);
-    }
     let offset = session.footer_scroll.scroll_offset();
     let end = offset.saturating_add(session.footer_visible_height);
     let mut hits = Vec::new();
@@ -1553,16 +1549,15 @@ fn render_footer(
         });
     }
     if rows > session.footer_visible_height {
-        let indicator = match (
-            session.footer_scroll.is_at_top(),
-            session
-                .footer_scroll
-                .is_at_bottom(session.footer_visible_height),
-        ) {
-            (true, false) => "↓",
-            (false, true) => "↑",
-            (false, false) => "↕",
-            (true, true) => "",
+        let indicator = if session.footer_scroll.is_at_top() {
+            "↓"
+        } else if session
+            .footer_scroll
+            .is_at_bottom(session.footer_visible_height)
+        {
+            "↑"
+        } else {
+            "↕"
         };
         frame.render_widget(
             Paragraph::new(indicator).style(Style::default().add_modifier(Modifier::DIM)),
@@ -2777,5 +2772,37 @@ mod tests {
         let mut secret_session = AddScreenSession::default();
         let (terminal, _) = draw(&secret_prompt, &mut secret_session, 60, 18);
         assert!(text_of(&terminal).contains("secret"));
+    }
+
+    #[test]
+    fn add_footer_clamps_after_growth_and_empty_inventory_has_no_rows() {
+        let (empty, rows) = position_footer_chips(Vec::new(), 20);
+        assert!(empty.is_empty());
+        assert_eq!(rows, 0);
+
+        let state = AddWorkflowState::new(Vec::new());
+        let mut session = AddScreenSession::default();
+        session.sync(&state);
+        let mut narrow = Terminal::new(TestBackend::new(20, 1)).unwrap();
+        let mut geometry = AddScreenGeometry::default();
+        narrow
+            .draw(|frame| {
+                geometry.hits =
+                    render_footer(frame, frame.area(), &state, &mut session, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            session.handle_event(mouse(MouseEventKind::ScrollDown, 0, 0), &state, &geometry,),
+            Some(AddScreenEvent::Changed)
+        );
+        assert!(session.footer_scroll.scroll_offset() > 0);
+
+        let mut wide = Terminal::new(TestBackend::new(120, 2)).unwrap();
+        wide.draw(|frame| {
+            let hits = render_footer(frame, frame.area(), &state, &mut session, Locale::En);
+            assert!(!hits.is_empty());
+        })
+        .unwrap();
+        assert_eq!(session.footer_scroll.scroll_offset(), 0);
     }
 }

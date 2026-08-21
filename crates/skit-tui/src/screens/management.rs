@@ -1187,18 +1187,20 @@ mod tests {
     }
 
     fn advertised_key(hint: &str) -> Event {
-        let (code, modifiers) = match hint {
-            "Enter" => (KeyCode::Enter, KeyModifiers::NONE),
-            "Esc" => (KeyCode::Esc, KeyModifiers::NONE),
-            "Tab/↓" => (KeyCode::Tab, KeyModifiers::NONE),
-            "Shift+Tab/↑" => (KeyCode::BackTab, KeyModifiers::SHIFT),
-            "Ctrl+N" => (KeyCode::Char('n'), KeyModifiers::CONTROL),
-            "Ctrl+R" => (KeyCode::Char('r'), KeyModifiers::CONTROL),
-            "e" => (KeyCode::Char('e'), KeyModifiers::NONE),
-            "d" => (KeyCode::Char('d'), KeyModifiers::NONE),
-            "y" => (KeyCode::Char('y'), KeyModifiers::NONE),
-            _ => panic!("unsupported advertised management key: {hint}"),
-        };
+        let (code, modifiers) = [
+            ("Enter", KeyCode::Enter, KeyModifiers::NONE),
+            ("Esc", KeyCode::Esc, KeyModifiers::NONE),
+            ("Tab/↓", KeyCode::Tab, KeyModifiers::NONE),
+            ("Shift+Tab/↑", KeyCode::BackTab, KeyModifiers::SHIFT),
+            ("Ctrl+N", KeyCode::Char('n'), KeyModifiers::CONTROL),
+            ("Ctrl+R", KeyCode::Char('r'), KeyModifiers::CONTROL),
+            ("e", KeyCode::Char('e'), KeyModifiers::NONE),
+            ("d", KeyCode::Char('d'), KeyModifiers::NONE),
+            ("y", KeyCode::Char('y'), KeyModifiers::NONE),
+        ]
+        .into_iter()
+        .find_map(|(candidate, code, modifiers)| (candidate == hint).then_some((code, modifiers)))
+        .unwrap();
         Event::Key(KeyEvent::new(code, modifiers))
     }
 
@@ -1297,12 +1299,11 @@ mod tests {
                 })
                 .unwrap();
             for item in health_footer_items(Locale::En) {
+                let hint = item.advertised_key();
                 assert_eq!(
-                    health_session
-                        .handle_event(advertised_key(item.advertised_key()), &health_view),
+                    health_session.handle_event(advertised_key(hint), &health_view),
                     HealthEventHandling::Action(item.typed_action().clone()),
-                    "Health key {} at {width}x{height}",
-                    item.advertised_key()
+                    "Health key {hint} at {width}x{height}",
                 );
             }
 
@@ -1314,12 +1315,11 @@ mod tests {
                 })
                 .unwrap();
             for item in runner_editor_footer_items(Locale::En) {
+                let hint = item.advertised_key();
                 assert_eq!(
-                    editor_session
-                        .handle_event(advertised_key(item.advertised_key()), &editor_view),
+                    editor_session.handle_event(advertised_key(hint), &editor_view),
                     RunnerEditorEventHandling::Action(item.typed_action().clone()),
-                    "runner editor key {} at {width}x{height}",
-                    item.advertised_key()
+                    "runner editor key {hint} at {width}x{height}",
                 );
             }
 
@@ -1331,12 +1331,11 @@ mod tests {
                 })
                 .unwrap();
             for item in runner_manager_footer_items(Locale::En) {
+                let hint = item.advertised_key();
                 assert_eq!(
-                    manager_session
-                        .handle_event(advertised_key(item.advertised_key()), &manager_view,),
+                    manager_session.handle_event(advertised_key(hint), &manager_view,),
                     RunnerManagerEventHandling::Action(item.typed_action().clone()),
-                    "runner manager key {} at {width}x{height}",
-                    item.advertised_key()
+                    "runner manager key {hint} at {width}x{height}",
                 );
             }
 
@@ -1348,12 +1347,11 @@ mod tests {
                 })
                 .unwrap();
             for item in runner_action_footer_items(Locale::En, true) {
+                let hint = item.advertised_key();
                 assert_eq!(
-                    manager_session
-                        .handle_event(advertised_key(item.advertised_key()), &action_view,),
+                    manager_session.handle_event(advertised_key(hint), &action_view,),
                     RunnerManagerEventHandling::Action(item.typed_action().clone()),
-                    "runner action key {} at {width}x{height}",
-                    item.advertised_key()
+                    "runner action key {hint} at {width}x{height}",
                 );
             }
 
@@ -1364,12 +1362,11 @@ mod tests {
                 })
                 .unwrap();
             for item in runner_removal_footer_items(Locale::En) {
+                let hint = item.advertised_key();
                 assert_eq!(
-                    manager_session
-                        .handle_event(advertised_key(item.advertised_key()), &action_view,),
+                    manager_session.handle_event(advertised_key(hint), &action_view,),
                     RunnerManagerEventHandling::Action(item.typed_action().clone()),
-                    "runner removal key {} at {width}x{height}",
-                    item.advertised_key()
+                    "runner removal key {hint} at {width}x{height}",
                 );
             }
 
@@ -1381,12 +1378,11 @@ mod tests {
                 })
                 .unwrap();
             for item in runner_action_footer_items(Locale::En, false) {
+                let hint = item.advertised_key();
                 assert_eq!(
-                    manager_session
-                        .handle_event(advertised_key(item.advertised_key()), &locked_view,),
+                    manager_session.handle_event(advertised_key(hint), &locked_view,),
                     RunnerManagerEventHandling::Action(item.typed_action().clone()),
-                    "locked runner action key {} at {width}x{height}",
-                    item.advertised_key()
+                    "locked runner action key {hint} at {width}x{height}",
                 );
             }
         }
