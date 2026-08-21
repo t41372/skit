@@ -367,11 +367,13 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
 - **0 port_test_config.rs divergences.** Low-level bash-path persistence stays literal while direct
   CLI and Preferences write doors own file validation (`929e547`). The two remaining ignores are
   architecture closures; axis display runs against its correct private CLI owner (`a5710d9`).
-- **Data-safety (in js_deps + elsewhere):** shim writes the plaintext-secret injected copy to
-  `entry_dir` unconditionally; oracle stages OS-temp-first (rewrite.py:176-180) so a crash never
-  persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
-  region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
-  `deps`-clear must sweep node_modules.
+- **Data-safety (in js_deps + elsewhere):** injected copies now use an OS-private temporary file
+  unless npm adjacency requires the entry directory, Settings and `deps --clear` share one
+  identity-gated cleanup transaction, and dependency metadata replacement is atomic on Windows
+  (`b777d3c`). A fresh Phase 4 audit found one remaining transaction gap: final cleanup currently
+  swallows a real unlink/rmtree failure after moving the old environment aside. The JS cleanup
+  batch must make that failure loud, preserve the old metadata, and treat a concurrent NotFound as
+  success.
 - **TUI path completion is still a release blocker.** `port_test_path_tui.rs` is 32 active / 29
   ignored. Twenty-five ignored owners cover the shipped v0.4 ghost completion while typing,
   including async capped scans, universal/path activation, hidden/error behavior, Right-arrow
@@ -381,12 +383,17 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
 - **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 
-The PathSuggester group is the largest confirmed per-file backlog. A static Phase 4 marker audit
-also found 35 JS-dependency, 7 source-edit, 5 editor, 2 source-default, and 1 language ignored rows
-whose reasons still say ABSENT. Several JS reasons are demonstrably stale after later production
-fixes (captured installer stderr and stale injected-file cleanup), but the rows must be re-audited
-and moved to their real owners or implemented before the ledger can call them closures. Do not turn
-them into fake REAL owners merely to reduce the ignored count.
+The PathSuggester group is the largest confirmed per-file backlog. Its isolated implementation has
+activated all 25 ghost-completion owners and is completing the CLI/workdir composition before
+integration. A static Phase 4 marker audit also found 35 JS-dependency, 7 source-edit, and 4 editor
+ignored rows whose reasons still say ABSENT. The two source-default guards were rehomed to real
+`skit-language` semantic units, and the language capability-stripping monkeypatch was classified as
+a framework-injection closure (`694a717`). The JS three-way audit classified its 35 rows as 5 with
+stronger owners, 13 stale owners that need executable rehomes, and 17 real gaps across cleanup,
+freshness/preflight, launch sweep, diagnostics, and announce behavior. The source-edit audit found
+a parser-backed resync data-loss risk on syntax errors in addition to the seven stale stubs. These
+groups must be implemented or moved to their real owners before the ledger can call them closed.
+Do not turn them into fake REAL owners merely to reduce the ignored count.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
   port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job
@@ -427,10 +434,11 @@ The ledger has the authoritative per-module adjudication log.
   the actionable child stderr line and keep rollback atomic. Source candidate management now warns
   per invalid item while valid siblings commit once (`85ecf69`). Interactive Python dependency and
   version questions are now owned by real three-language PTY contracts (`cf33d82`). Library
-  projection orchestration moved out of `skit-store` (`f5bba41`..`75fd38e`), but independent review
-  found that its two repository reads must become one coherent refresh before approval. The Prompt
-  Settings placeholder picker activated its eight owners (`c4b8659`), but its short-list keyboard
-  navigation, row order/overflow hint, and duplicate/dead chooser route are under follow-up review.
+  projection orchestration moved out of `skit-store` (`f5bba41`..`75fd38e`); the independent review
+  blocker is fixed in `d22d390`, which derives summaries and details from one registry membership
+  snapshot and one metadata read per member. The Prompt Settings placeholder picker activated its
+  eight owners (`c4b8659`); `6b29372` then added option-level keyboard navigation, restored managed
+  row/preview/overflow/chooser order, and removed the duplicate footer and dead reducer route.
   A further audit reopened the 25-owner PathSuggester group described above, and a static follow-up
   reopened the remaining ABSENT-marker groups for three-way adjudication. The final coverage,
   supply-chain, docs, package, benchmark, and hands-on gates are not valid until these changes stop.
