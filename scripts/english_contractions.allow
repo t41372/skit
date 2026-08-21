@@ -232,6 +232,17 @@ A	1	crates/skit-tui/tests/port_test_add_review_contracts.rs	.contains("What is f
 A	1	crates/skit-ui/src/preferences.rs	"Runs js/ts entries that don't pin their own runtime.",	oracle msgid production/catalog copy
 A	1	crates/skit-ui/src/settings.rs	"skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly."	exact owner for frozen user-visible copy
 A	1	crates/skit-ui/src/settings.rs	"skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly.",	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/cli.rs	"{} isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy.",	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/cli.rs	"{} isn't a plain constant with a literal value, so there's nothing to normalize; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	"{}'s value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.",	oracle msgid production/catalog copy
+A	2	crates/skit-i18n/src/lib.rs	"{} isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy.",	oracle msgid production/catalog copy
+A	2	crates/skit-i18n/src/lib.rs	"{} isn't a plain constant with a literal value, so there's nothing to normalize; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{}'s value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.",	oracle msgid production/catalog copy
+D	1	crates/skit-cli/tests/edge_workflows.rs	"missing isn't a plain constant",	exact owner for frozen user-visible copy
+D	1	crates/skit-cli/tests/source_management.rs	assert!(stderr.contains("NOPE isn't a plain constant"), "{stderr}");	exact owner for frozen user-visible copy
+D	2	crates/skit-cli/tests/source_management.rs	"Binary isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy."	exact owner for frozen user-visible copy
+D	1	crates/skit-cli/tests/source_management.rs	("absent", "", "X", "X isn't a plain constant"),	exact owner for frozen user-visible copy
+D	1	crates/skit-cli/tests/source_management.rs	"can't be moved into ${...:-...}",	exact owner for frozen user-visible copy
 D	1	crates/skit-language/tests/port_test_shell_inject.rs	"_skit_read 0 'x' 0 {} -p \"It's here: \" who",	trusted authored fixture payload; not skit English copy
 D	1	crates/skit-language/tests/port_test_shell_inject.rs	let src = "#!/usr/bin/env bash\nread -p \"It's here: \" who\necho \"[$who]\"\n";	trusted authored fixture payload; not skit English copy
 D	1	crates/skit-language/tests/port_test_shell_inject.rs	sq("It's here: ")	trusted authored fixture payload; not skit English copy
