@@ -202,12 +202,6 @@ fn rust_additive_ts_injection_rewrites_the_typed_const() {
     assert!(out.contains("const N: number = 7;"));
 }
 
-#[test]
-#[ignore = "UNMAPPED: the injected temp copy re-encodes the origin's .mjs/.cjs/.mts/.cts module flavor in its filename suffix (parametrized over 7 origins) -> Tier 3/4 (store/CLI temp-copy naming). skit-language produces only the rewritten bytes and never names the copy."]
-fn test_injected_copy_carries_the_origins_module_flavor() {
-    // Python asserts result.path.suffix matches the origin's module flavor.
-}
-
 // ---------------------------------------------------------------- drift / bad value
 
 #[test]
@@ -271,68 +265,10 @@ fn test_value_for_unmanaged_name_is_ignored() {
     assert_eq!(inject_with_specs(src, &[("OTHER", "x")], &[]).unwrap(), src);
 }
 
-// ---------------------------------------------------------------- gate 1 (offline)
-
-#[test]
-#[ignore = "UNMAPPED: the offline gate fires only for a BROKEN escaper (Python monkeypatches inject.escape_string to drop the closing quote) and expects InjectSyntaxError. The gate exists — inject_values re-parses the output and returns InvalidSource — but skit-language exposes no way to corrupt the internal escaper, so the failure path is unreachable from a public test."]
-fn test_offline_gate_refuses_a_corrupted_injection() {
-    // Python monkeypatches `inject.escape_string` to emit an unterminated string.
-}
-
-// ---------------------------------------------------------------- gate 2 (node --check)
-
-#[test]
-#[ignore = "UNMAPPED: `inject._resolve_runner` picks the first installed node/deno/bun via shutil.which -> Tier 3/4 (skit-runtime/CLI runner resolution). skit-language does not resolve or spawn a runtime."]
-fn test_resolve_runner_finds_first_installed() {}
-
-#[test]
-#[ignore = "UNMAPPED: `inject._resolve_runner` returns (None, None) when nothing is installed -> Tier 3/4 (skit-runtime/CLI). skit-language does not resolve a runtime."]
-fn test_resolve_runner_none_when_nothing_installed() {}
-
-#[test]
-#[ignore = "UNMAPPED: `inject._resolve_runner` normalizes a pinned path/.exe interpreter to a bare runner name -> Tier 3/4 (skit-runtime/CLI). skit-language does not resolve a runtime."]
-fn test_resolve_runner_respects_pinned_interpreter_and_normalizes() {}
-
-#[test]
-#[ignore = "UNMAPPED: `inject._gate_node` skips `node --check` for a `.ts` suffix (node cannot check TS) -> Tier 3/4 (skit-runtime interpreter gate). skit-language performs no interpreter spawn."]
-fn test_gate_node_skips_ts_suffix() {}
-
-#[test]
-#[ignore = "UNMAPPED: regression that runs the REAL `node --check` on an ESM `.mjs`-origin copy before any package.json exists -> Tier 3/4 (skit-runtime interpreter gate + temp-copy flavor). skit-language never spawns node."]
-fn test_mjs_origin_esm_copy_survives_gate2_before_any_package_json() {}
-
-#[test]
-#[ignore = "UNMAPPED: `inject._gate_node` returns without spawning when the runner is not node -> Tier 3/4 (skit-runtime). skit-language performs no interpreter spawn."]
-fn test_gate_node_skips_when_runner_is_not_node() {}
-
-#[test]
-#[ignore = "UNMAPPED: `inject._gate_node` returns when no runner is installed (program is None) -> Tier 3/4 (skit-runtime). skit-language performs no interpreter spawn."]
-fn test_gate_node_skips_when_no_runner_installed() {}
-
-#[test]
-#[ignore = "UNMAPPED: `inject._gate_node` passes on `node --check` returncode 0 -> Tier 3/4 (skit-runtime interpreter gate). skit-language performs no interpreter spawn."]
-fn test_gate_node_passes_on_returncode_zero() {}
-
-#[test]
-#[ignore = "UNMAPPED: `inject._gate_node` raises InjectSyntaxError on a nonzero `node --check` -> Tier 3/4 (skit-runtime interpreter gate). skit-language performs no interpreter spawn."]
-fn test_gate_node_raises_on_nonzero() {}
-
-#[test]
-#[ignore = "UNMAPPED: `inject._gate_node` raises InjectSyntaxError on nonzero with empty stderr -> Tier 3/4 (skit-runtime interpreter gate). skit-language performs no interpreter spawn."]
-fn test_gate_node_raises_on_nonzero_with_empty_stderr() {}
-
-#[test]
-#[ignore = "UNMAPPED: `inject._gate_node` swallows a subprocess spawn OSError (gate 1 already vouched) -> Tier 3/4 (skit-runtime). skit-language performs no interpreter spawn."]
-fn test_gate_node_survives_a_spawn_failure() {}
-
-#[test]
-#[ignore = "UNMAPPED: a `node --check` rejection must remove the written temp copy from disk -> Tier 3/4 (skit-runtime interpreter gate + temp-copy cleanup). skit-language writes no temp copy."]
-fn test_gate2_failure_removes_the_temp_copy() {}
-
 // ---------------------------------------------------------------- execution (runner-gated)
 
 #[test]
-fn test_injected_const_reaches_the_child() {
+fn rust_additive_injected_const_bytes_reparse() {
     // PORTED AS BYTE ASSERTION: Python runs the copy and asserts stdout `w=1200`. The int value
     // lands bare at its const target (`const WIDTH = 1200;`) in a copy that re-parses; running only
     // confirms node concatenates it.
@@ -341,29 +277,3 @@ fn test_injected_const_reaches_the_child() {
     assert!(out.contains("const WIDTH = 1200;"));
     assert!(source_is_valid("js", &out));
 }
-
-// Runtime execution test: Python runs the injected copy under node and asserts stdout `台北 🚀`.
-// The oracle emits the value as an ensure_ascii JSON literal (`台北 🚀`); that
-// escaped-bytes contract is now covered by test_cjk_and_emoji_escape_to_valid_js. The remaining
-// claim -- node decodes the escaped literal and prints the value -- needs a running runtime.
-#[test]
-#[ignore = "UNMAPPED: runtime execution (run_js on the injected copy asserts node stdout) -> Tier 3/4 (skit run); the escaped-literal byte contract is covered by test_cjk_and_emoji_escape_to_valid_js"]
-fn test_injected_string_reaches_the_child() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --manage` + `skit run --set --no-input` end to end (CliRunner + store.add_script), asserts the script's own stdout `w=1200` on the real fd -> Tier 4 (skit-cli). Byte injection covered by test_injected_const_reaches_the_child."]
-fn test_run_injects_and_executes_end_to_end() {}
-
-// ---------------------------------------------------------------- flows.execute integration
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --manage` + `flows.plan_for_entry` reports source == \"inject\" for a js entry (CliRunner + store.add_script) -> Tier 4 (skit-cli/flows). The inject plan itself is covered by the bucket-1 const tests."]
-fn test_execute_runs_a_js_entry_offline_plan() {}
-
-#[test]
-#[ignore = "UNMAPPED: flows.execute maps a drifted js const to FAIL_DRIFT with the `--resync` hint -> Tier 4 (skit-cli/flows). The injector's drift refusal is covered by test_missing_target_is_drift_not_value_error."]
-fn test_execute_maps_a_drifted_js_definition_to_drift() {}
-
-#[test]
-#[ignore = "UNMAPPED: a syntax-gate failure must map to FAIL_DRIFT WITHOUT a `--resync` hint and never launch -> Tier 4 (skit-cli/flows); Python also monkeypatches inject.escape_string to force the corruption and spies on launcher.run_entry."]
-fn test_execute_syntax_gate_failure_never_launches() {}

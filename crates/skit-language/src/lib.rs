@@ -1634,6 +1634,14 @@ mod private_tests {
             validate_rewritten_source("python", "def broken(".to_owned()),
             Err(LanguageError::InvalidSource { kind }) if kind == "python"
         ));
+        assert!(matches!(
+            validate_injected_source("js", "const broken = '".to_owned()),
+            Err(LanguageError::InjectedSourceInvalid { kind }) if kind == "js"
+        ));
+        assert!(matches!(
+            validate_injected_source("shell", "echo '".to_owned()),
+            Err(LanguageError::InjectedSourceInvalid { kind }) if kind == "shell"
+        ));
         assert_eq!(
             validate_rewritten_source("shell", "echo ok\n".to_owned()).unwrap(),
             "echo ok\n"

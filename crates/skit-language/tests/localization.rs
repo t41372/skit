@@ -64,6 +64,18 @@ fn every_language_error_localizes_and_keeps_its_values() {
         },
         &["python"],
     );
+    assert_localized(
+        &LanguageError::InjectedSourceInvalid {
+            kind: "js".to_owned(),
+        },
+        &[],
+    );
+    assert_localized(
+        &LanguageError::InjectedSourceInvalid {
+            kind: "shell".to_owned(),
+        },
+        &[],
+    );
     assert_localized(&LanguageError::SourceChanged, &[]);
     assert_localized(
         &LanguageError::InvalidValue {

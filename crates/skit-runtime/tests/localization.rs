@@ -4,7 +4,8 @@ use std::{io, path::PathBuf};
 
 use skit_i18n::{Locale, Localize};
 use skit_runtime::{
-    DependencyError, LaunchError, UvBootstrapError, javascript_dependency_install_announcement,
+    DependencyError, JavaScriptSyntaxError, LaunchError, UvBootstrapError,
+    javascript_dependency_install_announcement,
 };
 
 /// Check that English text does not drift and that each locale keeps the values.
@@ -24,6 +25,14 @@ fn assert_localized(error: &(impl Localize + std::fmt::Display), values: &[&str]
 
 fn io_failure() -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, "permission denied")
+}
+
+#[test]
+fn javascript_syntax_error_localizes_and_keeps_its_detail() {
+    assert_localized(
+        &JavaScriptSyntaxError::new("SyntaxError: boom"),
+        &["SyntaxError: boom"],
+    );
 }
 
 #[test]
