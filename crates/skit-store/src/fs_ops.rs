@@ -402,6 +402,27 @@ mod tests {
         )
     }
 
+    fn atomic_with_permission_ops(
+        path: &Path,
+        bytes: &[u8],
+        read_permissions: impl FnOnce(&Path) -> io::Result<std::fs::Permissions>,
+        apply_permissions: impl FnOnce(&File, std::fs::Permissions) -> io::Result<()>,
+        rename: impl FnMut(&Path, &Path) -> io::Result<()>,
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        atomic_write_bytes_with_ops(
+            path,
+            bytes,
+            |_, _, error| error,
+            read_permissions,
+            apply_permissions,
+            File::sync_all,
+            rename,
+            |_| unreachable!("a real successful replace does not retry"),
+            sync_parent,
+        )
+    }
+
     fn names(root: &TempDir) -> Vec<String> {
         let mut names = std::fs::read_dir(root.path())
             .unwrap()
@@ -670,6 +691,111 @@ mod tests {
         assert_eq!(sleeps.get(), 0);
         assert_eq!(std::fs::read(&target).unwrap(), original);
         assert_eq!(names(&root), ["registry.toml"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_write_text_keep_mode_applies_mode_before_the_rename() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"old\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o750)).unwrap();
+        let events = RefCell::new(Vec::new());
+
+        atomic_with_permission_ops(
+            &target,
+            b"new\n",
+            |path| {
+                events.borrow_mut().push("read-mode");
+                Ok(std::fs::metadata(path)?.permissions())
+            },
+            |file, permissions| {
+                events.borrow_mut().push("apply-mode");
+                assert_eq!(std::fs::read(&target).unwrap(), b"old\n");
+                assert_eq!(permissions.mode() & 0o777, 0o750);
+                file.set_permissions(permissions)
+            },
+            |source, destination| {
+                events.borrow_mut().push("replace");
+                assert_eq!(std::fs::read(&target).unwrap(), b"old\n");
+                assert_eq!(
+                    std::fs::metadata(source).unwrap().permissions().mode() & 0o777,
+                    0o750
+                );
+                atomicwrites::replace_atomic(source, destination)
+            },
+            |parent| {
+                events.borrow_mut().push("sync-parent");
+                sync_directory(parent)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            *events.borrow(),
+            ["read-mode", "apply-mode", "replace", "sync-parent"]
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"new\n");
+        assert_eq!(names(&root), ["target"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_write_text_keep_mode_missing_target_skips_chmod() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        let reads = Cell::new(0_u32);
+
+        atomic_with_permission_ops(
+            &target,
+            b"new\n",
+            |path| {
+                reads.set(reads.get() + 1);
+                std::fs::metadata(path).map(|metadata| metadata.permissions())
+            },
+            |_, _| unreachable!("a missing target has no permissions to apply"),
+            atomicwrites::replace_atomic,
+            sync_directory,
+        )
+        .unwrap();
+
+        assert_eq!(reads.get(), 1);
+        assert_eq!(std::fs::read(&target).unwrap(), b"new\n");
+        assert_eq!(names(&root), ["target"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_write_text_keep_mode_suppresses_chmod_failure() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"old\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o711)).unwrap();
+        let attempted_mode = Cell::new(None);
+
+        atomic_with_permission_ops(
+            &target,
+            b"new\n",
+            |path| Ok(std::fs::metadata(path)?.permissions()),
+            |_, permissions| {
+                attempted_mode.set(Some(permissions.mode() & 0o777));
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected permission apply failure",
+                ))
+            },
+            atomicwrites::replace_atomic,
+            sync_directory,
+        )
+        .unwrap();
+
+        assert_eq!(attempted_mode.get(), Some(0o711));
+        assert_eq!(std::fs::read(&target).unwrap(), b"new\n");
+        assert_eq!(names(&root), ["target"]);
     }
 
     #[test]

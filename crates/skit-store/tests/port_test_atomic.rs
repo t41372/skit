@@ -230,11 +230,26 @@ fn test_windows_locking_uses_one_byte_seek_retry_and_unlock() {}
 #[test]
 fn test_native_lock_distinguishes_contention_from_unexpected_os_errors() {}
 
-#[ignore = "UNMAPPED: Python layers a per-path in-process threading.Lock over flock and tests that \
-            a failed lockfile open releases that mutex. Rust relies solely on kernel flock \
-            (per-fd), so there is no in-process mutex layer to leak or release."]
 #[test]
-fn test_advisory_lock_open_failure_releases_its_thread_mutex() {}
+fn test_advisory_lock_open_failure_releases_its_thread_mutex() {
+    // Rust has no per-path thread mutex. Its public equivalent is that a failed lock-file open
+    // leaves no lock resource behind: the same store can retry after the filesystem obstruction is
+    // removed.
+    let root = TempDir::new().unwrap();
+    let lock_path = root.path().join("config.lock");
+    fs::create_dir(&lock_path).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert!(store.set("form", "plain").is_err());
+    assert!(!root.path().join("config.toml").exists());
+
+    fs::remove_dir(&lock_path).unwrap();
+    store.set("form", "plain").unwrap();
+
+    assert_eq!(store.get("form").unwrap(), "plain");
+    assert!(lock_path.is_file());
+    assert!(lock_path.metadata().unwrap().len() >= 1);
+}
 
 #[ignore = "UNMAPPED: same two-layer (thread-mutex + native) design as above. In Rust a failed \
             lock drops its File, closing the fd via RAII, and there is no thread mutex; there is \
@@ -271,39 +286,6 @@ fn test_atomic_write_text_keep_mode_preserves_existing_mode() {
         0o750 // bits preserved exactly, not reset to the temp file's mode
     );
 }
-
-#[ignore = "UNMAPPED seam-spy (+MUST-VERIFY): Python spies on the temp file's mode at rename time \
-            to prove the bits ride along BEFORE the swap (no crash window at the temp's default \
-            mode). Rust applies the mode to the temp fd before drop/rename \
-            (mutations/atomic.rs:159-167, fs_ops.rs:47-54) with no post-rename chmod, so there is \
-            no rename-seam to observe the pre-rename mode; the preserved-final-mode outcome is \
-            covered by test_atomic_write_text_keep_mode_preserves_existing_mode."]
-#[test]
-fn test_atomic_write_text_keep_mode_applies_mode_before_the_rename() {}
-
-#[test]
-fn test_atomic_write_text_keep_mode_missing_target_skips_chmod() {
-    // WHY: with no existing target, preserve_permissions_best_effort's fs::metadata(path) fails, so
-    // no mode is captured or applied and the fresh write still lands. Exercised via the first
-    // config write to a non-existent config.toml.
-    let root = TempDir::new().unwrap();
-    let path = root.path().join("config.toml");
-    assert!(!path.exists());
-    let store = FileConfigStore::new(root.path());
-
-    store.set("editor", "vim").unwrap();
-
-    assert_eq!(store.get("editor").unwrap(), "vim");
-    assert!(path.is_file());
-}
-
-#[ignore = "UNMAPPED (+MUST-VERIFY): a chmod failure is best-effort — the write still succeeds. \
-            Rust swallows it as `let _ = apply(permissions)` in preserve_permissions_best_effort \
-            (fs_ops.rs:68-70); this exact swallow is proven in-module by \
-            `a_permission_restore_failure_does_not_turn_a_committed_write_into_an_error`. No public \
-            seam forces set_permissions to fail on the temp fd."]
-#[test]
-fn test_atomic_write_text_keep_mode_suppresses_chmod_failure() {}
 
 #[ignore = "UNMAPPED: Windows-only. Python restores bits with a post-rename os.chmod because \
             Windows lacks os.fchmod. Rust uses one cross-platform path — File::set_permissions on \
