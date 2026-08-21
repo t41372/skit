@@ -880,6 +880,18 @@ mod private_tests {
         assert!(!destination.path().join(&asset.executable_name).exists());
     }
 
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "native Windows gate: run with cargo test --target x86_64-pc-windows-msvc -p skit-runtime test_extract_uv_skips_dir_fsync_on_windows -- --ignored; target: x86_64-pc-windows-msvc"]
+    fn test_extract_uv_skips_dir_fsync_on_windows() {
+        let root = TempDir::new().unwrap();
+        let missing_directory = root.path().join("must-not-be-opened");
+        let mut operations = SystemUvInstallOperations;
+
+        assert!(operations.sync_directory(&missing_directory).is_ok());
+        assert!(!missing_directory.exists());
+    }
+
     #[test]
     fn test_is_musl_true_when_ld_musl_present() {
         let root = TempDir::new().unwrap();

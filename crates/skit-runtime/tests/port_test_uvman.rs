@@ -166,7 +166,7 @@ fn test_triples_covers_every_pinned_and_producible_triple() {
 }
 
 #[test]
-#[ignore = "network liveness (opt-in): run when bumping UV_VERSION, like the oracle's SKIT_NET_TESTS gate"]
+#[ignore = "external network gate: run with SKIT_NET_TESTS=1 and --ignored when UV_VERSION changes; target: Astral uv release assets"]
 fn test_pinned_uv_release_exists() {
     let agent = ureq_agent();
     for target in all_targets() {
@@ -180,7 +180,7 @@ fn test_pinned_uv_release_exists() {
 }
 
 #[test]
-#[ignore = "network liveness (opt-in): cross-checks each pinned hash against Astral's live .sha256 sidecar"]
+#[ignore = "external network gate: run with SKIT_NET_TESTS=1 and --ignored when UV_VERSION changes; target: Astral uv SHA-256 sidecars"]
 fn test_pinned_sha256_matches_live_sidecar() {
     // A future UV_VERSION bump that forgets to refresh the pinned table must fail loudly here: every
     // pinned hash must equal the official `.sha256` sidecar. Built from the canonical GitHub base
@@ -207,12 +207,6 @@ fn test_pinned_sha256_matches_live_sidecar() {
 }
 
 // ---- Download consent (_ask_consent) ----------
-
-#[test]
-#[ignore = "CROSS-CRATE: quiet=True consent-bypass (uvman.py:251) is skit-cli's job — ensure_managed_uv takes no consent argument; consent is checked before it in crates/skit-cli/src/run/command.rs:733."]
-fn test_quiet_skips_consent() {
-    // Oracle: quiet=True (programmatic call) bypasses consent entirely; _ask_consent is never called.
-}
 
 // ---- _triple: architecture / platform resolution ----------
 
@@ -402,15 +396,3 @@ fn test_checksum_mismatch_raises_checksum_error_not_generic() {
 }
 
 // ---- _extract_uv: staged-file fsync (durability across power loss) ----------
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box + platform): directory fsync must not even be attempted on Windows. Rust cfg-gates it to a no-op — sync_directory is `#[cfg(not(unix))] -> Ok(())` (crates/skit-runtime/src/uv.rs:435-438) — matching the oracle, but there is no fsync spy seam and this can't be observed from a POSIX runner."]
-fn test_extract_uv_skips_dir_fsync_on_windows() {
-    // Oracle: on win32 only the staged file is fsync'd, never the directory.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): the fail-closed path is implemented — uv_asset returns UvBootstrapError::NoPinnedChecksum naming the triple (uvman.py:229-233 parity) — but every producible UvTarget triple is pinned, so the branch is reachable only by constructing a martian triple in-crate. Covered by private_tests::unpinned_triple_fails_closed_with_a_typed_error (crates/skit-runtime/src/uv.rs)."]
-fn test_checksum_fail_closed_when_triple_unpinned() {
-    // Oracle: a triple with no pinned hash raises UvDownloadError naming the triple, never extracts.
-}

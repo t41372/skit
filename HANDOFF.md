@@ -399,6 +399,15 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
   injected-copy failures use exact three-locale exit-125 wrappers; only drift includes `--resync`.
   Real runtime and E2E owners are active with an availability condition. Native Windows full-suite
   verification remains the platform gate.
+- **Private uv bootstrap ownership is complete.** All 36 `test_uvman.py` contracts are accounted as
+  31 active exact owners, 3 honest gates, and 2 structured stronger-owner closures. The final
+  runtime manifest rejects duplicate occurrences before set conversion, missing or extra category
+  names, ignored executable owners, undocumented gates, and residual closure stubs. Consent and
+  mirror selection run through real CLI/FileConfigStore/PTY paths; musl detection uses a private
+  path seam while the host still reads only `/lib`; install durability injects the actual staged
+  write/sync/replace/directory-sync operations and exercises the complete locked retry path.
+  Orphan-pin completeness is active in `76aaab1`. Only upstream network liveness and native Windows
+  directory-sync omission remain explicit run-condition gates; no uvman parity work remains.
 - **TUI path completion is complete.** `port_test_path_tui.rs` now has 62 executable contracts and
   4 honest cross-crate closures. The restored ghost completion uses a typed 2,000-entry bounded
   scanner, no cache, two bounded workers, complete-request latest-wins, dim suffix rendering, and
