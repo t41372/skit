@@ -498,54 +498,8 @@ fn test_resolve_editor_platform_default_unix() {
     assert!(sandbox.stored_script("a").contains("import rich"));
 }
 
-#[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor; Rust has no platform default and no win32 branch. MUST-FIX: src/skit/editor.py:30-31 (notepad on win32)."]
-fn test_resolve_editor_platform_default_windows() {
-    // Nothing configured, Windows -> the platform default is "notepad".
-    //   delenv VISUAL; delenv EDITOR; config.save_editor(""); sys.platform = "win32"
-    //   assert resolve_editor() == ["notepad"]
-}
-
-#[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor. MUST-FIX: src/skit/editor.py:48 (posix shlex off Windows drops quotes)."]
-fn test_resolve_editor_quoted_value_uses_posix_split_off_windows() {
-    // Off Windows, shlex uses posix mode and drops the surrounding quotes.
-    //   sys.platform = "linux"; config.save_editor('"/opt/my editor" --wait')
-    //   assert resolve_editor() == ["/opt/my editor", "--wait"]
-    // Rust always splits posix (shlex::split), so this direction happens to agree — but no surface.
-}
-
-#[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor, and Rust DIVERGES — it always uses posix shlex::split, never the win32 non-posix split. MUST-FIX: src/skit/editor.py:48 (posix=sys.platform!='win32')."]
-fn test_resolve_editor_quoted_value_non_posix_on_windows() {
-    // On Windows the split is non-posix, so backslashes are kept literally.
-    //   sys.platform = "win32"; config.save_editor(r"C:\\tools\\edit.exe --wait")
-    //   assert resolve_editor() == [r"C:\\tools\\edit.exe", "--wait"]
-}
-
-#[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor; Rust has no win32 quote-strip. MUST-FIX: src/skit/editor.py:53-59 (strip one surrounding quote pair per token on win32)."]
-fn test_resolve_editor_quoted_spaced_path_on_windows() {
-    // A quoted spaced Windows path: the non-posix split keeps the quotes; skit strips one pair.
-    //   sys.platform = "win32"; config.save_editor(r'"C:\\Program Files\\...\\Code.exe" --wait')
-    //   assert resolve_editor() == [r"C:\\Program Files\\...\\Code.exe", "--wait"]
-}
-
-#[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor; Rust has no win32 quote-strip. MUST-FIX: src/skit/editor.py:59 (len(p) >= 2 empty-quoted-pair boundary)."]
-fn test_resolve_editor_windows_empty_quoted_token_strips_to_empty() {
-    // The degenerate `""` token (len 2, matching pair) strips to '' on win32, not left literal.
-    //   sys.platform = "win32"; config.save_editor('"" --wait')
-    //   assert resolve_editor() == ["", "--wait"]
-}
-
-#[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor. MUST-FIX: src/skit/editor.py:59 (unquoted token untouched)."]
-fn test_resolve_editor_unquoted_windows_path_untouched() {
-    // An unquoted (no-space) Windows path has no surrounding quotes to strip.
-    //   sys.platform = "win32"; config.save_editor(r"C:\\tools\\edit.exe --wait")
-    //   assert resolve_editor() == [r"C:\\tools\\edit.exe", "--wait"]
-}
+// The six platform-tokenization owners live beside the private composition helper in
+// `src/cli/tests.rs`. Public tests below keep the real precedence and launch contracts.
 
 #[test]
 fn test_resolve_editor_whitespace_visual_falls_through_to_editor() {

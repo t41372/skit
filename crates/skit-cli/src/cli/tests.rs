@@ -9494,3 +9494,67 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
         created.slug
     );
 }
+
+#[test]
+fn test_resolve_editor_platform_default_windows() {
+    assert_eq!(
+        editor_argv_from_candidate("", EditableArgvDialect::Windows, "notepad"),
+        ["notepad"]
+    );
+}
+
+#[test]
+fn test_resolve_editor_quoted_value_uses_posix_split_off_windows() {
+    assert_eq!(
+        editor_argv_from_candidate(
+            r#""/opt/my editor" --wait"#,
+            EditableArgvDialect::Posix,
+            "vi",
+        ),
+        ["/opt/my editor", "--wait"]
+    );
+}
+
+#[test]
+fn test_resolve_editor_quoted_value_non_posix_on_windows() {
+    assert_eq!(
+        editor_argv_from_candidate(
+            r"C:\tools\edit.exe --wait",
+            EditableArgvDialect::Windows,
+            "notepad",
+        ),
+        [r"C:\tools\edit.exe", "--wait"]
+    );
+}
+
+#[test]
+fn test_resolve_editor_quoted_spaced_path_on_windows() {
+    assert_eq!(
+        editor_argv_from_candidate(
+            r#""C:\Program Files\VS Code\Code.exe" --wait"#,
+            EditableArgvDialect::Windows,
+            "notepad",
+        ),
+        [r"C:\Program Files\VS Code\Code.exe", "--wait"]
+    );
+}
+
+#[test]
+fn test_resolve_editor_windows_empty_quoted_token_strips_to_empty() {
+    assert_eq!(
+        editor_argv_from_candidate(r#""" --wait"#, EditableArgvDialect::Windows, "notepad",),
+        ["", "--wait"]
+    );
+}
+
+#[test]
+fn test_resolve_editor_unquoted_windows_path_untouched() {
+    assert_eq!(
+        editor_argv_from_candidate(
+            r"C:\tools\edit.exe --wait",
+            EditableArgvDialect::Windows,
+            "notepad",
+        ),
+        [r"C:\tools\edit.exe", "--wait"]
+    );
+}
