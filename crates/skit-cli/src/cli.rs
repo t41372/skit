@@ -61,9 +61,9 @@ use skit_language::{
     external_dependencies_at, has_uv_metadata_block_bytes, infer_draft_kind, infer_kind,
     managed_params, normalize_shell_default, parse_document, placeholder_params,
     plan_uv_metadata_edit, python_version_pin, read_uv_metadata, shebang_program,
-    split_pep508_requirements,
-    suggest_description, validate_pep440_specifiers, validate_pep508_requirement,
-    write_managed_params, write_managed_params_bytes, write_uv_metadata,
+    split_pep508_requirements, suggest_description, validate_pep440_specifiers,
+    validate_pep508_requirement, write_managed_params, write_managed_params_bytes,
+    write_uv_metadata,
 };
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe,

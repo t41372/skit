@@ -29,6 +29,7 @@ impl Sandbox {
             .env("SKIT_CONFIG_DIR", self.config.path())
             .env("SKIT_LANG", "en")
             .env("HOME", self.home.path())
+            .env_remove("PSModulePath")
             .current_dir(self.home.path());
         command
     }
@@ -165,7 +166,6 @@ fn configuration_runner_and_completion_edges_are_explicit() {
     sandbox
         .command()
         .env("SHELL", "/bin/unknown-shell")
-        .env_remove("PSModulePath")
         .arg("--show-completion")
         .assert()
         .code(2);
