@@ -3098,9 +3098,9 @@ const CATALOG: &[Translation] = &[
         "找不到必要命令：{}",
     ),
     row!(
-        "required package manager was not found: {}",
-        "找不到所需的软件包管理器：{}",
-        "找不到必要的套件管理程式：{}",
+        "{} is needed to install this script's dependencies, but it isn't on your PATH.",
+        "安装这个脚本的依赖需要 {}，但它不在你的 PATH 上。",
+        "安裝這支腳本的依賴需要 {}，但它不在你的 PATH 上。",
     ),
     row!(
         "required program was not found: {}",

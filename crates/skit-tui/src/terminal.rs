@@ -88,8 +88,7 @@ where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    let _: Option<()> = run_hosted_state(state, Vec::new(), host, locale, |_| None, None)?;
-    Ok(())
+    run_preflighted(state, |_| Ok::<(), E>(()), host, locale)
 }
 
 /// Run the terminal frontend with asynchronous path completion.
@@ -103,8 +102,51 @@ where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
+    run_preflighted_with_path_completion(state, |_| Ok::<(), E>(()), host, locale, provider)
+}
+
+/// Run the terminal frontend with a check that occurs before terminal suspension.
+///
+/// The check must be local and read-only. A refusal stays on the active screen as a localized
+/// status. The host does not receive the refused effect.
+pub fn run_preflighted<F, P, E>(
+    state: LibraryState,
+    preflight: P,
+    host: F,
+    locale: Locale,
+) -> Result<(), TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    P: FnMut(&Effect) -> Result<(), E>,
+    E: Localize,
+{
     let _: Option<()> =
-        run_hosted_state(state, Vec::new(), host, locale, |_| None, Some(provider))?;
+        run_hosted_state(state, Vec::new(), preflight, host, locale, |_| None, None)?;
+    Ok(())
+}
+
+/// Run with both a pre-suspend check and asynchronous path completion.
+pub fn run_preflighted_with_path_completion<F, P, E>(
+    state: LibraryState,
+    preflight: P,
+    host: F,
+    locale: Locale,
+    provider: Arc<dyn PathCompletionProvider>,
+) -> Result<(), TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    P: FnMut(&Effect) -> Result<(), E>,
+    E: Localize,
+{
+    let _: Option<()> = run_hosted_state(
+        state,
+        Vec::new(),
+        preflight,
+        host,
+        locale,
+        |_| None,
+        Some(provider),
+    )?;
     Ok(())
 }
 
@@ -125,7 +167,16 @@ where
 {
     let mut state = LibraryState::default();
     state.update(Action::Present(Screen::Add(Box::new(workflow))));
-    run_hosted_state(state, opening, host, locale, add_workflow_outcome, None).map(|outcome| {
+    run_hosted_state(
+        state,
+        opening,
+        |_| Ok::<(), E>(()),
+        host,
+        locale,
+        add_workflow_outcome,
+        None,
+    )
+    .map(|outcome| {
         outcome.and_then(|outcome| match outcome {
             AddWorkflowOutcome::Completed(slug) => Some(slug),
             AddWorkflowOutcome::Cancelled => None,
@@ -140,9 +191,10 @@ where
 /// subject belongs to rather than at a source picker asking for what it was just given
 /// (`src/skit/cli.py:2116-2126`). Replaying it as actions rather than as a second construction path
 /// means the shell door and the `a` door cannot answer the same command differently.
-fn run_hosted_state<F, E, O>(
+fn run_hosted_state<F, P, E, O>(
     mut state: LibraryState,
     opening: Vec<Action>,
+    mut preflight: P,
     mut host: F,
     mut locale: Locale,
     mut observe: impl FnMut(&Action) -> Option<O>,
@@ -150,6 +202,7 @@ fn run_hosted_state<F, E, O>(
 ) -> Result<Option<O>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
+    P: FnMut(&Effect) -> Result<(), E>,
     E: Localize,
 {
     for action in opening {
@@ -199,6 +252,9 @@ where
                 Effect::None => {}
                 Effect::Quit => break outcome,
                 effect => {
+                    if !accept_host_effect(&mut state, &effect, &mut preflight, locale) {
+                        continue;
+                    }
                     terminal.show_cursor()?;
                     suspend_terminal()?;
                     let (quit, host_outcome) = drain_host_effects_observed(
@@ -222,6 +278,28 @@ where
     };
     terminal.show_cursor()?;
     Ok(outcome)
+}
+
+fn accept_host_effect<P, E>(
+    state: &mut LibraryState,
+    effect: &Effect,
+    preflight: &mut P,
+    locale: Locale,
+) -> bool
+where
+    P: FnMut(&Effect) -> Result<(), E>,
+    E: Localize,
+{
+    match preflight(effect) {
+        Ok(()) => true,
+        Err(error) => {
+            let status = Message::new("Error: {}")
+                .nested(error.message())
+                .localize(locale);
+            state.update(Action::SetStatus(status));
+            false
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

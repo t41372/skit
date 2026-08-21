@@ -37,7 +37,8 @@ use session::HeaderKind;
 pub use session::{EventHandling, TuiSession};
 pub use terminal::{
     TuiError, collect_form, collect_run_form, collect_run_form_with_path_completion, run,
-    run_add_workflow, run_with_path_completion,
+    run_add_workflow, run_preflighted, run_preflighted_with_path_completion,
+    run_with_path_completion,
 };
 
 /// One clickable target produced by a view.

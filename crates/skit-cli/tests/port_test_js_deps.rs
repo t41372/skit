@@ -60,9 +60,8 @@ use skit_language::external_dependencies;
 use skit_runtime::{
     DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, JavaScriptModuleType,
     ProgramProbe, clear_javascript_dependencies, ensure_javascript_dependencies_for_module,
-    ensure_javascript_dependencies_with_environment, javascript_dependency_manifest,
-    javascript_dependencies_need_install, javascript_module_type,
-    preflight_javascript_dependencies,
+    ensure_javascript_dependencies_with_environment, javascript_dependencies_need_install,
+    javascript_dependency_manifest, javascript_module_type, preflight_javascript_dependencies,
 };
 use skit_store::{FileConfigStore, FileStore};
 
@@ -1600,12 +1599,7 @@ fn test_install_lock_reuses_the_same_persistent_inode() {}
 #[test]
 fn test_needs_install_true_without_a_marker() {
     let (root, dir) = entry_dir();
-    assert!(javascript_dependencies_need_install(
-        &dir,
-        "node",
-        &deps(&["chalk"]),
-    )
-    .unwrap());
+    assert!(javascript_dependencies_need_install(&dir, "node", &deps(&["chalk"]),).unwrap());
     assert!(!root.path().join(".locks").exists());
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
@@ -1624,12 +1618,7 @@ fn test_needs_install_false_when_the_marker_matches() {
     .unwrap();
     std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
 
-    assert!(!javascript_dependencies_need_install(
-        &dir,
-        "node",
-        &deps(&["chalk"]),
-    )
-    .unwrap());
+    assert!(!javascript_dependencies_need_install(&dir, "node", &deps(&["chalk"]),).unwrap());
     assert!(!root.path().join(".locks").exists());
 }
 
@@ -1647,12 +1636,7 @@ fn test_needs_install_true_when_the_declared_deps_changed() {
     .unwrap();
     std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
 
-    assert!(javascript_dependencies_need_install(
-        &dir,
-        "node",
-        &deps(&["chalk", "zod"]),
-    )
-    .unwrap());
+    assert!(javascript_dependencies_need_install(&dir, "node", &deps(&["chalk", "zod"]),).unwrap());
     assert!(!root.path().join(".locks").exists());
 }
 

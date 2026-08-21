@@ -69,7 +69,8 @@ use skit_language::{
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe,
     SystemProbe, clear_javascript_dependencies, managed_uv_path, network_looks_blocked,
-    project_launch_workdir, resolve_javascript_runtime,
+    preflight_javascript_dependencies_for_module, project_launch_workdir,
+    resolve_javascript_runtime,
 };
 use skit_store::{
     CONFIG_KEYS, ConfigError, FileAgentSkillStore, FileConfigStore, FileFormStateStore,
@@ -7224,8 +7225,9 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
     let rerunnable = tui_rerunnable(&surface.scan, &state_dir);
     let mut state = LibraryState::from_library_surface(surface);
     let _ = state.update(UiAction::ReplaceRerunnable(rerunnable));
-    skit_tui::run_with_path_completion(
+    skit_tui::run_preflighted_with_path_completion(
         state,
+        |effect| tui_preflight_effect(service, store, effect),
         |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
         active_locale(),
         path_completion_provider(),
@@ -7235,6 +7237,48 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
 
 fn path_completion_provider() -> Arc<dyn PathCompletionProvider> {
     Arc::new(PathCompletionService::new(SystemDirectoryReader))
+}
+
+fn tui_preflight_effect(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    effect: &UiEffect,
+) -> Result<(), CliError> {
+    tui_preflight_effect_with_probe(service, store, effect, &SystemProbe)
+}
+
+fn tui_preflight_effect_with_probe<P: ProgramProbe>(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    effect: &UiEffect,
+    probe: &P,
+) -> Result<(), CliError> {
+    let selector = match effect {
+        UiEffect::Open {
+            request: HostRequest::Run,
+            selector: Some(selector),
+        }
+        | UiEffect::Rerun { selector } => selector,
+        _ => return Ok(()),
+    };
+    let entry = service.show(selector)?;
+    let settings = EntrySettings::from_meta(&entry.meta);
+    if !matches!(entry.meta.kind.as_str(), "js" | "ts")
+        || entry.meta.mode != StorageMode::Copy
+        || settings.dependencies.is_empty()
+    {
+        return Ok(());
+    }
+    let runtime = resolve_javascript_runtime(&settings, probe).map_err(RunError::from)?;
+    preflight_javascript_dependencies_for_module(
+        &store.entry_dir_path(&entry.slug),
+        &runtime,
+        &settings.dependencies,
+        skit_runtime::javascript_module_type(&entry.meta.source),
+        probe,
+    )
+    .map_err(RunError::from)?;
+    Ok(())
 }
 
 fn tui_effect(

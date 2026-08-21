@@ -125,7 +125,7 @@ pub enum DependencyError {
     #[error("runtime {runtime:?} cannot manage JavaScript dependencies")]
     UnsupportedRuntime { runtime: String },
     /// The selected runtime's package manager is not available.
-    #[error("required package manager was not found: {name}")]
+    #[error("{name} is needed to install this script's dependencies, but it isn't on your PATH.")]
     InstallerNotFound { name: String },
     /// A private support file could not be updated.
     #[error("could not {operation} JavaScript dependencies at {path}: {reason}")]
@@ -179,9 +179,10 @@ impl Localize for DependencyError {
             Self::UnsupportedRuntime { runtime } => {
                 Message::new("runtime {} cannot manage JavaScript dependencies").quoted(runtime)
             }
-            Self::InstallerNotFound { name } => {
-                Message::new("required package manager was not found: {}").with(name)
-            }
+            Self::InstallerNotFound { name } => Message::new(
+                "{} is needed to install this script's dependencies, but it isn't on your PATH.",
+            )
+            .with(name),
             Self::Io {
                 operation,
                 path,
@@ -311,6 +312,61 @@ where
     )
 }
 
+/// Report whether the private dependency tree is stale without locking or changing it.
+pub fn javascript_dependencies_need_install(
+    entry_dir: &Path,
+    runtime: &str,
+    dependencies: &[String],
+) -> Result<bool, DependencyError> {
+    javascript_dependencies_need_install_for_module(entry_dir, runtime, dependencies, None)
+}
+
+/// Report dependency staleness while preserving an explicit source module type.
+pub fn javascript_dependencies_need_install_for_module(
+    entry_dir: &Path,
+    runtime: &str,
+    dependencies: &[String],
+    module_type: Option<JavaScriptModuleType>,
+) -> Result<bool, DependencyError> {
+    let state = resolve_dependency_state(runtime, dependencies, module_type)?;
+    let marker_path = entry_dir.join("node_modules").join(MARKER_NAME);
+    Ok(fs::read(marker_path).ok().as_deref() != Some(state.stamp.as_bytes()))
+}
+
+/// Check only the local package-manager requirement for a pending dependency install.
+pub fn preflight_javascript_dependencies<P: ProgramProbe>(
+    entry_dir: &Path,
+    runtime: &str,
+    dependencies: &[String],
+    probe: &P,
+) -> Result<(), DependencyError> {
+    preflight_javascript_dependencies_for_module(entry_dir, runtime, dependencies, None, probe)
+}
+
+/// Check a pending install while preserving an explicit source module type.
+pub fn preflight_javascript_dependencies_for_module<P: ProgramProbe>(
+    entry_dir: &Path,
+    runtime: &str,
+    dependencies: &[String],
+    module_type: Option<JavaScriptModuleType>,
+    probe: &P,
+) -> Result<(), DependencyError> {
+    if dependencies.is_empty() {
+        return Ok(());
+    }
+    let state = resolve_dependency_state(runtime, dependencies, module_type)?;
+    let marker_path = entry_dir.join("node_modules").join(MARKER_NAME);
+    if fs::read(marker_path).ok().as_deref() == Some(state.stamp.as_bytes()) {
+        return Ok(());
+    }
+    probe
+        .find_program(state.installer)
+        .map(|_| ())
+        .ok_or_else(|| DependencyError::InstallerNotFound {
+            name: state.installer.to_owned(),
+        })
+}
+
 /// Make a private dependency tree and preserve an explicit source module type.
 pub fn ensure_javascript_dependencies_for_module<P, R>(
     entry_dir: &Path,
@@ -335,11 +391,9 @@ where
             |module_type| ensure_module_manifest_unlocked(entry_dir, module_type),
         );
     }
-    let manifest = javascript_dependency_manifest_for_module(dependencies, module_type)?;
-    let (installer, _) = installer_for_runtime(runtime);
-    let stamp = dependency_stamp(installer, &manifest);
+    let state = resolve_dependency_state(runtime, dependencies, module_type)?;
     let marker_path = entry_dir.join("node_modules").join(MARKER_NAME);
-    if fs::read(&marker_path).ok().as_deref() == Some(stamp.as_bytes()) {
+    if fs::read(&marker_path).ok().as_deref() == Some(state.stamp.as_bytes()) {
         return Ok(());
     }
 
@@ -347,7 +401,7 @@ where
     let command = dependency_command(entry_dir, runtime, environment, probe)?;
     begin_dependency_backup(entry_dir)?;
     let install = (|| {
-        atomic_write(&entry_dir.join("package.json"), manifest.as_bytes())?;
+        atomic_write(&entry_dir.join("package.json"), state.manifest.as_bytes())?;
         let output = runner
             .run(&command)
             .map_err(|error| io_error("start package manager in", entry_dir, error))?;
@@ -359,7 +413,7 @@ where
             });
         }
         ensure_real_node_modules(entry_dir)?;
-        atomic_write(&marker_path, stamp.as_bytes())
+        atomic_write(&marker_path, state.stamp.as_bytes())
     })();
     match install {
         Ok(()) => finish_dependency_backup(entry_dir),
@@ -368,6 +422,28 @@ where
             Err(combine_rollback_error(primary, rollback, entry_dir))
         }
     }
+}
+
+#[derive(Debug)]
+struct DependencyState {
+    installer: &'static str,
+    manifest: String,
+    stamp: String,
+}
+
+fn resolve_dependency_state(
+    runtime: &str,
+    dependencies: &[String],
+    module_type: Option<JavaScriptModuleType>,
+) -> Result<DependencyState, DependencyError> {
+    let manifest = javascript_dependency_manifest_for_module(dependencies, module_type)?;
+    let (installer, _) = installer_for_runtime(runtime);
+    let stamp = dependency_stamp(installer, &manifest);
+    Ok(DependencyState {
+        installer,
+        manifest,
+        stamp,
+    })
 }
 
 fn ensure_module_manifest_unlocked(

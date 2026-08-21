@@ -4213,9 +4213,11 @@ fn javascript_tui_preflight_skips_dependency_checks_outside_owned_dependency_cop
                 name: "JavaScript no dependency preflight".to_owned(),
                 kind: EntryKind::parse("js").unwrap(),
                 mode,
-                source: (mode == StorageMode::Reference)
-                    .then(|| source.display().to_string())
-                    .unwrap_or_default(),
+                source: if mode == StorageMode::Reference {
+                    source.display().to_string()
+                } else {
+                    String::new()
+                },
                 workdir: "store".to_owned(),
                 description: String::new(),
                 payload: (mode == StorageMode::Copy).then_some(EntryPayload {
