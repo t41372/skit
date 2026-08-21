@@ -5570,6 +5570,14 @@ struct MirrorPromptPty {
 #[cfg(unix)]
 impl MirrorPromptPty {
     fn spawn(scenario: &str, locale: &str) -> Self {
+        Self::spawn_test(
+            "cli::tests::terminal_first_run_pty_child",
+            locale,
+            &[("SKIT_MIRROR_PTY_SCENARIO", scenario)],
+        )
+    }
+
+    fn spawn_test(test_name: &str, locale: &str, environment: &[(&str, &str)]) -> Self {
         use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 
         let root = TempDir::new().unwrap();
@@ -5583,17 +5591,15 @@ impl MirrorPromptPty {
             })
             .unwrap();
         let mut command = CommandBuilder::new(std::env::current_exe().unwrap());
-        command.args([
-            "--ignored",
-            "--exact",
-            "cli::tests::terminal_first_run_pty_child",
-            "--nocapture",
-        ]);
+        command.args(["--ignored", "--exact", test_name, "--nocapture"]);
         command.env("TERM", "xterm-256color");
         command.env("NO_COLOR", "1");
         command.env("SKIT_LANG", locale);
-        command.env("SKIT_MIRROR_PTY_SCENARIO", scenario);
         command.env("SKIT_MIRROR_PTY_RESULT", &result_path);
+        command.env("SKIT_PLAIN_DRAFT_PTY_RESULT", &result_path);
+        for (key, value) in environment {
+            command.env(key, value);
+        }
         let child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
 
@@ -5803,6 +5809,304 @@ fn terminal_first_run_questions_use_real_pty_defaults_choices_and_localized_repr
         github.finish().1,
         "answer=https://mirror.test/github-release"
     );
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "runs only as the child of the real PTY plain-draft owner"]
+fn add_plain_draft_pty_child() {
+    let data_dir = std::path::PathBuf::from(std::env::var_os("SKIT_DATA_DIR").unwrap());
+    let config_dir = std::path::PathBuf::from(std::env::var_os("SKIT_CONFIG_DIR").unwrap());
+    let expected_name = std::env::var("SKIT_PLAIN_DRAFT_EXPECTED_NAME").unwrap();
+    let kind = match std::env::var("SKIT_PLAIN_DRAFT_KIND").unwrap().as_str() {
+        "script" => DraftKind::Script,
+        "prompt" => DraftKind::Prompt,
+        other => panic!("unknown plain-draft kind: {other}"),
+    };
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let result = add_plain_draft(&service, &config_dir, kind);
+    let marker = match result {
+        Ok(()) => match service.show(expected_name.trim()) {
+            Ok(entry) => format!(
+                "ok|name={}|kind={}|source={}",
+                entry.meta.name, entry.meta.kind, entry.meta.source
+            ),
+            Err(RepositoryError::NotFound { .. }) => "ok|none".to_owned(),
+            Err(error) => panic!("successful plain add left an unreadable entry: {error}"),
+        },
+        Err(error) => {
+            let message = error.message().localize(active_locale());
+            eprintln!("{message}");
+            format!("error|code={}|message={message}", error.exit_code())
+        }
+    };
+    fs::write(
+        std::env::var_os("SKIT_PLAIN_DRAFT_PTY_RESULT").unwrap(),
+        marker,
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+struct PlainDraftSandbox {
+    data: TempDir,
+    state: TempDir,
+    config: TempDir,
+    scratch: TempDir,
+}
+
+#[cfg(unix)]
+impl PlainDraftSandbox {
+    fn new() -> Self {
+        Self {
+            data: TempDir::new().unwrap(),
+            state: TempDir::new().unwrap(),
+            config: TempDir::new().unwrap(),
+            scratch: TempDir::new().unwrap(),
+        }
+    }
+
+    fn editor(&self, name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = self.scratch.path().join(name);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        FileConfigStore::new(self.config.path())
+            .set("editor", path.to_str().unwrap())
+            .unwrap();
+        path
+    }
+
+    fn set_editor(&self, value: &Path) {
+        FileConfigStore::new(self.config.path())
+            .set("editor", value.to_str().unwrap())
+            .unwrap();
+    }
+
+    fn spawn(&self, kind: &str, expected_name: &str) -> MirrorPromptPty {
+        MirrorPromptPty::spawn_test(
+            "cli::tests::add_plain_draft_pty_child",
+            "en",
+            &[
+                ("SKIT_DATA_DIR", self.data.path().to_str().unwrap()),
+                ("SKIT_STATE_DIR", self.state.path().to_str().unwrap()),
+                ("SKIT_CONFIG_DIR", self.config.path().to_str().unwrap()),
+                ("SKIT_PLAIN_DRAFT_KIND", kind),
+                ("SKIT_PLAIN_DRAFT_EXPECTED_NAME", expected_name),
+            ],
+        )
+    }
+
+    fn service(&self) -> LibraryService<FileStore> {
+        LibraryService::new(FileStore::new(self.data.path()))
+    }
+
+    fn assert_no_drafts(&self) {
+        assert!(tui_drafts(self.data.path()).is_empty());
+        assert!(owned_draft_quarantines(self.data.path()).is_empty());
+    }
+
+    fn assert_no_state(&self) {
+        assert_eq!(fs::read_dir(self.state.path()).unwrap().count(), 0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn add_plain_draft_real_pty_covers_preflight_author_commit_and_failure_cleanup() {
+    let blank = PlainDraftSandbox::new();
+    let blank_sentinel = blank.scratch.path().join("blank-launched");
+    blank.editor("blank-editor.sh", &format!("touch {:?}", blank_sentinel));
+    let blank_config = fs::read(blank.config.path().join("config.toml")).unwrap();
+    let mut child = blank.spawn("script", "");
+    child.wait_for("Name in skit");
+    child.send("   \n");
+    let (output, marker) = child.finish();
+    assert!(
+        marker.contains("error|code=2|message=A name is required."),
+        "{marker}"
+    );
+    assert!(output.contains("A name is required."), "{output}");
+    assert!(!blank_sentinel.exists());
+    blank.assert_no_drafts();
+    blank.assert_no_state();
+    assert_eq!(
+        fs::read(blank.config.path().join("config.toml")).unwrap(),
+        blank_config
+    );
+
+    let taken = PlainDraftSandbox::new();
+    add_command(&taken.service(), "Taken", "printf taken");
+    let taken_sentinel = taken.scratch.path().join("taken-launched");
+    taken.editor("taken-editor.sh", &format!("touch {:?}", taken_sentinel));
+    let taken_meta = fs::read(taken.data.path().join("scripts/taken/meta.toml")).unwrap();
+    let mut child = taken.spawn("script", "Taken");
+    child.wait_for("Name in skit");
+    child.send("Taken\n");
+    let (output, marker) = child.finish();
+    assert!(marker.contains("error|code=1"), "{marker}");
+    assert!(output.contains("already taken"), "{output}");
+    assert!(!taken_sentinel.exists());
+    assert_eq!(
+        fs::read(taken.data.path().join("scripts/taken/meta.toml")).unwrap(),
+        taken_meta
+    );
+    taken.assert_no_drafts();
+    taken.assert_no_state();
+
+    let repository_error = PlainDraftSandbox::new();
+    let repository_sentinel = repository_error.scratch.path().join("repository-launched");
+    repository_error.editor(
+        "repository-editor.sh",
+        &format!("touch {:?}", repository_sentinel),
+    );
+    add_command(&repository_error.service(), "Broken Name", "printf broken");
+    let broken_meta = repository_error
+        .data
+        .path()
+        .join("scripts/broken-name/meta.toml");
+    fs::remove_file(&broken_meta).unwrap();
+    fs::create_dir(&broken_meta).unwrap();
+    let registry = fs::read(repository_error.data.path().join("registry.toml")).unwrap();
+    let mut child = repository_error.spawn("script", "Broken Name");
+    child.wait_for("Name in skit");
+    child.send("Broken Name\n");
+    let (output, marker) = child.finish();
+    assert!(marker.contains("error|code=1"), "{marker}");
+    assert!(output.contains("could not read"), "{output}");
+    assert!(!repository_sentinel.exists());
+    assert!(broken_meta.is_dir());
+    assert_eq!(
+        fs::read(repository_error.data.path().join("registry.toml")).unwrap(),
+        registry
+    );
+    repository_error.assert_no_state();
+
+    let empty = PlainDraftSandbox::new();
+    empty.set_editor(Path::new("/usr/bin/true"));
+    let empty_config = fs::read(empty.config.path().join("config.toml")).unwrap();
+    let mut child = empty.spawn("script", "Empty Author");
+    child.wait_for("Name in skit");
+    child.send("Empty Author\n");
+    let (output, marker) = child.finish();
+    assert_eq!(marker, "ok|none");
+    assert!(
+        output.contains("Nothing was written, so nothing was added."),
+        "{output}"
+    );
+    assert!(matches!(
+        empty.service().show("Empty Author"),
+        Err(RepositoryError::NotFound { .. })
+    ));
+    empty.assert_no_drafts();
+    empty.assert_no_state();
+    assert_eq!(
+        fs::read(empty.config.path().join("config.toml")).unwrap(),
+        empty_config
+    );
+
+    for (kind, name, editor_body, expected_kind, expected_bytes, suffix) in [
+        (
+            "script",
+            "Plain Script",
+            "printf \"print('plain')\\n\" >> \"$1\"",
+            "python",
+            b"#!/usr/bin/env python3\nprint('plain')\n".as_slice(),
+            ".py",
+        ),
+        (
+            "prompt",
+            "Plain Prompt",
+            "printf \"Review this.\\n\" >> \"$1\"",
+            "prompt",
+            b"# New prompt\n\nReview this.\n".as_slice(),
+            ".prompt.md",
+        ),
+    ] {
+        let success = PlainDraftSandbox::new();
+        success.editor("success-editor.sh", editor_body);
+        let config_before = fs::read(success.config.path().join("config.toml")).unwrap();
+        let mut child = success.spawn(kind, name);
+        child.wait_for("Name in skit");
+        child.send(&format!("{name}\n"));
+        let (_output, marker) = child.finish();
+        assert!(
+            marker.contains(&format!("ok|name={name}|kind={expected_kind}|source=")),
+            "{marker}"
+        );
+        let entry = success.service().show(name).unwrap();
+        assert_eq!(entry.meta.name, name);
+        assert_eq!(entry.meta.kind.as_str(), expected_kind);
+        assert!(entry.meta.source.contains("/drafts/skit-new-"));
+        assert!(entry.meta.source.ends_with(suffix), "{}", entry.meta.source);
+        assert_eq!(
+            fs::read(source_path(success.service().repository(), &entry).unwrap()).unwrap(),
+            expected_bytes
+        );
+        success.assert_no_drafts();
+        success.assert_no_state();
+        assert_eq!(
+            fs::read(success.config.path().join("config.toml")).unwrap(),
+            config_before
+        );
+    }
+
+    let collision = PlainDraftSandbox::new();
+    collision.editor(
+        "collision-editor.sh",
+        "printf 'EDITOR_READY\\n'\nIFS= read -r _\nprintf \"print('kept')\\n\" >> \"$1\"",
+    );
+    let mut child = collision.spawn("script", "Race Name");
+    child.wait_for("Name in skit");
+    child.send("Race Name\n");
+    child.wait_for("EDITOR_READY");
+    add_command(&collision.service(), "Race Name", "printf competitor");
+    child.send("continue\n");
+    let (output, marker) = child.finish();
+    assert!(marker.contains("error|code=1"), "{marker}");
+    assert!(output.contains("Your draft was kept at"), "{output}");
+    assert_eq!(
+        collision
+            .service()
+            .show("Race Name")
+            .unwrap()
+            .meta
+            .kind
+            .as_str(),
+        "command"
+    );
+    let drafts = tui_drafts(collision.data.path());
+    assert_eq!(drafts.len(), 1);
+    assert!(
+        fs::read(&drafts[0].path)
+            .unwrap()
+            .ends_with(b"print('kept')\n")
+    );
+    collision.assert_no_state();
+
+    let editor_error = PlainDraftSandbox::new();
+    editor_error.set_editor(Path::new("/nonexistent/skit-plain-editor"));
+    let mut child = editor_error.spawn("script", "Editor Error");
+    child.wait_for("Name in skit");
+    child.send("Editor Error\n");
+    let (output, marker) = child.finish();
+    assert!(marker.contains("error|code=1"), "{marker}");
+    assert!(output.contains("Could not launch the editor"), "{output}");
+    editor_error.assert_no_drafts();
+    editor_error.assert_no_state();
+
+    let inspect_error = PlainDraftSandbox::new();
+    inspect_error.editor("remove-editor.sh", "rm -f \"$1\"");
+    let mut child = inspect_error.spawn("script", "Inspect Error");
+    child.wait_for("Name in skit");
+    child.send("Inspect Error\n");
+    let (output, marker) = child.finish();
+    assert!(marker.contains("error|code=1"), "{marker}");
+    assert!(output.contains("File not found:"), "{output}");
+    inspect_error.assert_no_drafts();
+    inspect_error.assert_no_state();
 }
 
 #[derive(Debug)]
