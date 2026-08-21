@@ -114,6 +114,46 @@ fn write_plain_preset_entry(data: &Path) {
         .unwrap();
 }
 
+fn write_analyzer_preset_entries(data: &Path) {
+    let store = FileStore::new(data);
+    let mut input = ParamDecl::new("input-1");
+    input.binding = ParameterBinding::Input;
+    input.delivery = ParameterDelivery::Inject;
+    input.prompt = "Name: ".to_owned();
+    let shell = write_managed_params(
+        "shell",
+        "#!/usr/bin/env bash\nread -p \"Name: \" NAME\n",
+        &[input],
+    )
+    .unwrap();
+    for (name, kind, bytes, stored_name) in [
+        (
+            "Degraded analyzer",
+            "js",
+            b"parseArgs({options:{name: someVar}});\n".to_vec(),
+            "script.js",
+        ),
+        ("Input analyzer", "shell", shell.into_bytes(), "script.sh"),
+    ] {
+        store
+            .create(CreateEntry {
+                name: name.to_owned(),
+                kind: EntryKind::parse(kind).unwrap(),
+                mode: StorageMode::Copy,
+                source: String::new(),
+                workdir: "invoke".to_owned(),
+                description: String::new(),
+                payload: Some(EntryPayload {
+                    bytes,
+                    stored_name: Some(stored_name.to_owned()),
+                    permissions: SourcePermissions::default(),
+                }),
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+    }
+}
+
 fn write_secret_command_entry(data: &Path) {
     let directory = data.join("scripts/secret");
     fs::create_dir_all(&directory).unwrap();
@@ -1757,6 +1797,80 @@ fn plain_preset_collection_saves_typed_nonsecrets_in_three_locales() {
         assert!(saved.contains("COLOR = \"red\""), "{saved}");
         assert!(!saved.contains("secret-value"), "{saved}");
         assert!(!saved.contains("TOKEN"), "{saved}");
+    }
+}
+
+#[test]
+fn analyzer_preset_notices_use_real_sources_in_three_locales() {
+    for (locale, default_notice, input_notice) in [
+        (
+            "en",
+            "Leave empty to use the script's own default.",
+            "Leave empty and the script will ask you in the terminal.",
+        ),
+        (
+            "zh-CN",
+            "留空＝用脚本自己的默认值。",
+            "留空＝运行时脚本自己在终端问你。",
+        ),
+        (
+            "zh-TW",
+            "留空＝用腳本自己的預設。",
+            "留空＝執行時腳本自己在終端機問你。",
+        ),
+    ] {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        write_analyzer_preset_entries(data.path());
+
+        let javascript = data.path().join("scripts/degraded-analyzer/script.js");
+        let shell = data.path().join("scripts/input-analyzer/script.sh");
+        let javascript_before = fs::read(&javascript).unwrap();
+        let shell_before = fs::read(&shell).unwrap();
+
+        let mut degraded = LiveTui::spawn_command(
+            &["preset", "save", "degraded-analyzer", "degraded"],
+            data.path(),
+            state.path(),
+            config.path(),
+            home.path(),
+            locale,
+        );
+        let output = degraded.wait_for("name");
+        assert!(output.contains(default_notice), "{output}");
+        let checkpoint = degraded.checkpoint();
+        degraded.send(b"value\r");
+        let tail = degraded.wait_for_exit_after(checkpoint);
+        assert!(tail.contains("degraded"), "{tail}");
+
+        let mut input = LiveTui::spawn_command(
+            &["preset", "save", "input-analyzer", "input"],
+            data.path(),
+            state.path(),
+            config.path(),
+            home.path(),
+            locale,
+        );
+        let output = input.wait_for("Name:");
+        assert!(output.contains(input_notice), "{output}");
+        let checkpoint = input.checkpoint();
+        input.send(b"Ada\r");
+        let tail = input.wait_for_exit_after(checkpoint);
+        assert!(tail.contains("input"), "{tail}");
+
+        assert_eq!(fs::read(&javascript).unwrap(), javascript_before);
+        assert_eq!(fs::read(&shell).unwrap(), shell_before);
+        let degraded_state =
+            fs::read_to_string(state.path().join("values/degraded-analyzer.toml")).unwrap();
+        let input_state =
+            fs::read_to_string(state.path().join("values/input-analyzer.toml")).unwrap();
+        assert!(
+            degraded_state.contains("name = \"value\""),
+            "{degraded_state}"
+        );
+        assert!(input_state.contains("input-1 = \"Ada\""), "{input_state}");
     }
 }
 
