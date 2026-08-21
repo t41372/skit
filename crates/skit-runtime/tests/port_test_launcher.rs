@@ -63,6 +63,14 @@ use skit_runtime::{
 };
 use tempfile::TempDir;
 
+#[test]
+fn interpreter_platform_current_matches_the_compiled_host() {
+    #[cfg(windows)]
+    assert_eq!(InterpreterPlatform::current(), InterpreterPlatform::Windows);
+    #[cfg(not(windows))]
+    assert_eq!(InterpreterPlatform::current(), InterpreterPlatform::Other);
+}
+
 // --- Fixtures: the `ProgramProbe` seam replaces the oracle's monkeypatching of
 // `shutil.which`, `skit.langs.launch.find_uv`, and the real filesystem. ---
 

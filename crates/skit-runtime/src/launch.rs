@@ -99,9 +99,12 @@ impl InterpreterPlatform {
     /// Return the platform of this build.
     #[must_use]
     pub const fn current() -> Self {
-        if cfg!(windows) {
+        #[cfg(windows)]
+        {
             Self::Windows
-        } else {
+        }
+        #[cfg(not(windows))]
+        {
             Self::Other
         }
     }

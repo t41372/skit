@@ -3,7 +3,7 @@
 use std::{
     io::Read as _,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
     time::Duration,
 };
 
@@ -111,7 +111,7 @@ impl JavaScriptSyntaxGateRunner for SystemJavaScriptSyntaxGateRunner {
         source: &Path,
         timeout: Duration,
     ) -> Result<JavaScriptSyntaxGateOutput, JavaScriptSyntaxGateUnavailable> {
-        let mut child = Command::new(program)
+        let child = Command::new(program)
             .arg("--check")
             .arg(source)
             .stdout(Stdio::null())
@@ -120,58 +120,81 @@ impl JavaScriptSyntaxGateRunner for SystemJavaScriptSyntaxGateRunner {
             .map_err(|error| JavaScriptSyntaxGateUnavailable::Spawn {
                 reason: error.to_string(),
             })?;
-        let Some(mut stderr) = child.stderr.take() else {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(JavaScriptSyntaxGateUnavailable::Spawn {
-                reason: "node syntax check did not provide its stderr pipe".to_owned(),
-            });
-        };
-        let reader = match std::thread::Builder::new()
-            .name("skit-node-check-stderr".to_owned())
-            .spawn(move || {
-                let mut bytes = Vec::new();
-                stderr.read_to_end(&mut bytes).map(|_| bytes)
-            }) {
-            Ok(reader) => reader,
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(JavaScriptSyntaxGateUnavailable::Spawn {
-                    reason: error.to_string(),
-                });
-            }
-        };
-        let status = match child.wait_timeout(timeout) {
-            Ok(Some(status)) => status,
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = reader.join();
-                return Err(JavaScriptSyntaxGateUnavailable::Timeout);
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = reader.join();
-                return Err(JavaScriptSyntaxGateUnavailable::Spawn {
-                    reason: error.to_string(),
-                });
-            }
-        };
-        let stderr = reader
-            .join()
-            .map_err(|_| JavaScriptSyntaxGateUnavailable::Spawn {
-                reason: "node syntax check stderr reader panicked".to_owned(),
-            })?
-            .map_err(|error| JavaScriptSyntaxGateUnavailable::Spawn {
-                reason: error.to_string(),
-            })?;
-        Ok(JavaScriptSyntaxGateOutput {
-            success: status.success(),
-            stderr,
-        })
+        finish_javascript_syntax_gate_with(
+            child,
+            timeout,
+            |child| child.stderr.take(),
+            |mut stderr| {
+                std::thread::Builder::new()
+                    .name("skit-node-check-stderr".to_owned())
+                    .spawn(move || {
+                        let mut bytes = Vec::new();
+                        stderr.read_to_end(&mut bytes).map(|_| bytes)
+                    })
+            },
+            |child, timeout| {
+                child
+                    .wait_timeout(timeout)
+                    .map(|status| status.map(|status| status.success()))
+            },
+            stop_javascript_syntax_child,
+            std::thread::JoinHandle::join,
+        )
     }
+}
+
+fn stop_javascript_syntax_child(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn finish_javascript_syntax_gate_with<C, R, H>(
+    mut child: C,
+    timeout: Duration,
+    take_stderr: impl FnOnce(&mut C) -> Option<R>,
+    spawn_reader: impl FnOnce(R) -> std::io::Result<H>,
+    wait_timeout: impl FnOnce(&mut C, Duration) -> std::io::Result<Option<bool>>,
+    mut stop_child: impl FnMut(&mut C),
+    join_reader: impl FnOnce(H) -> std::thread::Result<std::io::Result<Vec<u8>>>,
+) -> Result<JavaScriptSyntaxGateOutput, JavaScriptSyntaxGateUnavailable> {
+    let Some(stderr) = take_stderr(&mut child) else {
+        stop_child(&mut child);
+        return Err(JavaScriptSyntaxGateUnavailable::Spawn {
+            reason: "node syntax check did not provide its stderr pipe".to_owned(),
+        });
+    };
+    let reader = match spawn_reader(stderr) {
+        Ok(reader) => reader,
+        Err(error) => {
+            stop_child(&mut child);
+            return Err(JavaScriptSyntaxGateUnavailable::Spawn {
+                reason: error.to_string(),
+            });
+        }
+    };
+    let success = match wait_timeout(&mut child, timeout) {
+        Ok(Some(success)) => success,
+        Ok(None) => {
+            stop_child(&mut child);
+            let _ = join_reader(reader);
+            return Err(JavaScriptSyntaxGateUnavailable::Timeout);
+        }
+        Err(error) => {
+            stop_child(&mut child);
+            let _ = join_reader(reader);
+            return Err(JavaScriptSyntaxGateUnavailable::Spawn {
+                reason: error.to_string(),
+            });
+        }
+    };
+    let stderr = join_reader(reader)
+        .map_err(|_| JavaScriptSyntaxGateUnavailable::Spawn {
+            reason: "node syntax check stderr reader panicked".to_owned(),
+        })?
+        .map_err(|error| JavaScriptSyntaxGateUnavailable::Spawn {
+            reason: error.to_string(),
+        })?;
+    Ok(JavaScriptSyntaxGateOutput { success, stderr })
 }
 
 /// Report that Node rejected one staged injected source.
@@ -247,4 +270,153 @@ pub fn retain_javascript_source_if_valid<T, R: JavaScriptSyntaxGateRunner>(
 ) -> Result<T, JavaScriptSyntaxError> {
     check_javascript_syntax(runtime, path, runner)?;
     Ok(source)
+}
+
+#[cfg(test)]
+mod private_tests {
+    use std::{cell::Cell, io, time::Duration};
+
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct FakeChild;
+
+    fn take_empty_stderr(_: &mut FakeChild) -> Option<io::Empty> {
+        Some(io::empty())
+    }
+
+    fn spawn_empty_reader(_: io::Empty) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn wait_success(_: &mut FakeChild, _: Duration) -> io::Result<Option<bool>> {
+        Ok(Some(true))
+    }
+
+    fn join_empty_reader(_: ()) -> std::thread::Result<io::Result<Vec<u8>>> {
+        Ok(Ok(Vec::new()))
+    }
+
+    fn stop_fake_child(_: &mut FakeChild) {}
+
+    #[test]
+    fn runtime_names_and_process_faults_are_typed_and_cleanup_is_mandatory() {
+        assert_eq!(JavaScriptRuntimeKind::Bun.name(), "bun");
+
+        let output = finish_javascript_syntax_gate_with(
+            FakeChild,
+            Duration::ZERO,
+            take_empty_stderr,
+            spawn_empty_reader,
+            wait_success,
+            stop_fake_child,
+            join_empty_reader,
+        )
+        .unwrap();
+        assert!(output.success);
+        assert!(output.stderr.is_empty());
+
+        let timeout = finish_javascript_syntax_gate_with(
+            FakeChild,
+            Duration::ZERO,
+            take_empty_stderr,
+            spawn_empty_reader,
+            |_, _| Ok(None),
+            stop_fake_child,
+            join_empty_reader,
+        )
+        .unwrap_err();
+        assert_eq!(timeout, JavaScriptSyntaxGateUnavailable::Timeout);
+
+        let cleanup_calls = Cell::new(0);
+        let missing_pipe = finish_javascript_syntax_gate_with(
+            FakeChild,
+            Duration::ZERO,
+            |_| None::<io::Empty>,
+            spawn_empty_reader,
+            wait_success,
+            |_| cleanup_calls.set(cleanup_calls.get() + 1),
+            join_empty_reader,
+        )
+        .unwrap_err();
+        assert_eq!(cleanup_calls.get(), 1);
+        assert_eq!(
+            missing_pipe,
+            JavaScriptSyntaxGateUnavailable::Spawn {
+                reason: "node syntax check did not provide its stderr pipe".to_owned()
+            }
+        );
+
+        let cleanup_calls = Cell::new(0);
+        let reader_spawn = finish_javascript_syntax_gate_with(
+            FakeChild,
+            Duration::ZERO,
+            take_empty_stderr,
+            |_| Err::<(), _>(io::Error::other("reader thread unavailable")),
+            wait_success,
+            |_| cleanup_calls.set(cleanup_calls.get() + 1),
+            join_empty_reader,
+        )
+        .unwrap_err();
+        assert_eq!(cleanup_calls.get(), 1);
+        assert!(matches!(
+            reader_spawn,
+            JavaScriptSyntaxGateUnavailable::Spawn { ref reason }
+                if reason == "reader thread unavailable"
+        ));
+
+        let cleanup_calls = Cell::new(0);
+        let wait = finish_javascript_syntax_gate_with(
+            FakeChild,
+            Duration::ZERO,
+            take_empty_stderr,
+            spawn_empty_reader,
+            |_, _| Err(io::Error::other("wait unavailable")),
+            |_| cleanup_calls.set(cleanup_calls.get() + 1),
+            join_empty_reader,
+        )
+        .unwrap_err();
+        assert_eq!(cleanup_calls.get(), 1);
+        assert!(matches!(
+            wait,
+            JavaScriptSyntaxGateUnavailable::Spawn { ref reason }
+                if reason == "wait unavailable"
+        ));
+    }
+
+    #[test]
+    fn stderr_join_and_read_faults_keep_their_typed_reason() {
+        let panicked = finish_javascript_syntax_gate_with(
+            FakeChild,
+            Duration::ZERO,
+            take_empty_stderr,
+            spawn_empty_reader,
+            wait_success,
+            stop_fake_child,
+            |_| Err(Box::new("reader panic")),
+        )
+        .unwrap_err();
+        assert_eq!(
+            panicked,
+            JavaScriptSyntaxGateUnavailable::Spawn {
+                reason: "node syntax check stderr reader panicked".to_owned()
+            }
+        );
+
+        let read = finish_javascript_syntax_gate_with(
+            FakeChild,
+            Duration::ZERO,
+            take_empty_stderr,
+            spawn_empty_reader,
+            wait_success,
+            stop_fake_child,
+            |_| Ok(Err(io::Error::other("stderr unreadable"))),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            read,
+            JavaScriptSyntaxGateUnavailable::Spawn { ref reason }
+                if reason == "stderr unreadable"
+        ));
+    }
 }

@@ -1744,9 +1744,21 @@ mod private_tests {
                 kind: InjectedSourceKind::Shell
             })
         ));
+        assert!(matches!(
+            validate_injected_source("python", "def broken(".to_owned()),
+            Err(LanguageError::InvalidSource { kind }) if kind == "python"
+        ));
         assert_eq!(
             validate_rewritten_source("shell", "echo ok\n".to_owned()).unwrap(),
             "echo ok\n"
+        );
+    }
+
+    #[test]
+    fn requirement_fallback_keeps_commas_inside_both_quote_styles() {
+        assert_eq!(
+            split_pep508_requirements("demo @ https://example.invalid/'a,b'/\"c,d\".whl, rich"),
+            ["demo @ https://example.invalid/'a,b'/\"c,d\".whl", "rich"]
         );
     }
 

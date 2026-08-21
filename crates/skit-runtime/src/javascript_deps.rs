@@ -1291,16 +1291,13 @@ fn remove_path(path: &Path) -> Result<(), DependencyError> {
     let Some(metadata) = optional_symlink_metadata(path)? else {
         return Ok(());
     };
-    let removal = if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        system_remove_dir_all(path)
-    } else {
-        system_remove_file(path)
-    };
-    match removal {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(io_error("remove", path, error)),
-    }
+    remove_existing_path_with(
+        path,
+        &metadata,
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
+    .map_err(|error| io_error("remove", path, error))
 }
 
 fn system_remove_file(path: &Path) -> io::Result<()> {
@@ -1325,6 +1322,19 @@ where
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error),
     };
+    remove_existing_path_with(path, &metadata, remove_file, remove_dir_all)
+}
+
+fn remove_existing_path_with<F, D>(
+    path: &Path,
+    metadata: &fs::Metadata,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> io::Result<()>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
     let removal = if metadata.is_dir() && !metadata.file_type().is_symlink() {
         remove_dir_all(path)
     } else {
@@ -1483,24 +1493,142 @@ mod transaction_tests {
     }
 
     #[test]
+    fn prepared_cleanup_rollback_and_drop_recover_real_bytes() {
+        let empty = TempDir::new().unwrap();
+        let mut cleanup = prepare_javascript_dependency_cleanup(empty.path()).unwrap();
+        cleanup.rollback().unwrap();
+        cleanup.rollback().unwrap();
+
+        let rolled_back = TempDir::new().unwrap();
+        let package = rolled_back.path().join("package.json");
+        fs::write(&package, b"rollback manifest\n").unwrap();
+        let mut cleanup = prepare_javascript_dependency_cleanup(rolled_back.path()).unwrap();
+        assert!(!package.exists());
+        cleanup.rollback().unwrap();
+        assert_eq!(fs::read(package).unwrap(), b"rollback manifest\n");
+
+        let populated = TempDir::new().unwrap();
+        let package = populated.path().join("package.json");
+        fs::write(&package, b"authoritative manifest\n").unwrap();
+        let cleanup = prepare_javascript_dependency_cleanup(populated.path()).unwrap();
+        assert!(!package.exists());
+        drop(cleanup);
+        assert_eq!(fs::read(package).unwrap(), b"authoritative manifest\n");
+        assert!(!populated.path().join(BACKUP_NAME).exists());
+    }
+
+    #[test]
+    fn cleanup_index_remover_failure_keeps_the_index_and_typed_error() {
+        let root = TempDir::new().unwrap();
+        let cleanup = root.path().join("cleanup");
+        fs::create_dir(&cleanup).unwrap();
+        let index = cleanup.join(BACKUP_INDEX);
+        fs::write(&index, b"package.json\n").unwrap();
+
+        let failure = remove_dependency_cleanup(
+            &cleanup,
+            &mut |path| {
+                assert_eq!(path, index);
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "index held",
+                ))
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(!failure.removed_any);
+        assert!(matches!(
+            failure.error,
+            DependencyError::ClearFailed { ref item, ref reason }
+                if item == BACKUP_INDEX && reason == "index held"
+        ));
+        assert_eq!(fs::read(index).unwrap(), b"package.json\n");
+    }
+
+    #[test]
+    fn existing_path_removal_treats_not_found_as_success_and_keeps_other_errors_typed() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("artifact");
+        fs::write(&path, b"authoritative\n").unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+
+        remove_existing_path_with(
+            &path,
+            &metadata,
+            &mut |_| Err(io::Error::new(io::ErrorKind::NotFound, "vanished")),
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
+        let error = remove_existing_path_with(
+            &path,
+            &metadata,
+            &mut |_| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "artifact locked",
+                ))
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(path).unwrap(), b"authoritative\n");
+    }
+
+    #[test]
+    fn parentless_atomic_write_is_typed_and_creates_no_artifact() {
+        let error = atomic_write_with(
+            Path::new(""),
+            b"must not be written",
+            File::sync_all,
+            atomicwrites::replace_atomic,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DependencyError::Io {
+                operation: "write",
+                ref reason,
+                ..
+            } if reason == "write path has no parent"
+        ));
+    }
+
+    #[test]
     fn test_clean_failure_is_loud_not_silent() {
         let root = TempDir::new().unwrap();
         let package = root.path().join("package.json");
         fs::write(&package, b"authoritative manifest\n").unwrap();
         fs::write(root.path().join("meta.toml"), b"name = \"Demo\"\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_file = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "package.json")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "held by another process",
+                ))
+            } else {
+                fs::remove_file(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::write(successful.path().join("package.json"), b"disposable\n").unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut remove_file,
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
 
         let error = clear_javascript_dependencies_unlocked_with(
             root.path(),
-            &mut |path| {
-                if path.file_name().is_some_and(|name| name == "package.json") {
-                    Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "held by another process",
-                    ))
-                } else {
-                    fs::remove_file(path)
-                }
-            },
+            &mut remove_file,
             &mut system_remove_dir_all,
         )
         .unwrap_err();
@@ -1520,20 +1648,32 @@ mod transaction_tests {
         let module = root.path().join("node_modules/chalk/index.js");
         fs::create_dir_all(module.parent().unwrap()).unwrap();
         fs::write(&module, b"module.exports = 1;\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_dir_all = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "tree is locked",
+                ))
+            } else {
+                fs::remove_dir_all(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::create_dir(successful.path().join("node_modules")).unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap();
 
         let error = clear_javascript_dependencies_unlocked_with(
             root.path(),
             &mut system_remove_file,
-            &mut |path| {
-                if path.file_name().is_some_and(|name| name == "node_modules") {
-                    Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "tree is locked",
-                    ))
-                } else {
-                    fs::remove_dir_all(path)
-                }
-            },
+            &mut remove_dir_all,
         )
         .unwrap_err();
 
@@ -1582,19 +1722,31 @@ mod transaction_tests {
         fs::create_dir_all(&target).unwrap();
         let link = root.path().join("node_modules");
         symlink(target.parent().unwrap(), &link).unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_file = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "held by another process",
+                ))
+            } else {
+                fs::remove_file(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::write(successful.path().join("package.json"), b"disposable\n").unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut remove_file,
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
 
         let error = clear_javascript_dependencies_unlocked_with(
             root.path(),
-            &mut |path| {
-                if path.file_name().is_some_and(|name| name == "node_modules") {
-                    Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "held by another process",
-                    ))
-                } else {
-                    fs::remove_file(path)
-                }
-            },
+            &mut remove_file,
             &mut system_remove_dir_all,
         )
         .unwrap_err();
@@ -1616,18 +1768,30 @@ mod transaction_tests {
         let module = root.path().join("node_modules/chalk/index.js");
         fs::create_dir_all(module.parent().unwrap()).unwrap();
         fs::write(&module, b"module.exports = 1;\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_dir_all = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                fs::remove_dir_all(path).unwrap();
+                Err(io::Error::new(io::ErrorKind::NotFound, "the tree vanished"))
+            } else {
+                fs::remove_dir_all(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::create_dir(successful.path().join("node_modules")).unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap();
 
         clear_javascript_dependencies_unlocked_with(
             root.path(),
             &mut system_remove_file,
-            &mut |path| {
-                if path.file_name().is_some_and(|name| name == "node_modules") {
-                    fs::remove_dir_all(path).unwrap();
-                    Err(io::Error::new(io::ErrorKind::NotFound, "the tree vanished"))
-                } else {
-                    fs::remove_dir_all(path)
-                }
-            },
+            &mut remove_dir_all,
         )
         .unwrap();
 
@@ -1639,19 +1803,31 @@ mod transaction_tests {
     fn test_clean_failure_message_verbatim() {
         let root = TempDir::new().unwrap();
         fs::write(root.path().join("package.json"), b"{}\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_file = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "package.json")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "held by another process",
+                ))
+            } else {
+                fs::remove_file(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::write(successful.path().join("package.json"), b"disposable\n").unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut remove_file,
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
 
         let error = clear_javascript_dependencies_unlocked_with(
             root.path(),
-            &mut |path| {
-                if path.file_name().is_some_and(|name| name == "package.json") {
-                    Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "held by another process",
-                    ))
-                } else {
-                    fs::remove_file(path)
-                }
-            },
+            &mut remove_file,
             &mut system_remove_dir_all,
         )
         .unwrap_err();
@@ -1674,20 +1850,32 @@ mod transaction_tests {
         .unwrap();
         fs::write(root.path().join("meta.toml"), b"name = \"Demo\"\n").unwrap();
         fs::write(root.path().join("script.js"), b"console.log(1);\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_dir_all = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "tree is locked",
+                ))
+            } else {
+                fs::remove_dir_all(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::create_dir(successful.path().join("node_modules")).unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap();
 
         let error = clear_javascript_dependencies_unlocked_with(
             root.path(),
             &mut system_remove_file,
-            &mut |path| {
-                if path.file_name().is_some_and(|name| name == "node_modules") {
-                    Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "tree is locked",
-                    ))
-                } else {
-                    fs::remove_dir_all(path)
-                }
-            },
+            &mut remove_dir_all,
         )
         .unwrap_err();
 
@@ -1715,22 +1903,34 @@ mod transaction_tests {
         let stage = staged_replacement(root.path());
         fs::create_dir(stage.join("node_modules")).unwrap();
         fs::write(stage.join("node_modules/new"), b"new module\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_dir_all = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "old tree is locked",
+                ))
+            } else {
+                fs::remove_dir_all(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::create_dir(successful.path().join("node_modules")).unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap();
 
         let error = commit_dependency_stage_with_remover(
             root.path(),
             &stage,
             |entry_dir| Ok(unused_temporary_path(entry_dir)),
             &mut system_remove_file,
-            &mut |path| {
-                if path.file_name().is_some_and(|name| name == "node_modules") {
-                    Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "old tree is locked",
-                    ))
-                } else {
-                    fs::remove_dir_all(path)
-                }
-            },
+            &mut remove_dir_all,
         )
         .unwrap_err();
 
