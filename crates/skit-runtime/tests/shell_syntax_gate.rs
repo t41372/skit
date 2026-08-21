@@ -65,8 +65,8 @@ fn test_interpreter_gate_refuses_what_the_offline_gate_missed() {
     let path = staged.path().to_path_buf();
     let runner = Runner::output(false, b"bash: staged source rejected\nsecond line\n");
 
-    let error = retain_shell_source_if_valid(staged, Some(&interpreter()), &path, &runner)
-        .unwrap_err();
+    let error =
+        retain_shell_source_if_valid(staged, Some(&interpreter()), &path, &runner).unwrap_err();
 
     assert!(!path.exists(), "a rejected private source must be removed");
     assert_eq!(error.shell(), "bash");
@@ -78,10 +78,7 @@ fn test_interpreter_gate_refuses_what_the_offline_gate_missed() {
     let commands = runner.commands.borrow();
     assert_eq!(commands.len(), 1);
     assert_eq!(commands[0].program, Path::new("/resolved/bin/bash"));
-    assert_eq!(
-        commands[0].args,
-        ["-n".into(), path.as_os_str().to_owned()]
-    );
+    assert_eq!(commands[0].args, ["-n".into(), path.as_os_str().to_owned()]);
     assert_eq!(commands[0].timeout, SHELL_SYNTAX_GATE_TIMEOUT);
 }
 
@@ -97,24 +94,15 @@ fn test_interpreter_gate_survives_a_spawn_failure() {
     let runner = Runner::unavailable(InjectedCommandUnavailable::Spawn {
         reason: "no fork for you".to_owned(),
     });
-    check_shell_syntax(
-        Some(&interpreter()),
-        Path::new("/tmp/injected.sh"),
-        &runner,
-    )
-    .unwrap();
+    check_shell_syntax(Some(&interpreter()), Path::new("/tmp/injected.sh"), &runner).unwrap();
     assert_eq!(runner.commands.borrow().len(), 1);
 }
 
 #[test]
 fn test_interpreter_gate_reports_an_empty_stderr_without_crashing() {
     let runner = Runner::output(false, b"");
-    let error = check_shell_syntax(
-        Some(&interpreter()),
-        Path::new("/tmp/injected.sh"),
-        &runner,
-    )
-    .unwrap_err();
+    let error = check_shell_syntax(Some(&interpreter()), Path::new("/tmp/injected.sh"), &runner)
+        .unwrap_err();
     assert_eq!(error.detail(), "");
     assert_eq!(
         error.message().localize(Locale::ZhCn),

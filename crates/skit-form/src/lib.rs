@@ -155,6 +155,8 @@ pub struct FormPlan {
     pub drift: Vec<FormDrift>,
     /// Whole-surface degradation when a language CLI cannot be represented statically.
     pub degradation: Option<DegradationReason>,
+    /// Whether the parsed source reads its own location.
+    pub uses_self_location: bool,
 }
 
 impl FormPlan {
@@ -421,6 +423,7 @@ pub fn form_plan(kind: &str, text: &str, settings: &EntrySettings) -> FormPlan {
                 vec![FormDrift::PromptMissing { names: gone }]
             },
             degradation: None,
+            uses_self_location: false,
         };
     }
     if kind == "command" {
@@ -557,6 +560,10 @@ fn declared_riders(declared: &[ParamDecl], taken: &BTreeSet<String>) -> Vec<Para
 
 fn managed_form_plan(kind: &str, text: &str, managed: &[ParamDecl]) -> FormPlan {
     let parsed = parse_document(kind, text);
+    let uses_self_location = match &parsed {
+        ParseOutcome::Parsed(document) => document.analysis().uses_self_location,
+        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => false,
+    };
     let mut report = match &parsed {
         ParseOutcome::Parsed(document) => reconciliation_from_language(document.reconcile(managed)),
         // Every kind that can carry managed metadata has a bundled parser. A parser-unavailable
@@ -611,6 +618,7 @@ fn managed_form_plan(kind: &str, text: &str, managed: &[ParamDecl]) -> FormPlan 
         fields,
         drift,
         degradation: None,
+        uses_self_location,
     }
 }
 

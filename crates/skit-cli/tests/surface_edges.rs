@@ -1,4 +1,7 @@
 //! Reporting, refusal, and management paths that the main lanes do not reach.
+//!
+//! `test_execute_syntax_gate_failure_never_launches` also belongs to the JavaScript oracle. The
+//! same frozen name intentionally has one executable owner for each independent language module.
 
 use std::fs;
 
@@ -898,7 +901,10 @@ fn test_execute_syntax_gate_failure_never_launches() {
         assert!(!launched.exists(), "the rejected source reached launch");
         let report_text = fs::read_to_string(&report).unwrap();
         let mut lines = report_text.lines();
-        assert_eq!(lines.next().map(Path::new), Some(bin.join("bash").as_path()));
+        assert_eq!(
+            lines.next().map(Path::new),
+            Some(bin.join("bash").as_path())
+        );
         let staged = PathBuf::from(lines.next().expect("the gate reports its staged source"));
         assert!(lines.next().is_none());
         assert!(!staged.exists(), "the rejected staged source survived");
@@ -906,7 +912,13 @@ fn test_execute_syntax_gate_failure_never_launches() {
         assert_eq!(snapshot_user_data(sandbox.data.path()), data_before);
         assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
         assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
-        assert!(!sandbox.data.path().join("scripts/shell-gate-refusal/node_modules").exists());
+        assert!(
+            !sandbox
+                .data
+                .path()
+                .join("scripts/shell-gate-refusal/node_modules")
+                .exists()
+        );
     }
 }
 
@@ -947,6 +959,22 @@ fn test_execute_surfaces_the_self_location_warning() {
         let source_before = fs::read(&source).unwrap();
         let data_before = snapshot_user_data(sandbox.data.path());
 
+        let raw = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .env("PATH", &bin)
+            .env("SKIT_GATE_REPORT", &report)
+            .env("SKIT_LAUNCH_MARKER", &launched)
+            .args(["run", &name, "--raw", "--no-input"])
+            .output()
+            .unwrap();
+        let raw_text = output_text(&raw);
+        assert!(raw.status.success(), "{locale}:\n{raw_text}");
+        assert!(!raw_text.contains(expected), "{locale}:\n{raw_text}");
+        assert!(!report.exists(), "raw launch reached the injection gate");
+        assert!(launched.is_file());
+        fs::remove_file(&launched).unwrap();
+
         let output = sandbox
             .command()
             .env("SKIT_LANG", locale)
@@ -964,7 +992,10 @@ fn test_execute_surfaces_the_self_location_warning() {
         assert!(launched.is_file());
         let staged = fs::read_to_string(&report).unwrap();
         let staged = PathBuf::from(staged.lines().nth(1).expect("the gate reports the source"));
-        assert!(!staged.exists(), "the accepted staged source survived launch");
+        assert!(
+            !staged.exists(),
+            "the accepted staged source survived launch"
+        );
         assert_eq!(fs::read(&source).unwrap(), source_before);
         assert_eq!(snapshot_user_data(sandbox.data.path()), data_before);
     }

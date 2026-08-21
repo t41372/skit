@@ -29,12 +29,13 @@ use skit_language::{
 use skit_runtime::{
     DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
     InterpreterPolicy, LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
-    SystemDependencyCommandRunner, SystemJavaScriptSyntaxGateRunner, SystemProbe, UvBootstrapError,
-    UvDownloadConsent, build_launch_plan_with_interpreter_policy, build_launch_preview,
+    ResolvedShellInterpreter, SystemDependencyCommandRunner, SystemInjectedCommandRunner,
+    SystemJavaScriptSyntaxGateRunner, SystemProbe, UvBootstrapError, UvDownloadConsent,
+    build_launch_plan_with_interpreter_policy, build_launch_preview,
     ensure_javascript_dependencies_for_module, ensure_managed_uv, execute_launch,
     javascript_dependency_install_announcement, javascript_module_type, managed_uv_path,
     resolve_javascript_runtime_program, retain_javascript_source_if_valid,
-    sweep_stale_injected_sources,
+    retain_shell_source_if_valid, shell_self_location_warning, sweep_stale_injected_sources,
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
@@ -523,7 +524,7 @@ pub(crate) fn run_with_roots(
         entry_dir: data_store.entry_dir_path(&entry.slug),
         invoke_cwd: PathBuf::from(&context.cwd),
     };
-    if args.dry_run {
+    let preflight_plan = if args.dry_run {
         let _ = build_launch_preview(
             &entry,
             &paths,
@@ -533,8 +534,9 @@ pub(crate) fn run_with_roots(
             runner.as_ref(),
             &SystemProbe,
         )?;
+        None
     } else if !needs_uv_bootstrap {
-        let _ = build_launch_plan_with_interpreter_policy(
+        Some(build_launch_plan_with_interpreter_policy(
             &entry,
             &paths,
             &assembly,
@@ -542,8 +544,26 @@ pub(crate) fn run_with_roots(
             runner.as_ref(),
             &interpreter_policy,
             &SystemProbe,
-        )?;
-    }
+        )?)
+    } else {
+        None
+    };
+    let shell_interpreter = if entry.meta.kind.as_str() == "shell" {
+        preflight_plan.as_ref().map(|plan| {
+            ResolvedShellInterpreter::new(
+                if settings.interpreter.is_empty() {
+                    "bash".to_owned()
+                } else {
+                    settings.interpreter.clone()
+                },
+                plan.program.clone(),
+            )
+        })
+    } else {
+        None
+    };
+    let shell_uses_self_location = entry.meta.kind.as_str() == "shell"
+        && form.as_ref().is_some_and(|plan| plan.uses_self_location);
 
     let prepared = if args.dry_run {
         None
@@ -572,10 +592,19 @@ pub(crate) fn run_with_roots(
     let staged = if args.dry_run {
         None
     } else {
-        stage_injected_source(data_store, &entry, &source, &declarations, &assembly)?
+        stage_injected_source_with_shell_interpreter(
+            data_store,
+            &entry,
+            &source,
+            &declarations,
+            &assembly,
+            shell_interpreter
+                .as_ref()
+                .map(ResolvedShellInterpreter::name),
+        )?
     };
-    let staged = match staged {
-        Some(source) => {
+    let staged = match (staged, entry.meta.kind.as_str()) {
+        (Some(source), "js" | "ts") => {
             let path = source.path.clone();
             Some(
                 retain_javascript_source_if_valid(
@@ -589,8 +618,28 @@ pub(crate) fn run_with_roots(
                 })?,
             )
         }
-        None => None,
+        (Some(source), "shell") => {
+            let path = source.path.clone();
+            Some(
+                retain_shell_source_if_valid(
+                    source,
+                    shell_interpreter.as_ref(),
+                    &path,
+                    &SystemInjectedCommandRunner,
+                )
+                .map_err(|error| RunError::InjectedCopy {
+                    detail: error.message(),
+                })?,
+            )
+        }
+        (source, _) => source,
     };
+    if staged.is_some()
+        && entry.meta.kind.as_str() == "shell"
+        && let Some(warning) = shell_self_location_warning(shell_uses_self_location)
+    {
+        eprintln!("{}", warning.localize(crate::cli::active_locale()));
+    }
     if !args.dry_run {
         let entry_dir = data_store.entry_dir_path(&entry.slug);
         sweep_injected_launch_sources(data_store, &entry);
@@ -909,6 +958,7 @@ fn launch_payload_path(store: &FileStore, entry: &Entry) -> Result<PathBuf, RunE
     })
 }
 
+#[cfg(test)]
 fn stage_injected_source(
     store: &FileStore,
     entry: &Entry,
@@ -916,19 +966,32 @@ fn stage_injected_source(
     declarations: &[skit_domain::parameters::ParamDecl],
     assembly: &skit_application::delivery::Assembly,
 ) -> Result<Option<StagedSource>, RunError> {
+    stage_injected_source_with_shell_interpreter(store, entry, source, declarations, assembly, None)
+}
+
+fn stage_injected_source_with_shell_interpreter(
+    store: &FileStore,
+    entry: &Entry,
+    source: &str,
+    declarations: &[skit_domain::parameters::ParamDecl],
+    assembly: &skit_application::delivery::Assembly,
+    resolved_shell: Option<&str>,
+) -> Result<Option<StagedSource>, RunError> {
     let entry_dir = store.entry_dir_path(&entry.slug);
     if assembly.inject_values.is_empty() {
         return Ok(None);
     }
     let kind = entry.meta.kind.as_str();
     let settings = EntrySettings::from_meta(&entry.meta);
-    let interpreter = settings.interpreter.as_str();
+    let configured_interpreter = settings.interpreter.as_str();
+    let interpreter = resolved_shell
+        .or_else(|| (!configured_interpreter.is_empty()).then_some(configured_interpreter));
     let rewritten = inject_values_for_interpreter(
         kind,
         source,
         declarations,
         &assembly.inject_values,
-        (!interpreter.is_empty()).then_some(interpreter),
+        interpreter,
     )
     .map_err(|error| map_injection_language_error(error, &entry.meta.name))?;
     let original = launch_payload_path(store, entry)?;

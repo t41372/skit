@@ -10338,6 +10338,7 @@ fn show_formatters_cover_empty_defaults_prompt_help_types_actions_and_every_drif
             },
         ],
         degradation: None,
+        uses_self_location: false,
     };
     let lines = show_drift_lines(&plan, "Tool", Locale::En);
     assert_eq!(lines.len(), 7);

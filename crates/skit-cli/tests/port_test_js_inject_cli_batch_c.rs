@@ -198,11 +198,11 @@ fn test_execute_syntax_gate_failure_never_launches() {
         ),
         (
             "zh-CN",
-            "skit 拒绝运行自己注入出来的副本：node 拒绝了注入副本：SyntaxError: boom",
+            "skit 拒绝运行自己注入出来的副本:node 拒绝了注入副本：SyntaxError: boom",
         ),
         (
             "zh-TW",
-            "skit 拒絕執行自己注入出來的副本：node 拒絕了注入副本：SyntaxError: boom",
+            "skit 拒絕執行自己注入出來的副本:node 拒絕了注入副本：SyntaxError: boom",
         ),
     ] {
         let sandbox = Sandbox::new();

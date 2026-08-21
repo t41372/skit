@@ -3216,9 +3216,19 @@ const CATALOG: &[Translation] = &[
         "node 拒絕了注入副本：{}",
     ),
     row!(
+        "{} rejected the injected copy: {}",
+        "{} 拒绝了注入后的副本:{}",
+        "{} 拒絕了注入後的副本:{}",
+    ),
+    row!(
         "skit refused to run its own injected copy: {}",
-        "skit 拒绝运行自己注入出来的副本：{}",
-        "skit 拒絕執行自己注入出來的副本：{}",
+        "skit 拒绝运行自己注入出来的副本:{}",
+        "skit 拒絕執行自己注入出來的副本:{}",
+    ),
+    row!(
+        "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values run from a temporary copy — so it sees the copy's path, not the original's. Rewriting a constant as NAME=\"${NAME:-value}\" delivers the value through the environment instead, with no copy at all (`skit params <script> --normalize NAME` does the rewrite for you on a stored copy).",
+        "⚠ 这个脚本会读自己的位置($0 / $BASH_SOURCE),而注入后的值是从临时副本运行的——所以它看到的是副本的路径,不是原文件的。把常量改写成 NAME=\"${NAME:-value}\" 就能改用环境变量传值,完全不写副本(`skit params <script> --normalize NAME` 会在已保存的副本上帮你完成这个改写)。",
+        "⚠ 這個腳本會讀自己的位置($0 / $BASH_SOURCE),而注入後的值是從臨時副本執行的——所以它看到的是副本的路徑,不是原檔案的。把常數改寫成 NAME=\"${NAME:-value}\" 就能改用環境變數傳值,完全不寫副本(`skit params <script> --normalize NAME` 會在儲存的副本上幫你做這個改寫)。",
     ),
     row!(
         "The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",

@@ -612,6 +612,33 @@ printf '%s %s\n' "${FALLBACK_ON_EMPTY:-first}" "${EMPTY_IS_VALUE-second}"
 }
 
 #[test]
+fn managed_shell_form_plan_owns_self_location_warning_eligibility() {
+    let source = r#"# /// script
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "WIDTH"
+# kind = "const"
+# type = "int"
+# default = 800
+# ///
+WIDTH=800
+printf '%s %s\n' "$WIDTH" "$BASH_SOURCE"
+"#;
+
+    let plan = form_plan("shell", source, &EntrySettings::default());
+    assert!(plan.uses_self_location);
+
+    let ordinary = form_plan(
+        "shell",
+        &source.replace(" \"$BASH_SOURCE\"", ""),
+        &EntrySettings::default(),
+    );
+    assert!(!ordinary.uses_self_location);
+}
+
+#[test]
 fn syntax_errors_keep_managed_metadata_visible_as_drift_without_inventing_fields() {
     let source = r#"# /// script
 # [tool.skit]
