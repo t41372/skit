@@ -167,12 +167,23 @@ fn source_shared_edits_warn_and_commit_valid_siblings_without_persisting_secrets
         .success();
     sandbox
         .command()
-        .args(["params", "managed", "--manage", "TOKEN"])
+        .args([
+            "params",
+            "managed",
+            "--manage",
+            "TOKEN",
+            "--no-secret",
+            "TOKEN",
+        ])
         .assert()
         .success();
     let stored = sandbox.data.path().join("scripts/managed/script.py");
     let meta = sandbox.data.path().join("scripts/managed/meta.toml");
     let source_before = fs::read(&stored).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&source_before).contains("secret = true"),
+        "the fixture must exercise a real public-to-secret transition"
+    );
     let meta_before = fs::read(&meta).unwrap();
 
     sandbox
