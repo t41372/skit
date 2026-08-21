@@ -78,6 +78,10 @@ jobs:
       - name: Install Fish for runtime parity
         if: runner.os != 'Windows'
         uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0
+      - name: Require the Fish runtime owner
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "SKIT_REQUIRE_FISH_RUNTIME=1" >> "$GITHUB_ENV"
       - name: Run all tests
         run: cargo test --locked --workspace --all-targets --all-features
       - name: Compile every Python benchmark subject with CPython 3.13

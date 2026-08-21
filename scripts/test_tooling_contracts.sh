@@ -36,7 +36,26 @@ sed -n "${fish_step_start},${fish_action_line}p" .github/workflows/ci.yml |
     echo 'the pinned Fish action must be limited to supported non-Windows test hosts' >&2
     exit 1
   }
-test "$fish_action_line" -lt "$(grep -Fn 'run: cargo test --locked --workspace --all-targets --all-features' .github/workflows/ci.yml | cut -d: -f1)" || {
+expect_text .github/workflows/ci.yml 'echo "SKIT_REQUIRE_FISH_RUNTIME=1" >> "$GITHUB_ENV"'
+fish_flag_line="$(
+  grep -Fn 'echo "SKIT_REQUIRE_FISH_RUNTIME=1" >> "$GITHUB_ENV"' .github/workflows/ci.yml |
+    cut -d: -f1
+)"
+test "$(printf '%s\n' "$fish_flag_line" | sed '/^$/d' | wc -l)" -eq 1 || {
+  echo '.github/workflows/ci.yml must require the Fish runtime owner exactly once' >&2
+  exit 1
+}
+fish_flag_step_start=$((fish_flag_line - 3))
+sed -n "${fish_flag_step_start},${fish_flag_line}p" .github/workflows/ci.yml |
+  grep -Fq "if: runner.os != 'Windows'" || {
+    echo 'the Fish runtime requirement must be limited to non-Windows test hosts' >&2
+    exit 1
+  }
+fish_test_line="$(
+  grep -Fn 'run: cargo test --locked --workspace --all-targets --all-features' \
+    .github/workflows/ci.yml | cut -d: -f1
+)"
+test "$fish_action_line" -lt "$fish_flag_line" && test "$fish_flag_line" -lt "$fish_test_line" || {
   echo 'Fish must be installed before the workspace test step' >&2
   exit 1
 }

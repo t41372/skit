@@ -409,12 +409,18 @@ pub fn validate_pep508_requirement(value: &str) -> Result<(), PythonMetadataErro
 
 /// Split a comma-composed field by using the PEP 508 parser to find valid partitions.
 ///
-/// Commas inside version specifiers, extras, markers, and URLs remain in their requirement.
+/// Commas inside version specifiers, extras, and markers remain in their requirement.
+///
+/// Version 0.4 does not support a comma in a direct URL when the text after the comma can parse as
+/// another requirement. This splitter keeps that limitation for compatibility.
 #[must_use]
 pub fn split_pep508_requirements(value: &str) -> Vec<String> {
     let value = value.trim();
     if value.is_empty() {
         return Vec::new();
+    }
+    if value.contains('@') {
+        return split_requirement_fallback(value);
     }
     let comma_offsets = value
         .char_indices()

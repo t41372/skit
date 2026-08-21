@@ -132,8 +132,8 @@ fn test_manage_then_plan_and_assemble_env_delivery() {
 fn test_env_overlay_overrides_default_in_real_fish() {
     let Some(fish) = SystemProbe.find_program("fish") else {
         assert!(
-            cfg!(windows) || std::env::var_os("CI").is_none(),
-            "the non-Windows CI test job must install Fish before it runs the workspace"
+            std::env::var("SKIT_REQUIRE_FISH_RUNTIME").as_deref() != Ok("1"),
+            "the Fish runtime owner is required, but SystemProbe did not find Fish"
         );
         eprintln!("Fish is not installed; the frozen Python owner has the same availability gate");
         return;
