@@ -387,12 +387,15 @@ The ledger has the authoritative per-module adjudication log.
 - **Phase 3 checkpoint (2026-08-20):** the first full LCOV run executed the workspace tests but the
   checker correctly failed on 2,514 uncovered executable lines. Do not add exclusions or weaken
   `scripts/check_coverage.sh`. Fresh crate reports now show `skit-domain`, `skit-application`,
-  `skit-form`, `skit-runtime`, `skit-language`, `skit-store`, and `skit-ui` at 0 gaps. The current
-  work is two non-overlapping Ratatui per-screen batches, followed by TUI session/terminal and the
-  remaining CLI/benchmark roots. Benchmark coverage has moved from 210 to 118 gaps: the binary
-  front doors, Hyperfine parser, merge invariants, and pipeline cleanup edges are covered; real
-  successful pipeline execution remains separate. `cargo deny`, `cargo audit --deny warnings`,
-  and zizmor are green. The docs type-check/build, release wheel build plus isolated
+  `skit-form`, `skit-runtime`, `skit-language`, `skit-store`, `skit-ui`, and `skit-benchmarks` at
+  0 gaps. Ratatui per-screen coverage is also 0: Add and Management closed 430 lines in `379d395`,
+  and the remaining eight screen/render files closed 364 lines in `a8a1af7`. Only the separate
+  TUI session/terminal batch remains. Benchmark coverage moved from 210 to 0; the final sequence
+  covers real front doors, typed filesystem failures and races, Hyperfine/merge invariants,
+  deterministic Rust tool discovery, suite adapters, footprint retries, and a real single-suite
+  execute/publication path. The remaining large root is `skit-cli`; finish it and the central TUI
+  batch, then run one fresh merged LCOV gate. `cargo deny`, `cargo audit --deny warnings`, and
+  zizmor are green. The docs type-check/build, release wheel build plus isolated
   `uv tool install` smoke, 112 benchmark metrics, all 8 enforced benchmark budgets, and
   `cargo bench` are green. Finish the remaining coverage, then run one fresh merged LCOV gate.
 - **User's hands-on test** fits AFTER the fix pass restores behavior, BEFORE mutation.
