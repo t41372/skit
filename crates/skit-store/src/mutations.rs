@@ -111,6 +111,13 @@ pub struct PreparedExternalCopyEdit {
     path: PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemoveLockPoint {
+    Dependency,
+    Entry,
+    Namespace,
+}
+
 impl ExternalCopyEdit for PreparedExternalCopyEdit {
     fn entry(&self) -> &Entry {
         &self.entry
@@ -265,46 +272,7 @@ impl EntryMutationRepository for FileStore {
     }
 
     fn remove(&self, entry: &Entry) -> Result<String, RepositoryError> {
-        let _launch = self.launch_lock(&entry.slug)?;
-        let _entry = self.entry_lock(&entry.slug)?;
-        let _namespace = self.namespace_lock()?;
-        let _dependencies = self.dependency_lock(&entry.slug)?;
-        let mut registry = Registry::load(self.data_dir())?;
-        let fresh = self.claim_for_mutation(entry, &mut registry)?;
-        let name = fresh.meta.name.clone();
-        let source = self.entry_dir(&fresh.slug);
-        let trash_root = self.data_dir().join(".trash");
-        create_dir_all(&trash_root, "create")?;
-        let trash = trash_root.join(format!("{}-{}", fresh.slug, EntryId::generate().as_str()));
-        fs::rename(&source, &trash).map_err(|error| io_error("remove", &source, error))?;
-        let _ = sync_directory(&self.scripts_dir());
-        let _ = sync_directory(&trash_root);
-
-        registry.remove(&fresh.slug);
-        if let Err(error) = registry.save() {
-            let rollback = fs::rename(&trash, &source)
-                .map_err(|rollback| io_error("rollback remove", &trash, rollback));
-            let _ = sync_directory(&self.scripts_dir());
-            let _ = sync_directory(&trash_root);
-            return Err(rollback_error(error, rollback, &source));
-        }
-        match fs::remove_dir_all(&trash) {
-            Ok(()) => {
-                let _ = sync_directory(&trash_root);
-                Ok(name)
-            }
-            Err(_) => {
-                let incomplete = RepositoryError::RemovalIncomplete {
-                    name,
-                    path: source.display().to_string(),
-                };
-                let restored = fs::rename(&trash, &source)
-                    .map_err(|error| io_error("restore incomplete removal", &trash, error));
-                let _ = sync_directory(&self.scripts_dir());
-                let _ = sync_directory(&trash_root);
-                Err(rollback_error(incomplete, restored, &source))
-            }
-        }
+        self.remove_with_lock_hook(entry, |_| {})
     }
 
     fn commit_copy_edit(
@@ -435,6 +403,56 @@ impl EntryMutationRepository for FileStore {
 }
 
 impl FileStore {
+    fn remove_with_lock_hook(
+        &self,
+        entry: &Entry,
+        mut before_lock: impl FnMut(RemoveLockPoint),
+    ) -> Result<String, RepositoryError> {
+        let _launch = self.launch_lock(&entry.slug)?;
+        before_lock(RemoveLockPoint::Dependency);
+        let _dependencies = self.dependency_lock(&entry.slug)?;
+        before_lock(RemoveLockPoint::Entry);
+        let _entry = self.entry_lock(&entry.slug)?;
+        before_lock(RemoveLockPoint::Namespace);
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        let name = fresh.meta.name.clone();
+        let source = self.entry_dir(&fresh.slug);
+        let trash_root = self.data_dir().join(".trash");
+        create_dir_all(&trash_root, "create")?;
+        let trash = trash_root.join(format!("{}-{}", fresh.slug, EntryId::generate().as_str()));
+        fs::rename(&source, &trash).map_err(|error| io_error("remove", &source, error))?;
+        let _ = sync_directory(&self.scripts_dir());
+        let _ = sync_directory(&trash_root);
+
+        registry.remove(&fresh.slug);
+        if let Err(error) = registry.save() {
+            let rollback = fs::rename(&trash, &source)
+                .map_err(|rollback| io_error("rollback remove", &trash, rollback));
+            let _ = sync_directory(&self.scripts_dir());
+            let _ = sync_directory(&trash_root);
+            return Err(rollback_error(error, rollback, &source));
+        }
+        match fs::remove_dir_all(&trash) {
+            Ok(()) => {
+                let _ = sync_directory(&trash_root);
+                Ok(name)
+            }
+            Err(_) => {
+                let incomplete = RepositoryError::RemovalIncomplete {
+                    name,
+                    path: source.display().to_string(),
+                };
+                let restored = fs::rename(&trash, &source)
+                    .map_err(|error| io_error("restore incomplete removal", &trash, error));
+                let _ = sync_directory(&self.scripts_dir());
+                let _ = sync_directory(&trash_root);
+                Err(rollback_error(incomplete, restored, &source))
+            }
+        }
+    }
+
     /// Recheck identity and source bytes, then pin a copy-mode payload for one launch.
     ///
     /// `expected_source_hash` is the hash observed while the launch form was assembled. Passing it
@@ -1154,7 +1172,7 @@ fn rollback_error(
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Barrier},
+        sync::{Arc, Barrier, mpsc},
         thread,
     };
 
@@ -1163,6 +1181,55 @@ mod tests {
     use time::{Date, Month};
 
     use super::*;
+
+    #[test]
+    fn remove_attempts_the_dependency_lock_before_the_entry_lock() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "Removal lock order".to_owned(),
+                kind: EntryKind::parse("js").unwrap(),
+                mode: StorageMode::Copy,
+                source: "/original.js".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: Some(EntryPayload {
+                    bytes: b"console.log('keep');\n".to_vec(),
+                    stored_name: Some("script.js".to_owned()),
+                    permissions: skit_application::SourcePermissions::default(),
+                }),
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let dependency = store.dependency_lock(&entry.slug).unwrap();
+        let release = Arc::new(Barrier::new(2));
+        let worker_release = Arc::clone(&release);
+        let worker_store = store.clone();
+        let worker_entry = entry.clone();
+        let (point_tx, point_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let mut first = true;
+            worker_store.remove_with_lock_hook(&worker_entry, |point| {
+                if first {
+                    first = false;
+                    point_tx.send(point).unwrap();
+                    worker_release.wait();
+                }
+            })
+        });
+        let first = point_rx.recv().unwrap();
+
+        if first == RemoveLockPoint::Dependency {
+            let entry_lock = store.entry_lock(&entry.slug).unwrap();
+            drop(entry_lock);
+        }
+        release.wait();
+        drop(dependency);
+
+        assert_eq!(first, RemoveLockPoint::Dependency);
+        assert_eq!(worker.join().unwrap().unwrap(), "Removal lock order");
+    }
 
     #[test]
     fn external_finalize_rejects_a_different_existing_file_in_the_same_entry_directory() {

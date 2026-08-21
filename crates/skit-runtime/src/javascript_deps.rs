@@ -115,6 +115,61 @@ impl DependencyCommandRunner for SystemDependencyCommandRunner {
     }
 }
 
+/// One reversible cleanup of a private JavaScript dependency environment.
+///
+/// The guard holds the persistent per-entry dependency lock. Call [`Self::finalize`] after every
+/// dependent commit succeeds, or call [`Self::rollback`] when one fails. Dropping an unresolved
+/// guard attempts disaster recovery, but normal callers must handle the typed result explicitly.
+#[derive(Debug)]
+#[must_use = "finalize or roll back the prepared JavaScript dependency cleanup"]
+pub struct PreparedJavaScriptDependencyCleanup {
+    entry_dir: PathBuf,
+    backup_started: bool,
+    resolved: bool,
+    _lock: Option<DependencyLock>,
+}
+
+impl PreparedJavaScriptDependencyCleanup {
+    /// Commit the cleanup and remove the quarantined old environment.
+    pub fn finalize(&mut self) -> Result<(), DependencyError> {
+        let result = if self.backup_started {
+            finish_dependency_backup(&self.entry_dir)
+        } else {
+            Ok(())
+        };
+        if result.is_ok() || !path_exists(&self.entry_dir.join(BACKUP_NAME)) {
+            self.resolved = true;
+            self._lock.take();
+        }
+        result
+    }
+
+    /// Restore the quarantined old environment while the dependency lock remains held.
+    pub fn rollback(&mut self) -> Result<(), DependencyError> {
+        if self.resolved {
+            return Ok(());
+        }
+        let result = if self.backup_started {
+            recover_dependency_backup(&self.entry_dir)
+        } else {
+            Ok(())
+        };
+        if result.is_ok() {
+            self.resolved = true;
+            self._lock.take();
+        }
+        result
+    }
+}
+
+impl Drop for PreparedJavaScriptDependencyCleanup {
+    fn drop(&mut self) {
+        if !self.resolved && self.backup_started {
+            let _ = recover_dependency_backup(&self.entry_dir);
+        }
+    }
+}
+
 /// Report a private JavaScript dependency failure.
 #[derive(Debug, Error)]
 pub enum DependencyError {
@@ -512,11 +567,33 @@ fn ensure_module_manifest_unlocked(
 
 /// Remove JavaScript dependency artifacts from one private entry directory.
 pub fn clear_javascript_dependencies(entry_dir: &Path) -> Result<(), DependencyError> {
-    let _lock = dependency_lock(entry_dir)?;
+    let mut cleanup = prepare_javascript_dependency_cleanup(entry_dir)?;
+    cleanup.finalize()
+}
+
+/// Quarantine every owned JavaScript dependency artifact under one persistent lock.
+///
+/// The entry directory is already in the requested cleared shape when this returns. The old tree
+/// remains recoverable until the caller finalizes the guard.
+pub fn prepare_javascript_dependency_cleanup(
+    entry_dir: &Path,
+) -> Result<PreparedJavaScriptDependencyCleanup, DependencyError> {
+    let lock = dependency_lock(entry_dir)?;
     require_entry_directory(entry_dir)?;
     recover_dependency_backup(entry_dir)?;
     remove_staging_leftovers(entry_dir)?;
-    clear_javascript_dependencies_unlocked(entry_dir)
+    sweep_stale_injected_sources(entry_dir);
+    validate_dependency_item_shapes(entry_dir)?;
+    let backup_started = dependency_items().any(|name| path_exists(&entry_dir.join(name)));
+    if backup_started {
+        begin_dependency_backup(entry_dir)?;
+    }
+    Ok(PreparedJavaScriptDependencyCleanup {
+        entry_dir: entry_dir.to_owned(),
+        backup_started,
+        resolved: false,
+        _lock: Some(lock),
+    })
 }
 
 fn clear_javascript_dependencies_unlocked(entry_dir: &Path) -> Result<(), DependencyError> {

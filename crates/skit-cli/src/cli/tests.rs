@@ -5713,20 +5713,20 @@ fn every_cli_error_localizes_and_keeps_its_values() {
     );
     assert_localized(
         &CliError::Rollback {
-            primary: Box::new(CliError::Usage(
-                Message::new("primary operation failed: {}").with("primary detail"),
-            )),
-            rollback: Box::new(CliError::Usage(
-                Message::new("rollback operation failed: {}").with("rollback detail"),
-            )),
+            primary: Box::new(CliError::Repository(RepositoryError::NotFound {
+                query: "primary detail".to_owned(),
+            })),
+            rollback: Box::new(CliError::Repository(RepositoryError::NotFound {
+                query: "rollback detail".to_owned(),
+            })),
         },
         &["primary detail", "rollback detail"],
     );
     assert_localized(
         &CliError::StateRestoreRollback {
-            primary: Box::new(CliError::Usage(
-                Message::new("finalize operation failed: {}").with("finalize detail"),
-            )),
+            primary: Box::new(CliError::Repository(RepositoryError::NotFound {
+                query: "finalize detail".to_owned(),
+            })),
             state: StateWriteError::Encode {
                 reason: "state restore detail".to_owned(),
             },
@@ -6423,8 +6423,10 @@ fn tui_finalize_cleanup_failure_restores_public_entry_and_plaintext_state() {
         &[token],
     )
     .unwrap();
-    let mut settings = EntrySettings::default();
-    settings.dependencies = vec!["chalk".to_owned()];
+    let settings = EntrySettings {
+        dependencies: vec!["chalk".to_owned()],
+        ..EntrySettings::default()
+    };
     let entry = service
         .add(CreateEntry {
             name: "Finalize rollback".to_owned(),

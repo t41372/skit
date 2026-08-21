@@ -67,16 +67,17 @@ use skit_language::{
     write_uv_metadata,
 };
 use skit_runtime::{
-    DependencyError, InterpreterPlatform, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe,
-    SystemNetworkProbe, SystemProbe, clear_javascript_dependencies, managed_uv_path,
-    network_looks_blocked, preflight_javascript_dependencies_for_module, project_launch_workdir,
-    resolve_interpreter, resolve_javascript_runtime,
+    DependencyError, InterpreterPlatform, LaunchError, LaunchPaths, NetworkProbe,
+    PreparedJavaScriptDependencyCleanup, ProgramProbe, SystemNetworkProbe, SystemProbe,
+    managed_uv_path, network_looks_blocked, preflight_javascript_dependencies_for_module,
+    prepare_javascript_dependency_cleanup, project_launch_workdir, resolve_interpreter,
+    resolve_javascript_runtime,
 };
 use skit_store::{
-    CONFIG_KEYS, ConfigError, CoordinatedStateError, FileAgentSkillStore, FileConfigStore,
-    FileFormStateStore, FileGlobExpander, FilePromptSelectionStore, FileRunnerManagementStore,
-    PromptRunner, RunnerManagementStoreError, RunnerRemovalCas, SystemDirectoryReader,
-    expand_user_path,
+    CONFIG_KEYS, ConfigError, CoordinatedStateError, ExternalRollbackOutcome, FileAgentSkillStore,
+    FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
+    FileRunnerManagementStore, PromptRunner, RunnerManagementStoreError, RunnerRemovalCas,
+    SystemDirectoryReader, expand_user_path,
 };
 use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
@@ -4577,6 +4578,148 @@ fn deps(
 /// name checks happen before the fallible cleanup, and cleanup happens before metadata or source
 /// bytes can commit. A locked or malformed private dependency tree therefore leaves every form
 /// axis retryable.
+#[derive(Debug)]
+struct CommittedEntryUpdate {
+    entry: Entry,
+    before: Entry,
+    before_source: Option<Vec<u8>>,
+    cleanup: Option<PreparedJavaScriptDependencyCleanup>,
+}
+
+type PreparedEntryJavaScriptCleanup = (
+    Entry,
+    Option<Vec<u8>>,
+    Option<PreparedJavaScriptDependencyCleanup>,
+);
+
+impl CommittedEntryUpdate {
+    fn finalize_cleanup(&mut self) -> Result<(), CliError> {
+        if let Some(cleanup) = self.cleanup.as_mut() {
+            cleanup.finalize()?;
+        }
+        Ok(())
+    }
+
+    fn rollback_entry(&self, service: &LibraryService<FileStore>) -> Result<(), CliError> {
+        let claimed = service.claim_identity(&self.entry)?;
+        if claimed.meta != self.entry.meta {
+            return Err(RepositoryError::StaleEntry {
+                slug: self.entry.slug.as_str().to_owned(),
+            }
+            .into());
+        }
+        service.update_entry(
+            &claimed,
+            UpdateEntry {
+                name: self.before.meta.name.clone(),
+                description: self.before.meta.description.clone(),
+                settings: EntrySettings::from_meta(&self.before.meta),
+                workdir: self.before.meta.workdir.clone(),
+                source: self.before_source.clone(),
+                expected_source_hash: self.entry.meta.source_hash.clone(),
+            },
+        )?;
+        Ok(())
+    }
+}
+
+fn prepare_entry_javascript_cleanup(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: &UpdateEntry,
+    clear_javascript: bool,
+) -> Result<PreparedEntryJavaScriptCleanup, CliError> {
+    match service.prepare_entry_update(entry, update, |claimed| {
+        let before_source = if update.source.is_some() {
+            let path = store.payload_path(claimed)?;
+            Some(fs::read(&path).map_err(|error| source_read_error(&path, error))?)
+        } else {
+            None
+        };
+        let cleanup = clear_javascript
+            .then(|| prepare_javascript_dependency_cleanup(&store.entry_dir_path(&claimed.slug)))
+            .transpose()?;
+        Ok::<_, CliError>((before_source, cleanup))
+    }) {
+        Ok((claimed, (before_source, cleanup))) => Ok((claimed, before_source, cleanup)),
+        Err(PreparedEntryUpdateError::Repository(error)) => Err(error.into()),
+        Err(PreparedEntryUpdateError::Preparation(error)) => Err(error),
+    }
+}
+
+fn commit_entry_with_javascript_cleanup(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: UpdateEntry,
+    clear_javascript: bool,
+) -> Result<CommittedEntryUpdate, CliError> {
+    let (claimed, before_source, mut cleanup) =
+        prepare_entry_javascript_cleanup(service, store, entry, &update, clear_javascript)?;
+    match service.update_entry(&claimed, update) {
+        Ok(updated) => Ok(CommittedEntryUpdate {
+            entry: updated,
+            before: claimed,
+            before_source,
+            cleanup,
+        }),
+        Err(error) => {
+            let primary = CliError::Repository(error);
+            let Some(cleanup) = cleanup.as_mut() else {
+                return Err(primary);
+            };
+            match cleanup.rollback() {
+                Ok(()) => Err(primary),
+                Err(rollback) => Err(CliError::Rollback {
+                    primary: Box::new(primary),
+                    rollback: Box::new(rollback.into()),
+                }),
+            }
+        }
+    }
+}
+
+fn rollback_committed_entry_update(
+    committed: &mut CommittedEntryUpdate,
+    service: &LibraryService<FileStore>,
+) -> ExternalRollbackOutcome<CliError> {
+    let entry = committed.rollback_entry(service);
+    let cleanup = committed
+        .cleanup
+        .as_mut()
+        .map_or(Ok(()), PreparedJavaScriptDependencyCleanup::rollback)
+        .map_err(CliError::from);
+    match (entry, cleanup) {
+        (Ok(()), Ok(())) => ExternalRollbackOutcome::complete(),
+        (Ok(()), Err(error)) => ExternalRollbackOutcome::restored_with_error(error),
+        (Err(error), Ok(())) => ExternalRollbackOutcome::authoritative_failure(error),
+        (Err(primary), Err(rollback)) => {
+            ExternalRollbackOutcome::authoritative_failure(CliError::Rollback {
+                primary: Box::new(primary),
+                rollback: Box::new(rollback),
+            })
+        }
+    }
+}
+
+fn finalize_committed_entry_update(
+    service: &LibraryService<FileStore>,
+    mut committed: CommittedEntryUpdate,
+) -> Result<Entry, CliError> {
+    if let Err(primary) = committed.finalize_cleanup() {
+        let rollback = rollback_committed_entry_update(&mut committed, service);
+        return match rollback.into_error() {
+            None => Err(primary),
+            Some(rollback) => Err(CliError::Rollback {
+                primary: Box::new(primary),
+                rollback: Box::new(rollback),
+            }),
+        };
+    }
+    Ok(committed.entry)
+}
+
 fn update_entry_with_javascript_cleanup(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -4584,17 +4727,9 @@ fn update_entry_with_javascript_cleanup(
     update: UpdateEntry,
     clear_javascript: bool,
 ) -> Result<Entry, CliError> {
-    match service.update_entry_after_preparation(entry, update, |claimed| {
-        if clear_javascript {
-            clear_javascript_dependencies(&store.entry_dir_path(&claimed.slug))
-        } else {
-            Ok(())
-        }
-    }) {
-        Ok(entry) => Ok(entry),
-        Err(PreparedEntryUpdateError::Repository(error)) => Err(error.into()),
-        Err(PreparedEntryUpdateError::Preparation(error)) => Err(error.into()),
-    }
+    let committed =
+        commit_entry_with_javascript_cleanup(service, store, entry, update, clear_javascript)?;
+    finalize_committed_entry_update(service, committed)
 }
 
 /// Run the shared preflight and optional cleanup without rewriting unchanged metadata.
@@ -4605,17 +4740,12 @@ fn prepare_javascript_cleanup(
     update: &UpdateEntry,
     clear_javascript: bool,
 ) -> Result<Entry, CliError> {
-    match service.prepare_entry_update(entry, update, |claimed| {
-        if clear_javascript {
-            clear_javascript_dependencies(&store.entry_dir_path(&claimed.slug))
-        } else {
-            Ok(())
-        }
-    }) {
-        Ok(entry) => Ok(entry),
-        Err(PreparedEntryUpdateError::Repository(error)) => Err(error.into()),
-        Err(PreparedEntryUpdateError::Preparation(error)) => Err(error.into()),
+    let (claimed, _, cleanup) =
+        prepare_entry_javascript_cleanup(service, store, entry, update, clear_javascript)?;
+    if let Some(mut cleanup) = cleanup {
+        cleanup.finalize()?;
     }
+    Ok(claimed)
 }
 
 fn write_deps_receipts(
@@ -5046,7 +5176,7 @@ fn params(
                     },
                     |state| scrub_secrets(&declarations, state),
                     |(updated, changed)| -> Result<(), CliError> {
-                        if !changed {
+                        if !*changed {
                             return Ok(());
                         }
                         let claimed = service.claim_identity(updated)?;
@@ -5511,6 +5641,27 @@ fn coordinated_state_error(error: CoordinatedStateError<CliError>) -> CliError {
             state,
             rollback: Box::new(rollback),
         },
+        CoordinatedStateError::FinalizeAfterState {
+            finalize,
+            rollback,
+            state_rollback,
+            authoritative_restored: _,
+        } => {
+            let primary = match rollback {
+                Some(rollback) => CliError::Rollback {
+                    primary: Box::new(finalize),
+                    rollback: Box::new(rollback),
+                },
+                None => finalize,
+            };
+            match state_rollback {
+                Some(state) => CliError::StateRestoreRollback {
+                    primary: Box::new(primary),
+                    state,
+                },
+                None => primary,
+            }
+        }
     }
 }
 
@@ -9712,15 +9863,13 @@ fn tui_submit_settings(
     }
     .filter(|declarations| declarations.iter().any(|declaration| declaration.secret));
     let state_store = FileFormStateStore::new(state_dir);
-    let old_entry = entry.clone();
-    let source_changed = update.source.is_some();
     let (entry, purged_secrets) = if entry_changed && purge_declarations.is_some() {
         let purge_declarations = purge_declarations.as_deref().unwrap_or_default();
-        state_store
-            .update_after_external_commit(
+        let (committed, purged_secrets) = state_store
+            .update_after_external_commit_and_finalize(
                 &entry.slug,
                 || {
-                    update_entry_with_javascript_cleanup(
+                    commit_entry_with_javascript_cleanup(
                         service,
                         store,
                         &entry,
@@ -9729,21 +9878,11 @@ fn tui_submit_settings(
                     )
                 },
                 |state| scrub_secrets(purge_declarations, state),
-                |updated| -> Result<(), CliError> {
-                    let claimed = service.claim_identity(updated)?;
-                    let rollback = UpdateEntry {
-                        name: old_entry.meta.name.clone(),
-                        description: old_entry.meta.description.clone(),
-                        settings: EntrySettings::from_meta(&old_entry.meta),
-                        workdir: old_entry.meta.workdir.clone(),
-                        source: source_changed.then(|| original_source.clone()).flatten(),
-                        expected_source_hash: updated.meta.source_hash.clone(),
-                    };
-                    service.update_entry(&claimed, rollback)?;
-                    Ok(())
-                },
+                CommittedEntryUpdate::finalize_cleanup,
+                |committed| rollback_committed_entry_update(committed, service),
             )
-            .map_err(coordinated_state_error)?
+            .map_err(coordinated_state_error)?;
+        (committed.entry, purged_secrets)
     } else {
         let entry = if entry_changed {
             update_entry_with_javascript_cleanup(service, store, &entry, update, clear_javascript)?
@@ -10176,6 +10315,16 @@ enum CliError {
         state: StateWriteError,
         rollback: Box<CliError>,
     },
+    #[error("Operation failed: {primary}. Rollback also failed: {rollback}.")]
+    Rollback {
+        primary: Box<CliError>,
+        rollback: Box<CliError>,
+    },
+    #[error("Operation failed: {primary}. State rollback also failed: {state}.")]
+    StateRestoreRollback {
+        primary: Box<CliError>,
+        state: StateWriteError,
+    },
     #[error("{0}")]
     Usage(Message),
     #[error("{0}")]
@@ -10220,6 +10369,16 @@ impl Localize for CliError {
                 Message::new("State commit failed: {}. Rollback also failed: {}.")
                     .nested(state.message())
                     .nested(rollback.message())
+            }
+            Self::Rollback { primary, rollback } => {
+                Message::new("Operation failed: {}. Rollback also failed: {}.")
+                    .nested(primary.message())
+                    .nested(rollback.message())
+            }
+            Self::StateRestoreRollback { primary, state } => {
+                Message::new("Operation failed: {}. State rollback also failed: {}.")
+                    .nested(primary.message())
+                    .nested(state.message())
             }
             Self::Usage(message) => message.clone(),
             Self::Failure(message) => message.clone(),
@@ -10266,6 +10425,8 @@ impl CliError {
             | Self::Tui(_)
             | Self::State(_)
             | Self::StateRollback { .. }
+            | Self::Rollback { .. }
+            | Self::StateRestoreRollback { .. }
             | Self::DataDirectoryUnavailable
             | Self::DirectoryUnavailable(_) => ExitClass::Skit.code() as i32,
             Self::Source { .. } | Self::SourceRead { .. } => ExitClass::Failure.code() as i32,

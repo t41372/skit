@@ -278,20 +278,20 @@ where
     /// metadata rewrite. If it commits an update, the repository repeats its identity and name
     /// checks. The early checks keep a fallible preparation from changing external state when the
     /// request is already stale or its destination name is already taken.
-    pub fn prepare_entry_update<E>(
+    pub fn prepare_entry_update<T, E>(
         &self,
         entry: &Entry,
         update: &UpdateEntry,
-        prepare: impl FnOnce(&Entry) -> Result<(), E>,
-    ) -> Result<Entry, PreparedEntryUpdateError<E>> {
+        prepare: impl FnOnce(&Entry) -> Result<T, E>,
+    ) -> Result<(Entry, T), PreparedEntryUpdateError<E>> {
         validate_settings(&update.settings, &update.workdir)
             .map_err(PreparedEntryUpdateError::Repository)?;
         let claimed = self
             .repository
             .preflight_update_entry(entry, &update.name)
             .map_err(PreparedEntryUpdateError::Repository)?;
-        prepare(&claimed).map_err(PreparedEntryUpdateError::Preparation)?;
-        Ok(claimed)
+        let prepared = prepare(&claimed).map_err(PreparedEntryUpdateError::Preparation)?;
+        Ok((claimed, prepared))
     }
 
     /// Prepare one external adapter, then commit the entry update.
@@ -301,7 +301,7 @@ where
         update: UpdateEntry,
         prepare: impl FnOnce(&Entry) -> Result<(), E>,
     ) -> Result<Entry, PreparedEntryUpdateError<E>> {
-        let claimed = self.prepare_entry_update(entry, &update, prepare)?;
+        let (claimed, ()) = self.prepare_entry_update(entry, &update, prepare)?;
         self.repository
             .update_entry(&claimed, update)
             .map_err(PreparedEntryUpdateError::Repository)

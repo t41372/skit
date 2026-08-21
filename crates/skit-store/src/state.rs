@@ -16,6 +16,63 @@ pub struct FileFormStateStore {
     state_dir: PathBuf,
 }
 
+/// Result of rolling back authoritative entry state and derived external artifacts.
+#[derive(Debug)]
+pub struct ExternalRollbackOutcome<E> {
+    authoritative_restored: bool,
+    error: Option<E>,
+}
+
+impl<E> ExternalRollbackOutcome<E> {
+    /// Report that authoritative state and all derived artifacts were restored.
+    #[must_use]
+    pub const fn complete() -> Self {
+        Self {
+            authoritative_restored: true,
+            error: None,
+        }
+    }
+
+    /// Report that authoritative state was restored but a derived rollback failed.
+    #[must_use]
+    pub const fn restored_with_error(error: E) -> Self {
+        Self {
+            authoritative_restored: true,
+            error: Some(error),
+        }
+    }
+
+    /// Report that authoritative state could not be restored.
+    #[must_use]
+    pub const fn authoritative_failure(error: E) -> Self {
+        Self {
+            authoritative_restored: false,
+            error: Some(error),
+        }
+    }
+
+    /// Whether the source and metadata returned to their authoritative prior state.
+    #[must_use]
+    pub const fn authoritative_restored(&self) -> bool {
+        self.authoritative_restored
+    }
+
+    /// Consume the optional rollback detail.
+    #[must_use]
+    pub fn into_error(self) -> Option<E> {
+        self.error
+    }
+}
+
+impl<E> From<Result<(), E>> for ExternalRollbackOutcome<E> {
+    fn from(result: Result<(), E>) -> Self {
+        match result {
+            Ok(()) => Self::complete(),
+            Err(error) => Self::authoritative_failure(error),
+        }
+    }
+}
+
 /// Failure from a state update coordinated with one external commit.
 #[derive(Debug)]
 pub enum CoordinatedStateError<E> {
@@ -29,6 +86,17 @@ pub enum CoordinatedStateError<E> {
         state: StateWriteError,
         /// External rollback failure. `None` means rollback succeeded.
         rollback: Option<E>,
+    },
+    /// Final cleanup failed after state committed.
+    FinalizeAfterState {
+        /// Failure from finalizing the external transaction.
+        finalize: E,
+        /// External rollback failure, including a derived-artifact restoration failure.
+        rollback: Option<E>,
+        /// Failure from restoring the byte-exact original state after external rollback succeeded.
+        state_rollback: Option<StateWriteError>,
+        /// Whether authoritative source and metadata rollback succeeded.
+        authoritative_restored: bool,
     },
 }
 
@@ -57,54 +125,139 @@ impl FileFormStateStore {
     ///
     /// If state persistence fails, `rollback` runs before the state lock is released. A concurrent
     /// run therefore cannot restore a stale public value between a secrecy commit and its purge.
-    pub fn update_after_external_commit<C, T, E>(
+    pub fn update_after_external_commit<C, T, E, R>(
         &self,
         slug: &Slug,
         commit: impl FnOnce() -> Result<C, E>,
         update: impl FnOnce(&mut PersistedFormState) -> T,
-        rollback: impl FnOnce(&C) -> Result<(), E>,
-    ) -> Result<(C, T), CoordinatedStateError<E>> {
-        self.update_after_external_commit_with(slug, commit, update, rollback, |path, bytes| {
-            atomic_write_bytes(path, bytes)
-                .map_err(|error| io_error("write", path, error.to_string()))
-        })
+        rollback: impl FnOnce(&mut C) -> R,
+    ) -> Result<(C, T), CoordinatedStateError<E>>
+    where
+        R: Into<ExternalRollbackOutcome<E>>,
+    {
+        self.update_after_external_commit_and_finalize(slug, commit, update, |_| Ok(()), rollback)
+    }
+
+    /// Coordinate an external commit, state write, and fallible final cleanup.
+    pub fn update_after_external_commit_and_finalize<C, T, E, R>(
+        &self,
+        slug: &Slug,
+        commit: impl FnOnce() -> Result<C, E>,
+        update: impl FnOnce(&mut PersistedFormState) -> T,
+        finalize: impl FnOnce(&mut C) -> Result<(), E>,
+        rollback: impl FnOnce(&mut C) -> R,
+    ) -> Result<(C, T), CoordinatedStateError<E>>
+    where
+        R: Into<ExternalRollbackOutcome<E>>,
+    {
+        self.update_after_external_commit_and_finalize_with(
+            slug,
+            commit,
+            update,
+            finalize,
+            rollback,
+            |path, bytes| {
+                atomic_write_bytes(path, bytes)
+                    .map_err(|error| io_error("write", path, error.to_string()))
+            },
+            restore_state_snapshot,
+        )
     }
 
     /// Injectable state-writer variant of [`Self::update_after_external_commit`].
     #[doc(hidden)]
-    pub fn update_after_external_commit_with<C, T, E>(
+    pub fn update_after_external_commit_with<C, T, E, R>(
         &self,
         slug: &Slug,
         commit: impl FnOnce() -> Result<C, E>,
         update: impl FnOnce(&mut PersistedFormState) -> T,
-        rollback: impl FnOnce(&C) -> Result<(), E>,
+        rollback: impl FnOnce(&mut C) -> R,
         write_state: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), StateWriteError>,
-    ) -> Result<(C, T), CoordinatedStateError<E>> {
+    ) -> Result<(C, T), CoordinatedStateError<E>>
+    where
+        R: Into<ExternalRollbackOutcome<E>>,
+    {
+        self.update_after_external_commit_and_finalize_with(
+            slug,
+            commit,
+            update,
+            |_| Ok(()),
+            rollback,
+            write_state,
+            restore_state_snapshot,
+        )
+    }
+
+    /// Injectable writer and restore variant of the complete coordinated transaction.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_after_external_commit_and_finalize_with<C, T, E, R>(
+        &self,
+        slug: &Slug,
+        commit: impl FnOnce() -> Result<C, E>,
+        update: impl FnOnce(&mut PersistedFormState) -> T,
+        finalize: impl FnOnce(&mut C) -> Result<(), E>,
+        rollback: impl FnOnce(&mut C) -> R,
+        write_state: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), StateWriteError>,
+        restore_state: impl FnOnce(&std::path::Path, Option<&[u8]>) -> Result<(), StateWriteError>,
+    ) -> Result<(C, T), CoordinatedStateError<E>>
+    where
+        R: Into<ExternalRollbackOutcome<E>>,
+    {
         let lock_path = self.lock_path(slug);
         let _lock = acquire_lock(&lock_path).map_err(|error| {
             CoordinatedStateError::State(io_error("lock", &lock_path, error.to_string()))
         })?;
         let path = self.values_path(slug);
-        let mut document = load_document_for_write(&path).map_err(CoordinatedStateError::State)?;
+        let (mut document, original_bytes) =
+            load_document_for_write_snapshot(&path).map_err(CoordinatedStateError::State)?;
         sanitize_document(&mut document);
         let mut state = state_from_document(&document);
         let before = state.clone();
         let result = update(&mut state);
         if state == before {
-            let committed = commit().map_err(CoordinatedStateError::Commit)?;
-            return Ok((committed, result));
+            let mut committed = commit().map_err(CoordinatedStateError::Commit)?;
+            return match finalize(&mut committed) {
+                Ok(()) => Ok((committed, result)),
+                Err(finalize) => {
+                    let rollback = rollback(&mut committed).into();
+                    Err(CoordinatedStateError::FinalizeAfterState {
+                        finalize,
+                        authoritative_restored: rollback.authoritative_restored(),
+                        rollback: rollback.into_error(),
+                        state_rollback: None,
+                    })
+                }
+            };
         }
         merge_state(&mut document, &before, &state);
         let encoded =
             toml::to_string_pretty(&document).expect("a parsed TOML value tree must serialize");
-        let committed = commit().map_err(CoordinatedStateError::Commit)?;
+        let mut committed = commit().map_err(CoordinatedStateError::Commit)?;
         if let Err(error) = write_state(&path, encoded.as_bytes()) {
             return Err(CoordinatedStateError::StateAfterCommit {
                 state: error,
-                rollback: rollback(&committed).err(),
+                rollback: rollback(&mut committed).into().into_error(),
             });
         }
-        Ok((committed, result))
+        match finalize(&mut committed) {
+            Ok(()) => Ok((committed, result)),
+            Err(finalize) => {
+                let rollback = rollback(&mut committed).into();
+                let authoritative_restored = rollback.authoritative_restored();
+                let state_rollback = if authoritative_restored {
+                    restore_state(&path, original_bytes.as_deref()).err()
+                } else {
+                    None
+                };
+                Err(CoordinatedStateError::FinalizeAfterState {
+                    finalize,
+                    rollback: rollback.into_error(),
+                    state_rollback,
+                    authoritative_restored,
+                })
+            }
+        }
     }
 }
 
@@ -189,6 +342,38 @@ fn load_document_for_write(path: &std::path::Path) -> Result<Table, StateWriteEr
         Ok(text) => Ok(toml::from_str::<Table>(&text).unwrap_or_default()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Table::new()),
         Err(error) => Err(io_error("read", path, error.to_string())),
+    }
+}
+
+fn load_document_for_write_snapshot(
+    path: &std::path::Path,
+) -> Result<(Table, Option<Vec<u8>>), StateWriteError> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let text = std::str::from_utf8(&bytes)
+                .map_err(|error| io_error("read", path, error.to_string()))?;
+            Ok((
+                toml::from_str::<Table>(text).unwrap_or_default(),
+                Some(bytes),
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((Table::new(), None)),
+        Err(error) => Err(io_error("read", path, error.to_string())),
+    }
+}
+
+fn restore_state_snapshot(
+    path: &std::path::Path,
+    original: Option<&[u8]>,
+) -> Result<(), StateWriteError> {
+    if let Some(original) = original {
+        return atomic_write_bytes(path, original)
+            .map_err(|error| io_error("rollback write", path, error.to_string()));
+    }
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error("rollback remove", path, error.to_string())),
     }
 }
 

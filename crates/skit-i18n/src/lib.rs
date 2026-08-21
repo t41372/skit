@@ -1676,6 +1676,16 @@ const CATALOG: &[Translation] = &[
         "状态提交失败：{}。回滚也失败：{}。",
         "狀態提交失敗：{}。復原也失敗：{}。",
     ),
+    row!(
+        "Operation failed: {}. Rollback also failed: {}.",
+        "操作失败：{}。回滚也失败：{}。",
+        "操作失敗：{}。復原也失敗：{}。",
+    ),
+    row!(
+        "Operation failed: {}. State rollback also failed: {}.",
+        "操作失败：{}。状态回滚也失败：{}。",
+        "操作失敗：{}。狀態復原也失敗：{}。",
+    ),
     row!("yes", "是", "是"),
     row!("no", "否", "否"),
     row!("on", "开启", "開啟"),
