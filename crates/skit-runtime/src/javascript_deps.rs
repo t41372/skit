@@ -300,7 +300,7 @@ where
         );
     }
     let manifest = javascript_dependency_manifest_for_module(dependencies, module_type)?;
-    let installer = installer_for_runtime(runtime);
+    let (installer, _) = installer_for_runtime(runtime);
     let stamp = dependency_stamp(installer, &manifest);
     let marker_path = entry_dir.join("node_modules").join(MARKER_NAME);
     if fs::read(&marker_path).ok().as_deref() == Some(stamp.as_bytes()) {
@@ -366,7 +366,11 @@ fn clear_javascript_dependencies_unlocked(entry_dir: &Path) -> Result<(), Depend
 }
 
 fn sweep_stale_injected_at(entry_dir: &Path, now: SystemTime) {
-    let Some(cutoff) = now.checked_sub(STALE_INJECTED_AGE) else {
+    sweep_stale_injected_before(entry_dir, now.checked_sub(STALE_INJECTED_AGE));
+}
+
+fn sweep_stale_injected_before(entry_dir: &Path, cutoff: Option<SystemTime>) {
+    let Some(cutoff) = cutoff else {
         return;
     };
     let Ok(items) = fs::read_dir(entry_dir) else {
@@ -445,13 +449,7 @@ fn dependency_command<P: ProgramProbe>(
     environment: &BTreeMap<String, String>,
     probe: &P,
 ) -> Result<DependencyCommand, DependencyError> {
-    let installer = installer_for_runtime(runtime);
-    let args = match installer {
-        "npm" => ["install", "--no-audit", "--no-fund", "--ignore-scripts"].as_slice(),
-        "bun" => ["install", "--ignore-scripts"].as_slice(),
-        "deno" => ["install"].as_slice(),
-        _ => unreachable!("installer_for_runtime returns a known installer"),
-    };
+    let (installer, args) = installer_for_runtime(runtime);
     let program =
         probe
             .find_program(installer)
@@ -466,11 +464,14 @@ fn dependency_command<P: ProgramProbe>(
     })
 }
 
-fn installer_for_runtime(runtime: &str) -> &'static str {
+fn installer_for_runtime(runtime: &str) -> (&'static str, &'static [&'static str]) {
     match runtime {
-        "bun" => "bun",
-        "deno" => "deno",
-        _ => "npm",
+        "bun" => ("bun", &["install", "--ignore-scripts"]),
+        "deno" => ("deno", &["install"]),
+        _ => (
+            "npm",
+            &["install", "--no-audit", "--no-fund", "--ignore-scripts"],
+        ),
     }
 }
 
@@ -507,6 +508,13 @@ impl Drop for TemporaryDependencyDirectory {
 }
 
 fn begin_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
+    begin_dependency_backup_with(entry_dir, |source, target| fs::rename(source, target))
+}
+
+fn begin_dependency_backup_with<F>(entry_dir: &Path, mut rename: F) -> Result<(), DependencyError>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
     let backup = entry_dir.join(BACKUP_NAME);
     fs::create_dir(&backup).map_err(|error| io_error("create backup", &backup, error))?;
     let old_names = dependency_items()
@@ -521,7 +529,7 @@ fn begin_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
     for name in dependency_items() {
         let current = entry_dir.join(name);
         if path_exists(&current)
-            && let Err(error) = fs::rename(&current, backup.join(name))
+            && let Err(error) = rename(&current, &backup.join(name))
         {
             let primary = io_error("backup", &current, error);
             let rollback = recover_dependency_backup(entry_dir);
@@ -534,9 +542,16 @@ fn begin_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
 }
 
 fn finish_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
+    finish_dependency_backup_with(entry_dir, |source, target| fs::rename(source, target))
+}
+
+fn finish_dependency_backup_with<F>(entry_dir: &Path, rename: F) -> Result<(), DependencyError>
+where
+    F: FnOnce(&Path, &Path) -> io::Result<()>,
+{
     let backup = entry_dir.join(BACKUP_NAME);
     let cleanup = unused_temporary_path(entry_dir);
-    if let Err(error) = fs::rename(&backup, &cleanup) {
+    if let Err(error) = rename(&backup, &cleanup) {
         let primary = io_error("commit dependency backup", &backup, error);
         let rollback = recover_dependency_backup(entry_dir);
         return Err(combine_rollback_error(primary, rollback, entry_dir));
@@ -932,6 +947,88 @@ mod transaction_tests {
         assert!(edge.exists());
         assert!(fresh.exists());
         assert!(unrelated.exists());
+    }
+
+    #[test]
+    fn injected_sweep_is_inert_before_the_cutoff_exists_and_when_the_directory_is_gone() {
+        let missing = TempDir::new().unwrap().path().join("gone");
+        sweep_stale_injected_before(&missing, None);
+        sweep_stale_injected_at(&missing, SystemTime::UNIX_EPOCH);
+
+        let root = TempDir::new().unwrap();
+        let candidate = root.path().join(".injected-young.js");
+        fs::write(&candidate, b"keep\n").unwrap();
+        sweep_stale_injected_at(root.path(), SystemTime::UNIX_EPOCH);
+        assert_eq!(fs::read(candidate).unwrap(), b"keep\n");
+    }
+
+    #[test]
+    fn backup_move_failure_uses_real_recovery_before_it_returns() {
+        let root = TempDir::new().unwrap();
+        entry_with_previous_environment(root.path());
+        let mut moves = 0;
+
+        let error = begin_dependency_backup_with(root.path(), |source, target| {
+            moves += 1;
+            if moves == 2 {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected rename refusal",
+                ))
+            } else {
+                fs::rename(source, target)
+            }
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DependencyError::Io {
+                operation: "backup",
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(root.path().join("package.json")).unwrap(),
+            b"old manifest\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join(STAMP_NAME)).unwrap(),
+            b"old stamp\n"
+        );
+        assert!(!root.path().join(BACKUP_NAME).exists());
+    }
+
+    #[test]
+    fn backup_commit_failure_uses_real_recovery_before_it_returns() {
+        let root = TempDir::new().unwrap();
+        entry_with_previous_environment(root.path());
+        begin_dependency_backup(root.path()).unwrap();
+
+        let error = finish_dependency_backup_with(root.path(), |_, _| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected rename refusal",
+            ))
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DependencyError::Io {
+                operation: "commit dependency backup",
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(root.path().join("package.json")).unwrap(),
+            b"old manifest\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join(STAMP_NAME)).unwrap(),
+            b"old stamp\n"
+        );
+        assert!(!root.path().join(BACKUP_NAME).exists());
     }
 
     #[cfg(unix)]

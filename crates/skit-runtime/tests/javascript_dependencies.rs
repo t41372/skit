@@ -97,6 +97,11 @@ fn manifest_is_deterministic_private_and_supports_scoped_version_specs() {
         .unwrap(),
         "{\n  \"private\": true,\n  \"dependencies\": {\n    \"zod\": \"4\",\n    \"chalk\": \"5\"\n  }\n}\n"
     );
+    assert!(
+        javascript_dependency_manifest(&["@scope/@".to_owned()])
+            .unwrap()
+            .contains("\"@scope/@\": \"*\"")
+    );
 }
 
 #[test]
@@ -179,6 +184,32 @@ fn a_dependency_free_module_keeps_only_an_explicit_module_manifest() {
     );
     assert!(!root.path().join(".skit-deps").exists());
     assert!(!root.path().join("node_modules").exists());
+}
+
+#[test]
+fn a_module_manifest_read_error_is_typed_and_does_not_replace_the_path() {
+    let root = TempDir::new().unwrap();
+    fs::create_dir(root.path().join("package.json")).unwrap();
+
+    let error = ensure_javascript_dependencies_for_module(
+        root.path(),
+        "node",
+        &[],
+        Some(JavaScriptModuleType::Module),
+        &BTreeMap::new(),
+        &Probe::default(),
+        &Runner::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DependencyError::Io {
+            operation: "read",
+            ..
+        }
+    ));
+    assert!(root.path().join("package.json").is_dir());
 }
 
 #[test]

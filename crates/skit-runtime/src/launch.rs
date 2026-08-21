@@ -888,21 +888,13 @@ fn render_windows_command_template(
 #[derive(Clone, Debug, Default)]
 struct PosixQuoteState {
     frames: Vec<char>,
-    escape_pending: bool,
 }
 
 #[cfg(not(windows))]
 impl PosixQuoteState {
-    fn advance(&mut self, text: &str) {
+    fn advance(&mut self, text: &str) -> bool {
         let chars = text.chars().collect::<Vec<_>>();
         let mut index = 0;
-        if self.escape_pending {
-            if chars.is_empty() {
-                return;
-            }
-            self.escape_pending = false;
-            index = 1;
-        }
         while index < chars.len() {
             let character = chars[index];
             let top = self.frames.last().copied();
@@ -912,8 +904,7 @@ impl PosixQuoteState {
                 }
             } else if character == '\\' {
                 if index.saturating_add(1) >= chars.len() {
-                    self.escape_pending = true;
-                    return;
+                    return true;
                 }
                 index = index.saturating_add(1);
             } else if character == '$' && chars.get(index.saturating_add(1)) == Some(&'(') {
@@ -932,10 +923,7 @@ impl PosixQuoteState {
             }
             index = index.saturating_add(1);
         }
-    }
-
-    fn take_pending_escape(&mut self) -> bool {
-        std::mem::take(&mut self.escape_pending)
+        false
     }
 
     fn quote_value(&self, name: &str, value: &str) -> Result<String, LaunchError> {
@@ -966,8 +954,7 @@ fn render_posix_command_template(
     while let Some(span) = next_template_token(template, position) {
         let chunk = &template[position..span.start];
         output.push_str(chunk);
-        state.advance(chunk);
-        let pending_escape = state.take_pending_escape();
+        let pending_escape = state.advance(chunk);
         match span.token {
             TemplateToken::OpenBrace => output.push('{'),
             TemplateToken::CloseBrace => output.push('}'),

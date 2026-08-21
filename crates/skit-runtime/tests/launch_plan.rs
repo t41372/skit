@@ -395,6 +395,19 @@ fn command_template_tracks_nested_posix_quote_contexts() {
 
 #[cfg(not(windows))]
 #[test]
+fn a_closed_command_substitution_restores_the_outer_quote_context() {
+    assert_eq!(
+        render_command_template(
+            r#"tool "$(printf done) {value}""#,
+            &BTreeMap::from([("value".to_owned(), "$HOME".to_owned())]),
+        )
+        .unwrap(),
+        r#"tool "$(printf done) \$HOME""#,
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
 fn command_template_neutralizes_a_dangling_escape_before_a_value() {
     assert_eq!(
         render_command_template(

@@ -56,9 +56,9 @@ pub fn network_looks_blocked(probe: &dyn NetworkProbe) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::{cell::RefCell, net::TcpListener, time::Duration};
 
-    use super::{NetworkProbe, REACHABILITY_HOSTS, network_looks_blocked};
+    use super::{NetworkProbe, REACHABILITY_HOSTS, SystemNetworkProbe, network_looks_blocked};
 
     #[derive(Debug)]
     struct ScriptedProbe {
@@ -103,5 +103,18 @@ mod tests {
         let scripted = probe(vec!["pypi.org", "github.com"]);
         assert!(!network_looks_blocked(&scripted));
         assert_eq!(scripted.asked.borrow().as_slice(), REACHABILITY_HOSTS);
+    }
+
+    #[test]
+    fn system_probe_connects_to_loopback_and_treats_resolution_failure_as_blocked() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        assert!(SystemNetworkProbe.can_connect(
+            "127.0.0.1",
+            address.port(),
+            Duration::from_secs(1),
+        ));
+        assert!(!SystemNetworkProbe.can_connect("\0", address.port(), Duration::from_millis(1)));
+        drop(listener);
     }
 }
