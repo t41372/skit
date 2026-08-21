@@ -758,6 +758,12 @@ fn summary_missing_uses_only_the_listing_projection_and_derived_copy_target() {
         Some(reference_dir.to_str().unwrap()),
     );
     assert!(!summary_missing(&store, &reference));
+    let invoke_directory = listing_summary("python", StorageMode::Reference, Some(""));
+    assert_eq!(
+        summary_target(&store, &invoke_directory),
+        Some(std::path::PathBuf::from("."))
+    );
+    assert!(!summary_missing(&store, &invoke_directory));
 
     // This version cannot infer target semantics for a kind written by a newer skit.
     let unknown = listing_summary(
@@ -3002,6 +3008,12 @@ fn doctor_source_and_size_helpers_are_total_on_missing_corrupt_and_nested_paths(
     assert!(!entry_missing(&store, &health_entry("command")));
     let mut executable = health_entry("exe");
     executable.meta.mode = StorageMode::Reference;
+    executable.meta.source.clear();
+    assert_eq!(
+        entry_target(&store, &executable),
+        Some(std::path::PathBuf::from("."))
+    );
+    assert!(!entry_missing(&store, &executable));
     executable.meta.source = root.path().join("gone").display().to_string();
     assert!(entry_missing(&store, &executable));
     fs::write(root.path().join("gone"), "x").unwrap();
