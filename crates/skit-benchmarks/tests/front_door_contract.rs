@@ -509,6 +509,9 @@ fn front_door_errors_name_the_failed_input_without_partial_artifacts() {
 fn compare_workflow_keeps_latest_python_main_as_a_schema_v1_side() {
     let workflow = include_str!("../../../.github/workflows/benchmark-compare.yml");
     for required in [
+        "pull_request:",
+        "ref: ${{ github.event.pull_request.base.sha }}",
+        "ref: ${{ github.event.pull_request.head.sha }}",
         "$side/pyproject.toml",
         "$side/crates/skit-benchmarks/Cargo.toml",
         "side-base/crates/skit-benchmarks/Cargo.toml",
@@ -523,6 +526,9 @@ fn compare_workflow_keeps_latest_python_main_as_a_schema_v1_side() {
             "missing compare lane {required}"
         );
     }
+    assert!(!workflow.contains("workflow_dispatch:"));
+    assert!(!workflow.contains("inputs.base"));
+    assert!(!workflow.contains("inputs.head"));
     assert_eq!(
         workflow
             .matches(".venv/bin/python -m benchmarks run")

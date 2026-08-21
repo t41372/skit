@@ -342,7 +342,9 @@ Criterion, runs the PR macro profile, checks enforced budgets, adds Markdown to 
 and uploads all raw data.
 
 Nightly runs the full profile with Node and `strace`. It is the enforcement point for full-only skip
-rows and installed closure. The compare workflow is manual because it needs two chosen refs.
+rows and installed closure. The compare workflow uses the pull request event's fixed base and head
+SHAs. This keeps untrusted benchmark code in the pull request cache scope instead of executing a
+caller-selected ref in the default-branch scope.
 
 CodSpeed remains complementary. Its simulation-mode instruction counts are stable across hardware,
 while the self-contained macro pipeline records process behavior, bytes, memory, imports, skips, and

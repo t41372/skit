@@ -311,10 +311,12 @@ their own committed temporary repository. The normal suite and an explicit sourc
 while the fix pass is still changing. A push starts the mutation workflow and invalidates its result
 on the next source change.
 
-Four unresolved advanced-security review threads on that stale PR head identify cache poisoning in
-the ref-selectable benchmark comparison workflow. The local workflow now disables the uv cache for
-that job, and the tooling contract rejects any direct cache action there. The threads remain remote
-and unresolved until this candidate is pushed and reviewed.
+The first current-head CodeQL run exposed four high cache-poisoning alerts in the benchmark
+comparison workflow. Disabling the uv cache was not enough because `workflow_dispatch` still ran
+caller-selected refs in the default-branch cache scope. The follow-up changes the workflow to the
+low-privilege `pull_request` event and checks out only the event's fixed base and head SHAs. The
+tooling and benchmark front-door contracts reject a return to arbitrary input refs, and Actionlint
+plus Zizmor pass. Confirm that the next CodeQL run closes alerts 8 through 11 before completion.
 
 The final increment has 1,110 unique `test_*` names: 969 already exist on this branch, 471 of those
 are ignored/ledger owners, and six names are duplicated inside the PR increment itself. The raw

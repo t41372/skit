@@ -20,6 +20,12 @@ expect_text .github/workflows/codspeed.yml 'tool: cargo-codspeed@5.0.1'
 expect_text .github/workflows/codspeed.yml 'cargo codspeed build -m simulation --locked --workspace --all-features'
 expect_text .github/workflows/codspeed.yml 'run: cargo codspeed run'
 expect_text .github/workflows/benchmark-compare.yml 'enable-cache: false'
+expect_text .github/workflows/benchmark-compare.yml 'ref: ${{ github.event.pull_request.base.sha }}'
+expect_text .github/workflows/benchmark-compare.yml 'ref: ${{ github.event.pull_request.head.sha }}'
+if grep -Eq 'workflow_dispatch:|inputs\.(base|head)' .github/workflows/benchmark-compare.yml; then
+  echo 'the comparison workflow must not execute caller-selected refs in the default-branch cache scope' >&2
+  exit 1
+fi
 if grep -Eq 'enable-cache:[[:space:]]*true|uses:[[:space:]]*actions/cache@' \
   .github/workflows/benchmark-compare.yml; then
   echo 'the ref-selectable benchmark workflow must not save a cache after running either side' >&2
