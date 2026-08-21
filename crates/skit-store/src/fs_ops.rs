@@ -77,26 +77,29 @@ pub(crate) fn acquire_lock(path: &Path) -> io::Result<FileLock> {
 /// Acquire a persistent lock file only when a writer has already created it.
 ///
 /// Read paths use this form so observing an entry does not create skit data. `None` means that no
-/// skit writer has used this lock path yet or permissions prevent both this reader and a writer
-/// from opening or locking it.
+/// skit writer has used this lock path yet or the filesystem prevents both this reader and a
+/// writer from opening or locking it.
 pub(crate) fn acquire_existing_lock(path: &Path) -> io::Result<Option<FileLock>> {
     let file = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            return Ok(None);
-        }
+        Err(error) if existing_lock_is_unavailable(error.kind()) => return Ok(None),
         Err(error) => return Err(error),
     };
     match file.lock() {
         Ok(()) => Ok(Some(FileLock { _file: file })),
-        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(None),
+        Err(error) if existing_lock_is_unavailable(error.kind()) => Ok(None),
         Err(error) => Err(error),
     }
+}
+
+fn existing_lock_is_unavailable(kind: io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        io::ErrorKind::NotFound
+            | io::ErrorKind::PermissionDenied
+            | io::ErrorKind::ReadOnlyFilesystem
+            | io::ErrorKind::Unsupported
+    )
 }
 
 /// `acquire_lock` that never waits: `Some(FileLock)` holding the lock, or `None` holding nothing.
@@ -207,7 +210,7 @@ pub(crate) fn sync_directory(_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_lock, atomic_write_bytes, atomic_write_bytes_with,
+        acquire_lock, atomic_write_bytes, atomic_write_bytes_with, existing_lock_is_unavailable,
         preserve_permissions_best_effort, sync_directory, try_acquire_lock,
     };
     use std::{cell::Cell, io};
@@ -215,6 +218,25 @@ mod tests {
 
     // Port of skit.atomic try_advisory_file_lock tests (test_atomic.py ~653-702), driven at the
     // fs_ops primitive rather than the crate-private read-path seam that uses it.
+
+    #[test]
+    fn existing_read_lock_degrades_only_when_the_same_writer_lock_cannot_work() {
+        for kind in [
+            io::ErrorKind::NotFound,
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::ReadOnlyFilesystem,
+            io::ErrorKind::Unsupported,
+        ] {
+            assert!(existing_lock_is_unavailable(kind), "{kind:?}");
+        }
+        for kind in [
+            io::ErrorKind::InvalidInput,
+            io::ErrorKind::InvalidData,
+            io::ErrorKind::Other,
+        ] {
+            assert!(!existing_lock_is_unavailable(kind), "{kind:?}");
+        }
+    }
 
     #[test]
     fn try_lock_acquires_when_free_and_a_second_taker_declines() {
