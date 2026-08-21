@@ -63,8 +63,14 @@ pub enum SummaryError {
     #[error("{0}")]
     Missing(String),
     /// Run JSON failed.
-    #[error("run.json is not valid: {0}")]
-    RunJson(#[from] serde_json::Error),
+    #[error("run.json is not valid JSON ({source})")]
+    RunJson {
+        /// Input file.
+        path: PathBuf,
+        /// JSON decoder error.
+        #[source]
+        source: serde_json::Error,
+    },
     /// Suite or result validation failed.
     #[error(transparent)]
     Results(#[from] ResultsError),
@@ -110,7 +116,11 @@ pub fn summarize_directory(
         )));
     }
     let run_text = read(&run_path)?;
-    let run: RunRecord = serde_json::from_str(&run_text)?;
+    let run: RunRecord =
+        serde_json::from_str(&run_text).map_err(|source| SummaryError::RunJson {
+            path: run_path,
+            source,
+        })?;
     if !run.total_duration_s.is_finite() || run.total_duration_s < 0.0 {
         return Err(SummaryError::Missing(
             "run.json total_duration_s must be finite and non-negative".to_owned(),

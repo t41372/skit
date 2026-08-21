@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fs, process::Command};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    process::Command,
+};
 
 use skit_benchmarks::{
     BenchmarkProfile, GitInfo, HostInfo, Meta, Metric, Results, SuiteKind, SuiteOutput,
@@ -63,6 +67,136 @@ fn benchmark_binary() -> &'static str {
 
 fn repository_budgets() -> &'static str {
     concat!(env!("CARGO_MANIFEST_DIR"), "/../../benchmarks/budgets.toml")
+}
+
+#[derive(Debug, Default)]
+struct WorkflowContract {
+    root_environment: BTreeMap<String, String>,
+    runners: BTreeSet<String>,
+    actions: Vec<String>,
+    commands: Vec<String>,
+}
+
+fn yaml_scalar(text: &str) -> String {
+    text.split(" #")
+        .next()
+        .unwrap_or(text)
+        .trim()
+        .trim_matches(['\'', '"'])
+        .to_owned()
+}
+
+fn workflow_contract(text: &str) -> WorkflowContract {
+    let mut contract = WorkflowContract::default();
+    let mut root_environment = false;
+    let mut command_indent = None;
+    for raw in text.lines() {
+        let indent = raw.len() - raw.trim_start_matches(' ').len();
+        let trimmed = raw.trim();
+        if let Some(block_indent) = command_indent {
+            if trimmed.is_empty() || indent > block_indent {
+                if !trimmed.is_empty() {
+                    contract.commands.push(trimmed.to_owned());
+                }
+                continue;
+            }
+            command_indent = None;
+        }
+        if indent == 0 {
+            root_environment = trimmed == "env:";
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key.trim_start_matches("- ").trim();
+        let value = yaml_scalar(value);
+        if root_environment && indent == 2 {
+            contract
+                .root_environment
+                .insert(key.to_owned(), value.clone());
+        }
+        match key {
+            "runs-on" => {
+                contract.runners.insert(value);
+            }
+            "uses" => contract.actions.push(value),
+            "run" if value == "|" => command_indent = Some(indent),
+            "run" => contract.commands.push(value),
+            _ => {}
+        }
+    }
+    contract
+}
+
+fn benchmark_workflows() -> [(&'static str, &'static str); 3] {
+    [
+        (
+            "benchmark.yml",
+            include_str!("../../../.github/workflows/benchmark.yml"),
+        ),
+        (
+            "benchmark-nightly.yml",
+            include_str!("../../../.github/workflows/benchmark-nightly.yml"),
+        ),
+        (
+            "benchmark-compare.yml",
+            include_str!("../../../.github/workflows/benchmark-compare.yml"),
+        ),
+    ]
+}
+
+#[test]
+fn test_workflows_install_hyperfine_via_the_action() {
+    for (name, text) in benchmark_workflows() {
+        let workflow = workflow_contract(text);
+        assert_eq!(
+            workflow
+                .actions
+                .iter()
+                .filter(|action| action.as_str() == "./.github/actions/install-hyperfine")
+                .count(),
+            1,
+            "{name} must use the repository action exactly once"
+        );
+    }
+}
+
+#[test]
+fn test_compare_workflow_pins_pyperf_to_the_harness_lock() {
+    const V040_HARNESS_PYPERF: &str = "pyperf==2.10.0";
+    let workflow = workflow_contract(include_str!(
+        "../../../.github/workflows/benchmark-compare.yml"
+    ));
+    let pins = workflow
+        .commands
+        .iter()
+        .filter_map(|command| shlex::split(command))
+        .filter(|words| {
+            words.starts_with(&["uv".to_owned(), "pip".to_owned(), "install".to_owned()])
+        })
+        .flatten()
+        .filter(|token| token.starts_with("pyperf=="))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        pins,
+        [
+            V040_HARNESS_PYPERF.to_owned(),
+            V040_HARNESS_PYPERF.to_owned()
+        ]
+    );
+}
+
+#[test]
+fn test_ci_runner_label_matches_runs_on() {
+    for (name, text) in benchmark_workflows() {
+        let workflow = workflow_contract(text);
+        let declared = workflow
+            .root_environment
+            .get(skit_benchmarks::environment::CI_RUNNER_VAR)
+            .unwrap_or_else(|| panic!("{name} must export BENCH_CI_RUNNER"));
+        assert_eq!(workflow.runners, BTreeSet::from([declared.clone()]));
+    }
 }
 
 #[test]

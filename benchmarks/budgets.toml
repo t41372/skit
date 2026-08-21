@@ -20,7 +20,10 @@
 metric = "footprint.wheel_bytes"
 max = 20971520
 tier = "enforced"
-profiles = ["pr", "full"]
+profiles = [
+    "pr",
+    "full",
+]
 note = "The binary wheel must stay below 20 MiB. This replaces the Python wheel's 1 MiB architecture-specific ceiling."
 
 [budget.context]
@@ -31,7 +34,10 @@ date = "2026-08-08"
 metric = "binary.release_bytes"
 max = 20971520
 tier = "enforced"
-profiles = ["pr", "full"]
+profiles = [
+    "pr",
+    "full",
+]
 note = "The stripped release binary must stay below 20 MiB."
 
 [budget.context]
@@ -42,7 +48,10 @@ date = "2026-08-08"
 metric = "repository.python_implementation_files"
 max = 0
 tier = "enforced"
-profiles = ["pr", "full"]
+profiles = [
+    "pr",
+    "full",
+]
 note = "The Rust product cannot add Python implementation or benchmark tooling."
 
 [budget.context]
@@ -58,9 +67,9 @@ headroom = 0.1
 note = "The native binary has no Python import graph. Keep the latest-main identifier and ratchet."
 
 [budget.context]
-python = "3.13"
-pr = "33"
 date = "2026-07-26"
+pr = "33"
+python = "3.13"
 
 [[budget]]
 metric = "imports.list_json.n0.modules"
@@ -71,9 +80,9 @@ headroom = 0.1
 note = "The native binary has no Python import graph. Keep the empty-library identifier and ratchet."
 
 [budget.context]
-python = "3.13"
-pr = "33"
 date = "2026-07-26"
+pr = "33"
+python = "3.13"
 
 [[budget]]
 metric = "imports.list_json.n100.modules"
@@ -84,9 +93,9 @@ headroom = 0.1
 note = "The native binary has no Python import graph. Keep the populated-library identifier and ratchet."
 
 [budget.context]
-python = "3.13"
-pr = "33"
 date = "2026-07-26"
+pr = "33"
+python = "3.13"
 
 [[budget]]
 metric = "imports.list_json.n100.has_tree_sitter"
@@ -95,8 +104,8 @@ tier = "enforced"
 note = "Listing must not initialize a parser grammar."
 
 [budget.context]
-pr = "33"
 date = "2026-07-25"
+pr = "33"
 
 [[budget]]
 metric = "pipeline.skipped_count"
@@ -178,8 +187,8 @@ tier = "enforced"
 note = "The version path does not load Typer."
 
 [budget.context]
-pr = "33"
 date = "2026-07-25"
+pr = "33"
 
 [[budget]]
 metric = "imports.version.has_rich"
@@ -188,8 +197,8 @@ tier = "enforced"
 note = "The version path does not load Rich."
 
 [budget.context]
-pr = "33"
 date = "2026-07-25"
+pr = "33"
 
 [[budget]]
 metric = "imports.version.has_textual"
@@ -198,8 +207,8 @@ tier = "enforced"
 note = "The version path does not load Textual."
 
 [budget.context]
-pr = "33"
 date = "2026-07-25"
+pr = "33"
 
 [[budget]]
 metric = "imports.version.has_tree_sitter"
@@ -208,8 +217,8 @@ tier = "enforced"
 note = "The version path does not initialize a parser grammar."
 
 [budget.context]
-pr = "33"
 date = "2026-07-25"
+pr = "33"
 
 [[budget]]
 metric = "syscalls.list_json.network"

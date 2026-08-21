@@ -11,7 +11,9 @@ use skit_benchmarks::{
         bench_path, build_environment, platform_key, pull_request_number, version_from_output,
     },
     process::{ProcessError, ProcessSpec, run},
-    report::{HEADLINE_METRICS, RunRecord, render_results_markdown, summarize_directory},
+    report::{
+        HEADLINE_METRICS, RunRecord, SummaryError, render_results_markdown, summarize_directory,
+    },
 };
 use tempfile::TempDir;
 
@@ -302,6 +304,40 @@ fn summary_names_missing_incomplete_and_legacy_run_directories() {
     assert!(markdown.contains("image image-1"));
     assert!(markdown.contains("No skipped cases."));
     assert!(markdown.contains("| 0 count | 0 | 2 |"));
+}
+
+#[test]
+fn test_summarize_dir_rejects_corrupt_run_json() {
+    let root = TempDir::new().unwrap();
+    let run_path = root.path().join("run.json");
+    let original = b"{truncated";
+    fs::write(&run_path, original).unwrap();
+
+    let error = summarize_directory(root.path(), None).unwrap_err();
+    match &error {
+        SummaryError::RunJson { path, source } => {
+            assert_eq!(path, &run_path);
+            assert_eq!(
+                source.to_string(),
+                "key must be a string at line 1 column 2"
+            );
+        }
+        other => panic!("expected typed run JSON error, got {other:?}"),
+    }
+    assert!(std::error::Error::source(&error).is_some());
+    assert_eq!(
+        error.to_string(),
+        "run.json is not valid JSON (key must be a string at line 1 column 2)"
+    );
+    assert_eq!(fs::read(&run_path).unwrap(), original);
+    assert_eq!(
+        fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        ["run.json"]
+    );
 }
 
 #[cfg(unix)]

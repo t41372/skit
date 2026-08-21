@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skit_benchmarks::{
     BenchmarkProfile, BudgetOutcome, GitInfo, HostInfo, Meta, Metric, PipelineError, Results, Skip,
@@ -298,6 +298,68 @@ fn budget_loader_and_evaluator_preserve_every_decay_channel() {
 
     assert!(load_budgets("[[budget]]\nmetric='x'\nmax=1\ntier='enforced'").is_err());
     assert!(load_budgets("[[budget]]\nmetric='x'\nmax=1\ntier='target'\nbogus=1").is_err());
+}
+
+#[test]
+fn test_loads_the_real_contract_file() {
+    let budgets = load_budgets(include_str!("../../../benchmarks/budgets.toml")).unwrap();
+    let enforced = budgets
+        .iter()
+        .filter(|budget| budget.tier == BudgetTier::Enforced)
+        .collect::<Vec<_>>();
+    assert!(enforced.iter().all(|budget| !budget.context.is_empty()));
+    let skip_profiles = enforced
+        .iter()
+        .filter(|budget| budget.metric == "pipeline.skipped_count")
+        .map(|budget| budget.profiles.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        skip_profiles,
+        BTreeSet::from([vec!["full".to_owned()], vec!["pr".to_owned()]])
+    );
+    let wheel = enforced
+        .iter()
+        .find(|budget| budget.metric == "footprint.wheel_bytes")
+        .unwrap();
+    assert_eq!(wheel.profiles, ["pr", "full"]);
+    let ratchets = enforced
+        .iter()
+        .filter(|budget| budget.ratchet)
+        .collect::<Vec<_>>();
+    assert!(!ratchets.is_empty());
+    assert!(
+        ratchets
+            .iter()
+            .all(|budget| budget.context.get("python").map(String::as_str) == Some("3.13"))
+    );
+}
+
+#[test]
+fn test_budgets_file_is_canonical() {
+    let text = include_str!("../../../benchmarks/budgets.toml");
+    assert_eq!(render_budgets(&load_budgets(text).unwrap()).unwrap(), text);
+}
+
+#[test]
+fn test_budget_bounds_render_as_plain_numbers() {
+    let budgets = load_budgets(
+        "[[budget]]\nmetric='footprint.wheel_bytes'\nmax=1048576\ntier='enforced'\ncontext={commit='abc'}",
+    )
+    .unwrap();
+    let report = evaluate(
+        &budgets,
+        &results(&[("footprint.wheel_bytes", 461_803.0, "bytes")]),
+    );
+    let text = render_report(&report);
+    assert!(text.contains("461803 bytes ≤ 1048576"), "{text}");
+    assert!(!text.contains("e+06"), "{text}");
+}
+
+#[test]
+fn test_fractional_bounds_render_compactly() {
+    let budgets = load_budgets("[[budget]]\nmetric='ratio'\nmax=0.5\ntier='target'").unwrap();
+    let report = evaluate(&budgets, &results(&[("ratio", 0.25, "x")]));
+    assert!(render_report(&report).contains("0.25 x ≤ 0.5"));
 }
 
 #[test]
