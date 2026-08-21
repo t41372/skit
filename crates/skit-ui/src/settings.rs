@@ -20,6 +20,7 @@ use skit_form::{
         ParameterRow, ParameterSection, ParameterSectionContext, SourceFollowup, parameter_section,
     },
 };
+use skit_language::split_pep508_requirements;
 
 use crate::SubmittedValues;
 
@@ -559,9 +560,7 @@ impl SettingsView {
         // its own specifier, and the PEP 508 splitter would merge a scoped npm package into its
         // neighbour (`src/skit/tui_settings.py:988-993`).
         Some(match self.dependency_flavor {
-            Some(DependencyFlavor::Uv) => {
-                crate::add::split_pep508_requirements(&field.value().as_text())
-            }
+            Some(DependencyFlavor::Uv) => split_pep508_requirements(&field.value().as_text()),
             _ => split_list(&field.value().as_text()),
         })
     }

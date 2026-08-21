@@ -12,22 +12,21 @@
 //! - Python `cli._validate_python_flags(deps, python)` has NO public Rust function. The `skit add -`
 //!   (stdin) lane runs the same validate-then-normalize contract inside `add_with_config`
 //!   (`crates/skit-cli/src/cli.rs`), so these are verified END-TO-END through the composition root.
-//! - Python `cli._resolve_python_metadata(...)` interactive re-ask loop -> ABSENT (the CLI never
-//!   prompts for dependencies; see the two stubs in section 3).
+//! - Python `cli._resolve_python_metadata(...)` interactive re-ask loop -> the real plain-form PTY
+//!   path, with dependency partitioning shared with the serializable add review.
 //! - Python `runner.invoke(cli.app, ...)` -> the real `skit` binary via `assert_cmd`, sandboxed by
 //!   the three `SKIT_*` temp dirs.
 //! - Python `registry.kind_for_draft(path)` -> the shared `skit_language::infer_draft_kind` owner;
 //!   section 6 keeps only CLI consequences that are not owned more strongly elsewhere.
 //! - Python `cli._create_python_in_editor(...)` -> the `skit add --edit` lane (`add_draft`).
 //!
-//! Bucket disposition (31 Python defs -> 31 `#[test]`; 25 active, 6 ignored):
-//! - 25 active contracts include sections 1, 2, and 5 plus all four canonical drafts-boundary
+//! Bucket disposition (31 Python defs -> 31 `#[test]`; 27 active, 4 ignored):
+//! - 27 active contracts include sections 1, 2, 3, and 5 plus all four canonical drafts-boundary
 //!   faces and the already-owned classifier complements.
 //! - The four drafts-boundary faces are active canonical contracts. The normal resume,
 //!   script-suffix, prompt-resume, and unknown-shebang twins remain as semantic-duplicate closures
 //!   with their stronger owners named in each reason.
 //! - 4 semantic-duplicate closures name their stronger owned-draft owner.
-//! - 2 ABSENT gap stubs (`kind="absent"`): the interactive deps/python re-ask loop (3).
 
 use std::fs;
 use std::io::Read as _;
@@ -38,13 +37,20 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use skit_i18n::{Locale, Localize};
-use skit_language::{validate_pep440_specifiers, validate_pep508_requirement};
+use skit_language::{read_uv_metadata, validate_pep440_specifiers, validate_pep508_requirement};
 use tempfile::TempDir;
+
+#[cfg(unix)]
+#[path = "support/plain_add_pty.rs"]
+mod plain_add_pty;
+#[cfg(unix)]
+use plain_add_pty::PlainAddPty;
 
 struct Sandbox {
     data: TempDir,
     state: TempDir,
     config: TempDir,
+    scratch: TempDir,
 }
 
 impl Sandbox {
@@ -53,6 +59,7 @@ impl Sandbox {
             data: TempDir::new().unwrap(),
             state: TempDir::new().unwrap(),
             config: TempDir::new().unwrap(),
+            scratch: TempDir::new().unwrap(),
         }
     }
 
@@ -64,6 +71,54 @@ impl Sandbox {
             .env("SKIT_CONFIG_DIR", self.config.path())
             .env("SKIT_LANG", language);
         command
+    }
+
+    fn show_json(&self, name: &str) -> serde_json::Value {
+        let output = self
+            .command_in("en")
+            .args(["show", name, "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
+}
+
+#[cfg(unix)]
+fn configure_plain(sandbox: &Sandbox) {
+    fs::write(
+        sandbox.config.path().join("config.toml"),
+        "form = \"plain\"\n",
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+fn python_source(sandbox: &Sandbox, name: &str, body: &str) -> PathBuf {
+    let path = sandbox.scratch.path().join(name);
+    fs::write(&path, body).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn dependencies_question(locale: &str) -> &'static str {
+    match locale {
+        "zh-CN" => "要安装的依赖(Enter 采用,可自行编辑,或输入 - 表示不需要)",
+        "zh-TW" => "要安裝的依賴(Enter 採用,可自行編輯,或輸入 - 表示不需要)",
+        _ => "Dependencies to install (Enter to accept, edit the list, or '-' for none)",
+    }
+}
+
+#[cfg(unix)]
+fn automatic_python_question(locale: &str) -> &'static str {
+    match locale {
+        "zh-CN" => "Python 版本(留空 = 自动)",
+        "zh-TW" => "Python 版本(留空 = 自動)",
+        _ => "Python version (leave empty for automatic)",
     }
 }
 
@@ -489,29 +544,143 @@ fn test_validate_python_flags_exits_2_on_a_bad_python() {
 // ==========================================================================
 // 3. The interactive deps / python asks are re-ask loops on invalid input
 //
-// ABSENT: the CLI never prompts for dependencies. The oracle drives cli._resolve_python_metadata
-// with a monkeypatched cli.Prompt.ask (deps asked twice, python asked twice, '-' means none). The
-// Rust CLI resolves dependencies non-interactively (external_dependencies_at, cli.rs:2916-2921);
-// the nearest analog is the skit-ui add reducer's field validation (skit-ui/src/add.rs:1053-1177),
-// which has no re-ask loop and no '-'/'none' token. No public surface carries this contract.
+// The real plain-form PTY drives the same dependency and Python questions a person sees. The
+// dependency partition comes from the same parser-backed helper as the serializable add review.
 // ==========================================================================
 
 #[test]
-#[ignore = "ABSENT (gap): the interactive deps/python re-ask loop is not implemented. MUST-FIX: \
-port cli.py:224-261 — an invalid deps answer re-asks (never stored), '-' means none, an invalid \
-python constraint re-asks, a valid one is finally recorded (four asks total)."]
+#[cfg(unix)]
 fn test_interactive_deps_reask_then_python_reask_then_accept() {
-    // An invalid deps answer re-asks (never stored); '-' means none. An invalid python
-    // constraint re-asks; a valid one is finally recorded. Four asks: deps twice, python twice.
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        configure_plain(&sandbox);
+        let source = python_source(&sandbox, "retry.py", "import requests\nprint(requests)\n");
+        let source_before = fs::read(&source).unwrap();
+        let config_before = fs::read(sandbox.config.path().join("config.toml")).unwrap();
+        let mut pty = PlainAddPty::spawn(
+            sandbox.data.path(),
+            sandbox.state.path(),
+            sandbox.config.path(),
+            sandbox.scratch.path(),
+            locale,
+            &["add", source.to_str().unwrap(), "-n", "retry"],
+        );
+        pty.wait_for(dependencies_question(locale));
+        let checkpoint = pty.checkpoint();
+        pty.send_line("@@@");
+        pty.wait_for_after(dependencies_question(locale), checkpoint);
+        pty.send_line("-");
+        pty.wait_for(automatic_python_question(locale));
+        let checkpoint = pty.checkpoint();
+        pty.send_line("not-a-version");
+        pty.wait_for_after(automatic_python_question(locale), checkpoint);
+        pty.send_line(">=3.11");
+        let (code, output) = pty.finish();
+        assert_eq!(code, 0, "locale={locale}: {output}");
+
+        let stored =
+            fs::read_to_string(sandbox.data.path().join("scripts/retry/script.py")).unwrap();
+        let metadata = read_uv_metadata(&stored).unwrap();
+        assert!(
+            metadata.dependencies.is_empty(),
+            "locale={locale}: {stored}"
+        );
+        assert_eq!(metadata.requires_python, ">=3.11", "locale={locale}");
+        let shown = sandbox.show_json("retry");
+        assert_eq!(shown["dependencies"], serde_json::json!([]));
+        assert_eq!(shown["requires_python"], ">=3.11");
+        assert_eq!(fs::read(&source).unwrap(), source_before, "locale={locale}");
+        assert_eq!(
+            fs::read(sandbox.config.path().join("config.toml")).unwrap(),
+            config_before
+        );
+        assert!(fs::read_dir(sandbox.state.path()).unwrap().next().is_none());
+    }
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the interactive deps/python re-ask loop is not implemented. MUST-FIX: \
-port cli.py:224-261 — a valid deps list is taken on the first ask, and '-' at the python ask \
-means automatic (two asks, no re-ask)."]
+#[cfg(unix)]
 fn test_interactive_valid_deps_accepted_first_try() {
-    // The complement: a valid deps list is taken on the first ask (the inner validate loop
-    // completes with bad=None), and '-' at the python ask means automatic.
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        configure_plain(&sandbox);
+        let source = python_source(
+            &sandbox,
+            "valid.py",
+            "import requests\nimport rich\nprint(requests, rich)\n",
+        );
+        let source_before = fs::read(&source).unwrap();
+        let config_before = fs::read(sandbox.config.path().join("config.toml")).unwrap();
+        let mut pty = PlainAddPty::spawn(
+            sandbox.data.path(),
+            sandbox.state.path(),
+            sandbox.config.path(),
+            sandbox.scratch.path(),
+            locale,
+            &["add", source.to_str().unwrap(), "-n", "valid"],
+        );
+        pty.wait_for(dependencies_question(locale));
+        pty.send_line("requests>=2,<3, rich");
+        pty.wait_for(automatic_python_question(locale));
+        pty.send_line("-");
+        let (code, output) = pty.finish();
+        assert_eq!(code, 0, "locale={locale}: {output}");
+
+        let stored =
+            fs::read_to_string(sandbox.data.path().join("scripts/valid/script.py")).unwrap();
+        let metadata = read_uv_metadata(&stored).unwrap();
+        assert_eq!(metadata.dependencies, ["requests>=2,<3", "rich"]);
+        assert!(metadata.requires_python.is_empty());
+        let shown = sandbox.show_json("valid");
+        assert_eq!(
+            shown["dependencies"],
+            serde_json::json!(["requests>=2,<3", "rich"])
+        );
+        assert_eq!(shown["requires_python"], "");
+        assert_eq!(fs::read(&source).unwrap(), source_before);
+        assert_eq!(
+            fs::read(sandbox.config.path().join("config.toml")).unwrap(),
+            config_before
+        );
+        assert!(fs::read_dir(sandbox.state.path()).unwrap().next().is_none());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn interactive_python_metadata_cancel_and_retry_refusals_write_nothing() {
+    for cancel_at_python in [false, true] {
+        let sandbox = Sandbox::new();
+        configure_plain(&sandbox);
+        let source = python_source(&sandbox, "cancel.py", "import requests\nprint(requests)\n");
+        let before = snapshot_sandbox(&sandbox);
+        let source_before = fs::read(&source).unwrap();
+        let mut pty = PlainAddPty::spawn(
+            sandbox.data.path(),
+            sandbox.state.path(),
+            sandbox.config.path(),
+            sandbox.scratch.path(),
+            "en",
+            &["add", source.to_str().unwrap(), "-n", "cancelled"],
+        );
+        pty.wait_for(dependencies_question("en"));
+        if cancel_at_python {
+            pty.send_line("-");
+            pty.wait_for(automatic_python_question("en"));
+            let checkpoint = pty.checkpoint();
+            pty.send_line("not-a-version");
+            pty.wait_for_after(automatic_python_question("en"), checkpoint);
+        } else {
+            let checkpoint = pty.checkpoint();
+            pty.send_line("@@@");
+            pty.wait_for_after(dependencies_question("en"), checkpoint);
+        }
+        pty.interrupt();
+        let (code, _) = pty.finish();
+        assert_ne!(code, 0);
+        assert_eq!(snapshot_sandbox(&sandbox), before);
+        assert_eq!(fs::read(&source).unwrap(), source_before);
+    }
 }
 
 // ==========================================================================

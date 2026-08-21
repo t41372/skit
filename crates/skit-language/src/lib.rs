@@ -349,6 +349,40 @@ pub fn validate_pep508_requirement(value: &str) -> Result<(), PythonMetadataErro
         })
 }
 
+/// Split a comma-composed field by using the PEP 508 parser to find valid partitions.
+///
+/// Commas inside version specifiers, extras, markers, and URLs remain in their requirement.
+#[must_use]
+pub fn split_pep508_requirements(value: &str) -> Vec<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Vec::new();
+    }
+    let comma_offsets = value
+        .char_indices()
+        .filter_map(|(index, character)| (character == ',').then_some(index))
+        .chain(std::iter::once(value.len()))
+        .collect::<Vec<_>>();
+    fn partition(value: &str, offsets: &[usize], start: usize) -> Option<Vec<String>> {
+        for &end in offsets.iter().filter(|&&offset| offset >= start) {
+            let item = value[start..end].trim();
+            if item.is_empty() || validate_pep508_requirement(item).is_err() {
+                continue;
+            }
+            if end == value.len() {
+                return Some(vec![item.to_owned()]);
+            }
+            if let Some(mut tail) = partition(value, offsets, end.saturating_add(1)) {
+                let mut output = vec![item.to_owned()];
+                output.append(&mut tail);
+                return Some(output);
+            }
+        }
+        None
+    }
+    partition(value, &comma_offsets, 0).unwrap_or_else(|| vec![value.to_owned()])
+}
+
 /// Validate one PEP 440 version-specifier list.
 pub fn validate_pep440_specifiers(value: &str) -> Result<(), PythonMetadataError> {
     VersionSpecifiers::from_str(value).map(|_| ()).map_err(|_| {

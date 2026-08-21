@@ -21,6 +21,49 @@ use tempfile::TempDir;
 
 use super::*;
 
+#[test]
+fn plain_python_metadata_questions_have_one_exhaustive_entrance() {
+    let asks = |kind, dep, python, owned, suggestions, no_input, interactive, tui| {
+        should_prompt_python_metadata(
+            kind,
+            dep,
+            python,
+            owned,
+            suggestions,
+            no_input,
+            interactive,
+            tui,
+        )
+    };
+    assert!(asks(
+        "python", false, false, false, true, false, true, false
+    ));
+    assert!(!asks(
+        "shell", false, false, false, true, false, true, false
+    ));
+    assert!(!asks(
+        "python", true, false, false, true, false, true, false
+    ));
+    assert!(!asks(
+        "python", false, true, false, true, false, true, false
+    ));
+    assert!(!asks(
+        "python", false, false, true, true, false, true, false
+    ));
+    assert!(!asks(
+        "python", false, false, false, false, false, true, false
+    ));
+    assert!(!asks(
+        "python", false, false, false, true, true, true, false
+    ));
+    assert!(!asks(
+        "python", false, false, false, true, false, false, false
+    ));
+    assert!(!asks(
+        "python", false, false, false, true, false, true, true
+    ));
+}
+
 fn write_meta(root: &TempDir, slug: &str, name: &str, description: &str) {
     let directory = root.path().join("scripts").join(slug);
     fs::create_dir_all(&directory).unwrap();

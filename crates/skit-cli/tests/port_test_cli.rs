@@ -1498,19 +1498,19 @@ fn test_resolve_metadata_non_interactive_uses_suggestions() {
 }
 
 #[test]
-#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` with a tty + stubbed Prompt.ask — the interactive deps/python prompts. Private in cli.rs add lane + interactive tty seam."]
+#[ignore = "SEMANTIC DUPLICATE: the stronger real-PTY owners are port_test_add_validation_contracts::test_interactive_deps_reask_then_python_reask_then_accept and test_interactive_valid_deps_accepted_first_try."]
 fn test_resolve_metadata_interactive() {
     // answers "requests, rich" / ">=3.12" -> (["requests","rich"], ">=3.12").
 }
 
 #[test]
-#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` — '-' at the deps prompt clears the suggested deps. Private in cli.rs add lane + interactive tty seam."]
+#[ignore = "SEMANTIC DUPLICATE: '-' clearing is covered through the real plain-form PTY by port_test_add_validation_contracts::test_interactive_deps_reask_then_python_reask_then_accept."]
 fn test_resolve_metadata_interactive_dash_clears_deps() {
     // '-' -> deps == [].
 }
 
 #[test]
-#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` — 'None' at the deps prompt clears the suggested deps. Private in cli.rs add lane + interactive tty seam."]
+#[ignore = "SEMANTIC DUPLICATE: the shared '-'/'none' branch is covered by the real-PTY '-' canonical; this private spelling has no separate product surface."]
 fn test_resolve_metadata_interactive_none_word_clears_deps() {
     // 'None' -> deps == [].
 }

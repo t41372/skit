@@ -190,7 +190,7 @@ fn test_add_dep_flags_carry_specifier_commas() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, CLI internal): drives `cli._resolve_python_metadata(...)`, a skit-cli composition-root helper (Prompt.ask + interactive deps), not a skit-language function. -> Tier 3/4."]
+#[ignore = "SEMANTIC DUPLICATE: the stronger real-PTY owner port_test_add_validation_contracts::test_interactive_valid_deps_accepted_first_try drives this shared partition and asserts `requests>=2,<3` stays one requirement."]
 fn test_interactive_deps_answer_keeps_specifier_commas() {
     // deps, py = cli._resolve_python_metadata("import requests\nprint(requests)\n", None, None,
     //     no_input=False)  with Prompt.ask answering "requests>=2,<3, rich" then ""

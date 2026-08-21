@@ -60,9 +60,9 @@ use skit_language::{
     detect_candidates, effective_uv_metadata_bytes, external_dependencies_at,
     has_uv_metadata_block_bytes, infer_draft_kind, infer_kind, managed_params,
     normalize_shell_default, parse_document, placeholder_params, plan_uv_metadata_edit,
-    python_version_pin, read_uv_metadata, shebang_program, suggest_description,
-    validate_pep440_specifiers, validate_pep508_requirement, write_managed_params,
-    write_managed_params_bytes, write_uv_metadata,
+    python_version_pin, read_uv_metadata, shebang_program, split_pep508_requirements,
+    suggest_description, validate_pep440_specifiers, validate_pep508_requirement,
+    write_managed_params, write_managed_params_bytes, write_uv_metadata,
 };
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe,
@@ -1779,6 +1779,79 @@ fn add_plain_text(prompt: &'static str) -> Result<String, CliError> {
         .allow_empty(true)
         .interact_text()
         .map_err(add_dialoguer_error)
+}
+
+fn add_plain_text_default(prompt: &'static str, default: &str) -> Result<String, CliError> {
+    Input::<String>::new()
+        .with_prompt(text(active_locale(), prompt).into_owned())
+        .default(default.to_owned())
+        .allow_empty(true)
+        .interact_text()
+        .map_err(add_dialoguer_error)
+}
+
+fn prompt_python_metadata(
+    suggestions: &[String],
+    python_pin: Option<&str>,
+) -> Result<(Vec<String>, String), CliError> {
+    let dependencies = loop {
+        let answer = add_plain_text_default(
+            "Dependencies to install (Enter to accept, edit the list, or '-' for none)",
+            &suggestions.join(", "),
+        )?;
+        if matches!(answer.trim().to_ascii_lowercase().as_str(), "-" | "none") {
+            break Vec::new();
+        }
+        let dependencies = split_pep508_requirements(&answer);
+        let error = dependencies
+            .iter()
+            .find_map(|requirement| validate_pep508_requirement(requirement).err());
+        if let Some(error) = error {
+            eprintln!("{}", error.message().localize(active_locale()));
+        } else {
+            break dependencies;
+        }
+    };
+    let prompt = if python_pin.is_some() {
+        "Python version (Enter accepts the #! pin, '-' for automatic)"
+    } else {
+        "Python version (leave empty for automatic)"
+    };
+    let default = python_pin.unwrap_or_default();
+    loop {
+        let answer = add_plain_text_default(prompt, default)?;
+        let answer = answer.trim();
+        if matches!(answer.to_ascii_lowercase().as_str(), "-" | "none") {
+            return Ok((dependencies, String::new()));
+        }
+        match (!answer.is_empty()).then(|| validate_pep440_specifiers(answer)) {
+            None | Some(Ok(())) => return Ok((dependencies, answer.to_owned())),
+            Some(Err(error)) => {
+                eprintln!("{}", error.message().localize(active_locale()));
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+const fn should_prompt_python_metadata(
+    kind: &str,
+    dependencies_explicit: bool,
+    requires_python_explicit: bool,
+    has_own_uv_metadata: bool,
+    has_suggestions: bool,
+    no_input: bool,
+    interactive: bool,
+    tui_form: bool,
+) -> bool {
+    matches!(kind.as_bytes(), b"python")
+        && !dependencies_explicit
+        && !requires_python_explicit
+        && !has_own_uv_metadata
+        && has_suggestions
+        && !no_input
+        && interactive
+        && !tui_form
 }
 
 fn add_dialoguer_error(error: dialoguer::Error) -> CliError {
@@ -3618,6 +3691,22 @@ fn add_with_config(
     if let Some(pin) = &derived_python_pin {
         requires_python = Some(pin.clone());
     }
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let prompted_python_metadata = should_prompt_python_metadata(
+        &kind_name,
+        dependencies_explicit,
+        requires_python_explicit,
+        has_own_uv_metadata,
+        !dependencies.is_empty(),
+        no_input,
+        interactive,
+        interactive && wants_tui_form(config_dir)?,
+    );
+    if prompted_python_metadata {
+        let resolved = prompt_python_metadata(&dependencies, derived_python_pin.as_deref())?;
+        dependencies = resolved.0;
+        requires_python = Some(resolved.1);
+    }
     let supports_dependencies = matches!(kind_name.as_str(), "python" | "js" | "ts");
     if dependencies_explicit && !supports_dependencies {
         return Err(CliError::Usage(
@@ -3662,7 +3751,7 @@ fn add_with_config(
     } else {
         StorageMode::Copy
     };
-    if let Some(pin) = &derived_python_pin {
+    if !prompted_python_metadata && let Some(pin) = &derived_python_pin {
         humanln!(
             "The #! line pins a python version — recording requires-python {} (change it with --python).",
             pin

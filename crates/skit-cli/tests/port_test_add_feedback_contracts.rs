@@ -30,18 +30,14 @@
 //!   the "no shebang -> nothing to pin" rule: the first line is not a `#!`, so the add path's
 //!   `shebang.and_then(shebang_program).and_then(python_version_pin)` yields `None` -> `""`.
 //!
-//! Bucket disposition (16 oracle defs; 9 active, 7 ignored):
-//! - 9 active asserting contracts include the owned-draft prompt canonical.
+//! Bucket disposition (16 oracle defs; 12 active, 4 ignored):
+//! - 12 active asserting contracts include the owned-draft prompt canonical and all three real-PTY
+//!   Python metadata labels.
 //! - One active owned-draft prompt contract. The reference and `.py`/bash twins remain as
 //!   semantic-duplicate closures with their stronger boundary and CLI classifier owners named.
-//! - 2 semantic-duplicate owned-draft closures, 3 absent interactive-metadata gaps, and 2
-//!   cross-crate hint-helper closures. `cli._resolve_python_metadata`'s INTERACTIVE ask
-//!   (deps/python `Prompt.ask` with the pin-aware label switch, src/skit/cli.py:224-261) has no
-//!   equivalent anywhere in the Rust workspace — the add flow resolves deps/python
-//!   non-interactively (`external_dependencies_at`, cli.rs:2920) and never asks. The label
-//!   strings "Enter accepts the #! pin" / "leave empty for automatic" appear in NO crate. These
-//!   three call a function that does not exist, so they are `#[ignore]` stubs with a MUST-FIX.
-//! - 2 cross-crate stubs: `cli._print_add_hints` is the crate-private `print_copy_onboarding_facts`
+//! - 2 semantic-duplicate owned-draft closures and 2 cross-crate hint-helper closures.
+//! - The 2 cross-crate stubs call `cli._print_add_hints`, which is the crate-private
+//!   `print_copy_onboarding_facts`
 //!   (cli.rs:2669-2694) in the `skit-cli` binary, unreachable from an integration test. Its
 //!   argv-yields-to-framework gate IS implemented (cli.rs:2677) and IS covered end-to-end by
 //!   `test_dynamic_optstring_with_argv_names_extra_arguments_once` in this same file — a
@@ -56,6 +52,12 @@ use skit_language::{
     external_dependencies_at, python_version_pin, read_uv_metadata, shebang_program,
 };
 use tempfile::TempDir;
+
+#[cfg(unix)]
+#[path = "support/plain_add_pty.rs"]
+mod plain_add_pty;
+#[cfg(unix)]
+use plain_add_pty::PlainAddPty;
 
 struct Sandbox {
     data: TempDir,
@@ -139,6 +141,42 @@ impl Sandbox {
                 .join("prompt.md"),
         )
         .unwrap()
+    }
+}
+
+#[cfg(unix)]
+fn configure_plain(sandbox: &Sandbox) {
+    fs::write(
+        sandbox.config.path().join("config.toml"),
+        "form = \"plain\"\n",
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+fn dependencies_question(locale: &str) -> &'static str {
+    match locale {
+        "zh-CN" => "要安装的依赖(Enter 采用,可自行编辑,或输入 - 表示不需要)",
+        "zh-TW" => "要安裝的依賴(Enter 採用,可自行編輯,或輸入 - 表示不需要)",
+        _ => "Dependencies to install (Enter to accept, edit the list, or '-' for none)",
+    }
+}
+
+#[cfg(unix)]
+fn pinned_python_question(locale: &str) -> &'static str {
+    match locale {
+        "zh-CN" => "Python 版本(Enter 采用 #! 指定的版本,'-' = 自动)",
+        "zh-TW" => "Python 版本(Enter 採用 #! 指定的版本,'-' = 自動)",
+        _ => "Python version (Enter accepts the #! pin, '-' for automatic)",
+    }
+}
+
+#[cfg(unix)]
+fn automatic_python_question(locale: &str) -> &'static str {
+    match locale {
+        "zh-CN" => "Python 版本(留空 = 自动)",
+        "zh-TW" => "Python 版本(留空 = 自動)",
+        _ => "Python version (leave empty for automatic)",
     }
 }
 
@@ -281,37 +319,92 @@ fn test_py_draft_with_shebang_body_still_resumes_as_shell() {
 // ==========================================================================
 
 #[test]
-#[ignore = "ABSENT GAP (kind=absent): the INTERACTIVE python-metadata ask has no equivalent in the Rust workspace. cli._resolve_python_metadata (src/skit/cli.py:224-261) asks Prompt.ask for deps then the python version, switching the label to 'Python version (Enter accepts the #! pin, ...)' when a versioned shebang seeds a pin (cli.py:249-253) and passing the pin as the ask default (cli.py:255). Rust's add flow resolves deps/python NON-interactively (external_dependencies_at, cli.rs:2920) and never asks; the label strings 'Enter accepts the #! pin' / 'leave empty for automatic' appear in NO crate. MUST FIX: add the interactive python-metadata ask with the pin-aware label. No public function to call, so this is a stub."]
+#[cfg(unix)]
 fn test_python_ask_label_names_the_pin_and_enter_records_it() {
-    // With a #! pin as the default, the label reads 'Enter accepts the #! pin' (never the
-    // 'leave empty' lie), and returning the pin (Enter) records it.
-    // Python: deps '-' (none), then Enter=pin ->
-    //   deps, py = cli._resolve_python_metadata(_PIN_TEXT, None, None, no_input=False)
-    //   assert deps == []
-    //   assert "Enter accepts the #! pin" in <the python ask's label>
-    //   assert "leave empty" not in <label>
-    //   assert py == ">=3.12,<3.13"   # Enter recorded the pin (python3.12 shebang)
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        configure_plain(&sandbox);
+        let source = sandbox.scratch.path().join("pinned.py");
+        fs::write(
+            &source,
+            "#!/usr/bin/env python3.12\nimport requests\nprint(requests)\n",
+        )
+        .unwrap();
+        let mut pty = PlainAddPty::spawn(
+            sandbox.data.path(),
+            sandbox.state.path(),
+            sandbox.config.path(),
+            sandbox.scratch.path(),
+            locale,
+            &["add", source.to_str().unwrap(), "-n", "pin-kept"],
+        );
+        pty.wait_for(dependencies_question(locale));
+        pty.send_line("-");
+        pty.wait_for(pinned_python_question(locale));
+        pty.send_line("");
+        let (code, output) = pty.finish();
+        assert_eq!(code, 0, "locale={locale}: {output}");
+        assert!(!output.contains(automatic_python_question(locale)));
+        let metadata = read_uv_metadata(&sandbox.stored("pin-kept")).unwrap();
+        assert_eq!(metadata.requires_python, ">=3.12,<3.13");
+    }
 }
 
 #[test]
-#[ignore = "ABSENT GAP (kind=absent): the INTERACTIVE python-metadata ask has no equivalent in the Rust workspace (see test_python_ask_label_names_the_pin_and_enter_records_it). cli._resolve_python_metadata (src/skit/cli.py:254-257) treats '-'/'none' at the python ask as automatic, returning '' even when a #! pin seeded the default. MUST FIX: add the interactive ask with the '-'-means-automatic escape. No public function to call, so this is a stub."]
+#[cfg(unix)]
 fn test_python_ask_dash_records_automatic_even_with_a_pin() {
-    // '-' at the pin-aware ask really means automatic — an empty requires-python, not the pin.
-    // Python: deps none, python '-' -> automatic
-    //   _deps, py = cli._resolve_python_metadata(_PIN_TEXT, None, None, no_input=False)
-    //   assert py == ""
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        configure_plain(&sandbox);
+        let source = sandbox.scratch.path().join("automatic.py");
+        fs::write(
+            &source,
+            "#!/usr/bin/env python3.12\nimport requests\nprint(requests)\n",
+        )
+        .unwrap();
+        let mut pty = PlainAddPty::spawn(
+            sandbox.data.path(),
+            sandbox.state.path(),
+            sandbox.config.path(),
+            sandbox.scratch.path(),
+            locale,
+            &["add", source.to_str().unwrap(), "-n", "automatic"],
+        );
+        pty.wait_for(dependencies_question(locale));
+        pty.send_line("-");
+        pty.wait_for(pinned_python_question(locale));
+        pty.send_line("-");
+        let (code, output) = pty.finish();
+        assert_eq!(code, 0, "locale={locale}: {output}");
+        assert!(read_uv_metadata(&sandbox.stored("automatic")).is_none());
+    }
 }
 
 #[test]
-#[ignore = "ABSENT GAP (kind=absent): the INTERACTIVE python-metadata ask has no equivalent in the Rust workspace (see test_python_ask_label_names_the_pin_and_enter_records_it). With no #! pin, cli._resolve_python_metadata (src/skit/cli.py:252) keeps the original 'Python version (leave empty for automatic)' label. MUST FIX: add the interactive ask with the no-pin label voice. No public function to call, so this is a stub."]
+#[cfg(unix)]
 fn test_python_ask_label_is_leave_empty_without_a_pin() {
-    // No #! pin: the label keeps the original 'leave empty for automatic' voice, and '-'
-    // there is automatic too.
-    // Python:
-    //   _deps, py = cli._resolve_python_metadata(_NOPIN_TEXT, None, None, no_input=False)
-    //   assert "leave empty for automatic" in <label>
-    //   assert "Enter accepts the #! pin" not in <label>
-    //   assert py == ""
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        configure_plain(&sandbox);
+        let source = sandbox.scratch.path().join("no-pin.py");
+        fs::write(&source, "import requests\nprint(requests)\n").unwrap();
+        let mut pty = PlainAddPty::spawn(
+            sandbox.data.path(),
+            sandbox.state.path(),
+            sandbox.config.path(),
+            sandbox.scratch.path(),
+            locale,
+            &["add", source.to_str().unwrap(), "-n", "no-pin"],
+        );
+        pty.wait_for(dependencies_question(locale));
+        pty.send_line("-");
+        pty.wait_for(automatic_python_question(locale));
+        pty.send_line("");
+        let (code, output) = pty.finish();
+        assert_eq!(code, 0, "locale={locale}: {output}");
+        assert!(!output.contains(pinned_python_question(locale)));
+        assert!(read_uv_metadata(&sandbox.stored("no-pin")).is_none());
+    }
 }
 
 // ==========================================================================

@@ -3710,6 +3710,21 @@ const CATALOG: &[Translation] = &[
     row!("Name for the command", "命令名称", "指令名稱"),
     row!("Description (optional)", "说明（可选）", "說明（選填）"),
     row!(
+        "Dependencies to install (Enter to accept, edit the list, or '-' for none)",
+        "要安装的依赖(Enter 采用,可自行编辑,或输入 - 表示不需要)",
+        "要安裝的依賴(Enter 採用,可自行編輯,或輸入 - 表示不需要)",
+    ),
+    row!(
+        "Python version (Enter accepts the #! pin, '-' for automatic)",
+        "Python 版本(Enter 采用 #! 指定的版本,'-' = 自动)",
+        "Python 版本(Enter 採用 #! 指定的版本,'-' = 自動)",
+    ),
+    row!(
+        "Python version (leave empty for automatic)",
+        "Python 版本(留空 = 自动)",
+        "Python 版本(留空 = 自動)",
+    ),
+    row!(
         "…or resume a kept draft:",
         "…或继续保留的草稿：",
         "…或繼續保留的草稿：",

@@ -15,9 +15,9 @@ use skit_form::{CliFormProjection, OnboardingPlan, onboarding_plan};
 use skit_language::{
     BindingIdentity, LosslessSource, UvMetadata, external_dependencies_at,
     has_uv_metadata_block_bytes, infer_draft_kind, infer_kind, placeholder_params,
-    python_version_pin, read_uv_metadata, shebang_program, suggest_description,
-    validate_pep440_specifiers, validate_pep508_requirement, write_managed_params_bytes,
-    write_uv_metadata_bytes,
+    python_version_pin, read_uv_metadata, shebang_program, split_pep508_requirements,
+    suggest_description, validate_pep440_specifiers, validate_pep508_requirement,
+    write_managed_params_bytes, write_uv_metadata_bytes,
 };
 
 use crate::picker::{ChoicePicker, PickerItem, PickerMode};
@@ -1185,39 +1185,6 @@ fn normalize_python_automatic(value: String) -> String {
     } else {
         trimmed.to_owned()
     }
-}
-
-/// Split a comma-composed field by asking the mature PEP 508 parser which partitions are valid.
-/// This keeps commas inside specifiers, extras, markers, and URLs intact.
-pub(crate) fn split_pep508_requirements(value: &str) -> Vec<String> {
-    let value = value.trim();
-    if value.is_empty() {
-        return Vec::new();
-    }
-    let comma_offsets = value
-        .char_indices()
-        .filter_map(|(index, character)| (character == ',').then_some(index))
-        .chain(std::iter::once(value.len()))
-        .collect::<Vec<_>>();
-    fn partition(value: &str, offsets: &[usize], start: usize) -> Option<Vec<String>> {
-        for &end in offsets.iter().filter(|&&offset| offset >= start) {
-            let item = value[start..end].trim();
-            if item.is_empty() || validate_pep508_requirement(item).is_err() {
-                continue;
-            }
-            if end == value.len() {
-                return Some(vec![item.to_owned()]);
-            }
-            let next = end.saturating_add(1);
-            if let Some(mut tail) = partition(value, offsets, next) {
-                let mut output = vec![item.to_owned()];
-                output.append(&mut tail);
-                return Some(output);
-            }
-        }
-        None
-    }
-    partition(value, &comma_offsets, 0).unwrap_or_else(|| vec![value.to_owned()])
 }
 
 /// New authored source kind.
