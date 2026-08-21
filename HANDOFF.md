@@ -324,8 +324,10 @@ now retains the normal launch announcement; doctor tests install their own priva
 harness drains final output after child exit; portable benchmark tests no longer hide common imports
 behind `cfg(unix)`; macOS expectations use the physical repository cwd; setup-uv activates and
 verifies CPython 3.13 in all benchmark workflows; and CodSpeed build/run both select `--workspace`.
-Current upstream pins are already the latest compatible releases (`CodSpeedHQ/action` 5.0.3,
-`cargo-codspeed` 5.0.1, and setup-uv 9.0.0), so no action upgrade is due. The old mutation job
+CodSpeed's upstream pins are already the latest compatible releases (`CodSpeedHQ/action` 5.0.3 and
+`cargo-codspeed` 5.0.1). A follow-up check found setup-uv 10.0.1, so every workflow now shares its
+full commit pin; v10 disables automatic caches on sensitive events and v10.0.1 adds resilient
+manifest downloads. The old mutation job
 failed during its unmodified baseline on the host-dependent doctor owner and did not score any
 mutants. Focused owners, CLI and benchmark full suites, workspace Clippy/Rustdoc, tooling, English,
 Actionlint, and Zizmor pass locally. The Linux-to-MSVC check reaches dependency C compilation and
