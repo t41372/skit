@@ -28,10 +28,11 @@
 //!   `RunnerLaunch` gives bun a `run` subcommand (Rust omits it), and the "no JS runtime"
 //!   refusal names the `skit config js.runner` escape hatch (Rust drops it).
 //! - CROSS-CRATE (`#[ignore]` stub): behavior owned by another tier this integration test
-//!   cannot reach without a forbidden dependency edit — shebang/kind inference
-//!   (`skit-language`), the launch `target()` projection and TOML round-trip / store
+//!   cannot reach without a forbidden dependency edit — the path-reading shebang wrapper,
+//!   the launch `target()` projection, and TOML round-trip / store
 //!   mutations (`skit-store`), the `js.runner` / Windows `shell.bash_path` config
 //!   resolution and every `CliRunner` surface (`skit-cli-rs` / `skit-store`).
+//!   The pure shebang and kind-inference contracts run at their public `skit-language` seams.
 
 use std::{
     collections::BTreeMap,
@@ -542,97 +543,11 @@ fn test_runner_target_is_script_path() {}
 // ==========================================================================
 //
 // skit-runtime does not depend on skit-language, so every shebang/kind-inference case is a
-// CROSS-CRATE stub. The Rust equivalents live in crates/skit-language/src/lib.rs:
-// `shebang_program(line: &str)` (takes a line, not a path — the file read is the caller's),
-// `infer_kind(path, shebang, executable)`, the private `shebang_kind`, and
-// `python_version_pin`. Their contract is exercised by skit-language's own tests
-// (language_contract.rs, edge_contract.rs).
-
 #[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program on a plain `#!/bin/bash` line -> \"bash\"."]
-fn test_shebang_plain() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program on `#!/usr/bin/env python3` -> \"python3\"."]
-fn test_shebang_env_form() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program skips env `-S` flags so \
-`#!/usr/bin/env -S deno run --allow-net` -> \"deno\"."]
-fn test_shebang_env_dash_s_with_flags() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program returns None when there is no `#!` line."]
-fn test_shebang_none_when_no_shebang() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): the oracle reads the file (OSError -> None); the Rust \
-`shebang_program(line)` takes an already-read line, so the unreadable-path branch belongs to the \
-caller (skit-store add lane / skit-language)."]
+#[ignore = "ARCHITECTURE CLOSURE (skit-language): Python's shebang_program reads a Path and maps \
+OSError to None. Rust's public shebang_program deliberately parses one already-read line; source \
+I/O belongs to the caller. There is no public combined path-reading seam to drive faithfully."]
 fn test_shebang_none_when_unreadable() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program returns None for a bare `#!` line (no \
-tokens after it)."]
-fn test_shebang_none_when_empty_hashbang_line() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program returns None for `#!/usr/bin/env -S` \
-(env then only a flag)."]
-fn test_shebang_env_with_only_flags_is_none() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): the shebang->kind map (bash->shell, node->js, \
-python3->python, unmapped/absent->None) is `shebang_kind` in skit-language."]
-fn test_kind_for_shebang_maps_the_program_or_none() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a versioned python name (python3.12) maps to \"python\", \
-pythonw stays unmapped — `python_version_pin` / `shebang_kind` in skit-language."]
-fn test_kind_for_shebang_versioned_python_is_python() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): the text twin (stdin lane) routes through the same \
-versioned-python rule in skit-language."]
-fn test_kind_for_shebang_text_versioned_python_and_non_matches() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): infer_kind's shebang branch routes a python3.12 #! to \
-\"python\" — `infer_kind` in skit-language."]
-fn test_infer_kind_versioned_python_shebang() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): infer_kind lets a .py extension outrank a bash shebang \
-(the extension is authoritative)."]
-fn test_infer_extension_beats_shebang() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): infer_kind lets a bash shebang outrank the +x bit."]
-fn test_infer_shebang_beats_exec_bit() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): an unmapped #! program falls through to the executability \
-check (exe on POSIX +x, unknown on Windows) — `infer_kind` in skit-language."]
-fn test_infer_unknown_shebang_program_falls_to_exec_bit() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a +x-only file is exe on POSIX — `infer_kind` in \
-skit-language."]
-fn test_infer_exec_bit_only_is_exe() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a plain file (no ext, no #!, no +x) is unknown \
-(Rust infer_kind returns None) — skit-language."]
-fn test_infer_plain_file_is_unknown() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a .zsh extension is shell — `infer_kind` in skit-language."]
-fn test_infer_zsh_extension_is_shell() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a .R extension lowercases to .r and is r — `infer_kind` \
-in skit-language."]
-fn test_infer_r_extension_is_case_insensitive() {}
 
 // ==========================================================================
 // needs — preflight / run / missing_needs
