@@ -9,6 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+atomicwrites.workspace = true
 skit-i18n.workspace = true
 shlex.workspace = true
 serde_json.workspace = true

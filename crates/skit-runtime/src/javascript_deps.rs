@@ -993,25 +993,45 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, DependencyError> {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), DependencyError> {
-    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|error| io_error("write", &temporary, error))?;
-    file.write_all(bytes)
-        .map_err(|error| io_error("write", &temporary, error))?;
-    file.sync_all()
-        .map_err(|error| io_error("sync", &temporary, error))?;
-    drop(file);
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path).map_err(|error| io_error("replace", path, error))?;
+    atomic_write_with(path, bytes, File::sync_all, atomicwrites::replace_atomic)
+}
+
+fn atomic_write_with(
+    path: &Path,
+    bytes: &[u8],
+    sync_file: impl FnOnce(&File) -> io::Result<()>,
+    replace: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<(), DependencyError> {
+    let parent = path.parent().ok_or_else(|| {
+        io_error(
+            "write",
+            path,
+            io::Error::new(io::ErrorKind::InvalidInput, "write path has no parent"),
+        )
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("dependency");
+    let id = TEMPORARY_ID.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(".{name}.{}-{id}.tmp", std::process::id()));
+    let outcome = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| io_error("write", &temporary, error))?;
+        file.write_all(bytes)
+            .map_err(|error| io_error("write", &temporary, error))?;
+        sync_file(&file).map_err(|error| io_error("sync", &temporary, error))?;
+        drop(file);
+        replace(&temporary, path).map_err(|error| io_error("replace", path, error))
+    })();
+    if outcome.is_err() {
+        let _ = fs::remove_file(&temporary);
+        return outcome;
     }
-    fs::rename(&temporary, path).map_err(|error| io_error("replace", path, error))?;
-    if let Some(parent) = path.parent() {
-        let _ = sync_directory(parent);
-    }
+    let _ = sync_directory(parent);
     Ok(())
 }
 
@@ -1048,6 +1068,50 @@ mod transaction_tests {
             failure_detail(b"detail \xff failed\n"),
             "detail \u{fffd} failed"
         );
+    }
+
+    #[test]
+    fn atomic_dependency_writes_preserve_the_old_file_and_remove_failed_temps() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("package.json");
+        fs::write(&target, b"old\n").unwrap();
+
+        let sync_error = atomic_write_with(
+            &target,
+            b"new\n",
+            |_| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "sync refused",
+                ))
+            },
+            atomicwrites::replace_atomic,
+        )
+        .unwrap_err();
+        assert!(sync_error.to_string().contains("sync refused"));
+        assert_eq!(fs::read(&target).unwrap(), b"old\n");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+
+        let replace_error = atomic_write_with(&target, b"new\n", File::sync_all, |_, _| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "replace refused",
+            ))
+        })
+        .unwrap_err();
+        assert!(replace_error.to_string().contains("replace refused"));
+        assert_eq!(fs::read(&target).unwrap(), b"old\n");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+
+        atomic_write_with(
+            &target,
+            b"new\n",
+            File::sync_all,
+            atomicwrites::replace_atomic,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new\n");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 
     #[test]
