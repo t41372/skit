@@ -14,20 +14,20 @@
 //! Buckets:
 //! - Bucket 1 (block-writer / round-trip byte-logic): the three `build_block` / `set_dependencies`
 //!   escaping tests below; asserted on the parsed-back `dependencies` values.
-//! - Bucket 2 (white-box Python internals): `_block_re(...).pattern`, `_next_nonspace(...)`, and the
-//!   `// /// script` (deps) injection path — no public skit-language equivalent (see each WHY).
-//! - Bucket 3 (off-crate / CLI+store): the whole `split_requirements` family and the three CLI call
-//!   sites — see the central FINDING below.
+//! - Bucket 2 (white-box Python internals): `_block_re(...).pattern` and `_next_nonspace(...)` have
+//!   no public skit-language equivalent (see each WHY). The observable `//` preservation path is
+//!   active through the public managed-params editor.
+//! - Bucket 3 (CLI/store): the three CLI call sites remain owned by their frontend and persistence
+//!   integration tests.
 //!
-//! CENTRAL FINDING for the supervisor: the module's documented subject, `pep723.split_requirements`
-//! (14 unit tests), maps to `skit_ui::add::split_pep508_requirements`, which is `pub(crate)` in the
-//! **skit-ui** crate — NOT in `skit-language`, and NOT publicly reachable from any integration test.
-//! `skit-language` exposes only the single-item validator `validate_pep508_requirement`, never a
-//! requirement splitter. So the comma-splitting byte-logic cannot be verified from this crate. Those
-//! 14 tests are therefore ported as `#[ignore]` stubs (with their frozen input/expected preserved),
-//! not because the behavior matches, but because the function lives off-crate behind `pub(crate)`.
+//! The 14 `split_requirements` owners now call the public shared
+//! `skit_language::split_pep508_requirements`. CLI, Add, and Settings use that same function.
 
-use skit_language::{read_uv_metadata, write_uv_metadata};
+use skit_domain::parameters::ParamDecl;
+use skit_language::{
+    managed_params, read_uv_metadata, split_pep508_requirements, write_managed_params,
+    write_uv_metadata,
+};
 
 // ---------------------------------------------------------------- comment-leader generalization
 
@@ -47,127 +47,144 @@ fn test_block_re_double_slash_pattern_mirrors_the_hash_form() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 2, no public `//` deps path): `pep723.inject_block(src, [], leader=\"//\")` injects a `// /// script` block whose body is `dependencies = []`. skit-language's deps writer/reader (`write_uv_metadata` / `read_uv_metadata` / `has_uv_metadata_block`) are all hardwired to the Python `#` leader; the only `//`-leader path (`write_managed_params`/`managed_params` for kind \"js\") carries a `[tool.skit]` params table, never a bare `dependencies` block. No public function reproduces this injection."]
 fn test_slash_block_round_trips_with_shebang_skip() {
-    // src = "#!/usr/bin/env node\nconst X = 5;\n"
-    // out = pep723.inject_block(src, [], leader="//")
-    // assert pep723.has_block(out, "//")
-    // assert out.startswith("#!/usr/bin/env node\n")
-    // assert out.index("#!") < out.index("// /// script")
-    // assert pep723.parse_block(out, "//") == {"dependencies": []}
+    // npm dependencies belong to entry metadata in Rust. An authored bare field is nevertheless
+    // user data in the shared JS/TS comment block and must survive the public params editor.
+    let source = concat!(
+        "#!/usr/bin/env node\n",
+        "// /// script\n",
+        "// dependencies = []\n",
+        "// ///\n",
+        "const X = 5;\n",
+    );
+    let declaration = ParamDecl::new("X");
+    let edited = write_managed_params("js", source, std::slice::from_ref(&declaration)).unwrap();
+
+    assert!(edited.starts_with("#!/usr/bin/env node\n"));
+    assert!(edited.find("#!").unwrap() < edited.find("// /// script").unwrap());
+    assert!(edited.contains("// dependencies = []\n"));
+    assert_eq!(managed_params("js", &edited), [declaration]);
+
+    let restored = write_managed_params("js", &edited, &[]).unwrap();
+    assert_eq!(restored, source);
 }
 
 // --------------------------------------------------------------------------
-// unit: split_requirements  (Rust equivalent: skit_ui::add::split_pep508_requirements, pub(crate))
+// unit: split_requirements
 // --------------------------------------------------------------------------
 //
-// Every test below is off-crate: the splitter is `pub(crate)` in skit-ui and skit-language exposes
-// no requirement splitter. Ports keep the frozen input/expected pair for later re-homing in a
-// skit-ui unit test. Reason string is identical across the family.
+// The shared splitter now lives in skit-language. CLI, Add, and Settings call this one function.
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_simple_list_splits() {
-    // assert pep723.split_requirements("requests, rich") == ["requests", "rich"]
+    assert_eq!(
+        split_pep508_requirements("requests, rich"),
+        ["requests", "rich"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_single_item_no_commas() {
-    // assert pep723.split_requirements("requests") == ["requests"]
+    assert_eq!(split_pep508_requirements("requests"), ["requests"]);
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_specifier_commas_stay_joined() {
-    // assert pep723.split_requirements("requests>=2,<3") == ["requests>=2,<3"]
+    assert_eq!(
+        split_pep508_requirements("requests>=2,<3"),
+        ["requests>=2,<3"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_specifier_lists_split_only_between_requirements() {
-    // assert pep723.split_requirements("requests>=2,<3, pillow!=9.0,>=8") == [
-    //     "requests>=2,<3",
-    //     "pillow!=9.0,>=8",
-    // ]
+    assert_eq!(
+        split_pep508_requirements("requests>=2,<3, pillow!=9.0,>=8"),
+        ["requests>=2,<3", "pillow!=9.0,>=8"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_spaces_around_specifier_commas() {
     // The continuation clause may be padded with spaces; the comma still belongs
     // to the specifier because what follows is an operator, not a name.
-    // assert pep723.split_requirements("foo >= 1 , < 2 , bar") == ["foo >= 1 , < 2", "bar"]
+    assert_eq!(
+        split_pep508_requirements("foo >= 1 , < 2 , bar"),
+        ["foo >= 1 , < 2", "bar"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_extras_bracket_commas_stay_joined() {
-    // assert pep723.split_requirements("requests[security,socks]>=2, rich") == [
-    //     "requests[security,socks]>=2",
-    //     "rich",
-    // ]
+    assert_eq!(
+        split_pep508_requirements("requests[security,socks]>=2, rich"),
+        ["requests[security,socks]>=2", "rich"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_parenthesized_specifier_commas_stay_joined() {
-    // assert pep723.split_requirements("foo (>=1.0,<2.0), bar") == ["foo (>=1.0,<2.0)", "bar"]
+    assert_eq!(
+        split_pep508_requirements("foo (>=1.0,<2.0), bar"),
+        ["foo (>=1.0,<2.0)", "bar"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_double_quoted_marker_comma_stays_joined() {
-    // assert pep723.split_requirements('a; sys_platform in "linux,darwin", b') == [
-    //     'a; sys_platform in "linux,darwin"',
-    //     "b",
-    // ]
+    assert_eq!(
+        split_pep508_requirements(r#"a; sys_platform in "linux,darwin", b"#),
+        [r#"a; sys_platform in "linux,darwin""#, "b"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_single_quoted_marker_comma_stays_joined() {
-    // assert pep723.split_requirements("a; extra in 'x,y', b") == ["a; extra in 'x,y'", "b"]
+    assert_eq!(
+        split_pep508_requirements("a; extra in 'x,y', b"),
+        ["a; extra in 'x,y'", "b"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_name_starting_with_digit_splits() {
     // PEP 508 names may start with a digit; isalnum (not isalpha) is the predicate.
-    // assert pep723.split_requirements("rich, 2captcha-python") == ["rich", "2captcha-python"]
+    assert_eq!(
+        split_pep508_requirements("rich, 2captcha-python"),
+        ["rich", "2captcha-python"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_trailing_comma_dropped() {
-    // assert pep723.split_requirements("requests>=2,<3,") == ["requests>=2,<3"]
+    assert_eq!(
+        split_pep508_requirements("requests>=2,<3,"),
+        ["requests>=2,<3"]
+    );
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_empty_and_blank_input() {
-    // assert pep723.split_requirements("") == []
-    // assert pep723.split_requirements("   ") == []
+    assert!(split_pep508_requirements("").is_empty());
+    assert!(split_pep508_requirements("   ").is_empty());
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_uppercase_x_in_name_is_ordinary_text() {
     // Guards the bracket character classes against corruption: an 'X' in a package
     // name must not perturb the bracket-nesting depth (kills the "XX([XX" mutants).
-    // assert pep723.split_requirements("pkgX, rich") == ["pkgX", "rich"]
+    assert_eq!(split_pep508_requirements("pkgX, rich"), ["pkgX", "rich"]);
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 3, off-crate): pep723.split_requirements -> skit_ui::add::split_pep508_requirements, pub(crate) in skit-ui, unreachable from a skit-language test. See CENTRAL FINDING."]
 fn test_nested_brackets_tracked_by_depth_not_flag() {
     // Depth must accumulate (+=), not be pinned to 1: with nesting, a pinned depth
     // hits zero at the first closer and lets an inner comma split mid-requirement.
-    // assert pep723.split_requirements("a[[x],y], b") == ["a[[x],y]", "b"]
+    assert_eq!(split_pep508_requirements("a[[x],y], b"), ["a[[x],y]", "b"]);
 }
 
 #[test]
-#[ignore = "UNMAPPED (bucket 2, white-box): `pep723._next_nonspace(text, i)` is a Python-private helper. The Rust splitter (`split_pep508_requirements`) never exposes a next-non-space probe; it drives partitioning through `validate_pep508_requirement`, so this helper has no public equivalent to observe."]
+#[ignore = "UNMAPPED (bucket 2, white-box): `pep723._next_nonspace(text, i)` is a Python-private helper. The shared Rust splitter does not expose a next-non-space probe. Its observable end-of-text behavior is active in `test_trailing_comma_dropped`."]
 fn test_next_nonspace_end_of_text_is_empty_string() {
     // The trailing-comma path relies on the exact "" sentinel; through the caller a
     // non-empty alnum return is coincidentally equivalent, so pin the contract here.

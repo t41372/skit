@@ -438,7 +438,48 @@ pub fn split_pep508_requirements(value: &str) -> Vec<String> {
         }
         None
     }
-    partition(value, &comma_offsets, 0).unwrap_or_else(|| vec![value.to_owned()])
+    partition(value, &comma_offsets, 0).unwrap_or_else(|| split_requirement_fallback(value))
+}
+
+fn split_requirement_fallback(value: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    let mut item = String::new();
+    let mut depth = 0_i32;
+    let mut quote = None;
+    for (index, character) in value.char_indices() {
+        if let Some(active) = quote {
+            item.push(character);
+            if character == active {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                let next = value[index + character.len_utf8()..]
+                    .chars()
+                    .find(|next| !next.is_whitespace());
+                if next.is_none_or(char::is_alphanumeric) {
+                    let trimmed = item.trim();
+                    if !trimmed.is_empty() {
+                        output.push(trimmed.to_owned());
+                    }
+                    item.clear();
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        item.push(character);
+    }
+    let trimmed = item.trim();
+    if !trimmed.is_empty() {
+        output.push(trimmed.to_owned());
+    }
+    output
 }
 
 /// Validate one PEP 440 version-specifier list.
