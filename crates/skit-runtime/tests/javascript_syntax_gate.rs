@@ -355,6 +355,36 @@ fn rust_additive_system_gate_runner_bounds_a_stuck_process() {
     assert_eq!(error, JavaScriptSyntaxGateUnavailable::Timeout);
 }
 
+#[cfg(unix)]
+#[test]
+fn rust_additive_system_gate_drains_large_stderr_before_waiting() {
+    use std::{io::Write as _, os::unix::fs::PermissionsExt as _};
+
+    let root = TempDir::new().unwrap();
+    let program = root.path().join("loud-node");
+    let mut file = fs::File::create(&program).unwrap();
+    file.write_all(
+        b"#!/bin/sh\nprintf 'SyntaxError: first line\\n' >&2\nhead -c 262144 /dev/zero >&2\nexit 1\n",
+    )
+    .unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    let source = root.path().join("source.js");
+    fs::write(&source, "const broken = ;\n").unwrap();
+
+    let output = SystemJavaScriptSyntaxGateRunner
+        .check(&program, &source, std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(!output.success);
+    assert!(output.stderr.len() > 65_536);
+    let gate = FakeGate::one(Ok(output));
+    let error =
+        check_javascript_syntax(Some(&runtime(JavaScriptRuntimeKind::Node)), &source, &gate)
+            .unwrap_err();
+    assert_eq!(error.detail(), "SyntaxError: first line");
+}
+
 #[test]
 fn test_gate2_failure_removes_the_temp_copy() {
     let staged = TempBuilder::new().suffix(".js").tempfile().unwrap();
