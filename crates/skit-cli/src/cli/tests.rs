@@ -8332,6 +8332,117 @@ fn settings_host_updates_prompt_javascript_reference_python_and_source_managemen
     assert!(String::from_utf8(after).unwrap().contains("updated"));
 }
 
+#[test]
+fn settings_inputs_read_prompt_runners_and_keep_future_kinds_empty_without_hidden_writes() {
+    let prompt_root = TempDir::new().unwrap();
+    let prompt_data = prompt_root.path().join("data");
+    let prompt_state = prompt_root.path().join("state");
+    let prompt_config = prompt_root.path().join("config");
+    fs::create_dir_all(&prompt_state).unwrap();
+    let prompt_store = FileStore::new(&prompt_data);
+    let prompt_service = LibraryService::new(prompt_store.clone());
+    let prompt = prompt_service
+        .add(CreateEntry {
+            name: "Runner projection".to_owned(),
+            kind: EntryKind::parse("prompt").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: "Choose a configured runner".to_owned(),
+            payload: Some(EntryPayload {
+                bytes: b"Review {{topic}}.".to_vec(),
+                stored_name: Some("prompt.md".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                runner: "codex".to_owned(),
+                params: vec!["topic".to_owned()],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let prompt_data_before = test_tree_snapshot(&prompt_data);
+    let prompt_state_before = test_tree_snapshot(&prompt_state);
+
+    let inputs = settings_inputs(
+        &prompt_service,
+        &prompt_store,
+        &prompt_config,
+        &prompt_state,
+        &prompt,
+        Some(SettingsSectionId::Runner),
+    )
+    .unwrap();
+
+    assert_eq!(inputs.kind, "prompt");
+    assert_eq!(inputs.runner, "codex");
+    assert_eq!(inputs.managed.len(), 1);
+    assert_eq!(inputs.managed[0].name, "topic");
+    assert_eq!(inputs.revealed, Some(SettingsSectionId::Runner));
+    assert_eq!(
+        inputs.configured_runners,
+        [
+            "claude",
+            "codex",
+            "opencode",
+            "amp",
+            "antigravity",
+            "copilot",
+            "cursor",
+            "pi",
+        ]
+        .map(str::to_owned)
+    );
+    let config_bytes = fs::read(prompt_config.join("config.toml")).unwrap();
+    let config_text = String::from_utf8(config_bytes).unwrap();
+    assert!(config_text.contains("runners_seeded = true"));
+    assert!(config_text.contains("name = \"codex\""));
+    assert_eq!(test_tree_snapshot(&prompt_data), prompt_data_before);
+    assert_eq!(test_tree_snapshot(&prompt_state), prompt_state_before);
+
+    let future_root = TempDir::new().unwrap();
+    let future_data = future_root.path().join("data");
+    let future_state = future_root.path().join("state");
+    let future_config = future_root.path().join("config");
+    fs::create_dir_all(&future_state).unwrap();
+    let future_store = FileStore::new(&future_data);
+    let future_service = LibraryService::new(future_store.clone());
+    let future = future_service
+        .add(CreateEntry {
+            name: "Future settings".to_owned(),
+            kind: EntryKind::parse("future-kind").unwrap(),
+            mode: StorageMode::Reference,
+            source: "opaque future source".to_owned(),
+            workdir: "invoke".to_owned(),
+            description: "Keep unknown metadata".to_owned(),
+            payload: None,
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let future_before = test_tree_snapshot(future_root.path());
+
+    let inputs = settings_inputs(
+        &future_service,
+        &future_store,
+        &future_config,
+        &future_state,
+        &future,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(inputs.kind, "future-kind");
+    assert!(inputs.reference_mode);
+    assert!(!inputs.has_analyzer);
+    assert!(!inputs.declared_schema);
+    assert_eq!(inputs.reader_fields, 0);
+    assert!(inputs.managed.is_empty());
+    assert!(inputs.candidates.is_empty());
+    assert!(inputs.configured_runners.is_empty());
+    assert_eq!(inputs.dependency_flavor, None);
+    assert_eq!(test_tree_snapshot(future_root.path()), future_before);
+}
+
 #[cfg(unix)]
 #[test]
 fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
