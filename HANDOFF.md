@@ -417,10 +417,16 @@ The ledger has the authoritative per-module adjudication log.
   preserves complete Unix mode bits while prompt snapshots keep the v0.4 `0o777` mask; CLI and TUI
   Settings use one identity-gated JavaScript cleanup-before-update transaction; editor command
   parsing now follows the host POSIX or Windows dialect. JavaScript installer failures now retain
-  the actionable child stderr line and keep rollback atomic. Remaining adjudicated work includes the Prompt Settings placeholder picker,
-  interactive add dependency questions, source-schema partial-warning behavior, and moving Library
+  the actionable child stderr line and keep rollback atomic. Source candidate management now warns
+  per invalid item while valid siblings commit once (`85ecf69`). Remaining adjudicated work includes
+  the Prompt Settings placeholder picker, interactive add dependency questions, and moving Library
   projection orchestration out of `skit-store`. The final coverage, supply-chain, docs, package,
   benchmark, and hands-on gates are not valid until these changes stop.
+  A review also questioned `FileStore::scan()` repairing stale registry rows. This is not a new
+  blocker: `registry.toml` is a derived index, not authoritative user data, and v0.4 explicitly
+  runs `_repair_rows` under a non-blocking lock. `rust-contract-matrix.md` records this narrow
+  exception to pure reads. Preserve it while moving Library projection; metadata, source, state,
+  and config reads remain byte-pure.
 - **User's hands-on test** fits AFTER the fix pass restores behavior, BEFORE mutation.
 - Mutation (`cargo mutants`) is **BLOCKED on explicit user approval** — it invalidates on any
   change, so it runs only after behavior is frozen; ~4.5h local, likely on another box/modal.com.
