@@ -896,6 +896,26 @@ mod tests {
         let root = TempDir::new().unwrap();
         let target = root.path().join("target");
         let reads = Cell::new(0_u32);
+        let applies = Cell::new(0_u32);
+        let apply_permissions = |file: &File, permissions| {
+            applies.set(applies.get() + 1);
+            file.set_permissions(permissions)
+        };
+
+        let existing = root.path().join("existing");
+        std::fs::write(&existing, b"old\n").unwrap();
+        atomic_with_permission_ops(
+            &existing,
+            b"control\n",
+            |path| std::fs::metadata(path).map(|metadata| metadata.permissions()),
+            apply_permissions,
+            atomicwrites::replace_atomic,
+            sync_directory,
+        )
+        .unwrap();
+        assert_eq!(applies.get(), 1, "the reusable callback must be observable");
+        std::fs::remove_file(existing).unwrap();
+        applies.set(0);
 
         atomic_with_permission_ops(
             &target,
@@ -904,13 +924,14 @@ mod tests {
                 reads.set(reads.get() + 1);
                 std::fs::metadata(path).map(|metadata| metadata.permissions())
             },
-            File::set_permissions,
+            apply_permissions,
             atomicwrites::replace_atomic,
             sync_directory,
         )
         .unwrap();
 
         assert_eq!(reads.get(), 1);
+        assert_eq!(applies.get(), 0);
         assert_eq!(std::fs::read(&target).unwrap(), b"new\n");
         assert_eq!(names(&root), ["target"]);
     }
