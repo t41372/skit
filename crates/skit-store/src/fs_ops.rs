@@ -74,6 +74,20 @@ pub(crate) fn acquire_lock(path: &Path) -> io::Result<FileLock> {
     Ok(FileLock { _file: file })
 }
 
+/// Acquire a persistent lock file only when a writer has already created it.
+///
+/// Read paths use this form so observing an entry does not create skit data. `None` means that no
+/// skit writer has used this lock path yet.
+pub(crate) fn acquire_existing_lock(path: &Path) -> io::Result<Option<FileLock>> {
+    let file = match OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    file.lock()?;
+    Ok(Some(FileLock { _file: file }))
+}
+
 /// `acquire_lock` that never waits: `Some(FileLock)` holding the lock, or `None` holding nothing.
 ///
 /// For a write that rides on a READ path -- the registry self-heal under `list`, say -- where the

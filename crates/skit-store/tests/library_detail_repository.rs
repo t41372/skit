@@ -258,6 +258,11 @@ fn a_fresh_refresh_preserves_metadata_payload_and_registry_bytes() {
         .iter()
         .map(|path| fs::read(path).unwrap())
         .collect::<Vec<_>>();
+    let entry_lock = root
+        .path()
+        .join(".locks")
+        .join(format!("{}.meta.lock", entry.slug.as_str()));
+    assert!(!entry_lock.exists());
 
     let refresh = store.library_refresh().unwrap();
     assert_eq!(
@@ -272,4 +277,5 @@ fn a_fresh_refresh_preserves_metadata_payload_and_registry_bytes() {
             path.display()
         );
     }
+    assert!(!entry_lock.exists(), "a read must not create an entry lock");
 }

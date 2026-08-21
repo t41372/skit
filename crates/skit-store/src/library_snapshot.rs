@@ -13,6 +13,7 @@ use skit_i18n::Localize as _;
 
 use crate::{
     FileStore,
+    fs_ops::acquire_existing_lock,
     mutations::registry::Registry,
     paths::stored_filenames,
     read::{diagnostic_from, summary_from},
@@ -20,6 +21,15 @@ use crate::{
 
 impl LibraryDetailRepository for FileStore {
     fn library_refresh(&self) -> Result<LibraryRefreshSnapshot, RepositoryError> {
+        self.library_refresh_with(|_| {})
+    }
+}
+
+impl FileStore {
+    fn library_refresh_with(
+        &self,
+        mut before_source_read: impl FnMut(&Entry),
+    ) -> Result<LibraryRefreshSnapshot, RepositoryError> {
         let Some(registry) = Registry::read(self.data_dir()) else {
             return Ok(LibraryRefreshSnapshot::default());
         };
@@ -38,15 +48,13 @@ impl LibraryDetailRepository for FileStore {
                 }
             };
             let meta_path = self.scripts_dir().join(slug.as_str()).join("meta.toml");
-            match self.read_entry_snapshot(slug.clone()) {
-                Ok((entry, metadata_bytes)) => {
+            match coherent_entry_snapshot(self, &slug, &mut before_source_read) {
+                Ok((entry, metadata_bytes, snapshot)) => {
                     if !registry.matches_entry_snapshot(&entry, &meta_path, &metadata_bytes) {
                         stale.push(slug);
                     }
                     refresh.scan.entries.push(summary_from(&entry));
-                    refresh
-                        .entries
-                        .push(entry_snapshot(self, entry, |path| fs::read(path).ok()));
+                    refresh.entries.push(snapshot);
                 }
                 Err(error) => refresh.scan.diagnostics.push(diagnostic_from(error, &slug)),
             }
@@ -56,6 +64,49 @@ impl LibraryDetailRepository for FileStore {
         }
         Ok(refresh)
     }
+}
+
+fn coherent_entry_snapshot(
+    store: &FileStore,
+    slug: &skit_domain::Slug,
+    before_source_read: &mut dyn FnMut(&Entry),
+) -> Result<(Entry, Vec<u8>, LibraryEntrySnapshot), RepositoryError> {
+    let lock_path = store
+        .data_dir()
+        .join(".locks")
+        .join(format!("{}.meta.lock", slug.as_str()));
+    if let Some(_lock) = existing_entry_lock(&lock_path)? {
+        return read_entry_snapshot(store, slug, None);
+    }
+
+    let first = read_entry_snapshot(store, slug, Some(before_source_read))?;
+    if let Some(_lock) = existing_entry_lock(&lock_path)? {
+        return read_entry_snapshot(store, slug, None);
+    }
+    Ok(first)
+}
+
+fn existing_entry_lock(
+    path: &std::path::Path,
+) -> Result<Option<crate::fs_ops::FileLock>, RepositoryError> {
+    acquire_existing_lock(path).map_err(|error| RepositoryError::Io {
+        operation: "lock",
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    })
+}
+
+fn read_entry_snapshot(
+    store: &FileStore,
+    slug: &skit_domain::Slug,
+    before_source_read: Option<&mut dyn FnMut(&Entry)>,
+) -> Result<(Entry, Vec<u8>, LibraryEntrySnapshot), RepositoryError> {
+    let (entry, metadata_bytes) = store.read_entry_snapshot(slug.clone())?;
+    if let Some(before_source_read) = before_source_read {
+        before_source_read(&entry);
+    }
+    let snapshot = entry_snapshot(store, entry.clone(), |path| fs::read(path).ok());
+    Ok((entry, metadata_bytes, snapshot))
 }
 
 fn entry_snapshot(
@@ -130,7 +181,11 @@ const fn known_entry_kind(kind: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::{
+        cell::Cell,
+        sync::{Arc, Barrier},
+        thread,
+    };
 
     use skit_application::{
         CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
@@ -170,5 +225,72 @@ mod tests {
 
         assert_eq!(reads.get(), 1);
         assert_eq!(snapshot.source.as_deref(), Some(expected.as_slice()));
+    }
+
+    #[test]
+    fn refresh_never_pairs_old_metadata_with_a_concurrently_committed_new_payload() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let old_source = b"printf old\n";
+        let new_source = b"printf new\n";
+        let entry = store
+            .create(CreateEntry {
+                name: "Coherent".to_owned(),
+                kind: EntryKind::parse("shell").unwrap(),
+                mode: StorageMode::Copy,
+                source: "/original/coherent.sh".to_owned(),
+                workdir: "invoke".to_owned(),
+                description: String::new(),
+                payload: Some(EntryPayload {
+                    bytes: old_source.to_vec(),
+                    stored_name: Some("script.sh".to_owned()),
+                    permissions: SourcePermissions::default(),
+                }),
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let writer_start = Arc::new(Barrier::new(2));
+        let writer_done = Arc::new(Barrier::new(2));
+        let writer = {
+            let store = store.clone();
+            let entry = entry.clone();
+            let writer_start = Arc::clone(&writer_start);
+            let writer_done = Arc::clone(&writer_done);
+            thread::spawn(move || {
+                writer_start.wait();
+                let updated = store
+                    .commit_copy_edit(&entry, new_source, &entry.meta.source_hash)
+                    .unwrap();
+                writer_done.wait();
+                updated
+            })
+        };
+        let mut first_read = true;
+
+        let refresh = store
+            .library_refresh_with(|_| {
+                if first_read {
+                    first_read = false;
+                    writer_start.wait();
+                    writer_done.wait();
+                }
+            })
+            .unwrap();
+        let updated = writer.join().unwrap();
+        let snapshot = refresh.entries.first().unwrap();
+        let source = snapshot.source.as_deref().unwrap();
+
+        assert!(source == old_source || source == new_source);
+        assert_eq!(snapshot.entry.meta.source_hash, crate::content_hash(source));
+        assert!(
+            (source == old_source && snapshot.entry.meta.source_hash == entry.meta.source_hash)
+                || (source == new_source
+                    && snapshot.entry.meta.source_hash == updated.meta.source_hash)
+        );
+
+        let stable = store.library_refresh().unwrap();
+        let stable = stable.entries.first().unwrap();
+        assert_eq!(stable.source.as_deref(), Some(new_source.as_slice()));
+        assert_eq!(stable.entry.meta.source_hash, updated.meta.source_hash);
     }
 }
