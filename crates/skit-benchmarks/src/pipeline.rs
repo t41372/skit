@@ -365,6 +365,72 @@ mod tests {
     }
 
     #[test]
+    fn stale_output_cleanup_removes_only_known_files_and_suite_json() {
+        let bench = TempDir::new().unwrap();
+        let suites = bench.path().join("suites");
+        fs::create_dir(&suites).unwrap();
+        for name in ["run.json", "results.json", "results.md"] {
+            fs::write(bench.path().join(name), "stale").unwrap();
+        }
+        fs::write(suites.join("startup.json"), "stale").unwrap();
+        fs::write(suites.join("keep.txt"), "keep").unwrap();
+
+        super::clear_stale_outputs(bench.path()).unwrap();
+
+        for name in ["run.json", "results.json", "results.md"] {
+            assert!(!bench.path().join(name).exists());
+        }
+        assert!(!suites.join("startup.json").exists());
+        assert_eq!(fs::read_to_string(suites.join("keep.txt")).unwrap(), "keep");
+    }
+
+    #[test]
+    fn stale_output_cleanup_reports_file_and_suite_removal_failures() {
+        let blocked_run = TempDir::new().unwrap();
+        fs::create_dir(blocked_run.path().join("run.json")).unwrap();
+        assert!(matches!(
+            super::clear_stale_outputs(blocked_run.path()),
+            Err(super::ExecutionError::Io {
+                operation: "remove",
+                ..
+            })
+        ));
+
+        let blocked_suite = TempDir::new().unwrap();
+        let suites = blocked_suite.path().join("suites");
+        fs::create_dir(&suites).unwrap();
+        fs::create_dir(suites.join("blocked.json")).unwrap();
+        assert!(matches!(
+            super::clear_stale_outputs(blocked_suite.path()),
+            Err(super::ExecutionError::Io {
+                operation: "remove",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn incomplete_dataset_directories_are_replaced_and_oversized_requests_refuse() {
+        let bench = TempDir::new().unwrap();
+        let incomplete = bench.path().join("datasets/n1");
+        fs::create_dir_all(&incomplete).unwrap();
+        fs::write(incomplete.join("stale"), "stale").unwrap();
+
+        let prepared = super::prepare_datasets(bench.path(), &[1]).unwrap();
+
+        assert_eq!(prepared[&1].n, 1);
+        assert!(!incomplete.join("stale").exists());
+        assert!(incomplete.join("manifest.json").is_file());
+
+        let oversized = usize::try_from(isize::MAX).unwrap().saturating_add(1);
+        assert!(matches!(
+            super::prepare_datasets(bench.path(), &[oversized]),
+            Err(super::ExecutionError::Dataset(crate::dataset::DatasetError::Invalid(reason)))
+                if reason.contains("does not fit isize")
+        ));
+    }
+
+    #[test]
     fn publication_runs_the_planned_suite_and_writes_strict_artifacts() {
         let fixture = Fixture::new();
         super::clear_stale_outputs(&fixture.context.out_dir).unwrap();
