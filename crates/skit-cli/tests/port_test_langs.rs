@@ -41,7 +41,7 @@
 //! - DIVERGENCE (full asserting body, `#[ignore]`d): 17 — the assertion is
 //!   faithful to the oracle and compiles; it fails because Rust diverges. Fixing the impl
 //!   and deleting the `#[ignore]` line turns it green.
-//! - UNMAPPABLE / ABSENT SEAM (compiling `#[ignore]` stub): 4, 5, 6, 7, 16, 21 — Python
+//! - FRAMEWORK-INJECTION CLOSURE (compiling `#[ignore]` stub): 4, 5, 6, 7, 16, 21 — Python
 //!   runtime mechanisms (lazy grammar import, `LazyCapabilities`, `without()`, dataclass
 //!   `compare=False`, module-namespace monkeypatch) with no Rust equivalent by design.
 
@@ -623,7 +623,7 @@ fn test_doctor_json_missing_uv_pure_exe_library_exits_zero() {
 // ---- plan_for_entry: capability degradation ----------------------------------------------------
 
 #[test]
-#[ignore = "ABSENT SEAM: the oracle strips a spec's cli_reader (spec.without(\"cli_reader\")) and monkeypatches flows.spec_for to prove plan_for_entry falls through to source \"none\" instead of crashing (tests/test_langs.py:307). Rust cannot construct a python spec without its statically linked CLI reader — the LazyCapabilities/without() injection seam does not exist — so the degradation path is unreachable. Not a MUST-FIX feature; it tests a Python monkeypatch mechanism."]
+#[ignore = "FRAMEWORK-INJECTION CLOSURE: the oracle strips a spec's cli_reader (spec.without(\"cli_reader\")) and monkeypatches flows.spec_for to prove plan_for_entry falls through to source \"none\" instead of crashing (tests/test_langs.py:307). Rust cannot construct a python spec without its statically linked CLI reader — the LazyCapabilities/without() injection seam does not exist — so the degradation path is unreachable. This tests a Python monkeypatch mechanism, not a missing product capability."]
 fn test_plan_without_cli_reader_degrades_to_none_plan() {
     // Python: a future kind can carry params_io+analyzer but no static CLI reader; the plan
     // must fall through to "none", not crash. No Rust capability-stripping seam exists.

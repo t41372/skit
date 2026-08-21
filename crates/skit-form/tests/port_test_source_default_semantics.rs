@@ -24,10 +24,9 @@
 //!   `current_defaults` machinery — the module's thesis — plus the `delivers_empty` matrix and the
 //!   `input_binding` flag. Eight tests, all reachable from this crate (`skit-form` +->
 //!   `skit-language` + `skit-domain`).
-//! - Bucket 2 (white-box, no public seam): the two synthetic-`analyze` reconcile-guard tests. The
-//!   guard IS present (`skit-language` `reconcile_analysis`), but the Python API's injectable
-//!   analyzer has no Rust equivalent, and a real analyzer never emits a defaultless matched const
-//!   (the oracle says so). `#[ignore]`, `kind=absent` (the injection seam, not the behavior).
+//! - Bucket 2 (white-box): the two synthetic-`analyze` reconcile-guard owners moved to
+//!   `skit-language`'s in-module semantic tests. That is the narrow Rust seam that can construct a
+//!   defaultless candidate without adding a production injection API.
 //! - Bucket 3 (cross-crate): `assemble` (split into `skit-application` `run_inputs` token
 //!   expansion + `delivery::assemble` routing), `remembered_values`/`save_after_run`
 //!   (`skit-application` `form_state` + the `skit-store` state adapter), and `edit_specs --resync`
@@ -228,35 +227,6 @@ fn test_resync_current_default_and_rebind_and_untouched_input_share_one_pass() {
     //   input-1 -> exact prompt match, falls through untouched -> (order 0, "Name: ")
     //   input-2 -> its prompt no longer resolves, re-anchored by position (rebind) ->
     //              (order 1, "New label: "), and "resync-rebound:input-2" in result.warnings
-}
-
-#[test]
-#[ignore = "ABSENT (injection seam, not behavior): the guard IS present — skit-language \
-`reconcile_analysis` records a default only under `!declaration.secret && let Some(default)` \
-(crates/skit-language/src/semantic.rs:2428-2434). What is absent is the Python API's injectable \
-`analyze` callable; `ParsedDocument::reconcile` always runs the real parser, and the oracle notes \
-a real analyzer never emits a defaultless const, so no production change is implied."]
-fn test_reconcile_ok_const_without_a_default_is_not_recorded() {
-    // A matched ok const whose candidate carries no default (default is None) must not be
-    // written into current_defaults — the `if cand.default is not None` guard. Real analyzers
-    // always give a const a literal, so the oracle drives this through a synthetic analyze:
-    //   analyze(_) -> Analysis([Candidate(binding="const", name="X", type="str", default=None)])
-    //   report = reconcile("_\n", [const X str], analyze=analyze)
-    //   report.ok names == ["X"]; report.current_defaults == {}
-}
-
-#[test]
-#[ignore = "ABSENT (injection seam, not behavior): envdefault twin of the guard above. The \
-recording guard is present in skit-language `reconcile_analysis` (semantic.rs:2428-2434); the \
-injectable `analyze` callable that would feed a defaultless env candidate has no Rust equivalent \
-(`ParsedDocument::reconcile` runs the real parser)."]
-fn test_reconcile_ok_envdefault_without_a_default_is_not_recorded() {
-    // The envdefault twin of the guard: an ok env match with a None default records nothing
-    // (the value arrives by env either way):
-    //   analyze(_) -> Analysis([Candidate(binding="envdefault", name="PORT",
-    //                                      env_name="PORT", type="str", default=None)])
-    //   report = reconcile("_\n", [envdefault PORT], analyze=analyze)
-    //   report.ok names == ["PORT"]; report.current_defaults == {}
 }
 
 // --------------------------------------------------------------------------

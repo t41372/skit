@@ -307,6 +307,48 @@ fn reconciliation_reports_unbound_and_duplicate_stored_claims_as_missing() {
     );
 }
 
+fn assert_defaultless_candidate_is_not_recorded(binding: ParameterBinding, name: &str) {
+    let mut declaration = ParamDecl::new(name);
+    declaration.binding = binding;
+    declaration.delivery = ParameterDelivery::Inject;
+    assert!(declaration.default.is_none());
+    let analysis = SemanticAnalysis {
+        candidates: vec![SemanticCandidate {
+            declaration: declaration.clone(),
+            identity: BindingIdentity {
+                binding,
+                key: name.to_owned(),
+                occurrence: 0,
+                scope: Vec::new(),
+            },
+            span: SourceSpan {
+                start: 0,
+                end: 1,
+                start_line: 1,
+                end_line: 1,
+            },
+            demotion: None,
+            empty_uses_default: false,
+        }],
+        ..SemanticAnalysis::default()
+    };
+
+    let report = reconcile_analysis(&analysis, &[declaration]);
+
+    assert_eq!(report.ok.len(), 1);
+    assert!(report.current_defaults.is_empty());
+}
+
+#[test]
+fn test_reconcile_ok_const_without_a_default_is_not_recorded() {
+    assert_defaultless_candidate_is_not_recorded(ParameterBinding::Const, "X");
+}
+
+#[test]
+fn test_reconcile_ok_envdefault_without_a_default_is_not_recorded() {
+    assert_defaultless_candidate_is_not_recorded(ParameterBinding::EnvDefault, "PORT");
+}
+
 #[test]
 fn duplicate_input_claims_never_rewrite_one_call_twice() {
     let document = parsed_python("value = input('Prompt')\n");
