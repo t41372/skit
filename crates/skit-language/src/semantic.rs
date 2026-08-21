@@ -2822,6 +2822,30 @@ mod tests {
         literal_value(&document, assignment.child_by_field_name("right")?)
     }
 
+    fn python_string_for(expression: &str) -> Option<String> {
+        let source = format!("value = {expression}\n");
+        let ParseOutcome::Parsed(document) = parse_document("python", &source) else {
+            panic!("the literal fixture must parse");
+        };
+        let statement = named_children(document.syntax_tree().root_node())
+            .into_iter()
+            .next()?;
+        let assignment = assignment_node(statement)?;
+        literal_string(&document, assignment.child_by_field_name("right")?)
+    }
+
+    fn python_bool_for(expression: &str) -> Option<bool> {
+        let source = format!("value = {expression}\n");
+        let ParseOutcome::Parsed(document) = parse_document("python", &source) else {
+            panic!("the literal fixture must parse");
+        };
+        let statement = named_children(document.syntax_tree().root_node())
+            .into_iter()
+            .next()?;
+        let assignment = assignment_node(statement)?;
+        literal_bool(&document, assignment.child_by_field_name("right")?)
+    }
+
     #[test]
     fn python_integer_literals_cover_every_supported_radix_and_sign() {
         for (source, expected) in [
@@ -2891,6 +2915,13 @@ mod tests {
         assert_eq!(python_literal_value_for("None"), None);
         assert_eq!(python_literal_value_for("..."), None);
         assert_eq!(python_literal_for("[1]"), None);
+        assert_eq!(python_string_for("'text'"), Some("text".to_owned()));
+        assert_eq!(python_string_for("1"), None);
+        assert_eq!(python_bool_for("True"), Some(true));
+        assert_eq!(python_bool_for("'true'"), None);
+        assert_eq!(literal_as_string(&PythonLiteral::None), None);
+        assert_eq!(literal_as_string(&PythonLiteral::Ellipsis), None);
+        assert_eq!(parameter_value_text(&ParameterValue::Float(3.5)), "3.5");
     }
 
     #[test]
