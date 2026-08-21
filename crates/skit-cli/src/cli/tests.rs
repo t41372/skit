@@ -2174,12 +2174,6 @@ fn parameter_json_and_parser_helpers_cover_every_public_spelling() {
     );
     assert!(assignment("=value", "field").is_err());
     assert!(assignment("value", "field").is_err());
-    let mut declarations = [ParamDecl::new("item")];
-    assert_eq!(
-        parameter_mut(&mut declarations, "item").unwrap().name,
-        "item"
-    );
-    assert!(parameter_mut(&mut declarations, "missing").is_err());
 
     for (value, expected) in [
         ("str", ParameterType::Str),
@@ -2192,36 +2186,6 @@ fn parameter_json_and_parser_helpers_cover_every_public_spelling() {
         assert_eq!(parse_parameter_type(value).unwrap(), expected);
     }
     assert!(parse_parameter_type("future").is_err());
-    for (value, expected) in [
-        ("inject", ParameterDelivery::Inject),
-        ("env", ParameterDelivery::Env),
-        ("flag", ParameterDelivery::Flag),
-        ("placeholder", ParameterDelivery::Placeholder),
-    ] {
-        assert_eq!(parse_delivery(value).unwrap(), expected);
-    }
-    assert!(parse_delivery("future").is_err());
-    assert!(set_bool(&mut declarations, &[], |item| &mut item.required, true).is_ok());
-    assert!(!declarations[0].required);
-    assert!(
-        set_bool(
-            &mut declarations,
-            &["item".to_owned()],
-            |item| &mut item.required,
-            true,
-        )
-        .unwrap()
-    );
-    assert!(declarations[0].required);
-    assert!(
-        set_bool(
-            &mut declarations,
-            &["missing".to_owned()],
-            |item| &mut item.required,
-            false,
-        )
-        .is_err()
-    );
 }
 
 #[test]

@@ -25,7 +25,6 @@ use skit_application::{
         HealthInspection, HealthIssue, HealthIssueKind, HealthRebuild, HealthRebuildOutcome,
         HealthService, HealthSnapshot, MirrorHealth, UvHealth,
     },
-    parameter_edit::finish_parameter_edit,
     payload_stored_name, plan_agent_install,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
@@ -4704,11 +4703,6 @@ fn params(
     } else {
         form_params(held.meta.kind.as_str(), &source, &settings)
     };
-    for item in &settings.parameters {
-        if !declarations.iter().any(|current| current.name == item.name) {
-            declarations.push(item.clone());
-        }
-    }
     let template_placeholder_order = match held.meta.kind.as_str() {
         "command" => placeholder_params("command", &settings.template)
             .into_iter()
@@ -4720,201 +4714,46 @@ fn params(
             .collect(),
         _ => Vec::new(),
     };
-    let template_placeholder_names = template_placeholder_order
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let mut explicit_names = settings
+    let explicit_names = settings
         .parameters
         .iter()
         .map(|item| item.name.clone())
         .collect::<BTreeSet<_>>();
-    let original_explicit_names = explicit_names.clone();
-    let original_declarations = declarations.clone();
-    let mut tweaked_names = BTreeSet::new();
-    for specification in args
-        .parameter_types
-        .iter()
-        .chain(&args.defaults)
-        .chain(&args.choices)
-        .chain(&args.delivery)
-        .chain(&args.bindings)
-        .chain(&args.flags)
-        .chain(&args.env_targets)
-        .chain(&args.actions)
-        .chain(&args.help_text)
-        .chain(&args.prompts)
-        .chain(&args.env_sources)
-    {
-        if let Some((name, _)) = specification.split_once('=') {
-            tweaked_names.insert(name.to_owned());
-        }
-    }
-    for name in args
-        .multiple
-        .iter()
-        .chain(&args.no_multiple)
-        .chain(&args.repeat)
-        .chain(&args.no_repeat)
-        .chain(&args.required)
-        .chain(&args.optional)
-        .chain(&args.secret)
-        .chain(&args.no_secret)
-    {
-        tweaked_names.insert(name.clone());
-    }
     let mut changed = false;
 
-    for name in args.add {
-        if explicit_names.contains(&name) {
-            return Err(CliError::Usage(
-                Message::new("parameter already exists: {}").with(name),
-            ));
+    if source_parameter_kind && has_shared_parameter_tweaks {
+        let mut prompts = Vec::new();
+        for spec in &args.prompts {
+            let Some((name, value)) = spec
+                .split_once('=')
+                .filter(|(name, _)| !name.trim().is_empty())
+            else {
+                humanerrln!(
+                    "Ignored a malformed value: {} (expected NAME=text).",
+                    format!("--prompt: {spec}")
+                );
+                continue;
+            };
+            prompts.push(NamedEdit::new(name, value));
         }
-        if template_placeholder_names.contains(&name) {
-            if let Some(declaration) = declarations.iter_mut().find(|item| item.name == name) {
-                declaration.delivery = ParameterDelivery::Placeholder;
-            } else {
-                declarations.push(synthesized_placeholder(&name));
-            }
-        } else {
-            if declarations.iter().any(|item| item.name == name) {
-                return Err(CliError::Usage(
-                    Message::new("parameter already exists: {}").with(name),
-                ));
-            }
-            let mut declaration = ParamDecl::new(name.clone());
-            if matches!(held.meta.kind.as_str(), "command" | "prompt") {
-                declaration.delivery = ParameterDelivery::Env;
-            }
-            declarations.push(declaration);
-        }
-        explicit_names.insert(name);
-        changed = true;
-    }
-    if !args.remove.is_empty() {
-        let before = declarations.len();
-        declarations.retain(|item| !args.remove.contains(&item.name));
-        explicit_names.retain(|name| !args.remove.contains(name));
-        changed |= declarations.len() != before;
-    }
-    let tweak_baseline = declarations.clone();
-    for spec in args.parameter_types {
-        let (name, value) = assignment(&spec, "type")?;
-        parameter_mut(&mut declarations, name)?.parameter_type = parse_parameter_type(value)?;
-        changed = true;
-    }
-    for spec in args.choices {
-        let (name, value) = assignment(&spec, "choices")?;
-        parameter_mut(&mut declarations, name)?.choices = value
-            .split(',')
-            .filter(|item| !item.is_empty())
-            .map(str::to_owned)
-            .collect();
-        changed = true;
-    }
-    for spec in args.defaults {
-        let (name, value) = assignment(&spec, "default")?;
-        let item = parameter_mut(&mut declarations, name)?;
-        item.default = Some(
-            coerce_default(value, item.parameter_type)
-                .map_err(|error| CliError::Usage(error.message()))?,
-        );
-        changed = true;
-    }
-    for spec in args.delivery {
-        let (name, value) = assignment(&spec, "delivery")?;
-        parameter_mut(&mut declarations, name)?.delivery = parse_delivery(value)?;
-        changed = true;
-    }
-    for spec in args.bindings {
-        let (name, value) = assignment(&spec, "binding")?;
-        let item = parameter_mut(&mut declarations, name)?;
-        item.binding = parse_binding(value)?;
-        *item = item.clone().normalized();
-        changed = true;
-    }
-    for spec in args.flags {
-        let (name, value) = assignment(&spec, "flag")?;
-        parameter_mut(&mut declarations, name)?.flag = value.to_owned();
-        changed = true;
-    }
-    changed |= set_bool(
-        &mut declarations,
-        &args.multiple,
-        |item| &mut item.multiple,
-        true,
-    )?;
-    changed |= set_bool(
-        &mut declarations,
-        &args.no_multiple,
-        |item| &mut item.multiple,
-        false,
-    )?;
-    changed |= set_bool(
-        &mut declarations,
-        &args.repeat,
-        |item| &mut item.repeat,
-        true,
-    )?;
-    changed |= set_bool(
-        &mut declarations,
-        &args.no_repeat,
-        |item| &mut item.repeat,
-        false,
-    )?;
-    for spec in args.env_targets {
-        let (name, value) = assignment(&spec, "environment target")?;
-        parameter_mut(&mut declarations, name)?.env_target = value.to_owned();
-        changed = true;
-    }
-    for spec in args.actions {
-        let (name, value) = assignment(&spec, "action")?;
-        parameter_mut(&mut declarations, name)?.action = value.to_owned();
-        changed = true;
-    }
-    for spec in args.help_text {
-        let (name, value) = assignment(&spec, "help text")?;
-        parameter_mut(&mut declarations, name)?.help = value.to_owned();
-        changed = true;
-    }
-    for spec in args.prompts {
-        let Some((name, value)) = spec
-            .split_once('=')
-            .filter(|(name, _)| !name.trim().is_empty())
-        else {
-            humanerrln!(
-                "Ignored a malformed value: {} (expected NAME=text).",
-                format!("--prompt: {spec}")
-            );
-            continue;
-        };
-        let item = parameter_mut(&mut declarations, name)?;
-        if source_parameter_kind && item.binding == ParameterBinding::None {
-            return Err(CliError::Usage(
-                Message::new("parameter {} is not managed in the stored source").with(name),
-            ));
-        }
-        item.prompt = value.to_owned();
-        changed = true;
-    }
-    changed |= set_bool(
-        &mut declarations,
-        &args.required,
-        |item| &mut item.required,
-        true,
-    )?;
-    changed |= set_bool(
-        &mut declarations,
-        &args.optional,
-        |item| &mut item.required,
-        false,
-    )?;
-    if source_parameter_kind {
-        for name in args.secret.iter().chain(&args.no_secret) {
+        let env_sources = args
+            .env_sources
+            .iter()
+            .map(|spec| {
+                let (name, value) = assignment(spec, "environment source")?;
+                Ok(NamedEdit::new(name, value))
+            })
+            .collect::<Result<Vec<_>, CliError>>()?;
+        for name in prompts
+            .iter()
+            .map(|edit| edit.name.as_str())
+            .chain(args.secret.iter().map(String::as_str))
+            .chain(args.no_secret.iter().map(String::as_str))
+            .chain(env_sources.iter().map(|edit| edit.name.as_str()))
+        {
             let item = declarations
                 .iter()
-                .find(|item| item.name == *name)
+                .find(|item| item.name == name)
                 .ok_or_else(|| CliError::Usage(Message::new("unknown parameter: {}").with(name)))?;
             if item.binding == ParameterBinding::None {
                 return Err(CliError::Usage(
@@ -4922,53 +4761,29 @@ fn params(
                 ));
             }
         }
-    }
-    changed |= set_bool(
-        &mut declarations,
-        &args.secret,
-        |item| &mut item.secret,
-        true,
-    )?;
-    for name in &args.no_secret {
-        let item = parameter_mut(&mut declarations, name)?;
-        item.secret = false;
-        item.env_source.clear();
-        changed = true;
-    }
-    for spec in args.env_sources {
-        let (name, value) = assignment(&spec, "environment source")?;
-        let item = parameter_mut(&mut declarations, name)?;
-        if source_parameter_kind && item.binding == ParameterBinding::None {
-            return Err(CliError::Usage(
-                Message::new("parameter {} is not managed in the stored source").with(name),
-            ));
-        }
-        if !item.secret {
-            humanerrln!(
-                "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
-                name
+        let result = edit_declared(
+            &declarations,
+            &DeclaredEditRequest {
+                prompts,
+                secret: args.secret.clone(),
+                no_secret: args.no_secret.clone(),
+                env_sources,
+                ..DeclaredEditRequest::default()
+            },
+            &DeclaredEditContext::new(
+                ParameterDelivery::Inject,
+                Vec::<ParameterDelivery>::new(),
+                Vec::<String>::new(),
+            ),
+        );
+        for warning in &result.warnings {
+            eprintln!(
+                "{}",
+                declared_edit_warning_message(warning).localize(active_locale())
             );
-            continue;
         }
-        item.env_source = value.trim().to_owned();
-        changed = true;
-    }
-
-    for name in tweaked_names {
-        let Some(previous) = tweak_baseline.iter().find(|item| item.name == name) else {
-            continue;
-        };
-        let item = parameter_mut(&mut declarations, &name)?;
-        if let Err(error) = finish_parameter_edit(item) {
-            *item = previous.clone();
-            eprintln!("{}", error.message().localize(active_locale()));
-        } else {
-            explicit_names.insert(name);
-        }
-    }
-    if has_metadata_schema_operation {
-        changed =
-            declarations != original_declarations || explicit_names != original_explicit_names;
+        changed |= result.changed;
+        declarations = result.declarations;
     }
 
     let mut workdir = held.meta.workdir.clone();
@@ -5028,13 +4843,13 @@ fn params(
         if matches!(held.meta.kind.as_str(), "command" | "prompt")
             && !(prompt_schema_was_hidden && has_interpolation_policy)
         {
-            let current_order = match held.meta.kind.as_str() {
-                "command" => placeholder_params("command", &settings.template)
+            let current_order = if held.meta.kind.as_str() == "command" {
+                placeholder_params("command", &settings.template)
                     .into_iter()
                     .map(|item| item.name)
-                    .collect::<Vec<_>>(),
-                "prompt" => template_placeholder_order.clone(),
-                _ => unreachable!(),
+                    .collect::<Vec<_>>()
+            } else {
+                template_placeholder_order.clone()
             };
             let placeholder_names = declarations
                 .iter()
@@ -5057,11 +4872,6 @@ fn params(
         }
         let claimed = service.claim_identity(&held)?;
         held = service.update_settings(&claimed, &settings, &workdir)?;
-        if !args.secret.is_empty() {
-            let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
-            let purged = state.purge_secrets(&held.slug, &declarations)?;
-            report_purged_secrets(purged, args.json);
-        }
     }
     if has_managed_edit_operation && !args.json {
         let names = declarations
@@ -5085,19 +4895,6 @@ fn params(
                 frameworks
             );
         }
-        return Ok(());
-    }
-    if has_metadata_schema_operation && !args.json {
-        let names = declarations
-            .iter()
-            .map(|item| item.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        humanln!(
-            "Updated {}. Declared parameters: {}",
-            held.meta.name,
-            if names.is_empty() { "—" } else { &names }
-        );
         return Ok(());
     }
     if human_prompt_read && settings.interpolate {
@@ -5870,43 +5667,9 @@ fn assignment<'a>(value: &'a str, field: &'static str) -> Result<(&'a str, &'a s
         })
 }
 
-fn parameter_mut<'a>(
-    declarations: &'a mut [ParamDecl],
-    name: &str,
-) -> Result<&'a mut ParamDecl, CliError> {
-    declarations
-        .iter_mut()
-        .find(|item| item.name == name)
-        .ok_or_else(|| CliError::Usage(Message::new("unknown parameter: {}").with(name)))
-}
-
 fn parse_parameter_type(value: &str) -> Result<ParameterType, CliError> {
     as_param_type(value)
         .ok_or_else(|| CliError::Usage(Message::new("unknown parameter type: {}").with(value)))
-}
-
-fn parse_delivery(value: &str) -> Result<ParameterDelivery, CliError> {
-    match value {
-        "inject" => Ok(ParameterDelivery::Inject),
-        "env" => Ok(ParameterDelivery::Env),
-        "flag" => Ok(ParameterDelivery::Flag),
-        "placeholder" => Ok(ParameterDelivery::Placeholder),
-        _ => Err(CliError::Usage(
-            Message::new("unknown parameter delivery: {}").with(value),
-        )),
-    }
-}
-
-fn set_bool(
-    declarations: &mut [ParamDecl],
-    names: &[String],
-    field: impl Fn(&mut ParamDecl) -> &mut bool,
-    value: bool,
-) -> Result<bool, CliError> {
-    for name in names {
-        *field(parameter_mut(declarations, name)?) = value;
-    }
-    Ok(!names.is_empty())
 }
 
 fn config(key: Option<&str>, value: Option<&str>, json: bool) -> Result<(), CliError> {
