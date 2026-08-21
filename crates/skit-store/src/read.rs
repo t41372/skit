@@ -386,9 +386,15 @@ struct RawMeta {
     #[serde(default)]
     description: String,
     #[serde(default)]
+    runner: Option<String>,
+    #[serde(default)]
     dependencies: Option<Vec<String>>,
     #[serde(default)]
+    needs: Option<Vec<String>>,
+    #[serde(default)]
     params: Option<Vec<String>>,
+    #[serde(default)]
+    parameters: Option<Vec<toml::Value>>,
     #[serde(flatten)]
     extra: BTreeMap<String, toml::Value>,
 }
@@ -402,10 +408,16 @@ impl RawMeta {
             .map(EntryId::parse)
             .transpose()
             .map_err(|error| error.to_string())?;
+        let runner = self.runner.take();
         let dependencies = self.dependencies.take();
+        let needs = self.needs.take();
         let params = self.params.take();
+        let parameters = self.parameters.take();
+        restore_string(&mut self.extra, "runner", runner);
         restore_string_list(&mut self.extra, "dependencies", dependencies);
+        restore_string_list(&mut self.extra, "needs", needs);
         restore_string_list(&mut self.extra, "params", params);
+        restore_value_list(&mut self.extra, "parameters", parameters);
         let extra = self
             .extra
             .into_iter()
@@ -431,6 +443,12 @@ impl RawMeta {
     }
 }
 
+fn restore_string(extra: &mut BTreeMap<String, toml::Value>, key: &str, value: Option<String>) {
+    if let Some(value) = value {
+        extra.insert(key.to_owned(), toml::Value::String(value));
+    }
+}
+
 fn restore_string_list(
     extra: &mut BTreeMap<String, toml::Value>,
     key: &str,
@@ -441,6 +459,16 @@ fn restore_string_list(
             key.to_owned(),
             toml::Value::Array(values.into_iter().map(toml::Value::String).collect()),
         );
+    }
+}
+
+fn restore_value_list(
+    extra: &mut BTreeMap<String, toml::Value>,
+    key: &str,
+    values: Option<Vec<toml::Value>>,
+) {
+    if let Some(values) = values {
+        extra.insert(key.to_owned(), toml::Value::Array(values));
     }
 }
 

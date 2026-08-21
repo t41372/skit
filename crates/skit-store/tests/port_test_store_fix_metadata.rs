@@ -8,6 +8,7 @@
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use skit_application::{DiagnosticCode, EntryRepository as _, RepositoryError};
+use skit_domain::EntrySettings;
 use skit_i18n::Locale;
 use skit_store::{FileStore, RegistryRebuildProblem};
 use tempfile::TempDir;
@@ -213,6 +214,23 @@ fn test_from_toml_dict_scalar_params_raises_scriptmetaerror_not_typeerror() {
 }
 
 #[test]
+fn known_runtime_list_containers_reject_scalars_without_hiding_the_field() {
+    for field in ["needs", "parameters"] {
+        let root = TempDir::new().unwrap();
+        write_meta(
+            &root,
+            "bad",
+            &format!("schema = 1\nname = \"bad\"\nkind = \"future-kind\"\n{field} = 5\n"),
+        );
+        write_registry_row(&root, "bad", "bad");
+
+        let diagnostic = diagnostic_for(&root, "bad");
+        assert_eq!(diagnostic.code, DiagnosticCode::CorruptMetadata);
+        assert!(diagnostic.message.contains(field), "{diagnostic:?}");
+    }
+}
+
+#[test]
 fn test_list_entries_skips_scalar_dependencies_meta() {
     let root = TempDir::new().unwrap();
     let good = write_good(&root);
@@ -315,6 +333,8 @@ fn valid_known_lists_keep_unknown_toml_open_kinds_and_source_bytes() {
             "kind = \"future-kind\"\n",
             "dependencies = [\"one\", \"two\"]\n",
             "params = [\"CITY\"]\n",
+            "needs = [\"curl\"]\n",
+            "parameters = [{ name = \"CITY\" }, \"garbage\", 5]\n",
             "vendor_scalar = 7\n",
             "[vendor_table]\n",
             "enabled = true\n",
@@ -335,6 +355,19 @@ fn valid_known_lists_keep_unknown_toml_open_kinds_and_source_bytes() {
         serde_json::json!(["one", "two"])
     );
     assert_eq!(entry.meta.extra["params"], serde_json::json!(["CITY"]));
+    assert_eq!(entry.meta.extra["needs"], serde_json::json!(["curl"]));
+    assert_eq!(
+        entry.meta.extra["parameters"],
+        serde_json::json!([{ "name": "CITY" }, "garbage", 5])
+    );
+    assert_eq!(
+        EntrySettings::from_meta(&entry.meta)
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect::<Vec<_>>(),
+        ["CITY"]
+    );
     assert_eq!(entry.meta.extra["vendor_scalar"], serde_json::json!(7));
     assert_eq!(
         entry.meta.extra["vendor_table"],
