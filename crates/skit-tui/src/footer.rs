@@ -547,10 +547,14 @@ fn default_library_status(state: &LibraryState, locale: Locale) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use ratatui_core::{backend::TestBackend, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::{
         KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
+    use skit_domain::parameters::{ParamDecl, ParameterValue};
+    use skit_ui::{Action, RunFormView};
 
     use super::*;
 
@@ -681,6 +685,73 @@ mod tests {
         assert_eq!(action_footer_required_height::<TestAction>(20, &[]), 0);
         assert_eq!(action_footer_content_width(0), 0);
         assert_eq!(action_footer_content_width(2), 2);
+    }
+
+    #[test]
+    fn run_form_command_registry_renders_insert_and_reset_in_both_chinese_locales() {
+        let mut declaration = ParamDecl::new("name");
+        declaration.default = Some(ParameterValue::String("World".to_owned()));
+        let form = RunFormView::from_declarations(
+            "greet",
+            "greet",
+            &[declaration],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        );
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Run(Box::new(form))));
+
+        let commands = command_specs(CommandContext::RunForm).collect::<Vec<_>>();
+        let insert = commands
+            .iter()
+            .find(|spec| spec.command == UiCommand::InsertValue)
+            .unwrap();
+        let reset = commands
+            .iter()
+            .find(|spec| spec.command == UiCommand::ResetDefault)
+            .unwrap();
+        assert_eq!(
+            (insert.bindings[0].hint, insert.label),
+            ("Ctrl+T", "Insert value")
+        );
+        assert_eq!(
+            (reset.bindings[0].hint, reset.label),
+            ("Ctrl+O", "Reset to default")
+        );
+
+        for (locale, insert_label, reset_label) in [
+            (Locale::ZhCn, "插入值", "恢复默认值"),
+            (Locale::ZhTw, "插入值", "恢復預設值"),
+        ] {
+            let mut session = FooterSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(100, 4)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = session.render(frame, frame.area(), &state, locale);
+                })
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            let compact = rendered.replace(' ', "");
+            assert!(
+                compact.contains(&format!("Ctrl+T{insert_label}")),
+                "{rendered}"
+            );
+            assert!(
+                compact.contains(&format!("Ctrl+O{reset_label}")),
+                "{rendered}"
+            );
+            assert!(!rendered.contains("Insert value"), "{rendered}");
+            assert!(!rendered.contains("Reset to default"), "{rendered}");
+        }
     }
 
     #[test]

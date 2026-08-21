@@ -1755,6 +1755,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Run", "运行", "執行"),
     row!("Run {}", "运行 {}", "執行 {}"),
+    row!("Insert value", "插入值", "插入值"),
+    row!("Reset to default", "恢复默认值", "恢復預設值"),
     row!("Add", "添加", "新增"),
     row!("Edit", "编辑", "編輯"),
     row!("Settings", "设置", "設定"),
