@@ -1,4 +1,7 @@
-use std::{fmt::Debug, path::Path};
+use std::{
+    fmt::Debug,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use skit_domain::{Entry, EntryKind, EntrySettings, StorageMode, parameters::ParameterInvariant};
@@ -65,6 +68,33 @@ pub struct UpdateEntry {
     pub expected_source_hash: String,
 }
 
+/// One identity-claimed copy source prepared for a user-paced external editor.
+#[derive(Clone, Debug)]
+pub struct ExternalCopyEdit {
+    entry: Entry,
+    path: PathBuf,
+}
+
+impl ExternalCopyEdit {
+    /// Build one adapter-owned edit claim.
+    #[must_use]
+    pub const fn new(entry: Entry, path: PathBuf) -> Self {
+        Self { entry, path }
+    }
+
+    /// Return the claimed entry incarnation.
+    #[must_use]
+    pub const fn entry(&self) -> &Entry {
+        &self.entry
+    }
+
+    /// Return the authoritative stored source path passed to the editor.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// Failure from an update whose adapter preparation must finish before the entry can change.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PreparedEntryUpdateError<E> {
@@ -111,6 +141,18 @@ pub trait EntryMutationRepository: Debug {
         entry: &Entry,
         bytes: &[u8],
         expected_source_hash: &str,
+    ) -> Result<Entry, RepositoryError>;
+
+    /// Claim one authoritative copy source before an external editor starts.
+    fn prepare_external_copy_edit(
+        &self,
+        entry: &Entry,
+    ) -> Result<ExternalCopyEdit, RepositoryError>;
+
+    /// Finalize bytes written in place by an external editor without replacing those bytes.
+    fn finalize_external_copy_edit(
+        &self,
+        edit: &ExternalCopyEdit,
     ) -> Result<Entry, RepositoryError>;
 }
 
@@ -174,6 +216,22 @@ where
     ) -> Result<Entry, RepositoryError> {
         self.repository
             .commit_copy_edit(entry, bytes, expected_source_hash)
+    }
+
+    /// Claim one authoritative source before a user-paced external edit.
+    pub fn prepare_external_copy_edit(
+        &self,
+        entry: &Entry,
+    ) -> Result<ExternalCopyEdit, RepositoryError> {
+        self.repository.prepare_external_copy_edit(entry)
+    }
+
+    /// Finalize an in-place external edit through the identity-gated port.
+    pub fn finalize_external_copy_edit(
+        &self,
+        edit: &ExternalCopyEdit,
+    ) -> Result<Entry, RepositoryError> {
+        self.repository.finalize_external_copy_edit(edit)
     }
 }
 

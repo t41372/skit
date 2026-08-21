@@ -24,7 +24,8 @@ pub use runner_management::{
     FileRunnerManagementStore, RunnerManagementStoreError, RunnerRemovalCas,
 };
 use skit_application::{
-    CreateEntry, EntryMutationRepository, EntryPayload, RepositoryError, UpdateEntry,
+    CreateEntry, EntryMutationRepository, EntryPayload, ExternalCopyEdit, RepositoryError,
+    UpdateEntry,
 };
 use skit_domain::{Entry, EntryId, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_i18n::{Localize as _, Message};
@@ -327,6 +328,67 @@ impl EntryMutationRepository for FileStore {
                 || self.write_meta(&before),
             ));
         }
+        Ok(after)
+    }
+
+    fn prepare_external_copy_edit(
+        &self,
+        entry: &Entry,
+    ) -> Result<ExternalCopyEdit, RepositoryError> {
+        let _entry = self.entry_lock(&entry.slug)?;
+        let fresh = self.verify_claim_locked(entry)?;
+        if fresh.meta.mode != StorageMode::Copy {
+            return Err(invalid(Message::new(
+                "reference entries are edited at their original path",
+            )));
+        }
+        let path = self.stored_path(&fresh)?;
+        let fresh = if fresh.meta.id.is_some() {
+            fresh
+        } else {
+            let _namespace = self.namespace_lock()?;
+            let mut registry = Registry::load(self.data_dir())?;
+            self.stamp_identity_locked(fresh, &mut registry)?
+        };
+        Ok(ExternalCopyEdit::new(fresh, path))
+    }
+
+    fn finalize_external_copy_edit(
+        &self,
+        edit: &ExternalCopyEdit,
+    ) -> Result<Entry, RepositoryError> {
+        let entry = edit.entry();
+        let _entry = self.entry_lock(&entry.slug)?;
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        if fresh.meta != entry.meta {
+            return Err(stale(&entry.slug));
+        }
+        if fresh.meta.mode != StorageMode::Copy {
+            return Err(invalid(Message::new(
+                "reference entries are edited at their original path",
+            )));
+        }
+
+        let target = edit.path();
+        if target.parent() != Some(self.entry_dir(&fresh.slug).as_path())
+            || target.file_name().is_none()
+        {
+            return Err(invalid(Message::new(
+                "external edit source is outside its entry directory",
+            )));
+        }
+        let bytes = fs::read(target).map_err(|error| io_error("read", target, error))?;
+        let next_hash = content_hash(&bytes);
+        if next_hash == fresh.meta.source_hash {
+            return Ok(fresh);
+        }
+
+        let before = fresh.clone();
+        let mut after = fresh;
+        after.meta.source_hash = next_hash;
+        self.commit_meta_projection(&before, &after, &mut registry)?;
         Ok(after)
     }
 }

@@ -4309,6 +4309,15 @@ fn edit_with_config(
                     .with(source.display()),
             ));
         }
+        let held = service.claim_identity(&held)?;
+        let source = PathBuf::from(&held.meta.source);
+        if !source.exists() {
+            return Err(CliError::Failure(
+                Message::new("{}: the referenced source file is gone: {}")
+                    .with(&held.meta.name)
+                    .with(source.display()),
+            ));
+        }
         humanln!(
             "Editing the original file (reference mode): {}",
             source.display()
@@ -4317,7 +4326,7 @@ fn edit_with_config(
         let edited = if held.meta.kind.as_str() == "prompt" {
             // Keep the editor's bytes in place when validation fails. The next edit is the
             // recovery path.
-            let edited = fs::read(&source).map_err(|error| source_error("read", &source, error))?;
+            let edited = fs::read(&source).map_err(|error| source_read_error(&source, error))?;
             validate_prompt_utf8(&edited, &source.display().to_string())?;
             Some(edited)
         } else {
@@ -4327,31 +4336,29 @@ fn edit_with_config(
         return Ok(());
     }
 
-    let target = source_path(store, &held)
+    if source_path(store, &held)
         .filter(|path| path.exists())
-        .ok_or_else(|| {
-            CliError::Failure(Message::new("{} has no stored copy to edit.").with(&held.meta.name))
-        })?;
-    let original = fs::read(&target).map_err(|error| source_error("read", &target, error))?;
-    let temp = tempfile::tempdir().map_err(CliError::Io)?;
-    let staged = temp.path().join(
-        target
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("script")),
-    );
-    fs::write(&staged, &original).map_err(|error| source_error("stage", &staged, error))?;
-    launch_editor(&argv, &staged)?;
-    let edited = fs::read(&staged).map_err(|error| source_error("read", &staged, error))?;
+        .is_none()
+    {
+        return Err(CliError::Failure(
+            Message::new("{} has no stored copy to edit.").with(&held.meta.name),
+        ));
+    }
+    let edit = service.prepare_external_copy_edit(&held)?;
+    let held = edit.entry();
+    let target = edit.path();
+    let original = fs::read(target).map_err(|error| source_error("read", target, error))?;
+    launch_editor(&argv, target)?;
+    let edited = fs::read(target).map_err(|error| source_read_error(target, error))?;
     if edited != original {
-        // Commit the editor's bytes before prompt validation. This preserves the user's work and
-        // updates the source hash, so the next edit can repair an invalid prompt.
-        let claimed = service.claim_identity(&held)?;
-        service.commit_copy_edit(&claimed, &edited, &held.meta.source_hash)?;
+        // The external editor already wrote the authoritative source. Finalize only its metadata;
+        // a failed finalization must never replace or roll back the user's bytes.
+        service.finalize_external_copy_edit(&edit)?;
     }
     if held.meta.kind.as_str() == "prompt" {
         validate_prompt_utf8(&edited, &target.display().to_string())?;
     }
-    report_saved_edit(&held, Some(&edited));
+    report_saved_edit(held, Some(&edited));
     Ok(())
 }
 
@@ -4361,14 +4368,7 @@ fn open_editor(target: &Path) -> Result<(), CliError> {
 
 fn open_editor_in(config_dir: &Path, target: &Path) -> Result<(), CliError> {
     let argv = resolve_editor_argv(config_dir);
-    let status = launch_editor(&argv, target)?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(CliError::Usage(
-            Message::new("the editor exited with status {}").with(status.code().unwrap_or(1)),
-        ))
-    }
+    launch_editor(&argv, target).map(|_| ())
 }
 
 fn deps(
@@ -9887,11 +9887,10 @@ fn source_error(operation: &'static str, path: &Path, source: io::Error) -> CliE
 }
 
 fn source_read_error(path: &Path, error: io::Error) -> CliError {
-    CliError::Failure(
-        Message::new("Can't read {}: {}")
-            .with(path.display())
-            .with(error),
-    )
+    CliError::SourceRead {
+        path: path.display().to_string(),
+        source: error,
+    }
 }
 
 fn resolve_add_source(path: &Path) -> Result<PathBuf, CliError> {
@@ -10136,6 +10135,12 @@ enum CliError {
         #[source]
         source: io::Error,
     },
+    #[error("Can't read {path}: {source}")]
+    SourceRead {
+        path: String,
+        #[source]
+        source: io::Error,
+    },
     #[error("could not determine the platform data directory; pass --data-dir or SKIT_DATA_DIR")]
     DataDirectoryUnavailable,
     #[error("could not determine the platform {0} directory; set the matching SKIT_*_DIR variable")]
@@ -10173,6 +10178,9 @@ impl Localize for CliError {
                 .nested(Message::term(operation))
                 .with(path)
                 .with(source),
+            Self::SourceRead { path, source } => Message::new("Can't read {}: {}")
+                .with(path)
+                .with(source),
             Self::DataDirectoryUnavailable => Message::new(
                 "could not determine the platform data directory; pass --data-dir or SKIT_DATA_DIR",
             ),
@@ -10202,7 +10210,7 @@ impl CliError {
             | Self::StateRollback { .. }
             | Self::DataDirectoryUnavailable
             | Self::DirectoryUnavailable(_) => ExitClass::Skit.code() as i32,
-            Self::Source { .. } => ExitClass::Failure.code() as i32,
+            Self::Source { .. } | Self::SourceRead { .. } => ExitClass::Failure.code() as i32,
         }
     }
 }

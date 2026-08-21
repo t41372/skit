@@ -29,7 +29,7 @@ pub use agent_skill::{
     detect_agent_targets, plan_agent_install,
 };
 pub use mutations::{
-    CreateEntry, EntryMutationRepository, EntryPayload, PreparedEntryUpdateError,
+    CreateEntry, EntryMutationRepository, EntryPayload, ExternalCopyEdit, PreparedEntryUpdateError,
     SourcePermissions, UpdateEntry,
 };
 pub use payload_policy::{
