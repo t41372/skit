@@ -574,7 +574,7 @@ fn scan_rust_tests(path: &Path, tests: &mut Vec<RustTest>) {
             .map(|line| line.trim())
             .take_while(|line| line.is_empty() || line.starts_with("#["))
             .collect::<Vec<_>>();
-        if attributes.iter().any(|line| *line == "#[test]") {
+        if attributes.contains(&"#[test]") {
             tests.push(RustTest {
                 name: format!("test_{bare}"),
                 ignored: attributes.iter().any(|line| line.starts_with("#[ignore")),
