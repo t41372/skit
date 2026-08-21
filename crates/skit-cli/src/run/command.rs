@@ -27,11 +27,13 @@ use skit_language::{
     render_prompt_body,
 };
 use skit_runtime::{
-    DependencyError, LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
+    DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
+    LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
     SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, UvDownloadConsent,
     build_launch_plan, build_launch_preview, ensure_javascript_dependencies_for_module,
-    ensure_managed_uv, execute_launch, javascript_module_type, managed_uv_path,
-    resolve_javascript_runtime, sweep_stale_injected_sources,
+    ensure_managed_uv, execute_launch, javascript_dependency_install_announcement,
+    javascript_module_type, managed_uv_path, resolve_javascript_runtime,
+    sweep_stale_injected_sources,
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
@@ -41,6 +43,23 @@ use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
 use crate::cli::{entry_candidates, preset_candidates, runner_candidates};
+
+#[derive(Clone, Copy, Debug)]
+struct CliDependencyCommandRunner;
+
+impl DependencyCommandRunner for CliDependencyCommandRunner {
+    fn installation_started(&self, installer: &str) {
+        eprintln!(
+            "{}",
+            javascript_dependency_install_announcement(installer)
+                .localize(crate::cli::active_locale())
+        );
+    }
+
+    fn run(&self, command: &DependencyCommand) -> io::Result<DependencyCommandOutput> {
+        SystemDependencyCommandRunner.run(command)
+    }
+}
 
 /// Options for `skit run`.
 #[derive(Debug, Args)]
@@ -243,6 +262,7 @@ impl RunError {
             Self::Launch(error) => error.exit_code(),
             Self::PromptBodyMissing { .. } => 127,
             Self::Dependencies(DependencyError::InstallerNotFound { .. })
+            | Self::Dependencies(DependencyError::InstallerStartFailed { .. })
             | Self::Dependencies(DependencyError::InstallFailed { .. })
             | Self::Dependencies(DependencyError::ClearFailed { .. })
             | Self::Dependencies(DependencyError::Io { .. })
@@ -516,7 +536,7 @@ pub(crate) fn run_with_roots(
             javascript_module_type(&entry.meta.source),
             &mirror_environment,
             &SystemProbe,
-            &SystemDependencyCommandRunner,
+            &CliDependencyCommandRunner,
         )?;
     }
 
@@ -1291,6 +1311,13 @@ mod tests {
                 126,
             ),
             (
+                RunError::Dependencies(DependencyError::InstallerStartFailed {
+                    installer: "npm".to_owned(),
+                    reason: "permission denied".to_owned(),
+                }),
+                126,
+            ),
+            (
                 RunError::Dependencies(DependencyError::ClearFailed {
                     item: "node_modules".to_owned(),
                     reason: "locked".to_owned(),
@@ -1979,7 +2006,7 @@ mod localization_tests {
         );
         assert_localized(
             &RunError::Dependencies(DependencyError::InstallFailed {
-                program: "npm".to_owned(),
+                installer: "npm".to_owned(),
                 exit_code: Some(23),
                 detail: "package missing".to_owned(),
             }),

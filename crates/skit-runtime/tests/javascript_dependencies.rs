@@ -629,7 +629,8 @@ fn package_and_filesystem_refusals_do_not_escape_the_private_entry() {
             &probe,
             &ErrorRunner,
         ),
-        Err(DependencyError::Io { .. })
+        Err(DependencyError::InstallerStartFailed { installer, reason })
+            if installer == "npm" && reason == "cannot spawn"
     ));
     assert!(matches!(
         clear_javascript_dependencies(Path::new("/")),

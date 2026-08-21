@@ -36,8 +36,7 @@
 //!   transaction and contracts in other owning crates).
 //! - ABSENT (compiling `#[ignore]` stub, MUST-FIX + Python ref): library seams the Rust
 //!   surface never exposes — `split_requirement(s)`, `require_installer`, `needs_install`,
-//!   `_failure_detail` helper-only edge shapes (the real-binary stderr owner is active below),
-//!   a manifest-with-module-type, and the install-announce line.
+//!   and a manifest-with-module-type.
 //! - CROSS-CRATE / TOOLING (compiling `#[ignore]` stub naming the owning tier): the TUI
 //!   screens (`skit-tui`/`skit-ui`), the injection temp-file placement (`rewrite`), the
 //!   `RunnerLaunch.build`/`preflight` install wiring (`skit-runtime` launch + `skit-cli`
@@ -60,11 +59,9 @@ use skit_language::external_dependencies;
 use skit_runtime::{
     DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
     JavaScriptModuleType, ProgramProbe, clear_javascript_dependencies,
-    ensure_javascript_dependencies_for_module,
-    ensure_javascript_dependencies_for_module_with_reporter,
-    ensure_javascript_dependencies_with_environment, javascript_dependencies_need_install,
-    javascript_dependency_failure_detail, javascript_dependency_manifest, javascript_module_type,
-    preflight_javascript_dependencies,
+    ensure_javascript_dependencies_for_module, ensure_javascript_dependencies_with_environment,
+    javascript_dependencies_need_install, javascript_dependency_failure_detail,
+    javascript_dependency_manifest, javascript_module_type, preflight_javascript_dependencies,
 };
 use skit_store::{FileConfigStore, FileStore};
 
@@ -109,6 +106,7 @@ enum Outcome {
 #[derive(Debug)]
 struct RecordingRunner {
     calls: Mutex<Vec<DependencyCommand>>,
+    announcements: Mutex<Vec<String>>,
     outcome: Outcome,
 }
 
@@ -116,6 +114,7 @@ impl RecordingRunner {
     fn new(outcome: Outcome) -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
+            announcements: Mutex::new(Vec::new()),
             outcome,
         }
     }
@@ -127,9 +126,20 @@ impl RecordingRunner {
     fn calls(&self) -> Vec<DependencyCommand> {
         self.calls.lock().unwrap().clone()
     }
+
+    fn announcements(&self) -> Vec<String> {
+        self.announcements.lock().unwrap().clone()
+    }
 }
 
 impl DependencyCommandRunner for RecordingRunner {
+    fn installation_started(&self, installer: &str) {
+        self.announcements
+            .lock()
+            .unwrap()
+            .push(installer.to_owned());
+    }
+
     fn run(&self, command: &DependencyCommand) -> std::io::Result<DependencyCommandOutput> {
         self.calls.lock().unwrap().push(command.clone());
         match &self.outcome {
@@ -566,7 +576,9 @@ fn test_ensure_installed_failure_without_stderr_still_reports() {
         &runner,
     )
     .unwrap_err();
-    assert!(error.to_string().contains("npm"));
+    assert_eq!(error.to_string(), "Installing dependencies failed (npm): ?");
+    assert!(!dir.join("package.json").exists());
+    assert!(!dir.join("node_modules/.skit-deps-ok").exists());
     drop(root);
 }
 
@@ -585,7 +597,9 @@ fn test_ensure_installed_spawn_oserror_is_wrapped() {
         &runner,
     )
     .unwrap_err();
-    assert!(error.to_string().contains("exec format error"));
+    assert_eq!(error.to_string(), "Couldn't run npm: exec format error");
+    assert!(!dir.join("package.json").exists());
+    assert!(!dir.join("node_modules/.skit-deps-ok").exists());
     drop(root);
 }
 
@@ -1640,8 +1654,7 @@ fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
     let runner = RecordingRunner::success();
-    let mut announcements = Vec::new();
-    ensure_javascript_dependencies_for_module_with_reporter(
+    ensure_javascript_dependencies_for_module(
         &dir,
         "node",
         &deps(&["chalk"]),
@@ -1649,12 +1662,11 @@ fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {
         &BTreeMap::new(),
         &probe,
         &runner,
-        &mut |installer| announcements.push(installer.to_owned()),
     )
     .unwrap();
-    assert_eq!(announcements, ["npm"]);
+    assert_eq!(runner.announcements(), ["npm"]);
 
-    ensure_javascript_dependencies_for_module_with_reporter(
+    ensure_javascript_dependencies_for_module(
         &dir,
         "node",
         &deps(&["chalk"]),
@@ -1662,10 +1674,13 @@ fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {
         &BTreeMap::new(),
         &probe,
         &runner,
-        &mut |installer| announcements.push(installer.to_owned()),
     )
     .unwrap();
-    assert_eq!(announcements, ["npm"], "a fresh marker must stay silent");
+    assert_eq!(
+        runner.announcements(),
+        ["npm"],
+        "a fresh marker must stay silent"
+    );
     assert_eq!(runner.calls().len(), 1);
     drop(root);
 }

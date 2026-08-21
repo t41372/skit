@@ -78,6 +78,9 @@ pub struct DependencyCommand {
 
 /// Start one package-manager command.
 pub trait DependencyCommandRunner: std::fmt::Debug {
+    /// Report that one installer process is about to start.
+    fn installation_started(&self, _installer: &str) {}
+
     /// Return the child's status and captured diagnostic stream.
     fn run(&self, command: &DependencyCommand) -> io::Result<DependencyCommandOutput>;
 }
@@ -155,11 +158,19 @@ pub enum DependencyError {
         /// Failure from the recovery attempt.
         rollback: Box<Self>,
     },
+    /// The package manager could not start.
+    #[error("Couldn't run {installer}: {reason}")]
+    InstallerStartFailed {
+        /// Package-manager name implied by the selected runtime.
+        installer: String,
+        /// Operating-system detail.
+        reason: String,
+    },
     /// The package manager returned a failure status.
-    #[error("JavaScript package installation failed with {program}: {detail}")]
+    #[error("Installing dependencies failed ({installer}): {detail}")]
     InstallFailed {
-        /// Resolved package-manager executable.
-        program: String,
+        /// Package-manager name implied by the selected runtime.
+        installer: String,
         /// Numeric status when the platform supplied one.
         exit_code: Option<i32>,
         /// Most useful trusted line from the package manager's stderr.
@@ -203,13 +214,22 @@ impl Localize for DependencyError {
                 .with(path)
                 .nested(primary.message())
                 .nested(rollback.message()),
+            Self::InstallerStartFailed { installer, reason } => Message::new("Couldn't run {}: {}")
+                .with(installer)
+                .with(reason),
             Self::InstallFailed {
-                program, detail, ..
-            } => Message::new("JavaScript package installation failed with {}: {}")
-                .with(program)
+                installer, detail, ..
+            } => Message::new("Installing dependencies failed ({}): {}")
+                .with(installer)
                 .with(detail),
         }
     }
+}
+
+/// Present the one receipt emitted immediately before a package manager starts.
+#[must_use]
+pub fn javascript_dependency_install_announcement(installer: &str) -> Message {
+    Message::new("Installing dependencies ({})…").with(installer)
 }
 
 /// Build the deterministic private package.json document.
@@ -402,14 +422,19 @@ where
     begin_dependency_backup(entry_dir)?;
     let install = (|| {
         atomic_write(&entry_dir.join("package.json"), state.manifest.as_bytes())?;
-        let output = runner
-            .run(&command)
-            .map_err(|error| io_error("start package manager in", entry_dir, error))?;
+        runner.installation_started(state.installer);
+        let output =
+            runner
+                .run(&command)
+                .map_err(|error| DependencyError::InstallerStartFailed {
+                    installer: state.installer.to_owned(),
+                    reason: error.to_string(),
+                })?;
         if !output.success {
             return Err(DependencyError::InstallFailed {
-                program: command.program.display().to_string(),
+                installer: state.installer.to_owned(),
                 exit_code: output.exit_code,
-                detail: failure_detail(&output.stderr),
+                detail: javascript_dependency_failure_detail(&output.stderr),
             });
         }
         ensure_real_node_modules(entry_dir)?;
@@ -636,7 +661,9 @@ const INSTALLER_NOISE: &[&str] = &[
     "If you are behind a proxy",
 ];
 
-fn failure_detail(stderr: &[u8]) -> String {
+/// Select one stable user-facing cause from captured package-manager stderr.
+#[must_use]
+pub fn javascript_dependency_failure_detail(stderr: &[u8]) -> String {
     let text = strip_ansi(&String::from_utf8_lossy(stderr));
     let informative = text
         .lines()
@@ -664,6 +691,10 @@ fn npm_line_is_noise(line: &str) -> bool {
     };
     if let Some(after_space) = remainder.strip_prefix(' ') {
         remainder = after_space;
+    }
+    remainder = remainder.trim_end();
+    if !remainder.is_empty() && remainder.bytes().all(|byte| byte.is_ascii_digit()) {
+        return true;
     }
     if let Some((token, rest)) = remainder.split_once(' ')
         && !token.is_empty()
@@ -1722,12 +1753,12 @@ mod transaction_tests {
             "npm error A complete log of this run can be found in: /tmp/debug.log\n",
         );
         assert_eq!(
-            failure_detail(stderr.as_bytes()),
+            javascript_dependency_failure_detail(stderr.as_bytes()),
             "npm error 404 Not Found - GET /missing"
         );
-        assert_eq!(failure_detail(&[]), "?");
+        assert_eq!(javascript_dependency_failure_detail(&[]), "?");
         assert_eq!(
-            failure_detail(b"detail \xff failed\n"),
+            javascript_dependency_failure_detail(b"detail \xff failed\n"),
             "detail \u{fffd} failed"
         );
     }

@@ -2501,9 +2501,15 @@ const CATALOG: &[Translation] = &[
         "--template 僅適用於命令項目",
     ),
     row!(
-        "JavaScript package installation failed with {}: {}",
-        "JavaScript 软件包安装失败，使用的是 {}：{}",
-        "JavaScript 套件安裝失敗，使用的是 {}：{}",
+        "Installing dependencies ({})…",
+        "正在安装依赖({})…",
+        "正在安裝依賴({})…",
+    ),
+    row!("Couldn't run {}: {}", "无法运行 {}:{}", "無法執行 {}:{}",),
+    row!(
+        "Installing dependencies failed ({}): {}",
+        "依赖安装失败({}):{}",
+        "依賴安裝失敗({}):{}",
     ),
     // Version 0.4 ships this exact cleanup refusal and punctuation.
     row!(
