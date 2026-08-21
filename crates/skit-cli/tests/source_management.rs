@@ -156,6 +156,93 @@ fn managed_parameter_tweaks_stay_in_source_and_declared_schema_flags_refuse() {
 }
 
 #[test]
+fn source_shared_edits_validate_the_complete_batch_before_writing_or_purging() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.data.path().join("managed.py");
+    fs::write(&original, "TOKEN = 'value'\nprint(TOKEN)\n").unwrap();
+    sandbox
+        .command()
+        .args(["add", original.to_str().unwrap(), "--name", "Managed"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .args(["params", "managed", "--manage", "TOKEN"])
+        .assert()
+        .success();
+    let stored = sandbox.data.path().join("scripts/managed/script.py");
+    let meta = sandbox.data.path().join("scripts/managed/meta.toml");
+    let source_before = fs::read(&stored).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+
+    sandbox
+        .command()
+        .args([
+            "params",
+            "managed",
+            "--prompt",
+            "missing=Label",
+            "--secret",
+            "TOKEN",
+        ])
+        .assert()
+        .code(2)
+        .stderr(predicate_str::contains("unknown parameter: missing"));
+
+    assert_eq!(fs::read(stored).unwrap(), source_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn a_legacy_non_rider_stays_declared_without_becoming_an_effective_parameter() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.data.path().join("tool.sh");
+    fs::write(&original, "echo ok\n").unwrap();
+    sandbox
+        .command()
+        .args(["add", original.to_str().unwrap(), "--name", "Tool"])
+        .assert()
+        .success();
+    let stored = sandbox.data.path().join("scripts/tool/script.sh");
+    let meta = sandbox.data.path().join("scripts/tool/meta.toml");
+    let mut meta_text = fs::read_to_string(&meta).unwrap();
+    meta_text
+        .push_str("\n[[parameters]]\nname = \"legacy\"\ntype = \"str\"\ndelivery = \"inject\"\n");
+    fs::write(&meta, meta_text).unwrap();
+    let source_before = fs::read(&stored).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+
+    let output = sandbox
+        .command()
+        .args(["params", "tool", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        record["declared"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["name"] == "legacy")
+    );
+    assert!(
+        record["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["name"] != "legacy")
+    );
+    assert_eq!(fs::read(stored).unwrap(), source_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn shell_normalize_is_explicit_and_never_changes_the_original() {
     let sandbox = Sandbox::new();
     let original = sandbox.data.path().join("tool.sh");
