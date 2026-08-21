@@ -145,6 +145,8 @@ pub(crate) fn atomic_write_bytes_with<E>(
         path,
         bytes,
         map_error,
+        |path| fs::metadata(path).map(|metadata| metadata.permissions()),
+        File::set_permissions,
         sync_file,
         atomicwrites::replace_atomic,
         std::thread::sleep,
@@ -157,6 +159,8 @@ pub(crate) fn atomic_write_bytes_with_ops<E>(
     path: &Path,
     bytes: &[u8],
     map_error: impl Fn(&'static str, &Path, io::Error) -> E,
+    read_permissions: impl FnOnce(&Path) -> io::Result<fs::Permissions>,
+    apply_permissions: impl FnOnce(&File, fs::Permissions) -> io::Result<()>,
     sync_file: impl FnOnce(&File) -> io::Result<()>,
     rename: impl FnMut(&Path, &Path) -> io::Result<()>,
     sleep: impl FnMut(Duration),
@@ -187,10 +191,9 @@ pub(crate) fn atomic_write_bytes_with_ops<E>(
             .map_err(|error| map_error("create", &temp, error))?;
         file.write_all(bytes)
             .map_err(|error| map_error("write", &temp, error))?;
-        preserve_permissions_best_effort(
-            fs::metadata(path).map(|metadata| metadata.permissions()),
-            |permissions| file.set_permissions(permissions),
-        );
+        preserve_permissions_best_effort(read_permissions(path), |permissions| {
+            apply_permissions(&file, permissions)
+        });
         sync_file(&file).map_err(|error| map_error("sync", &temp, error))?;
         drop(file);
         replace_with_retry_impl(rename, sleep, &temp, path)
@@ -395,6 +398,8 @@ mod tests {
             path,
             bytes,
             |_, _, error| error,
+            |path| std::fs::metadata(path).map(|metadata| metadata.permissions()),
+            File::set_permissions,
             sync_file,
             rename,
             sleep,

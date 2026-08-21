@@ -134,7 +134,7 @@ Interpreter Batch D closes the final nine launch/config rows:
 | --- | --- | --- | --- |
 | test_store.py | 78 | crates/skit-cli/tests/port_test_store_manifest.rs + owning store/language/application/runtime/CLI targets | implementation parity (73 executable REAL / 5 semantic or version closures) · the manifest proves 78 occurrences, 78 unique names, the exact oracle set, and the 73/5 split · Windows PATHEXT inference uses a pure application policy with real CLI metadata/environment composition (`0e4a698`/`8a15675`) · recursive size and v0.4 display thresholds run at the private CLI owners (`e326985`) · 15 public add contracts run through the real binary and FileStore (`cebb661`) · registry fallback, repair, corruption, and race owners remain canonical in skit-store, including the final repair-race batch (`fae2d20`) · real Windows-host CLI execution remains a CI gate |
 | test_store_fix.py | 38 | final exact manifest + metadata/filesystem/add-deps CLI/store owners + private atomic/lock/mutation owners | implementation parity complete (32 executable exact owners / 6 structured stronger-owner or architecture closures) · Batch 1 owns 12 metadata-corruption rows · Batch 2 owns four filesystem/recovery/atomic rows · Batch 3 owns 13 copy/reference workdir, strict byte-fidelity, PEP 723, refusal, and newline rows, including one private test-only resolved-source read fault seam with no public API · Batch 4 owns three persistent-lock and concurrent-add rows · the final manifest rejects duplicate, missing, extra, overlapping, empty-reason, and empty-stronger-owner accounting; 0 rows remain |
-| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs + `fs_ops` actual-operations owners | in progress (18 exact owners / 14 architecture or platform closures; 17 host-active + 1 non-Unix gate) · Atomic Batch A moves ten durability/retry names to the real shared writer: temp sync precedes replace, parent sync follows it and stays best-effort, every failure cleans the temp without clobbering the target, and bounded sharing-violation retries preserve exact backoff · the replace test seam is crate-private again · lock/crash and permission batches remain |
+| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs + `fs_ops` actual-operations owners | in progress (21 exact owners / 11 architecture or platform closures; 20 host-active + 1 non-Unix gate) · Atomic Batch A moves ten durability/retry names to the real shared writer: temp sync precedes replace, parent sync follows it and stays best-effort, every failure cleans the temp without clobbering the target, and bounded sharing-violation retries preserve exact backoff · Batch B proves permission apply/skip/failure through that writer and proves a public config-lock open failure leaves the same store ready to retry · the operations seam stays crate-private · native crash/lock and Windows permission rows remain |
 
 The six `test_store_fix.py` semantic closures stay at stronger existing owners instead of gaining
 duplicate exact names:
@@ -310,10 +310,10 @@ gaps, all now resolved or recorded:
   `docs/behavior-changes.md`; `test_bool_default_is_carried` asserts the kept behavior with a
   BEHAVIOR-CHANGE note. Reversible on request.
 
-### test_atomic.py → port_test_atomic.rs + fs_ops owner (18 exact / 14 deferred) — Tier 2
+### test_atomic.py → port_test_atomic.rs + fs_ops owner (21 exact / 11 deferred) — Tier 2
 
-All 32 frozen names occur once. Eighteen have exact owners; seventeen execute on Unix and the
-directory-sync skip owner executes on non-Unix hosts. Fourteen remain explicit architecture or
+All 32 frozen names occur once. Twenty-one have exact owners; twenty execute on Unix and the
+directory-sync skip owner executes on non-Unix hosts. Eleven remain explicit architecture or
 platform closures. The Rust atomic mechanism is `pub(crate)`: public store owners assert the user
 data outcome, while syscall order/fault owners run beside the actual shared writer rather than
 exporting a second atomic implementation. This is the data-safety tier; the port surfaced three
@@ -332,6 +332,13 @@ real concerns:
   replace; directory sync happens after it and stays best-effort. The former doc-hidden public
   `replace_with_retry_impl` export is gone. Native Windows still owns the sharing-violation and
   no-directory-sync platform gate.
+- **RESOLVED (Atomic Batch B) — permission order, missing-target skip, and best-effort failure.**
+  The same production operations seam now receives the real metadata-permission read and
+  `File::set_permissions` operation. Exact owners prove that the temp receives the caller's mode
+  while the old target is still present and before replace, that a missing target never calls the
+  apply operation, and that an apply error still publishes the new bytes without temp residue.
+  The public `FileConfigStore` owner also makes `config.lock` a directory, observes a typed write
+  error with no config write, removes the obstruction, and succeeds through the same store.
 - **RESOLVED (c04395c) — opportunistic read-path registry self-heal.** `_repair_rows` +
   `try_advisory_file_lock` are translated: `FileStore::scan` re-projects a stale row from its meta
   under a NON-BLOCKING lock (new `try_acquire_lock`), saving only on change, and `resolve` uses the
@@ -341,10 +348,10 @@ real concerns:
   `rust-contract-matrix.md` "reads never migrate" line is rescoped to user data (the registry is the
   oracle-defined self-heal exception).
 
-Still deferred: permission-application ordering/failure and Windows permission semantics; native
-lock/crash gates; and Python's thread-mutex/msvcrt-specific implementation rows, where Rust uses
-kernel file locks and RAII instead. The fsync/replace ordering and swallow rows are no longer source
-comments or success-only surrogates.
+Still deferred: Windows permission semantics; native lock/crash gates; and Python's remaining
+thread-mutex/msvcrt-specific implementation rows, where Rust uses kernel file locks and RAII
+instead. The fsync/replace and permission ordering/failure rows are no longer source comments,
+success-only public outcomes, or pure-helper surrogates.
 
 ## Adjudication log
 
