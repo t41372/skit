@@ -34,7 +34,8 @@ exclusion changed. Production has changed since that proof, so coverage and ever
 run again on the final candidate. Phase 4 has already fixed shared atomic-temp cleanup (`619e55d`),
 injected-source secret staging (`42f5f6d`), copy-mode Unix permission bits (`72646e2`), JavaScript
 dependency cleanup before Settings save (`fd50836`), and Windows editor command parsing
-(`cf8ebba`). More review findings remain in §6. Mutation remains blocked on user approval.** The user
+  (`cf8ebba`), and actionable JavaScript installer stderr (`b1ad9ac`). More review findings remain
+  in §6. Mutation remains blocked on user approval.** The user
 chose plan **A**:
 finish the broad port first, then keep the implementation-fix and review passes open until the
 release evidence is final.
@@ -415,8 +416,8 @@ The ledger has the authoritative per-module adjudication log.
   private temp directory unless npm resolution needs entry-directory adjacency; generic copy mode
   preserves complete Unix mode bits while prompt snapshots keep the v0.4 `0o777` mask; CLI and TUI
   Settings use one identity-gated JavaScript cleanup-before-update transaction; editor command
-  parsing now follows the host POSIX or Windows dialect. The JavaScript installer stderr contract is
-  in progress. Remaining adjudicated work includes the Prompt Settings placeholder picker,
+  parsing now follows the host POSIX or Windows dialect. JavaScript installer failures now retain
+  the actionable child stderr line and keep rollback atomic. Remaining adjudicated work includes the Prompt Settings placeholder picker,
   interactive add dependency questions, source-schema partial-warning behavior, and moving Library
   projection orchestration out of `skit-store`. The final coverage, supply-chain, docs, package,
   benchmark, and hands-on gates are not valid until these changes stop.
