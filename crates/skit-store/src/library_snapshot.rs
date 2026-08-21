@@ -195,6 +195,85 @@ mod tests {
 
     use super::*;
 
+    fn request(name: &str) -> CreateEntry {
+        CreateEntry {
+            name: name.to_owned(),
+            kind: EntryKind::parse("shell").unwrap(),
+            mode: StorageMode::Copy,
+            source: format!("/original/{name}.sh"),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"printf stored\n".to_vec(),
+                stored_name: Some("script.sh".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        }
+    }
+
+    #[test]
+    fn refresh_reports_an_invalid_registry_slug_without_hiding_valid_entries() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let entry = store.create(request("Valid")).unwrap();
+        let registry_path = root.path().join("registry.toml");
+        let mut document =
+            toml::from_str::<toml::Table>(&fs::read_to_string(&registry_path).unwrap()).unwrap();
+        let entries = document["entries"].as_table_mut().unwrap();
+        let row = entries.get(entry.slug.as_str()).unwrap().clone();
+        entries.insert("not a slug".to_owned(), row);
+        fs::write(&registry_path, toml::to_string_pretty(&document).unwrap()).unwrap();
+
+        let refresh = store.library_refresh().unwrap();
+
+        assert_eq!(refresh.entries.len(), 1);
+        assert_eq!(refresh.entries[0].entry.slug, entry.slug);
+        assert_eq!(refresh.scan.diagnostics.len(), 1);
+        assert_eq!(
+            refresh.scan.diagnostics[0].code,
+            DiagnosticCode::InvalidSlug
+        );
+        assert_eq!(
+            refresh.scan.diagnostics[0].slug.as_deref(),
+            Some("not a slug")
+        );
+    }
+
+    #[test]
+    fn refresh_keeps_a_real_existing_lock_open_error_typed() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let entry = store.create(request("Locked")).unwrap();
+        let lock_path = root
+            .path()
+            .join(".locks")
+            .join(format!("{}.meta.lock", entry.slug.as_str()));
+        assert!(!lock_path.exists());
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::create_dir(&lock_path).unwrap();
+
+        let refresh = store.library_refresh().unwrap();
+
+        #[cfg(unix)]
+        {
+            assert!(refresh.entries.is_empty());
+            assert_eq!(refresh.scan.diagnostics.len(), 1);
+            assert_eq!(refresh.scan.diagnostics[0].code, DiagnosticCode::Io);
+            assert_eq!(refresh.scan.diagnostics[0].slug.as_deref(), Some("locked"));
+            assert!(
+                refresh.scan.diagnostics[0]
+                    .message
+                    .contains(&lock_path.display().to_string())
+            );
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(refresh.entries.len(), 1);
+            assert!(refresh.scan.diagnostics.is_empty());
+        }
+    }
+
     #[test]
     fn one_entry_snapshot_reads_the_payload_once_and_keeps_its_bytes_exact() {
         let root = TempDir::new().unwrap();

@@ -137,6 +137,12 @@ fn test_infer_kind_windows_uses_pathext_not_execute_bit() {
         unix_mode: Some(0o777),
         dialect: windows,
     }));
+    assert!(!source_is_executable(ExecutableSourceFacts {
+        path: Path::new("extensionless"),
+        is_file: true,
+        unix_mode: Some(0o777),
+        dialect: windows,
+    }));
 }
 
 #[test]

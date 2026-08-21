@@ -8,7 +8,7 @@ use skit_application::{
     path_completion::{
         DirectoryEntry, DirectoryReadError, DirectoryReadFilter, DirectoryReader,
         PathCompletionContext, PathCompletionKind, PathCompletionRequest, PathCompletionService,
-        PathInputDialect,
+        PathInputDialect, looks_pathy,
     },
     tokens::TokenContext,
 };
@@ -16,6 +16,15 @@ use skit_application::{
 #[derive(Clone, Debug, Default)]
 struct RecordingReader {
     calls: Arc<Mutex<Vec<(PathBuf, usize, DirectoryReadFilter)>>>,
+}
+
+#[test]
+fn windows_drive_roots_use_the_same_separator_activation_as_other_paths() {
+    for piece in [r"C:\\", "D:/", r"z:\\work", "Q:/work"] {
+        assert!(looks_pathy(piece, PathInputDialect::Windows), "{piece}");
+    }
+    assert!(!looks_pathy("C:relative", PathInputDialect::Windows));
+    assert!(!looks_pathy("C:relative", PathInputDialect::Posix));
 }
 
 impl DirectoryReader for RecordingReader {

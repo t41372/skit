@@ -772,7 +772,45 @@ fn backup_corrupt(path: &Path) -> Result<(), RepositoryError> {
 mod tests {
     use std::time::{Duration, SystemTime};
 
+    use skit_application::{
+        CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
+    };
+    use skit_domain::EntrySettings;
+    use tempfile::TempDir;
+
     use super::*;
+
+    #[test]
+    fn legacy_projection_matches_an_already_read_authoritative_snapshot_by_mtime() {
+        let root = TempDir::new().unwrap();
+        let store = crate::FileStore::new(root.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "Legacy".to_owned(),
+                kind: EntryKind::parse("shell").unwrap(),
+                mode: StorageMode::Copy,
+                source: "/original/legacy.sh".to_owned(),
+                workdir: "invoke".to_owned(),
+                description: "legacy row".to_owned(),
+                payload: Some(EntryPayload {
+                    bytes: b"printf legacy\n".to_vec(),
+                    stored_name: Some("script.sh".to_owned()),
+                    permissions: SourcePermissions::default(),
+                }),
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let meta_path = root
+            .path()
+            .join("scripts")
+            .join(entry.slug.as_str())
+            .join("meta.toml");
+        let metadata_bytes = fs::read(&meta_path).unwrap();
+        let mut registry = Registry::fresh(root.path());
+        registry.project_with_proof(&entry, metadata_mtime_ns(&meta_path).unwrap(), None);
+
+        assert!(registry.matches_entry_snapshot(&entry, &meta_path, &metadata_bytes));
+    }
 
     #[test]
     fn registry_timestamps_refuse_pre_epoch_and_oversized_values() {

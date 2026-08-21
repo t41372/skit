@@ -492,7 +492,11 @@ fn contract_io(operation: &str, path: &Path, error: std::io::Error) -> SuiteErro
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::Path};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::{Path, PathBuf},
+    };
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
@@ -516,6 +520,16 @@ mod tests {
             cargo: None,
             rustc: None,
         }
+    }
+
+    #[cfg(windows)]
+    fn closure_site_packages(venv: &Path) -> PathBuf {
+        venv.join("Lib/site-packages")
+    }
+
+    #[cfg(not(windows))]
+    fn closure_site_packages(venv: &Path) -> PathBuf {
+        venv.join("lib/python3.13/site-packages")
     }
 
     #[test]
@@ -545,12 +559,7 @@ mod tests {
                 calls.push(spec.clone());
                 let operation = spec.argv.get(1).map(String::as_str);
                 if operation == Some("venv") {
-                    let site = if cfg!(windows) {
-                        venv.join("Lib/site-packages")
-                    } else {
-                        venv.join("lib/python3.13/site-packages")
-                    };
-                    fs::create_dir_all(site).unwrap();
+                    fs::create_dir_all(closure_site_packages(&venv)).unwrap();
                 }
                 let success = if operation == Some("pip") {
                     install_attempts += 1;

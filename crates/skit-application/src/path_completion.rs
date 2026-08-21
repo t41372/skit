@@ -175,8 +175,7 @@ pub fn looks_pathy(piece: &str, dialect: PathInputDialect) -> bool {
     piece.starts_with('~')
         || piece.starts_with("{cwd}")
         || piece.contains('/')
-        || (dialect == PathInputDialect::Windows
-            && (piece.contains('\\') || has_windows_drive_root(piece)))
+        || (dialect == PathInputDialect::Windows && piece.contains('\\'))
 }
 
 fn complete_with(
@@ -248,12 +247,4 @@ fn lookup<'a>(piece: &'a str, request: &PathCompletionRequest) -> Option<(PathBu
         request.context.workdir.join(base)
     };
     Some((base, prefix))
-}
-
-fn has_windows_drive_root(piece: &str) -> bool {
-    let bytes = piece.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'/' | b'\\')
 }

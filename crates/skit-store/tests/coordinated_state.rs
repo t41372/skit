@@ -429,3 +429,113 @@ fn finalize_failure_reports_an_incomplete_byte_exact_state_restore() {
     assert_ne!(fs::read(&state_path).unwrap(), original);
     assert!(!state_store.load(&slug).values.contains_key("TOKEN"));
 }
+
+fn test_state_writer(path: &std::path::Path, bytes: &[u8]) -> Result<(), StateWriteError> {
+    fs::create_dir_all(path.parent().unwrap()).map_err(|error| StateWriteError::Io {
+        operation: "write",
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    })?;
+    fs::write(path, bytes).map_err(|error| StateWriteError::Io {
+        operation: "write",
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    })
+}
+
+#[test]
+fn unchanged_state_still_commits_and_finalizes_or_rolls_back_the_external_value() {
+    let root = TempDir::new().unwrap();
+    let state_store = FileFormStateStore::new(root.path());
+    let slug = skit_domain::Slug::parse("unchanged").unwrap();
+
+    let success = state_store
+        .update_after_external_commit_with(
+            &slug,
+            || Ok::<_, &str>("committed"),
+            |_| "unchanged result",
+            |_| Ok(()),
+            test_state_writer,
+        )
+        .unwrap();
+    assert_eq!(success, ("committed", "unchanged result"));
+    assert!(!root.path().join("values/unchanged.toml").exists());
+
+    let rolled_back = std::cell::Cell::new(false);
+    let error = state_store
+        .update_after_external_commit_and_finalize(
+            &slug,
+            || Ok::<_, &str>("committed"),
+            |_| "unchanged result",
+            |_| Err("finalize failed"),
+            |_| {
+                rolled_back.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+    assert!(rolled_back.get());
+    assert!(matches!(
+        error,
+        CoordinatedStateError::FinalizeAfterState {
+            finalize: "finalize failed",
+            rollback: None,
+            state_rollback: None,
+            authoritative_restored: true,
+        }
+    ));
+    assert!(!root.path().join("values/unchanged.toml").exists());
+}
+
+#[test]
+fn state_restore_handles_a_finalize_that_removes_or_replaces_the_new_state_file() {
+    for replace_with_directory in [false, true] {
+        let root = TempDir::new().unwrap();
+        let state_store = FileFormStateStore::new(root.path());
+        let slug = skit_domain::Slug::parse("finalize-path-change").unwrap();
+        let state_path = root.path().join("values/finalize-path-change.toml");
+
+        let error = state_store
+            .update_after_external_commit_and_finalize(
+                &slug,
+                || Ok::<_, &str>(()),
+                |state| {
+                    state.values.insert("NEXT".to_owned(), "value".to_owned());
+                },
+                |_| {
+                    fs::remove_file(&state_path).unwrap();
+                    if replace_with_directory {
+                        fs::create_dir(&state_path).unwrap();
+                    }
+                    Err("finalize changed state path")
+                },
+                |_| Ok(()),
+            )
+            .unwrap_err();
+
+        if replace_with_directory {
+            assert!(matches!(
+                error,
+                CoordinatedStateError::FinalizeAfterState {
+                    state_rollback: Some(StateWriteError::Io {
+                        operation: "rollback remove",
+                        ..
+                    }),
+                    authoritative_restored: true,
+                    ..
+                }
+            ));
+            assert!(state_path.is_dir());
+        } else {
+            assert!(matches!(
+                error,
+                CoordinatedStateError::FinalizeAfterState {
+                    state_rollback: None,
+                    authoritative_restored: true,
+                    ..
+                }
+            ));
+            assert!(!state_path.exists());
+        }
+    }
+}

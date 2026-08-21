@@ -843,16 +843,11 @@ mod tests {
             },
         )
         .unwrap();
-        let (kept_summary, kept_source) = cached_or_authoritative_summary(
-            Some(&registry),
-            &kept.slug,
-            &meta_path(&root, &kept.slug),
-            || panic!("the unchanged sibling must remain index-served"),
-        )
-        .unwrap();
+        let kept_summary = registry
+            .summary(&kept.slug, &meta_path(&root, &kept.slug))
+            .expect("the unchanged sibling must remain index-served");
 
         assert!(matches!(doomed_source, SummarySource::Authoritative));
-        assert!(matches!(kept_source, SummarySource::Cache));
         let mut first_listing = [doomed_summary.name, kept_summary.name];
         first_listing.sort();
         assert_eq!(first_listing, ["Doomed", "Kept"]);

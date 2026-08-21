@@ -331,14 +331,10 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         fixture.context.strace = None;
         let syscalls =
             super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[100])).unwrap();
-        assert_eq!(
-            syscalls.skipped[0].reason,
-            if cfg!(target_os = "linux") {
-                "strace not found"
-            } else {
-                "not Linux"
-            }
-        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(syscalls.skipped[0].reason, "strace not found");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(syscalls.skipped[0].reason, "not Linux");
     }
 
     #[test]

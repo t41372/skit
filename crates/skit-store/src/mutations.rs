@@ -1182,6 +1182,113 @@ mod tests {
 
     use super::*;
 
+    fn copy_request(name: &str, kind: &str, stored_name: &str) -> CreateEntry {
+        CreateEntry {
+            name: name.to_owned(),
+            kind: EntryKind::parse(kind).unwrap(),
+            mode: StorageMode::Copy,
+            source: format!("/original/{stored_name}"),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"stored\n".to_vec(),
+                stored_name: Some(stored_name.to_owned()),
+                permissions: skit_application::SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        }
+    }
+
+    #[test]
+    fn external_edit_prepare_rejects_references_and_stamps_legacy_copy_identity() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let reference = store
+            .create(CreateEntry {
+                name: "Reference".to_owned(),
+                kind: EntryKind::parse("python").unwrap(),
+                mode: StorageMode::Reference,
+                source: "/original/reference.py".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        assert!(matches!(
+            store.prepare_external_copy_edit(&reference),
+            Err(RepositoryError::InvalidMutation { .. })
+        ));
+
+        let copy = store
+            .create(copy_request("Legacy identity", "python", "script.py"))
+            .unwrap();
+        let meta_path = store.entry_dir(&copy.slug).join("meta.toml");
+        let mut document =
+            toml::from_str::<toml::Table>(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+        document.remove("id");
+        fs::write(&meta_path, toml::to_string_pretty(&document).unwrap()).unwrap();
+        let legacy = store.read_entry(copy.slug.clone()).unwrap();
+        assert!(legacy.meta.id.is_none());
+
+        let edit = store.prepare_external_copy_edit(&legacy).unwrap();
+
+        assert!(edit.entry().meta.id.is_some());
+        assert_eq!(edit.path(), store.entry_dir(&copy.slug).join("script.py"));
+    }
+
+    #[test]
+    fn external_finalize_rejects_reference_outside_and_missing_multi_name_payloads() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let reference = store
+            .create(CreateEntry {
+                name: "Reference finalize".to_owned(),
+                kind: EntryKind::parse("python").unwrap(),
+                mode: StorageMode::Reference,
+                source: "/original/reference.py".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let reference_edit = PreparedExternalCopyEdit {
+            path: store.entry_dir(&reference.slug).join("script.py"),
+            entry: reference,
+        };
+        assert!(matches!(
+            store.finalize_external_copy_edit(&reference_edit),
+            Err(FinalizeExternalCopyEditError::Repository(
+                RepositoryError::InvalidMutation { .. }
+            ))
+        ));
+
+        let copy = store
+            .create(copy_request("Outside", "python", "script.py"))
+            .unwrap();
+        let mut outside = store.prepare_external_copy_edit(&copy).unwrap();
+        outside.path = root.path().join("outside.py");
+        assert!(matches!(
+            store.finalize_external_copy_edit(&outside),
+            Err(FinalizeExternalCopyEditError::Repository(
+                RepositoryError::InvalidMutation { .. }
+            ))
+        ));
+
+        let javascript = store
+            .create(copy_request("Missing module", "js", "script.js"))
+            .unwrap();
+        let missing = store.prepare_external_copy_edit(&javascript).unwrap();
+        fs::remove_file(missing.path()).unwrap();
+        assert!(matches!(
+            store.finalize_external_copy_edit(&missing),
+            Err(FinalizeExternalCopyEditError::Repository(
+                RepositoryError::InvalidMutation { .. }
+            ))
+        ));
+    }
+
     #[test]
     fn test_add_python_injected_write_failure_rolls_back_entire_entry() {
         let data = TempDir::new().unwrap();

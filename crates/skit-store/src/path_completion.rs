@@ -131,4 +131,26 @@ mod tests {
         assert_eq!(entries, [DirectoryEntry::directory("prefix")]);
         assert_eq!(probed, [PathBuf::from("prefix")]);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_directory_names_are_examined_then_skipped() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let entries = collect_entries(
+            [
+                Ok((
+                    OsString::from_vec(vec![0xff]),
+                    PathBuf::from("invalid-name"),
+                )),
+                row("visible"),
+            ],
+            2,
+            &DirectoryReadFilter::new("", true),
+            |_| Some(false),
+        )
+        .unwrap();
+
+        assert_eq!(entries, [DirectoryEntry::file("visible")]);
+    }
 }
