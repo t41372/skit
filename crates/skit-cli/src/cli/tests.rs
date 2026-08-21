@@ -3370,6 +3370,47 @@ fn health_size_text_matches_the_latest_main_units_and_thresholds() {
 }
 
 #[test]
+fn test_dir_size_sums_only_files_recursively() {
+    let root = TempDir::new().unwrap();
+    let library = root.path().join("lib");
+    fs::create_dir_all(library.join("a")).unwrap();
+    fs::create_dir(library.join("empty-dir")).unwrap();
+    fs::write(library.join("a/one.txt"), vec![b'x'; 100]).unwrap();
+    fs::write(library.join("two.txt"), vec![b'y'; 50]).unwrap();
+
+    assert_eq!(directory_size(&library), 150);
+}
+
+#[test]
+fn test_dir_size_missing_dir_is_zero() {
+    let root = TempDir::new().unwrap();
+    assert_eq!(directory_size(&root.path().join("nope")), 0);
+}
+
+#[test]
+fn test_dir_size_on_a_file_is_zero() {
+    let root = TempDir::new().unwrap();
+    let file = root.path().join("f.txt");
+    fs::write(&file, b"data").unwrap();
+    assert_eq!(directory_size(&file), 0);
+}
+
+#[test]
+fn test_human_size_units_and_thresholds() {
+    for (size, expected) in [
+        (0, "0 B"),
+        (512, "512 B"),
+        (1024, "1.0 KB"),
+        (1536, "1.5 KB"),
+        (1024 * 1024, "1.0 MB"),
+        (3 * 1024 * 1024 * 1024, "3.0 GB"),
+        (5 * 1024_u64.pow(4), "5120.0 GB"),
+    ] {
+        assert_eq!(health_size_text(size), expected, "size={size}");
+    }
+}
+
+#[test]
 fn tui_host_opens_every_frontend_neutral_screen_and_handles_simple_effects() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");

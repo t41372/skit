@@ -435,28 +435,6 @@ fn test_resolve_not_found_raises() {
 }
 
 // ===========================================================================
-// disk-usage helpers — not skit-store symbols.
-// ===========================================================================
-
-#[ignore = "UNMAPPED. `store.dir_size` is not a skit-store function (no such symbol in \
-            skit-store/src). The disk-usage helpers for doctor/health are not a FileStore \
-            responsibility in the rewrite."]
-#[test]
-fn test_dir_size_sums_only_files_recursively() {}
-
-#[ignore = "UNMAPPED. `store.dir_size` is not a skit-store function."]
-#[test]
-fn test_dir_size_missing_dir_is_zero() {}
-
-#[ignore = "UNMAPPED. `store.dir_size` is not a skit-store function."]
-#[test]
-fn test_dir_size_on_a_file_is_zero() {}
-
-#[ignore = "UNMAPPED. `store.human_size` is not a skit-store function."]
-#[test]
-fn test_human_size_units_and_thresholds() {}
-
-// ===========================================================================
 // extract_comment_description — skit-language::description, not the store.
 // ===========================================================================
 
