@@ -1,5 +1,12 @@
 use super::*;
 
+fn parsed_python(source: &str) -> ParsedDocument {
+    let ParseOutcome::Parsed(document) = parse_document("python", source) else {
+        panic!("the Python fixture must parse");
+    };
+    document
+}
+
 fn python_literal_for(expression: &str) -> Option<PythonLiteral> {
     let source = format!("value = {expression}\n");
     let ParseOutcome::Parsed(document) = parse_document("python", &source) else {
@@ -236,6 +243,205 @@ fn typed_python_strings_escape_tabs_and_unicode_line_boundaries() {
         typed_python_literal(&declaration, "left\tright\u{2029}tail").unwrap(),
         "'left\\tright\\u2029tail'"
     );
+}
+
+#[test]
+fn empty_and_unrelated_python_framework_calls_keep_static_and_absent_surfaces_distinct() {
+    for source in [
+        "import argparse\np = argparse.ArgumentParser()\np.add_argument()\n",
+        "import click\n@click.command()\n@click.option()\ndef main():\n    pass\n",
+    ] {
+        let CliSurface::Static(surface) = parsed_python(source).cli_surface() else {
+            panic!("an empty declaration is still a static surface");
+        };
+        assert!(surface.fields.is_empty(), "{source}");
+    }
+
+    for source in [
+        "import typer\nvalue = 1\n",
+        "import typer\ndef main():\n    pass\nrun(main)\n",
+        "import typer\ndef main():\n    pass\nobject.run(main)\n",
+    ] {
+        assert_eq!(parsed_python(source).cli_surface(), CliSurface::Absent);
+    }
+}
+
+#[test]
+fn reconciliation_reports_unbound_and_duplicate_stored_claims_as_missing() {
+    let mut current = ParamDecl::new("VALUE");
+    current.binding = ParameterBinding::Const;
+    let analysis = SemanticAnalysis {
+        candidates: vec![SemanticCandidate {
+            declaration: current.clone(),
+            identity: BindingIdentity {
+                binding: ParameterBinding::Const,
+                key: "VALUE".to_owned(),
+                occurrence: 0,
+                scope: Vec::new(),
+            },
+            span: SourceSpan {
+                start: 0,
+                end: 1,
+                start_line: 1,
+                end_line: 1,
+            },
+            demotion: None,
+            empty_uses_default: false,
+        }],
+        ..SemanticAnalysis::default()
+    };
+    let unbound = ParamDecl::new("UNBOUND");
+
+    let report = reconcile_analysis(&analysis, &[unbound.clone(), current.clone(), current]);
+
+    assert_eq!(report.ok.len(), 1);
+    assert_eq!(
+        report.missing,
+        [
+            unbound,
+            ParamDecl {
+                binding: ParameterBinding::Const,
+                ..ParamDecl::new("VALUE")
+            }
+        ]
+    );
+}
+
+#[test]
+fn duplicate_input_claims_never_rewrite_one_call_twice() {
+    let document = parsed_python("value = input('Prompt')\n");
+    let mut first = ParamDecl::new("FIRST");
+    first.binding = ParameterBinding::Input;
+    first.delivery = ParameterDelivery::Inject;
+    first.order = 0;
+    first.prompt = "Prompt".to_owned();
+    let mut second = first.clone();
+    second.name = "SECOND".to_owned();
+    let values = BTreeMap::from([
+        ("FIRST".to_owned(), "one".to_owned()),
+        ("SECOND".to_owned(), "two".to_owned()),
+    ]);
+
+    assert!(matches!(
+        document.plan_injection(&[first, second], &values),
+        Err(LanguageError::BindingNotFound { name }) if name == "SECOND"
+    ));
+}
+
+#[test]
+fn source_semantics_degrade_for_unparsed_non_env_and_nondefault_expansions() {
+    let mut declaration = ParamDecl::new("VALUE");
+    declaration.binding = ParameterBinding::Const;
+    assert_eq!(
+        source_parameter_semantics("shell", "echo $VALUE\n", &declaration),
+        SourceParameterSemantics::default()
+    );
+
+    declaration.binding = ParameterBinding::EnvDefault;
+    for source in [
+        "echo ${:-fallback}\n",
+        "echo ${OTHER:-fallback}\n",
+        "echo ${VALUE}\n",
+        "echo ${VALUE:?required}\n",
+    ] {
+        assert_eq!(
+            source_parameter_semantics("shell", source, &declaration),
+            SourceParameterSemantics::default(),
+            "{source}"
+        );
+    }
+    assert_eq!(
+        source_parameter_semantics("future", "anything", &declaration),
+        SourceParameterSemantics::default()
+    );
+}
+
+#[test]
+fn module_description_and_analysis_reject_non_docstring_statement_shapes() {
+    let shell = match parse_document("shell", "echo ok\n") {
+        ParseOutcome::Parsed(document) => document,
+        _ => panic!("the shell fixture must parse"),
+    };
+    assert_eq!(shell.python_module_description(), None);
+
+    for source in ["def main():\n    pass\n", "1\n"] {
+        assert_eq!(parsed_python(source).python_module_description(), None);
+    }
+    assert_eq!(
+        match parse_document("powershell", "param()\n") {
+            ParseOutcome::Parsed(document) => document.analysis().candidates,
+            _ => panic!("the PowerShell fixture must parse"),
+        },
+        Vec::new()
+    );
+}
+
+#[test]
+fn main_guards_and_input_prompts_keep_nonmatching_shapes_out_of_semantic_fields() {
+    let analysis =
+        parsed_python("if True:\n    VALUE = 1\nname = object()\ninput(name)\n").analysis();
+
+    assert!(
+        analysis
+            .candidates
+            .iter()
+            .all(|candidate| candidate.declaration.name != "VALUE")
+    );
+    let input = analysis
+        .candidates
+        .iter()
+        .find(|candidate| candidate.declaration.binding == ParameterBinding::Input)
+        .unwrap();
+    assert!(input.declaration.prompt.is_empty());
+}
+
+#[test]
+fn typed_annotation_wrappers_report_their_parser_owned_trailing_name() {
+    let document = parsed_python("def main(value: int):\n    pass\n");
+    let mut names = Vec::new();
+    walk(document.syntax_tree().root_node(), &mut |node| {
+        if node.kind() == "type" {
+            names.push(trailing_name(&document, node).to_owned());
+        }
+    });
+    assert_eq!(names, ["int"]);
+}
+
+#[test]
+fn every_parser_kind_dispatches_without_an_open_ended_document_state() {
+    let fixtures = [
+        ("python", "value = 1\n"),
+        ("shell", "VALUE=1\n"),
+        ("js", "const value = 1;\n"),
+        ("ts", "const value: number = 1;\n"),
+        ("tsx", "const value = <div />;\n"),
+        ("fish", "set value 1\n"),
+        ("powershell", "param()\n"),
+    ];
+    let declaration = ParamDecl::new("VALUE");
+    for (kind, source) in fixtures {
+        let ParseOutcome::Parsed(document) = parse_document(kind, source) else {
+            panic!("the {kind} fixture must parse");
+        };
+        let _ = document.analysis();
+        let _ = document.cli_surface();
+        let _ = document.source_parameter_semantics(&declaration);
+        if kind != "shell" {
+            assert!(matches!(
+                document.plan_shell_normalization("VALUE"),
+                Err(LanguageError::UnsupportedKind { kind: actual }) if actual == kind
+            ));
+        }
+    }
+    for (kind, source) in [("fish", "echo ok\n"), ("powershell", "param()\n")] {
+        let ParseOutcome::Parsed(document) = parse_document(kind, source) else {
+            panic!("the unsupported-injection fixture must parse");
+        };
+        assert!(matches!(
+            document.plan_injection(&[], &BTreeMap::new()),
+            Err(LanguageError::UnsupportedKind { kind: actual }) if actual == kind
+        ));
+    }
 }
 
 #[test]

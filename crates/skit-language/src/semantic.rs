@@ -289,9 +289,20 @@ impl SourceEditPlan {
 /// One parser-owned source document.
 #[derive(Debug)]
 pub struct ParsedDocument {
-    kind: String,
+    kind: ParserKind,
     source: String,
     tree: tree_sitter::Tree,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParserKind {
+    Python,
+    Shell,
+    JavaScript,
+    TypeScript,
+    Tsx,
+    Fish,
+    PowerShell,
 }
 
 impl ParsedDocument {
@@ -306,7 +317,7 @@ impl ParsedDocument {
     }
 
     pub(crate) fn python_module_description(&self) -> Option<String> {
-        if self.kind != "python" {
+        if self.kind != ParserKind::Python {
             return None;
         }
         let statement = named_children(self.tree.root_node())
@@ -333,26 +344,28 @@ impl ParsedDocument {
     /// Return parser-backed language analysis from this document's tree.
     #[must_use]
     pub fn analysis(&self) -> SemanticAnalysis {
-        match self.kind.as_str() {
-            "python" => python_analysis(self),
-            "shell" => shell::analysis(self),
-            "js" | "ts" | "tsx" => javascript::analysis(self),
-            "fish" => fish::analysis(self),
-            "powershell" => powershell::analysis(self),
-            _ => SemanticAnalysis::default(),
+        match self.kind {
+            ParserKind::Python => python_analysis(self),
+            ParserKind::Shell => shell::analysis(self),
+            ParserKind::JavaScript | ParserKind::TypeScript | ParserKind::Tsx => {
+                javascript::analysis(self)
+            }
+            ParserKind::Fish => fish::analysis(self),
+            ParserKind::PowerShell => powershell::analysis(self),
         }
     }
 
     /// Return the first detected CLI framework surface.
     #[must_use]
     pub fn cli_surface(&self) -> CliSurface {
-        match self.kind.as_str() {
-            "python" => python_cli_surface(self),
-            "shell" => shell::cli_surface(self),
-            "js" | "ts" | "tsx" => javascript::cli_surface(self),
-            "fish" => fish::cli_surface(self),
-            "powershell" => powershell::cli_surface(self),
-            _ => CliSurface::Absent,
+        match self.kind {
+            ParserKind::Python => python_cli_surface(self),
+            ParserKind::Shell => shell::cli_surface(self),
+            ParserKind::JavaScript | ParserKind::TypeScript | ParserKind::Tsx => {
+                javascript::cli_surface(self)
+            }
+            ParserKind::Fish => fish::cli_surface(self),
+            ParserKind::PowerShell => powershell::cli_surface(self),
         }
     }
 
@@ -365,9 +378,14 @@ impl ParsedDocument {
     /// Return live source semantics for one declaration from this parse session.
     #[must_use]
     pub fn source_parameter_semantics(&self, declaration: &ParamDecl) -> SourceParameterSemantics {
-        match self.kind.as_str() {
-            "shell" => shell_parameter_semantics(self, declaration),
-            _ => SourceParameterSemantics::default(),
+        match self.kind {
+            ParserKind::Shell => shell_parameter_semantics(self, declaration),
+            ParserKind::Python
+            | ParserKind::JavaScript
+            | ParserKind::TypeScript
+            | ParserKind::Tsx
+            | ParserKind::Fish
+            | ParserKind::PowerShell => SourceParameterSemantics::default(),
         }
     }
 
@@ -387,24 +405,44 @@ impl ParsedDocument {
         values: &BTreeMap<String, String>,
         interpreter: Option<&str>,
     ) -> Result<SourceEditPlan, LanguageError> {
-        match self.kind.as_str() {
-            "python" => plan_python_injection(self, declarations, values),
-            "shell" => shell::plan_injection(self, declarations, values, interpreter),
-            "js" | "ts" | "tsx" => javascript::plan_injection(self, declarations, values),
-            kind => Err(LanguageError::UnsupportedKind {
-                kind: kind.to_owned(),
+        match self.kind {
+            ParserKind::Python => plan_python_injection(self, declarations, values),
+            ParserKind::Shell => shell::plan_injection(self, declarations, values, interpreter),
+            ParserKind::JavaScript | ParserKind::TypeScript | ParserKind::Tsx => {
+                javascript::plan_injection(self, declarations, values)
+            }
+            ParserKind::Fish => Err(LanguageError::UnsupportedKind {
+                kind: "fish".to_owned(),
+            }),
+            ParserKind::PowerShell => Err(LanguageError::UnsupportedKind {
+                kind: "powershell".to_owned(),
             }),
         }
     }
 
     /// Plan one opt-in shell environment-default normalization.
     pub fn plan_shell_normalization(&self, name: &str) -> Result<SourceEditPlan, LanguageError> {
-        if self.kind != "shell" {
-            return Err(LanguageError::UnsupportedKind {
-                kind: self.kind.clone(),
-            });
+        match self.kind {
+            ParserKind::Shell => shell::normalize(self, name),
+            ParserKind::Python => Err(LanguageError::UnsupportedKind {
+                kind: "python".to_owned(),
+            }),
+            ParserKind::JavaScript => Err(LanguageError::UnsupportedKind {
+                kind: "js".to_owned(),
+            }),
+            ParserKind::TypeScript => Err(LanguageError::UnsupportedKind {
+                kind: "ts".to_owned(),
+            }),
+            ParserKind::Tsx => Err(LanguageError::UnsupportedKind {
+                kind: "tsx".to_owned(),
+            }),
+            ParserKind::Fish => Err(LanguageError::UnsupportedKind {
+                kind: "fish".to_owned(),
+            }),
+            ParserKind::PowerShell => Err(LanguageError::UnsupportedKind {
+                kind: "powershell".to_owned(),
+            }),
         }
-        shell::normalize(self, name)
     }
 }
 
@@ -412,17 +450,38 @@ impl ParsedDocument {
 #[must_use]
 pub fn parse_document(kind: &str, source: &str) -> ParseOutcome {
     let mut parser = tree_sitter::Parser::new();
-    let parser_result = match kind {
-        "python" => parser.set_language(&tree_sitter_python::LANGUAGE.into()),
-        "shell" => parser.set_language(&tree_sitter_bash::LANGUAGE.into()),
-        "js" => parser.set_language(&tree_sitter_javascript::LANGUAGE.into()),
-        "ts" => parser.set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+    let (parser_kind, parser_result) = match kind {
+        "python" => (
+            ParserKind::Python,
+            parser.set_language(&tree_sitter_python::LANGUAGE.into()),
+        ),
+        "shell" => (
+            ParserKind::Shell,
+            parser.set_language(&tree_sitter_bash::LANGUAGE.into()),
+        ),
+        "js" => (
+            ParserKind::JavaScript,
+            parser.set_language(&tree_sitter_javascript::LANGUAGE.into()),
+        ),
+        "ts" => (
+            ParserKind::TypeScript,
+            parser.set_language(&tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+        ),
         // The TSX dialect: the TypeScript grammar cannot parse JSX, so tsx needs its own grammar.
         // The oracle's JS analyzer wires the same tsx grammar (langs/javascript/analyzer.py
         // `_LANGUAGES["tsx"]`); the js-family analysis, surface, and injection are shared.
-        "tsx" => parser.set_language(&tree_sitter_typescript::LANGUAGE_TSX.into()),
-        "fish" => parser.set_language(&tree_sitter_fish::language()),
-        "powershell" => parser.set_language(&tree_sitter_powershell::LANGUAGE.into()),
+        "tsx" => (
+            ParserKind::Tsx,
+            parser.set_language(&tree_sitter_typescript::LANGUAGE_TSX.into()),
+        ),
+        "fish" => (
+            ParserKind::Fish,
+            parser.set_language(&tree_sitter_fish::language()),
+        ),
+        "powershell" => (
+            ParserKind::PowerShell,
+            parser.set_language(&tree_sitter_powershell::LANGUAGE.into()),
+        ),
         _ => {
             return ParseOutcome::ParserUnavailable(ParseFailure {
                 kind: kind.to_owned(),
@@ -431,13 +490,7 @@ pub fn parse_document(kind: &str, source: &str) -> ParseOutcome {
             });
         }
     };
-    if parser_result.is_err() {
-        return ParseOutcome::ParserUnavailable(ParseFailure {
-            kind: kind.to_owned(),
-            line: None,
-            column: None,
-        });
-    }
+    parser_result.expect("bundled tree-sitter grammars match the runtime ABI");
     // This grammar requires a statement after a valid script-level param block. Add an analyzer-
     // only empty statement so the parser keeps the complete parameter list. All semantic spans
     // stay inside the original prefix, and the source owned by this document stays byte-exact.
@@ -448,13 +501,9 @@ pub fn parse_document(kind: &str, source: &str) -> ParseOutcome {
     } else {
         source
     };
-    let Some(tree) = parser.parse(parser_source, None) else {
-        return ParseOutcome::ParserUnavailable(ParseFailure {
-            kind: kind.to_owned(),
-            line: None,
-            column: None,
-        });
-    };
+    let tree = parser
+        .parse(parser_source, None)
+        .expect("a parser without cancellation returns a syntax tree");
     let error = first_fatal_error(tree.root_node(), kind, source);
     if error.is_some() {
         return ParseOutcome::SyntaxError(ParseFailure {
@@ -464,7 +513,7 @@ pub fn parse_document(kind: &str, source: &str) -> ParseOutcome {
         });
     }
     ParseOutcome::Parsed(ParsedDocument {
-        kind: kind.to_owned(),
+        kind: parser_kind,
         source: source.to_owned(),
         tree,
     })
@@ -484,12 +533,7 @@ fn first_fatal_error<'tree>(
     if node.is_error() && kind == "powershell" && powershell::recoverable_error(source, node) {
         return None;
     }
-    if node.is_error()
-        || (node.is_missing()
-            && !(kind == "powershell"
-                && node.kind() == ";"
-                && node.start_byte() == node.end_byte()))
-    {
+    if node.is_error() || (node.is_missing() && !(kind == "powershell" && node.kind() == ";")) {
         return Some(node);
     }
     let mut cursor = node.walk();
@@ -523,12 +567,10 @@ fn shell_parameter_semantics(
         if matched || node.kind() != "expansion" {
             return;
         }
-        let Some(name) = named_children(node)
+        let name = named_children(node)
             .into_iter()
             .find(|child| child.kind() == "variable_name")
-        else {
-            return;
-        };
+            .expect("a parsed braced shell expansion has a variable name");
         if text(document, name) != declaration.name {
             return;
         }
@@ -829,9 +871,9 @@ fn block_constants(
         if name.starts_with('_') {
             continue;
         }
-        let Some(right) = assignment.child_by_field_name("right") else {
-            continue;
-        };
+        let right = assignment
+            .child_by_field_name("right")
+            .expect("a parsed assignment has a right-hand value");
         let Some(default) = literal_value(document, right) else {
             continue;
         };
@@ -869,9 +911,9 @@ fn is_main_guard(document: &ParsedDocument, statement: tree_sitter::Node<'_>) ->
     if statement.kind() != "if_statement" {
         return false;
     }
-    let Some(condition) = statement.child_by_field_name("condition") else {
-        return false;
-    };
+    let condition = statement
+        .child_by_field_name("condition")
+        .expect("a parsed if statement has a condition");
     let condition = unwrap_parenthesized(condition);
     if condition.kind() != "comparison_operator" {
         return false;
@@ -899,10 +941,10 @@ fn is_main_guard(document: &ParsedDocument, statement: tree_sitter::Node<'_>) ->
 
 fn unwrap_parenthesized(mut node: tree_sitter::Node<'_>) -> tree_sitter::Node<'_> {
     while node.kind() == "parenthesized_expression" {
-        let Some(child) = named_children(node).into_iter().next() else {
-            break;
-        };
-        node = child;
+        node = named_children(node)
+            .into_iter()
+            .next()
+            .expect("a parsed parenthesized expression has a child");
     }
     node
 }
@@ -919,11 +961,10 @@ fn simple_assignment_name(node: tree_sitter::Node<'_>) -> Option<tree_sitter::No
     {
         return None;
     }
-    let mut children = named_children(node).into_iter();
-    let child = children.next()?;
-    if children.next().is_some() {
-        return None;
-    }
+    let child = named_children(node)
+        .into_iter()
+        .next()
+        .expect("a parsed tuple pattern has a child");
     simple_assignment_name(child)
 }
 
@@ -1796,22 +1837,14 @@ fn parameter_names(document: &ParsedDocument, parameters: tree_sitter::Node<'_>)
 }
 
 fn parameter_name_node(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
-    match node.kind() {
-        "identifier" => Some(node),
-        "typed_parameter" | "typed_default_parameter" | "default_parameter" => {
-            node.child_by_field_name("name").or_else(|| {
-                named_children(node)
-                    .into_iter()
-                    .find(|child| child.kind() == "identifier")
-            })
-        }
-        "list_splat" | "dictionary_splat" | "list_splat_pattern" | "dictionary_splat_pattern" => {
-            named_children(node)
-                .into_iter()
-                .find(|child| child.kind() == "identifier")
-        }
-        _ => None,
+    if node.kind() == "identifier" {
+        return Some(node);
     }
+    node.child_by_field_name("name").or_else(|| {
+        named_children(node)
+            .into_iter()
+            .find(|child| child.kind() == "identifier")
+    })
 }
 
 fn children_by_field_name<'tree>(
@@ -2112,15 +2145,12 @@ fn typer_surface(document: &ParsedDocument) -> Option<CliSurface> {
         return Some(dynamic_surface("typer", DegradationReason::Subcommands));
     }
     let env = constant_environment(document);
-    let Some(parameters) = commands[0].child_by_field_name("parameters") else {
-        return Some(static_surface("typer", Vec::new()));
-    };
+    let parameters = commands[0]
+        .child_by_field_name("parameters")
+        .expect("a parsed Python function has parameters");
     let mut fields = Vec::new();
     for parameter in named_children(parameters) {
-        let Some((declaration, degradation, span_node)) = typer_field(document, parameter, &env)
-        else {
-            continue;
-        };
+        let (declaration, degradation, span_node) = typer_field(document, parameter, &env);
         let ordinal = field_occurrence(&fields, &declaration.name);
         fields.push(semantic_field(
             document,
@@ -2136,9 +2166,9 @@ fn typer_surface(document: &ParsedDocument) -> Option<CliSurface> {
 fn typer_run_targets(document: &ParsedDocument) -> BTreeSet<String> {
     let mut targets = BTreeSet::new();
     for call in calls_named(document, "run") {
-        let Some(function) = call.child_by_field_name("function") else {
-            continue;
-        };
+        let function = call
+            .child_by_field_name("function")
+            .expect("a parsed Python call has a function");
         let function = unwrap_parenthesized(function);
         if function.kind() != "attribute"
             || !function
@@ -2163,12 +2193,13 @@ fn typer_field<'tree>(
     document: &ParsedDocument,
     parameter: tree_sitter::Node<'tree>,
     env: &BTreeMap<String, ParameterValue>,
-) -> Option<(
+) -> (
     ParamDecl,
     Option<DegradationReason>,
     tree_sitter::Node<'tree>,
-)> {
-    let name_node = parameter_name_node(parameter)?;
+) {
+    let name_node =
+        parameter_name_node(parameter).expect("a parsed Python function parameter has a name");
     let name = text(document, name_node);
     let annotation = parameter.child_by_field_name("type");
     let default = parameter
@@ -2214,7 +2245,7 @@ fn typer_field<'tree>(
     }
     degradation = finish_typer_bool(&mut declaration, degradation);
     declaration.degraded = degradation.is_some();
-    Some((declaration, degradation, parameter))
+    (declaration, degradation, parameter)
 }
 
 fn annotated_parts<'tree>(
@@ -2242,12 +2273,10 @@ fn annotated_parts<'tree>(
     let raw_values = if annotation.kind() == "subscript" {
         named_children(annotation).into_iter().skip(1).collect()
     } else {
-        let Some(arguments) = named_children(annotation)
+        let arguments = named_children(annotation)
             .into_iter()
             .find(|child| child.kind() == "type_parameter")
-        else {
-            return (None, None);
-        };
+            .expect("a parsed generic type has type parameters");
         named_children(arguments)
     };
     let values = raw_values
@@ -2599,18 +2628,17 @@ fn plan_python_injection(
         let Some((resolved, _)) = bindings.get(&declaration.order) else {
             continue;
         };
-        let Ok(resolved) = usize::try_from(*resolved) else {
-            continue;
-        };
-        let Some(call) = calls.get(resolved) else {
-            continue;
-        };
+        let resolved =
+            usize::try_from(*resolved).expect("current input call orders come from an enumeration");
+        let call = calls
+            .get(resolved)
+            .expect("matched input call orders index the current call list");
         if queue.contains_key(&resolved) {
             continue;
         }
-        let Some(function) = call.child_by_field_name("function") else {
-            continue;
-        };
+        let function = call
+            .child_by_field_name("function")
+            .expect("a parsed Python call has a function");
         let value = values
             .get(&declaration.name)
             .expect("selected declarations have accepted values");

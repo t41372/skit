@@ -617,14 +617,7 @@ pub fn normalize_shell_default(text: &str, name: &str) -> Result<String, Languag
         });
     };
     let output = document.plan_shell_normalization(name)?.apply(text)?;
-    match parse_document("shell", &output) {
-        ParseOutcome::Parsed(_) => Ok(output),
-        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => {
-            Err(LanguageError::InvalidSource {
-                kind: "shell".to_owned(),
-            })
-        }
-    }
+    validate_rewritten_source("shell", output)
 }
 
 fn metadata_leader(kind: &str) -> Option<&'static str> {
@@ -1060,13 +1053,16 @@ pub fn inject_values_for_interpreter(
     let output = document
         .plan_injection_for_interpreter(declarations, values, interpreter)?
         .apply(text)?;
-    match parse_document(kind, &output) {
-        ParseOutcome::Parsed(_) => Ok(output),
-        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => {
-            Err(LanguageError::InvalidSource {
-                kind: kind.to_owned(),
-            })
-        }
+    validate_rewritten_source(kind, output)
+}
+
+fn validate_rewritten_source(kind: &str, output: String) -> Result<String, LanguageError> {
+    if matches!(parse_document(kind, &output), ParseOutcome::Parsed(_)) {
+        Ok(output)
+    } else {
+        Err(LanguageError::InvalidSource {
+            kind: kind.to_owned(),
+        })
     }
 }
 
@@ -1576,6 +1572,14 @@ mod private_tests {
             apply_source_edits("abc", vec![(0, 2, "x".to_owned()), (1, 3, "y".to_owned())]),
             Err(LanguageError::InvalidSource { .. })
         ));
+        assert!(matches!(
+            validate_rewritten_source("python", "def broken(".to_owned()),
+            Err(LanguageError::InvalidSource { kind }) if kind == "python"
+        ));
+        assert_eq!(
+            validate_rewritten_source("shell", "echo ok\n".to_owned()).unwrap(),
+            "echo ok\n"
+        );
     }
 
     #[test]
