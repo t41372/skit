@@ -360,9 +360,14 @@ pub(crate) fn tagged<'a>(text: &'a str, prefix: &str) -> &'a str {
 }
 
 pub(crate) fn oracle_runtime() -> Option<PathBuf> {
-    resolve_javascript_runtime_program(&EntrySettings::default(), &SystemProbe)
+    let runtime = resolve_javascript_runtime_program(&EntrySettings::default(), &SystemProbe)
         .ok()
-        .map(|runtime| runtime.program)
+        .map(|runtime| runtime.program);
+    assert!(
+        runtime.is_some() || env::var("SKIT_REQUIRE_NODE_RUNTIME").as_deref() != Ok("1"),
+        "the JavaScript runtime owner is required, but SystemProbe found no JavaScript runtime"
+    );
+    runtime
 }
 
 pub(crate) fn exact_tree_keys(snapshot: &BTreeMap<String, Option<Vec<u8>>>) -> BTreeSet<&str> {

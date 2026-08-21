@@ -12,12 +12,19 @@ expect_text() {
 
 expect_text Cargo.toml 'tree-sitter = "0.26.12"'
 expect_text .github/workflows/ci.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
+expect_text .github/workflows/ci.yml 'workflow_dispatch:'
 expect_text .github/workflows/mutation.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
 expect_text .github/workflows/codspeed.yml 'CodSpeedHQ/action@4296e51e7041e24dadb86d1d6e8b9320d223dbe8 # v5.0.3'
 expect_text .github/workflows/codspeed.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
 expect_text .github/workflows/codspeed.yml 'tool: cargo-codspeed@5.0.1'
 expect_text .github/workflows/codspeed.yml 'cargo codspeed build -m simulation --locked --workspace --all-features'
 expect_text .github/workflows/codspeed.yml 'run: cargo codspeed run'
+expect_text .github/workflows/benchmark-compare.yml 'enable-cache: false'
+if grep -Eq 'enable-cache:[[:space:]]*true|uses:[[:space:]]*actions/cache@' \
+  .github/workflows/benchmark-compare.yml; then
+  echo 'the ref-selectable benchmark workflow must not save a cache after running either side' >&2
+  exit 1
+fi
 expect_text .github/workflows/release.yml 'pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2'
 expect_text .github/workflows/release.yml 'workflow_dispatch:'
 expect_text .github/workflows/release.yml "if: github.event_name == 'push'"
@@ -40,11 +47,14 @@ expect_text .github/workflows/ci.yml 'fish-actions/install-fish@d6d9d26231a15f8d
 expect_text .github/workflows/ci.yml 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0'
 expect_text .github/workflows/ci.yml 'node-version: "26.7.0"'
 expect_text .github/workflows/ci.yml 'run: node --version'
+expect_text .github/workflows/ci.yml 'echo "SKIT_REQUIRE_NODE_RUNTIME=1" >> "$GITHUB_ENV"'
 expect_text .github/workflows/docs.yml 'run: npm install --global npm@12.0.2'
 expect_text .github/workflows/ci.yml 'uv::private_tests::test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored'
 expect_text crates/skit-runtime/src/uv.rs 'uv::private_tests::test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored'
 expect_text .github/workflows/ci.yml "throw 'the native Windows uv gate ran zero tests'"
 expect_text .github/workflows/ci.yml 'test_the_preamble_runs_on_every_supported_dialect -- --exact --ignored'
+expect_text .github/workflows/ci.yml 'the complete POSIX shell gate ran zero tests'
+expect_text .github/workflows/ci.yml 'the CPython 3.13 compile gate ran zero tests'
 fish_action_line="$(
   grep -Fn 'uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0' \
     .github/workflows/ci.yml | cut -d: -f1
@@ -130,13 +140,17 @@ shell_gate_line="$(
   grep -Fn 'test_the_preamble_runs_on_every_supported_dialect -- --exact --ignored' \
     .github/workflows/ci.yml | cut -d: -f1
 )"
+shell_gate_step_line="$(
+  grep -Fn -- '- name: Run every supported POSIX shell' .github/workflows/ci.yml | cut -d: -f1
+)"
 test "$(printf '%s\n' "$shell_install_line" | sed '/^$/d' | wc -l)" -eq 1 &&
+  test "$(printf '%s\n' "$shell_gate_step_line" | sed '/^$/d' | wc -l)" -eq 1 &&
   test "$(printf '%s\n' "$shell_gate_line" | sed '/^$/d' | wc -l)" -eq 1 &&
   test "$shell_install_line" -lt "$shell_gate_line" || {
   echo 'the Linux shell matrix must be installed before its one native gate' >&2
   exit 1
 }
-sed -n "$((shell_gate_line - 2)),$((shell_gate_line - 1))p" .github/workflows/ci.yml |
+sed -n "${shell_gate_step_line},${shell_gate_line}p" .github/workflows/ci.yml |
   grep -Fq "if: runner.os == 'Linux'" || {
     echo 'the complete POSIX shell gate must run on Linux' >&2
     exit 1

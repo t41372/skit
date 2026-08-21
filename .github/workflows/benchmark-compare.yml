@@ -49,7 +49,9 @@ jobs:
         with:
           version: "0.12.3"
           python-version: "3.13"
-          enable-cache: true
+          # Either selected ref can execute arbitrary benchmark code. Do not let it write a cache
+          # that a later trusted run can restore.
+          enable-cache: false
       - name: Install hyperfine
         uses: ./.github/actions/install-hyperfine
       - name: Validate comparison sides

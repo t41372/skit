@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions: {}
 
@@ -81,6 +82,9 @@ jobs:
           node-version: "26.7.0"
       - name: Verify the Node.js runtime
         run: node --version
+      - name: Require the Node.js runtime owners
+        shell: bash
+        run: echo "SKIT_REQUIRE_NODE_RUNTIME=1" >> "$GITHUB_ENV"
       - name: Install Fish for runtime parity
         if: runner.os != 'Windows'
         uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0
@@ -102,9 +106,31 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes zsh
       - name: Run every supported POSIX shell
         if: runner.os == 'Linux'
-        run: cargo test --locked -p skit-cli-rs --test surface_edges test_the_preamble_runs_on_every_supported_dialect -- --exact --ignored
+        shell: bash
+        run: |
+          output="$(cargo test --locked -p skit-cli-rs --test surface_edges test_the_preamble_runs_on_every_supported_dialect -- --exact --ignored 2>&1)" || {
+            status=$?
+            printf '%s\n' "$output"
+            exit "$status"
+          }
+          printf '%s\n' "$output"
+          grep -Fq '1 passed; 0 failed' <<<"$output" || {
+            echo 'the complete POSIX shell gate ran zero tests' >&2
+            exit 1
+          }
       - name: Compile every Python benchmark subject with CPython 3.13
-        run: cargo test --locked -p skit-benchmarks --test source_contract test_python_compiles -- --exact --ignored
+        shell: bash
+        run: |
+          output="$(cargo test --locked -p skit-benchmarks --test source_contract test_python_compiles -- --exact --ignored 2>&1)" || {
+            status=$?
+            printf '%s\n' "$output"
+            exit "$status"
+          }
+          printf '%s\n' "$output"
+          grep -Fq '1 passed; 0 failed' <<<"$output" || {
+            echo 'the CPython 3.13 compile gate ran zero tests' >&2
+            exit 1
+          }
 
   coverage:
     name: coverage (100% executable-source line gate)
