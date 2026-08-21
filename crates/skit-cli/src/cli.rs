@@ -9269,14 +9269,9 @@ fn tui_submit_settings(
             .filter(|parameter| parameter.delivery == ParameterDelivery::Placeholder)
             .map(|parameter| parameter.name.clone())
             .collect::<BTreeSet<_>>();
-        let current_order = match entry.meta.kind.as_str() {
-            "command" => placeholder_params("command", &settings.template)
-                .into_iter()
-                .map(|item| item.name)
-                .collect::<Vec<_>>(),
-            "prompt" => placeholder_order,
-            _ => unreachable!(),
-        };
+        // placeholder_kind is derived from the same command/prompt match that produced this
+        // updated template/body order.
+        let current_order = placeholder_order;
         settings.params = current_order
             .into_iter()
             .filter(|name| placeholder_names.contains(name))

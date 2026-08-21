@@ -5470,6 +5470,73 @@ fn tui_settings_offers_no_binding_control_so_unmanaging_goes_through_its_own_key
 }
 
 #[test]
+fn tui_settings_source_requests_refuse_missing_or_unreadable_stored_copies_without_writing() {
+    for replace_with_directory in [false, true] {
+        let root = TempDir::new().unwrap();
+        let data_dir = root.path().join("data");
+        let state_dir = root.path().join("state");
+        let config_dir = root.path().join("config");
+        let source = root.path().join("tool.sh");
+        fs::write(&source, "NAME=world\necho \"$NAME\"\n").unwrap();
+        let store = FileStore::new(&data_dir);
+        let service = LibraryService::new(store.clone());
+        add_with_config(
+            &service,
+            &config_dir,
+            AddOptions {
+                source: Some(source),
+                kind: None,
+                name: Some("Source refusal".to_owned()),
+                description: Some(String::new()),
+                reference: false,
+                command_template: None,
+                prompt: false,
+                executable: false,
+                runner: None,
+                no_interpolate: false,
+                dependencies: Vec::new(),
+                dependencies_explicit: false,
+                requires_python: None,
+                no_input: false,
+            },
+        )
+        .unwrap();
+        let values = settings_edits(
+            &service,
+            &store,
+            &state_dir,
+            "source-refusal",
+            &[("source:resync", "true")],
+        );
+        let entry = service.show("source-refusal").unwrap();
+        let payload = source_path(&store, &entry).unwrap();
+        fs::remove_file(&payload).unwrap();
+        if replace_with_directory {
+            fs::create_dir(&payload).unwrap();
+        }
+        let before = test_tree_snapshot(root.path());
+
+        let error = tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values)
+            .unwrap_err();
+
+        assert!(matches!(error, CliError::Usage(_)), "{error:?}");
+        assert_eq!(
+            error.message().localize(Locale::En),
+            "the stored source is not valid UTF-8"
+        );
+        assert_eq!(
+            error.message().localize(Locale::ZhCn),
+            "存储的源文件不是有效的 UTF-8"
+        );
+        assert_eq!(
+            error.message().localize(Locale::ZhTw),
+            "儲存的來源不是有效的 UTF-8"
+        );
+        assert_eq!(test_tree_snapshot(root.path()), before);
+    }
+}
+
+#[test]
 fn tui_settings_manage_source_parameters_without_losing_non_utf8_bytes() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
