@@ -284,6 +284,7 @@ const CATALOG: &[Translation] = &[
     row!("inspect", "检查", "檢查"),
     row!("scan", "扫描", "掃描"),
     row!("lock", "锁定", "鎖定"),
+    row!("move", "移动", "移動"),
     row!("remove", "删除", "移除"),
     row!(
         "{}'s stored copy isn't valid UTF-8, so skit can't rewrite the script's own dependency block — and that block is what uv reads. Edit it in the script itself: skit edit {}",

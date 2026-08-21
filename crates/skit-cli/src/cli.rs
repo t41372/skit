@@ -7447,6 +7447,7 @@ enum DraftConsumeOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DraftConsumeTestPoint {
+    BeforeQuarantine,
     Quarantined,
     Verified,
     BeforeRestore,
@@ -7590,6 +7591,7 @@ fn consume_owned_draft_claim(
         .map_err(|error| source_error("create", &drafts_dir, error))?
         .keep();
     let quarantine = quarantine_dir.join("draft");
+    hook(DraftConsumeTestPoint::BeforeQuarantine, &quarantine);
     if let Err(error) = fs::rename(path, &quarantine) {
         let _ = fs::remove_dir(&quarantine_dir);
         if error.kind() == io::ErrorKind::NotFound {

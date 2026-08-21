@@ -7224,6 +7224,229 @@ fn owned_draft_quarantine_restore_failure_keeps_every_file() {
 
 #[cfg(unix)]
 #[test]
+fn owned_draft_preconditions_and_quarantine_move_failures_preserve_every_source() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
+
+    let missing_identity = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(
+        &missing_identity,
+        "skit-new-no-identity.py",
+        b"print('identity')\n",
+    );
+    let mut no_identity = snapshot.clone();
+    no_identity.identity = None;
+    let error = consume_owned_draft(missing_identity.path(), &no_identity).unwrap_err();
+    let message = error.message();
+    assert_eq!(
+        message.localize(Locale::En),
+        format!(
+            "the kept draft has no filesystem identity: {}",
+            snapshot.path.display()
+        )
+    );
+    assert_eq!(
+        message.localize(Locale::ZhCn),
+        format!("保留的草稿没有文件系统标识：{}", snapshot.path.display())
+    );
+    assert_eq!(
+        message.localize(Locale::ZhTw),
+        format!("保留的草稿沒有檔案系統識別：{}", snapshot.path.display())
+    );
+    assert_eq!(fs::read(&snapshot.path).unwrap(), b"print('identity')\n");
+    assert!(owned_draft_quarantines(missing_identity.path()).is_empty());
+
+    let invalid_path = TempDir::new().unwrap();
+    let valid = owned_draft_snapshot(&invalid_path, "skit-new-valid.py", b"print('valid')\n");
+    let mut invalid = valid.clone();
+    invalid.path = invalid_path
+        .path()
+        .join("drafts")
+        .join(OsString::from_vec(b"skit-new-\0.py".to_vec()));
+    invalid.source_record = invalid.path.display().to_string();
+    let error = consume_owned_draft(invalid_path.path(), &invalid).unwrap_err();
+    assert!(
+        error
+            .message()
+            .localize(Locale::En)
+            .contains("could not inspect"),
+        "{}",
+        error.message().localize(Locale::En)
+    );
+    assert_eq!(fs::read(&valid.path).unwrap(), b"print('valid')\n");
+    assert!(owned_draft_quarantines(invalid_path.path()).is_empty());
+
+    let missing_at_move = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(
+        &missing_at_move,
+        "skit-new-missing-at-move.py",
+        b"print('gone')\n",
+    );
+    let original = snapshot.path.clone();
+    let outcome =
+        consume_owned_draft_with_test_hook(missing_at_move.path(), &snapshot, |point, _| {
+            if point == DraftConsumeTestPoint::BeforeQuarantine {
+                fs::remove_file(&original).unwrap();
+            }
+        })
+        .unwrap();
+    assert_eq!(outcome, DraftConsumeOutcome::AlreadyMissing);
+    assert!(!original.exists());
+    assert!(owned_draft_quarantines(missing_at_move.path()).is_empty());
+
+    let move_failure = TempDir::new().unwrap();
+    let snapshot =
+        owned_draft_snapshot(&move_failure, "skit-new-move-error.py", b"print('keep')\n");
+    let original = snapshot.path.clone();
+    let error =
+        consume_owned_draft_with_test_hook(move_failure.path(), &snapshot, |point, quarantine| {
+            if point == DraftConsumeTestPoint::BeforeQuarantine {
+                fs::create_dir(quarantine).unwrap();
+            }
+        })
+        .unwrap_err();
+    assert!(
+        error
+            .message()
+            .localize(Locale::En)
+            .contains("could not move"),
+        "{}",
+        error.message().localize(Locale::En)
+    );
+    assert_eq!(fs::read(&original).unwrap(), b"print('keep')\n");
+    let quarantines = owned_draft_quarantines(move_failure.path());
+    assert_eq!(quarantines.len(), 1);
+    assert!(quarantines[0].is_dir());
+    fs::remove_dir_all(quarantines[0].parent().unwrap()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn owned_draft_restore_and_cleanup_failures_never_clobber_or_rollback() {
+    use std::os::unix::fs::symlink;
+
+    let destination_exists = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(
+        &destination_exists,
+        "skit-new-occupied.py",
+        b"print('claim')\n",
+    );
+    let staged = destination_exists.path().join("drafts/replacement.tmp");
+    fs::write(&staged, b"print('replacement')\n").unwrap();
+    fs::remove_file(&snapshot.path).unwrap();
+    fs::rename(&staged, &snapshot.path).unwrap();
+    let original = snapshot.path.clone();
+    let error =
+        consume_owned_draft_with_test_hook(destination_exists.path(), &snapshot, |point, _| {
+            if point == DraftConsumeTestPoint::Quarantined {
+                fs::write(&original, b"print('new arrival')\n").unwrap();
+            }
+        })
+        .unwrap_err();
+    assert_eq!(fs::read(&original).unwrap(), b"print('new arrival')\n");
+    let quarantines = owned_draft_quarantines(destination_exists.path());
+    assert_eq!(quarantines.len(), 1);
+    assert_eq!(
+        fs::read(&quarantines[0]).unwrap(),
+        b"print('replacement')\n"
+    );
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        let localized = error.message().localize(locale);
+        assert!(
+            localized.contains(&original.display().to_string()),
+            "{localized}"
+        );
+        assert!(
+            localized.contains(&quarantines[0].display().to_string()),
+            "{localized}"
+        );
+    }
+
+    let inspect_failure = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(
+        &inspect_failure,
+        "skit-new-inspect-restore.py",
+        b"print('inspect')\n",
+    );
+    let drafts = inspect_failure.path().join("drafts");
+    let moved = inspect_failure.path().join("drafts-moved");
+    let error =
+        consume_owned_draft_with_test_hook(inspect_failure.path(), &snapshot, |point, _| {
+            if point == DraftConsumeTestPoint::Quarantined {
+                fs::rename(&drafts, &moved).unwrap();
+                symlink("drafts", &drafts).unwrap();
+            }
+        })
+        .unwrap_err();
+    assert!(error.message().localize(Locale::En).contains("restore"));
+    fs::remove_file(&drafts).unwrap();
+    fs::rename(&moved, &drafts).unwrap();
+    let quarantines = owned_draft_quarantines(inspect_failure.path());
+    assert_eq!(quarantines.len(), 1);
+    assert_eq!(fs::read(&quarantines[0]).unwrap(), b"print('inspect')\n");
+
+    let remove_file_failure = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(
+        &remove_file_failure,
+        "skit-new-remove-file.py",
+        b"print('remove file')\n",
+    );
+    let saved = remove_file_failure.path().join("saved-claim.py");
+    let error = consume_owned_draft_with_test_hook(
+        remove_file_failure.path(),
+        &snapshot,
+        |point, quarantine| {
+            if point == DraftConsumeTestPoint::Verified {
+                fs::rename(quarantine, &saved).unwrap();
+                fs::create_dir(quarantine).unwrap();
+            }
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .message()
+            .localize(Locale::En)
+            .contains("could not remove")
+    );
+    assert_eq!(fs::read(&saved).unwrap(), b"print('remove file')\n");
+    assert!(!snapshot.path.exists());
+    let quarantines = owned_draft_quarantines(remove_file_failure.path());
+    assert_eq!(quarantines.len(), 1);
+    fs::remove_dir_all(quarantines[0].parent().unwrap()).unwrap();
+
+    let remove_dir_failure = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(
+        &remove_dir_failure,
+        "skit-new-remove-dir.py",
+        b"print('remove dir')\n",
+    );
+    let mut extra = None;
+    let error = consume_owned_draft_with_test_hook(
+        remove_dir_failure.path(),
+        &snapshot,
+        |point, quarantine| {
+            if point == DraftConsumeTestPoint::Verified {
+                let path = quarantine.parent().unwrap().join("still-here");
+                fs::write(&path, b"cleanup evidence").unwrap();
+                extra = Some(path);
+            }
+        },
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .message()
+            .localize(Locale::En)
+            .contains("could not remove")
+    );
+    assert!(!snapshot.path.exists());
+    let extra = extra.unwrap();
+    assert_eq!(fs::read(&extra).unwrap(), b"cleanup evidence");
+    fs::remove_dir_all(extra.parent().unwrap()).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn owned_draft_consume_rejects_a_replaced_drafts_directory() {
     use std::os::unix::fs::symlink;
 
