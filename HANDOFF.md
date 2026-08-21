@@ -13,9 +13,10 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**The broad Rust port and the local implementation-fix pass are complete. The current local
+**The broad Rust port and the implementation-fix pass are almost complete. The last fully certified
 candidate passed 4,054 workspace tests with 0 failures and 526 classified ignores. A fresh
-committed-state LCOV run covered every target and feature, and `scripts/check_coverage.sh` returned
+committed-state LCOV run at that checkpoint covered every target and feature, and
+`scripts/check_coverage.sh` returned
 `complete executable-source line coverage`; no checker rule or exclusion changed. Workspace Clippy
 and Rustdoc pass with warnings denied, and 0 `FAILING CONTRACT` attributes remain. Multi-round
 oracle/PR/main review found and closed the late transaction, parser, runtime, plain-form, and i18n
@@ -25,13 +26,34 @@ manifests were rejected.
 
 Phase 5 has re-recorded and visually checked 12 localized 1280x780 screenshots (four screens in
 English, Simplified Chinese, and Traditional Chinese). Supply-chain, workflow, English, i18n, and
-documentation, packaging, and benchmark gates pass locally. Remaining release blockers are the
-user hands-on check, native macOS/Windows and declared-runtime CI evidence, and the explicitly
-approved zero-survivor mutation run. The contract matrix is now 20 Complete / 1 In progress. Do not
-push: opening or updating the PR starts mutation before that approval.** The user
+documentation, packaging, and benchmark gates pass locally. A final authority audit then fixed
+wrong-typed runtime metadata, zero-test CI gates, benchmark occurrence accounting, and benchmark
+workflow cache isolation. Their owning suites and static workflow gates pass; the successor must
+rerun the fresh workspace LCOV/full/static checkpoint on the pushed SHA. Remaining release blockers
+are that checkpoint, the user hands-on check, native macOS/Windows and declared-runtime CI evidence,
+and the mutation result. The contract matrix is 20 Complete / 1 In progress. The user explicitly
+authorized the handoff push on 2026-08-21; that push starts PR #45 CI and mutation.** The user
 chose plan **A**:
 finish the broad port first, then keep the implementation-fix and review passes open until the
 release evidence is final.
+
+### Immediate successor checklist
+
+1. Treat the pushed PR #45 head as the only candidate. Record its exact SHA and do not reuse the
+   stale `865e568` check rollup.
+2. Run the full workspace test and fresh workspace LCOV commands, then run the coverage checker.
+   The previous 4,054/0/526 count predates the final metadata and benchmark-manifest owners.
+3. Run workspace Clippy and Rustdoc with warnings denied. Focused green evidence already exists for
+   `skit-store`, `port_test_prompt_kind`, `runner_management_transaction`, and all benchmark targets.
+4. Watch the three-platform CI, declared-runtime gates, release build-only workflow, and mutation
+   workflow. The POSIX shell, CPython 3.13, and Windows uv exact gates now reject zero-test success;
+   Node and Fish owners become mandatory only after their pinned setup steps.
+5. Ask the user to complete the hands-on terminal checklist. Do not mark the last matrix row
+   Complete until native/runtime CI, hands-on, and mutation are green.
+6. If product code stays unchanged, rerun the local release package and benchmark commands only if
+   the final binary or evidence policy requires a new exact-SHA receipt. The prior package, budget,
+   docs, supply-chain, and demo receipts remain useful historical evidence, not proof for a changed
+   SHA.
 
 ---
 
@@ -272,9 +294,11 @@ Remote PR status was checked read-only on 2026-08-21. PR #44 remains an open dra
 head above, with its CodeRabbit status green and its merge state conflicting. PR #45 remains an
 open draft, but its remote head is the older
 `865e568cc70d15824880b0dc876c6060dc1cdce8`, far behind the current branch. GitHub has
-no object or checks for the current local candidate. The stale PR #45 rollup has 9 failures, 7
+no object or checks for the current local candidate. GitHub currently reports that stale head as
+mergeable, but that says nothing about the unpushed candidate. Its rollup remains 9 failures, 7
 successes, and 1 skipped job; do not treat it as evidence about the current local branch. The remote
-docs, CodeQL, dependency/workflow audit, and wheel plus `uv tool` jobs passed. Its Linux failures
+docs, three CodeQL language analyses, dependency/workflow audit, and wheel plus `uv tool` jobs
+passed, while the aggregate CodeQL check is still red. Its Linux failures
 were three stale workflow fixtures; macOS failures were noncanonical temp paths and Linux-only
 benchmark expectations; Windows failed on unstable metadata APIs that the portable identity work
 removed. Coverage stopped on the same stale Linux fixtures. CodSpeed ran plain `cargo bench` and
@@ -286,6 +310,11 @@ their own committed temporary repository. The normal suite and an explicit sourc
 `.git` both pass; no current-candidate mutation run has started. Do not push merely to refresh these checks
 while the fix pass is still changing. A push starts the mutation workflow and invalidates its result
 on the next source change.
+
+Four unresolved advanced-security review threads on that stale PR head identify cache poisoning in
+the ref-selectable benchmark comparison workflow. The local workflow now disables the uv cache for
+that job, and the tooling contract rejects any direct cache action there. The threads remain remote
+and unresolved until this candidate is pushed and reviewed.
 
 The final increment has 1,110 unique `test_*` names: 969 already exist on this branch, 471 of those
 are ignored/ledger owners, and six names are duplicated inside the PR increment itself. The raw
@@ -324,14 +353,19 @@ reversal (`c04395c`) and shim secret crash-safety. The latter is complete: ordin
 copies use the OS temporary directory, entry-directory staging is only the fallback or an explicit
 runtime-adjacency requirement, and the final shim manifest owns both paths plus cleanup. Reversible.
 
-## 4. Verified baseline (re-verify on arrival)
+## 4. Last full verified baseline (refresh on the pushed SHA)
 
 ```
-git status --short          # clean after the local release-evidence commit
+git status --short          # clean at the 029f9dd release-evidence checkpoint
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 4054 passed / 0 failed / 526 ignored
+# historical checkpoint => 4054 passed / 0 failed / 526 ignored
 rg '^\s*#\[ignore = "FAILING CONTRACT' crates --glob='*.rs' | wc -l   # => 0
 ```
+
+Do not publish 4,054/0/526 as the pushed-head count. The final authority audit added one active
+prompt-kind owner and one benchmark manifest owner, removed one prompt-kind ignore, and changed the
+metadata reader. Focused suites are green; the full workspace and LCOV aggregate remain the first
+handoff task.
 
 Keep the regex anchored to the start of an attribute line. The previous unanchored `grep` also
 counted three module comments in `port_test_path_tui.rs`, `port_test_editor.rs`, and
@@ -497,15 +531,22 @@ The ledger has the authoritative per-module adjudication log.
   type-check, static build, and link check pass: 90 static pages built and all links and anchors in
   34 documentation pages resolve. The local Node 24/npm 11 host is older than the documented
   toolchain; the docs workflow now pins Node 26.7.0 and npm 12.0.2 in the required order. The test
-  matrix pins Node 26.7.0 before the workspace suite, runs the ignored uv directory-sync owner on
+  matrix pins Node 26.7.0 before the workspace suite and makes its real-runtime owners mandatory,
+  runs the ignored uv directory-sync owner on
   native Windows, and installs zsh before the real bash/sh/zsh/dash child gate on Linux. The tooling
-  contract pins their presence, platform conditions, uniqueness, and order; the Windows step uses
-  the fully qualified owner and fails if Cargo reports zero tests. The release workflow now supports
+  contract pins their presence, platform conditions, uniqueness, and order. The Windows, POSIX
+  shell, and CPython 3.13 steps fail if Cargo reports zero tests. CI now has a manual dispatch so the
+  current three-platform candidate can run without updating the mutation-coupled draft PR. The
+  release workflow also supports
   a safe build-only manual dispatch. It installs and smokes every native-compatible Linux, Windows,
   and macOS wheel, verifies all 8 wheel archives plus the sdist and its Cargo lock, Agent Skill, and
   corpus, and permits PyPI publication only on a version-tag push. All 12 localized screenshots are
   visible through locale-matched 2x2 grids in the three repository READMEs; the old attachment
   videos and stale GIF remain absent.
+  Here, declared-runtime evidence means the parser- or injection-sensitive CPython 3.13, Node,
+  Fish, and POSIX bash/sh/zsh/dash paths. PowerShell, Ruby, Perl, Lua, and R share the generic typed
+  spawn path and remain covered by native platform launch-plan owners instead of tool-specific
+  parser behavior.
   Maturin 1.14.1 built a 6,229,905-byte wheel and a 1,742,189-byte sdist on the exact candidate.
   An isolated uv tool install passed version/help, a real add/manage/run smoke, a 34-file sdist
   corpus census, and an embedded-Agent-Skill byte comparison. The packaging and manifest owners
@@ -547,10 +588,14 @@ The ledger has the authoritative per-module adjudication log.
   reached `ring` but could not continue because this devbox has no `lib.exe`; Windows compilation
   and real-host execution therefore remain CI gates.
   The benchmark-tooling audit is also complete: 17 frozen exact owners are active, CPython 3.13 is
-  one explicit three-platform host-tool gate, 113 rows have stronger consolidated owners, 22 are
-  structured architecture closures, and three PR fixtures were rejected as invalid. The final
-  denominator is 156 with no stale owner or known product gap. The Rust benchmark crate now has 128
-  test bodies, and its integrated all-target/all-feature suite is green.
+  one explicit three-platform host-tool gate, 116 oracle occurrences have stronger consolidated
+  owners, and 22 are structured architecture closures. A fail-closed manifest preserves the
+  oracle's one duplicate bare name and rejects missing, duplicate, ignored, or empty ownership.
+  The denominator is 156 occurrences with no stale owner or known product gap. The Rust benchmark
+  crate now has 129 test bodies, and its integrated all-target/all-feature suite is green.
+  Metadata reads now also reject scalar `runner`, `needs`, and `parameters` containers at the same
+  typed corruption boundary as `dependencies` and `params`; the public prompt-kind owner proves
+  scan/list/doctor/resolve degradation, valid-sibling visibility, and read purity.
   The final shell pass now owns resolved-interpreter `-n` gating, self-location warnings and params
   hints, and multi-name normalization with typed refusal batching and one CAS commit. The final TUI
   pass proves each shared registry action and each local Add/management/picker action by keyboard

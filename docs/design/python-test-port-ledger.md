@@ -30,7 +30,10 @@ Coverage checkpoint (2026-08-21): after the later independent-review fixes, a fr
 committed-state workspace LCOV run again exercised every target and feature.
 `scripts/check_coverage.sh` reported complete executable-source line coverage without a new
 exclusion. The default-parallel workspace suite reported 4,054 passed, 0 failed, and 526 classified
-ignores. The cargo-mutants gate still waits for explicit user approval.
+ignores. A later authority audit added one benchmark manifest test and activated one prompt-kind
+owner while changing the metadata reader. Its owning suites pass, but the successor must refresh
+the full workspace LCOV count on the pushed SHA. The user authorized the push, so the remote
+cargo-mutants workflow is expected to start there.
 
 ## Port order
 
@@ -58,7 +61,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_powershell.py | 35 | language + form + application ports + CLI manifest | done (20 executable / 15 architecture-closed) · global exact-name uniqueness enforced `51494e0` · A+B+runtime-scalar defaults fixed · C `[bool]` native checkbox kept |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | language + runtime + `port_test_js_inject_cli*.rs` + exact manifest | implementation parity: 33 unique executable owners + 4 structured stronger-owner closures · resolved runtime identity and Node gate A+B · stage/gate-before-dependencies CLI Batch C · exact three-locale drift/refusal voice · native Windows runtime verification pending |
-| test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs + skit-runtime private transaction owners + crates/skit-store/tests/mutations.rs | implementation parity (91 executable / 49 classified cross-crate or private closures; 0 ABSENT/FAILING) · installer failures capture typed exit/stderr and keep rollback atomic `b1ad9ac`; six cleanup owners exercise real unlink/rmtree/symlink races, NotFound success, partial-delete quarantine, and self-heal `13c04fe`; cheap freshness/TUI preflight `ab4d93a`/`e276058`; every-launch one-hour strict sweep `e62e36e`/`df0c171`; captured diagnostics and install-only announcements `b6073df`/`536d1e4`; split, manifest, and installer helpers `647a31f`/`5265eeb` |
+| test_js_deps.py | 151 | crates/skit-cli/tests/port_test_js_deps.rs + skit-runtime private transaction owners + crates/skit-store/tests/mutations.rs | implementation parity (102 executable / 49 classified cross-crate or private closures; 0 ABSENT/FAILING) · installer failures capture typed exit/stderr and keep rollback atomic `b1ad9ac`; six cleanup owners exercise real unlink/rmtree/symlink races, NotFound success, partial-delete quarantine, and self-heal `13c04fe`; cheap freshness/TUI preflight `ab4d93a`/`e276058`; every-launch one-hour strict sweep `e62e36e`/`df0c171`; captured diagnostics and install-only announcements `b6073df`/`536d1e4`; split, manifest, and installer helpers `647a31f`/`5265eeb` |
 | test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs + crates/skit-language/tests/edge_contract.rs + real CLI/store owners | implementation parity: 37 baseline executable/rehomed + 1 architecture closure + 7 Batch A + 14 Batch C + 6 Batch B + 9 Batch D = 74 · no ABSENT/FAILING or cross-crate runtime stubs remain · needs receipts `744b3c4` · bun run + JS refusal `19e5ab8` · detection `98efbb4` · add-kind validation `dc1bac7`/`b99f36a` · final launch/config owners `2791482`/`1285121` · typed Windows policy is host-neutral tested; real Windows host remains a CI gate |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
@@ -191,7 +194,7 @@ The five `test_store.py` closures retain their ignored bodies and exact oracle n
 | --- | --- | --- | --- |
 | test_cli.py | 140 | crates/skit-cli/tests/port_test_cli.rs | implementation parity (98/42) · stored managed rows remain visible while sound live defaults overlay the human view `7d94289` · bare unknown directories get noninteractive `--exe` recovery `0d1a294` · source-managed receipts and idempotent bytes `0c64921` · malformed prompt tweaks `ccec2c6` · reused arguments `0b8bf2d` · typed run values `33d9a4a` · source preflight `22016c2`/`4fc1659`/`de754cf` · explicit passthrough `39f9bd0` · remaining ignores are classified closures |
 | test_prompt_cli.py | 150 | crates/skit-cli/tests/port_test_prompt_cli.rs | implementation parity (115/35 + 1 Rust regression) · full prompt params read view/unreadable/flood/pseudo rendering `8f21ed4` · placeholder metadata layering `7510454` · Add dispatch matrix `1755354` · three-language help taxonomy `2d78043` · private unset-runner representation closed `d057578` · malformed runner container `22103c2` · prior editor/runner/params/add fixes remain covered; remaining ignores are classified cross-crate/private/architecture rows |
-| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | implementation parity (72) · Unicode XID placeholder scan/render fixed `07dfbce` while command identifiers remain ASCII · brace-adjacent/triple-stache and reserved `prompt` grammar fixed `45516b3` · blank raw runner rows remain inspectable but invalid `059e24b` · malformed container recovery voice fixed `7bc5c5a` · compound naming fixed `19cc2ff` · missing-body classification fixed `0f1fdd9` · 43 architecture/cross-crate closures |
+| test_prompt_kind.py | 115 | crates/skit-cli/tests/port_test_prompt_kind.rs | implementation parity (73 executable / 42 architecture or cross-crate closures) · Unicode XID placeholder scan/render fixed `07dfbce` while command identifiers remain ASCII · brace-adjacent/triple-stache and reserved `prompt` grammar fixed `45516b3` · blank raw runner rows remain inspectable but invalid `059e24b` · wrong-typed runner metadata now degrades as typed corruption without hiding valid entries or rewriting data · malformed container recovery voice fixed `7bc5c5a` · compound naming fixed `19cc2ff` · missing-body classification fixed `0f1fdd9` |
 | test_config_cmd.py | 75 | crates/skit-cli/tests/port_test_config_cmd.rs | done (61) · **human-display layer FIXED 3bb4fbf** (sentinels, padded list, `k = v`, paused notice, choice-naming errors) · 14 cross-crate wizard/first-run |
 | test_add_no_source.py | 68 | crates/skit-cli/tests/port_test_add_no_source.rs + private CLI selector units | implementation parity (36/32) · typed unknown-kind plain selector with 8 public PTY owners and 5 helper owners `d1a6678` · interactive directory consent `046bd88` · bare menu prompt `659be98` · pipe/no-input advice `157f9b7` · remaining ignores are 31 cross-crate rows plus 1 framework-call closure |
 | test_config.py | 60 | crates/skit-cli/tests/port_test_config.rs + private CLI unit | implementation parity (61 REAL / 2 closure across 63 translated rows) · low-level bash-path persistence is literal while CLI/Preferences write doors validate files `929e547` · blank mirror values fixed `c3e02b8` · axis-display owner corrected `a5710d9` |
@@ -239,7 +242,7 @@ The five `test_store.py` closures retain their ignored bodies and exact oracle n
 | test_i18n.py | 38 | crates/skit-i18n/tests/port_test_i18n.rs + skit-cli config/manifest | done · 28 executable + 10 Babel/gettext/Python-runtime architecture-closed · 6 additive row tests · replacement and catalog/config fixes `f1dc3c7`/`7e53da4`/`5d3c303` |
 | test_prompt_utf8.py | 16 | crates/skit-cli/tests/port_test_prompt_utf8.rs | implementation parity (13 executable / 7 closures, including Rust regressions) · prompt snapshots keep the v0.4 ordinary-bit mask while generic script copies preserve complete Unix mode bits `72646e2` · malformed file/stdin intake is atomic and offset-exact `9105a6d` · copy/reference edit retains invalid authored bytes for repair but refuses success `f38666b` · shared strict run/params/doctor decoder fixed `959e35f` |
 | test_packaging.py | 7 | crates/skit-cli/tests/port_test_packaging.rs + manifest | done · 3 executable + 4 Python-runtime architecture-closed · TOML 1.1 harness fixed in `606c716` |
-| test_benchmarks_tooling.py | 156 | `skit-benchmarks` native owners; 128 `#[test]` bodies after the dataset-cardinality, repository/report, suite-evidence, and source/tool-integrity batches | implementation parity audit complete (17 exact active + 1 exact CPython 3.13 host-tool gate + 113 stronger consolidated owners + 0 stale rehomes + 0 product gaps + 3 rejected PR fixtures + 22 structured closures = 156) · ordinary and run-over generation use one final authoritative store count policy · repository/report owners use real checked-in artifacts and the public summary front door · suite owners use the real materialized source registry, library metrics, fresh-process raw output, and bounded closure retry operations without source scans or test sleeps · frozen broken analyzer twins pin the oracle bytes and real parser verdicts in all four languages · every CI host installs CPython 3.13 and compiles the shipped Python benchmark subjects · Criterion and CodSpeed are additional measurements, not Python tooling substitutes |
+| test_benchmarks_tooling.py | 156 occurrences / 155 bare names | `skit-benchmarks` native owners and `port_test_benchmarks_tooling_manifest.rs`; 129 `#[test]` bodies | implementation parity audit complete (17 exact active + 1 exact CPython 3.13 host-tool gate + 116 stronger consolidated occurrences + 22 structured closures = 156) · the fail-closed manifest preserves the oracle's duplicate `test_rejects_bad_inputs`, rejects duplicate or ignored exact owners, and requires a reason plus a real owner path for every closure · ordinary and run-over generation use one final authoritative store count policy · repository/report owners use real checked-in artifacts and the public summary front door · suite owners use the real materialized source registry, library metrics, fresh-process raw output, and bounded closure retry operations without source scans or test sleeps · frozen broken analyzer twins pin the oracle bytes and real parser verdicts in all four languages · every CI host installs CPython 3.13 and the exact compile gate fails if Cargo runs zero tests · Criterion and CodSpeed are additional measurements, not Python tooling substitutes |
 | test_mutation_gate.py | 4 | N/A — Rust uses cargo-mutants (Phase 3 gate); the Python scripts/check_mutation_stats.py has no Rust analog | done (N/A) |
 | test_hermeticity.py | 1 | crates/skit-cli/tests/port_test_hermeticity.rs | done (1) · no gap |
 
@@ -416,7 +419,7 @@ and confirmed failing under `--ignored`.
 Historical divergence findings from this wave follow. The declared edit engine, raw-row extension
 preservation, default withholding, and resync rebind were all closed by the later implementation-fix
 pass; this list is retained only as the discovery record:
-- **declared_params — params batch fault tolerance** (pending tasks #15/#16): a bad `--type
+- **declared_params — params batch fault tolerance** (historical tasks #15/#16; closed later): a bad `--type
   w=integer` or a malformed `--type NOEQUALS` must WARN and exit 0 leaving the type unchanged (oracle
   cli.py batch tolerance); Rust hard-errors exit 2 and applies nothing. Plus secret/env-rider and
   template-default divergences (14 confirmed real by the verifier running `--ignored`).
@@ -424,10 +427,10 @@ pass; this list is retained only as the discovery record:
   preserves a raw `{name, delivery}` row verbatim (models.py:112-113) and from_toml_dict keeps dict
   rows raw (models.py:163-167); Rust's typed Vec<ParamDecl> re-serializes via to_meta_map, always
   adding `type` and dropping unmodeled keys (parameters.rs:340-349).
-- **default_semantics_review_fixes** — `analysis._record_default` withholds a source default
-  (divergence, in skit-language); the const lane of the coercibility gate is ABSENT (MUST-FIX).
-- **source_default_semantics** — a resync-rebind divergence (deferred to skit-cli where edit_specs
-  lives).
+- **default_semantics_review_fixes** — `analysis._record_default` withheld a source default, and
+  the const lane of the coercibility gate was absent. Both historical findings are closed.
+- **source_default_semantics** — the historical resync-rebind divergence moved to the CLI
+  `edit_specs` owner and is closed.
 The high ignore ratios on the two source-default modules are legitimate cross-cutting deferral (the
 assemble/flows/preset/edit_specs halves live in skit-application and skit-cli); the in-crate half is
 ported live. Two skit-form "injection-seam" ignores note the guard behavior IS present in
@@ -465,7 +468,7 @@ experiments and caught 4 weakened assertions (checking `deps --json` instead of 
 PEP-723 block / byte-equality / exact-ordered-list contracts), 1 FALSE divergence (a test #[ignore]'d
 as failing that actually passes -- Rust does wipe a stray node_modules), and 1 HIDDEN divergence (a
 passing test that dropped the oracle's node_modules sweep assertion, which really fails). The later
-JS dependency batches corrected these issues and finalized the 91/49 owner accounting.
+JS dependency batches corrected these issues and finalized the 102/49 owner accounting.
 
 Historical divergence (now fixed, from shim) -- **secret crash-safety**: the oracle writes
 the injected copy (which carries PLAINTEXT SECRET values) to the OS temp dir first, entry_dir only as
