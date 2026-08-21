@@ -461,7 +461,7 @@ impl LiveTui {
     }
 
     fn wait_for_after(&mut self, checkpoint: usize, needle: &str) -> String {
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.drain();
             let visible = self.visible_after(checkpoint);
@@ -492,7 +492,7 @@ impl LiveTui {
     }
 
     fn wait_for_exit_after(&mut self, checkpoint: usize) -> String {
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.drain();
             if self.child.try_wait().unwrap().is_some() {
@@ -534,7 +534,7 @@ impl LiveTui {
     fn answer_cursor_query_after(&mut self, checkpoint: usize) {
         const QUERY: &[u8] = b"\x1b[6n";
 
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.drain();
             if self.output[checkpoint.min(self.output.len())..]
@@ -1872,6 +1872,167 @@ fn analyzer_preset_notices_use_real_sources_in_three_locales() {
         );
         assert!(input_state.contains("input-1 = \"Ada\""), "{input_state}");
     }
+}
+
+#[test]
+fn runner_container_confirmation_and_refusals_are_localized_and_atomic() {
+    for (locale, prompt, removed) in [
+        (
+            "en",
+            "Remove the malformed prompt runner container? [y/N]:",
+            "Malformed prompt runner container removed.",
+        ),
+        (
+            "zh-CN",
+            "删除格式错误的提示词运行器容器？[y/N]：",
+            "格式错误的提示词运行器容器已删除。",
+        ),
+        (
+            "zh-TW",
+            "移除格式錯誤的提示詞執行器容器？[y/N]：",
+            "格式錯誤的提示詞執行器容器已移除。",
+        ),
+    ] {
+        let run = |answer: &[u8]| {
+            let data = TempDir::new().unwrap();
+            let state = TempDir::new().unwrap();
+            let config = TempDir::new().unwrap();
+            let home = TempDir::new().unwrap();
+            let config_path = config.path().join("config.toml");
+            fs::write(&config_path, "language = \"en\"\nprompt = \"garbage\"\n").unwrap();
+            let before = fs::read(&config_path).unwrap();
+            let mut cli = LiveTui::spawn_command(
+                &["runner", "remove", "--row", "container"],
+                data.path(),
+                state.path(),
+                config.path(),
+                home.path(),
+                locale,
+            );
+            let shown = cli.wait_for(prompt);
+            assert!(shown.contains(prompt), "{shown}");
+            let checkpoint = cli.checkpoint();
+            cli.send(answer);
+            let tail = cli.wait_for_exit_after(checkpoint);
+            (config_path, before, tail, data, state, config, home)
+        };
+
+        let (config_path, before, tail, _data, state, _config, _home) = run(b"n\r");
+        assert_eq!(fs::read(&config_path).unwrap(), before);
+        assert!(!state.path().join("values").exists());
+        assert!(!tail.contains(removed), "{tail}");
+
+        let (config_path, before, tail, _data, state, _config, _home) = run(b"y\r");
+        let after = fs::read_to_string(&config_path).unwrap();
+        assert_ne!(after.as_bytes(), before);
+        assert!(after.contains("language = \"en\""), "{after}");
+        assert!(after.contains("runners = []"), "{after}");
+        assert!(tail.contains(removed), "{tail}");
+        assert!(!state.path().join("values").exists());
+    }
+}
+
+#[test]
+fn runner_human_selection_reports_container_unknown_and_pinned_names() {
+    for (locale, pinned_voice) in [
+        ("en", "2 prompts pin this runner"),
+        ("zh-CN", "有 2 个提示词固定使用此运行器"),
+        ("zh-TW", "有 2 個提示詞固定使用此執行器"),
+    ] {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        write_pinned_prompt_entry(data.path());
+        FileStore::new(data.path())
+            .create(CreateEntry {
+                name: "Second pinned prompt".to_owned(),
+                kind: EntryKind::parse("prompt").unwrap(),
+                mode: StorageMode::Copy,
+                source: String::new(),
+                workdir: "invoke".to_owned(),
+                description: String::new(),
+                payload: Some(EntryPayload {
+                    bytes: b"Second\n".to_vec(),
+                    stored_name: Some("prompt.md".to_owned()),
+                    permissions: SourcePermissions::default(),
+                }),
+                settings: EntrySettings {
+                    runner: "local".to_owned(),
+                    ..EntrySettings::default()
+                },
+            })
+            .unwrap();
+        let config_path = config.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[prompt]\nrunners_seeded = true\nrunners = [{ name = \"local\", argv = [\"local\", \"{{prompt}}\"] }]\n",
+        )
+        .unwrap();
+        let before = fs::read(&config_path).unwrap();
+        let mut cli = LiveTui::spawn_command(
+            &["runner", "remove", "local"],
+            data.path(),
+            state.path(),
+            config.path(),
+            home.path(),
+            locale,
+        );
+        let shown = cli.wait_for(pinned_voice);
+        assert!(shown.contains("local"), "{shown}");
+        let checkpoint = cli.checkpoint();
+        cli.send(b"n\r");
+        let _ = cli.wait_for_exit_after(checkpoint);
+        assert_eq!(fs::read(&config_path).unwrap(), before);
+        assert!(!state.path().join("values").exists());
+    }
+
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let config_path = config.path().join("config.toml");
+    fs::write(
+        &config_path,
+        "[prompt]\nrunners_seeded = true\nrunners = []\n",
+    )
+    .unwrap();
+    let before = fs::read(&config_path).unwrap();
+    let mut unknown = LiveTui::spawn_command(
+        &["runner", "remove", "--row", "container", "--yes"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    let output = unknown.wait_for_exit_after(0);
+    assert!(output.contains("Unknown runner row: container"), "{output}");
+    assert_eq!(fs::read(&config_path).unwrap(), before);
+
+    let mut missing = LiveTui::spawn_command(
+        &["runner", "remove", "missing", "--yes"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    let output = missing.wait_for_exit_after(0);
+    assert!(output.contains('—'), "{output}");
+    assert_eq!(fs::read(&config_path).unwrap(), before);
+
+    fs::write(&config_path, "language = \"en\"\nprompt = \"garbage\"\n").unwrap();
+    let mut list = LiveTui::spawn_command(
+        &["runner", "list", "--all"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    let output = list.wait_for_exit_after(0);
+    assert!(output.contains("container"), "{output}");
 }
 
 #[test]

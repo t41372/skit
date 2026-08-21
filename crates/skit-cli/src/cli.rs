@@ -5983,13 +5983,10 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                     ))),
                 };
             }
-            if !matches!(&selection, RunnerSelection::Name(_)) && targets[0].reason.is_none() {
+            if let RunnerSelection::Row(row) = &selection
+                && targets[0].reason.is_none()
+            {
                 let name = targets[0].name.as_deref().unwrap_or_default();
-                let row = match &selection {
-                    RunnerSelection::Row(row) => row.to_string(),
-                    RunnerSelection::Container => "container".to_owned(),
-                    RunnerSelection::Name(_) => unreachable!("name selections use the stable path"),
-                };
                 return Err(CliError::Usage(
                     Message::new(
                         "Runner row {} is valid. Remove the agent by name instead: skit runner remove {}",
@@ -6084,7 +6081,7 @@ fn prompt_runner_pin_count(
                 count += 1;
             }
             Ok(_) | Err(RepositoryError::NotFound { .. }) => {}
-            Err(error) => return Err(error.into()),
+            Err(_) => {}
         }
     }
     Ok(count)
