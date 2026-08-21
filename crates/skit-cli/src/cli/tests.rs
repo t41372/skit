@@ -7,7 +7,7 @@ use std::{
 };
 
 use clap::{CommandFactory as _, Parser as _};
-use skit_application::{ExitClass, LibraryService, RepositoryError};
+use skit_application::{DiagnosticCode, ExitClass, LibraryService, RepositoryError};
 use skit_domain::{
     Entry, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode,
     parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
@@ -9902,16 +9902,27 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
     )
     .unwrap();
     fs::set_permissions(&scripts_dir, original_permissions).unwrap();
-    assert!(
-        matches!(
-            degraded,
-            UiAction::Complete {
-                surface: None,
-                rerunnable: None,
-                ref message,
-            } if message.starts_with("Entry added\nwarning: ")
-        ),
-        "{degraded:?}"
+    let degraded_debug = format!("{degraded:?}");
+    let UiAction::AddCompleted {
+        surface,
+        rerunnable,
+        message,
+        ..
+    } = degraded
+    else {
+        panic!(
+            "the completed add must keep the diagnostic-bearing Library surface: {degraded_debug}"
+        );
+    };
+    assert_eq!(message, "Entry added");
+    assert!(rerunnable.is_empty());
+    assert!(surface.scan.entries.is_empty());
+    assert!(surface.details.is_empty());
+    assert_eq!(surface.scan.diagnostics.len(), 1);
+    assert_eq!(surface.scan.diagnostics[0].code, DiagnosticCode::Io);
+    assert_eq!(
+        surface.scan.diagnostics[0].slug.as_deref(),
+        Some(created.slug.as_str())
     );
     assert_eq!(
         service.show(created.slug.as_str()).unwrap().slug,
