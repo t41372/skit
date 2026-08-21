@@ -2814,6 +2814,7 @@ dependencies = [
  "thiserror 2.0.20",
  "ureq",
  "uuid",
+ "wait-timeout",
  "zip",
 ]
 

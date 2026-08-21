@@ -3199,6 +3199,21 @@ const CATALOG: &[Translation] = &[
         "來源不是有效的 {} 語法",
     ),
     row!(
+        "the injected copy no longer parses as a JavaScript/TypeScript script (nothing was run)",
+        "注入副本不再是可解析的 JavaScript/TypeScript 脚本（未运行任何内容）",
+        "注入副本不再是可剖析的 JavaScript/TypeScript 指令碼（未執行任何內容）",
+    ),
+    row!(
+        "the injected copy no longer parses as a shell script (nothing was run)",
+        "注入副本不再是可解析的 shell 脚本（未运行任何内容）",
+        "注入副本不再是可剖析的 shell 指令碼（未執行任何內容）",
+    ),
+    row!(
+        "node rejected the injected copy: {}",
+        "node 拒绝了注入副本：{}",
+        "node 拒絕了注入副本：{}",
+    ),
+    row!(
         "source management applies only to a stored copy",
         "来源管理仅适用于存储的副本",
         "來源管理僅適用於儲存的副本",

@@ -10,6 +10,8 @@ use skit_domain::{Entry, EntrySettings, StorageMode};
 use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
+use crate::{JavaScriptRuntimeKind, ResolvedJavaScriptRuntime};
+
 /// Hold file paths that are resolved before launch planning.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchPaths {
@@ -672,15 +674,15 @@ fn javascript_plan<P: ProgramProbe>(
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     require_file(&paths.script, probe)?;
-    let runtime = resolve_javascript_runtime(settings, probe)?;
-    let program = require_program(&runtime, probe)?;
+    let runtime = resolve_javascript_runtime_program(settings, probe)?;
+    let program = runtime.program.clone();
     // The same script must behave the same under all three runtimes — node and bun
     // have no sandbox, and deno's would otherwise deny env/fs probes (auto-deny when
     // stdin is not a TTY: exactly the agent/CI path). skit is a launcher, not a
     // sandbox. An unknown pinned runtime name takes no subcommand.
-    let mut prefix = match runtime.as_str() {
-        "deno" => vec!["run".to_owned(), "--allow-all".to_owned()],
-        "bun" => vec!["run".to_owned()],
+    let mut prefix = match runtime.kind {
+        JavaScriptRuntimeKind::Deno => vec!["run".to_owned(), "--allow-all".to_owned()],
+        JavaScriptRuntimeKind::Bun => vec!["run".to_owned()],
         _ => Vec::new(),
     };
     prefix.push(paths.script.display().to_string());
@@ -696,6 +698,15 @@ pub fn resolve_javascript_runtime<P: ProgramProbe>(
     settings: &EntrySettings,
     probe: &P,
 ) -> Result<String, LaunchError> {
+    resolve_javascript_runtime_program(settings, probe)
+        .map(|runtime| runtime.kind.name().to_owned())
+}
+
+/// Select one JavaScript runtime and keep its normalized identity and exact program path.
+pub fn resolve_javascript_runtime_program<P: ProgramProbe>(
+    settings: &EntrySettings,
+    probe: &P,
+) -> Result<ResolvedJavaScriptRuntime, LaunchError> {
     let candidates: &[&str] = if settings.interpreter.is_empty() {
         &["deno", "bun", "node"]
     } else {
@@ -703,8 +714,14 @@ pub fn resolve_javascript_runtime<P: ProgramProbe>(
     };
     candidates
         .iter()
-        .find(|name| probe.find_program(name).is_some())
-        .map(|name| (*name).to_owned())
+        .find_map(|name| {
+            probe
+                .find_program(name)
+                .map(|program| ResolvedJavaScriptRuntime {
+                    kind: JavaScriptRuntimeKind::from_candidate(name),
+                    program,
+                })
+        })
         .ok_or_else(|| LaunchError::JsRuntimeMissing {
             names: candidates.join(", "),
         })

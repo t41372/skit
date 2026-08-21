@@ -15,9 +15,10 @@ use skit_domain::EntrySettings;
 use skit_runtime::{
     JavaScriptRuntimeKind, JavaScriptSyntaxGateOutput, JavaScriptSyntaxGateRunner,
     JavaScriptSyntaxGateUnavailable, ProgramProbe, ResolvedJavaScriptRuntime,
-    check_javascript_syntax, resolve_javascript_runtime_program, retain_javascript_source_if_valid,
+    SystemJavaScriptSyntaxGateRunner, check_javascript_syntax, resolve_javascript_runtime_program,
+    retain_javascript_source_if_valid,
 };
-use tempfile::{NamedTempFile, TempDir};
+use tempfile::{Builder as TempBuilder, TempDir};
 
 #[derive(Debug, Default)]
 struct Probe {
@@ -127,6 +128,13 @@ fn test_gate_node_skips_ts_suffix() {
         &gate,
     )
     .unwrap();
+    assert!(gate.calls.borrow().is_empty());
+}
+
+#[test]
+fn rust_additive_gate_skips_without_a_resolved_runtime() {
+    let gate = FakeGate::success();
+    check_javascript_syntax(None, Path::new("x.js"), &gate).unwrap();
     assert!(gate.calls.borrow().is_empty());
 }
 
@@ -292,8 +300,64 @@ fn test_gate_node_survives_a_spawn_failure() {
 }
 
 #[test]
+fn rust_additive_system_gate_runner_reports_a_missing_program() {
+    let error = SystemJavaScriptSyntaxGateRunner
+        .check(
+            Path::new("/definitely/missing/skit-node"),
+            Path::new("x.js"),
+            std::time::Duration::from_millis(1),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        JavaScriptSyntaxGateUnavailable::Spawn { .. }
+    ));
+}
+
+#[test]
+fn rust_additive_system_gate_runner_captures_node_rejection() {
+    let Some(program) = skit_runtime::SystemProbe.find_program("node") else {
+        return;
+    };
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("broken.js");
+    fs::write(&source, "const broken = ;\n").unwrap();
+
+    let output = SystemJavaScriptSyntaxGateRunner
+        .check(&program, &source, std::time::Duration::from_secs(5))
+        .unwrap();
+
+    assert!(!output.success);
+    assert!(!output.stderr.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn rust_additive_system_gate_runner_bounds_a_stuck_process() {
+    use std::{io::Write as _, os::unix::fs::PermissionsExt as _};
+
+    let root = TempDir::new().unwrap();
+    let program = root.path().join("stuck-node");
+    let mut file = fs::File::create(&program).unwrap();
+    file.write_all(b"#!/bin/sh\nwhile :; do :; done\n").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let error = SystemJavaScriptSyntaxGateRunner
+        .check(
+            &program,
+            Path::new("x.js"),
+            std::time::Duration::from_millis(10),
+        )
+        .unwrap_err();
+
+    assert_eq!(error, JavaScriptSyntaxGateUnavailable::Timeout);
+}
+
+#[test]
 fn test_gate2_failure_removes_the_temp_copy() {
-    let staged = NamedTempFile::new().unwrap();
+    let staged = TempBuilder::new().suffix(".js").tempfile().unwrap();
     let path = staged.path().to_path_buf();
     fs::write(&path, "const T = 'x';\n").unwrap();
     let gate = FakeGate::one(Ok(rejected(b"boom")));

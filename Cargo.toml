@@ -73,6 +73,7 @@ unicode-width = "0.2.2"
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 walkdir = "2.5.0"
+wait-timeout = "0.2.1"
 which = "8.0.5"
 codspeed-criterion-compat = "5.0.1"
 csv = "1.4.0"

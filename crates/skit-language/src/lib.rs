@@ -100,6 +100,12 @@ pub enum LanguageError {
     /// A parser-backed source has syntax errors.
     #[error("source is not valid {kind} syntax")]
     InvalidSource { kind: String },
+    /// An injected source no longer parses after skit applies its edit plan.
+    #[error("the injected copy no longer parses as a {kind} script (nothing was run)")]
+    InjectedSourceInvalid {
+        /// Language family used by the mandatory reparse gate.
+        kind: InjectedSourceKind,
+    },
     /// The source no longer matches the version used for semantic planning.
     #[error("source changed after semantic edit planning")]
     SourceChanged,
@@ -119,6 +125,24 @@ pub enum LanguageError {
     /// A shell `read` cannot deliver one accepted value byte-for-byte.
     #[error(transparent)]
     ShellInput(#[from] ShellInputError),
+}
+
+/// Identify one language family with a v0.4 injected-source refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InjectedSourceKind {
+    /// JavaScript or TypeScript.
+    JavaScript,
+    /// A POSIX-family shell script.
+    Shell,
+}
+
+impl std::fmt::Display for InjectedSourceKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::JavaScript => "JavaScript/TypeScript",
+            Self::Shell => "shell",
+        })
+    }
 }
 
 /// Report an invalid Python package or version constraint.
@@ -147,6 +171,16 @@ impl Localize for LanguageError {
             Self::InvalidSource { kind } => {
                 Message::new("source is not valid {} syntax").with(kind)
             }
+            Self::InjectedSourceInvalid {
+                kind: InjectedSourceKind::JavaScript,
+            } => Message::new(
+                "the injected copy no longer parses as a JavaScript/TypeScript script (nothing was run)",
+            ),
+            Self::InjectedSourceInvalid {
+                kind: InjectedSourceKind::Shell,
+            } => Message::new(
+                "the injected copy no longer parses as a shell script (nothing was run)",
+            ),
             Self::SourceChanged => Message::new("source changed after semantic edit planning"),
             Self::InvalidValue {
                 name,
@@ -1111,7 +1145,24 @@ pub fn inject_values_for_interpreter(
     let output = document
         .plan_injection_for_interpreter(declarations, values, interpreter)?
         .apply(text)?;
-    validate_rewritten_source(kind, output)
+    validate_injected_source(kind, output)
+}
+
+fn validate_injected_source(kind: &str, output: String) -> Result<String, LanguageError> {
+    if matches!(parse_document(kind, &output), ParseOutcome::Parsed(_)) {
+        return Ok(output);
+    }
+    match kind {
+        "js" | "ts" | "tsx" => Err(LanguageError::InjectedSourceInvalid {
+            kind: InjectedSourceKind::JavaScript,
+        }),
+        "shell" => Err(LanguageError::InjectedSourceInvalid {
+            kind: InjectedSourceKind::Shell,
+        }),
+        _ => Err(LanguageError::InvalidSource {
+            kind: kind.to_owned(),
+        }),
+    }
 }
 
 fn validate_rewritten_source(kind: &str, output: String) -> Result<String, LanguageError> {
@@ -1636,11 +1687,15 @@ mod private_tests {
         ));
         assert!(matches!(
             validate_injected_source("js", "const broken = '".to_owned()),
-            Err(LanguageError::InjectedSourceInvalid { kind }) if kind == "js"
+            Err(LanguageError::InjectedSourceInvalid {
+                kind: InjectedSourceKind::JavaScript
+            })
         ));
         assert!(matches!(
             validate_injected_source("shell", "echo '".to_owned()),
-            Err(LanguageError::InjectedSourceInvalid { kind }) if kind == "shell"
+            Err(LanguageError::InjectedSourceInvalid {
+                kind: InjectedSourceKind::Shell
+            })
         ));
         assert_eq!(
             validate_rewritten_source("shell", "echo ok\n".to_owned()).unwrap(),
