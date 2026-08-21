@@ -120,13 +120,20 @@ impl JavaScriptSyntaxGateRunner for SystemJavaScriptSyntaxGateRunner {
             .map_err(|error| JavaScriptSyntaxGateUnavailable::Spawn {
                 reason: error.to_string(),
             })?;
-        let status = match child.wait_timeout(timeout) {
-            Ok(Some(status)) => status,
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(JavaScriptSyntaxGateUnavailable::Timeout);
-            }
+        let Some(mut stderr) = child.stderr.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(JavaScriptSyntaxGateUnavailable::Spawn {
+                reason: "node syntax check did not provide its stderr pipe".to_owned(),
+            });
+        };
+        let reader = match std::thread::Builder::new()
+            .name("skit-node-check-stderr".to_owned())
+            .spawn(move || {
+                let mut bytes = Vec::new();
+                stderr.read_to_end(&mut bytes).map(|_| bytes)
+            }) {
+            Ok(reader) => reader,
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -135,12 +142,28 @@ impl JavaScriptSyntaxGateRunner for SystemJavaScriptSyntaxGateRunner {
                 });
             }
         };
-        let mut stderr = Vec::new();
-        child
-            .stderr
-            .take()
-            .expect("the node syntax gate pipes stderr")
-            .read_to_end(&mut stderr)
+        let status = match child.wait_timeout(timeout) {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(JavaScriptSyntaxGateUnavailable::Timeout);
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = reader.join();
+                return Err(JavaScriptSyntaxGateUnavailable::Spawn {
+                    reason: error.to_string(),
+                });
+            }
+        };
+        let stderr = reader
+            .join()
+            .map_err(|_| JavaScriptSyntaxGateUnavailable::Spawn {
+                reason: "node syntax check stderr reader panicked".to_owned(),
+            })?
             .map_err(|error| JavaScriptSyntaxGateUnavailable::Spawn {
                 reason: error.to_string(),
             })?;
