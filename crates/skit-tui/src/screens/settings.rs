@@ -2495,4 +2495,109 @@ mod tests {
         assert!(option_text(Locale::En, &option).contains("/tmp/config"));
         assert!(!is_selected(&empty_choice, &option));
     }
+
+    #[test]
+    fn option_cursors_and_unavailable_picker_keep_keyboard_and_mouse_reverses() {
+        let mut session = SettingsScreenSession::default();
+        let options = vec![ChoiceOption::plain("one"), ChoiceOption::plain("two")];
+        let multiple = Field::new(
+            "multiple",
+            "Multiple",
+            FieldKind::MultiChoice {
+                options: options.clone(),
+            },
+            FieldOwner::Declared,
+            FieldValue::Explicit(TypedValue::Choices(Vec::new())),
+        );
+
+        for (code, expected) in [(KeyCode::Up, 0), (KeyCode::End, 1), (KeyCode::Home, 0)] {
+            assert_eq!(
+                session.handle_field_key(
+                    "multiple",
+                    &multiple,
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                ),
+                Some(SettingsScreenEvent::Changed)
+            );
+            assert_eq!(session.option_cursors["multiple"], expected);
+        }
+        assert_eq!(
+            session.handle_field_key(
+                "multiple",
+                &multiple,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            ),
+            None
+        );
+
+        let empty = Field::new(
+            "empty-multiple",
+            "Empty multiple",
+            FieldKind::MultiChoice {
+                options: Vec::new(),
+            },
+            FieldOwner::Declared,
+            FieldValue::Inherit,
+        );
+        assert_eq!(
+            session.handle_field_key(
+                "empty-multiple",
+                &empty,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            None
+        );
+
+        let plain = Field::new(
+            "plain",
+            "Plain",
+            FieldKind::Text,
+            FieldOwner::Declared,
+            FieldValue::Inherit,
+        );
+        assert_eq!(
+            picked(&plain, "two"),
+            FieldValue::Explicit(TypedValue::Choice("two".to_owned()))
+        );
+        let wrong_value = Field::new(
+            "wrong",
+            "Wrong",
+            FieldKind::MultiChoice {
+                options: options.clone(),
+            },
+            FieldOwner::Declared,
+            FieldValue::Explicit(TypedValue::Text("not a choice list".to_owned())),
+        );
+        assert_eq!(
+            picked(&wrong_value, "two"),
+            FieldValue::Explicit(TypedValue::Choices(vec!["two".to_owned()]))
+        );
+
+        let view = prompt_view();
+        assert!(!view.prompt_picker_available());
+        let geometry = SettingsScreenGeometry {
+            body: Rect::new(0, 0, 20, 5),
+            first_visible: 0,
+            hits: vec![super::SettingsHitRegion {
+                area: Rect::new(0, 0, 8, 1),
+                target: SettingsControlId::ChoosePromptCandidates,
+            }],
+        };
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(session.handle_mouse(&mouse, &view, &geometry), None);
+
+        assert_eq!(
+            choice_key(
+                &multiple,
+                &options,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            ),
+            None
+        );
+    }
 }

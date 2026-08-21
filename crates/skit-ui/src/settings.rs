@@ -2150,6 +2150,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prompt_picker_treats_a_non_list_local_value_as_no_selection() {
+        let candidates = (0..=crate::PROMPT_LIST_PREVIEW_LIMIT)
+            .map(|index| format!("VALUE_{index}"))
+            .collect::<Vec<_>>();
+        let mut view = SettingsView::from_inputs(&SettingsInputs {
+            kind: "prompt".to_owned(),
+            name: "Prompt".to_owned(),
+            supports_modes: true,
+            declared_schema: true,
+            interpolate: true,
+            candidates,
+            ..SettingsInputs::default()
+        });
+        assert!(view.prompt_picker_available());
+        assert!(view.set_value(
+            PROMPT_CANDIDATES_KEY,
+            FieldValue::Explicit(TypedValue::Text("legacy scalar".to_owned())),
+        ));
+
+        let picker = view.prompt_picker();
+
+        assert!(!picker.is_selected(&"VALUE_0".to_owned()));
+    }
+
     /// A command entry edits its own command line here, and a prompt edits its insertion switch.
     ///
     /// Version 0.4 puts both inside the declared editor (`src/skit/tui_settings.py:645-666`).

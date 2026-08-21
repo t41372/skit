@@ -1199,3 +1199,36 @@ fn picked_paths_use_the_field_shape_and_never_share_one_quoting_shortcut() {
         })
     ));
 }
+
+#[test]
+fn path_completion_refuses_a_non_text_control_before_it_reads_context() {
+    let mut enabled = ParamDecl::new("enabled");
+    enabled.parameter_type = ParameterType::Bool;
+    let form = run_view_for(&enabled).with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work/project".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: None,
+            env: BTreeMap::new(),
+            today: "2026-08-21".to_owned(),
+            now: "12-00-00".to_owned(),
+        },
+    });
+
+    assert!(matches!(
+        form.fields()[0].control,
+        FormControl::Checkbox { .. }
+    ));
+    assert_eq!(
+        form.path_completion_request(
+            0,
+            "ignored",
+            skit_application::path_completion::PathInputDialect::Posix,
+        ),
+        None
+    );
+}

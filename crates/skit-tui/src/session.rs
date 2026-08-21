@@ -168,30 +168,7 @@ impl PathSuggestionSession {
             let results = result_tx.clone();
             let _ = thread::Builder::new()
                 .name("skit-path-completion".to_owned())
-                .spawn(move || {
-                    loop {
-                        let job = {
-                            let Ok(receiver) = requests.lock() else {
-                                return;
-                            };
-                            let Ok(job) = receiver.recv() else {
-                                return;
-                            };
-                            job
-                        };
-                        let request = *job.request;
-                        let suggestion = provider.complete(&request);
-                        let result = PathSuggestionResult {
-                            generation: job.generation,
-                            field: job.field,
-                            value: request.value,
-                            suggestion,
-                        };
-                        if results.send(result).is_err() {
-                            return;
-                        }
-                    }
-                });
+                .spawn(move || run_path_suggestion_worker(provider, requests, results));
         }
         Self {
             requests: Some(request_tx),
@@ -296,6 +273,35 @@ impl PathSuggestionSession {
 
     fn has_pending_work(&self) -> bool {
         self.in_flight || self.retry_pending
+    }
+}
+
+fn run_path_suggestion_worker(
+    provider: Arc<dyn PathCompletionProvider>,
+    requests: Arc<Mutex<mpsc::Receiver<PathSuggestionJob>>>,
+    results: mpsc::Sender<PathSuggestionResult>,
+) {
+    loop {
+        let job = {
+            let Ok(receiver) = requests.lock() else {
+                return;
+            };
+            let Ok(job) = receiver.recv() else {
+                return;
+            };
+            job
+        };
+        let request = *job.request;
+        let suggestion = provider.complete(&request);
+        let result = PathSuggestionResult {
+            generation: job.generation,
+            field: job.field,
+            value: request.value,
+            suggestion,
+        };
+        if results.send(result).is_err() {
+            return;
+        }
     }
 }
 
@@ -1966,12 +1972,16 @@ impl RunWidgetSession {
     }
 }
 
-const fn host_path_dialect() -> PathInputDialect {
-    if cfg!(windows) {
+const fn path_dialect_for(windows: bool) -> PathInputDialect {
+    if windows {
         PathInputDialect::Windows
     } else {
         PathInputDialect::Posix
     }
+}
+
+const fn host_path_dialect() -> PathInputDialect {
+    path_dialect_for(cfg!(windows))
 }
 
 impl SearchWidgetSession {
@@ -2991,5 +3001,88 @@ mod path_suggestion_tests {
 
         suggestions.clear();
         assert!(!suggestions.has_pending_work());
+    }
+
+    #[test]
+    fn a_full_request_queue_retries_instead_of_publishing_a_stale_expectation() {
+        let (requests, held_requests) = mpsc::sync_channel(1);
+        requests
+            .try_send(PathSuggestionJob {
+                generation: 1,
+                field: 0,
+                request: Box::new(request("/held")),
+            })
+            .unwrap();
+        let (_results, result_rx) = mpsc::channel();
+        let mut suggestions = PathSuggestionSession {
+            requests: Some(requests),
+            results: Some(result_rx),
+            ..PathSuggestionSession::default()
+        };
+
+        suggestions.ensure(1, Some(request("/new")));
+
+        assert!(suggestions.expected.is_none());
+        assert!(!suggestions.in_flight);
+        assert!(suggestions.retry_pending);
+        drop(held_requests);
+    }
+
+    #[test]
+    fn a_poisoned_worker_queue_stops_without_running_the_provider() {
+        let (_requests, request_rx) = mpsc::sync_channel(1);
+        let requests = Arc::new(Mutex::new(request_rx));
+        let poison = Arc::clone(&requests);
+        let _ = thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison the worker queue");
+        })
+        .join();
+        let (results, result_rx) = mpsc::channel();
+
+        run_path_suggestion_worker(Arc::new(ContextProvider), requests, results);
+
+        assert!(matches!(
+            result_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn path_dialect_policy_keeps_both_host_shapes_explicit() {
+        assert_eq!(path_dialect_for(false), PathInputDialect::Posix);
+        assert_eq!(path_dialect_for(true), PathInputDialect::Windows);
+        assert_eq!(host_path_dialect(), path_dialect_for(cfg!(windows)));
+    }
+
+    #[test]
+    fn an_overlay_ignores_events_that_do_not_belong_to_its_picker() {
+        let names = (0..=skit_ui::PROMPT_LIST_PREVIEW_LIMIT)
+            .map(|index| format!("VALUE_{index}"))
+            .collect::<Vec<_>>();
+        let view = skit_ui::SettingsView::from_inputs(&skit_ui::SettingsInputs {
+            kind: "prompt".to_owned(),
+            name: "Prompt".to_owned(),
+            supports_modes: true,
+            interpolate: true,
+            candidates: names,
+            ..skit_ui::SettingsInputs::default()
+        });
+        assert!(view.prompt_picker_available());
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Settings(Box::new(view.clone()))));
+        let mut session = TuiSession {
+            settings_prompt_overlay: Some((
+                PromptCandidatePickerSession::new(view.prompt_picker()),
+                ChoicePickerGeometry::default(),
+            )),
+            ..TuiSession::default()
+        };
+
+        assert_eq!(
+            session.handle_event(Event::FocusGained, &state, &ViewGeometry::default()),
+            EventHandling::Ignored
+        );
+        assert!(session.settings_prompt_overlay.is_some());
     }
 }
