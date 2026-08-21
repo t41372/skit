@@ -6716,3 +6716,152 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
     ));
     assert_eq!(fs::read(&config_path).unwrap(), before);
 }
+
+#[test]
+fn settings_host_updates_prompt_javascript_reference_python_and_source_management_axes() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+
+    let prompt = service
+        .add(CreateEntry {
+            name: "Prompt settings".to_owned(),
+            kind: EntryKind::parse("prompt").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"Review {{topic}}.".to_vec(),
+                stored_name: Some("prompt.md".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let mut values = SubmittedValues::new();
+    set(&mut values, "runner", "  codex  ");
+    values.insert("interpolate".to_owned(), FieldValue::boolean(false));
+    values.insert(
+        "parameter:add".to_owned(),
+        FieldValue::Explicit(TypedValue::Choices(vec!["topic".to_owned()])),
+    );
+    tui_submit_settings(&service, &store, &state_dir, prompt.slug.as_str(), &values).unwrap();
+    let prompt = service.show(prompt.slug.as_str()).unwrap();
+    let prompt_settings = EntrySettings::from_meta(&prompt.meta);
+    assert_eq!(prompt_settings.runner, "codex");
+    assert!(!prompt_settings.interpolate);
+    assert_eq!(prompt_settings.params, ["topic"]);
+    assert!(
+        prompt_settings
+            .parameters
+            .iter()
+            .any(|parameter| parameter.name == "topic"
+                && parameter.delivery == ParameterDelivery::Placeholder)
+    );
+
+    let javascript = service
+        .add(CreateEntry {
+            name: "JavaScript settings".to_owned(),
+            kind: EntryKind::parse("js").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"console.log('ok');\n".to_vec(),
+                stored_name: Some("script.js".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let mut values = SubmittedValues::new();
+    values.insert(
+        "dependencies".to_owned(),
+        FieldValue::Explicit(TypedValue::Choices(vec![
+            "@scope/pkg@1".to_owned(),
+            "zod@4".to_owned(),
+        ])),
+    );
+    set(&mut values, "python", "");
+    tui_submit_settings(
+        &service,
+        &store,
+        &state_dir,
+        javascript.slug.as_str(),
+        &values,
+    )
+    .unwrap();
+    let javascript = service.show(javascript.slug.as_str()).unwrap();
+    let javascript_settings = EntrySettings::from_meta(&javascript.meta);
+    assert_eq!(javascript_settings.dependencies, ["@scope/pkg@1", "zod@4"]);
+    assert_eq!(javascript_settings.requires_python, "");
+
+    let referenced_source = root.path().join("referenced.py");
+    fs::write(&referenced_source, b"print('reference')\n").unwrap();
+    let referenced = service
+        .add(CreateEntry {
+            name: "Referenced Python settings".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Reference,
+            source: referenced_source.display().to_string(),
+            workdir: "origin".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let source_before = fs::read(&referenced_source).unwrap();
+    let mut values = SubmittedValues::new();
+    values.insert(
+        "dependencies".to_owned(),
+        FieldValue::Explicit(TypedValue::Choices(vec!["requests>=2".to_owned()])),
+    );
+    set(&mut values, "python", ">=3.11");
+    tui_submit_settings(
+        &service,
+        &store,
+        &state_dir,
+        referenced.slug.as_str(),
+        &values,
+    )
+    .unwrap();
+    let referenced = service.show(referenced.slug.as_str()).unwrap();
+    let referenced_settings = EntrySettings::from_meta(&referenced.meta);
+    assert_eq!(referenced_settings.dependencies, ["requests>=2"]);
+    assert_eq!(referenced_settings.requires_python, ">=3.11");
+    assert_eq!(fs::read(&referenced_source).unwrap(), source_before);
+
+    let shell = service
+        .add(CreateEntry {
+            name: "Shell settings".to_owned(),
+            kind: EntryKind::parse("shell").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"NAME=world\necho \"$NAME\"\n".to_vec(),
+                stored_name: Some("script.sh".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let mut values = SubmittedValues::new();
+    values.insert(
+        "source:normalize".to_owned(),
+        FieldValue::Explicit(TypedValue::Choices(vec!["NAME".to_owned()])),
+    );
+    tui_submit_settings(&service, &store, &state_dir, shell.slug.as_str(), &values).unwrap();
+    let shell = service.show(shell.slug.as_str()).unwrap();
+    let shell_source = fs::read(source_path(&store, &shell).unwrap()).unwrap();
+    assert!(
+        String::from_utf8(shell_source)
+            .unwrap()
+            .contains("${NAME:-world}")
+    );
+}
