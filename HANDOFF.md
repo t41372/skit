@@ -371,16 +371,18 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
 - **Data-safety (in js_deps + elsewhere):** injected copies now use an OS-private temporary file
   unless npm adjacency requires the entry directory, Settings and `deps --clear` share one
   identity-gated cleanup transaction, and dependency metadata replacement is atomic on Windows
-  (`b777d3c`). A fresh Phase 4 audit found one remaining transaction gap: final cleanup currently
-  swallows a real unlink/rmtree failure after moving the old environment aside. The JS cleanup
-  batch must make that failure loud, preserve the old metadata, and treat a concurrent NotFound as
-  success.
+  (`b777d3c`). Final cleanup now reports real unlink/rmtree failures, treats a concurrent NotFound
+  as success, preserves a committed replacement environment after a partial cleanup, and leaves a
+  typed quarantine that the next operation repairs (`13c04fe`).
 - **TUI path completion is complete.** `port_test_path_tui.rs` now has 62 executable contracts and
   4 honest cross-crate closures. The restored ghost completion uses a typed 2,000-entry bounded
   scanner, no cache, two bounded workers, complete-request latest-wins, dim suffix rendering, and
   Right-arrow acceptance. Secret fields dispatch no request. The terminal polls only while work is
-  pending, and a real PTY proves ghost-to-launch composition. Missing reference origins remain
-  available to the form projection while launch still refuses them (`ef76e01`..`0f7703a`).
+  pending, and a real PTY proves ghost-to-launch composition. The adapter filters prefix and hidden
+  misses before metadata probes while they still count toward the cap; `{cwd}` has one token
+  authority, and async owners are serialized without weakening result checkpoints (`b02a3d9`).
+  Missing reference origins remain available to the form projection while launch still refuses
+  them (`ef76e01`..`0f7703a`).
 - **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 
@@ -396,10 +398,13 @@ final-secret scrubbing, state purge, and TUI receipts (`95c8465`..`4c1689a`). Th
 root is now closed by public process owners and the external-edit transaction (`4832197` /
 `cd15b26` / `40fa612`). JavaScript freshness, launch sweep, captured diagnostics, announce
 discipline, and helper surfaces close the other audited root (`ab4d93a`..`5265eeb`).
-- **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
-  shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
-  port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job
-  per the §7 port mode).
+- **Interpreter detection ownership is complete.** Seventeen frozen shebang/inference owners now
+  run at the existing `skit-language` parser and classifier seams (`98efbb4`). The unreadable-path
+  helper remains one honest architecture closure because Rust separates path I/O from line
+  parsing. Of the other 36 cross-crate rows, 12 have stronger consolidated owners, 18 need exact
+  tests-only rehomes, and 6 exposed real gaps: three explicit add-kind validations, two Windows
+  Bash resolution messages, and one shell dependency refusal sentence. These are implementation
+  work, not detection gaps or framework closures.
 
 The ledger has the authoritative per-module adjudication log.
 
@@ -443,10 +448,17 @@ The ledger has the authoritative per-module adjudication log.
   row/preview/overflow/chooser order, and removed the duplicate footer and dead reducer route.
   The reopened 25-owner PathSuggester group is now complete (`ef76e01`..`0f7703a`). The first JS
   follow-up made six real cleanup-failure/race owners executable and stopped swallowing cleanup
-  removal failures (`13c04fe`); freshness/preflight is complete (`ab4d93a` / `e276058`). A static
-  follow-up keeps the remaining JS ABSENT-marker group open. Source resync is now one parser-backed
-  CLI/TUI operation with all 14 frozen edit owners active (`95c8465`..`4c1689a`). The final coverage,
-  supply-chain, docs, package, benchmark, and hands-on gates are not valid until these changes stop.
+  removal failures (`13c04fe`); freshness/preflight is complete (`ab4d93a` / `e276058`). The
+  remaining follow-up closes launch sweeping, captured diagnostics, announcements, and the
+  split/manifest/installer helper owners (`e62e36e`..`5265eeb`). Source resync is now one
+  parser-backed CLI/TUI operation with all 14 frozen edit owners active (`95c8465`..`4c1689a`).
+  Source secrecy commits and state purge now share one transaction with rollback, and completed
+  runs re-read the current schema under the state lock before they persist values (`33aedcb` /
+  `eac38c9`). Public editor owners and the locked external-edit snapshot close the editor root
+  (`a63ecb4`..`f1ee263`). The explicit `ABSENT`/`FAILING CONTRACT` marker count is zero. The final
+  coverage, supply-chain, docs, package, benchmark, and hands-on gates are not valid until these
+  changes stop. The zero-marker result does not hide the six real interpreter-cluster gaps found
+  while adjudicating older `CROSS-CRATE` rows; their exact-owner batches remain open.
   A review also questioned `FileStore::scan()` repairing stale registry rows. This is not a new
   blocker: `registry.toml` is a derived index, not authoritative user data, and v0.4 explicitly
   runs `_repair_rows` under a non-blocking lock. `rust-contract-matrix.md` records this narrow
