@@ -1,13 +1,17 @@
 use std::collections::BTreeMap;
 
 use skit_benchmarks::{
-    BenchmarkProfile, BudgetOutcome, GitInfo, HostInfo, Meta, Metric, Results, Skip, SuiteKind,
+    BenchmarkProfile, BudgetOutcome, GitInfo, HostInfo, Meta, Metric, PipelineError, Results, Skip,
+    SuiteKind, SuiteOutput,
     budget::{
         Budget, BudgetReport, BudgetRowResult, BudgetTier, evaluate, format_number, load_budgets,
         propose, render_budgets, render_report,
     },
     compare::{Delta, compare, render_markdown as render_comparison},
-    hyperfine::{Case, build_argv, metrics_from_export, parse_export, validate_case_names},
+    hyperfine::{
+        Case, HyperfineError, build_argv, metrics_from_export, parse_export, validate_case_names,
+    },
+    merge,
     stats::{median, nearest_rank_p95, sample_stddev},
 };
 
@@ -131,6 +135,117 @@ fn hyperfine_builder_and_parser_keep_real_argv_and_full_samples() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn hyperfine_refuses_every_ambiguous_case_and_export_shape() {
+    let build = |cases: &[Case]| build_argv(cases, 0, 1, "result.json", "hyperfine");
+    assert!(matches!(build(&[]), Err(HyperfineError::EmptyCases)));
+    assert!(matches!(
+        build(&[Case::new("", ["true"])]),
+        Err(HyperfineError::EmptyName)
+    ));
+    assert!(matches!(
+        build(&[Case::new("empty", Vec::<String>::new())]),
+        Err(HyperfineError::EmptyArgv(name)) if name == "empty"
+    ));
+    assert!(matches!(
+        build(&[
+            Case::new("duplicate", ["true"]),
+            Case::new("duplicate", ["false"]),
+        ]),
+        Err(HyperfineError::DuplicateCase(name)) if name == "duplicate"
+    ));
+    assert!(matches!(
+        build(&[Case::new("nul", ["bad\0argument"])]),
+        Err(HyperfineError::Quote { case, .. }) if case == "nul"
+    ));
+
+    for export in [
+        r#"{"results":[]}"#,
+        r#"{"results":[{"command":"","times":[1]}]}"#,
+        r#"{"results":[{"command":"missing-times","times":[]}]}"#,
+    ] {
+        assert!(matches!(
+            parse_export(export),
+            Err(HyperfineError::Shape(_))
+        ));
+    }
+    assert!(matches!(
+        parse_export(
+            r#"{"results":[{"command":"same","times":[1]},{"command":"same","times":[2]}]}"#
+        ),
+        Err(HyperfineError::Shape(reason)) if reason.contains("duplicate hyperfine case")
+    ));
+}
+
+#[test]
+fn merge_rejects_duplicate_and_half_present_metric_contracts() {
+    let output = |suite, metrics| SuiteOutput {
+        suite,
+        duration_seconds: 0.0,
+        metrics,
+        skipped: Vec::new(),
+        raw: BTreeMap::new(),
+    };
+    assert!(matches!(
+        merge(
+            meta(),
+            vec![
+                output(
+                    SuiteKind::Imports,
+                    BTreeMap::from([("same.metric".to_owned(), metric(1.0, "count"))]),
+                ),
+                output(
+                    SuiteKind::Footprint,
+                    BTreeMap::from([("same.metric".to_owned(), metric(2.0, "count"))]),
+                ),
+            ],
+            0.0,
+        ),
+        Err(PipelineError::DuplicateMetric(metric)) if metric == "same.metric"
+    ));
+
+    assert!(matches!(
+        merge(
+            meta(),
+            vec![output(
+                SuiteKind::Startup,
+                BTreeMap::from([("startup.python.median_ms".to_owned(), metric(1.0, "ms"),)]),
+            )],
+            0.0,
+        ),
+        Err(PipelineError::HalfPresentDerivation {
+            present: "startup.python.median_ms",
+            absent: "startup.version.median_ms",
+            ..
+        })
+    ));
+
+    assert!(matches!(
+        merge(
+            meta(),
+            vec![output(
+                SuiteKind::Startup,
+                BTreeMap::from([
+                    ("startup.version.median_ms".to_owned(), metric(3.0, "ms")),
+                    ("startup.python.median_ms".to_owned(), metric(1.0, "ms")),
+                    ("startup.version.over_python_ms".to_owned(), metric(2.0, "ms")),
+                ]),
+            )],
+            0.0,
+        ),
+        Err(PipelineError::DuplicateMetric(metric))
+            if metric == "startup.version.over_python_ms"
+    ));
+}
+
+#[test]
+fn every_profile_and_suite_keeps_its_stable_artifact_token() {
+    assert_eq!(BenchmarkProfile::Compare.as_str(), "compare");
+    assert_eq!(SuiteKind::Rss.as_str(), "rss");
+    assert_eq!(SuiteKind::Micro.as_str(), "micro");
+    assert_eq!(SuiteKind::Syscalls.as_str(), "syscalls");
 }
 
 const ENFORCED: &str = r#"
