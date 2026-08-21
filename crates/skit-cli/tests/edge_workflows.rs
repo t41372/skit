@@ -75,6 +75,16 @@ impl Sandbox {
         path.to_str().unwrap().to_owned()
     }
 
+    fn install_private_uv_probe(&self) {
+        let bin = self.data.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::copy(
+            env!("CARGO_BIN_EXE_skit"),
+            bin.join(if cfg!(windows) { "uv.exe" } else { "uv" }),
+        )
+        .unwrap();
+    }
+
     fn editor_pty(
         &self,
         args: &[&str],
@@ -155,6 +165,7 @@ fn configuration_runner_and_completion_edges_are_explicit() {
     sandbox
         .command()
         .env("SHELL", "/bin/unknown-shell")
+        .env_remove("PSModulePath")
         .arg("--show-completion")
         .assert()
         .code(2);
@@ -350,6 +361,7 @@ fn locale_fallbacks_use_config_then_environment_without_changing_json() {
 #[test]
 fn doctor_human_report_exposes_each_repair_axis() {
     let sandbox = Sandbox::new();
+    sandbox.install_private_uv_probe();
     let missing = sandbox.source("missing.sh", b"echo ok\n");
     sandbox.ok(&["add", &missing, "--ref", "--name", "Missing"]);
     fs::remove_file(&missing).unwrap();
@@ -424,6 +436,7 @@ fn doctor_rebuild_prints_registered_corruption_warnings_in_every_locale_without_
         ("zh-TW", "警告 項目 \"broken\" 的中繼資料已損毀："),
     ] {
         let sandbox = Sandbox::new();
+        sandbox.install_private_uv_probe();
         sandbox.ok(&["add", "--cmd", "true", "--name", "Broken", "--no-input"]);
         let meta = sandbox.data.path().join("scripts/broken/meta.toml");
         fs::write(&meta, b"name = [broken").unwrap();

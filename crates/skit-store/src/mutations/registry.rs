@@ -304,7 +304,8 @@ fn merge_row(mut existing: Table, replacement: Table) -> Table {
 ///
 /// The file ID rejects replacements. The change time rejects in-place edits that restore the
 /// modification time and file size. The registry modification time keeps the Python row stamp
-/// coherent. Unix and Windows provide all three values. Other targets do not use the shortcut.
+/// coherent. Unix uses change time. Windows verifies the stored content hash because stable Rust
+/// does not expose the change counter. Other targets do not use the shortcut.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MetadataFingerprint {
     platform: &'static str,
@@ -338,22 +339,23 @@ impl MetadataFingerprint {
     fn read(path: &Path) -> Option<Self> {
         use std::os::windows::fs::MetadataExt as _;
 
-        let metadata = fs::metadata(path).ok()?;
+        let file = fs::File::open(path).ok()?;
+        let metadata = file.metadata().ok()?;
         if !metadata.is_file() {
             return None;
         }
+        let id = fs_id::FileID::new(&file).ok()?;
         Some(Self {
             platform: "windows",
-            file_id: format!(
-                "{}:{}",
-                metadata.volume_serial_number()?,
-                metadata.file_index()?
-            ),
-            file_size: metadata.file_size(),
+            file_id: format!("{}:{}", id.storage_id(), id.internal_file_id()),
+            file_size: metadata.len(),
             registry_mtime_ns: timestamp_ns(metadata.modified().ok()?).ok()?,
             // Windows file times count 100-nanosecond intervals.
             modified_ns: i128::from(metadata.last_write_time()) * 100,
-            changed_ns: i128::from(metadata.change_time()) * 100,
+            // Stable Rust does not expose the Windows change counter. Cache verification also
+            // compares the authoritative content hash on Windows, so creation time is sufficient
+            // here to reject file-ID reuse without weakening edit detection.
+            changed_ns: i128::from(metadata.creation_time()) * 100,
         })
     }
 
@@ -557,7 +559,23 @@ impl CachedProjection {
         );
         expected == proof.projection_hash
             && MetadataFingerprint::read(meta_path).as_ref() == Some(&proof.fingerprint)
+            && metadata_hash_matches(meta_path, &proof.metadata_hash)
     }
+}
+
+#[cfg(unix)]
+fn metadata_hash_matches(_path: &Path, _expected: &str) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn metadata_hash_matches(path: &Path, expected: &str) -> bool {
+    fs::read(path).is_ok_and(|bytes| content_hash(&bytes) == expected)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn metadata_hash_matches(_path: &Path, _expected: &str) -> bool {
+    false
 }
 
 fn legacy_metadata_mtime_ns(path: &Path) -> Option<i64> {

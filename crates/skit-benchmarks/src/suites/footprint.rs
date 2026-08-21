@@ -677,6 +677,7 @@ esac
 
         let invocations = fs::read_to_string(&log).unwrap();
         let lines = invocations.lines().collect::<Vec<_>>();
+        let physical_workdir = fixture.context.workdir.canonicalize().unwrap();
         assert_eq!(lines.len(), 5);
         assert_eq!(
             lines[0],
@@ -690,14 +691,14 @@ esac
             lines[1],
             format!(
                 "{}|venv {} --python {}",
-                fixture.context.workdir.display(),
+                physical_workdir.display(),
                 fixture.context.workdir.join("footprint-venv").display(),
                 fixture.context.python.as_ref().unwrap().display()
             )
         );
         let install = format!(
             "{}|pip install --python {} {}",
-            fixture.context.workdir.display(),
+            physical_workdir.display(),
             fixture
                 .context
                 .workdir

@@ -295,8 +295,13 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         );
 
         let syscalls = super::run(context, &plan(SuiteKind::Syscalls, &[100])).unwrap();
-        assert_eq!(syscalls.metrics["syscalls.list_json.file_ops"].value, 9.0);
-        assert_eq!(syscalls.metrics["syscalls.list_json.network"].value, 1.0);
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(syscalls.metrics["syscalls.list_json.file_ops"].value, 9.0);
+            assert_eq!(syscalls.metrics["syscalls.list_json.network"].value, 1.0);
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(syscalls.skipped[0].reason, "not Linux");
     }
 
     #[test]
@@ -327,7 +332,14 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         fixture.context.strace = None;
         let syscalls =
             super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[100])).unwrap();
-        assert_eq!(syscalls.skipped[0].reason, "strace not found");
+        assert_eq!(
+            syscalls.skipped[0].reason,
+            if cfg!(target_os = "linux") {
+                "strace not found"
+            } else {
+                "not Linux"
+            }
+        );
     }
 
     #[test]
@@ -378,9 +390,12 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         assert!(super::imports::run(&fixture.context, &plan(SuiteKind::Imports, &[])).is_err());
         assert!(super::footprint::run(&fixture.context, &plan(SuiteKind::Footprint, &[])).is_err());
         assert!(super::startup::run(&fixture.context, &plan(SuiteKind::Startup, &[])).is_err());
-        assert!(
-            super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[0, 100])).is_err()
-        );
+        let syscalls =
+            super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[0, 100]));
+        #[cfg(target_os = "linux")]
+        assert!(syscalls.is_err());
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(syscalls.unwrap().skipped[0].reason, "not Linux");
     }
 
     #[test]
@@ -436,6 +451,7 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         assert_eq!(output.metrics["scale.list.n0.median_ms"].value, 1.0);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn syscalls_requires_the_successful_probe_to_write_its_table() {
         let mut fixture = Fixture::new();

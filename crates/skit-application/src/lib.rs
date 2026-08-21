@@ -56,10 +56,39 @@ enum SourceIdentityKind {
         change_time_nanoseconds: i64,
     },
     Windows {
-        volume_serial_number: u32,
-        file_index: u64,
+        volume_serial_number: u64,
+        #[serde(with = "u128_decimal")]
+        file_index: u128,
         creation_time: u64,
     },
+}
+
+mod u128_decimal {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Encoded {
+        Legacy(u64),
+        Decimal(String),
+    }
+
+    pub(super) fn serialize<S>(value: &u128, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Encoded::deserialize(deserializer)? {
+            Encoded::Legacy(value) => Ok(u128::from(value)),
+            Encoded::Decimal(value) => value.parse().map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 impl SourceIdentity {
@@ -81,7 +110,7 @@ impl SourceIdentity {
 
     /// Construct an identity from Windows file metadata captured from an open file.
     #[must_use]
-    pub const fn windows(volume_serial_number: u32, file_index: u64, creation_time: u64) -> Self {
+    pub const fn windows(volume_serial_number: u64, file_index: u128, creation_time: u64) -> Self {
         Self(SourceIdentityKind::Windows {
             volume_serial_number,
             file_index,
@@ -541,5 +570,34 @@ mod source_identity_tests {
         assert!(!before.same_file(&replacement));
         assert!(!before.same_file(&SourceIdentity::windows(1, 2, 3)));
         assert!(!SourceIdentity::windows(1, 2, 3).same_file(&SourceIdentity::windows(1, 2, 4)));
+    }
+
+    #[test]
+    fn windows_identity_keeps_the_complete_stable_file_id() {
+        let high_bit = 1_u128 << 96;
+        let identity = SourceIdentity::windows(7, high_bit + 11, 13);
+
+        assert_eq!(
+            serde_json::to_value(&identity).unwrap(),
+            serde_json::json!({
+                "platform": "windows",
+                "volume_serial_number": 7,
+                "file_index": (high_bit + 11).to_string(),
+                "creation_time": 13,
+            })
+        );
+        assert!(identity.same_file(&SourceIdentity::windows(7, high_bit + 11, 13)));
+        assert!(!identity.same_file(&SourceIdentity::windows(7, 11, 13)));
+
+        let legacy = serde_json::json!({
+            "platform": "windows",
+            "volume_serial_number": 7,
+            "file_index": 11,
+            "creation_time": 13,
+        });
+        assert_eq!(
+            serde_json::from_value::<SourceIdentity>(legacy).unwrap(),
+            SourceIdentity::windows(7, 11, 13)
+        );
     }
 }

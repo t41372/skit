@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 skit-i18n.workspace = true
 glob.workspace = true
+fs-id.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true

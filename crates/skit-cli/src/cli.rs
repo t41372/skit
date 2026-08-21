@@ -7434,14 +7434,14 @@ fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, Cl
             bytes,
             source_permissions(&metadata),
             true,
-            source_identity(&metadata),
+            source_identity_from_file(&file, &metadata),
         )
     } else {
         (
             Vec::new(),
             source_permissions(&metadata),
             false,
-            source_identity(&metadata),
+            source_identity_at(&path, &metadata),
         )
     };
     let is_draft = is_owned_draft(data_dir, &path);
@@ -7692,10 +7692,11 @@ fn consume_owned_draft_claim(
         .then(|| File::open(path))
         .transpose()
         .map_err(|error| source_error("open", path, error))?;
-    let opened_identity = opened
-        .as_ref()
-        .and_then(|file| file.metadata().ok())
-        .and_then(|metadata| source_identity(&metadata));
+    let opened_identity = opened.as_ref().and_then(|file| {
+        file.metadata()
+            .ok()
+            .and_then(|metadata| source_identity_from_file(file, &metadata))
+    });
     let claim_matches_before = opened_identity.as_ref() == Some(expected_identity)
         && expected_modified.is_none_or(|expected| {
             opened
@@ -7735,7 +7736,7 @@ fn consume_owned_draft_claim(
     let quarantine_identity = fs::symlink_metadata(&quarantine)
         .ok()
         .filter(|metadata| !metadata.file_type().is_symlink() && metadata.is_file())
-        .and_then(|metadata| source_identity(&metadata));
+        .and_then(|metadata| source_identity_at(&quarantine, &metadata));
     let same_open_file = opened_identity
         .as_ref()
         .zip(quarantine_identity.as_ref())
@@ -8240,7 +8241,7 @@ fn tui_drafts_after(
             Some(DraftSummary {
                 path: item.path(),
                 modified,
-                identity: source_identity(&metadata),
+                identity: source_identity_at(&item.path(), &metadata),
                 permissions: source_permissions(&metadata),
             })
         })
@@ -9586,7 +9587,7 @@ fn read_source(
             bytes: Vec::new(),
             permissions: source_permissions(&metadata),
             is_regular: false,
-            identity: source_identity(&metadata),
+            identity: source_identity_at(path, &metadata),
         });
     }
     let mut file = File::open(path).map_err(|error| source_read_error(path, error))?;
@@ -9600,7 +9601,7 @@ fn read_source(
         bytes,
         permissions: source_permissions(&metadata),
         is_regular: metadata.is_file(),
-        identity: source_identity(&metadata),
+        identity: source_identity_from_file(&file, &metadata),
     })
 }
 
@@ -9655,7 +9656,17 @@ fn source_permissions(metadata: &Metadata) -> SourcePermissions {
 }
 
 #[cfg(unix)]
-fn source_identity(metadata: &Metadata) -> Option<SourceIdentity> {
+fn source_identity_from_file(_file: &File, metadata: &Metadata) -> Option<SourceIdentity> {
+    source_identity_from_metadata(metadata)
+}
+
+#[cfg(unix)]
+fn source_identity_at(_path: &Path, metadata: &Metadata) -> Option<SourceIdentity> {
+    source_identity_from_metadata(metadata)
+}
+
+#[cfg(unix)]
+fn source_identity_from_metadata(metadata: &Metadata) -> Option<SourceIdentity> {
     use std::os::unix::fs::MetadataExt as _;
 
     Some(SourceIdentity::unix(
@@ -9667,18 +9678,36 @@ fn source_identity(metadata: &Metadata) -> Option<SourceIdentity> {
 }
 
 #[cfg(windows)]
-fn source_identity(metadata: &Metadata) -> Option<SourceIdentity> {
+fn source_identity_from_file(file: &File, metadata: &Metadata) -> Option<SourceIdentity> {
     use std::os::windows::fs::MetadataExt as _;
 
+    let id = fs_id::FileID::new(file).ok()?;
     Some(SourceIdentity::windows(
-        metadata.volume_serial_number()?,
-        metadata.file_index()?,
+        id.storage_id(),
+        id.internal_file_id(),
+        metadata.creation_time(),
+    ))
+}
+
+#[cfg(windows)]
+fn source_identity_at(path: &Path, metadata: &Metadata) -> Option<SourceIdentity> {
+    use std::os::windows::fs::MetadataExt as _;
+
+    let id = fs_id::FileID::new(path).ok()?;
+    Some(SourceIdentity::windows(
+        id.storage_id(),
+        id.internal_file_id(),
         metadata.creation_time(),
     ))
 }
 
 #[cfg(not(any(unix, windows)))]
-fn source_identity(_metadata: &Metadata) -> Option<SourceIdentity> {
+fn source_identity_from_file(_file: &File, _metadata: &Metadata) -> Option<SourceIdentity> {
+    None
+}
+
+#[cfg(not(any(unix, windows)))]
+fn source_identity_at(_path: &Path, _metadata: &Metadata) -> Option<SourceIdentity> {
     None
 }
 
