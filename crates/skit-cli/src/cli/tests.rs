@@ -6401,3 +6401,100 @@ fn owned_draft_consume_rejects_a_replaced_drafts_directory() {
         b"print('draft')\n"
     );
 }
+
+#[test]
+fn show_formatters_cover_empty_defaults_prompt_help_types_actions_and_every_drift_row() {
+    let mut empty_default = ParamDecl::new("EMPTY");
+    empty_default.default = Some(ParameterValue::String(String::new()));
+    empty_default.prompt = "A helpful prompt".to_owned();
+    let mut degraded = ParamDecl::new("DEGRADED");
+    degraded.degraded = true;
+    degraded.parameter_type = ParameterType::Int;
+    let mut boolean = ParamDecl::new("VERBOSE");
+    boolean.parameter_type = ParameterType::Bool;
+    boolean.flag = "--verbose".to_owned();
+    boolean.default = Some(ParameterValue::Bool(false));
+    let fields = [empty_default.clone(), degraded.clone(), boolean.clone()]
+        .into_iter()
+        .map(|declaration| PreparedField {
+            declaration,
+            input_binding: false,
+            empty_uses_default: false,
+        })
+        .collect::<Vec<_>>();
+    let mut output = Vec::new();
+    write_show_fields(&mut output, &fields, Locale::En).unwrap();
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("EMPTY"));
+    assert!(output.contains("A helpful prompt"));
+    assert!(output.contains("VERBOSE"));
+    assert_eq!(field_type(&degraded), "str");
+    assert_eq!(field_action(&boolean), "store_true");
+    assert_eq!(field_json(&fields[1])["type"], "str");
+    assert_eq!(field_json(&fields[2])["action"], "store_true");
+
+    let mut env_missing = ParamDecl::new("ENV_VALUE");
+    env_missing.binding = ParameterBinding::EnvDefault;
+    let plain_missing = ParamDecl::new("PLAIN");
+    let mut old_type = ParamDecl::new("COUNT");
+    old_type.parameter_type = ParameterType::Int;
+    let mut new_type = old_type.clone();
+    new_type.parameter_type = ParameterType::Float;
+    let rebound = ParamDecl::new("QUESTION");
+    let plan = PreparedFormPlan {
+        source: skit_form::FormSource::Inject,
+        fields: Vec::new(),
+        drift: vec![
+            FormDrift::Missing {
+                declaration: env_missing,
+            },
+            FormDrift::Missing {
+                declaration: plain_missing,
+            },
+            FormDrift::TypeChanged {
+                stored: old_type,
+                current: new_type,
+            },
+            FormDrift::Rebound {
+                stored: rebound.clone(),
+                current: rebound,
+            },
+            FormDrift::PromptMissing {
+                names: vec!["topic".to_owned()],
+            },
+        ],
+        degradation: None,
+    };
+    let lines = show_drift_lines(&plan, "Tool", Locale::En);
+    assert_eq!(lines.len(), 7);
+    for expected in [
+        "ENV_VALUE is no longer read from the environment",
+        "PLAIN: injection target no longer exists",
+        "COUNT: type changed from int to float",
+        "QUESTION: its prompt no longer matches",
+        "No longer in the prompt",
+        "skit params Tool --resync",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.contains(expected)),
+            "{lines:?}"
+        );
+    }
+    let prompt_only = PreparedFormPlan {
+        drift: vec![FormDrift::PromptMissing {
+            names: vec!["one".to_owned(), "two".to_owned()],
+        }],
+        ..PreparedFormPlan::default()
+    };
+    let lines = show_drift_lines(&prompt_only, "Prompt", Locale::ZhTw);
+    assert_eq!(lines.len(), 1);
+    assert!(show_drift_lines(&PreparedFormPlan::default(), "Clean", Locale::En).is_empty());
+
+    let error = uv_edit_error(
+        "Tool",
+        UvMetadataEditError::Language(skit_language::LanguageError::UnsupportedKind {
+            kind: "future".to_owned(),
+        }),
+    );
+    assert!(error.message().localize(Locale::En).contains("future"));
+}
