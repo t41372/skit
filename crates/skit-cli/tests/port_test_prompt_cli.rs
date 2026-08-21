@@ -1790,6 +1790,52 @@ fn test_params_read_view_shows_unmanaged_and_gone() {
     );
 }
 
+#[test]
+fn prompt_declared_edit_removes_a_gone_slot_without_a_stale_tweak_warning() {
+    let sandbox = Sandbox::new();
+    sandbox.added("{{a}} {{b}}\n", "p");
+    overwrite_body(&sandbox, "p", "{{a}} only\n");
+    let body_before = sandbox.body_bytes("p");
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+
+    let output = sandbox
+        .command()
+        .args([
+            "params",
+            "p",
+            "--rm",
+            "b",
+            "--type",
+            "b=int",
+            "--default",
+            "a=first",
+            "--default",
+            "a=last",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("b isn't a declared parameter"), "{stderr}");
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(payload["placeholders"], serde_json::json!(["a"]));
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["declared"][0]["name"], "a");
+    assert_eq!(payload["declared"][0]["default"], "last");
+    assert_eq!(payload["parameters"][0]["name"], "a");
+    assert_eq!(payload["parameters"][0]["default"], "last");
+    assert_eq!(sandbox.body_bytes("p"), body_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+}
+
 /// Overwrite the stored body file (whatever its name) under an entry dir.
 fn overwrite_body(sandbox: &Sandbox, slug: &str, text: &str) {
     let dir = sandbox.entry_dir(slug);

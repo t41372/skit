@@ -54,13 +54,17 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use serde_json::{Value, json};
-use skit_application::delivery::{PreparedValue, assemble};
+use skit_application::{
+    CreateEntry, EntryMutationRepository as _,
+    delivery::{PreparedValue, assemble},
+};
 use skit_domain::parameters::{
     ParamDecl, ParameterDelivery, ParameterType, ParameterValue, declared_for_template,
     declared_from_meta, synthesized_placeholder,
 };
-use skit_domain::{EntryKind, EntryMeta, EntrySettings};
+use skit_domain::{EntryKind, EntryMeta, EntrySettings, StorageMode};
 use skit_form::{FormPlan, FormSource, form_plan};
+use skit_store::FileStore;
 use tempfile::TempDir;
 
 // ---- shared helpers (self-contained; this file edits no shared module) --------------------------
@@ -786,6 +790,54 @@ fn test_cli_declared_edit_with_json_emits_the_final_read_view() {
     let payload = stdout_json(&output);
     assert_eq!(payload["declared"][0]["name"], "width");
     assert_eq!(payload["declared"][0]["delivery"], "flag");
+}
+
+#[test]
+fn test_cli_declared_edit_json_preserves_a_legacy_non_form_row() {
+    let workspace = lib();
+    let mut legacy = ParamDecl::new("LEGACY");
+    legacy.delivery = ParameterDelivery::Inject;
+    FileStore::new(workspace.data.path())
+        .create(CreateEntry {
+            name: "Legacy command".to_owned(),
+            kind: EntryKind::parse("command").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings {
+                template: "true".to_owned(),
+                parameters: vec![legacy],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
+
+    let output = workspace.run(&[
+        "params",
+        "legacy-command",
+        "--default",
+        "LEGACY=first",
+        "--default",
+        "LEGACY=last",
+        "--json",
+    ]);
+
+    assert!(output.status.success(), "{}", combined(&output));
+    let payload = stdout_json(&output);
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["declared"][0]["name"], "LEGACY");
+    assert_eq!(payload["declared"][0]["delivery"], "inject");
+    assert_eq!(payload["declared"][0]["default"], "last");
+    assert_eq!(payload["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["parameters"][0]["name"], "LEGACY");
+    assert_eq!(payload["parameters"][0]["delivery"], "inject");
+    assert_eq!(payload["parameters"][0]["default"], "last");
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
