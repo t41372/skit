@@ -7,7 +7,8 @@
 
 use skit_domain::parameters::{
     DeclaredEditContext, DeclaredEditRequest, DeclaredEditWarning, NamedEdit, ParamDecl,
-    ParameterDelivery, ParameterType, ParameterValue, as_param_type, coerce_default, edit_declared,
+    ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, as_param_type,
+    coerce_default, edit_declared,
 };
 
 fn named(values: &[(&str, &str)]) -> Vec<NamedEdit<String>> {
@@ -45,6 +46,80 @@ fn run(
 
 fn warning(name: &str, build: impl FnOnce(String) -> DeclaredEditWarning) -> DeclaredEditWarning {
     build(name.to_owned())
+}
+
+#[test]
+fn declared_edit_warning_names_and_codes_cover_the_complete_typed_set() {
+    let warnings = [
+        (
+            DeclaredEditWarning::NotDeclared {
+                name: "not_declared".to_owned(),
+            },
+            "not_declared",
+            "not-declared",
+        ),
+        (
+            DeclaredEditWarning::AlreadyDeclared {
+                name: "already_declared".to_owned(),
+            },
+            "already_declared",
+            "already-declared",
+        ),
+        (
+            DeclaredEditWarning::BadDelivery {
+                name: "bad_delivery".to_owned(),
+            },
+            "bad_delivery",
+            "bad-delivery",
+        ),
+        (
+            DeclaredEditWarning::NotAPlaceholder {
+                name: "not_a_placeholder".to_owned(),
+            },
+            "not_a_placeholder",
+            "not-a-placeholder",
+        ),
+        (
+            DeclaredEditWarning::BadType {
+                name: "bad_type".to_owned(),
+            },
+            "bad_type",
+            "bad-type",
+        ),
+        (
+            DeclaredEditWarning::BadDefault {
+                name: "bad_default".to_owned(),
+            },
+            "bad_default",
+            "bad-default",
+        ),
+        (
+            DeclaredEditWarning::EnvSourceNotSecret {
+                name: "env_source_not_secret".to_owned(),
+            },
+            "env_source_not_secret",
+            "env-source-not-secret",
+        ),
+        (
+            DeclaredEditWarning::ChoiceWithoutChoices {
+                name: "choice_without_choices".to_owned(),
+            },
+            "choice_without_choices",
+            "choice-without-choices",
+        ),
+        (
+            DeclaredEditWarning::BoolFlagOnByDefault {
+                name: "bool_flag_on_by_default".to_owned(),
+            },
+            "bool_flag_on_by_default",
+            "bool-flag-on-by-default",
+        ),
+    ];
+
+    for (warning, expected_name, expected_code) in warnings {
+        assert_eq!(warning.name(), expected_name);
+        assert_eq!(warning.code(), expected_code);
+    }
 }
 
 // add / remove / order
@@ -182,6 +257,30 @@ fn test_inputs_are_never_mutated() {
     );
     assert_eq!(original.prompt, "orig");
     assert!(!original.secret);
+}
+
+#[test]
+fn duplicate_input_rows_keep_the_first_position_and_the_last_complete_row() {
+    let first = ParamDecl {
+        help: "first".to_owned(),
+        ..ParamDecl::new("same")
+    };
+    let middle = ParamDecl::new("middle");
+    let last = ParamDecl {
+        parameter_type: ParameterType::Float,
+        default: Some(ParameterValue::Float(2.5)),
+        help: "last".to_owned(),
+        ..ParamDecl::new("same")
+    };
+
+    let result = run(
+        &[first, middle.clone(), last.clone()],
+        DeclaredEditRequest::default(),
+    );
+
+    assert_eq!(result.declarations, [last, middle]);
+    assert!(result.warnings.is_empty());
+    assert!(!result.changed);
 }
 
 // tweaks
@@ -509,6 +608,54 @@ fn test_a_name_touched_by_two_ops_is_listed_once_and_both_apply() {
     assert_eq!(declaration.prompt, "A?");
 }
 
+#[test]
+fn rust_extension_axes_apply_together_and_each_boolean_axis_can_be_cleared() {
+    let original = ParamDecl {
+        parameter_type: ParameterType::Bool,
+        default: Some(ParameterValue::Bool(false)),
+        flag: "--enabled".to_owned(),
+        ..ParamDecl::new("enabled")
+    };
+    let enabled = run(
+        &[original],
+        DeclaredEditRequest {
+            deliveries: named(&[("enabled", "not-a-delivery")]),
+            bindings: vec![NamedEdit::new("enabled", ParameterBinding::Const)],
+            multiple: vec!["enabled".to_owned()],
+            repeat: vec!["enabled".to_owned()],
+            env_targets: named(&[("enabled", "FEATURE_ENABLED")]),
+            actions: named(&[("enabled", "store_false")]),
+            ..DeclaredEditRequest::default()
+        },
+    );
+
+    assert_eq!(
+        enabled.warnings,
+        [DeclaredEditWarning::BadDelivery {
+            name: "enabled".to_owned(),
+        }]
+    );
+    let declaration = &enabled.declarations[0];
+    assert_eq!(declaration.binding, ParameterBinding::Const);
+    assert_eq!(declaration.delivery, ParameterDelivery::Inject);
+    assert!(declaration.multiple);
+    assert!(declaration.repeat);
+    assert_eq!(declaration.env_target, "FEATURE_ENABLED");
+    assert_eq!(declaration.action, "store_false");
+
+    let cleared = run(
+        &enabled.declarations,
+        DeclaredEditRequest {
+            no_multiple: vec!["enabled".to_owned()],
+            no_repeat: vec!["enabled".to_owned()],
+            ..DeclaredEditRequest::default()
+        },
+    );
+    assert!(cleared.warnings.is_empty());
+    assert!(!cleared.declarations[0].multiple);
+    assert!(!cleared.declarations[0].repeat);
+}
+
 // rollback on invalid
 
 #[test]
@@ -756,4 +903,36 @@ fn test_bool_flag_that_is_off_by_default_still_gets_store_true() {
     assert_eq!(declaration.parameter_type, ParameterType::Bool);
     assert_eq!(declaration.default, Some(ParameterValue::Bool(false)));
     assert_eq!(declaration.action, "store_true");
+}
+
+#[test]
+fn truthy_legacy_defaults_of_every_scalar_shape_refuse_a_bool_on_flag() {
+    for default in [
+        ParameterValue::String("yes".to_owned()),
+        ParameterValue::Integer(1),
+        ParameterValue::Float(0.5),
+    ] {
+        let original = ParamDecl {
+            parameter_type: ParameterType::Bool,
+            default: Some(default),
+            flag: "--enabled".to_owned(),
+            ..ParamDecl::new("enabled")
+        };
+        let result = run(
+            std::slice::from_ref(&original),
+            DeclaredEditRequest {
+                help: named(&[("enabled", "Enable the feature.")]),
+                ..DeclaredEditRequest::default()
+            },
+        );
+
+        assert_eq!(
+            result.warnings,
+            [DeclaredEditWarning::BoolFlagOnByDefault {
+                name: "enabled".to_owned(),
+            }]
+        );
+        assert_eq!(result.declarations, [original]);
+        assert!(!result.changed);
+    }
 }
