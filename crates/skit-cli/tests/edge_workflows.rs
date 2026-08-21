@@ -878,7 +878,12 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     sandbox.ok(&["config", "editor", "false"]);
     let (failed_code, failed) =
         sandbox.editor_pty(&["add", "--edit", "--name", "Failed Editor"], |_| {});
-    assert_eq!(failed_code, 2, "{failed}");
+    assert_eq!(failed_code, 0, "{failed}");
+    assert!(
+        failed.contains("Nothing was written, so no script was added."),
+        "{failed}"
+    );
+    assert!(!sandbox.data.path().join("scripts/failed-editor").exists());
     // An unbalanced-quote value becomes the program name; the launch failure is a
     // failed operation (exit 1), and the draft is kept like every editor failure.
     sandbox.ok(&["config", "editor", "'"]);
