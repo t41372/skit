@@ -479,4 +479,59 @@ mod tests {
         assert!(!picker.all_selected());
         assert_eq!(picker.accept(), PickerResult::Many(Vec::new()));
     }
+
+    #[test]
+    fn single_and_multiple_picker_operations_keep_their_typed_boundaries() {
+        let items = vec![
+            PickerItem::new(Choice::Alpha, "alpha"),
+            PickerItem::new(Choice::Alphabet, "alphabet"),
+            PickerItem::new(Choice::Graph, "graph"),
+        ];
+        let mut single = ChoicePicker::new(PickerMode::Single, items.clone(), Vec::new());
+        assert_eq!(single.mode(), PickerMode::Single);
+        assert_eq!(single.query(), "");
+        assert_eq!(
+            single.accept_item(&Choice::Graph),
+            Some(PickerResult::One(Choice::Graph))
+        );
+        assert_eq!(
+            single.accept_item(&Choice::Alphabet),
+            Some(PickerResult::One(Choice::Alphabet))
+        );
+        single.toggle(&Choice::Alpha);
+        single.select_visible(true);
+        single.select_all(true);
+        assert!(!single.is_selected(&Choice::Alpha));
+        assert_eq!(single.accept(), PickerResult::One(Choice::Alpha));
+
+        single.set_query("missing");
+        assert_eq!(single.query(), "missing");
+        assert_eq!(single.accept(), PickerResult::Cancelled);
+        assert_eq!(
+            single.accept_item(&Choice::Graph),
+            Some(PickerResult::One(Choice::Graph))
+        );
+
+        let empty = ChoicePicker::<Choice>::new(PickerMode::Single, Vec::new(), Vec::new());
+        assert_eq!(empty.accept(), PickerResult::Cancelled);
+        assert_eq!(empty.accept_item(&Choice::Graph), None);
+
+        let mut multiple = ChoicePicker::new(PickerMode::Multiple, items, Vec::new());
+        assert_eq!(multiple.mode(), PickerMode::Multiple);
+        assert_eq!(multiple.accept_item(&Choice::Alpha), None);
+        multiple.toggle(&Choice::Alpha);
+        multiple.toggle(&Choice::Alpha);
+        multiple.toggle(&Choice::Graph);
+        multiple.set_query("alpha");
+        multiple.select_visible(true);
+        assert!(multiple.is_selected(&Choice::Alpha));
+        assert!(multiple.is_selected(&Choice::Alphabet));
+        assert!(multiple.is_selected(&Choice::Graph));
+        multiple.select_visible(false);
+        assert!(!multiple.is_selected(&Choice::Alpha));
+        assert!(!multiple.is_selected(&Choice::Alphabet));
+        assert!(multiple.is_selected(&Choice::Graph));
+        multiple.toggle(&Choice::Graph);
+        assert_eq!(multiple.accept(), PickerResult::Many(Vec::new()));
+    }
 }

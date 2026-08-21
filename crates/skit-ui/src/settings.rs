@@ -1294,6 +1294,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn empty_serializable_state_refuses_unknown_focus_without_mutation() {
+        let mut view = SettingsView {
+            selector: "empty".to_owned(),
+            title: "Empty".to_owned(),
+            sections: Vec::new(),
+            dependency_flavor: None,
+            resync_available: false,
+            focused: String::new(),
+            revealed: None,
+            stored_workdir: String::new(),
+        };
+        let before = serde_json::to_value(&view).unwrap();
+
+        assert_eq!(view.resolved_workdir("stored").unwrap(), "");
+        assert!(view.needs_edit().is_empty());
+        assert!(!view.focus("missing"));
+        view.move_focus(true);
+        view.move_focus(false);
+        assert_eq!(
+            view.update(SettingsAction::Focus {
+                key: "missing".to_owned()
+            }),
+            SettingsEffect::None
+        );
+        assert_eq!(view.update(SettingsAction::FocusNext), SettingsEffect::None);
+        assert_eq!(
+            view.update(SettingsAction::FocusPrevious),
+            SettingsEffect::None
+        );
+        assert_eq!(view.update(SettingsAction::Close), SettingsEffect::Close);
+        assert_eq!(serde_json::to_value(&view).unwrap(), before);
+
+        for (section, title) in [
+            (SettingsSectionId::Basics, "Basics"),
+            (SettingsSectionId::Storage, "Storage"),
+            (SettingsSectionId::Launch, "Run in (working directory)"),
+            (
+                SettingsSectionId::Runner,
+                "Runner (the agent this prompt runs with)",
+            ),
+            (
+                SettingsSectionId::Parameters,
+                "Parameters (the run form's fields)",
+            ),
+            (SettingsSectionId::Presets, "Presets"),
+            (SettingsSectionId::Dependencies, "Dependencies"),
+            (SettingsSectionId::Needs, "Needs (external commands)"),
+        ] {
+            assert_eq!(section.title(), title);
+        }
+    }
+
     /// A section that does not apply is absent, not empty.
     ///
     /// Version 0.4 returns early rather than rendering a heading with nothing under it
@@ -1334,14 +1387,12 @@ mod tests {
     #[test]
     fn the_working_directory_offers_only_the_places_this_kind_has() {
         let view = SettingsView::from_inputs(&python_inputs());
-        let FieldKind::SingleChoice { options } = &view.field(WORKDIR_KEY).unwrap().kind else {
-            panic!("the working directory needs a closed option set");
-        };
-        let values = options
-            .iter()
-            .map(|option| option.value.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(values, ["origin", "store", "invoke", WORKDIR_CUSTOM]);
+        assert!(matches!(
+            &view.field(WORKDIR_KEY).unwrap().kind,
+            FieldKind::SingleChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["origin", "store", "invoke", WORKDIR_CUSTOM]
+        ));
 
         // A command template has no folder of its own and no stored copy.
         let command = SettingsInputs {
@@ -1351,14 +1402,12 @@ mod tests {
             ..python_inputs()
         };
         let view = SettingsView::from_inputs(&command);
-        let FieldKind::SingleChoice { options } = &view.field(WORKDIR_KEY).unwrap().kind else {
-            panic!("the working directory needs a closed option set");
-        };
-        let values = options
-            .iter()
-            .map(|option| option.value.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(values, ["invoke", WORKDIR_CUSTOM]);
+        assert!(matches!(
+            &view.field(WORKDIR_KEY).unwrap().kind,
+            FieldKind::SingleChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["invoke", WORKDIR_CUSTOM]
+        ));
     }
 
     /// A stored working directory that is none of the known policies preselects custom.
@@ -1560,17 +1609,15 @@ mod tests {
         });
         let field = view.field(RUNNER_KEY).unwrap();
         assert_eq!(field.value().as_text(), "retired");
-        let FieldKind::SingleChoice { options } = &field.kind else {
-            panic!("the runner needs a closed option set");
-        };
         // Value-keyed: the pin is present as its own option, so no index can shift it.
-        let stale = options
-            .iter()
-            .find(|option| option.value == "retired")
-            .expect("the stale pin lost its option");
-        assert_eq!(stale.label, "{} (no longer configured)");
-        assert_eq!(stale.detail, "retired");
-        assert_eq!(options[0].value, "", "the opt-out option comes first");
+        assert!(matches!(
+            &field.kind,
+            FieldKind::SingleChoice { options }
+                if options.first().is_some_and(|option| option.value.is_empty())
+                    && options.iter().any(|option| option.value == "retired"
+                        && option.label == "{} (no longer configured)"
+                        && option.detail == "retired")
+        ));
         // Nothing moved, so an unrelated save writes no runner change.
         assert!(!view.is_dirty());
 
@@ -1598,23 +1645,19 @@ mod tests {
         view.add_and_select_runner(&inputs.selector, "local".to_owned());
         let field = view.field(RUNNER_KEY).unwrap();
         assert_eq!(field.value().as_text(), "local");
-        let FieldKind::SingleChoice { options } = &field.kind else {
-            panic!("the runner needs a closed option set");
-        };
-        assert_eq!(
-            options
-                .iter()
-                .map(|option| option.value.as_str())
-                .collect::<Vec<_>>(),
-            ["", "claude", "local"]
-        );
+        assert!(matches!(
+            &field.kind,
+            FieldKind::SingleChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["", "claude", "local"]
+        ));
 
         // Selecting one the picker already lists adds no duplicate row.
         view.add_and_select_runner(&inputs.selector, "claude".to_owned());
-        let FieldKind::SingleChoice { options } = &view.field(RUNNER_KEY).unwrap().kind else {
-            panic!("the runner needs a closed option set");
-        };
-        assert_eq!(options.len(), 3);
+        assert!(matches!(
+            &view.field(RUNNER_KEY).unwrap().kind,
+            FieldKind::SingleChoice { options } if options.len() == 3
+        ));
         assert_eq!(view.field(RUNNER_KEY).unwrap().value().as_text(), "claude");
 
         // A response that names another entry is refused, so a screen that moved on keeps its pin.
@@ -1648,6 +1691,13 @@ mod tests {
             view.dependencies_edit(),
             Some(vec!["requests>=2,<3".to_owned(), "rich".to_owned()])
         );
+        assert_eq!(
+            view.submitted_values().get(DEPENDENCIES_KEY),
+            Some(&FieldValue::Explicit(TypedValue::Arguments(vec![
+                "requests>=2,<3".to_owned(),
+                "rich".to_owned(),
+            ])))
+        );
         // The constraint stayed untouched even though the other axis moved.
         assert_eq!(view.requires_python_edit(), None);
 
@@ -1656,6 +1706,9 @@ mod tests {
             .unwrap()
             .set_value(FieldValue::text("none"));
         assert_eq!(view.requires_python_edit(), Some(String::new()));
+
+        view.set_value(NEEDS_KEY, FieldValue::text("ffmpeg, jq"));
+        assert_eq!(view.needs_edit(), ["ffmpeg", "jq"]);
     }
 
     /// An npm entry that runs from its own project is offered no dependency field.
@@ -1938,16 +1991,12 @@ mod tests {
             field.label,
             "Detected but not yet managed — tick to manage:"
         );
-        let FieldKind::MultiChoice { options } = &field.kind else {
-            panic!("the offer needs an open option set");
-        };
-        assert_eq!(
-            options
-                .iter()
-                .map(|option| option.value.as_str())
-                .collect::<Vec<_>>(),
-            ["WIDTH", "HEIGHT"]
-        );
+        assert!(matches!(
+            &field.kind,
+            FieldKind::MultiChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["WIDTH", "HEIGHT"]
+        ));
 
         // The host splits one comma-separated list, so the ticked set travels in that shape and no
         // translation layer sits between the model and the save.
@@ -2150,17 +2199,13 @@ mod tests {
             ..python_inputs()
         });
         let field = shell.field(NORMALIZE_KEY).expect("no normalize offer");
-        let FieldKind::MultiChoice { options } = &field.kind else {
-            panic!("the offer needs an open option set");
-        };
         // Both a managed constant and an unmanaged one can be rewritten.
-        assert_eq!(
-            options
-                .iter()
-                .map(|option| option.value.as_str())
-                .collect::<Vec<_>>(),
-            ["NAME", "WIDTH"]
-        );
+        assert!(matches!(
+            &field.kind,
+            FieldKind::MultiChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["NAME", "WIDTH"]
+        ));
 
         // One already rewritten is not offered again: the rewrite is what produced it, so the only
         // outcome would be a refusal.
@@ -2172,16 +2217,12 @@ mod tests {
             candidates: vec!["WIDTH".to_owned()],
             ..python_inputs()
         });
-        let FieldKind::MultiChoice { options } = &shell.field(NORMALIZE_KEY).unwrap().kind else {
-            panic!("the offer needs an open option set");
-        };
-        assert_eq!(
-            options
-                .iter()
-                .map(|option| option.value.as_str())
-                .collect::<Vec<_>>(),
-            ["WIDTH"]
-        );
+        assert!(matches!(
+            &shell.field(NORMALIZE_KEY).unwrap().kind,
+            FieldKind::MultiChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["WIDTH"]
+        ));
 
         // With nothing left to rewrite there is no control at all, not an empty one.
         let mut rewritten = declaration("NAME");
