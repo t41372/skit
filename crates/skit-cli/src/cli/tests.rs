@@ -6865,3 +6865,163 @@ fn settings_host_updates_prompt_javascript_reference_python_and_source_managemen
             .contains("${NAME:-world}")
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let drafts = data_dir.join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+
+    let removed_path = drafts.join("skit-new-removed.py");
+    fs::write(&removed_path, b"print('remove')\n").unwrap();
+    let removed = tui_drafts(&data_dir).pop().unwrap();
+    let mut remove_workflow = AddWorkflowState::new(vec![removed]);
+    let _ = remove_workflow.reduce(AddAction::SelectDraft(0));
+    let _ = remove_workflow.reduce(AddAction::DeleteSelectedDraft);
+    let effects = remove_workflow.reduce(AddAction::ConfirmDraftDelete(true));
+    let action = tui_add_effect(&service, &store, &state_dir, &config_dir, effects).unwrap();
+    assert!(matches!(
+        action,
+        UiAction::Add(AddAction::DraftDeleted {
+            result: Ok(DraftDeleteOutcome::Removed),
+            ..
+        })
+    ));
+    assert!(!removed_path.exists());
+
+    let missing_path = drafts.join("skit-new-missing.py");
+    fs::write(&missing_path, b"print('missing')\n").unwrap();
+    let missing = tui_drafts(&data_dir).pop().unwrap();
+    let mut missing_workflow = AddWorkflowState::new(vec![missing]);
+    let _ = missing_workflow.reduce(AddAction::SelectDraft(0));
+    let _ = missing_workflow.reduce(AddAction::DeleteSelectedDraft);
+    let effects = missing_workflow.reduce(AddAction::ConfirmDraftDelete(true));
+    fs::remove_file(&missing_path).unwrap();
+    let action = tui_add_effect(&service, &store, &state_dir, &config_dir, effects).unwrap();
+    assert!(matches!(
+        action,
+        UiAction::Add(AddAction::DraftDeleted {
+            result: Ok(DraftDeleteOutcome::AlreadyMissing),
+            ..
+        })
+    ));
+
+    let source = root.path().join("editable.py");
+    fs::write(&source, b"print('before')\n").unwrap();
+    let editor = root.path().join("editor.sh");
+    fs::write(
+        &editor,
+        "#!/bin/sh\nprintf \"print('after')\\n\" > \"$1\"\n",
+    )
+    .unwrap();
+    let mut permissions = fs::metadata(&editor).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&editor, permissions).unwrap();
+    FileConfigStore::new(&config_dir)
+        .set("editor", editor.to_str().unwrap())
+        .unwrap();
+    let snapshot = tui_add_source(&data_dir, &source).unwrap();
+    let review = skit_ui::ReviewState::from_source(
+        snapshot,
+        KnownEntryKind::Python,
+        ReviewDefaults::default(),
+    );
+    let mut edit_workflow = AddWorkflowState::from_review(review);
+    let effects = edit_workflow.reduce(AddAction::EditSource);
+    let action = tui_add_effect(&service, &store, &state_dir, &config_dir, effects).unwrap();
+    assert!(matches!(
+        action,
+        UiAction::Add(AddAction::SourceEdited {
+            result: Ok(ref snapshot),
+            ..
+        }) if snapshot.bytes == b"print('after')\n"
+    ));
+    assert_eq!(fs::read(&source).unwrap(), b"print('after')\n");
+
+    assert_eq!(
+        tui_add_effect(
+            &service,
+            &store,
+            &state_dir,
+            &config_dir,
+            vec![AddEffect::DraftKept(source)],
+        )
+        .unwrap(),
+        UiAction::ClearStatus
+    );
+    assert_eq!(
+        tui_add_effect(&service, &store, &state_dir, &config_dir, Vec::new()).unwrap(),
+        UiAction::ClearStatus
+    );
+
+    let invalid = tui_add_effect(
+        &service,
+        &store,
+        &state_dir,
+        &config_dir,
+        vec![AddEffect::Complete("not a slug!".to_owned())],
+    )
+    .unwrap();
+    assert!(matches!(
+        invalid,
+        UiAction::Complete {
+            surface: None,
+            rerunnable: None,
+            ref message,
+        } if message == "Entry added"
+    ));
+
+    let created = service
+        .add(CreateEntry {
+            name: "Completed without surface".to_owned(),
+            kind: EntryKind::parse("prompt").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"Review this".to_vec(),
+                stored_name: Some("prompt.md".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let scripts_dir = data_dir.join("scripts");
+    let original_permissions = fs::metadata(&scripts_dir).unwrap().permissions();
+    let mut unreadable_permissions = original_permissions.clone();
+    unreadable_permissions.set_mode(0o000);
+    fs::set_permissions(&scripts_dir, unreadable_permissions).unwrap();
+    let degraded = tui_add_effect(
+        &service,
+        &store,
+        &state_dir,
+        &config_dir,
+        vec![AddEffect::Complete(created.slug.as_str().to_owned())],
+    )
+    .unwrap();
+    fs::set_permissions(&scripts_dir, original_permissions).unwrap();
+    assert!(
+        matches!(
+            degraded,
+            UiAction::Complete {
+                surface: None,
+                rerunnable: None,
+                ref message,
+            } if message.starts_with("Entry added\nwarning: ")
+        ),
+        "{degraded:?}"
+    );
+    assert_eq!(
+        service.show(created.slug.as_str()).unwrap().slug,
+        created.slug
+    );
+}
