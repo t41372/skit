@@ -4,12 +4,182 @@
 //! immutable projection and never reconstructs these facts from partial list rows. Version 0.4
 //! reads exactly the same facts for the same screen (`src/skit/tui.py:531-604`).
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt::Debug, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
-use skit_domain::Slug;
+use skit_domain::{Entry, EntrySettings, Slug, parameters::ParamDecl};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use crate::LibraryScan;
+use crate::{
+    EntryRepository, LibraryScan, RepositoryError,
+    form_state::{FormStateRepository, LastRunState, prefill},
+};
+
+/// Storage state for the target that one entry would launch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LibraryTargetState {
+    /// This entry kind has no file-backed target that this version can check.
+    NotApplicable,
+    /// The launch target exists.
+    Present,
+    /// The launch target is absent at this path.
+    Missing(PathBuf),
+}
+
+/// One complete storage snapshot used to project Library detail facts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LibraryEntrySnapshot {
+    /// Complete entry metadata.
+    pub entry: Entry,
+    /// Byte-exact payload content, or `None` when the payload cannot be read.
+    pub source: Option<Vec<u8>>,
+    /// Current launch-target state.
+    pub target: LibraryTargetState,
+    /// Whether the entry's recorded original source currently exists.
+    pub original_source_exists: bool,
+}
+
+/// Read-side storage port for one complete Library refresh.
+pub trait LibraryDetailRepository: EntryRepository {
+    /// Read every valid entry and its storage facts in one directory pass.
+    fn detail_snapshots(&self) -> Result<Vec<LibraryEntrySnapshot>, RepositoryError>;
+}
+
+/// Parser-backed form facts used by the Library detail projection.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LibraryFormFacts {
+    /// Effective declarations in runtime order.
+    pub declarations: Vec<ParamDecl>,
+    /// Whether stored definitions differ from the current source.
+    pub drifted: bool,
+}
+
+/// Form-analysis port used by the Library detail projection.
+pub trait LibraryFormProjector: Debug {
+    /// Project form facts from one byte-exact entry snapshot.
+    fn project(&self, entry: &Entry, source: Option<&[u8]>) -> LibraryFormFacts;
+}
+
+/// Build one complete Library surface from application ports.
+#[derive(Debug)]
+pub struct LibrarySurfaceService<'a, R, S, F, E> {
+    repository: &'a R,
+    form_state: &'a S,
+    form_projector: &'a F,
+    effective_settings: E,
+}
+
+impl<'a, R, S, F, E> LibrarySurfaceService<'a, R, S, F, E> {
+    /// Construct the service from storage, state, form, and source projections.
+    #[must_use]
+    pub const fn new(
+        repository: &'a R,
+        form_state: &'a S,
+        form_projector: &'a F,
+        effective_settings: E,
+    ) -> Self {
+        Self {
+            repository,
+            form_state,
+            form_projector,
+            effective_settings,
+        }
+    }
+}
+
+impl<R, S, F, E> LibrarySurfaceService<'_, R, S, F, E>
+where
+    R: LibraryDetailRepository,
+    S: FormStateRepository,
+    F: LibraryFormProjector,
+    E: Fn(&Entry, Option<&[u8]>) -> EntrySettings,
+{
+    /// Build one projection against an explicit clock reading.
+    pub fn load_at(
+        &self,
+        configured_runners: &[String],
+        now: OffsetDateTime,
+    ) -> Result<LibrarySurface, RepositoryError> {
+        let scan = self.repository.scan()?;
+        let details = self
+            .repository
+            .detail_snapshots()?
+            .into_iter()
+            .map(|snapshot| {
+                let slug = snapshot.entry.slug.clone();
+                let detail = self.entry_detail(snapshot, configured_runners, now);
+                (slug, detail)
+            })
+            .collect();
+        Ok(LibrarySurface { scan, details })
+    }
+
+    fn entry_detail(
+        &self,
+        snapshot: LibraryEntrySnapshot,
+        configured_runners: &[String],
+        now: OffsetDateTime,
+    ) -> LibraryEntryDetail {
+        let entry = &snapshot.entry;
+        let kind = entry.meta.kind.as_str();
+        let source = snapshot.source.as_deref();
+        let settings = (self.effective_settings)(entry, source);
+        let persisted = self.form_state.load(&entry.slug);
+        let form = self.form_projector.project(entry, source);
+        let values = prefill(&form.declarations, &persisted.values, None);
+        let parameters = form
+            .declarations
+            .iter()
+            .map(|declaration| LibraryParameterDetail {
+                key: declaration.name.clone(),
+                value: values.get(&declaration.name).cloned().unwrap_or_default(),
+                secret: declaration.secret,
+            })
+            .collect();
+        LibraryEntryDetail {
+            added_at: entry.meta.added_at.clone(),
+            template: (kind == "command" && !settings.template.is_empty())
+                .then(|| settings.template.clone()),
+            prompt_runner: (kind == "prompt")
+                .then(|| prompt_runner(&settings.runner, configured_runners)),
+            parameters,
+            presets: persisted.presets.keys().cloned().collect(),
+            dependencies: settings.dependencies,
+            last_run: last_run(now, &persisted.last_run),
+            missing_target: match snapshot.target {
+                LibraryTargetState::Missing(path) => Some(path.display().to_string()),
+                LibraryTargetState::NotApplicable | LibraryTargetState::Present => None,
+            },
+            drifted: form.drifted,
+            original_file_preserved: kind != "command"
+                && !entry.meta.source.is_empty()
+                && snapshot.original_source_exists,
+        }
+    }
+}
+
+fn prompt_runner(pin: &str, configured_runners: &[String]) -> LibraryPromptRunner {
+    if pin.is_empty() {
+        return LibraryPromptRunner::PickOnRunForm;
+    }
+    if configured_runners.iter().any(|runner| runner == pin) {
+        LibraryPromptRunner::Configured(pin.to_owned())
+    } else {
+        LibraryPromptRunner::Missing(pin.to_owned())
+    }
+}
+
+fn last_run(now: OffsetDateTime, last_run: &LastRunState) -> Option<LibraryLastRun> {
+    let at = last_run.at.clone()?;
+    let elapsed = OffsetDateTime::parse(&at, &Rfc3339)
+        .ok()
+        .map(|then| (now - then).whole_seconds());
+    Some(LibraryLastRun {
+        age: LibraryRunAge::from_elapsed(at.clone(), elapsed),
+        at,
+        exit: last_run.exit,
+    })
+}
 
 /// Localized relative-time shape for one recorded launch.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
