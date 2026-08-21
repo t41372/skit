@@ -638,6 +638,42 @@ fn unknown_source_tweaks_warn_keep_valid_siblings_and_keep_json_on_stdout() {
 }
 
 #[test]
+fn one_valid_secret_transition_purges_every_final_secret_legacy_value() {
+    let sandbox = Sandbox::new();
+    let city = const_decl("CITY", ParameterType::Str);
+    let mut api_key = const_decl("API_KEY", ParameterType::Str);
+    api_key.secret = true;
+    let source = write_managed_params(
+        "python",
+        "CITY = \"Taipei\"\nAPI_KEY = \"source-secret\"\nprint(CITY, API_KEY)\n",
+        &[city, api_key],
+    )
+    .unwrap();
+    sandbox.add_job_source(&source);
+    let state = sandbox.state.path().join("values/job.toml");
+    fs::create_dir_all(state.parent().unwrap()).unwrap();
+    fs::write(
+        &state,
+        "[values]\nCITY = \"city-leak\"\nAPI_KEY = \"api-leak\"\nKEEP = \"public\"\n\n[presets.saved]\nCITY = \"city-preset\"\nAPI_KEY = \"api-preset\"\nKEEP = \"public\"\n",
+    )
+    .unwrap();
+
+    let output = sandbox
+        .command()
+        .args(["params", "job", "--secret", "CITY"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    let state = fs::read_to_string(state).unwrap();
+    assert!(!state.contains("CITY"), "{state}");
+    assert!(!state.contains("API_KEY"), "{state}");
+    assert!(!state.contains("leak"), "{state}");
+    assert!(!state.contains("preset"), "{state}");
+    assert!(state.contains("KEEP = \"public\""), "{state}");
+}
+
+#[test]
 fn source_edit_order_is_resync_then_unmanage_manage_and_tweak() {
     let result = edit_source_declarations(
         "python",
