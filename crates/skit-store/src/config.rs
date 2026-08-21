@@ -97,7 +97,6 @@ pub struct PromptRunnerRow {
     /// Stable display text for malformed shapes.
     pub descriptor: String,
     reason_message: Option<Message>,
-    descriptor_message: Option<Message>,
     raw: Value,
 }
 
@@ -114,13 +113,12 @@ impl PromptRunnerRow {
             .map(|message| message.localize(locale))
     }
 
-    /// Return the display label in the selected locale.
+    /// Return the display label.
+    ///
+    /// Runner names and raw container paths are user data, so the locale does not change them.
     #[must_use]
-    pub fn localized_descriptor(&self, locale: Locale) -> String {
-        self.descriptor_message.as_ref().map_or_else(
-            || self.descriptor.clone(),
-            |message| message.localize(locale),
-        )
+    pub fn localized_descriptor(&self, _locale: Locale) -> String {
+        self.descriptor.clone()
     }
 
     /// Return an opaque token for the complete raw management identity.
@@ -1234,16 +1232,14 @@ fn runner_rows_from_document(document: &Table) -> Vec<PromptRunnerRow> {
                     reason: None,
                     descriptor: runner.name,
                     reason_message: None,
-                    descriptor_message: None,
                     raw,
                 }
             })
             .collect();
     }
 
-    let Some(prompt_value) = document.get("prompt") else {
-        return Vec::new();
-    };
+    // `runners_are_configured` returns true only when the prompt key exists.
+    let prompt_value = &document["prompt"];
     let Some(prompt) = prompt_value.as_table() else {
         return vec![container_runner_row(
             PromptRunnerIssue::PromptSectionNotTable,
@@ -1281,7 +1277,6 @@ fn container_runner_row(
         reason: Some(issue.code().to_owned()),
         descriptor: descriptor.to_owned(),
         reason_message: Some(issue.status_message()),
-        descriptor_message: None,
         raw: value.clone(),
     }
 }
@@ -1341,7 +1336,6 @@ fn runner_row(
         reason: issue.map(|issue| issue.code().to_owned()),
         descriptor,
         reason_message,
-        descriptor_message: None,
         raw: value.clone(),
     }
 }
@@ -1462,18 +1456,6 @@ fn remove_malformed_runner_container(
     expected: &PromptRunnerRow,
 ) -> Result<bool, ConfigError> {
     match document.get_mut("prompt") {
-        Some(prompt) if !prompt.is_table() => {
-            if expected.reason.as_deref() != Some(PromptRunnerIssue::PromptSectionNotTable.code())
-                || prompt != &expected.raw
-            {
-                return Ok(false);
-            }
-            let mut repaired = Table::new();
-            repaired.insert("runners_seeded".to_owned(), Value::Boolean(true));
-            repaired.insert("runners".to_owned(), Value::Array(Vec::new()));
-            *prompt = Value::Table(repaired);
-            Ok(true)
-        }
         Some(Value::Table(prompt)) => {
             let Some(runners) = prompt.get("runners") else {
                 return Ok(false);
@@ -1488,8 +1470,19 @@ fn remove_malformed_runner_container(
             prompt.insert("runners".to_owned(), Value::Array(Vec::new()));
             Ok(true)
         }
+        Some(prompt) => {
+            if expected.reason.as_deref() != Some(PromptRunnerIssue::PromptSectionNotTable.code())
+                || prompt != &expected.raw
+            {
+                return Ok(false);
+            }
+            let mut repaired = Table::new();
+            repaired.insert("runners_seeded".to_owned(), Value::Boolean(true));
+            repaired.insert("runners".to_owned(), Value::Array(Vec::new()));
+            *prompt = Value::Table(repaired);
+            Ok(true)
+        }
         None => Ok(false),
-        Some(_) => unreachable!("all non-table prompt values use the first match arm"),
     }
 }
 
@@ -1592,9 +1585,124 @@ fn io_error(operation: &'static str, path: &std::path::Path, error: std::io::Err
 
 #[cfg(test)]
 mod tests {
-    use super::replace_existing_backup;
+    use super::{
+        PromptRunnerIssue, container_runner_row, legacy_value_descriptor,
+        remove_malformed_runner_container, replace_existing_backup, runner_array_mut,
+        runner_rows_from_document, table_mut,
+    };
+    use skit_i18n::Locale;
     use std::{fs, io};
     use tempfile::TempDir;
+    use toml::{Table, Value};
+
+    #[test]
+    fn raw_runner_issue_messages_keep_their_stable_machine_and_human_meanings() {
+        for (issue, code, message) in [
+            (
+                PromptRunnerIssue::ArgvType,
+                "argv-type",
+                "a prompt runner argv must be a list of strings",
+            ),
+            (
+                PromptRunnerIssue::RowNotTable,
+                "row-not-table",
+                "the prompt runner row is not a table",
+            ),
+            (
+                PromptRunnerIssue::Duplicate,
+                "duplicate",
+                "another row already uses this prompt runner name",
+            ),
+        ] {
+            assert_eq!(issue.code(), code);
+            assert_eq!(issue.message().localize(Locale::En), message);
+        }
+    }
+
+    #[test]
+    fn runner_document_helpers_cover_fresh_missing_and_future_container_shapes() {
+        let mut fresh = Table::new();
+        assert!(runner_array_mut(&mut fresh).unwrap().is_empty());
+        assert!(fresh["prompt"]["runners"].as_array().unwrap().is_empty());
+
+        let mut future = Table::new();
+        future.insert("prompt".to_owned(), Value::String("future".to_owned()));
+        let error = table_mut(&mut future, "prompt").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("configuration section is not a table: prompt")
+        );
+
+        let mut seeded_without_rows = Table::new();
+        seeded_without_rows.insert(
+            "prompt".to_owned(),
+            Value::Table(Table::from_iter([(
+                "runners_seeded".to_owned(),
+                Value::Boolean(true),
+            )])),
+        );
+        assert!(runner_rows_from_document(&seeded_without_rows).is_empty());
+
+        let expected = container_runner_row(
+            PromptRunnerIssue::RunnersNotList,
+            "prompt.runners",
+            &Value::String("old".to_owned()),
+        );
+        assert_eq!(
+            expected.localized_reason(Locale::En).as_deref(),
+            Some("the prompt.runners value isn't a list; repair it before runner management")
+        );
+        assert_eq!(
+            expected.localized_descriptor(Locale::ZhTw),
+            "prompt.runners"
+        );
+        assert!(!remove_malformed_runner_container(&mut seeded_without_rows, &expected).unwrap());
+
+        let mut malformed = Table::from_iter([(
+            "prompt".to_owned(),
+            Value::Table(Table::from_iter([(
+                "runners".to_owned(),
+                Value::String("old".to_owned()),
+            )])),
+        )]);
+        let stale = container_runner_row(
+            PromptRunnerIssue::RunnersNotList,
+            "prompt.runners",
+            &Value::String("newer".to_owned()),
+        );
+        assert!(!remove_malformed_runner_container(&mut malformed, &stale).unwrap());
+        assert!(remove_malformed_runner_container(&mut malformed, &expected).unwrap());
+        assert!(
+            malformed["prompt"]["runners"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(malformed["prompt"]["runners_seeded"].as_bool().unwrap());
+
+        let mut absent = Table::new();
+        assert!(!remove_malformed_runner_container(&mut absent, &expected).unwrap());
+    }
+
+    #[test]
+    fn legacy_runner_descriptors_use_python_scalar_and_string_spelling() {
+        let datetime = "1979-05-27T07:32:00Z".parse().unwrap();
+        assert_eq!(legacy_value_descriptor(&Value::Float(1.25)), "1.25");
+        assert_eq!(legacy_value_descriptor(&Value::Boolean(true)), "True");
+        assert_eq!(legacy_value_descriptor(&Value::Boolean(false)), "False");
+        assert_eq!(
+            legacy_value_descriptor(&Value::Datetime(datetime)),
+            "1979-05-27T07:32:00Z"
+        );
+        assert_eq!(
+            legacy_value_descriptor(&Value::Array(vec![
+                Value::String("slash\\quote'".to_owned()),
+                Value::String("line\nreturn\rtab\t\u{7}".to_owned()),
+            ])),
+            "['slash\\\\quote\\'', 'line\\nreturn\\rtab\\t\\u0007']"
+        );
+    }
 
     #[test]
     fn backup_replacement_restores_the_previous_backup_when_the_new_write_fails() {
