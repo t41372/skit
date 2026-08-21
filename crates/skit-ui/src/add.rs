@@ -160,6 +160,11 @@ pub struct SourceSnapshot {
     pub bytes: Vec<u8>,
     /// Permissions stored with a copy payload.
     pub permissions: SourcePermissions,
+    /// Whether the host can execute this regular file directly.
+    ///
+    /// `None` keeps compatibility with snapshots created before hosts supplied this fact.
+    #[serde(default)]
+    pub executable: Option<bool>,
     /// Whether the snapshot is a regular file.
     pub is_regular: bool,
     /// Whether the source is a directory-shaped executable.
@@ -196,10 +201,14 @@ impl SourceSnapshot {
             .filter(|kind| !(self.is_draft && *kind == KnownEntryKind::Executable))
     }
 
-    fn is_executable(&self) -> bool {
-        self.permissions
-            .unix_mode
-            .is_some_and(|mode| mode & 0o111 != 0)
+    /// Return the host fact, or derive the legacy POSIX fact from captured permission bits.
+    #[must_use]
+    pub fn is_executable(&self) -> bool {
+        self.executable.unwrap_or_else(|| {
+            self.permissions
+                .unix_mode
+                .is_some_and(|mode| mode & 0o111 != 0)
+        })
     }
 
     fn default_name(&self, kind: KnownEntryKind) -> String {
@@ -1821,6 +1830,7 @@ mod tests {
                 readonly: false,
                 unix_mode: Some(0o644),
             },
+            executable: None,
             is_regular: true,
             is_directory: false,
             is_draft: false,
@@ -2290,6 +2300,50 @@ mod tests {
         let _ = workflow.reduce(AddAction::PickKind(Some(KnownEntryKind::Shell)));
         assert_eq!(workflow.stage(), AddStage::Review);
         assert_eq!(workflow.review().unwrap().kind(), KnownEntryKind::Shell);
+    }
+
+    #[test]
+    fn host_executable_facts_are_only_the_final_kind_fallback() {
+        let mut executable = source("tool.unknown", b"plain bytes\n");
+        executable.executable = Some(true);
+        let mut executable_workflow = AddWorkflowState::new(Vec::new());
+        let _ = executable_workflow.reduce(AddAction::SetSourcePath("tool.unknown".into()));
+        inspected(&mut executable_workflow, executable);
+        assert_eq!(
+            executable_workflow.review().unwrap().kind(),
+            KnownEntryKind::Executable
+        );
+
+        let mut python = source("tool.py", b"#!/bin/sh\nprint('ok')\n");
+        python.executable = Some(true);
+        let mut python_workflow = AddWorkflowState::new(Vec::new());
+        let _ = python_workflow.reduce(AddAction::SetSourcePath("tool.py".into()));
+        inspected(&mut python_workflow, python);
+        assert_eq!(
+            python_workflow.review().unwrap().kind(),
+            KnownEntryKind::Python
+        );
+
+        let mut shell = source("tool", b"#!/usr/bin/env bash\necho ok\n");
+        shell.executable = Some(true);
+        let mut shell_workflow = AddWorkflowState::new(Vec::new());
+        let _ = shell_workflow.reduce(AddAction::SetSourcePath("tool".into()));
+        inspected(&mut shell_workflow, shell);
+        assert_eq!(
+            shell_workflow.review().unwrap().kind(),
+            KnownEntryKind::Shell
+        );
+
+        let mut legacy = source("legacy", b"plain bytes\n");
+        legacy.permissions.unix_mode = Some(0o755);
+        let mut encoded = serde_json::to_value(legacy).unwrap();
+        encoded.as_object_mut().unwrap().remove("executable");
+        assert!(
+            serde_json::from_value::<SourceSnapshot>(encoded)
+                .unwrap()
+                .is_executable(),
+            "an older serialized Unix snapshot keeps its execute-bit inference"
+        );
     }
 
     #[test]

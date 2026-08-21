@@ -357,6 +357,7 @@ fn snap(name: &str, bytes: &[u8]) -> SourceSnapshot {
             readonly: false,
             unix_mode: Some(0o644),
         },
+        executable: None,
         is_regular: true,
         is_directory: false,
         is_draft: false,

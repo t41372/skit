@@ -105,6 +105,18 @@ fn windows_cli_infers_a_real_pathext_source_as_an_executable() {
         .success();
 
     assert_eq!(sandbox.show_json("run")["kind"], "exe");
+
+    let dropped = sandbox.scratch.path().join("dropped.exe");
+    fs::write(&dropped, b"MZ").unwrap();
+    sandbox
+        .command_in("en")
+        .env("PATHEXT", ".FOO;.BAT")
+        .args(["add"])
+        .arg(&dropped)
+        .args(["--name", "dropped", "--no-input"])
+        .assert()
+        .code(2);
+    assert!(!sandbox.data.path().join("scripts/dropped").exists());
 }
 
 #[cfg(unix)]

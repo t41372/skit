@@ -18,9 +18,10 @@ use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell,
 use dialoguer::{Confirm, Input, MultiSelect, Password};
 use skit_application::{
     AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope, AgentTarget, CreateEntry,
-    EntryPayload, ExitClass, ExternalCopyEdit as _, FinalizeExternalCopyEditError, ForcedAddKind,
-    LibraryScan, LibraryService, PreparedEntryUpdateError, RepositoryError, RepositoryOperation,
-    SourceIdentity, SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
+    EntryPayload, ExecutableDialect, ExecutableSourceFacts, ExitClass, ExternalCopyEdit as _,
+    FinalizeExternalCopyEditError, ForcedAddKind, LibraryScan, LibraryService,
+    PreparedEntryUpdateError, RepositoryError, RepositoryOperation, SourceIdentity,
+    SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
     form_feedback::GlobCountPort,
     form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill, scrub_secrets},
     health::{
@@ -36,7 +37,7 @@ use skit_application::{
     },
     prompt_selection::PromptSelectionService,
     runner_management::{EditableArgvDialect, split_editable_argv},
-    supports_storage_modes,
+    source_is_executable, supports_storage_modes,
     value_preparation::validate_form_value,
 };
 use skit_domain::{
@@ -1330,14 +1331,7 @@ fn preflight_owned_draft_boundary(data_dir: &Path, options: &AddOptions) -> Resu
         .lines()
         .next()
         .filter(|line| line.starts_with("#!"));
-    let inferred = infer_draft_kind(
-        &snapshot.path,
-        shebang,
-        snapshot
-            .permissions
-            .unix_mode
-            .is_some_and(|mode| mode & 0o111 != 0),
-    );
+    let inferred = infer_draft_kind(&snapshot.path, shebang, snapshot.is_executable());
     refuse_owned_draft_boundary(
         &snapshot.path,
         options.reference,
@@ -3568,13 +3562,14 @@ fn add_with_config(
         .lines()
         .next()
         .filter(|line| line.starts_with("#!"));
-    let file_is_executable = permissions.unix_mode.is_some_and(|mode| mode & 0o111 != 0);
+    let file_is_executable = source_is_host_executable(&source, source_is_regular, permissions);
     let owned_draft = !from_stdin && is_owned_draft(service.repository().data_dir(), &source);
     let source_claim = owned_draft.then(|| AddSourceSnapshot {
         path: source.clone(),
         source_record: source_record.clone(),
         bytes: bytes.clone(),
         permissions,
+        executable: Some(file_is_executable),
         is_regular: source_is_regular,
         is_directory: !source_is_regular,
         is_draft: true,
@@ -7805,15 +7800,35 @@ fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, Cl
         )
     };
     let is_draft = is_owned_draft(data_dir, &path);
+    let executable = source_is_host_executable(&path, is_regular, permissions);
     Ok(AddSourceSnapshot {
         source_record: path.display().to_string(),
         path,
         bytes,
         permissions,
+        executable: Some(executable),
         is_regular,
         is_directory,
         is_draft,
         identity,
+    })
+}
+
+fn source_is_host_executable(path: &Path, is_file: bool, permissions: SourcePermissions) -> bool {
+    #[cfg(windows)]
+    let pathext = env::var("PATHEXT").ok();
+    #[cfg(windows)]
+    let dialect = ExecutableDialect::Windows {
+        pathext: pathext.as_deref(),
+    };
+    #[cfg(not(windows))]
+    let dialect = ExecutableDialect::Posix;
+
+    source_is_executable(ExecutableSourceFacts {
+        path,
+        is_file,
+        unix_mode: permissions.unix_mode,
+        dialect,
     })
 }
 

@@ -65,6 +65,7 @@ fn snapshot(path: &str, bytes: &[u8], unix_mode: u32, is_draft: bool) -> SourceS
             readonly: false,
             unix_mode: Some(unix_mode),
         },
+        executable: None,
         is_regular: true,
         is_directory: false,
         is_draft,

@@ -4,6 +4,60 @@ use std::path::Path;
 
 use skit_domain::{EntryKind, StorageMode};
 
+const DEFAULT_WINDOWS_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+/// Host executable convention used for add-time source inference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutableDialect<'a> {
+    /// A real file is executable when any Unix execute bit is set.
+    Posix,
+    /// A real file is executable when its suffix occurs in PATHEXT.
+    Windows {
+        /// The host PATHEXT value. Unset and empty values use the Windows default.
+        pathext: Option<&'a str>,
+    },
+}
+
+/// Complete filesystem and host facts for direct-executable inference.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExecutableSourceFacts<'a> {
+    /// Source path whose final suffix is inspected on Windows.
+    pub path: &'a Path,
+    /// Whether the resolved source is a regular file.
+    pub is_file: bool,
+    /// Unix permission bits when the host supplies them.
+    pub unix_mode: Option<u32>,
+    /// Host executable convention.
+    pub dialect: ExecutableDialect<'a>,
+}
+
+/// Return whether one real source file can be inferred as a direct executable.
+///
+/// Language extension and shebang classification stays in `skit-language` and must run before
+/// this fallback. This policy uses only facts supplied by a filesystem adapter.
+#[must_use]
+pub fn source_is_executable(facts: ExecutableSourceFacts<'_>) -> bool {
+    if !facts.is_file {
+        return false;
+    }
+    match facts.dialect {
+        ExecutableDialect::Posix => facts.unix_mode.is_some_and(|mode| mode & 0o111 != 0),
+        ExecutableDialect::Windows { pathext } => {
+            let pathext = pathext
+                .filter(|value| !value.is_empty())
+                .unwrap_or(DEFAULT_WINDOWS_PATHEXT);
+            let Some(extension) = facts.path.extension().and_then(|value| value.to_str()) else {
+                return false;
+            };
+            let extension = format!(".{extension}");
+            pathext
+                .split(';')
+                .filter(|candidate| !candidate.is_empty())
+                .any(|candidate| candidate.eq_ignore_ascii_case(&extension))
+        }
+    }
+}
+
 /// One entry kind that an explicit `add --kind` request can author.
 ///
 /// Prompt files and command entries use dedicated authoring lanes. The stdin composition keeps a

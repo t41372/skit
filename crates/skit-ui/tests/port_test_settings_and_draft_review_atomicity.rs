@@ -101,6 +101,7 @@ fn snapshot(path: &str, bytes: &[u8], is_draft: bool) -> SourceSnapshot {
             readonly: false,
             unix_mode: Some(0o644),
         },
+        executable: None,
         is_regular: true,
         is_directory: false,
         is_draft,

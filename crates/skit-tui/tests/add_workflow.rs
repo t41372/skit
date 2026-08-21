@@ -241,6 +241,7 @@ fn add_prompt_review_routes_the_complete_picker_and_runner_editor_seam() {
             source_record: "task.prompt.md".to_owned(),
             bytes: body.into_bytes(),
             permissions: SourcePermissions::default(),
+            executable: None,
             is_regular: true,
             is_directory: false,
             is_draft: false,

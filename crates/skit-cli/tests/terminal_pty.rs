@@ -833,6 +833,7 @@ impl PromptTuiSandbox {
                 source_record: path.display().to_string(),
                 bytes: b"Do {{a}}\n".to_vec(),
                 permissions: SourcePermissions::default(),
+                executable: None,
                 is_regular: true,
                 is_directory: false,
                 is_draft: false,
