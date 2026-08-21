@@ -223,6 +223,16 @@ pub fn generate(
     seed: u64,
     state_fraction: f64,
 ) -> Result<DatasetManifest, DatasetError> {
+    generate_with_before_count_hook(root, n, seed, state_fraction, |_, _| Ok(()))
+}
+
+fn generate_with_before_count_hook(
+    root: &Path,
+    n: isize,
+    seed: u64,
+    state_fraction: f64,
+    before_count: impl FnOnce(&LibraryService<FileStore>, &[Entry]) -> Result<(), DatasetError>,
+) -> Result<DatasetManifest, DatasetError> {
     if n < 0 {
         return Err(DatasetError::Invalid("n must be >= 0".to_owned()));
     }
@@ -280,17 +290,21 @@ pub fn generate(
             .record_run(&entry.slug, 0, &at, declarations, Some(&values))
             .map_err(|error| DatasetError::Product(error.to_string()))?;
     }
-    let found = library
-        .list()
-        .map_err(|error| DatasetError::Product(error.to_string()))?
-        .entries
-        .len();
-    validate_generated_count(found, n)?;
+    before_count(&library, &entries)?;
+    let found = authoritative_entry_count(&library)?;
+    validate_authoritative_count(found, n, CountVoice::Generated)?;
     finalize(root, n, seed, state_fraction, slugs, kinds)
 }
 
 /// Generate the dedicated Python, shell, and JavaScript run-overhead library.
 pub fn generate_runover(root: PathBuf) -> Result<DatasetManifest, DatasetError> {
+    generate_runover_with_before_count_hook(root, |_, _| Ok(()))
+}
+
+fn generate_runover_with_before_count_hook(
+    root: PathBuf,
+    before_count: impl FnOnce(&LibraryService<FileStore>, &[Entry]) -> Result<(), DatasetError>,
+) -> Result<DatasetManifest, DatasetError> {
     require_empty(&root)?;
     create_directory_tree(&root)?;
     let root = absolute(&root)?;
@@ -305,6 +319,7 @@ pub fn generate_runover(root: PathBuf) -> Result<DatasetManifest, DatasetError> 
     ];
     let mut slugs = Vec::new();
     let mut kinds = BTreeMap::new();
+    let mut entries = Vec::with_capacity(lanes.len());
     for (index, (kind, name, body)) in lanes.into_iter().enumerate() {
         let entry = add_entry(
             &library,
@@ -318,8 +333,12 @@ pub fn generate_runover(root: PathBuf) -> Result<DatasetManifest, DatasetError> 
             .commit_copy_edit(&entry, body.as_bytes(), &entry.meta.source_hash)
             .map_err(|error| DatasetError::Product(error.to_string()))?;
         kinds.insert(entry.slug.as_str().to_owned(), kind.to_owned());
-        slugs.push(entry.slug);
+        slugs.push(entry.slug.clone());
+        entries.push(entry);
     }
+    before_count(&library, &entries)?;
+    let found = authoritative_entry_count(&library)?;
+    validate_authoritative_count(found, lanes.len(), CountVoice::Runover)?;
     finalize(root, 3, 0, 0.0, slugs, kinds)
 }
 
@@ -603,13 +622,34 @@ fn read_file(path: &Path) -> Result<Vec<u8>, DatasetError> {
     fs::read(path).map_err(|source| io("read", path, source))
 }
 
-fn validate_generated_count(found: usize, expected: usize) -> Result<(), DatasetError> {
+#[derive(Clone, Copy)]
+enum CountVoice {
+    Generated,
+    Runover,
+}
+
+fn authoritative_entry_count(library: &LibraryService<FileStore>) -> Result<usize, DatasetError> {
+    library
+        .list()
+        .map(|scan| scan.entries.len())
+        .map_err(|error| DatasetError::Product(error.to_string()))
+}
+
+fn validate_authoritative_count(
+    found: usize,
+    expected: usize,
+    voice: CountVoice,
+) -> Result<(), DatasetError> {
     if found == expected {
         Ok(())
     } else {
-        Err(DatasetError::Invalid(format!(
-            "generated {found} entries, expected {expected}"
-        )))
+        let message = match voice {
+            CountVoice::Generated => format!("generated {found} entries, expected {expected}"),
+            CountVoice::Runover => {
+                format!("runover library has {found} entries, expected {expected}")
+            }
+        };
+        Err(DatasetError::Invalid(message))
     }
 }
 
@@ -711,6 +751,64 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn test_generate_refuses_silent_store_undercount() {
+        let root = TempDir::new().unwrap();
+        let dataset = root.path().join("dataset");
+
+        let error = super::generate_with_before_count_hook(
+            &dataset,
+            3,
+            super::DEFAULT_SEED,
+            super::DEFAULT_STATE_FRACTION,
+            |library, entries| {
+                library
+                    .remove(entries.last().expect("generation wrote three entries"))
+                    .map(|_| ())
+                    .map_err(|error| super::DatasetError::Product(error.to_string()))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "generated 2 entries, expected 3");
+        assert!(dataset.is_dir(), "the failed dataset remains inspectable");
+        assert!(dataset.join("srcfiles").is_dir());
+        assert!(!dataset.join("manifest.json").exists());
+        let dirs = super::dataset_dirs(&dataset).unwrap();
+        let scan = super::LibraryService::new(super::FileStore::new(dirs.data))
+            .list()
+            .unwrap();
+        assert_eq!(scan.entries.len(), 2);
+    }
+
+    #[test]
+    fn test_runover_refuses_silent_store_undercount() {
+        let root = TempDir::new().unwrap();
+        let dataset = root.path().join("runover");
+
+        let error =
+            super::generate_runover_with_before_count_hook(dataset.clone(), |library, entries| {
+                library
+                    .remove(entries.last().expect("generation wrote three entries"))
+                    .map(|_| ())
+                    .map_err(|error| super::DatasetError::Product(error.to_string()))
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "runover library has 2 entries, expected 3"
+        );
+        assert!(dataset.is_dir(), "the failed dataset remains inspectable");
+        assert!(dataset.join("srcfiles").is_dir());
+        assert!(!dataset.join("manifest.json").exists());
+        let dirs = super::dataset_dirs(&dataset).unwrap();
+        let scan = super::LibraryService::new(super::FileStore::new(dirs.data))
+            .list()
+            .unwrap();
+        assert_eq!(scan.entries.len(), 2);
+    }
+
+    #[test]
     fn private_source_contract_rejects_unsupported_kinds() {
         assert!(super::extension("unknown").is_err());
         assert!(super::source_text("unknown", 0).is_err());
@@ -742,8 +840,8 @@ mod tests {
                 .unwrap()
                 .is_absolute()
         );
-        assert!(super::validate_generated_count(2, 2).is_ok());
-        assert!(super::validate_generated_count(1, 2).is_err());
+        assert!(super::validate_authoritative_count(2, 2, super::CountVoice::Generated).is_ok());
+        assert!(super::validate_authoritative_count(1, 2, super::CountVoice::Runover).is_err());
         assert!(super::create_staged_manifest(&ordinary).is_err());
 
         let mut read_only = fs::File::open(&ordinary).unwrap();
