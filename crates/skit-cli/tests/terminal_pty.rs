@@ -492,11 +492,15 @@ impl LiveTui {
     }
 
     fn wait_for_exit_after(&mut self, checkpoint: usize) -> String {
+        self.wait_for_exit_status_after(checkpoint).1
+    }
+
+    fn wait_for_exit_status_after(&mut self, checkpoint: usize) -> (u32, String) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.drain();
-            if self.child.try_wait().unwrap().is_some() {
-                return self.visible_after(checkpoint);
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return (status.exit_code(), self.visible_after(checkpoint));
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 panic!(
@@ -511,8 +515,8 @@ impl LiveTui {
                 Ok(chunk) => self.output.extend_from_slice(&chunk),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    if self.child.try_wait().unwrap().is_some() {
-                        return self.visible_after(checkpoint);
+                    if let Some(status) = self.child.try_wait().unwrap() {
+                        return (status.exit_code(), self.visible_after(checkpoint));
                     }
                 }
             }
@@ -571,6 +575,40 @@ impl Drop for LiveTui {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+#[test]
+fn bare_invocation_runs_the_first_run_gate_and_returns_after_the_library_quits() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    FileConfigStore::new(config.path().to_path_buf())
+        .mark_mirror_configured()
+        .unwrap();
+    FileStore::new(data.path()).rebuild_registry().unwrap();
+    let data_before = tree_snapshot(data.path());
+    let state_before = tree_snapshot(state.path());
+    let config_before = tree_snapshot(config.path());
+
+    let mut tui = LiveTui::spawn_command(
+        &[],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    tui.answer_cursor_query_after(0);
+    tui.wait_for("Library");
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let (code, output) = tui.wait_for_exit_status_after(quit);
+
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(tree_snapshot(data.path()), data_before);
+    assert_eq!(tree_snapshot(state.path()), state_before);
+    assert_eq!(tree_snapshot(config.path()), config_before);
 }
 
 #[test]
