@@ -374,26 +374,26 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
   swallows a real unlink/rmtree failure after moving the old environment aside. The JS cleanup
   batch must make that failure loud, preserve the old metadata, and treat a concurrent NotFound as
   success.
-- **TUI path completion is still a release blocker.** `port_test_path_tui.rs` is 32 active / 29
-  ignored. Twenty-five ignored owners cover the shipped v0.4 ghost completion while typing,
-  including async capped scans, universal/path activation, hidden/error behavior, Right-arrow
-  acceptance, secret exclusion, and a vanished reference-origin form. The picker, field browser,
-  `tui_nav`, `draft_and_reader_tui`, and reset-default work are green, but they do not replace this
-  feature. A Phase 4 audit rejected the prior ABSENT/architecture classification.
+- **TUI path completion is complete.** `port_test_path_tui.rs` now has 62 executable contracts and
+  4 honest cross-crate closures. The restored ghost completion uses a typed 2,000-entry bounded
+  scanner, no cache, two bounded workers, complete-request latest-wins, dim suffix rendering, and
+  Right-arrow acceptance. Secret fields dispatch no request. The terminal polls only while work is
+  pending, and a real PTY proves ghost-to-launch composition. Missing reference origins remain
+  available to the form projection while launch still refuses them (`ef76e01`..`0f7703a`).
 - **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 
-The PathSuggester group is the largest confirmed per-file backlog. Its isolated implementation has
-activated all 25 ghost-completion owners and is completing the CLI/workdir composition before
-integration. A static Phase 4 marker audit also found 35 JS-dependency, 7 source-edit, and 4 editor
-ignored rows whose reasons still say ABSENT. The two source-default guards were rehomed to real
+The remaining explicit ABSENT-marker backlog is now 29 JS-dependency and 4 editor rows. The two
+source-default guards were rehomed to real
 `skit-language` semantic units, and the language capability-stripping monkeypatch was classified as
 a framework-injection closure (`694a717`). The JS three-way audit classified its 35 rows as 5 with
 stronger owners, 13 stale owners that need executable rehomes, and 17 real gaps across cleanup,
 freshness/preflight, launch sweep, diagnostics, and announce behavior. The source-edit audit found
-a parser-backed resync data-loss risk on syntax errors in addition to the seven stale stubs. These
-groups must be implemented or moved to their real owners before the ledger can call them closed.
-Do not turn them into fake REAL owners merely to reduce the ignored count.
+a parser-backed resync data-loss risk on syntax errors in addition to the seven stale stubs; the
+shared typed editor now closes that whole root, including partial warnings, rebind, operation order,
+final-secret scrubbing, state purge, and TUI receipts (`95c8465`..`4c1689a`). The remaining JS and
+editor rows must be implemented or moved to their real owners before the ledger can call them
+closed. Do not turn them into fake REAL owners merely to reduce the ignored count.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
   port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job
@@ -439,8 +439,11 @@ The ledger has the authoritative per-module adjudication log.
   snapshot and one metadata read per member. The Prompt Settings placeholder picker activated its
   eight owners (`c4b8659`); `6b29372` then added option-level keyboard navigation, restored managed
   row/preview/overflow/chooser order, and removed the duplicate footer and dead reducer route.
-  A further audit reopened the 25-owner PathSuggester group described above, and a static follow-up
-  reopened the remaining ABSENT-marker groups for three-way adjudication. The final coverage,
+  The reopened 25-owner PathSuggester group is now complete (`ef76e01`..`0f7703a`). The first JS
+  follow-up made six real cleanup-failure/race owners executable and stopped swallowing cleanup
+  removal failures (`13c04fe`); freshness/preflight is the next JS batch. A static follow-up
+  keeps the remaining JS/editor ABSENT-marker groups open. Source resync is now one parser-backed
+  CLI/TUI operation with all 14 frozen edit owners active (`95c8465`..`4c1689a`). The final coverage,
   supply-chain, docs, package, benchmark, and hands-on gates are not valid until these changes stop.
   A review also questioned `FileStore::scan()` repairing stale registry rows. This is not a new
   blocker: `registry.toml` is a derived index, not authoritative user data, and v0.4 explicitly
