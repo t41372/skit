@@ -890,6 +890,51 @@ fn adapter_only_error_paths_do_not_require_process_global_configuration() {
 }
 
 #[test]
+fn prompt_runner_validation_keeps_empty_configuration_typed_and_read_only() {
+    let root = TempDir::new().unwrap();
+    let config_dir = root.path().join("config");
+    let config = FileConfigStore::new(&config_dir);
+
+    // A blank optional pin is absent. It must not seed or create the config file.
+    validate_prompt_runner_in(&config, Some("  ")).unwrap();
+    assert!(test_tree_snapshot(root.path()).is_empty());
+
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "[prompt]\nrunners_seeded = true\n",
+    )
+    .unwrap();
+    let before = test_tree_snapshot(root.path());
+
+    let usage = validate_prompt_runner_in(&config, Some("missing")).unwrap_err();
+    assert!(matches!(usage, CliError::Usage(_)), "{usage:?}");
+    let pinned = validate_prompt_runner_pin_in(&config, Some("missing")).unwrap_err();
+    assert!(matches!(pinned, CliError::Failure(_)), "{pinned:?}");
+    for (locale, usage_expected, pinned_expected) in [
+        (
+            Locale::En,
+            "Unknown runner: missing. Configured runners: —",
+            "The runner missing isn't configured (known: —). Manage runners with: skit runner list",
+        ),
+        (
+            Locale::ZhCn,
+            "未知运行器：missing。已配置的运行器：—",
+            "执行器 missing 未配置(已知:—)。管理执行器:skit runner list",
+        ),
+        (
+            Locale::ZhTw,
+            "未知執行器：missing。已設定的執行器：—",
+            "執行器 missing 未設定(已知:—)。管理執行器:skit runner list",
+        ),
+    ] {
+        assert_eq!(usage.message().localize(locale), usage_expected);
+        assert_eq!(pinned.message().localize(locale), pinned_expected);
+    }
+    assert_eq!(test_tree_snapshot(root.path()), before);
+}
+
+#[test]
 fn onboarding_candidate_labels_project_input_and_unset_shapes_in_every_locale() {
     let plan = onboarding_plan(
         "python",
