@@ -1,6 +1,7 @@
 //! Typed launch-form state and product semantics.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use nucleo_matcher::{
     Config as MatcherConfig, Matcher, Utf32Str,
@@ -9,6 +10,9 @@ use nucleo_matcher::{
 use serde::{Deserialize, Serialize};
 use skit_application::{
     form_feedback::{GlobCountRequest, glob_count_request},
+    path_completion::{
+        PathCompletionContext, PathCompletionKind, PathCompletionRequest, PathInputDialect,
+    },
     path_insertion::{PathInsertionError, RunPathInsertMode, insert_picked_path},
     tokens::{TokenContext, TokenError, has_tokens, preview_typed},
     value_preparation::{ValuePreparationError, validate_form_value},
@@ -732,6 +736,41 @@ impl RunFormView {
             }
         };
         Some((context, mode))
+    }
+
+    /// Build one path-completion request without reading the filesystem.
+    #[must_use]
+    pub fn path_completion_request(
+        &self,
+        index: usize,
+        value: &str,
+        dialect: PathInputDialect,
+    ) -> Option<PathCompletionRequest> {
+        let field = self.fields.get(index)?;
+        let FormControl::Text(control) = &field.control else {
+            return None;
+        };
+        if control.secret || control.multiline {
+            return None;
+        }
+        let context = self.context.as_ref()?;
+        let paths = context.path.as_ref()?;
+        Some(PathCompletionRequest {
+            value: value.to_owned(),
+            kind: if field.parameter_type == ParameterType::Path {
+                PathCompletionKind::Path
+            } else {
+                PathCompletionKind::Text
+            },
+            shlexy: field.multiple || matches!(field.role, RunFieldRole::ExtraArguments),
+            placeholder_braces: field.delivery == ParameterDelivery::Placeholder,
+            dialect,
+            context: PathCompletionContext {
+                workdir: PathBuf::from(&paths.workdir),
+                invoke_cwd: PathBuf::from(&paths.invoke_cwd),
+                tokens: context.tokens.clone(),
+            },
+        })
     }
 
     /// Return saved preset names in stable order.

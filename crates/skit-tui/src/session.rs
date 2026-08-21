@@ -1,5 +1,7 @@
 //! Ephemeral state for mature terminal widgets.
 
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui_core::{
@@ -27,6 +29,9 @@ use ratatui_widgets::{
     borders::Borders,
     paragraph::{Paragraph, Wrap},
     scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState},
+};
+use skit_application::path_completion::{
+    PathCompletionProvider, PathCompletionRequest, PathInputDialect,
 };
 use skit_domain::parameters::ParameterType;
 use skit_i18n::{Locale, format_text, text};
@@ -101,6 +106,7 @@ pub struct TuiSession {
     help: HelpScreenSession,
     confirm_remove: ConfirmRemoveSession,
     run: RunWidgetSession,
+    path_suggestions: PathSuggestionSession,
     run_modal: RunModalSession,
     preferences: PreferencesWidgetSession,
     settings: SettingsScreenSession,
@@ -115,6 +121,164 @@ pub struct TuiSession {
     form: FormWidgetSession,
     footer: FooterSession,
     clicks: ClickRegionRegistry<SessionHit>,
+}
+
+#[derive(Debug)]
+struct PathSuggestionJob {
+    generation: u64,
+    field: usize,
+    request: Box<PathCompletionRequest>,
+}
+
+#[derive(Debug)]
+struct PathSuggestionResult {
+    generation: u64,
+    field: usize,
+    value: String,
+    suggestion: Option<String>,
+}
+
+#[derive(Debug)]
+struct VisiblePathSuggestion {
+    generation: u64,
+    field: usize,
+    value: String,
+    suggestion: String,
+}
+
+#[derive(Debug, Default)]
+struct PathSuggestionSession {
+    requests: Option<mpsc::SyncSender<PathSuggestionJob>>,
+    results: Option<mpsc::Receiver<PathSuggestionResult>>,
+    generation: u64,
+    expected: Option<(u64, usize, String)>,
+    visible: Option<VisiblePathSuggestion>,
+}
+
+impl PathSuggestionSession {
+    fn new(provider: Arc<dyn PathCompletionProvider>) -> Self {
+        let (request_tx, request_rx) = mpsc::sync_channel::<PathSuggestionJob>(2);
+        let (result_tx, result_rx) = mpsc::channel::<PathSuggestionResult>();
+        let request_rx = Arc::new(Mutex::new(request_rx));
+        for _ in 0..2 {
+            let provider = Arc::clone(&provider);
+            let requests = Arc::clone(&request_rx);
+            let results = result_tx.clone();
+            let _ = thread::Builder::new()
+                .name("skit-path-completion".to_owned())
+                .spawn(move || {
+                    loop {
+                        let job = {
+                            let Ok(receiver) = requests.lock() else {
+                                return;
+                            };
+                            let Ok(job) = receiver.recv() else {
+                                return;
+                            };
+                            job
+                        };
+                        let request = *job.request;
+                        let suggestion = provider.complete(&request);
+                        let result = PathSuggestionResult {
+                            generation: job.generation,
+                            field: job.field,
+                            value: request.value,
+                            suggestion,
+                        };
+                        if results.send(result).is_err() {
+                            return;
+                        }
+                    }
+                });
+        }
+        Self {
+            requests: Some(request_tx),
+            results: Some(result_rx),
+            ..Self::default()
+        }
+    }
+
+    fn ensure(&mut self, field: usize, request: Option<PathCompletionRequest>) {
+        let Some(request) = request else {
+            self.clear();
+            return;
+        };
+        let current_matches = self
+            .expected
+            .as_ref()
+            .is_some_and(|(_, target, value)| *target == field && value == &request.value);
+        if current_matches {
+            return;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        let value = request.value.clone();
+        self.visible = None;
+        let job = PathSuggestionJob {
+            generation,
+            field,
+            request: Box::new(request),
+        };
+        match self.requests.as_ref().map(|sender| sender.try_send(job)) {
+            Some(Ok(())) => self.expected = Some((generation, field, value)),
+            Some(Err(mpsc::TrySendError::Full(_))) => self.expected = None,
+            Some(Err(mpsc::TrySendError::Disconnected(_))) | None => self.clear(),
+        }
+    }
+
+    fn refresh(&mut self) -> bool {
+        let mut changed = false;
+        let Some(results) = &self.results else {
+            return false;
+        };
+        while let Ok(result) = results.try_recv() {
+            let is_current = self
+                .expected
+                .as_ref()
+                .is_some_and(|(generation, field, value)| {
+                    *generation == result.generation
+                        && *field == result.field
+                        && *value == result.value
+                });
+            if !is_current {
+                continue;
+            }
+            self.visible = result.suggestion.and_then(|suggestion| {
+                (suggestion != result.value && suggestion.starts_with(&result.value)).then_some(
+                    VisiblePathSuggestion {
+                        generation: result.generation,
+                        field: result.field,
+                        value: result.value,
+                        suggestion,
+                    },
+                )
+            });
+            changed = true;
+        }
+        changed
+    }
+
+    fn visible(&self, field: usize, value: &str) -> Option<&str> {
+        self.visible.as_ref().and_then(|visible| {
+            (visible.field == field
+                && visible.value == value
+                && self.expected.as_ref().is_some_and(|expected| {
+                    expected.0 == visible.generation && expected.1 == field && expected.2 == value
+                }))
+            .then_some(visible.suggestion.as_str())
+        })
+    }
+
+    fn take(&mut self, field: usize, value: &str) -> Option<String> {
+        let suggestion = self.visible(field, value)?.to_owned();
+        self.clear();
+        Some(suggestion)
+    }
+
+    fn clear(&mut self) {
+        self.expected = None;
+        self.visible = None;
+    }
 }
 
 #[derive(Debug)]
@@ -283,6 +447,21 @@ enum WidgetControl {
 }
 
 impl TuiSession {
+    /// Construct a session whose path queries run on bounded background workers.
+    #[must_use]
+    pub fn with_path_completion(provider: Arc<dyn PathCompletionProvider>) -> Self {
+        Self {
+            path_suggestions: PathSuggestionSession::new(provider),
+            ..Self::default()
+        }
+    }
+
+    /// Apply completed background work before the next draw.
+    #[must_use]
+    pub fn refresh_background(&mut self) -> bool {
+        self.path_suggestions.refresh()
+    }
+
     /// Dispatch one terminal event through the active mature widget first.
     #[must_use]
     pub fn handle_event(
@@ -550,13 +729,23 @@ impl TuiSession {
         self.search.sync(state.query());
         if let Screen::Run(form) = state.screen() {
             self.run.sync(form);
+            let field = form.focused();
+            let value = self.run.input_value(field).map(str::to_owned);
+            let request = value
+                .as_deref()
+                .and_then(|value| form.path_completion_request(field, value, host_path_dialect()));
+            self.path_suggestions.ensure(field, request);
         } else if let Screen::Add(view) = state.screen() {
+            self.path_suggestions.clear();
             self.add.sync(view);
         } else if let Screen::Settings(view) = state.screen() {
+            self.path_suggestions.clear();
             self.settings.sync(view);
         } else if let Screen::Form(form) = state.screen() {
+            self.path_suggestions.clear();
             self.form.sync(form);
         } else {
+            self.path_suggestions.clear();
             self.add_overlay = None;
             self.settings_prompt_overlay = None;
         }
@@ -1021,7 +1210,12 @@ impl TuiSession {
                 secret,
                 focused,
             } => {
-                render_line_input(frame, area, state, *secret, *focused, "");
+                let suggestion = (*focused)
+                    .then(|| self.path_suggestions.visible(index, state.value()))
+                    .flatten();
+                render_line_input_with_suggestion(
+                    frame, area, state, *secret, *focused, "", suggestion,
+                );
                 self.clicks
                     .register(area, SessionHit::Target(HitTarget::FocusField(index)));
                 hits.push(HitRegion {
@@ -1199,6 +1393,20 @@ impl TuiSession {
 
         match &mut self.run.controls[focused] {
             WidgetControl::Input { state, .. } => {
+                if key.code == KeyCode::Right
+                    && key.modifiers.is_empty()
+                    && state.cursor() == state.value().chars().count()
+                    && let Some(suggestion) = self.path_suggestions.take(focused, state.value())
+                {
+                    *state = LineInput::new(suggestion.clone());
+                    let request =
+                        form.path_completion_request(focused, &suggestion, host_path_dialect());
+                    self.path_suggestions.ensure(focused, request);
+                    return EventHandling::Action(Action::SetFieldValue {
+                        field: focused,
+                        value: suggestion,
+                    });
+                }
                 let before = state.value().to_owned();
                 let response = state.handle_event(&Event::Key(key));
                 if response.is_none() {
@@ -1216,9 +1424,13 @@ impl TuiSession {
                 if before == state.value() {
                     EventHandling::Consumed
                 } else {
+                    let value = state.value().to_owned();
+                    let request =
+                        form.path_completion_request(focused, &value, host_path_dialect());
+                    self.path_suggestions.ensure(focused, request);
                     EventHandling::Action(Action::SetFieldValue {
                         field: focused,
-                        value: state.value().to_owned(),
+                        value,
                     })
                 }
             }
@@ -1333,9 +1545,12 @@ impl TuiSession {
                 for character in value.chars() {
                     let _ = state.handle(InputRequest::InsertChar(character));
                 }
+                let value = state.value().to_owned();
+                let request = form.path_completion_request(focused, &value, host_path_dialect());
+                self.path_suggestions.ensure(focused, request);
                 EventHandling::Action(Action::SetFieldValue {
                     field: focused,
-                    value: state.value().to_owned(),
+                    value,
                 })
             }
             WidgetControl::TextArea {
@@ -1598,6 +1813,7 @@ impl TuiSession {
     }
 
     fn move_focus(&mut self, forward: bool) -> EventHandling {
+        self.path_suggestions.clear();
         if forward {
             self.run.focus.next();
         } else {
@@ -1645,6 +1861,15 @@ fn is_ctrl_c(event: &Event) -> bool {
 }
 
 impl RunWidgetSession {
+    fn input_value(&self, index: usize) -> Option<&str> {
+        match self.controls.get(index)? {
+            WidgetControl::Input { state, .. } => Some(state.value()),
+            WidgetControl::TextArea { .. }
+            | WidgetControl::Checkbox(_)
+            | WidgetControl::Choice { .. } => None,
+        }
+    }
+
     fn sync(&mut self, form: &RunFormView) {
         let signature = RunSignature {
             selector: form.selector().to_owned(),
@@ -1714,6 +1939,14 @@ impl RunWidgetSession {
             self.viewport.width,
             u16::try_from(clipped_end.saturating_sub(clipped_start)).unwrap_or(u16::MAX),
         ))
+    }
+}
+
+const fn host_path_dialect() -> PathInputDialect {
+    if cfg!(windows) {
+        PathInputDialect::Windows
+    } else {
+        PathInputDialect::Posix
     }
 }
 
@@ -2525,6 +2758,18 @@ pub(crate) fn render_line_input(
     focused: bool,
     label: &str,
 ) {
+    render_line_input_with_suggestion(frame, area, state, secret, focused, label, None);
+}
+
+fn render_line_input_with_suggestion(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LineInput,
+    secret: bool,
+    focused: bool,
+    label: &str,
+    suggestion: Option<&str>,
+) {
     let border = if focused { ACCENT } else { BOX_DIM };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2535,14 +2780,22 @@ pub(crate) fn render_line_input(
     let width = usize::from(inner.width.max(1));
     let scroll = state.visual_scroll(width);
     let display = if secret {
-        "•".repeat(state.value().chars().count())
+        Line::from(Span::styled(
+            "•".repeat(state.value().chars().count()),
+            Style::default().fg(Color::White),
+        ))
     } else {
-        state.value().to_owned()
+        let suffix = suggestion.and_then(|suggestion| suggestion.strip_prefix(state.value()));
+        Line::from(vec![
+            Span::styled(state.value().to_owned(), Style::default().fg(Color::White)),
+            Span::styled(
+                suffix.unwrap_or_default().to_owned(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
     };
     frame.render_widget(
-        Paragraph::new(display)
-            .style(Style::default().fg(Color::White))
-            .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
+        Paragraph::new(display).scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
         inner,
     );
     if focused && inner.width > 0 && inner.height > 0 {

@@ -48,6 +48,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use ratatui_core::{
@@ -56,12 +57,12 @@ use ratatui_core::{
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
+use skit_application::path_completion::{
+    DirectoryEntry, DirectoryReadError, DirectoryReader, PathCompletionContext, PathCompletionKind,
+    PathCompletionProvider, PathCompletionRequest, PathCompletionService, PathInputDialect,
+};
 use skit_application::path_insertion::{
     ArgumentDialect, RunPathInsertMode, insert_picked_path_for_dialect,
-};
-use skit_application::path_completion::{
-    DirectoryEntry, DirectoryReadError, DirectoryReader, PathCompletionContext,
-    PathCompletionKind, PathCompletionRequest, PathCompletionService, PathInputDialect,
 };
 use skit_application::runner_management::{EditableArgvDialect, split_editable_argv};
 use skit_application::tokens::TokenContext;
@@ -312,9 +313,7 @@ fn complete(request: PathCompletionRequest) -> Option<String> {
 }
 
 fn completion_session() -> TuiSession {
-    TuiSession::with_path_completion(Arc::new(PathCompletionService::new(
-        SystemDirectoryReader,
-    )))
+    TuiSession::with_path_completion(Arc::new(PathCompletionService::new(SystemDirectoryReader)))
 }
 
 fn wait_for_completion(session: &mut TuiSession) {
@@ -335,12 +334,7 @@ fn type_run_value(
     value: &str,
 ) {
     for character in value.chars() {
-        let handling = drive_root(
-            session,
-            state,
-            geometry,
-            key(KeyCode::Char(character)),
-        );
+        let handling = drive_root(session, state, geometry, key(KeyCode::Char(character)));
         assert!(matches!(handling, EventHandling::Action(_)));
     }
 }
@@ -358,9 +352,51 @@ impl DirectoryReader for FixedDirectoryReader {
         scan_cap: usize,
     ) -> Result<Vec<DirectoryEntry>, DirectoryReadError> {
         if let Some(error) = &self.failure {
-            return Err(error.clone());
+            return Err(*error);
         }
         Ok(self.entries.iter().take(scan_cap).cloned().collect())
+    }
+}
+
+#[derive(Debug)]
+struct CountingProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+impl PathCompletionProvider for CountingProvider {
+    fn complete(&self, request: &PathCompletionRequest) -> Option<String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Some(format!("{}-suggested", request.value))
+    }
+}
+
+#[derive(Debug)]
+struct RacingProvider;
+
+impl PathCompletionProvider for RacingProvider {
+    fn complete(&self, request: &PathCompletionRequest) -> Option<String> {
+        match request.value.as_str() {
+            "a" => {
+                std::thread::sleep(Duration::from_millis(100));
+                Some("alpha".to_owned())
+            }
+            "b" => Some("beta".to_owned()),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SlowProvider {
+    released: Arc<AtomicBool>,
+}
+
+impl PathCompletionProvider for SlowProvider {
+    fn complete(&self, _request: &PathCompletionRequest) -> Option<String> {
+        while !self.released.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        None
     }
 }
 
@@ -471,12 +507,7 @@ fn test_cwd_token_completes_at_invoke_cwd_not_workdir() {
     let (_tmp, root) = tree();
     let invoke = tempfile::tempdir().unwrap();
     fs::write(invoke.path().join("notes.md"), "x").unwrap();
-    let request = completion_request(
-        &root,
-        invoke.path(),
-        "{cwd}/no",
-        PathCompletionKind::Path,
-    );
+    let request = completion_request(&root, invoke.path(), "{cwd}/no", PathCompletionKind::Path);
     assert_eq!(complete(request), Some("{cwd}/notes.md".to_owned()));
 }
 
@@ -563,12 +594,7 @@ fn test_missing_workdir_silences_relative_token_lookup() {
 #[test]
 fn test_shlexy_field_completes_only_the_trailing_piece() {
     let (_tmp, root) = tree();
-    let mut request = completion_request(
-        &root,
-        &root,
-        "first.txt dr",
-        PathCompletionKind::Path,
-    );
+    let mut request = completion_request(&root, &root, "first.txt dr", PathCompletionKind::Path);
     request.shlexy = true;
     assert_eq!(
         PathCompletionService::new(SystemDirectoryReader).complete(&request),
@@ -585,7 +611,7 @@ fn test_scan_cap_stops_the_scan_exactly() {
     let reader = FixedDirectoryReader {
         entries: ["dax3", "dax2", "dax4", "daa-first"]
             .into_iter()
-            .map(|name| DirectoryEntry::file(name))
+            .map(DirectoryEntry::file)
             .collect(),
         failure: None,
     };
@@ -1039,6 +1065,155 @@ fn test_path_fields_render_hint_and_suggester() {
 }
 
 #[test]
+fn right_accepts_only_the_current_ghost_at_the_end_of_the_input() {
+    let (_tmp, root) = tree();
+    let mut state = form_state(
+        &[param("src", ParameterType::Path, false)],
+        &[],
+        "",
+        root.to_str(),
+    );
+    let mut session = completion_session();
+    let geometry = render_root(&mut session, &state);
+    type_run_value(&mut session, &mut state, &geometry, "da");
+    wait_for_completion(&mut session);
+    assert_eq!(field_value(&state, 0), "da", "a ghost is not a value");
+
+    assert_eq!(
+        drive_root(&mut session, &mut state, &geometry, key(KeyCode::Home)),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        drive_root(&mut session, &mut state, &geometry, key(KeyCode::Right)),
+        EventHandling::Consumed,
+        "Right inside the value keeps its cursor meaning"
+    );
+    assert_eq!(field_value(&state, 0), "da");
+    let _ = drive_root(&mut session, &mut state, &geometry, key(KeyCode::End));
+    assert!(matches!(
+        drive_root(&mut session, &mut state, &geometry, key(KeyCode::Right)),
+        EventHandling::Action(Action::SetFieldValue { .. })
+    ));
+    assert_eq!(field_value(&state, 0), "data.csv");
+}
+
+#[test]
+fn stale_out_of_order_completion_never_replaces_the_latest_ghost() {
+    let root = tempfile::tempdir().unwrap();
+    let mut state = form_state(
+        &[param("src", ParameterType::Path, false)],
+        &[],
+        "",
+        root.path().to_str(),
+    );
+    let mut session = TuiSession::with_path_completion(Arc::new(RacingProvider));
+    let geometry = render_root(&mut session, &state);
+    type_run_value(&mut session, &mut state, &geometry, "a");
+    let _ = drive_root(&mut session, &mut state, &geometry, key(KeyCode::Backspace));
+    type_run_value(&mut session, &mut state, &geometry, "b");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let _ = session.refresh_background();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = render_with_session(frame, &state, Locale::En, &mut session);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rendered = region_text(buffer, buffer.area);
+        if rendered.contains("beta") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "latest completion did not arrive"
+        );
+        std::thread::yield_now();
+    }
+    std::thread::sleep(Duration::from_millis(125));
+    let _ = session.refresh_background();
+    assert!(matches!(
+        drive_root(&mut session, &mut state, &geometry, key(KeyCode::Right)),
+        EventHandling::Action(Action::SetFieldValue { .. })
+    ));
+    assert_eq!(field_value(&state, 0), "beta");
+}
+
+#[test]
+fn secret_fields_never_dispatch_a_filesystem_completion_request() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = CountingProvider {
+        calls: Arc::clone(&calls),
+    };
+    let mut secret = param("token", ParameterType::Str, false);
+    secret.secret = true;
+    let mut state = form_state(&[secret], &[], "", Some("/work"));
+    let mut session = TuiSession::with_path_completion(Arc::new(provider));
+    let geometry = render_root(&mut session, &state);
+    type_run_value(&mut session, &mut state, &geometry, "./token");
+    let _ = session.refresh_background();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_slow_completion_worker_does_not_block_escape() {
+    let released = Arc::new(AtomicBool::new(false));
+    let provider = SlowProvider {
+        released: Arc::clone(&released),
+    };
+    let mut state = form_state(
+        &[param("src", ParameterType::Path, false)],
+        &[],
+        "",
+        Some("/work"),
+    );
+    let mut session = TuiSession::with_path_completion(Arc::new(provider));
+    let geometry = render_root(&mut session, &state);
+    type_run_value(&mut session, &mut state, &geometry, "d");
+    let started = Instant::now();
+    assert_eq!(
+        session.handle_event(key(KeyCode::Esc), &state, &geometry),
+        EventHandling::Action(Action::Back)
+    );
+    assert!(started.elapsed() < Duration::from_millis(50));
+    released.store(true, Ordering::SeqCst);
+}
+
+#[test]
+fn path_hint_and_existing_browse_door_stay_complete_in_three_locales() {
+    let (_tmp, root) = tree();
+    for (locale, path_label, browse_label) in [
+        (Locale::En, "path", "browse"),
+        (Locale::ZhCn, "路径", "浏览"),
+        (Locale::ZhTw, "路徑", "瀏覽"),
+    ] {
+        let mut state = form_state(
+            &[param("src", ParameterType::Path, false)],
+            &[],
+            "",
+            root.to_str(),
+        );
+        let mut session = completion_session();
+        let geometry = render_root(&mut session, &state);
+        type_run_value(&mut session, &mut state, &geometry, "da");
+        wait_for_completion(&mut session);
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = render_with_session(frame, &state, locale, &mut session);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rendered = region_text(buffer, buffer.area);
+        assert!(rendered.contains(path_label), "{locale:?}: {rendered}");
+        assert!(rendered.contains(browse_label), "{locale:?}: {rendered}");
+        assert!(rendered.contains("data.csv"), "{locale:?}: {rendered}");
+    }
+}
+
+#[test]
 fn test_token_menu_puts_file_row_first_on_path_fields_and_picker_replaces() {
     let mut state = form_state(
         &[param("src", ParameterType::Path, false)],
@@ -1488,12 +1663,7 @@ fn test_suggester_does_not_cache_stale_results() {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("data.csv");
     fs::write(&target, "x").unwrap();
-    let request = completion_request(
-        root.path(),
-        root.path(),
-        "da",
-        PathCompletionKind::Path,
-    );
+    let request = completion_request(root.path(), root.path(), "da", PathCompletionKind::Path);
     let service = PathCompletionService::new(SystemDirectoryReader);
     assert_eq!(service.complete(&request), Some("data.csv".to_owned()));
     fs::remove_file(target).unwrap();
@@ -1508,7 +1678,7 @@ fn test_suggester_does_not_cache_stale_results() {
 #[test]
 fn test_brace_escapes_on_a_normal_field_halves_doubled_braces() {
     let root = tempfile::tempdir().unwrap();
-    fs::create_dir(root.path().join("{x}" )).unwrap();
+    fs::create_dir(root.path().join("{x}")).unwrap();
     fs::write(root.path().join("{x}/data.csv"), "x").unwrap();
     assert_eq!(
         complete(completion_request(
@@ -1524,7 +1694,7 @@ fn test_brace_escapes_on_a_normal_field_halves_doubled_braces() {
 #[test]
 fn test_brace_escapes_off_on_a_placeholder_field_keeps_doubled_braces() {
     let root = tempfile::tempdir().unwrap();
-    fs::create_dir(root.path().join("{x}" )).unwrap();
+    fs::create_dir(root.path().join("{x}")).unwrap();
     fs::write(root.path().join("{x}/data.csv"), "x").unwrap();
     let mut request = completion_request(
         root.path(),
@@ -1544,12 +1714,7 @@ fn test_shlexy_trailing_piece_refuses_either_quote() {
         request.shlexy = true;
         assert_eq!(complete(request), None);
     }
-    let mut request = completion_request(
-        &root,
-        &root,
-        "done.txt dr",
-        PathCompletionKind::Path,
-    );
+    let mut request = completion_request(&root, &root, "done.txt dr", PathCompletionKind::Path);
     request.shlexy = true;
     assert_eq!(complete(request), Some("done.txt draft.txt".to_owned()));
 }

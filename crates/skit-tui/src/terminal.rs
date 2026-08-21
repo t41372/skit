@@ -1,6 +1,8 @@
 //! Crossterm lifecycle and blocking event loop.
 
 use std::io;
+use std::sync::Arc;
+use std::time::Duration;
 
 use ratatui_core::terminal::Terminal;
 use ratatui_crossterm::{
@@ -11,6 +13,7 @@ use ratatui_crossterm::{
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
 };
+use skit_application::path_completion::PathCompletionProvider;
 use skit_domain::Slug;
 use skit_i18n::{Locale, Localize, Message, detect_locale};
 use skit_ui::{
@@ -58,7 +61,23 @@ where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    let _: Option<()> = run_hosted_state(state, Vec::new(), host, locale, |_| None)?;
+    let _: Option<()> = run_hosted_state(state, Vec::new(), host, locale, |_| None, None)?;
+    Ok(())
+}
+
+/// Run the terminal frontend with asynchronous path completion.
+pub fn run_with_path_completion<F, E>(
+    state: LibraryState,
+    host: F,
+    locale: Locale,
+    provider: Arc<dyn PathCompletionProvider>,
+) -> Result<(), TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    let _: Option<()> =
+        run_hosted_state(state, Vec::new(), host, locale, |_| None, Some(provider))?;
     Ok(())
 }
 
@@ -79,7 +98,7 @@ where
 {
     let mut state = LibraryState::default();
     state.update(Action::Present(Screen::Add(Box::new(workflow))));
-    run_hosted_state(state, opening, host, locale, add_workflow_outcome).map(|outcome| {
+    run_hosted_state(state, opening, host, locale, add_workflow_outcome, None).map(|outcome| {
         outcome.and_then(|outcome| match outcome {
             AddWorkflowOutcome::Completed(slug) => Some(slug),
             AddWorkflowOutcome::Cancelled => None,
@@ -100,6 +119,7 @@ fn run_hosted_state<F, E, O>(
     mut host: F,
     mut locale: Locale,
     mut observe: impl FnMut(&Action) -> Option<O>,
+    path_completion: Option<Arc<dyn PathCompletionProvider>>,
 ) -> Result<Option<O>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
@@ -129,13 +149,19 @@ where
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
-    let mut session = TuiSession::default();
+    let mut session = path_completion.map_or_else(TuiSession::default, |provider| {
+        TuiSession::with_path_completion(provider)
+    });
 
     let outcome = loop {
+        let _ = session.refresh_background();
         let mut geometry = ViewGeometry::default();
         terminal.draw(|frame| {
             geometry = render_with_session(frame, &state, locale, &mut session);
         })?;
+        if !event::poll(Duration::from_millis(25))? {
+            continue;
+        }
         if let Some(action) = dispatch_event(&mut session, event::read()?, &state, &geometry) {
             let mut outcome = observe(&action);
             let effect = state.update(action);
@@ -258,7 +284,7 @@ where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    collect_screen(Screen::Form(form), host, locale)
+    collect_screen(Screen::Form(form), host, locale, None)
 }
 
 /// Collect one typed launch form and restore the terminal before returning its values.
@@ -275,13 +301,28 @@ where
     F: FnMut(Effect) -> Result<Action, E>,
     E: Localize,
 {
-    collect_screen(Screen::Run(Box::new(form)), host, locale)
+    collect_screen(Screen::Run(Box::new(form)), host, locale, None)
+}
+
+/// Collect one typed launch form with asynchronous path completion.
+pub fn collect_run_form_with_path_completion<F, E>(
+    form: RunFormView,
+    host: F,
+    locale: Locale,
+    provider: Arc<dyn PathCompletionProvider>,
+) -> Result<Option<SubmittedValues>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    collect_screen(Screen::Run(Box::new(form)), host, locale, Some(provider))
 }
 
 fn collect_screen<F, E>(
     screen: Screen,
     mut host: F,
     mut locale: Locale,
+    path_completion: Option<Arc<dyn PathCompletionProvider>>,
 ) -> Result<Option<SubmittedValues>, TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
@@ -295,13 +336,19 @@ where
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
-    let mut session = TuiSession::default();
+    let mut session = path_completion.map_or_else(TuiSession::default, |provider| {
+        TuiSession::with_path_completion(provider)
+    });
 
     let values = loop {
+        let _ = session.refresh_background();
         let mut geometry = ViewGeometry::default();
         terminal.draw(|frame| {
             geometry = render_with_session(frame, &state, locale, &mut session);
         })?;
+        if !event::poll(Duration::from_millis(25))? {
+            continue;
+        }
         if let Some(action) = dispatch_event(&mut session, event::read()?, &state, &geometry) {
             if action == Action::Quit {
                 break None;

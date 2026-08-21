@@ -35,7 +35,10 @@ pub use screens::settings::{
 };
 use session::HeaderKind;
 pub use session::{EventHandling, TuiSession};
-pub use terminal::{TuiError, collect_form, collect_run_form, run, run_add_workflow};
+pub use terminal::{
+    TuiError, collect_form, collect_run_form, collect_run_form_with_path_completion, run,
+    run_add_workflow, run_with_path_completion,
+};
 
 /// One clickable target produced by a view.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
