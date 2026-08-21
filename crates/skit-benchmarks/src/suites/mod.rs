@@ -67,6 +67,7 @@ pub(crate) mod tests {
         SuiteKind, SuitePlan,
         dataset::{DEFAULT_SEED, DEFAULT_STATE_FRACTION, generate},
         runner::RunContext,
+        test_support::initialized_git_repository,
     };
 
     pub(crate) fn executable(path: &Path, body: &str) -> PathBuf {
@@ -101,9 +102,11 @@ pub(crate) mod tests {
             let workdir = root.path().join("work");
             let out_dir = root.path().join("out");
             let tools = root.path().join("tools");
+            let repo_root = root.path().join("repo");
             fs::create_dir_all(&workdir).unwrap();
             fs::create_dir_all(&out_dir).unwrap();
             fs::create_dir_all(&tools).unwrap();
+            initialized_git_repository(&repo_root);
 
             let dataset0 = generate(
                 &root.path().join("dataset-0"),
@@ -205,10 +208,6 @@ done
 printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
 "#,
             );
-            let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .canonicalize()
-                .unwrap();
             Self {
                 context: RunContext {
                     repo_root,

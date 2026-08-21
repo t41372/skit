@@ -354,6 +354,7 @@ mod tests {
     use crate::{
         BenchmarkProfile, GitInfo, HostInfo, Meta, SuiteKind, SuiteOutput,
         suites::tests::{Fixture, executable, plan},
+        test_support::initialized_git_repository,
     };
 
     fn meta() -> Meta {
@@ -529,10 +530,9 @@ esac
                 log.display()
             ),
         );
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .canonicalize()
-            .unwrap();
+        let repo = root.path().join("repo");
+        initialized_git_repository(&repo);
+        let repo = repo.canonicalize().unwrap();
         let suite_plan = [plan(SuiteKind::Imports, &[0])];
         let results = super::execute_plan(
             super::ExecutionRequest {

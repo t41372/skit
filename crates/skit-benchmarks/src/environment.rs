@@ -323,7 +323,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::BenchmarkProfile;
+    use crate::{BenchmarkProfile, test_support::initialized_git_repository};
 
     fn executable(root: &Path, name: &str, output: &str, status: i32) -> std::path::PathBuf {
         let path = root.join(name);
@@ -342,7 +342,8 @@ mod tests {
         let skit = executable(tools.path(), "skit", "skit 0.5.0", 0);
         let python = executable(tools.path(), "python", "Python 3.13.5", 0);
         let uv = executable(tools.path(), "uv", "uv 0.11.26", 0);
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let repo = tools.path().join("repo");
+        initialized_git_repository(&repo);
 
         let meta = super::collect_meta(
             BenchmarkProfile::Compare,

@@ -282,9 +282,11 @@ platform code that later local commits changed. CodSpeed ran plain `cargo bench`
 the instrumented workspace variable was absent. The local workflow now installs matching
 `cargo-codspeed` 5.0.1, builds in simulation mode, and runs the instrumented binaries; it still
 needs a fresh remote proof. The mutation baseline also ran benchmark tests in a copied tree without
-`.git`, which made five baseline tests fail before mutation scoring; that release-workflow defect
-remains. Do not push merely to refresh these checks while the fix pass is still changing. A push
-starts the mutation workflow and invalidates its result on the next source change.
+`.git`, which made five baseline tests fail before mutation scoring. The benchmark tests now build
+their own committed temporary repository. The normal suite and an explicit source copy without
+`.git` both pass 56/56; no mutation run was started. Do not push merely to refresh these checks
+while the fix pass is still changing. A push starts the mutation workflow and invalidates its result
+on the next source change.
 
 The final increment has 1,110 unique `test_*` names: 969 already exist on this branch, 471 of those
 are ignored/ledger owners, and six names are duplicated inside the PR increment itself. The raw
