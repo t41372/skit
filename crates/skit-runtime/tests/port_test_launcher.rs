@@ -57,8 +57,9 @@ use std::{
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_runtime::{
-    LaunchError, LaunchPaths, ProgramProbe, SystemProbe, build_launch_plan, build_launch_preview,
-    execute_launch, project_launch_workdir, resolve_launch_workdir,
+    InterpreterPlatform, LaunchError, LaunchPaths, ProgramProbe, SystemProbe, build_launch_plan,
+    build_launch_preview, execute_launch, project_launch_workdir, resolve_interpreter,
+    resolve_launch_workdir,
 };
 use tempfile::TempDir;
 
@@ -119,6 +120,116 @@ fn probe_for(script: &str) -> FakeProbe {
         ],
         executable: vec![PathBuf::from(script)],
         ..FakeProbe::default()
+    }
+}
+
+// ================================================================================================
+// Windows interpreter resolution (a typed, platform-neutral policy exercised on every host)
+// ================================================================================================
+
+#[test]
+fn test_resolve_bash_on_win32_uses_config_path_when_it_exists() {
+    let configured = PathBuf::from("C:/Program Files/Git/bin/bash.exe");
+    let mut probe = FakeProbe {
+        files: vec![configured.clone()],
+        ..FakeProbe::default()
+    };
+
+    assert_eq!(
+        resolve_interpreter(
+            "bash",
+            InterpreterPlatform::Windows,
+            Some(&configured),
+            &probe,
+        )
+        .unwrap(),
+        configured
+    );
+
+    probe.programs.insert(
+        "bash".to_owned(),
+        PathBuf::from("C:/Program Files/Git/usr/bin/bash.exe"),
+    );
+    assert_eq!(
+        resolve_interpreter(
+            "bash",
+            InterpreterPlatform::Windows,
+            Some(Path::new("C:/configured/bash.exe")),
+            &probe,
+        )
+        .unwrap(),
+        PathBuf::from("C:/Program Files/Git/usr/bin/bash.exe")
+    );
+}
+
+#[test]
+fn test_resolve_bash_on_win32_configured_but_missing_falls_through() {
+    let probe = FakeProbe::default();
+    let error = resolve_interpreter(
+        "bash",
+        InterpreterPlatform::Windows,
+        Some(Path::new("C:/gone/bash.exe")),
+        &probe,
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, LaunchError::WindowsShellMissing { ref name } if name == "bash"));
+    assert_windows_shell_error_messages(&error, "bash");
+}
+
+#[test]
+fn test_resolve_bash_on_win32_unset_names_both_escape_hatches() {
+    let error = resolve_interpreter(
+        "zsh",
+        InterpreterPlatform::Windows,
+        None,
+        &FakeProbe::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, LaunchError::WindowsShellMissing { ref name } if name == "zsh"));
+    assert_windows_shell_error_messages(&error, "zsh");
+}
+
+#[test]
+fn test_resolve_nonbash_on_win32_gets_generic_message() {
+    let error = resolve_interpreter(
+        "ruby",
+        InterpreterPlatform::Windows,
+        Some(Path::new("C:/configured/bash.exe")),
+        &FakeProbe::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, LaunchError::ProgramNotFound { ref name } if name == "ruby"));
+    assert!(error.to_string().contains("ruby"));
+    assert!(!error.to_string().contains("Git for Windows"));
+}
+
+fn assert_windows_shell_error_messages(error: &LaunchError, name: &str) {
+    use skit_i18n::{Locale, Localize as _};
+
+    for (locale, expected) in [
+        (
+            Locale::En,
+            format!(
+                "{name} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>"
+            ),
+        ),
+        (
+            Locale::ZhCn,
+            format!(
+                "此系统上没有 {name}。请安装 Git for Windows（自带的 bash 即可）或 WSL，或用 skit config shell.bash_path <path> 指定一个。"
+            ),
+        ),
+        (
+            Locale::ZhTw,
+            format!(
+                "此系統上沒有 {name}。請安裝 Git for Windows（內附的 bash 即可）或 WSL，或用 skit config shell.bash_path <path> 指定一個。"
+            ),
+        ),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
     }
 }
 

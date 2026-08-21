@@ -5,6 +5,19 @@ use std::fs;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
+#[cfg(unix)]
+use std::{
+    os::unix::fs::PermissionsExt as _,
+    path::{Path, PathBuf},
+};
+
+#[cfg(unix)]
+use skit_application::form_state::FormStateRepository as _;
+#[cfg(unix)]
+use skit_domain::Slug;
+#[cfg(unix)]
+use skit_store::FileFormStateStore;
+
 struct Sandbox {
     data: TempDir,
     state: TempDir,
@@ -48,6 +61,55 @@ impl Sandbox {
             .success();
         source
     }
+}
+
+#[cfg(unix)]
+fn shell_fixture(sandbox: &Sandbox, name: &str, body: &str) -> (PathBuf, PathBuf) {
+    let source = sandbox.data.path().join(format!("{name}.sh"));
+    let bin = sandbox.data.path().join(format!("{name}-bin"));
+    fs::create_dir(&bin).unwrap();
+    let bash = bin.join("bash");
+    fs::write(&bash, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
+    fs::set_permissions(&bash, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(&source, body).unwrap();
+    sandbox
+        .command()
+        .args(["add"])
+        .arg(&source)
+        .args(["--kind", "shell", "--name", name, "--no-input"])
+        .assert()
+        .success();
+    (source, bin)
+}
+
+#[cfg(unix)]
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort();
+    output
+}
+
+#[cfg(unix)]
+fn snapshot_user_data(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    snapshot_tree(root)
+        .into_iter()
+        .filter(|(path, _)| !path.starts_with(".locks"))
+        .collect()
 }
 
 #[test]
@@ -738,6 +800,108 @@ fn params_json_reports_no_unmanaged_names_for_a_reader_driven_source() {
 
     assert!(report.contains("\"unmanaged\":[]"), "{report}");
     assert!(report.contains("target"), "{report}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_e2e_run_shell_script() {
+    let sandbox = Sandbox::new();
+    let (source, bin) = shell_fixture(&sandbox, "hi", "#!/bin/bash\necho \"shell-ran-ok\"\n");
+    let source_before = fs::read(&source).unwrap();
+    let data_before = snapshot_user_data(sandbox.data.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+
+    sandbox
+        .command()
+        .env("PATH", bin)
+        .args(["run", "hi", "--no-input"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("shell-ran-ok"));
+
+    assert_eq!(fs::read(source).unwrap(), source_before);
+    assert_eq!(snapshot_user_data(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    let state = FileFormStateStore::new(sandbox.state.path()).load(&Slug::parse("hi").unwrap());
+    assert_eq!(state.last_run.exit, Some(0));
+    assert!(
+        state
+            .last_run
+            .at
+            .as_deref()
+            .is_some_and(|at| !at.is_empty())
+    );
+    assert_eq!(state.last_run.values, Some(Default::default()));
+    assert!(state.values.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_e2e_run_shell_env_param_reaches_child() {
+    let sandbox = Sandbox::new();
+    let (source, bin) = shell_fixture(
+        &sandbox,
+        "width",
+        "#!/bin/bash\n: \"${WIDTH:=640}\"\necho \"w=$WIDTH\"\n",
+    );
+    sandbox.ok(&["params", "width", "--manage", "WIDTH"]);
+    let source_before = fs::read(&source).unwrap();
+    let data_before = snapshot_user_data(sandbox.data.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+
+    sandbox
+        .command()
+        .env("PATH", bin)
+        .args(["run", "width", "--set", "WIDTH=800", "--no-input"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("w=800"));
+
+    assert_eq!(fs::read(source).unwrap(), source_before);
+    assert_eq!(snapshot_user_data(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    let state = FileFormStateStore::new(sandbox.state.path()).load(&Slug::parse("width").unwrap());
+    assert_eq!(state.values.get("WIDTH").map(String::as_str), Some("800"));
+    assert_eq!(state.last_run.exit, Some(0));
+    assert!(
+        state
+            .last_run
+            .at
+            .as_deref()
+            .is_some_and(|at| !at.is_empty())
+    );
+    assert_eq!(
+        state
+            .last_run
+            .values
+            .as_ref()
+            .and_then(|values| values.get("WIDTH"))
+            .map(String::as_str),
+        Some("800")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_e2e_dry_run_shows_interpreter_and_script() {
+    let sandbox = Sandbox::new();
+    let (_source, bin) = shell_fixture(&sandbox, "dry", "#!/bin/bash\necho hi\n");
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+
+    sandbox
+        .command()
+        .env("PATH", bin)
+        .args(["run", "dry", "--dry-run", "--no-input"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("bash"))
+        .stdout(predicate::str::contains("script.sh"));
+
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 #[cfg(unix)]

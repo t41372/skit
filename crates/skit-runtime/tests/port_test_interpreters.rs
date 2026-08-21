@@ -167,30 +167,6 @@ fn test_resolve_interpreter_missing_posix_names_the_interpreter() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs / skit-store): the Windows bash escape hatch resolves \
-bash from the `shell.bash_path` config; the skit-runtime launch surface takes an already-resolved \
-interpreter name and has no config fallback. Config lives in skit-store::config and is read at the \
-skit-cli tier (cli.rs `shell.bash_path`). Platform is a compile-time cfg here, not runtime-patchable."]
-fn test_resolve_bash_on_win32_uses_config_path_when_it_exists() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs / skit-store): Windows bash resolution + its \"configured but \
-missing\" fall-through live at the config/CLI tier, not the skit-runtime launch surface."]
-fn test_resolve_bash_on_win32_configured_but_missing_falls_through() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs / skit-store): the win32 refusal that names both escape hatches \
-(\"Git for Windows\" + \"skit config shell.bash_path\") belongs to the config/CLI tier. Verify that \
-exact wording there; the skit-runtime ProgramNotFound message carries neither."]
-fn test_resolve_bash_on_win32_unset_names_both_escape_hatches() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs / skit-store): the win32-only distinction (only bash/sh/zsh get \
-the escape hatch, ruby gets the generic message) does not exist in the runtime tier, which has no \
-per-platform escape hatch for any interpreter."]
-fn test_resolve_nonbash_on_win32_gets_generic_message() {}
-
-#[test]
 fn test_which_seam_is_the_real_shutil_which() {
     // The real PATH-lookup seam: a name that cannot exist resolves to None (proves it
     // delegates to the OS, not a stub).
@@ -462,13 +438,6 @@ fn test_runner_meta_interpreter_override() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-store / skit-cli-rs): the `js.runner` config override (used when the \
-entry has no pin) is read from skit-store::config and resolved at the skit-cli run tier \
-(run/command.rs `js.runner`); skit-runtime `resolve_javascript_runtime` consults only the entry pin, \
-so the config layer cannot be injected through this surface."]
-fn test_runner_config_override() {}
-
-#[test]
 fn test_runner_none_installed_names_candidates_and_config_key() {
     let script = "/data/scripts/demo/script.js";
     let probe = probe_for(script); // no runtimes resolve
@@ -603,23 +572,3 @@ fn test_run_entry_needs_raises_before_spawn() {
 // ==========================================================================
 // E2E (POSIX): the overlay reaches a real child  (owned by skit-cli-rs)
 // ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the `skit run` shell E2E is a CliRunner surface owned by \
-skit-cli-rs (skit-runtime's `execute_launch` real-spawn path is covered by its own private tests)."]
-fn test_e2e_run_shell_script() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the env-overlay-reaches-child E2E is a CliRunner surface \
-owned by skit-cli-rs."]
-fn test_e2e_run_shell_env_param_reaches_child() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the `skit run --dry-run` transparency E2E is a CliRunner \
-surface owned by skit-cli-rs."]
-fn test_e2e_dry_run_shows_interpreter_and_script() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the reference-mode shell run E2E is a CliRunner surface \
-owned by skit-cli-rs."]
-fn test_e2e_run_reference_mode_shell() {}

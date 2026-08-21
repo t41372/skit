@@ -958,6 +958,52 @@ fn test_set_js_runner() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn test_runner_config_override() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("configured.js");
+    let bin = sandbox.data.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(&source, "console.log('script body');\n").unwrap();
+    for (name, marker) in [("deno", "wrong-deno"), ("node", "configured-node")] {
+        let executable = bin.join(name);
+        fs::write(&executable, format!("#!/bin/sh\necho {marker}\n")).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    assert_eq!(sandbox.run(&["config", "js.runner", "node"]).code, 0);
+    let add = sandbox
+        .command("en")
+        .args(["add"])
+        .arg(&source)
+        .args(["--name", "configured", "--no-input"])
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let output = sandbox
+        .command("en")
+        .env("PATH", &bin)
+        .args(["run", "configured", "--no-input"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "{combined}");
+    assert!(combined.contains("configured-node"), "{combined}");
+    assert!(!combined.contains("wrong-deno"), "{combined}");
+}
+
 #[test]
 fn test_set_js_runner_unknown_is_usage_error() {
     let sandbox = Sandbox::new();
