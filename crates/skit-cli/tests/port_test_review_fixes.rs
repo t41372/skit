@@ -44,12 +44,8 @@
 //!   confirms the `zh-Hant-*` tag still resolves to Traditional Chinese.
 //!
 //! Buckets:
-//! - ASSERTING (23 `#[test]`): everything the reachable public API can drive directly.
-//! - STUBS (7 `#[ignore]`), recorded in the agent's structured output:
-//!   * `test_edit_specs_does_not_mutate_input` — kind="absent". The pure `analysis.edit_specs`
-//!     (`resync`/`add`/`remove`/`secret`/`prompts` + warning accumulation) has NO public Rust
-//!     equivalent; the CLI inlines a fail-fast variant instead (see the same note in
-//!     `crates/skit-language/tests/port_test_reconcile.rs`).
+//! - ASSERTING (24 `#[test]`): everything the reachable public API can drive directly.
+//! - STUBS (6 `#[ignore]`), recorded in the agent's structured output:
 //!   * `test_write_injected_unique_and_private` — kind="cross-crate". `rewrite.write_injected`
 //!     has no public Rust function; the injected-temp write is inlined in
 //!     `crates/skit-cli/src/run/command.rs:679-699`. It also DIVERGES: the oracle writes the
@@ -60,9 +56,9 @@
 //!     `os.fdopen`; the atomic writer lives in `skit-store` (`mutations/atomic.rs`) and offers no
 //!     public fault-injection seam. `crates/skit-store/tests/port_test_atomic.rs` stubs the
 //!     sibling fsync-failure cleanup test for the same reason.
-//!   * `test_available_locales_missing_dir` — kind="absent". The Rust catalog is embedded at
-//!     compile time (`skit_i18n::available_locale_tags()` is `const`); there is no `_LOCALES_DIR`,
-//!     so the "dir missing -> return [DEFAULT_LOCALE]" fallback has no mechanism to reproduce.
+//!   * `test_available_locales_missing_dir` — kind="architecture-closure". Rust embeds the
+//!     complete catalog at compile time, so no runtime locales directory can disappear. The
+//!     stronger packaged-catalog contract owns availability without reproducing Python I/O.
 //!   * `test_detect_locale_locale_module_error` — kind="cross-crate". The oracle's no-arg
 //!     `detect_locale()` reads the `SKIT_LANG` > config > `LC_ALL` > `LC_MESSAGES` > `LANG` >
 //!     system chain; that precedence lives in `crates/skit-cli/src/cli.rs:219-238`
@@ -90,12 +86,14 @@ use skit_application::{
 };
 use skit_domain::{
     Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode,
-    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType},
+    parameters::{
+        NamedEdit, ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, SourceEditRequest,
+    },
 };
 use skit_i18n::{Locale, detect_locale};
 use skit_language::{
-    LanguageError, inject_values, managed_params, placeholder_params, read_uv_metadata,
-    write_managed_params, write_uv_metadata,
+    LanguageError, edit_source_declarations, inject_values, managed_params, placeholder_params,
+    read_uv_metadata, write_managed_params, write_uv_metadata,
 };
 use skit_runtime::{LaunchPaths, ProgramProbe, build_launch_plan, render_command_template};
 use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
@@ -379,14 +377,27 @@ fn test_write_params_prompt_with_newline_roundtrips() {
 // ==================================================================================
 
 #[test]
-#[ignore = "GAP (absent, MUST-FIX): the pure `analysis.edit_specs` \
-(resync/add/remove/secret/prompts + warn-and-continue) has NO public Rust equivalent; the CLI \
-inlines a fail-fast variant instead (same finding as \
-crates/skit-language/tests/port_test_reconcile.rs). Oracle ref: \
-src/skit/langs/python/reconcile.py:37-59 -> src/skit/analysis.py edit_specs."]
 fn test_edit_specs_does_not_mutate_input() {
-    // Oracle behavior (absent): edit_specs(text, original, secret=["CITY"], prompts={"CITY":
-    // "changed"}) returns a new EditResult and leaves original[0].secret == False / prompt == "".
+    let text = "CITY = \"Taipei\"\n";
+    let original = vec![const_spec("CITY")];
+    let before = original.clone();
+    let result = edit_source_declarations(
+        "python",
+        text,
+        &original,
+        &SourceEditRequest {
+            secret: vec!["CITY".to_owned()],
+            prompts: vec![NamedEdit::new("CITY", "changed")],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(original, before);
+    assert!(!original[0].secret);
+    assert!(original[0].prompt.is_empty());
+    assert!(result.declarations[0].secret);
+    assert_eq!(result.declarations[0].prompt, "changed");
 }
 
 // ==================================================================================
@@ -493,13 +504,9 @@ fn test_argstate_corrupt_file_fallback() {
 // ==================================================================================
 
 #[test]
-#[ignore = "GAP (absent): the Rust catalog is embedded at compile time \
-(skit_i18n::available_locale_tags() is `const`); there is no `_LOCALES_DIR`, so the \
-`dir-missing -> [DEFAULT_LOCALE]` fallback has no mechanism to reproduce. Oracle ref: \
-src/skit/i18n.py:75-82."]
+#[ignore = "ARCHITECTURE CLOSURE: Rust embeds its complete locale catalog at compile time, so there is no runtime locales directory that can disappear. `skit_i18n::available_locale_tags()` and the packaged catalog contract are stronger than Python's missing-directory fallback. Oracle ref: src/skit/i18n.py:75-82."]
 fn test_available_locales_missing_dir() {
-    // Oracle behavior (absent mechanism): with `_LOCALES_DIR` pointed at a nonexistent path,
-    // available_locales() == [DEFAULT_LOCALE].
+    // Python runtime-directory I/O has no Rust product boundary to execute.
 }
 
 // ==================================================================================

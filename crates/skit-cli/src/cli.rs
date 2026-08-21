@@ -2459,6 +2459,26 @@ where
 {
     let mut values = BTreeMap::new();
     for field in &form.fields {
+        if !field.help.is_empty() {
+            writeln!(output, "  {}", field.help)?;
+        }
+        if field.degraded {
+            writeln!(
+                output,
+                "  {}",
+                text(locale, "Leave empty to use the script's own default.")
+            )?;
+        }
+        if field.input_binding {
+            writeln!(
+                output,
+                "  {}",
+                text(
+                    locale,
+                    "Leave empty and the script will ask you in the terminal."
+                )
+            )?;
+        }
         let arguments = field
             .label_arguments
             .iter()
@@ -8634,11 +8654,15 @@ fn plain_run_form_view(
             } else {
                 saved.get(&parameter.name).cloned().unwrap_or_default()
             };
-            if parameter.secret {
+            let mut field = if parameter.secret {
                 FormField::secret_raw(format!("value:{}", parameter.name), label, value)
             } else {
                 FormField::text_raw(format!("value:{}", parameter.name), label, value)
-            }
+            };
+            field.help = parameter.help.clone();
+            field.degraded = parameter.degraded;
+            field.input_binding = parameter.binding == ParameterBinding::Input;
+            field
         })
         .collect::<Vec<_>>();
     if !runners.is_empty() {

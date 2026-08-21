@@ -180,6 +180,34 @@ fn write_analyzer_preset_entries(data: &Path) {
     }
 }
 
+fn write_plain_hint_entry(data: &Path) {
+    let mut help = ParamDecl::new("HELP");
+    help.delivery = ParameterDelivery::Placeholder;
+    help.prompt = "Help field".to_owned();
+    help.help = "Owned help row".to_owned();
+    let mut plain = ParamDecl::new("PLAIN");
+    plain.delivery = ParameterDelivery::Placeholder;
+    plain.prompt = "Plain field".to_owned();
+    let parameters = vec![help, plain];
+    FileStore::new(data)
+        .create(CreateEntry {
+            name: "Plain hints".to_owned(),
+            kind: EntryKind::parse("command").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings {
+                template: "printf '%s' '{HELP} {PLAIN}'".to_owned(),
+                params: ["HELP", "PLAIN"].map(str::to_owned).to_vec(),
+                parameters,
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+}
+
 fn write_secret_command_entry(data: &Path) {
     let directory = data.join("scripts/secret");
     fs::create_dir_all(&directory).unwrap();
@@ -2070,6 +2098,88 @@ fn analyzer_preset_notices_use_real_sources_in_three_locales() {
             "{degraded_state}"
         );
         assert!(input_state.contains("input-1 = \"Ada\""), "{input_state}");
+    }
+}
+
+#[test]
+fn test_promptform_prints_input_binding_hint() {
+    for (locale, degraded, input) in [
+        (
+            "en",
+            "Leave empty to use the script's own default.",
+            "Leave empty and the script will ask you in the terminal.",
+        ),
+        (
+            "zh-CN",
+            "留空＝用脚本自己的默认值。",
+            "留空＝运行时脚本自己在终端问你。",
+        ),
+        (
+            "zh-TW",
+            "留空＝用腳本自己的預設。",
+            "留空＝執行時腳本自己在終端機問你。",
+        ),
+    ] {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        write_plain_hint_entry(data.path());
+        write_analyzer_preset_entries(data.path());
+        let data_before = tree_snapshot(data.path());
+        let state_before = tree_snapshot(state.path());
+        let config_before = tree_snapshot(config.path());
+
+        let run = |selector: &str, answers: &[&[u8]]| {
+            let (code, raw) = run_pty_configured(
+                &["run", selector, "--plain", "--dry-run"],
+                data.path(),
+                state.path(),
+                config.path(),
+                answers,
+                false,
+                |command| {
+                    command.env("SKIT_LANG", locale);
+                },
+            );
+            let output = strip_terminal_control(&raw);
+            assert_eq!(code, 0, "{output}");
+            output
+        };
+        let helped = run("plain-hints", &[b"help\r", b"plain\r"]);
+        let degraded_output = run("degraded-analyzer", &[b"degraded\r"]);
+        let input_output = run("input-analyzer", &[b"input\r"]);
+
+        for (output, hint, label) in [
+            (&helped, "Owned help row", "Help field"),
+            (&degraded_output, degraded, "name"),
+            (&input_output, input, "Name"),
+        ] {
+            let lines = output.lines().map(str::trim_end).collect::<Vec<_>>();
+            let index = lines
+                .iter()
+                .position(|line| line.trim() == hint)
+                .unwrap_or_else(|| panic!("missing {hint:?}: {output}"));
+            assert!(lines[index + 1].starts_with(label), "{output}");
+            assert_eq!(lines.iter().filter(|line| line.trim() == hint).count(), 1);
+        }
+        let helped_lines = helped.lines().map(str::trim_end).collect::<Vec<_>>();
+        let plain = helped_lines
+            .iter()
+            .position(|line| line.starts_with("Plain field"))
+            .unwrap();
+        assert_ne!(helped_lines[plain - 1].trim(), "Owned help row");
+        assert!(!helped.contains(degraded), "{helped}");
+        assert!(!helped.contains(input), "{helped}");
+        assert!(
+            !degraded_output.contains("Owned help row"),
+            "{degraded_output}"
+        );
+        assert!(!degraded_output.contains(input), "{degraded_output}");
+        assert!(!input_output.contains("Owned help row"), "{input_output}");
+        assert!(!input_output.contains(degraded), "{input_output}");
+        assert_eq!(tree_snapshot(data.path()), data_before);
+        assert_eq!(tree_snapshot(state.path()), state_before);
+        assert_eq!(tree_snapshot(config.path()), config_before);
     }
 }
 

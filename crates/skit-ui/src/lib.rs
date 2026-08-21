@@ -1064,6 +1064,15 @@ pub struct FormField {
     pub secret: bool,
     /// Permit embedded line breaks.
     pub multiline: bool,
+    /// User-authored help shown before a plain prompt.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub help: String,
+    /// An empty value keeps the script's own dynamic default.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub degraded: bool,
+    /// An empty value lets the source ask in the terminal.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub input_binding: bool,
 }
 
 impl FormField {
@@ -1082,6 +1091,9 @@ impl FormField {
             value: value.into(),
             secret: false,
             multiline: false,
+            help: String::new(),
+            degraded: false,
+            input_binding: false,
         }
     }
 

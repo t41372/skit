@@ -476,14 +476,6 @@ fn test_plain_const_field_renders_no_input_binding_hint() {
 }
 
 // ---------------------------------------------------------------------------
-// 6 (oracle). The plain line form prints the same input-binding hint
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli) + DIVERGENCE FINDING: the plain line form is skit-cli's private collect_plain_form (crates/skit-cli/src/cli.rs:1870-1922), reachable only behind run_entry's is_terminal() gate — a PTY, via crates/skit-cli/tests/terminal_pty.rs — so it cannot be constructed from skit-tui. Oracle promptform.collect (src/skit/promptform.py:29-38) prints THREE dim hints before asking (help, the degraded 'Leave empty to use the script's own default.', and the input-binding 'Leave empty and the script will ask you in the terminal.'), each only for the field that owns it; the Rust collect_plain_form prints only 'label: ' / 'label [value]: ' and drops all three. MUST-FIX: restore the pre-prompt hints in collect_plain_form. Oracle: test_reset_default_ui.py:365-384."]
-fn test_promptform_prints_input_binding_hint() {}
-
-// ---------------------------------------------------------------------------
 // 7 (oracle). CLI: params shows the source's live default; show carries delivers_empty
 // ---------------------------------------------------------------------------
 
