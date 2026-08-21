@@ -238,6 +238,23 @@ fn combine(output: &std::process::Output) -> String {
     text
 }
 
+fn registry_product_rows(bytes: &[u8]) -> toml::Table {
+    let mut document = toml::from_str::<toml::Table>(&String::from_utf8_lossy(bytes)).unwrap();
+    if let Some(entries) = document
+        .get_mut("entries")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for row in entries
+            .iter_mut()
+            .filter_map(|(_, value)| value.as_table_mut())
+        {
+            row.remove("mtime_ns");
+            row.remove("skit_cache");
+        }
+    }
+    document
+}
+
 /// Write a source file with a fixed name so the copy slug is deterministic.
 fn write_source(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
@@ -1376,7 +1393,11 @@ fn test_update_dependencies_surfaces_clean_failure_as_store_error() {
     assert!(rendered.contains("node_modules"), "{rendered}");
     assert_eq!(std::fs::read(stored).unwrap(), stored_before);
     assert_eq!(std::fs::read(meta).unwrap(), meta_before);
-    assert_eq!(std::fs::read(registry).unwrap(), registry_before);
+    assert_eq!(
+        registry_product_rows(&std::fs::read(registry).unwrap()),
+        registry_product_rows(&registry_before),
+        "rollback may refresh only the derived cache proof; product rows stay exact"
+    );
     let remaining = std::fs::read_dir(&entry_dir)
         .unwrap()
         .flatten()

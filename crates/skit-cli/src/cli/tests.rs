@@ -5197,6 +5197,177 @@ fn tui_settings_clear_materialized_javascript_dependencies_before_the_metadata_u
 }
 
 #[test]
+fn tui_settings_state_failure_restores_the_entry_and_prepared_javascript_cleanup() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("rollback.js");
+    fs::write(&source, "const TOKEN = 'public';\nconsole.log(TOKEN);\n").unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    add_with_config(
+        &service,
+        &config_dir,
+        AddOptions {
+            source: Some(source),
+            kind: Some("js".to_owned()),
+            name: Some("Rollback JS".to_owned()),
+            description: Some("before".to_owned()),
+            reference: false,
+            command_template: None,
+            prompt: false,
+            executable: false,
+            runner: None,
+            no_interpolate: false,
+            dependencies: vec!["chalk".to_owned()],
+            dependencies_explicit: true,
+            requires_python: None,
+            no_input: false,
+        },
+    )
+    .unwrap();
+    let entry = service.show("rollback-js").unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    fs::create_dir(entry_dir.join("node_modules")).unwrap();
+    fs::write(
+        entry_dir.join("node_modules/chalk.js"),
+        b"module.exports = {};\n",
+    )
+    .unwrap();
+    fs::write(
+        entry_dir.join("package.json"),
+        b"{\"dependencies\":{\"chalk\":\"*\"}}\n",
+    )
+    .unwrap();
+    let mut public = ParamDecl::new("TOKEN");
+    public.binding = ParameterBinding::Const;
+    public.delivery = ParameterDelivery::Inject;
+    let state_store = FileFormStateStore::new(&state_dir);
+    FormStateService::new(state_store.clone())
+        .save_last(
+            &entry.slug,
+            &[public.clone()],
+            Some(&BTreeMap::from([(
+                "TOKEN".to_owned(),
+                "plaintext".to_owned(),
+            )])),
+            None,
+            false,
+        )
+        .unwrap();
+    let source_path = entry_dir.join("script.js");
+    let source_before = fs::read(&source_path).unwrap();
+    let meta_before = fs::read(entry_dir.join("meta.toml")).unwrap();
+    let state_path = state_dir.join("values/rollback-js.toml");
+    let state_before = fs::read(&state_path).unwrap();
+    let mut secret = public;
+    secret.secret = true;
+
+    let error = state_store
+        .update_after_external_commit_with(
+            &entry.slug,
+            || {
+                commit_entry_with_javascript_cleanup(
+                    &service,
+                    &store,
+                    &entry,
+                    UpdateEntry {
+                        name: entry.meta.name.clone(),
+                        description: "after".to_owned(),
+                        settings: EntrySettings::default(),
+                        workdir: entry.meta.workdir.clone(),
+                        source: Some(b"const TOKEN = 'secret';\n".to_vec()),
+                        expected_source_hash: entry.meta.source_hash.clone(),
+                    },
+                    true,
+                )
+            },
+            |state| scrub_secrets(&[secret], state),
+            |committed| rollback_committed_entry_update(committed, &service),
+            |path, _| {
+                Err(StateWriteError::Io {
+                    operation: "write",
+                    path: path.display().to_string(),
+                    reason: "injected state replacement failure".to_owned(),
+                })
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CoordinatedStateError::StateAfterCommit { rollback: None, .. }
+    ));
+    assert_eq!(fs::read(source_path).unwrap(), source_before);
+    assert_eq!(fs::read(entry_dir.join("meta.toml")).unwrap(), meta_before);
+    assert_eq!(fs::read(state_path).unwrap(), state_before);
+    assert_eq!(
+        fs::read(entry_dir.join("node_modules/chalk.js")).unwrap(),
+        b"module.exports = {};\n"
+    );
+    assert_eq!(
+        fs::read(entry_dir.join("package.json")).unwrap(),
+        b"{\"dependencies\":{\"chalk\":\"*\"}}\n"
+    );
+}
+
+#[test]
+fn prepared_cleanup_rollback_refuses_to_clobber_a_newer_entry_update() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let entry = service
+        .add(CreateEntry {
+            name: "Concurrent cleanup rollback".to_owned(),
+            kind: EntryKind::parse("js").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: "before".to_owned(),
+            payload: Some(EntryPayload {
+                bytes: b"console.log('before');\n".to_vec(),
+                stored_name: Some("script.js".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let mut committed = commit_entry_with_javascript_cleanup(
+        &service,
+        &store,
+        &entry,
+        UpdateEntry {
+            name: entry.meta.name.clone(),
+            description: "transaction".to_owned(),
+            settings: EntrySettings::default(),
+            workdir: entry.meta.workdir.clone(),
+            source: Some(b"console.log('transaction');\n".to_vec()),
+            expected_source_hash: entry.meta.source_hash.clone(),
+        },
+        false,
+    )
+    .unwrap();
+    let concurrent = service
+        .describe(&committed.entry, "newest concurrent description")
+        .unwrap();
+
+    let rollback = rollback_committed_entry_update(&mut committed, &service);
+
+    assert!(!rollback.authoritative_restored());
+    assert!(rollback.into_error().is_some());
+    assert_eq!(
+        service.show(entry.slug.as_str()).unwrap().meta.description,
+        concurrent.meta.description
+    );
+    assert_eq!(
+        fs::read(store.payload_path(&concurrent).unwrap()).unwrap(),
+        b"console.log('transaction');\n"
+    );
+}
+
+#[test]
 fn tui_settings_refuse_a_taken_name_before_javascript_dependency_cleanup() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
@@ -5541,6 +5712,28 @@ fn every_cli_error_localizes_and_keeps_its_values() {
         &["state encoding", "rollback encoding"],
     );
     assert_localized(
+        &CliError::Rollback {
+            primary: Box::new(CliError::Usage(
+                Message::new("primary operation failed: {}").with("primary detail"),
+            )),
+            rollback: Box::new(CliError::Usage(
+                Message::new("rollback operation failed: {}").with("rollback detail"),
+            )),
+        },
+        &["primary detail", "rollback detail"],
+    );
+    assert_localized(
+        &CliError::StateRestoreRollback {
+            primary: Box::new(CliError::Usage(
+                Message::new("finalize operation failed: {}").with("finalize detail"),
+            )),
+            state: StateWriteError::Encode {
+                reason: "state restore detail".to_owned(),
+            },
+        },
+        &["finalize detail", "state restore detail"],
+    );
+    assert_localized(
         &CliError::Usage(Message::new("unknown preset: {}").with("nightly")),
         &["nightly"],
     );
@@ -5585,6 +5778,26 @@ fn every_cli_error_localizes_and_keeps_its_values() {
             rollback: None,
         }),
         CliError::State(_)
+    ));
+    assert!(matches!(
+        coordinated_state_error(CoordinatedStateError::FinalizeAfterState {
+            finalize: CliError::Aborted,
+            rollback: Some(CliError::ConfirmationRequired),
+            state_rollback: None,
+            authoritative_restored: true,
+        }),
+        CliError::Rollback { .. }
+    ));
+    assert!(matches!(
+        coordinated_state_error(CoordinatedStateError::FinalizeAfterState {
+            finalize: CliError::Aborted,
+            rollback: None,
+            state_rollback: Some(StateWriteError::Encode {
+                reason: "state restore".to_owned(),
+            }),
+            authoritative_restored: true,
+        }),
+        CliError::StateRestoreRollback { .. }
     ));
 }
 
@@ -6189,6 +6402,90 @@ fn tui_settings_source_secret_transition_purges_every_state_surface() {
     assert!(!state.contains("CITY"), "{state}");
     assert!(!state.contains("leak"), "{state}");
     assert!(state.contains("KEEP = \"public\""), "{state}");
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_finalize_cleanup_failure_restores_public_entry_and_plaintext_state() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let mut token = ParamDecl::new("TOKEN");
+    token.binding = ParameterBinding::Const;
+    token.delivery = ParameterDelivery::Inject;
+    let source = write_managed_params(
+        "js",
+        "const TOKEN = 'public';\nconsole.log(TOKEN);\n",
+        &[token],
+    )
+    .unwrap();
+    let mut settings = EntrySettings::default();
+    settings.dependencies = vec!["chalk".to_owned()];
+    let entry = service
+        .add(CreateEntry {
+            name: "Finalize rollback".to_owned(),
+            kind: EntryKind::parse("js").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: "before".to_owned(),
+            payload: Some(EntryPayload {
+                bytes: source.into_bytes(),
+                stored_name: Some("script.js".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings,
+        })
+        .unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    fs::write(entry_dir.join("package.json"), b"old manifest\n").unwrap();
+    let blocked = entry_dir.join("node_modules/chalk");
+    fs::create_dir_all(&blocked).unwrap();
+    fs::write(blocked.join("index.js"), b"offline chalk\n").unwrap();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+    let state_path = state_dir.join("values/finalize-rollback.toml");
+    fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    let state_before = b"unknown='keep'\n[values]\nTOKEN='plaintext'\n";
+    fs::write(&state_path, state_before).unwrap();
+    let source_path = entry_dir.join("script.js");
+    let meta_path = entry_dir.join("meta.toml");
+    let source_before = fs::read(&source_path).unwrap();
+    let meta_before = fs::read(&meta_path).unwrap();
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        entry.slug.as_str(),
+        &[("dependencies", ""), ("parameter:TOKEN:secret", "true")],
+    );
+
+    let error = tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values)
+        .unwrap_err();
+
+    for item in fs::read_dir(&entry_dir).unwrap().flatten() {
+        let candidate = if item.file_name() == "node_modules" {
+            item.path()
+        } else {
+            item.path().join("node_modules")
+        };
+        let blocked = candidate.join("chalk");
+        if blocked.exists() {
+            fs::set_permissions(&blocked, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    assert!(matches!(error, CliError::Dependencies(_)), "{error:?}");
+    assert_eq!(fs::read(source_path).unwrap(), source_before);
+    assert_eq!(fs::read(meta_path).unwrap(), meta_before);
+    assert_eq!(fs::read(state_path).unwrap(), state_before);
+    assert!(fs::read_dir(entry_dir).unwrap().flatten().any(|item| {
+        item.file_name()
+            .to_string_lossy()
+            .starts_with(".skit-deps.tmp-")
+    }));
 }
 
 #[test]

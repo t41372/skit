@@ -8,6 +8,7 @@ use skit_domain::{
     EntryKind, EntrySettings, StorageMode,
     parameters::{ParamDecl, ParameterBinding, ParameterDelivery},
 };
+use skit_store::ExternalRollbackOutcome;
 use skit_store::{CoordinatedStateError, FileFormStateStore, FileStore};
 use tempfile::TempDir;
 
@@ -249,4 +250,182 @@ fn refused_state_update_keeps_the_document_byte_and_semantic_exact() {
     assert_eq!(result, Err("schema changed while the run was active"));
     assert_eq!(fs::read(&state_path).unwrap(), original);
     assert_eq!(state_store.load(&slug), semantic_before);
+}
+
+#[test]
+fn finalize_failure_restores_original_state_bytes_or_absence_after_external_rollback() {
+    for original in [
+        Some(b"unknown='keep'\n\n[values]\nTOKEN='plain'\n".as_slice()),
+        None,
+    ] {
+        let root = TempDir::new().unwrap();
+        let state_store = FileFormStateStore::new(root.path());
+        let slug = skit_domain::Slug::parse("finalize-restore").unwrap();
+        let state_path = root.path().join("values/finalize-restore.toml");
+        if let Some(original) = original {
+            fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+            fs::write(&state_path, original).unwrap();
+        }
+        let rollback_ran = std::cell::Cell::new(false);
+
+        let error = state_store
+            .update_after_external_commit_and_finalize(
+                &slug,
+                || Ok::<_, &str>(()),
+                |state| {
+                    state.values.clear();
+                    state.values.insert("NEXT".to_owned(), "new".to_owned());
+                },
+                |_| Err("final cleanup failed"),
+                |_| {
+                    rollback_ran.set(true);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert!(rollback_ran.get());
+        assert!(matches!(
+            error,
+            CoordinatedStateError::FinalizeAfterState {
+                finalize: "final cleanup failed",
+                rollback: None,
+                state_rollback: None,
+                authoritative_restored: true,
+            }
+        ));
+        match original {
+            Some(original) => assert_eq!(fs::read(state_path).unwrap(), original),
+            None => assert!(!state_path.exists()),
+        }
+    }
+}
+
+#[test]
+fn finalize_failure_never_restores_plaintext_state_when_external_rollback_fails() {
+    let root = TempDir::new().unwrap();
+    let state_store = FileFormStateStore::new(root.path());
+    let slug = skit_domain::Slug::parse("unsafe-restore").unwrap();
+    let state_path = root.path().join("values/unsafe-restore.toml");
+    fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    let original = b"[values]\nTOKEN='plaintext'\n";
+    fs::write(&state_path, original).unwrap();
+    let source_is_secret = std::cell::Cell::new(false);
+
+    let error = state_store
+        .update_after_external_commit_and_finalize(
+            &slug,
+            || {
+                source_is_secret.set(true);
+                Ok::<_, &str>(())
+            },
+            |state| {
+                state.values.clear();
+            },
+            |_| Err("final cleanup failed"),
+            |_| Err("entry rollback failed"),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CoordinatedStateError::FinalizeAfterState {
+            finalize: "final cleanup failed",
+            rollback: Some("entry rollback failed"),
+            state_rollback: None,
+            authoritative_restored: false,
+        }
+    ));
+    assert_ne!(fs::read(&state_path).unwrap(), original);
+    assert!(
+        source_is_secret.get(),
+        "failed entry rollback keeps the new secret source"
+    );
+    assert!(!state_store.load(&slug).values.contains_key("TOKEN"));
+}
+
+#[test]
+fn derived_cleanup_rollback_failure_still_restores_state_after_entry_rollback() {
+    let root = TempDir::new().unwrap();
+    let state_store = FileFormStateStore::new(root.path());
+    let slug = skit_domain::Slug::parse("derived-rollback-failure").unwrap();
+    let state_path = root.path().join("values/derived-rollback-failure.toml");
+    fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    let original = b"unknown='keep'\n[values]\nTOKEN='plaintext'\n";
+    fs::write(&state_path, original).unwrap();
+
+    let error = state_store
+        .update_after_external_commit_and_finalize(
+            &slug,
+            || Ok::<_, &str>(()),
+            |state| {
+                state.values.clear();
+            },
+            |_| Err("final cleanup failed"),
+            |_| ExternalRollbackOutcome::restored_with_error("cleanup rollback failed"),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CoordinatedStateError::FinalizeAfterState {
+            finalize: "final cleanup failed",
+            rollback: Some("cleanup rollback failed"),
+            state_rollback: None,
+            authoritative_restored: true,
+        }
+    ));
+    assert_eq!(fs::read(state_path).unwrap(), original);
+}
+
+#[test]
+fn finalize_failure_reports_an_incomplete_byte_exact_state_restore() {
+    let root = TempDir::new().unwrap();
+    let state_store = FileFormStateStore::new(root.path());
+    let slug = skit_domain::Slug::parse("state-restore-failure").unwrap();
+    let state_path = root.path().join("values/state-restore-failure.toml");
+    fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    let original = b"unknown='keep'\n[values]\nTOKEN='plaintext'\n";
+    fs::write(&state_path, original).unwrap();
+
+    let error = state_store
+        .update_after_external_commit_and_finalize_with(
+            &slug,
+            || Ok::<_, &str>(()),
+            |state| {
+                state.values.clear();
+            },
+            |_| Err("final cleanup failed"),
+            |_| Ok(()),
+            |path, bytes| {
+                fs::write(path, bytes).map_err(|error| StateWriteError::Io {
+                    operation: "write",
+                    path: path.display().to_string(),
+                    reason: error.to_string(),
+                })
+            },
+            |path, _| {
+                Err(StateWriteError::Io {
+                    operation: "rollback write",
+                    path: path.display().to_string(),
+                    reason: "injected restore failure".to_owned(),
+                })
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CoordinatedStateError::FinalizeAfterState {
+            finalize: "final cleanup failed",
+            rollback: None,
+            state_rollback: Some(StateWriteError::Io {
+                operation: "rollback write",
+                ..
+            }),
+            authoritative_restored: true,
+        }
+    ));
+    assert_ne!(fs::read(&state_path).unwrap(), original);
+    assert!(!state_store.load(&slug).values.contains_key("TOKEN"));
 }
