@@ -251,12 +251,10 @@ fn distribution_sizes(site: &Path, venv: &Path) -> Result<Vec<(String, u64)>, Su
         let mut total = 0_u64;
         let mut counted = HashSet::new();
         if record.is_file() {
-            let mut rows = csv::ReaderBuilder::new()
+            let reader = csv::ReaderBuilder::new()
                 .has_headers(false)
-                .from_path(&record)
-                .map_err(|error| {
-                    SuiteError::Contract(format!("could not read {}: {error}", record.display()))
-                })?;
+                .from_path(&record);
+            let mut rows = open_record(&record, reader)?;
             for row in rows.records() {
                 let row = row.map_err(|error| {
                     SuiteError::Contract(format!(
@@ -264,9 +262,7 @@ fn distribution_sizes(site: &Path, venv: &Path) -> Result<Vec<(String, u64)>, Su
                         record.display()
                     ))
                 })?;
-                let Some(relative) = row.get(0) else {
-                    continue;
-                };
+                let relative = row.get(0).unwrap_or_default();
                 let installed = site.join(relative);
                 if installed.is_file() {
                     total += file_size_u64(&installed)?;
@@ -290,6 +286,15 @@ fn distribution_sizes(site: &Path, venv: &Path) -> Result<Vec<(String, u64)>, Su
     }
     sizes.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(sizes)
+}
+
+fn open_record(
+    record: &Path,
+    reader: Result<csv::Reader<fs::File>, csv::Error>,
+) -> Result<csv::Reader<fs::File>, SuiteError> {
+    reader.map_err(|error| {
+        SuiteError::Contract(format!("could not read {}: {error}", record.display()))
+    })
 }
 
 fn distribution_name(dist_info: &Path, directory_name: &str) -> Result<String, SuiteError> {
@@ -343,20 +348,24 @@ fn find_site_packages(venv: &Path) -> Result<PathBuf, SuiteError> {
     }
 }
 
+#[cfg(windows)]
 fn venv_python(venv: &Path) -> PathBuf {
-    if cfg!(windows) {
-        venv.join("Scripts/python.exe")
-    } else {
-        venv.join("bin/python")
-    }
+    venv.join("Scripts/python.exe")
 }
 
+#[cfg(not(windows))]
+fn venv_python(venv: &Path) -> PathBuf {
+    venv.join("bin/python")
+}
+
+#[cfg(windows)]
 fn venv_skit(venv: &Path) -> PathBuf {
-    if cfg!(windows) {
-        venv.join("Scripts/skit.exe")
-    } else {
-        venv.join("bin/skit")
-    }
+    venv.join("Scripts/skit.exe")
+}
+
+#[cfg(not(windows))]
+fn venv_skit(venv: &Path) -> PathBuf {
+    venv.join("bin/skit")
 }
 
 fn one_artifact(
@@ -454,6 +463,9 @@ fn contract_io(operation: &str, path: &Path, error: std::io::Error) -> SuiteErro
 mod tests {
     use std::{collections::BTreeMap, fs};
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
+
     use tempfile::TempDir;
 
     #[test]
@@ -491,7 +503,7 @@ mod tests {
         fs::create_dir_all(venv.join("bin")).unwrap();
         fs::write(site.join("payload"), b"abc").unwrap();
         fs::write(venv.join("bin/skit"), b"12345").unwrap();
-        fs::write(dist.join("RECORD"), "payload,,\n../../../bin/skit,,\n").unwrap();
+        fs::write(dist.join("RECORD"), "payload,,\n").unwrap();
         fs::write(
             dist.join("METADATA"),
             "Metadata-Version: 2.4\nName: skit-cli\n",
@@ -589,5 +601,117 @@ mod tests {
         fs::create_dir(&broken).unwrap();
         fs::write(broken.join("RECORD"), [0xff, b',', b',', b'\n']).unwrap();
         assert!(super::distribution_sizes(&site, &venv).is_err());
+
+        let unreadable = site.join("unreadable-1.0.dist-info");
+        fs::create_dir(&unreadable).unwrap();
+        fs::create_dir(unreadable.join("RECORD")).unwrap();
+        assert!(super::distribution_sizes(&site, &venv).is_err());
+
+        let vanished = site.join("vanished.RECORD");
+        let error = super::open_record(
+            &vanished,
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_path(&vanished),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(&vanished.display().to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn footprint_names_dist_creation_and_retried_install_failures() {
+        use crate::{
+            SuiteKind,
+            suites::tests::{Fixture, plan},
+        };
+
+        let fixture = Fixture::new();
+        let dist = fixture.context.workdir.join("dist");
+        fs::write(&dist, "unchanged").unwrap();
+        let error = super::run(&fixture.context, &plan(SuiteKind::Footprint, &[0])).unwrap_err();
+        assert!(error.to_string().contains(&dist.display().to_string()));
+        assert_eq!(fs::read_to_string(&dist).unwrap(), "unchanged");
+
+        let fixture = Fixture::new();
+        let uv = fixture.context.uv.clone().unwrap();
+        let log = fixture.context.workdir.join("uv-invocations");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s|%s\n' "$PWD" "$*" >> '{}'
+case "$1" in
+  build)
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --out-dir) out=$2; shift 2 ;; *) shift ;; esac
+    done
+    mkdir -p "$out"
+    printf wheel > "$out/skit_cli-0.5.0-py3-none-any.whl"
+    printf source > "$out/skit_cli-0.5.0.tar.gz"
+    ;;
+  venv)
+    venv=$2
+    mkdir -p "$venv/bin" "$venv/lib/python3.13/site-packages"
+    printf '#!/bin/sh\nexit 0\n' > "$venv/bin/python"
+    chmod +x "$venv/bin/python"
+    ;;
+  pip)
+    i=0
+    while [ "$i" -lt 2100 ]; do printf x >&2; i=$((i + 1)); done
+    printf 'TAIL\n' >&2
+    exit 9
+    ;;
+esac
+"#,
+            log.display()
+        );
+        fs::write(&uv, script).unwrap();
+        fs::set_permissions(&uv, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut closure_plan = plan(SuiteKind::Footprint, &[0]);
+        closure_plan.measure_closure = true;
+        let error = super::run(&fixture.context, &closure_plan).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("closure install failed 3 times"));
+        assert!(message.trim_end().ends_with("TAIL"));
+        assert!(message.len() < 2_100);
+
+        let invocations = fs::read_to_string(&log).unwrap();
+        let lines = invocations.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 5);
+        assert_eq!(
+            lines[0],
+            format!(
+                "{}|build --out-dir {}",
+                fixture.context.repo_root.display(),
+                fixture.context.workdir.join("dist").display()
+            )
+        );
+        assert_eq!(
+            lines[1],
+            format!(
+                "{}|venv {} --python {}",
+                fixture.context.workdir.display(),
+                fixture.context.workdir.join("footprint-venv").display(),
+                fixture.context.python.as_ref().unwrap().display()
+            )
+        );
+        let install = format!(
+            "{}|pip install --python {} {}",
+            fixture.context.workdir.display(),
+            fixture
+                .context
+                .workdir
+                .join("footprint-venv/bin/python")
+                .display(),
+            fixture
+                .context
+                .workdir
+                .join("dist/skit_cli-0.5.0-py3-none-any.whl")
+                .display()
+        );
+        assert_eq!(
+            &lines[2..],
+            [install.as_str(), install.as_str(), install.as_str()]
+        );
     }
 }
