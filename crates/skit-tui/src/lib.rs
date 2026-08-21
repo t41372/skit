@@ -101,13 +101,15 @@ pub fn render_with_session(
     session: &mut TuiSession,
 ) -> ViewGeometry {
     session.begin_render(state);
-    let footer_height =
-        footer::required_height(frame.area().width, frame.area().height, state, locale);
-    let areas = layout::split_with_header(
-        frame.area(),
-        footer_height,
-        header_height(state, frame.area().height),
+    let header_height = header_height(state, frame.area().height);
+    let footer_height = footer::required_height(
+        frame.area().width,
+        frame.area().height,
+        header_height,
+        state,
+        locale,
     );
+    let areas = layout::split_with_header(frame.area(), footer_height, header_height);
 
     let header = header_kind(state);
     if areas.header.height > 0

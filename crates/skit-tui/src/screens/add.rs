@@ -31,6 +31,7 @@ use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandl
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
+    footer::handle_footer_scroll,
     session::render_line_input,
     theme::{ACCENT, BOX_MAROON, SELECT_BG, SELECT_FG, panel_block},
 };
@@ -169,6 +170,9 @@ pub struct AddScreenSession {
     scroll: ScrollableContentState,
     viewport: Rect,
     visible_height: usize,
+    footer_scroll: ScrollableContentState,
+    footer_viewport: Rect,
+    footer_visible_height: usize,
     row_spans: BTreeMap<AddControlId, (usize, usize)>,
 }
 
@@ -191,6 +195,7 @@ impl AddScreenSession {
         self.inputs.clear();
         self.checks.clear();
         self.row_spans.clear();
+        self.footer_scroll = ScrollableContentState::default();
         match state.stage() {
             AddStage::Source => {
                 let source = state.source();
@@ -324,6 +329,14 @@ impl AddScreenSession {
     ) -> Option<AddScreenEvent> {
         self.sync(state);
         if let Event::Mouse(mouse) = &event {
+            if handle_footer_scroll(
+                &mut self.footer_scroll,
+                mouse,
+                self.footer_viewport,
+                self.footer_visible_height,
+            ) {
+                return Some(AddScreenEvent::Changed);
+            }
             if matches!(
                 mouse.kind,
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -797,7 +810,7 @@ pub fn render_add(
     for overlay in select_overlays {
         hits.extend(overlay);
     }
-    hits.extend(render_footer(frame, chunks[1], state, locale));
+    hits.extend(render_footer(frame, chunks[1], state, session, locale));
     AddScreenGeometry {
         body,
         first_visible: offset,
@@ -1367,6 +1380,14 @@ struct AddFooterChip {
     target: AddControlId,
 }
 
+#[derive(Debug)]
+struct PositionedAddFooterChip {
+    chip: AddFooterChip,
+    row: usize,
+    x: u16,
+    width: u16,
+}
+
 fn footer_chips(state: &AddWorkflowState, locale: Locale) -> Vec<AddFooterChip> {
     let chip = |key, label: String, target| AddFooterChip { key, label, target };
     match state.stage() {
@@ -1488,39 +1509,101 @@ fn render_footer(
     frame: &mut Frame,
     area: Rect,
     state: &AddWorkflowState,
+    session: &mut AddScreenSession,
     locale: Locale,
 ) -> Vec<AddHitRegion> {
     if area.is_empty() {
+        session.footer_viewport = Rect::default();
+        session.footer_visible_height = 0;
         return Vec::new();
     }
-    let mut row = 0_u16;
-    let mut x = 0_u16;
+    let chips = footer_chips(state, locale);
+    let (mut positioned, mut rows) = position_footer_chips(chips, area.width);
+    let mut content_width = area.width;
+    if rows > usize::from(area.height) && area.width > 1 {
+        content_width = area.width.saturating_sub(1);
+        (positioned, rows) = position_footer_chips(footer_chips(state, locale), content_width);
+    }
+    session.footer_visible_height = usize::from(area.height);
+    session.footer_viewport = Rect::new(area.x, area.y, content_width, area.height);
+    session.footer_scroll.set_lines(vec![String::new(); rows]);
+    let maximum_offset = rows.saturating_sub(session.footer_visible_height);
+    if session.footer_scroll.scroll_offset() > maximum_offset {
+        session.footer_scroll.set_scroll_offset(maximum_offset);
+    }
+    let offset = session.footer_scroll.scroll_offset();
+    let end = offset.saturating_add(session.footer_visible_height);
     let mut hits = Vec::new();
-    for chip in footer_chips(state, locale) {
-        let label = format!("[{}] {}", chip.key, chip.label);
-        let desired = u16::try_from(label.width().saturating_add(1))
-            .unwrap_or(u16::MAX)
-            .min(area.width);
-        if x > 0 && x.saturating_add(desired) > area.width {
-            row = row.saturating_add(1);
-            x = 0;
-        }
-        if row >= area.height {
-            break;
-        }
-        let width = desired.min(area.width.saturating_sub(x));
-        let chip_area = Rect::new(area.x.saturating_add(x), area.y + row, width, 1);
+    for item in positioned
+        .into_iter()
+        .filter(|item| item.row >= offset && item.row < end)
+    {
+        let label = format!("[{}] {}", item.chip.key, item.chip.label);
+        let y = area
+            .y
+            .saturating_add(u16::try_from(item.row.saturating_sub(offset)).unwrap_or(u16::MAX));
+        let chip_area = Rect::new(area.x.saturating_add(item.x), y, item.width, 1);
         frame.render_widget(
             Paragraph::new(label).style(Style::default().add_modifier(Modifier::DIM)),
             chip_area,
         );
         hits.push(AddHitRegion {
             area: chip_area,
-            target: chip.target,
+            target: item.chip.target,
         });
-        x = x.saturating_add(width).saturating_add(1);
+    }
+    if rows > session.footer_visible_height {
+        let indicator = match (
+            session.footer_scroll.is_at_top(),
+            session
+                .footer_scroll
+                .is_at_bottom(session.footer_visible_height),
+        ) {
+            (true, false) => "↓",
+            (false, true) => "↑",
+            (false, false) => "↕",
+            (true, true) => "",
+        };
+        frame.render_widget(
+            Paragraph::new(indicator).style(Style::default().add_modifier(Modifier::DIM)),
+            Rect::new(area.right().saturating_sub(1), area.y, 1, 1),
+        );
     }
     hits
+}
+
+fn position_footer_chips(
+    chips: Vec<AddFooterChip>,
+    width: u16,
+) -> (Vec<PositionedAddFooterChip>, usize) {
+    if chips.is_empty() || width == 0 {
+        return (Vec::new(), 0);
+    }
+    let mut row = 0_usize;
+    let mut x = 0_u16;
+    let mut positioned = Vec::with_capacity(chips.len());
+    for chip in chips {
+        let desired = u16::try_from(
+            chip.key
+                .width()
+                .saturating_add(chip.label.width())
+                .saturating_add(4),
+        )
+        .unwrap_or(u16::MAX)
+        .min(width);
+        if x > 0 && x.saturating_add(desired) > width {
+            row = row.saturating_add(1);
+            x = 0;
+        }
+        positioned.push(PositionedAddFooterChip {
+            chip,
+            row,
+            x,
+            width: desired.min(width.saturating_sub(x)),
+        });
+        x = x.saturating_add(desired).saturating_add(1);
+    }
+    (positioned, row.saturating_add(1))
 }
 
 fn storage_options(state: &AddWorkflowState, locale: Locale) -> Vec<String> {
@@ -2620,7 +2703,16 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(1, 1)).unwrap();
         terminal
             .draw(|frame| {
-                assert!(render_footer(frame, Rect::default(), &cancelled, Locale::En).is_empty());
+                assert!(
+                    render_footer(
+                        frame,
+                        Rect::default(),
+                        &cancelled,
+                        &mut cancelled_session,
+                        Locale::En,
+                    )
+                    .is_empty()
+                );
             })
             .unwrap();
 

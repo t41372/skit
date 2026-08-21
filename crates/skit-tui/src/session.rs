@@ -558,7 +558,12 @@ impl TuiSession {
             | ModalState::RunFilePicker { .. }),
         ) = state.modal()
         {
+            let fallback = event.clone();
             return match self.run_modal.handle_event(event, modal) {
+                RunModalEvent::Handling(EventHandling::Ignored) => {
+                    map_event(fallback, state, geometry)
+                        .map_or(EventHandling::Ignored, EventHandling::Action)
+                }
                 RunModalEvent::Handling(handling) => handling,
                 RunModalEvent::Insert { field, text } => self.insert_run_text(field, &text),
                 RunModalEvent::OpenEnvironment { field } => {
@@ -643,7 +648,15 @@ impl TuiSession {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     self.handle_run_key(key, form)
                 }
-                Event::Mouse(mouse) => self.handle_run_mouse(mouse, form, geometry),
+                Event::Mouse(mouse) => {
+                    let handling = self.handle_run_mouse(mouse, form, geometry);
+                    if handling == EventHandling::Ignored {
+                        map_event(Event::Mouse(mouse), state, geometry)
+                            .map_or(EventHandling::Ignored, EventHandling::Action)
+                    } else {
+                        handling
+                    }
+                }
                 Event::Paste(value) => self.handle_run_paste(&value, form),
                 Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
                     EventHandling::Ignored
@@ -656,7 +669,15 @@ impl TuiSession {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     self.handle_form_key(key, form)
                 }
-                Event::Mouse(mouse) => self.handle_form_mouse(mouse, geometry),
+                Event::Mouse(mouse) => {
+                    let handling = self.handle_form_mouse(mouse, geometry);
+                    if handling == EventHandling::Ignored {
+                        map_event(Event::Mouse(mouse), state, geometry)
+                            .map_or(EventHandling::Ignored, EventHandling::Action)
+                    } else {
+                        handling
+                    }
+                }
                 Event::Paste(value) => self.handle_form_paste(&value, form),
                 Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
                     EventHandling::Ignored

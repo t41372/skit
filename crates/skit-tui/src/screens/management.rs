@@ -1086,7 +1086,7 @@ fn list_style(accent: Color) -> ListPickerStyle {
     }
 }
 
-fn health_footer_items(locale: Locale) -> Vec<ActionFooterItem<HealthAction>> {
+pub(crate) fn health_footer_items(locale: Locale) -> Vec<ActionFooterItem<HealthAction>> {
     vec![
         ActionFooterItem::new("Enter", text(locale, "Jump to entry"), HealthAction::Jump),
         ActionFooterItem::new(
@@ -1098,7 +1098,9 @@ fn health_footer_items(locale: Locale) -> Vec<ActionFooterItem<HealthAction>> {
     ]
 }
 
-fn runner_editor_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerEditorAction>> {
+pub(crate) fn runner_editor_footer_items(
+    locale: Locale,
+) -> Vec<ActionFooterItem<RunnerEditorAction>> {
     vec![
         ActionFooterItem::new(
             "Tab/↓",
@@ -1115,7 +1117,9 @@ fn runner_editor_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerEdit
     ]
 }
 
-fn runner_manager_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerManagerAction>> {
+pub(crate) fn runner_manager_footer_items(
+    locale: Locale,
+) -> Vec<ActionFooterItem<RunnerManagerAction>> {
     vec![
         ActionFooterItem::new(
             "Ctrl+N",
@@ -1126,7 +1130,7 @@ fn runner_manager_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerMan
     ]
 }
 
-fn runner_action_footer_items(
+pub(crate) fn runner_action_footer_items(
     locale: Locale,
     editable: bool,
 ) -> Vec<ActionFooterItem<RunnerManagerAction>> {
@@ -1151,7 +1155,9 @@ fn runner_action_footer_items(
     items
 }
 
-fn runner_removal_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerManagerAction>> {
+pub(crate) fn runner_removal_footer_items(
+    locale: Locale,
+) -> Vec<ActionFooterItem<RunnerManagerAction>> {
     vec![
         ActionFooterItem::new(
             "y",
@@ -1178,6 +1184,22 @@ mod tests {
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn advertised_key(hint: &str) -> Event {
+        let (code, modifiers) = match hint {
+            "Enter" => (KeyCode::Enter, KeyModifiers::NONE),
+            "Esc" => (KeyCode::Esc, KeyModifiers::NONE),
+            "Tab/↓" => (KeyCode::Tab, KeyModifiers::NONE),
+            "Shift+Tab/↑" => (KeyCode::BackTab, KeyModifiers::SHIFT),
+            "Ctrl+N" => (KeyCode::Char('n'), KeyModifiers::CONTROL),
+            "Ctrl+R" => (KeyCode::Char('r'), KeyModifiers::CONTROL),
+            "e" => (KeyCode::Char('e'), KeyModifiers::NONE),
+            "d" => (KeyCode::Char('d'), KeyModifiers::NONE),
+            "y" => (KeyCode::Char('y'), KeyModifiers::NONE),
+            _ => panic!("unsupported advertised management key: {hint}"),
+        };
+        Event::Key(KeyEvent::new(code, modifiers))
     }
 
     fn mouse(column: u16, row: u16) -> Event {
@@ -1260,6 +1282,113 @@ mod tests {
                 snapshot_token: format!("row-{index}"),
             }],
             pinned_count,
+        }
+    }
+
+    #[test]
+    fn every_management_footer_key_emits_its_typed_action_at_every_size_tier() {
+        for (width, height) in [(120, 30), (46, 12), (24, 6)] {
+            let health_view = health();
+            let mut health_session = HealthScreenSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| {
+                    health_session.render(frame, frame.area(), &health_view, Locale::En);
+                })
+                .unwrap();
+            for item in health_footer_items(Locale::En) {
+                assert_eq!(
+                    health_session
+                        .handle_event(advertised_key(item.advertised_key()), &health_view),
+                    HealthEventHandling::Action(item.typed_action().clone()),
+                    "Health key {} at {width}x{height}",
+                    item.advertised_key()
+                );
+            }
+
+            let editor_view = RunnerEditorView::new();
+            let mut editor_session = RunnerEditorSession::default();
+            terminal
+                .draw(|frame| {
+                    editor_session.render(frame, frame.area(), &editor_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_editor_footer_items(Locale::En) {
+                assert_eq!(
+                    editor_session
+                        .handle_event(advertised_key(item.advertised_key()), &editor_view),
+                    RunnerEditorEventHandling::Action(item.typed_action().clone()),
+                    "runner editor key {} at {width}x{height}",
+                    item.advertised_key()
+                );
+            }
+
+            let manager_view = RunnerManagerView::new(vec![row(0, None, 3)]);
+            let mut manager_session = RunnerManagerSession::default();
+            terminal
+                .draw(|frame| {
+                    manager_session.render(frame, frame.area(), &manager_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_manager_footer_items(Locale::En) {
+                assert_eq!(
+                    manager_session
+                        .handle_event(advertised_key(item.advertised_key()), &manager_view,),
+                    RunnerManagerEventHandling::Action(item.typed_action().clone()),
+                    "runner manager key {} at {width}x{height}",
+                    item.advertised_key()
+                );
+            }
+
+            let mut action_view = RunnerManagerView::new(vec![row(0, None, 3)]);
+            action_view.reduce(RunnerManagerAction::ActivateSelected);
+            terminal
+                .draw(|frame| {
+                    manager_session.render(frame, frame.area(), &action_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_action_footer_items(Locale::En, true) {
+                assert_eq!(
+                    manager_session
+                        .handle_event(advertised_key(item.advertised_key()), &action_view,),
+                    RunnerManagerEventHandling::Action(item.typed_action().clone()),
+                    "runner action key {} at {width}x{height}",
+                    item.advertised_key()
+                );
+            }
+
+            action_view.reduce(RunnerManagerAction::RemoveSelected);
+            terminal
+                .draw(|frame| {
+                    manager_session.render(frame, frame.area(), &action_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_removal_footer_items(Locale::En) {
+                assert_eq!(
+                    manager_session
+                        .handle_event(advertised_key(item.advertised_key()), &action_view,),
+                    RunnerManagerEventHandling::Action(item.typed_action().clone()),
+                    "runner removal key {} at {width}x{height}",
+                    item.advertised_key()
+                );
+            }
+
+            let mut locked_view = RunnerManagerView::new(vec![row(0, Some("broken"), 0)]);
+            locked_view.reduce(RunnerManagerAction::ActivateSelected);
+            terminal
+                .draw(|frame| {
+                    manager_session.render(frame, frame.area(), &locked_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_action_footer_items(Locale::En, false) {
+                assert_eq!(
+                    manager_session
+                        .handle_event(advertised_key(item.advertised_key()), &locked_view,),
+                    RunnerManagerEventHandling::Action(item.typed_action().clone()),
+                    "locked runner action key {} at {width}x{height}",
+                    item.advertised_key()
+                );
+            }
         }
     }
 

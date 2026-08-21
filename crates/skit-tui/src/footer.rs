@@ -8,7 +8,6 @@ use ratatui_core::{
 use ratatui_crossterm::crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui_interact::components::{
     Button, ButtonState, ButtonStyle, ButtonVariant, ScrollableContentState,
-    handle_scrollable_content_mouse,
 };
 use ratatui_widgets::{
     block::Block,
@@ -50,6 +49,16 @@ impl<A> ActionFooterItem<A> {
             starts_group: true,
             ..Self::new(key, label, action)
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn advertised_key(&self) -> &str {
+        &self.key
+    }
+
+    #[cfg(test)]
+    pub(crate) fn typed_action(&self) -> &A {
+        &self.action
     }
 }
 
@@ -176,17 +185,7 @@ impl<A: Clone> ActionFooterSession<A> {
                 .cloned()
                 .map_or(ActionFooterMouse::Ignored, ActionFooterMouse::Action);
         }
-        if matches!(
-            mouse.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) && handle_scrollable_content_mouse(
-            &mut self.scroll,
-            mouse,
-            self.viewport,
-            self.visible_height,
-        )
-        .is_some()
-        {
+        if handle_footer_scroll(&mut self.scroll, mouse, self.viewport, self.visible_height) {
             return ActionFooterMouse::Scrolled;
         }
         ActionFooterMouse::Ignored
@@ -273,26 +272,31 @@ struct Chip {
 pub(crate) fn required_height(
     width: u16,
     terminal_height: u16,
+    header_height: u16,
     state: &LibraryState,
     locale: Locale,
 ) -> u16 {
     if is_suppressed(state) {
         return 0;
     }
+    let available = terminal_height
+        .saturating_sub(header_height)
+        .saturating_sub(u16::from(terminal_height > header_height));
+    if available == 0 {
+        return 0;
+    }
     let inner_width = width.saturating_sub(2);
     if inner_width == 0 {
-        return 2.min(terminal_height);
+        return 2.min(available);
     }
     let (_, rows) = chips(state, locale, inner_width);
     let visible_rows = rows.min(row_budget(terminal_height, state.command_context()));
+    let border_rows = if available <= 2 { 0 } else { 2 };
     let desired = u16::try_from(visible_rows)
         .unwrap_or(u16::MAX)
         .saturating_add(u16::from(has_note(state, inner_width)))
-        .saturating_add(2);
-    let available = terminal_height.saturating_sub(3);
-    desired
-        .min(available.max(terminal_height.min(2)))
-        .max(terminal_height.min(2))
+        .saturating_add(border_rows);
+    desired.min(available).max(1)
 }
 
 pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
@@ -313,17 +317,23 @@ impl FooterSession {
         state: &LibraryState,
         locale: Locale,
     ) -> Vec<HitRegion> {
+        let compact = area.height <= 2;
         let base_block = Block::default()
-            .borders(Borders::ALL)
+            .borders(if compact { Borders::NONE } else { Borders::ALL })
             .border_type(BorderType::Rounded);
         let inner = base_block.inner(area);
-        let (chips, rows) = chips(state, locale, inner.width);
         let note_rows = usize::from(has_note(state, inner.width));
         self.visible_height = usize::from(inner.height).saturating_sub(note_rows);
+        let mut content_width = inner.width;
+        let (mut positioned, mut rows) = chips(state, locale, content_width);
+        if compact && rows > self.visible_height && content_width > 1 {
+            content_width = content_width.saturating_sub(1);
+            (positioned, rows) = chips(state, locale, content_width);
+        }
         self.viewport = Rect::new(
             inner.x,
             inner.y,
-            inner.width,
+            content_width,
             u16::try_from(self.visible_height).unwrap_or(u16::MAX),
         );
         self.scroll.set_lines(vec![String::new(); rows]);
@@ -340,15 +350,25 @@ impl FooterSession {
             (false, true) => Some(" ↑ "),
             (false, false) => Some(" ↑↓ "),
         };
-        frame.render_widget(
-            indicator.map_or(base_block.clone(), |title| base_block.clone().title(title)),
-            area,
-        );
+        if compact {
+            frame.render_widget(base_block, area);
+            if let Some(title) = indicator {
+                frame.render_widget(
+                    Paragraph::new(title.trim()),
+                    Rect::new(inner.right().saturating_sub(1), inner.y, 1, 1),
+                );
+            }
+        } else {
+            frame.render_widget(
+                indicator.map_or(base_block.clone(), |title| base_block.clone().title(title)),
+                area,
+            );
+        }
 
         let offset = self.scroll.scroll_offset();
         let end = offset.saturating_add(self.visible_height);
         let mut hits = Vec::new();
-        for chip in chips
+        for chip in positioned
             .into_iter()
             .filter(|chip| chip.row >= offset && chip.row < end)
         {
@@ -358,7 +378,7 @@ impl FooterSession {
             let chip_area = Rect::new(
                 inner.x.saturating_add(chip.x),
                 y,
-                chip.width.min(inner.width.saturating_sub(chip.x)),
+                chip.width.min(content_width.saturating_sub(chip.x)),
                 1,
             );
             let mut state = ButtonState::enabled();
@@ -403,17 +423,30 @@ impl FooterSession {
     }
 
     pub(crate) fn handle_mouse(&mut self, mouse: &MouseEvent) -> bool {
-        matches!(
-            mouse.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) && handle_scrollable_content_mouse(
-            &mut self.scroll,
-            mouse,
-            self.viewport,
-            self.visible_height,
-        )
-        .is_some()
+        handle_footer_scroll(&mut self.scroll, mouse, self.viewport, self.visible_height)
     }
+}
+
+pub(crate) fn handle_footer_scroll(
+    scroll: &mut ScrollableContentState,
+    mouse: &MouseEvent,
+    viewport: Rect,
+    visible_height: usize,
+) -> bool {
+    if mouse.column < viewport.x
+        || mouse.column >= viewport.right()
+        || mouse.row < viewport.y
+        || mouse.row >= viewport.bottom()
+    {
+        return false;
+    }
+    let page = visible_height.max(1);
+    match mouse.kind {
+        MouseEventKind::ScrollUp => scroll.scroll_up(page),
+        MouseEventKind::ScrollDown => scroll.scroll_down(page, page),
+        _ => return false,
+    }
+    true
 }
 
 fn footer_button_style() -> ButtonStyle {
@@ -557,6 +590,10 @@ mod tests {
     use skit_ui::{Action, RunFormView};
 
     use super::*;
+    use crate::screens::management::{
+        health_footer_items, runner_action_footer_items, runner_editor_footer_items,
+        runner_manager_footer_items, runner_removal_footer_items,
+    };
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum TestAction {
@@ -661,6 +698,15 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
+            session.handle_mouse(&scroll_down(1, 0)),
+            ActionFooterMouse::Scrolled
+        );
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+            })
+            .unwrap();
+        assert_eq!(
             session.handle_mouse(&click(1, 0)),
             ActionFooterMouse::Action(TestAction::Fourth)
         );
@@ -685,6 +731,60 @@ mod tests {
         assert_eq!(action_footer_required_height::<TestAction>(20, &[]), 0);
         assert_eq!(action_footer_content_width(0), 0);
         assert_eq!(action_footer_content_width(2), 2);
+    }
+
+    fn assert_local_action_inventory<A>(items: Vec<ActionFooterItem<A>>)
+    where
+        A: Clone + std::fmt::Debug + Eq,
+    {
+        let expected = items
+            .iter()
+            .map(|item| item.action.clone())
+            .collect::<Vec<_>>();
+        for (width, height) in [(120, 3), (46, 2), (24, 1)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut session = ActionFooterSession::default();
+            let mut seen = Vec::new();
+            for _ in 0..32 {
+                terminal
+                    .draw(|frame| {
+                        session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+                    })
+                    .unwrap();
+                for y in 0..height {
+                    for x in 0..width {
+                        if let ActionFooterMouse::Action(action) =
+                            session.handle_mouse(&click(x, y))
+                            && !seen.contains(&action)
+                        {
+                            seen.push(action);
+                        }
+                    }
+                }
+                if seen.len() == expected.len() {
+                    break;
+                }
+                assert_eq!(
+                    session.handle_mouse(&scroll_down(0, 0)),
+                    ActionFooterMouse::Scrolled,
+                    "local footer stopped before every action at {width}x{height}: {seen:?}"
+                );
+            }
+            assert!(
+                seen.len() == expected.len() && expected.iter().all(|item| seen.contains(item)),
+                "local footer dropped an action at {width}x{height}: expected={expected:?} seen={seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_management_local_action_uses_the_scrollable_footer_at_every_size_tier() {
+        assert_local_action_inventory(health_footer_items(Locale::En));
+        assert_local_action_inventory(runner_editor_footer_items(Locale::En));
+        assert_local_action_inventory(runner_manager_footer_items(Locale::En));
+        assert_local_action_inventory(runner_action_footer_items(Locale::En, true));
+        assert_local_action_inventory(runner_action_footer_items(Locale::En, false));
+        assert_local_action_inventory(runner_removal_footer_items(Locale::En));
     }
 
     #[test]

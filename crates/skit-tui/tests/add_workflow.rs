@@ -4,10 +4,11 @@ use ratatui_crossterm::crossterm::event::{
 };
 use skit_application::SourcePermissions;
 use skit_i18n::Locale;
+use skit_tui::{AddControlId, AddScreenEvent, AddScreenSession, render_add};
 use skit_tui::{EventHandling, TuiSession, ViewGeometry, render_with_session};
 use skit_ui::{
-    Action, AddAction, AddWorkflowState, KnownEntryKind, LibraryState, ReviewDefaults, ReviewState,
-    Screen, SourceSnapshot,
+    Action, AddAction, AddEffect, AddWorkflowState, DraftSummary, KnownEntryKind, LibraryState,
+    ReviewDefaults, ReviewState, Screen, SourceSnapshot,
 };
 
 fn draw(session: &mut TuiSession, state: &LibraryState) -> (Terminal<TestBackend>, ViewGeometry) {
@@ -64,6 +65,247 @@ fn mouse(column: u16, row: u16) -> Event {
         row,
         modifiers: KeyModifiers::NONE,
     })
+}
+
+fn scroll_down(column: u16, row: u16) -> Event {
+    Event::Mouse(MouseEvent {
+        kind: MouseEventKind::ScrollDown,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+fn advertised_key(buffer: &Buffer, area: ratatui_core::layout::Rect) -> Event {
+    let rendered = (area.x..area.right())
+        .map(|column| buffer[(column, area.y)].symbol())
+        .collect::<String>();
+    let hint = rendered
+        .strip_prefix('[')
+        .and_then(|tail| tail.split_once(']'))
+        .map(|(hint, _)| hint)
+        .unwrap_or_else(|| panic!("footer hit has no advertised key: {rendered:?}"));
+    let (code, modifiers) = match hint {
+        "Enter" => (KeyCode::Enter, KeyModifiers::NONE),
+        "Esc" => (KeyCode::Esc, KeyModifiers::NONE),
+        "Space" => (KeyCode::Char(' '), KeyModifiers::NONE),
+        "Tab/↓" => (KeyCode::Tab, KeyModifiers::NONE),
+        "Shift+Tab/↑" => (KeyCode::BackTab, KeyModifiers::SHIFT),
+        "Ctrl+N" => (KeyCode::Char('n'), KeyModifiers::CONTROL),
+        "Ctrl+P" => (KeyCode::Char('p'), KeyModifiers::CONTROL),
+        "Ctrl+D" => (KeyCode::Char('d'), KeyModifiers::CONTROL),
+        "Ctrl+E" => (KeyCode::Char('e'), KeyModifiers::CONTROL),
+        "Ctrl+S" => (KeyCode::Char('s'), KeyModifiers::CONTROL),
+        _ => panic!("unsupported advertised Add key: {hint}"),
+    };
+    Event::Key(KeyEvent::new(code, modifiers))
+}
+
+fn assert_typed_add_event(
+    target: &AddControlId,
+    handling: Option<AddScreenEvent>,
+    workflow: &AddWorkflowState,
+) {
+    let matches_target = match (target, &handling) {
+        (AddControlId::Continue, Some(AddScreenEvent::Action(AddAction::Continue)))
+        | (AddControlId::NewScript, Some(AddScreenEvent::Action(AddAction::NewDraft(_))))
+        | (AddControlId::NewPrompt, Some(AddScreenEvent::Action(AddAction::NewDraft(_))))
+        | (AddControlId::Save, Some(AddScreenEvent::Action(AddAction::Save)))
+        | (AddControlId::EditSource, Some(AddScreenEvent::Action(AddAction::EditSource)))
+        | (AddControlId::ToggleFocused, Some(AddScreenEvent::Action(_)))
+        | (AddControlId::NextField | AddControlId::PreviousField, Some(AddScreenEvent::Changed))
+        | (
+            AddControlId::PickFocusedKind,
+            Some(AddScreenEvent::Action(AddAction::PickKind(Some(_)))),
+        ) => true,
+        (AddControlId::DeleteDraft, Some(AddScreenEvent::Action(action))) => matches!(
+            (workflow.stage(), action),
+            (skit_ui::AddStage::Source, AddAction::DeleteSelectedDraft)
+                | (
+                    skit_ui::AddStage::ConfirmDraftDelete,
+                    AddAction::ConfirmDraftDelete(true)
+                )
+        ),
+        (AddControlId::Cancel, Some(AddScreenEvent::Action(action))) => match workflow.stage() {
+            skit_ui::AddStage::Kind => matches!(action, AddAction::PickKind(None)),
+            skit_ui::AddStage::ConfirmDraftDelete => {
+                matches!(action, AddAction::ConfirmDraftDelete(false))
+            }
+            _ => matches!(action, AddAction::Cancel),
+        },
+        _ => false,
+    };
+    assert!(
+        matches_target,
+        "advertised {target:?} returned {handling:?} at stage {:?}",
+        workflow.stage()
+    );
+}
+
+#[test]
+fn every_advertised_add_action_is_scrollable_and_clickable_at_every_size_tier() {
+    let source = AddWorkflowState::new(Vec::new());
+    let mut kind = AddWorkflowState::new(Vec::new());
+    let _ = kind.reduce(AddAction::SetSourcePath("tool.unknown".into()));
+    let request = kind
+        .reduce(AddAction::Continue)
+        .into_iter()
+        .find_map(|effect| match effect {
+            AddEffect::InspectSource { request, .. } => Some(request),
+            _ => None,
+        })
+        .unwrap();
+    let _ = kind.reduce(AddAction::SourceInspected {
+        request,
+        result: Ok(SourceSnapshot {
+            path: "tool.unknown".into(),
+            source_record: "tool.unknown".into(),
+            bytes: b"unknown body\n".to_vec(),
+            permissions: SourcePermissions::default(),
+            executable: None,
+            is_regular: true,
+            is_directory: false,
+            is_draft: false,
+            identity: None,
+        }),
+    });
+    let review = AddWorkflowState::from_review(ReviewState::from_source(
+        SourceSnapshot {
+            path: "tool.py".into(),
+            source_record: "tool.py".into(),
+            bytes: b"NAME = 'World'\nprint(NAME)\n".to_vec(),
+            permissions: SourcePermissions::default(),
+            executable: None,
+            is_regular: true,
+            is_directory: false,
+            is_draft: false,
+            identity: None,
+        },
+        KnownEntryKind::Python,
+        ReviewDefaults::default(),
+    ));
+    let mut confirm = AddWorkflowState::new(vec![DraftSummary {
+        path: "draft.py".into(),
+        modified: 1,
+        identity: None,
+        permissions: SourcePermissions::default(),
+    }]);
+    let _ = confirm.reduce(AddAction::SelectDraft(0));
+    let _ = confirm.reduce(AddAction::DeleteSelectedDraft);
+
+    for workflow in [source, kind, review, confirm] {
+        let mut wide_session = AddScreenSession::default();
+        let mut wide = Terminal::new(TestBackend::new(200, 40)).unwrap();
+        let mut wide_geometry = Default::default();
+        wide.draw(|frame| {
+            wide_geometry = render_add(
+                frame,
+                frame.area(),
+                &workflow,
+                &mut wide_session,
+                Locale::En,
+            );
+        })
+        .unwrap();
+        let expected = wide_geometry
+            .hits
+            .iter()
+            .filter(|hit| hit.area.y >= 38)
+            .map(|hit| hit.target.clone())
+            .collect::<Vec<AddControlId>>();
+        assert!(!expected.is_empty(), "stage={:?}", workflow.stage());
+
+        for (width, height) in [(120_u16, 30_u16), (46, 9), (24, 3)] {
+            let footer_y = height.saturating_sub(if height < 14 { 1 } else { 2 });
+            let mut session = AddScreenSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut seen = Vec::new();
+            for _ in 0..32 {
+                let mut geometry = Default::default();
+                terminal
+                    .draw(|frame| {
+                        geometry =
+                            render_add(frame, frame.area(), &workflow, &mut session, Locale::En);
+                    })
+                    .unwrap();
+                let footer_hits = geometry
+                    .hits
+                    .iter()
+                    .filter(|hit| hit.area.y >= footer_y)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                for hit in footer_hits {
+                    if expected.contains(&hit.target) && !seen.contains(&hit.target) {
+                        seen.push(hit.target.clone());
+                        if hit.target == AddControlId::ToggleFocused {
+                            for _ in 0..64 {
+                                if matches!(
+                                    session.focused(),
+                                    Some(
+                                        AddControlId::Candidate(_)
+                                            | AddControlId::PromptCandidate(_)
+                                            | AddControlId::Interpolate
+                                    )
+                                ) {
+                                    break;
+                                }
+                                assert_eq!(
+                                    session.handle_event(
+                                        Event::Key(
+                                            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE,)
+                                        ),
+                                        &workflow,
+                                        &geometry,
+                                    ),
+                                    Some(AddScreenEvent::Changed)
+                                );
+                            }
+                            assert!(
+                                matches!(
+                                    session.focused(),
+                                    Some(
+                                        AddControlId::Candidate(_)
+                                            | AddControlId::PromptCandidate(_)
+                                            | AddControlId::Interpolate
+                                    )
+                                ),
+                                "Toggle focused needs a checkbox owner"
+                            );
+                        }
+                        let key_handling = session.handle_event(
+                            advertised_key(terminal.backend().buffer(), hit.area),
+                            &workflow,
+                            &geometry,
+                        );
+                        assert_typed_add_event(&hit.target, key_handling, &workflow);
+                        let mouse_handling = session.handle_event(
+                            mouse(hit.area.x, hit.area.y),
+                            &workflow,
+                            &geometry,
+                        );
+                        assert_typed_add_event(&hit.target, mouse_handling, &workflow);
+                    }
+                }
+                if seen.len() == expected.len() {
+                    break;
+                }
+                assert_eq!(
+                    session.handle_event(
+                        scroll_down(1, height.saturating_sub(1)),
+                        &workflow,
+                        &geometry,
+                    ),
+                    Some(AddScreenEvent::Changed)
+                );
+            }
+            assert_eq!(
+                seen,
+                expected,
+                "stage={:?} size={width}x{height}",
+                workflow.stage()
+            );
+        }
+    }
 }
 
 #[test]
