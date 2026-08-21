@@ -389,12 +389,13 @@ The ledger has the authoritative per-module adjudication log.
   `scripts/check_coverage.sh`. Fresh crate reports now show `skit-domain`, `skit-application`,
   `skit-form`, `skit-runtime`, `skit-language`, `skit-store`, `skit-ui`, and `skit-benchmarks` at
   0 gaps. Ratatui per-screen coverage is also 0: Add and Management closed 430 lines in `379d395`,
-  and the remaining eight screen/render files closed 364 lines in `a8a1af7`. Only the separate
-  TUI session/terminal batch remains. Benchmark coverage moved from 210 to 0; the final sequence
+  the remaining eight screen/render files closed 364 lines in `a8a1af7`, and central session plus
+  terminal closed 344 lines in `559ee2c`. Benchmark coverage moved from 210 to 0; the final sequence
   covers real front doors, typed filesystem failures and races, Hyperfine/merge invariants,
   deterministic Rust tool discovery, suite adapters, footprint retries, and a real single-suite
-  execute/publication path. The remaining large root is `skit-cli`; finish it and the central TUI
-  batch, then run one fresh merged LCOV gate. `cargo deny`, `cargo audit --deny warnings`, and
+  execute/publication path. The remaining large root is `skit-cli`: its fresh gap count moved from
+  542 to 388, and `run/command.rs` is now 0. Finish `cli.rs`, then run one fresh merged LCOV gate.
+  `cargo deny`, `cargo audit --deny warnings`, and
   zizmor are green. The docs type-check/build, release wheel build plus isolated
   `uv tool install` smoke, 112 benchmark metrics, all 8 enforced benchmark budgets, and
   `cargo bench` are green. Finish the remaining coverage, then run one fresh merged LCOV gate.
