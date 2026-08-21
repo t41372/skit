@@ -454,23 +454,11 @@ fn reader_only_form_plan(kind: &str, text: &str, declared: &[ParamDecl]) -> Form
                 ..FormPlan::default()
             }
         }
-        CliFormProjection::Dynamic { reason, .. } => {
-            let riders = declared_riders(declared, &BTreeSet::new());
-            if riders.is_empty() {
-                FormPlan {
-                    source: FormSource::Reader,
-                    degradation: Some(reason),
-                    ..FormPlan::default()
-                }
-            } else {
-                FormPlan {
-                    source: FormSource::Declared,
-                    fields: prepared(riders),
-                    ..FormPlan::default()
-                }
-            }
-        }
-        CliFormProjection::Absent => {
+        // PowerShell is the only reader-only adapter. Its parser publishes either a complete
+        // static param() surface or no surface; unlike Python's multi-command frameworks, it has
+        // no whole-surface Dynamic state. Keep its non-static fallback exhaustive without an
+        // executable branch no real document can produce.
+        CliFormProjection::Absent | CliFormProjection::Dynamic { .. } => {
             let riders = declared_riders(declared, &BTreeSet::new());
             if riders.is_empty() {
                 FormPlan::default()
@@ -546,13 +534,9 @@ fn managed_form_plan(kind: &str, text: &str, managed: &[ParamDecl]) -> FormPlan 
     let parsed = parse_document(kind, text);
     let mut report = match &parsed {
         ParseOutcome::Parsed(document) => reconciliation_from_language(document.reconcile(managed)),
-        ParseOutcome::ParserUnavailable(_) => reconciliation_from_language(ReconcileReport {
-            missing: managed.to_vec(),
-            ..ReconcileReport::default()
-        }),
-        ParseOutcome::SyntaxError(_) => {
-            reconciliation_from_language(ReconcileReport::from_syntax_error(managed))
-        }
+        // Every kind that can carry managed metadata has a bundled parser. A parser-unavailable
+        // result therefore has the same conservative all-missing projection as a syntax error.
+        _ => reconciliation_from_language(ReconcileReport::from_syntax_error(managed)),
     };
     if let ParseOutcome::Parsed(document) = &parsed {
         for declaration in managed {
@@ -620,7 +604,6 @@ fn refresh_default(declaration: &mut ParamDecl, report: &FormReconciliation) {
     }
 }
 
-#[derive(Default)]
 struct FormReconciliation {
     ok: Vec<DeclarationPair>,
     missing: Vec<ParamDecl>,

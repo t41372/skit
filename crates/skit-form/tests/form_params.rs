@@ -127,6 +127,63 @@ fn prepared_managed_fields_can_skip_a_second_source_parse() {
 }
 
 #[test]
+fn prepared_managed_fields_accept_only_unique_flag_and_environment_riders() {
+    let mut placeholder = ParamDecl::new("placeholder");
+    placeholder.delivery = ParameterDelivery::Placeholder;
+    let mut inject = ParamDecl::new("inject");
+    inject.delivery = ParameterDelivery::Inject;
+    let settings = EntrySettings {
+        parameters: vec![
+            flag("flagged"),
+            env("environment"),
+            placeholder,
+            inject,
+            flag("managed"),
+        ],
+        ..EntrySettings::default()
+    };
+
+    let fields = form_params_from_managed(vec![ParamDecl::new("managed")], &settings);
+
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["managed", "flagged", "environment"]
+    );
+}
+
+#[test]
+fn explicit_empty_delivery_is_limited_to_supported_text_riders() {
+    for delivery in [
+        ParameterDelivery::Inject,
+        ParameterDelivery::Flag,
+        ParameterDelivery::Env,
+    ] {
+        let mut declaration = ParamDecl::new("value");
+        declaration.delivery = delivery;
+        declaration.default = Some(ParameterValue::String("default".to_owned()));
+        let field = skit_form::PreparedField {
+            declaration,
+            input_binding: false,
+            empty_uses_default: false,
+        };
+        assert!(field.delivers_empty(), "delivery={delivery:?}");
+    }
+
+    let mut placeholder = ParamDecl::new("value");
+    placeholder.delivery = ParameterDelivery::Placeholder;
+    placeholder.default = Some(ParameterValue::String("default".to_owned()));
+    let field = skit_form::PreparedField {
+        declaration: placeholder,
+        input_binding: false,
+        empty_uses_default: false,
+    };
+    assert!(!field.delivers_empty());
+}
+
+#[test]
 fn test_reader_kind_declared_env_rider_merges_not_erases() {
     // A PowerShell entry reads its param() block statically; a declared env row must ride after
     // the reader field, never short-circuit the plan and erase that field.
@@ -250,6 +307,67 @@ fn powershell_zero_and_absent_reader_surfaces_keep_distinct_sources() {
             .collect::<Vec<_>>(),
         ["extra", "token"]
     );
+
+    let no_declarations = form_plan(
+        "powershell",
+        "Write-Output 'hi'\n",
+        &EntrySettings::default(),
+    );
+    assert_eq!(no_declarations.source, FormSource::None);
+    assert!(no_declarations.fields.is_empty());
+}
+
+#[test]
+fn every_form_source_has_one_stable_machine_spelling() {
+    assert_eq!(
+        [
+            FormSource::None,
+            FormSource::Inject,
+            FormSource::Reader,
+            FormSource::Command,
+            FormSource::Declared,
+        ]
+        .map(FormSource::as_str),
+        ["none", "inject", "argparse", "command", "declared"]
+    );
+}
+
+#[test]
+fn generic_language_surfaces_preserve_static_dynamic_and_absent_states() {
+    let static_plan = form_plan(
+        "python",
+        "p = argparse.ArgumentParser()\np.add_argument('--name')\n",
+        &EntrySettings::default(),
+    );
+    assert_eq!(static_plan.source, FormSource::Reader);
+    assert_eq!(static_plan.declarations()[0].name, "name");
+
+    let dynamic_plan = form_plan(
+        "python",
+        "p = argparse.ArgumentParser()\np.add_argument('--name')\np.add_subparsers()\n",
+        &EntrySettings::default(),
+    );
+    assert_eq!(dynamic_plan.source, FormSource::Reader);
+    assert!(dynamic_plan.fields.is_empty());
+    assert!(dynamic_plan.degradation.is_some());
+
+    let absent_plan = form_plan("python", "print('plain')\n", &EntrySettings::default());
+    assert_eq!(absent_plan.source, FormSource::None);
+    assert!(absent_plan.fields.is_empty());
+}
+
+#[test]
+fn an_unchanged_prompt_schema_has_no_missing_placeholder_drift() {
+    let settings = EntrySettings {
+        params: vec!["name".to_owned()],
+        ..EntrySettings::default()
+    };
+
+    let plan = form_plan("prompt", "Hello {{name}}", &settings);
+
+    assert_eq!(plan.source, FormSource::Command);
+    assert!(plan.drift.is_empty());
+    assert_eq!(plan.declarations()[0].name, "name");
 }
 
 #[test]
@@ -407,6 +525,40 @@ CHANGED = 42
 }
 
 #[test]
+fn managed_input_whose_prompt_moved_is_exposed_as_rebound_drift() {
+    let source = r#"# /// script
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "answer"
+# kind = "input"
+# type = "str"
+# prompt = "Old question?"
+# order = 0
+# ///
+answer = input("New question?")
+"#;
+
+    let plan = form_plan("python", source, &EntrySettings::default());
+
+    assert_eq!(plan.source, FormSource::Inject);
+    assert_eq!(plan.fields.len(), 1);
+    assert!(
+        matches!(
+            plan.drift.as_slice(),
+            [FormDrift::Rebound { stored, current }]
+                if stored.name == "answer"
+                    && stored.prompt == "Old question?"
+                    && current.name == "input-1"
+                    && current.prompt == "New question?"
+        ),
+        "drift={:?}",
+        plan.drift
+    );
+}
+
+#[test]
 fn prepared_fields_publish_input_and_empty_delivery_semantics_directly() {
     let source = r#"# /// script
 # [tool.skit]
@@ -523,6 +675,10 @@ fn source_summaries_and_declared_defaults_keep_distinct_display_grammars() {
         source_summary(ParameterValue::String("line\\break\n".to_owned())),
         "VALUE  str 'line\\\\break\\n'"
     );
+    assert_eq!(
+        source_summary(ParameterValue::String("both ' and \"\r\t\u{7}".to_owned())),
+        "VALUE  str 'both \\' and \"\\r\\t\\x07'"
+    );
     assert_eq!(source_summary(ParameterValue::Integer(3)), "VALUE  int 3");
     assert_eq!(
         source_summary(ParameterValue::Float(3.0)),
@@ -532,6 +688,13 @@ fn source_summaries_and_declared_defaults_keep_distinct_display_grammars() {
         source_summary(ParameterValue::Bool(true)),
         "VALUE  bool True"
     );
+    let without_default = ParamDecl::new("VALUE");
+    let ParameterSection::SourceManaged { rows, .. } =
+        parameter_section(context(false), &[without_default], &[])
+    else {
+        unreachable!("the analyzer-backed context always builds a source section");
+    };
+    assert_eq!(rows[0].summary, "VALUE  str");
 
     let declared_default = |value| {
         let section = parameter_section(context(true), &[declaration(value)], &[]);
@@ -544,5 +707,7 @@ fn source_summaries_and_declared_defaults_keep_distinct_display_grammars() {
         declared_default(ParameterValue::String("World".to_owned())),
         "World"
     );
+    assert_eq!(declared_default(ParameterValue::Integer(3)), "3");
+    assert_eq!(declared_default(ParameterValue::Float(3.5)), "3.5");
     assert_eq!(declared_default(ParameterValue::Bool(true)), "true");
 }

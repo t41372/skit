@@ -515,6 +515,7 @@ mod tests {
         assert_eq!(TypedValue::Boolean(true).as_text(), "true");
         assert_eq!(TypedValue::Boolean(false).as_text(), "false");
         assert_eq!(TypedValue::Integer(3).as_text(), "3");
+        assert_eq!(TypedValue::Decimal(2.5).as_text(), "2.5");
         assert_eq!(TypedValue::Choice("json".to_owned()).as_text(), "json");
         assert_eq!(
             TypedValue::Choices(vec!["a".to_owned(), "b".to_owned()]).as_text(),
@@ -524,6 +525,35 @@ mod tests {
             TypedValue::Arguments(vec!["--force".to_owned(), "x".to_owned()]).as_text(),
             "--force x"
         );
+    }
+
+    #[test]
+    fn every_capability_axis_makes_the_field_actionable() {
+        assert!(!FieldCapabilities::default().any());
+        for capabilities in [
+            FieldCapabilities {
+                browse: true,
+                ..FieldCapabilities::default()
+            },
+            FieldCapabilities {
+                insert_token: true,
+                ..FieldCapabilities::default()
+            },
+            FieldCapabilities {
+                choose_environment: true,
+                ..FieldCapabilities::default()
+            },
+            FieldCapabilities {
+                reset_default: true,
+                ..FieldCapabilities::default()
+            },
+            FieldCapabilities {
+                new_runner: true,
+                ..FieldCapabilities::default()
+            },
+        ] {
+            assert!(capabilities.any());
+        }
     }
 
     /// The model round-trips through JSON so a future non-terminal frontend can consume it.

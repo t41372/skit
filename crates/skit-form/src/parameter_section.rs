@@ -419,14 +419,10 @@ fn python_string_repr(value: &str) -> String {
                 rendered.push(character);
             }
             character if character.is_control() => {
+                // Rust's control characters are the C0/C1 sets (U+0000..=U+001F and
+                // U+007F..=U+009F), so Python repr always uses its two-digit byte escape here.
                 let codepoint = u32::from(character);
-                if codepoint <= 0xff {
-                    rendered.push_str(&format!("\\x{codepoint:02x}"));
-                } else if codepoint <= 0xffff {
-                    rendered.push_str(&format!("\\u{codepoint:04x}"));
-                } else {
-                    rendered.push_str(&format!("\\U{codepoint:08x}"));
-                }
+                rendered.push_str(&format!("\\x{codepoint:02x}"));
             }
             character => rendered.push(character),
         }
@@ -494,15 +490,11 @@ mod tests {
             &[],
             &["NAME".to_owned()],
         );
-        let ParameterSection::SourceManaged { rows, followup } = section else {
-            panic!("expected the source-managed section");
-        };
-        assert!(rows.is_empty(), "a reader-derived parameter is not a row");
-        assert_eq!(
-            followup,
-            SourceFollowup::ReaderDriven,
-            "the candidates must not be offered while the reader owns the form"
-        );
+        assert!(matches!(
+            section,
+            ParameterSection::SourceManaged { rows, followup }
+                if rows.is_empty() && followup == SourceFollowup::ReaderDriven
+        ));
     }
 
     /// Once a block exists the trap is gone, so unmanaged constants are offered again.
@@ -516,16 +508,14 @@ mod tests {
             &[declaration("GREETING")],
             &["WIDTH".to_owned()],
         );
-        let ParameterSection::SourceManaged { rows, followup } = section else {
-            panic!("expected the source-managed section");
-        };
-        assert_eq!(rows.len(), 1);
-        assert_eq!(
-            followup,
-            SourceFollowup::Offer {
-                candidates: vec!["WIDTH".to_owned()]
-            }
-        );
+        assert!(matches!(
+            section,
+            ParameterSection::SourceManaged { rows, followup }
+                if rows.len() == 1
+                    && followup == SourceFollowup::Offer {
+                        candidates: vec!["WIDTH".to_owned()]
+                    }
+        ));
     }
 
     /// A block-managed row offers three axes and no more, and reads out the rest in its own label.
@@ -536,44 +526,43 @@ mod tests {
     #[test]
     fn a_source_managed_row_offers_only_the_axes_a_save_can_keep() {
         let section = parameter_section(context("python"), &[declaration("GREETING")], &[]);
-        let ParameterSection::SourceManaged { rows, .. } = section else {
-            panic!("expected the source-managed section");
-        };
-        let row = &rows[0];
-
-        for axis in ["prompt", "secret", "env_source", KEEP_KEY] {
-            assert!(row.offers(axis), "the row lost its editable {axis}");
-        }
-        for axis in [
-            "type",
-            "default",
-            "choices",
-            "help",
-            "required",
-            "flag",
-            "action",
-            "multiple",
-            "repeat",
-            "delivery",
-            "binding",
-            "env_target",
-        ] {
-            assert!(
-                row.field(axis).is_none(),
-                "a source-managed row drew a {axis} control, which saving cannot keep"
-            );
-        }
-        // The type and the default reach the person through the toggle's own label, which is user
-        // data and must never be translated.
-        let keep = row.field(KEEP_KEY).expect("no keep toggle");
-        assert_eq!(keep.label, row.summary);
-        assert!(
-            !keep.translate_label,
-            "a parameter name is not catalog copy"
-        );
-        assert!(keep.label.contains("GREETING"), "{}", keep.label);
-        assert!(keep.label.contains("str"), "{}", keep.label);
-        assert!(keep.label.contains("World"), "{}", keep.label);
+        assert!(matches!(
+            section,
+            ParameterSection::SourceManaged { rows, .. } if {
+                let row = &rows[0];
+                for axis in ["prompt", "secret", "env_source", KEEP_KEY] {
+                    assert!(row.offers(axis), "the row lost its editable {axis}");
+                }
+                for axis in [
+                    "type",
+                    "default",
+                    "choices",
+                    "help",
+                    "required",
+                    "flag",
+                    "action",
+                    "multiple",
+                    "repeat",
+                    "delivery",
+                    "binding",
+                    "env_target",
+                ] {
+                    assert!(
+                        row.field(axis).is_none(),
+                        "a source-managed row drew a {axis} control, which saving cannot keep"
+                    );
+                }
+                // The type and the default reach the person through the toggle's own label, which
+                // is user data and must never be translated.
+                let keep = row.field(KEEP_KEY).expect("no keep toggle");
+                assert_eq!(keep.label, row.summary);
+                assert!(!keep.translate_label, "a parameter name is not catalog copy");
+                assert!(keep.label.contains("GREETING"), "{}", keep.label);
+                assert!(keep.label.contains("str"), "{}", keep.label);
+                assert!(keep.label.contains("World"), "{}", keep.label);
+                true
+            }
+        ));
     }
 
     /// A hand-declared row is the user's to change, except for its delivery.
@@ -587,29 +576,32 @@ mod tests {
             &[declaration("output")],
             &[],
         );
-        let ParameterSection::Declared { rows } = section else {
-            panic!("expected the declared section");
-        };
-        let row = &rows[0];
-        for axis in [
-            "type",
-            "default",
-            "choices",
-            "help",
-            "flag",
-            "required",
-            "prompt",
-            "secret",
-            "env_source",
-            KEEP_KEY,
-        ] {
-            assert!(row.offers(axis), "a declared row lost its editable {axis}");
-        }
-        // Delivery is fixed at add time, so it is header text and not a control.
-        assert!(row.field("delivery").is_none());
-        let keep = row.field(KEEP_KEY).expect("no keep toggle");
-        assert_eq!(keep.label, "output  flag");
-        assert!(!keep.translate_label);
+        assert!(matches!(
+            section,
+            ParameterSection::Declared { rows } if {
+                let row = &rows[0];
+                for axis in [
+                    "type",
+                    "default",
+                    "choices",
+                    "help",
+                    "flag",
+                    "required",
+                    "prompt",
+                    "secret",
+                    "env_source",
+                    KEEP_KEY,
+                ] {
+                    assert!(row.offers(axis), "a declared row lost its editable {axis}");
+                }
+                // Delivery is fixed at add time, so it is header text and not a control.
+                assert!(row.field("delivery").is_none());
+                let keep = row.field(KEEP_KEY).expect("no keep toggle");
+                assert_eq!(keep.label, "output  flag");
+                assert!(!keep.translate_label);
+                true
+            }
+        ));
     }
 
     /// Every field of one row is keyed by the parameter's own name, never by its position.
@@ -626,14 +618,17 @@ mod tests {
             &[declaration("first"), declaration("second")],
             &[],
         );
-        let ParameterSection::Declared { rows } = section else {
-            panic!("expected the declared section");
-        };
-        assert_eq!(rows[1].prefix(), "parameter:second");
-        assert_eq!(
-            rows[1].field("prompt").unwrap().key,
-            "parameter:second:prompt"
-        );
+        assert!(matches!(
+            section,
+            ParameterSection::Declared { rows } if {
+                assert_eq!(rows[1].prefix(), "parameter:second");
+                assert_eq!(
+                    rows[1].field("prompt").unwrap().key,
+                    "parameter:second:prompt"
+                );
+                true
+            }
+        ));
         // Inserting a row ahead of it leaves every key of the surviving row untouched.
         let shifted = parameter_section(
             ParameterSectionContext {
@@ -647,13 +642,16 @@ mod tests {
             ],
             &[],
         );
-        let ParameterSection::Declared { rows: shifted } = shifted else {
-            panic!("expected the declared section");
-        };
-        assert_eq!(
-            shifted[2].field("prompt").unwrap().key,
-            "parameter:second:prompt"
-        );
+        assert!(matches!(
+            shifted,
+            ParameterSection::Declared { rows } if {
+                assert_eq!(
+                    rows[2].field("prompt").unwrap().key,
+                    "parameter:second:prompt"
+                );
+                true
+            }
+        ));
     }
 
     /// A flag only means something where the argument vector is the interface.
@@ -662,28 +660,37 @@ mod tests {
     /// so a command template and a prompt have none while every other declared kind does.
     #[test]
     fn only_a_kind_whose_form_is_not_placeholders_offers_a_flag() {
-        let row_for = |kind: &'static str| {
-            let section = parameter_section(
+        let section_for = |kind: &'static str| {
+            parameter_section(
                 ParameterSectionContext {
                     declared_schema: true,
                     ..context(kind)
                 },
                 &[declaration("name")],
                 &[],
-            );
-            let ParameterSection::Declared { rows } = section else {
-                panic!("expected the declared section");
-            };
-            rows.into_iter().next().expect("no row")
+            )
         };
         for kind in ["command", "prompt"] {
-            let row = row_for(kind);
-            assert!(!row.offers("flag"), "{kind} drew a meaningless flag");
-            assert!(row.field("flag").is_none());
+            assert!(
+                matches!(
+                    section_for(kind),
+                    ParameterSection::Declared { rows } if {
+                        let row = &rows[0];
+                        !row.offers("flag") && row.field("flag").is_none()
+                    }
+                ),
+                "{kind} drew a meaningless flag"
+            );
         }
         // A binary and the interpreted kinds that keep a hand-written schema all take argv.
         for kind in ["exe", "powershell", "ruby", "perl", "lua", "r"] {
-            assert!(row_for(kind).offers("flag"), "{kind} lost its flag");
+            assert!(
+                matches!(
+                    section_for(kind),
+                    ParameterSection::Declared { rows } if rows[0].offers("flag")
+                ),
+                "{kind} lost its flag"
+            );
         }
     }
 
@@ -748,11 +755,7 @@ mod tests {
     /// Every row keeps its own baseline, so a save compares against what the screen opened with.
     #[test]
     fn every_row_field_carries_the_baseline_the_section_opened_with() {
-        let section = parameter_section(context("python"), &[declaration("GREETING")], &[]);
-        let ParameterSection::SourceManaged { mut rows, .. } = section else {
-            panic!("expected the source-managed section");
-        };
-        let row = &mut rows[0];
+        let mut row = source_managed_row(&declaration("GREETING"));
         assert!(row.fields.iter().all(|field| !field.is_dirty()));
 
         let prompt = row
