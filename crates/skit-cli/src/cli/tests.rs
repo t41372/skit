@@ -6226,6 +6226,42 @@ fn add_plain_draft_pty_child() {
 }
 
 #[cfg(unix)]
+#[test]
+#[ignore = "runs only as the child of the real PTY add-command composition owner"]
+fn add_command_composition_pty_child() {
+    let data_dir = std::path::PathBuf::from(std::env::var_os("SKIT_DATA_DIR").unwrap());
+    let scenario = std::env::var("SKIT_ADD_COMMAND_PTY_SCENARIO").unwrap();
+    let expected_name = std::env::var("SKIT_ADD_COMMAND_PTY_NAME").unwrap();
+    let service = LibraryService::new(FileStore::new(&data_dir));
+    let mut options = add_options();
+    let edit = match scenario.as_str() {
+        "script-repository-error" => {
+            options.name = Some(expected_name.clone());
+            true
+        }
+        "prompt-name-repository-error" => {
+            options.prompt = true;
+            false
+        }
+        other => panic!("unknown add-command PTY scenario: {other}"),
+    };
+    let result = super::add_command(&service, options, edit);
+    let marker = match result {
+        Ok(()) => "ok".to_owned(),
+        Err(error) => {
+            let message = error.message().localize(active_locale());
+            eprintln!("{message}");
+            format!("error|code={}|message={message}", error.exit_code())
+        }
+    };
+    fs::write(
+        std::env::var_os("SKIT_PLAIN_DRAFT_PTY_RESULT").unwrap(),
+        marker,
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
 struct PlainDraftSandbox {
     data: TempDir,
     state: TempDir,
@@ -6298,6 +6334,102 @@ impl PlainDraftSandbox {
     fn assert_no_state(&self) {
         assert_eq!(fs::read_dir(self.state.path()).unwrap().count(), 0);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn add_command_pty_preflight_keeps_repository_faults_and_prompted_names_no_write() {
+    let corrupt_name = |sandbox: &PlainDraftSandbox, name: &str| {
+        add_command(&sandbox.service(), name, "printf broken");
+        let entry = sandbox.service().show(name).unwrap();
+        let meta = sandbox
+            .data
+            .path()
+            .join("scripts")
+            .join(entry.slug.as_str())
+            .join("meta.toml");
+        fs::remove_file(&meta).unwrap();
+        fs::create_dir(&meta).unwrap();
+        meta
+    };
+    let spawn = |sandbox: &PlainDraftSandbox, scenario: &str, name: &str| {
+        MirrorPromptPty::spawn_test(
+            "cli::tests::add_command_composition_pty_child",
+            "en",
+            &[
+                ("SKIT_DATA_DIR", sandbox.data.path().to_str().unwrap()),
+                ("SKIT_STATE_DIR", sandbox.state.path().to_str().unwrap()),
+                ("SKIT_CONFIG_DIR", sandbox.config.path().to_str().unwrap()),
+                ("SKIT_ADD_COMMAND_PTY_SCENARIO", scenario),
+                ("SKIT_ADD_COMMAND_PTY_NAME", name),
+            ],
+        )
+    };
+
+    let script = PlainDraftSandbox::new();
+    let script_sentinel = script.scratch.path().join("script-editor-launched");
+    script.editor(
+        "script-repository-editor.sh",
+        &format!("touch {:?}", script_sentinel),
+    );
+    let script_meta = corrupt_name(&script, "Broken Script");
+    let script_before = test_tree_snapshot(script.data.path());
+    let script_config_before = test_tree_snapshot(script.config.path());
+    let script_state_before = test_tree_snapshot(script.state.path());
+    let script_scratch_before = test_tree_snapshot(script.scratch.path());
+    let child = spawn(&script, "script-repository-error", "Broken Script");
+    let (output, marker) = child.finish();
+    assert!(
+        marker.contains("error|code=1|message=could not read"),
+        "{marker}"
+    );
+    assert!(output.contains("could not read"), "{output}");
+    assert!(script_meta.is_dir());
+    assert!(!script_sentinel.exists());
+    assert_eq!(test_tree_snapshot(script.data.path()), script_before);
+    assert_eq!(
+        test_tree_snapshot(script.config.path()),
+        script_config_before
+    );
+    assert_eq!(test_tree_snapshot(script.state.path()), script_state_before);
+    assert_eq!(
+        test_tree_snapshot(script.scratch.path()),
+        script_scratch_before
+    );
+
+    let prompt = PlainDraftSandbox::new();
+    let prompt_sentinel = prompt.scratch.path().join("prompt-editor-launched");
+    prompt.editor(
+        "prompt-repository-editor.sh",
+        &format!("touch {:?}", prompt_sentinel),
+    );
+    let prompt_meta = corrupt_name(&prompt, "Broken Prompt");
+    let prompt_before = test_tree_snapshot(prompt.data.path());
+    let prompt_config_before = test_tree_snapshot(prompt.config.path());
+    let prompt_state_before = test_tree_snapshot(prompt.state.path());
+    let prompt_scratch_before = test_tree_snapshot(prompt.scratch.path());
+    let mut child = spawn(&prompt, "prompt-name-repository-error", "Broken Prompt");
+    child.wait_for("Name in skit");
+    child.send("Broken Prompt\n");
+    let (output, marker) = child.finish();
+    assert!(
+        marker.contains("error|code=1|message=could not read"),
+        "{marker}"
+    );
+    assert!(output.contains("Name in skit"), "{output}");
+    assert!(output.contains("could not read"), "{output}");
+    assert!(prompt_meta.is_dir());
+    assert!(!prompt_sentinel.exists());
+    assert_eq!(test_tree_snapshot(prompt.data.path()), prompt_before);
+    assert_eq!(
+        test_tree_snapshot(prompt.config.path()),
+        prompt_config_before
+    );
+    assert_eq!(test_tree_snapshot(prompt.state.path()), prompt_state_before);
+    assert_eq!(
+        test_tree_snapshot(prompt.scratch.path()),
+        prompt_scratch_before
+    );
 }
 
 #[cfg(unix)]
