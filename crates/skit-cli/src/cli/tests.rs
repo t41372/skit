@@ -1,4 +1,10 @@
-use std::{cell::RefCell, collections::BTreeMap, fs, io, path::Path};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    fs, io,
+    io::{Read as _, Write as _},
+    path::Path,
+};
 
 use clap::{CommandFactory as _, Parser as _};
 use skit_application::{ExitClass, LibraryService, RepositoryError};
@@ -5509,6 +5515,293 @@ fn the_library_surface_carries_every_detail_fact_the_frontend_renders() {
             .next()
             .map(|entry| entry.slug.clone()),
         Some(tool.slug.clone())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "runs only as the child of the real PTY mirror-wizard owner"]
+fn terminal_first_run_pty_child() {
+    let scenario = std::env::var("SKIT_MIRROR_PTY_SCENARIO").unwrap();
+    let result = match scenario.as_str() {
+        "confirm" => format!("confirm={}", TerminalFirstRun.confirm_mirrors()),
+        "axis-pypi" => format!(
+            "answer={}",
+            TerminalFirstRun.axis_answer(
+                "PyPI index (Python packages)",
+                &["aliyun".to_owned(), "tsinghua".to_owned()],
+                "PyPI index URL",
+                false,
+            )
+        ),
+        "axis-github" => format!(
+            "answer={}",
+            TerminalFirstRun.axis_answer(
+                "GitHub releases (Python builds, the uv binary)",
+                &["nju".to_owned()],
+                "github-release mirror base URL",
+                true,
+            )
+        ),
+        "axis-empty" => format!(
+            "answer={}",
+            TerminalFirstRun.axis_answer(
+                "npm registry (JS/TS packages)",
+                &[],
+                "npm registry URL",
+                false,
+            )
+        ),
+        _ => panic!("unknown PTY child scenario: {scenario}"),
+    };
+    fs::write(std::env::var_os("SKIT_MIRROR_PTY_RESULT").unwrap(), result).unwrap();
+}
+
+#[cfg(unix)]
+struct MirrorPromptPty {
+    child: Box<dyn portable_pty::Child + Send + Sync>,
+    writer: Option<Box<dyn io::Write + Send>>,
+    chunks: std::sync::mpsc::Receiver<Vec<u8>>,
+    output: Vec<u8>,
+    result_path: std::path::PathBuf,
+    _root: TempDir,
+}
+
+#[cfg(unix)]
+impl MirrorPromptPty {
+    fn spawn(scenario: &str, locale: &str) -> Self {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+        let root = TempDir::new().unwrap();
+        let result_path = root.path().join("result");
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 20,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(std::env::current_exe().unwrap());
+        command.args([
+            "--ignored",
+            "--exact",
+            "cli::tests::terminal_first_run_pty_child",
+            "--nocapture",
+        ]);
+        command.env("TERM", "xterm-256color");
+        command.env("NO_COLOR", "1");
+        command.env("SKIT_LANG", locale);
+        command.env("SKIT_MIRROR_PTY_SCENARIO", scenario);
+        command.env("SKIT_MIRROR_PTY_RESULT", &result_path);
+        let child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let writer = pair.master.take_writer().unwrap();
+        let (sender, chunks) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => {
+                        if sender.send(buffer[..read].to_vec()).is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+        Self {
+            child,
+            writer: Some(writer),
+            chunks,
+            output: Vec::new(),
+            result_path,
+            _root: root,
+        }
+    }
+
+    fn checkpoint(&mut self) -> usize {
+        self.drain();
+        self.output.len()
+    }
+
+    fn send(&mut self, answer: &str) {
+        let writer = self.writer.as_mut().unwrap();
+        writer.write_all(answer.as_bytes()).unwrap();
+        writer.flush().unwrap();
+    }
+
+    fn wait_for(&mut self, needle: &str) -> String {
+        self.wait_for_after(0, needle)
+    }
+
+    fn wait_for_after(&mut self, checkpoint: usize, needle: &str) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        loop {
+            self.drain();
+            let visible = self.visible_after(checkpoint);
+            if visible.contains(needle) {
+                return visible;
+            }
+            let remaining = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| {
+                    panic!("timed out waiting for {needle:?}; new terminal output:\n{visible}")
+                });
+            match self
+                .chunks
+                .recv_timeout(remaining.min(std::time::Duration::from_millis(100)))
+            {
+                Ok(chunk) => self.output.extend_from_slice(&chunk),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => assert!(
+                    self.child.try_wait().unwrap().is_none(),
+                    "mirror PTY child exited while waiting for {needle:?}: {visible}"
+                ),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("mirror PTY output closed while waiting for {needle:?}: {visible}")
+                }
+            }
+        }
+    }
+
+    fn finish(mut self) -> (String, String) {
+        self.writer.take();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        let status = loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for mirror PTY child: {}",
+                self.visible_after(0)
+            );
+            match self
+                .chunks
+                .recv_timeout(std::time::Duration::from_millis(100))
+            {
+                Ok(chunk) => self.output.extend_from_slice(&chunk),
+                Err(
+                    std::sync::mpsc::RecvTimeoutError::Timeout
+                    | std::sync::mpsc::RecvTimeoutError::Disconnected,
+                ) => {}
+            }
+        };
+        assert!(
+            status.success(),
+            "mirror PTY child failed: {status:?}: {}",
+            self.visible_after(0)
+        );
+        self.drain();
+        let output = self.visible_after(0);
+        let result = fs::read_to_string(&self.result_path).unwrap();
+        (output, result)
+    }
+
+    fn drain(&mut self) {
+        while let Ok(chunk) = self.chunks.try_recv() {
+            self.output.extend_from_slice(&chunk);
+        }
+    }
+
+    fn visible_after(&self, checkpoint: usize) -> String {
+        String::from_utf8_lossy(&self.output[checkpoint.min(self.output.len())..]).into_owned()
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn terminal_first_run_questions_use_real_pty_defaults_choices_and_localized_reprompts() {
+    let mut confirm = MirrorPromptPty::spawn("confirm", "en");
+    confirm.wait_for("Configure mirrors for faster installs (mainland China)?");
+    confirm.send("\n");
+    assert_eq!(confirm.finish().1, "confirm=true");
+
+    let mut declined = MirrorPromptPty::spawn("confirm", "zh-CN");
+    declined.wait_for("是否配置镜像以加速下载(中国大陆)?");
+    declined.send("n\n");
+    assert_eq!(declined.finish().1, "confirm=false");
+
+    let mut traditional = MirrorPromptPty::spawn("confirm", "zh-TW");
+    traditional.wait_for("是否設定鏡像以加速下載(中國大陸)?");
+    traditional.send("\n");
+    assert_eq!(traditional.finish().1, "confirm=true");
+
+    let mut preset = MirrorPromptPty::spawn("axis-pypi", "en");
+    preset.wait_for("PyPI index (Python packages) [aliyun/tsinghua/custom/off]");
+    preset.send("invalid\n");
+    preset.wait_for("Choose one of: aliyun, tsinghua, custom, off");
+    preset.send("tsinghua\n");
+    assert_eq!(preset.finish().1, "answer=tsinghua");
+
+    let mut off = MirrorPromptPty::spawn("axis-pypi", "en");
+    off.wait_for("PyPI index (Python packages)");
+    off.send("off\n");
+    assert_eq!(off.finish().1, "answer=off");
+
+    let mut empty = MirrorPromptPty::spawn("axis-empty", "en");
+    empty.wait_for("npm registry (JS/TS packages) [custom/off]");
+    empty.send("\n");
+    assert_eq!(empty.finish().1, "answer=off");
+
+    for (locale, question, warning) in [
+        (
+            "en",
+            "PyPI index (Python packages)",
+            "A custom choice needs a URL.",
+        ),
+        (
+            "zh-CN",
+            "PyPI 索引（Python 软件包）",
+            "自定义选项需要 URL。",
+        ),
+        ("zh-TW", "PyPI 索引（Python 套件）", "自訂選項需要 URL。"),
+    ] {
+        let mut custom = MirrorPromptPty::spawn("axis-pypi", locale);
+        custom.wait_for(question);
+        custom.send("custom\n");
+        custom.wait_for(match locale {
+            "zh-CN" | "zh-TW" => "PyPI 索引 URL",
+            _ => "PyPI index URL",
+        });
+        let empty_url = custom.checkpoint();
+        custom.send("\n");
+        custom.wait_for_after(empty_url, warning);
+        let invalid_url = custom.checkpoint();
+        custom.send("not-a-url\n");
+        custom.wait_for_after(invalid_url, warning);
+        custom.send(if locale == "en" {
+            "http://mirror.test/simple\n"
+        } else {
+            "https://mirror.test/simple\n"
+        });
+        assert_eq!(
+            custom.finish().1,
+            if locale == "en" {
+                "answer=http://mirror.test/simple"
+            } else {
+                "answer=https://mirror.test/simple"
+            }
+        );
+    }
+
+    let mut github = MirrorPromptPty::spawn("axis-github", "en");
+    github.wait_for("GitHub releases (Python builds, the uv binary)");
+    github.send("custom\n");
+    github.wait_for("github-release mirror base URL");
+    let insecure = github.checkpoint();
+    github.send("http://mirror.test/github-release\n");
+    github.wait_for_after(
+        insecure,
+        "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: http://mirror.test/github-release).",
+    );
+    github.send("https://mirror.test/github-release\n");
+    assert_eq!(
+        github.finish().1,
+        "answer=https://mirror.test/github-release"
     );
 }
 
