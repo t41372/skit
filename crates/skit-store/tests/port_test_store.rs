@@ -25,10 +25,9 @@
 //!     AGENTS.md guards against; the try-only lock keeps a read from ever blocking. `resolve` shares
 //!     only the pure projection half (`scan_inner`) and never repairs, matching the oracle where
 //!     `resolve` loads the index but never calls `_repair_rows` (`registry_resolve.rs` guards that no
-//!     repair rides the resolve path). The `store._repair_rows` tests that drive the private window
-//!     between staging and repair still have no public seam and stay `#[ignore]`d; the OBSERVABLE
-//!     self-heal (a legacy/broken/hand-edited row is served from the meta and then the row is repaired
-//!     once, converging on the next listing) IS ported and must pass.
+//!     repair rides the resolve path). Exact private-window owners live in `src/read.rs` unit tests:
+//!     they stage with `scan_inner`, commit the raced mutation, and call the real `repair_rows`.
+//!     Observable self-heal owners remain in this integration test and `registry_fast_read.rs`.
 //!   * THE CACHE IS CONTENT-HASHED. A registry row's fast-path proof (`skit_cache`) covers the
 //!     metadata file's id, size, mtime, ctime, and a content hash — not mtime alone. So the v0.4
 //!     "forge the mtime while corrupting the bytes and the listing still serves it" probe cannot
@@ -562,15 +561,6 @@ fn test_summaries_match_full_entries_field_for_field() {
 #[test]
 fn test_summaries_serve_from_the_index_without_parsing_metas() {}
 
-#[ignore = "UNMAPPED -> white-box. Asserts the internal store._registry_row projection and reads \
-            summary.script_path (a launcher/library_surface projection with no EntrySummary field). \
-            The Rust read DOES repair the legacy row (FileStore::repair_rows), and that observable \
-            self-heal is ported in test_an_older_registry_is_widened_the_first_time_it_is_listed; \
-            the legacy-row fallback is ported in test_a_renamed_legacy_row_is_upgraded_not_patched \
-            and test_a_hand_broken_row_falls_back_instead_of_inventing_a_summary."]
-#[test]
-fn test_a_row_an_older_skit_wrote_falls_back_to_its_meta() {}
-
 #[test]
 fn test_a_hand_broken_row_falls_back_instead_of_inventing_a_summary() {
     // WHY: a row a newer skit could not have written (non-string field, unknown mode, missing
@@ -705,22 +695,6 @@ fn test_an_older_registry_is_widened_the_first_time_it_is_listed() {
     assert_eq!(store.scan().unwrap().entries.len(), 1);
     assert_eq!(fs::read(registry_path(&root)).unwrap(), converged);
 }
-
-#[ignore = "UNMAPPED -> white-box. Drives the exact staging/repair window: stage a slug, commit a \
-            concurrent add, then run _repair_rows and assert the raced row survived. The Rust \
-            self-heal EXISTS (FileStore::repair_rows) but re-reads the index under the lock and \
-            touches only the staged slugs, so the raced row is never in its working set; the public \
-            `list` cannot reproduce that precise interleaving. The lock-and-re-derive discipline is \
-            proven by test_an_older_registry_is_widened_the_first_time_it_is_listed and \
-            test_a_reference_row_that_lost_its_target_is_repaired_once."]
-#[test]
-fn test_repair_never_drops_an_entry_added_meanwhile() {}
-
-#[ignore = "UNMAPPED -> white-box. Same private staging/repair window as above: a slug removed after \
-            staging is skipped (never resurrected) because repair_rows re-checks membership under the \
-            lock; the public `list` has no seam to force that exact interleaving."]
-#[test]
-fn test_repair_skips_an_entry_removed_meanwhile() {}
 
 #[cfg(unix)]
 #[test]
@@ -905,22 +879,6 @@ fn test_a_non_mapping_row_falls_back_instead_of_crashing() {
             test_a_reference_row_that_lost_its_target_is_repaired_once."]
 #[test]
 fn test_widening_gives_up_on_a_row_it_would_reject_again() {}
-
-#[ignore = "UNMAPPED -> white-box. Drives the private staging/repair window: a rename lands after \
-            staging, and _repair_rows must re-derive from the meta AS IT IS NOW (keeping the rename) \
-            rather than writing the listing's snapshot. FileStore::repair_rows does exactly that \
-            (re-reads each meta under the lock), but the public `list` cannot force that exact \
-            interleaving; the re-derive-under-the-lock discipline is proven by \
-            test_a_reference_row_that_lost_its_target_is_repaired_once."]
-#[test]
-fn test_repair_keeps_a_rename_that_landed_meanwhile() {}
-
-#[ignore = "UNMAPPED -> white-box. Same private window with the nastiest interleaving: an older skit \
-            reuses the slug for a new meta before the repair runs. repair_rows re-derives from the \
-            slug's meta as it is NOW, so the new entry gets a correct row -- but the public `list` \
-            has no seam to stage the old entry's slug then swap the meta underneath it."]
-#[test]
-fn test_repair_adopts_a_slug_reused_by_an_older_skit_meanwhile() {}
 
 #[test]
 fn test_a_renamed_legacy_row_is_upgraded_not_patched() {
@@ -1282,13 +1240,6 @@ fn test_an_index_whose_entries_key_is_not_a_table_reads_empty() {
     assert_eq!(store.rebuild_registry_report().unwrap().entry_count, 1);
 }
 
-#[ignore = "UNMAPPED -> white-box. FileStore::repair_rows IS best-effort -- it skips a slug whose \
-            meta corrupted since staging (`read_entry` Err -> continue) and does not write a row a \
-            re-read cannot produce -- but driving the exact stage-then-corrupt window needs the \
-            private _repair_rows seam the public `list` has no way to reproduce."]
-#[test]
-fn test_repair_skips_a_meta_that_broke_or_went_unrepresentable_meanwhile() {}
-
 // ===========================================================================
 // Every meta write keeps its own index row fresh (the pure store contract).
 // ===========================================================================
@@ -1556,11 +1507,3 @@ fn test_a_mutator_whose_row_vanished_mid_write_persists_the_meta_without_resurre
     // The row is doctor's to rebuild, not this write's.
     assert!(store.scan().unwrap().entries.is_empty());
 }
-
-#[ignore = "UNMAPPED -> white-box. Monkeypatches store._read_meta to rmtree the entry mid-read to \
-            force one exact interleaving; no public seam exists. Rust isolates a per-row read \
-            failure as a diagnostic (file_store.rs::\
-            a_missing_metadata_file_is_an_io_diagnostic_during_best_effort_scan), never crashing the \
-            scan."]
-#[test]
-fn test_a_listing_survives_an_entry_removed_while_it_was_mid_fallback() {}

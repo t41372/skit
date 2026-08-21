@@ -348,6 +348,104 @@ fn a_fresh_python_legacy_row_keeps_the_v040_index_fast_path() {
 }
 
 #[test]
+fn test_a_row_an_older_skit_wrote_falls_back_to_its_meta() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let old = store
+        .create(request("Old", StorageMode::Reference, "from meta"))
+        .unwrap();
+    let sibling = store
+        .create(request("Sibling", StorageMode::Copy, "unchanged"))
+        .unwrap();
+    let old_meta = fs::read(
+        root.path()
+            .join("scripts")
+            .join(old.slug.as_str())
+            .join("meta.toml"),
+    )
+    .unwrap();
+    let sibling_meta = fs::read(
+        root.path()
+            .join("scripts")
+            .join(sibling.slug.as_str())
+            .join("meta.toml"),
+    )
+    .unwrap();
+    let mut document = registry(&root);
+    let sibling_row = row(&document, sibling.slug.as_str()).clone();
+    document
+        .get_mut("entries")
+        .and_then(Value::as_table_mut)
+        .unwrap()
+        .insert(
+            old.slug.as_str().to_owned(),
+            Value::Table(Table::from_iter([
+                ("name".to_owned(), Value::String("Old".to_owned())),
+                ("kind".to_owned(), Value::String("future-kind".to_owned())),
+                (
+                    "description".to_owned(),
+                    Value::String("from meta".to_owned()),
+                ),
+            ])),
+        );
+    write_registry(&root, &document);
+
+    let scan = store.scan().unwrap();
+
+    assert!(scan.diagnostics.is_empty());
+    let old_summary = scan
+        .entries
+        .iter()
+        .find(|summary| summary.slug == old.slug)
+        .unwrap();
+    assert_eq!(old_summary.mode, StorageMode::Reference);
+    assert_eq!(old_summary.target.as_deref(), Some("/original/Old.tool"));
+    let repaired = registry(&root);
+    let old_row = row(&repaired, old.slug.as_str());
+    assert_eq!(
+        old_row.get("mode").and_then(Value::as_str),
+        Some("reference")
+    );
+    assert_eq!(
+        old_row.get("target").and_then(Value::as_str),
+        Some("/original/Old.tool")
+    );
+    assert!(
+        old_row
+            .get("skit_cache")
+            .and_then(Value::as_table)
+            .is_some()
+    );
+    assert_eq!(row(&repaired, sibling.slug.as_str()), &sibling_row);
+    assert_eq!(
+        fs::read(
+            root.path()
+                .join("scripts")
+                .join(old.slug.as_str())
+                .join("meta.toml")
+        )
+        .unwrap(),
+        old_meta
+    );
+    assert_eq!(
+        fs::read(
+            root.path()
+                .join("scripts")
+                .join(sibling.slug.as_str())
+                .join("meta.toml")
+        )
+        .unwrap(),
+        sibling_meta
+    );
+    let converged = fs::read(root.path().join("registry.toml")).unwrap();
+    store.scan().unwrap();
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        converged
+    );
+}
+
+#[test]
 fn concurrent_atomic_updates_never_mix_cache_and_metadata_generations() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
