@@ -783,6 +783,17 @@ fn test_shell_dynamic_getopts_add_prints_the_passthrough_notice() {
     assert_eq!(output.status.code(), Some(0), "{combined}");
     assert!(combined.contains("parses its own arguments"), "{combined}");
     assert!(combined.contains("getopts"), "{combined}"); // the framework is named
+
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let shown = sandbox.show_json("dyn");
+    assert_eq!(shown["param_source"], "argparse");
+    assert_eq!(shown["degraded_reason"], "dynamic");
+    assert_eq!(shown["fields"], serde_json::json!([]));
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 #[test]
