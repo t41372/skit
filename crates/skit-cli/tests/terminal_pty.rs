@@ -2243,10 +2243,22 @@ fn runner_container_confirmation_and_refusals_are_localized_and_atomic() {
 
 #[test]
 fn runner_human_selection_reports_container_unknown_and_pinned_names() {
-    for (locale, pinned_voice) in [
-        ("en", "2 prompts pin this runner"),
-        ("zh-CN", "有 2 个提示词固定使用此运行器"),
-        ("zh-TW", "有 2 個提示詞固定使用此執行器"),
+    for (locale, pinned_voice, question) in [
+        (
+            "en",
+            "2 prompts pin this runner",
+            "Remove the agent \"local\"? [y/N]:",
+        ),
+        (
+            "zh-CN",
+            "有 2 个提示词固定使用此运行器",
+            "删除 Agent“local”？[y/N]：",
+        ),
+        (
+            "zh-TW",
+            "有 2 個提示詞固定使用此執行器",
+            "移除 Agent「local」？[y/N]：",
+        ),
     ] {
         let data = TempDir::new().unwrap();
         let state = TempDir::new().unwrap();
@@ -2287,7 +2299,10 @@ fn runner_human_selection_reports_container_unknown_and_pinned_names() {
             home.path(),
             locale,
         );
-        let shown = cli.wait_for(pinned_voice);
+        let pinned = cli.wait_for(pinned_voice);
+        assert!(pinned.contains(pinned_voice), "{pinned}");
+        let shown = cli.wait_for(question);
+        assert!(shown.contains(pinned_voice), "{shown}");
         assert!(shown.contains("local"), "{shown}");
         let checkpoint = cli.checkpoint();
         cli.send(b"n\r");
