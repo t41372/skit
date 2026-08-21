@@ -369,6 +369,25 @@ mod tests {
             })
         ));
 
+        let store = skit_store::FileStore::new(&dirs.data);
+        let surface = skit_store::library_surface(&store, &dirs.state, &dirs.config).unwrap();
+        let mut state = skit_ui::LibraryState::from_library_surface(surface);
+        let backend = ratatui_core::backend::TestBackend::new(120, 40);
+        let mut terminal =
+            ratatui_core::terminal::Terminal::new(backend).unwrap_or_else(|never| match never {});
+        let mut session = skit_tui::TuiSession::default();
+        let geometry = super::draw(&mut terminal, &state, &mut session);
+        assert!(matches!(
+            super::dispatch_key(
+                &mut state,
+                &mut session,
+                &geometry,
+                ratatui_crossterm::crossterm::event::KeyCode::F(12),
+                "unsupported-key"
+            ),
+            Err(super::TuiProbeError::InputIgnored("unsupported-key"))
+        ));
+
         fs::write(
             dirs.data
                 .join("scripts")

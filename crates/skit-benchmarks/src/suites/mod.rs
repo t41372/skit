@@ -382,4 +382,70 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
             super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[0, 100])).is_err()
         );
     }
+
+    #[test]
+    fn suite_artifact_failures_keep_the_target_path_and_do_not_fake_success() {
+        let mut fixture = Fixture::new();
+        let blocked_out = fixture.context.workdir.join("blocked-out");
+        fs::write(&blocked_out, "unchanged").unwrap();
+        fixture.context.out_dir = blocked_out.clone();
+        let create_error =
+            super::imports::run(&fixture.context, &plan(SuiteKind::Imports, &[0])).unwrap_err();
+        assert!(create_error.to_string().contains("blocked-out/artifacts"));
+        assert_eq!(fs::read_to_string(&blocked_out).unwrap(), "unchanged");
+
+        let fixture = Fixture::new();
+        let artifact = fixture.context.out_dir.join("artifacts/importtime.txt");
+        fs::create_dir_all(&artifact).unwrap();
+        let write_error =
+            super::imports::run(&fixture.context, &plan(SuiteKind::Imports, &[0])).unwrap_err();
+        assert!(write_error.to_string().contains("artifacts/importtime.txt"));
+        assert!(artifact.is_dir());
+
+        let mut fixture = Fixture::new();
+        let blocked_work = fixture.context.out_dir.join("blocked-work");
+        fs::write(&blocked_work, "unchanged").unwrap();
+        fixture.context.workdir = blocked_work.clone();
+        let source_error =
+            super::micro::run(&fixture.context, &plan(SuiteKind::Micro, &[0])).unwrap_err();
+        assert!(source_error.to_string().contains("blocked-work/sources"));
+        assert_eq!(fs::read_to_string(&blocked_work).unwrap(), "unchanged");
+    }
+
+    #[test]
+    fn scale_metric_merge_refuses_a_duplicate_without_replacing_it() {
+        let mut output = crate::SuiteOutput {
+            suite: SuiteKind::Scale,
+            duration_seconds: 0.0,
+            metrics: BTreeMap::from([(
+                "scale.list.n0.median_ms".to_owned(),
+                crate::Metric::single(1.0, "ms"),
+            )]),
+            skipped: Vec::new(),
+            raw: BTreeMap::new(),
+        };
+        let error = super::scale::merge_metrics(
+            &mut output,
+            BTreeMap::from([(
+                "scale.list.n0.median_ms".to_owned(),
+                crate::Metric::single(2.0, "ms"),
+            )]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate scale metric"));
+        assert_eq!(output.metrics["scale.list.n0.median_ms"].value, 1.0);
+    }
+
+    #[test]
+    fn syscalls_requires_the_successful_probe_to_write_its_table() {
+        let mut fixture = Fixture::new();
+        let strace = executable(
+            &fixture.context.workdir.join("strace-no-output"),
+            "#!/bin/sh\nexit 0\n",
+        );
+        fixture.context.strace = Some(strace);
+        let error =
+            super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[100])).unwrap_err();
+        assert!(error.to_string().contains("strace_n100.txt"));
+    }
 }

@@ -69,17 +69,27 @@ pub(super) fn run(context: &RunContext, plan: &SuitePlan) -> Result<SuiteOutput,
             context.environment(*n)?,
             &format!("scale_n{n}"),
         )?;
-        for (name, metric) in run.metrics {
-            if output.metrics.insert(name.clone(), metric).is_some() {
-                return Err(SuiteError::Contract(format!(
-                    "duplicate scale metric {name}"
-                )));
-            }
-        }
+        merge_metrics(&mut output, run.metrics)?;
         output.raw.insert(
             format!("n{n}"),
             serde_json::Value::Object(run.raw.into_iter().collect()),
         );
     }
     Ok(output)
+}
+
+pub(super) fn merge_metrics(
+    output: &mut SuiteOutput,
+    metrics: BTreeMap<String, crate::Metric>,
+) -> Result<(), SuiteError> {
+    if let Some(name) = metrics
+        .keys()
+        .find(|name| output.metrics.contains_key(name.as_str()))
+    {
+        return Err(SuiteError::Contract(format!(
+            "duplicate scale metric {name}"
+        )));
+    }
+    output.metrics.extend(metrics);
+    Ok(())
 }
