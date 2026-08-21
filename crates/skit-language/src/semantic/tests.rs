@@ -20,6 +20,22 @@ fn python_literal_for(expression: &str) -> Option<PythonLiteral> {
     python_literal(&document, value)
 }
 
+#[test]
+fn combined_source_edits_reject_a_plan_from_another_source_identity() {
+    let current = SourceEditPlan {
+        source: "VALUE=1\n".to_owned(),
+        edits: Vec::new(),
+    };
+    let stale = SourceEditPlan {
+        source: "VALUE=2\n".to_owned(),
+        edits: Vec::new(),
+    };
+    assert!(matches!(
+        SourceEditPlan::combine("VALUE=1\n", [current, stale]),
+        Err(LanguageError::SourceChanged)
+    ));
+}
+
 fn python_literal_value_for(expression: &str) -> Option<ParameterValue> {
     let source = format!("value = {expression}\n");
     let ParseOutcome::Parsed(document) = parse_document("python", &source) else {
@@ -468,12 +484,6 @@ fn every_parser_kind_dispatches_without_an_open_ended_document_state() {
         let _ = document.analysis();
         let _ = document.cli_surface();
         let _ = document.source_parameter_semantics(&declaration);
-        if kind != "shell" {
-            assert!(matches!(
-                document.plan_shell_normalization("VALUE"),
-                Err(LanguageError::UnsupportedKind { kind: actual }) if actual == kind
-            ));
-        }
     }
     for (kind, source) in [("fish", "echo ok\n"), ("powershell", "param()\n")] {
         let ParseOutcome::Parsed(document) = parse_document(kind, source) else {

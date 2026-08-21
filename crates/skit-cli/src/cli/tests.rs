@@ -2332,6 +2332,25 @@ fn settings_read_projection_refreshes_only_sound_public_defaults() {
     );
 }
 
+#[test]
+fn human_parameter_declarations_render_the_reconciled_current_default() {
+    let mut width = ParamDecl::new("WIDTH");
+    width.binding = ParameterBinding::Const;
+    width.delivery = ParameterDelivery::Inject;
+    width.parameter_type = ParameterType::Int;
+    width.default = Some(ParameterValue::Integer(800));
+    let stored = write_managed_params("shell", "WIDTH=800\n", &[width.clone()]).unwrap();
+    let live = stored.replace("WIDTH=800", "WIDTH=1200");
+
+    let declarations = human_parameter_declarations("shell", &live, &[width]);
+    let current = declarations[0].default.as_ref().unwrap();
+    assert_eq!(current, &ParameterValue::Integer(1200));
+    assert_eq!(
+        format!("Current default: {}", tui_parameter_value(current)),
+        "Current default: 1200"
+    );
+}
+
 /// A row's edits merge onto the declaration that owns it, and nothing else moves.
 ///
 /// Version 0.4 merges onto the row's own declaration rather than re-deriving it

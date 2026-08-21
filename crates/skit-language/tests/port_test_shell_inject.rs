@@ -910,6 +910,22 @@ fn test_normalize_on_an_unparseable_script_changes_nothing() {
 }
 
 #[test]
+fn rust_additive_single_normalize_api_keeps_legacy_typed_errors() {
+    assert_eq!(
+        normalize_shell_default("WIDTH=800\n", "WIDTH").unwrap(),
+        "WIDTH=\"${WIDTH:-800}\"\n"
+    );
+    assert!(matches!(
+        normalize_shell_default("HEIGHT=600\n", "WIDTH"),
+        Err(LanguageError::BindingNotFound { name }) if name == "WIDTH"
+    ));
+    assert!(matches!(
+        normalize_shell_default("if {\n", "WIDTH"),
+        Err(LanguageError::InvalidSource { kind }) if kind == "shell"
+    ));
+}
+
+#[test]
 fn rust_additive_normalize_batch_has_typed_per_item_results() {
     let src = "#!/usr/bin/env bash\nWIDTH=800\nreadonly MAX=100\n";
     let result = normalize_shell_defaults(

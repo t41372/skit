@@ -723,15 +723,6 @@ fn shell_read_preamble(keyword: &str) -> String {
     )
 }
 
-pub(super) fn normalize(
-    document: &ParsedDocument,
-    name: &str,
-) -> Result<SourceEditPlan, LanguageError> {
-    normalize_typed(document, name).map_err(|_| LanguageError::BindingNotFound {
-        name: name.to_owned(),
-    })
-}
-
 pub(super) fn normalize_typed(
     document: &ParsedDocument,
     name: &str,

@@ -1,8 +1,8 @@
 use std::fmt::Display;
 
 use skit_i18n::{
-    Locale, available_locale_tags, catalog, detect_locale, format_text, kind_label, render,
-    requested_locale, text,
+    Locale, available_locale_tags, catalog, detect_locale, format_named_text, format_text,
+    kind_label, render, requested_locale, text,
 };
 
 fn assert_zh(template: &str, args: &[&dyn Display], simplified: &str, traditional: &str) {
@@ -164,6 +164,37 @@ fn named_message_values_reorder_without_rewriting_user_text() {
         literal_holes
             .localize(Locale::ZhTw)
             .starts_with("已正規化 Tool {names} 中的 WIDTH {name}:")
+    );
+}
+
+#[test]
+fn named_message_formatting_preserves_unknown_and_malformed_holes() {
+    assert_eq!(
+        format_named_text(
+            Locale::En,
+            "{} {}",
+            &[
+                ("first", &"one" as &dyn Display),
+                ("second", &"two" as &dyn Display),
+            ],
+        ),
+        "one two"
+    );
+    assert_eq!(
+        format_named_text(
+            Locale::En,
+            "{known} {future} tail",
+            &[("known", &"value" as &dyn Display)],
+        ),
+        "value {future} tail"
+    );
+    assert_eq!(
+        format_named_text(
+            Locale::En,
+            "{known} tail {",
+            &[("known", &"value" as &dyn Display)],
+        ),
+        "value tail {"
     );
 }
 

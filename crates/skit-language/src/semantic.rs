@@ -440,31 +440,6 @@ impl ParsedDocument {
         }
     }
 
-    /// Plan one opt-in shell environment-default normalization.
-    pub fn plan_shell_normalization(&self, name: &str) -> Result<SourceEditPlan, LanguageError> {
-        match self.kind {
-            ParserKind::Shell => shell::normalize(self, name),
-            ParserKind::Python => Err(LanguageError::UnsupportedKind {
-                kind: "python".to_owned(),
-            }),
-            ParserKind::JavaScript => Err(LanguageError::UnsupportedKind {
-                kind: "js".to_owned(),
-            }),
-            ParserKind::TypeScript => Err(LanguageError::UnsupportedKind {
-                kind: "ts".to_owned(),
-            }),
-            ParserKind::Tsx => Err(LanguageError::UnsupportedKind {
-                kind: "tsx".to_owned(),
-            }),
-            ParserKind::Fish => Err(LanguageError::UnsupportedKind {
-                kind: "fish".to_owned(),
-            }),
-            ParserKind::PowerShell => Err(LanguageError::UnsupportedKind {
-                kind: "powershell".to_owned(),
-            }),
-        }
-    }
-
     pub(crate) fn plan_shell_normalization_typed(
         &self,
         name: &str,

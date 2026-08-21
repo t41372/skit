@@ -8,9 +8,32 @@
 use skit_domain::parameters::{
     DeclaredEditContext, DeclaredEditRequest, DeclaredEditWarning, NamedEdit, ParamDecl,
     ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, SourceEditRequest,
-    SourceEditWarning, SourceManageWarning, as_param_type, coerce_default, edit_declared,
-    manage_source_candidates,
+    SourceEditWarning, SourceManageWarning, SourceNormalizationRefusalKind, as_param_type,
+    coerce_default, edit_declared, manage_source_candidates,
 };
+
+#[test]
+fn rust_additive_normalization_refusal_codes_are_stable() {
+    assert_eq!(
+        [
+            SourceNormalizationRefusalKind::NotAConst,
+            SourceNormalizationRefusalKind::MultipleAssignments,
+            SourceNormalizationRefusalKind::Readonly,
+            SourceNormalizationRefusalKind::AlreadyEnv,
+            SourceNormalizationRefusalKind::UnsafeLiteral,
+            SourceNormalizationRefusalKind::SyntaxError,
+        ]
+        .map(SourceNormalizationRefusalKind::code),
+        [
+            "not-a-const",
+            "multiple-assignments",
+            "readonly",
+            "already-env",
+            "unsafe-literal",
+            "syntax-error",
+        ]
+    );
+}
 
 fn named(values: &[(&str, &str)]) -> Vec<NamedEdit<String>> {
     values
