@@ -339,7 +339,10 @@ linked code would produce misleading numbers.
 The PR workflow is path-filtered and advisory. GitHub can leave a path-skipped required workflow in
 pending state, so it must not be a required check. It builds the release CLI and harness, runs
 Criterion, runs the PR macro profile, checks enforced budgets, adds Markdown to the step summary,
-and uploads all raw data.
+and uploads all raw data. All three benchmark workflows activate setup-uv's pinned CPython 3.13
+environment and fail before measurement if `python3` resolves to another minor version. The
+CodSpeed build and run commands both select the complete workspace; otherwise Cargo's CLI-only
+`default-members` setting hides the benchmark crate at run time.
 
 Nightly runs the full profile with Node and `strace`. It is the enforcement point for full-only skip
 rows and installed closure. The compare workflow uses the pull request event's fixed base and head

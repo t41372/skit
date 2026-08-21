@@ -318,6 +318,19 @@ low-privilege `pull_request` event and checks out only the event's fixed base an
 tooling and benchmark front-door contracts reject a return to arbitrary input refs, and Actionlint
 plus Zizmor pass. Confirm that the next CodeQL run closes alerts 8 through 11 before completion.
 
+The first complete PR #45 run at `f09e488` then produced eight red checks. They were not eight
+product regressions. The final local follow-up fixes seven fixture/workflow roots: the Fish owner
+now retains the normal launch announcement; doctor tests install their own private uv; the PTY
+harness drains final output after child exit; portable benchmark tests no longer hide common imports
+behind `cfg(unix)`; macOS expectations use the physical repository cwd; setup-uv activates and
+verifies CPython 3.13 in all benchmark workflows; and CodSpeed build/run both select `--workspace`.
+Current upstream pins are already the latest compatible releases (`CodSpeedHQ/action` 5.0.3,
+`cargo-codspeed` 5.0.1, and setup-uv 9.0.0), so no action upgrade is due. The old mutation job
+failed during its unmodified baseline on the host-dependent doctor owner and did not score any
+mutants. Focused owners, CLI and benchmark full suites, workspace Clippy/Rustdoc, tooling, English,
+Actionlint, and Zizmor pass locally. The Linux-to-MSVC check reaches dependency C compilation and
+then stops because this host has no `lib.exe`; the native Windows job remains authoritative.
+
 The final increment has 1,110 unique `test_*` names: 969 already exist on this branch, 471 of those
 are ignored/ledger owners, and six names are duplicated inside the PR increment itself. The raw
 fixed tree fails `cargo fmt --all --check` and fails workspace `--no-run` at multiple independent
