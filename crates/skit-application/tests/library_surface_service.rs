@@ -1,11 +1,12 @@
 use std::{cell::Cell, collections::BTreeMap, path::PathBuf};
 
 use skit_application::{
-    EntryRepository, LibraryScan, RepositoryError,
+    LibraryScan, RepositoryError,
     form_state::{FormStateRepository, LastRunState, PersistedFormState, StateWriteError},
     library_detail::{
         LibraryDetailRepository, LibraryEntrySnapshot, LibraryFormFacts, LibraryFormProjector,
-        LibraryPromptRunner, LibraryRunAge, LibrarySurfaceService, LibraryTargetState,
+        LibraryPromptRunner, LibraryRefreshSnapshot, LibraryRunAge, LibrarySurfaceService,
+        LibraryTargetState,
     },
 };
 use skit_domain::{
@@ -17,30 +18,21 @@ use time::OffsetDateTime;
 #[derive(Debug)]
 struct MemoryLibrary {
     entry: Entry,
-    scans: Cell<usize>,
-    detail_reads: Cell<usize>,
-}
-
-impl EntryRepository for MemoryLibrary {
-    fn scan(&self) -> Result<LibraryScan, RepositoryError> {
-        self.scans.set(self.scans.get() + 1);
-        Ok(LibraryScan::default())
-    }
-
-    fn resolve(&self, _query: &str) -> Result<Entry, RepositoryError> {
-        Ok(self.entry.clone())
-    }
+    refreshes: Cell<usize>,
 }
 
 impl LibraryDetailRepository for MemoryLibrary {
-    fn detail_snapshots(&self) -> Result<Vec<LibraryEntrySnapshot>, RepositoryError> {
-        self.detail_reads.set(self.detail_reads.get() + 1);
-        Ok(vec![LibraryEntrySnapshot {
-            entry: self.entry.clone(),
-            source: Some(b"source bytes\r\n".to_vec()),
-            target: LibraryTargetState::Missing(PathBuf::from("/missing/demo.prompt")),
-            original_source_exists: true,
-        }])
+    fn library_refresh(&self) -> Result<LibraryRefreshSnapshot, RepositoryError> {
+        self.refreshes.set(self.refreshes.get() + 1);
+        Ok(LibraryRefreshSnapshot {
+            scan: LibraryScan::default(),
+            entries: vec![LibraryEntrySnapshot {
+                entry: self.entry.clone(),
+                source: Some(b"source bytes\r\n".to_vec()),
+                target: LibraryTargetState::Missing(PathBuf::from("/missing/demo.prompt")),
+                original_source_exists: true,
+            }],
+        })
     }
 }
 
@@ -111,8 +103,7 @@ fn prompt_entry() -> Entry {
 fn the_application_service_builds_one_complete_surface_from_ports() {
     let repository = MemoryLibrary {
         entry: prompt_entry(),
-        scans: Cell::new(0),
-        detail_reads: Cell::new(0),
+        refreshes: Cell::new(0),
     };
     let state = MemoryState;
     let form = FixedForm;
@@ -129,8 +120,7 @@ fn the_application_service_builds_one_complete_surface_from_ports() {
         .load_at(&["configured".to_owned()], OffsetDateTime::UNIX_EPOCH)
         .unwrap();
 
-    assert_eq!(repository.scans.get(), 1);
-    assert_eq!(repository.detail_reads.get(), 1);
+    assert_eq!(repository.refreshes.get(), 1);
     let detail = &surface.details[&Slug::parse("demo").unwrap()];
     assert_eq!(detail.parameters[0].key, "name");
     assert_eq!(detail.parameters[0].value, "Ada");

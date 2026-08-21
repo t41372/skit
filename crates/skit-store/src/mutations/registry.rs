@@ -110,6 +110,22 @@ impl Registry {
         projection.verify(meta_path).then_some(projection.summary)
     }
 
+    /// Check whether one row represents an already-read authoritative metadata snapshot.
+    pub(crate) fn matches_entry_snapshot(
+        &self,
+        entry: &Entry,
+        meta_path: &Path,
+        metadata_bytes: &[u8],
+    ) -> bool {
+        self.entries()
+            .get(entry.slug.as_str())
+            .and_then(Value::as_table)
+            .and_then(|row| CachedProjection::parse(&entry.slug, row))
+            .is_some_and(|projection| {
+                projection.matches_entry_snapshot(entry, meta_path, metadata_bytes)
+            })
+    }
+
     /// Return the registry row keys that define library membership.
     pub(crate) fn row_keys(&self) -> Vec<String> {
         let mut keys = self.entries().keys().cloned().collect::<Vec<_>>();
@@ -560,6 +576,30 @@ impl CachedProjection {
         expected == proof.projection_hash
             && MetadataFingerprint::read(meta_path).as_ref() == Some(&proof.fingerprint)
             && metadata_hash_matches(meta_path, &proof.metadata_hash)
+    }
+
+    fn matches_entry_snapshot(
+        &self,
+        entry: &Entry,
+        meta_path: &Path,
+        metadata_bytes: &[u8],
+    ) -> bool {
+        if self.summary != summary_from_entry(entry) {
+            return false;
+        }
+        let Some(proof) = &self.proof else {
+            return legacy_metadata_mtime_ns(meta_path) == Some(self.mtime_ns);
+        };
+        let expected = projection_hash(
+            &self.slug,
+            &self.summary,
+            self.mtime_ns,
+            &proof.fingerprint,
+            &proof.metadata_hash,
+        );
+        expected == proof.projection_hash
+            && MetadataFingerprint::read(meta_path).as_ref() == Some(&proof.fingerprint)
+            && content_hash(metadata_bytes) == proof.metadata_hash
     }
 }
 

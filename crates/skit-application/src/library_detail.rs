@@ -11,7 +11,7 @@ use skit_domain::{Entry, EntrySettings, Slug, parameters::ParamDecl};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{
-    EntryRepository, LibraryScan, RepositoryError,
+    LibraryScan, RepositoryError,
     form_state::{FormStateRepository, LastRunState, prefill},
 };
 
@@ -39,10 +39,19 @@ pub struct LibraryEntrySnapshot {
     pub original_source_exists: bool,
 }
 
+/// One coherent list-and-detail snapshot for a Library refresh.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LibraryRefreshSnapshot {
+    /// Current entry summaries and diagnostics.
+    pub scan: LibraryScan,
+    /// Storage facts for the same valid entries as the scan.
+    pub entries: Vec<LibraryEntrySnapshot>,
+}
+
 /// Read-side storage port for one complete Library refresh.
-pub trait LibraryDetailRepository: EntryRepository {
-    /// Read every valid entry and its storage facts in one directory pass.
-    fn detail_snapshots(&self) -> Result<Vec<LibraryEntrySnapshot>, RepositoryError>;
+pub trait LibraryDetailRepository: Debug {
+    /// Read membership once and derive list and detail facts from the same entries.
+    fn library_refresh(&self) -> Result<LibraryRefreshSnapshot, RepositoryError>;
 }
 
 /// Parser-backed form facts used by the Library detail projection.
@@ -100,10 +109,9 @@ where
         configured_runners: &[String],
         now: OffsetDateTime,
     ) -> Result<LibrarySurface, RepositoryError> {
-        let scan = self.repository.scan()?;
-        let details = self
-            .repository
-            .detail_snapshots()?
+        let refresh = self.repository.library_refresh()?;
+        let details = refresh
+            .entries
             .into_iter()
             .map(|snapshot| {
                 let slug = snapshot.entry.slug.clone();
@@ -111,7 +119,10 @@ where
                 (slug, detail)
             })
             .collect();
-        Ok(LibrarySurface { scan, details })
+        Ok(LibrarySurface {
+            scan: refresh.scan,
+            details,
+        })
     }
 
     fn entry_detail(

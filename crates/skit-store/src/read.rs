@@ -39,6 +39,13 @@ impl FileStore {
     }
 
     pub(crate) fn read_entry(&self, slug: Slug) -> Result<Entry, RepositoryError> {
+        self.read_entry_snapshot(slug).map(|(entry, _)| entry)
+    }
+
+    pub(crate) fn read_entry_snapshot(
+        &self,
+        slug: Slug,
+    ) -> Result<(Entry, Vec<u8>), RepositoryError> {
         let meta_path = self.scripts_dir().join(slug.as_str()).join("meta.toml");
         let text = fs::read_to_string(&meta_path).map_err(|error| RepositoryError::Io {
             operation: "read",
@@ -55,7 +62,8 @@ impl FileStore {
                 slug: slug.as_str().to_owned(),
                 reason,
             })?;
-        Ok(Entry { slug, meta })
+        let bytes = text.into_bytes();
+        Ok((Entry { slug, meta }, bytes))
     }
 
     /// Read every readable entry with its complete metadata in one directory pass.
@@ -137,7 +145,7 @@ impl FileStore {
     /// failing the read; a slug removed, or whose meta vanished or broke, since the listing is
     /// skipped; and nothing is saved unless a row actually changed. It contends on the same
     /// `registry.native.lock` writers take, so a repair never races a committing writer.
-    fn repair_rows(&self, stale: &[Slug]) {
+    pub(crate) fn repair_rows(&self, stale: &[Slug]) {
         let repair = match try_acquire_lock(&self.data_dir().join("registry.native.lock")) {
             Some(lock) => Registry::read(self.data_dir()).map(|registry| (lock, registry)),
             None => None,
@@ -325,7 +333,7 @@ fn entry_with_name(entry: Entry, query: &str) -> Result<Entry, RepositoryError> 
     }
 }
 
-fn summary_from(entry: &Entry) -> EntrySummary {
+pub(crate) fn summary_from(entry: &Entry) -> EntrySummary {
     EntrySummary {
         slug: entry.slug.clone(),
         name: entry.meta.name.clone(),
@@ -340,7 +348,7 @@ fn summary_from(entry: &Entry) -> EntrySummary {
     }
 }
 
-fn diagnostic_from(error: RepositoryError, slug: &Slug) -> Diagnostic {
+pub(crate) fn diagnostic_from(error: RepositoryError, slug: &Slug) -> Diagnostic {
     let code = match &error {
         RepositoryError::Io { .. }
         | RepositoryError::Rollback { .. }

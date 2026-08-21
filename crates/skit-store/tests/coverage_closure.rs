@@ -54,7 +54,7 @@ fn library_reference_targets_keep_empty_and_explicit_source_meanings() {
     let store = FileStore::new(root.path());
     store.rebuild_registry().unwrap();
 
-    let snapshots = store.detail_snapshots().unwrap();
+    let snapshots = store.library_refresh().unwrap().entries;
     let target = |slug: &str| {
         &snapshots
             .iter()
