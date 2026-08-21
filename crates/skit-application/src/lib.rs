@@ -34,7 +34,8 @@ pub use mutations::{
     SourcePermissions, UpdateEntry,
 };
 pub use payload_policy::{
-    add_workdir, canonical_stored_filename, payload_stored_name, supports_storage_modes,
+    ForcedAddKind, add_workdir, canonical_stored_filename, payload_stored_name,
+    supports_storage_modes,
 };
 use serde::{Deserialize, Serialize};
 use skit_domain::{Entry, EntrySummary};

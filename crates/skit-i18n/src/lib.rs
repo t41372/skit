@@ -2231,9 +2231,9 @@ const CATALOG: &[Translation] = &[
         "將一個 shell 常數正規化為環境變數預設值",
     ),
     row!(
-        "Open entry-kind registry key",
-        "开放的条目类型注册键",
-        "開放式項目類型登錄鍵",
+        "Force an interpreted kind or exe. With stdin, prompt is also valid",
+        "强制指定解释型类型或 exe。使用标准输入时也可指定 prompt",
+        "強制指定直譯型類型或 exe。使用標準輸入時也可指定 prompt",
     ),
     row!(
         "Override the skit data directory",
@@ -2921,6 +2921,16 @@ const CATALOG: &[Translation] = &[
         "Unknown JS runner: {}. Choose from: {}",
         "未知的 JS 运行时：{}。可选：{}",
         "未知的 JS 執行環境：{}。可選：{}",
+    ),
+    row!(
+        "Unknown kind: {}. Choose from: {}",
+        "未知类型：{}。可选：{}",
+        "未知類型：{}。可選：{}",
+    ),
+    row!(
+        "Use --kind or --exe, not both.",
+        "--kind 与 --exe 只能择一。",
+        "--kind 與 --exe 只能擇一。",
     ),
     row!(
         "Unknown mirror value: {}. \"mirror\" is the master switch (on / off); mirrors are picked per ecosystem: mirror.pypi ({}), mirror.github ({}), mirror.npm ({}) — each also takes a URL or \"off\".",

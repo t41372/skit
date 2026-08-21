@@ -4,6 +4,81 @@ use std::path::Path;
 
 use skit_domain::{EntryKind, StorageMode};
 
+/// One entry kind that an explicit `add --kind` request can author.
+///
+/// Prompt files and command entries use dedicated authoring lanes. The stdin composition keeps a
+/// version 0.4 `--kind prompt` compatibility alias. Stored [`EntryKind`] values stay open so a
+/// newer skit version's metadata remains readable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ForcedAddKind {
+    /// fish source.
+    Fish,
+    /// JavaScript source.
+    JavaScript,
+    /// Lua source.
+    Lua,
+    /// Perl source.
+    Perl,
+    /// PowerShell source.
+    PowerShell,
+    /// Python source.
+    Python,
+    /// R source.
+    R,
+    /// Ruby source.
+    Ruby,
+    /// POSIX-family shell source.
+    Shell,
+    /// TypeScript source.
+    TypeScript,
+    /// Directly launched program.
+    Executable,
+}
+
+impl ForcedAddKind {
+    /// Every forceable kind in the version 0.4 presentation order.
+    pub const ALL: &'static [Self] = &[
+        Self::Fish,
+        Self::JavaScript,
+        Self::Lua,
+        Self::Perl,
+        Self::PowerShell,
+        Self::Python,
+        Self::R,
+        Self::Ruby,
+        Self::Shell,
+        Self::TypeScript,
+        Self::Executable,
+    ];
+
+    /// Parse one exact authoring spelling.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|kind| kind.as_str() == value)
+    }
+
+    /// Return the stable registry spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fish => "fish",
+            Self::JavaScript => "js",
+            Self::Lua => "lua",
+            Self::Perl => "perl",
+            Self::PowerShell => "powershell",
+            Self::Python => "python",
+            Self::R => "r",
+            Self::Ruby => "ruby",
+            Self::Shell => "shell",
+            Self::TypeScript => "ts",
+            Self::Executable => "exe",
+        }
+    }
+}
+
 /// Return the canonical stored copy name for one kind.
 ///
 /// JavaScript and TypeScript callers can use [`payload_stored_name`] to keep a module-specific

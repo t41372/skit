@@ -188,6 +188,30 @@ fn completion_candidates_include_each_entry_slug_and_display_name() {
 }
 
 #[test]
+fn add_kind_completion_uses_the_typed_forceable_policy() {
+    assert_eq!(
+        add_kind_candidates()
+            .iter()
+            .map(|candidate| candidate.get_value().to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        [
+            "fish",
+            "js",
+            "lua",
+            "perl",
+            "powershell",
+            "python",
+            "r",
+            "ruby",
+            "shell",
+            "ts",
+            "exe",
+            "prompt",
+        ]
+    );
+}
+
+#[test]
 fn completion_candidates_include_prompt_runners_and_saved_presets() {
     let root = TempDir::new().unwrap();
     fs::write(

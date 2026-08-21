@@ -18,9 +18,9 @@ use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell,
 use dialoguer::{Confirm, Input, MultiSelect, Password};
 use skit_application::{
     AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope, AgentTarget, CreateEntry,
-    EntryPayload, ExitClass, ExternalCopyEdit as _, FinalizeExternalCopyEditError, LibraryScan,
-    LibraryService, PreparedEntryUpdateError, RepositoryError, RepositoryOperation, SourceIdentity,
-    SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
+    EntryPayload, ExitClass, ExternalCopyEdit as _, FinalizeExternalCopyEditError, ForcedAddKind,
+    LibraryScan, LibraryService, PreparedEntryUpdateError, RepositoryError, RepositoryOperation,
+    SourceIdentity, SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
     form_feedback::GlobCountPort,
     form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill, scrub_secrets},
     health::{
@@ -295,8 +295,8 @@ enum Command {
     Add {
         /// Source file to register.
         source: Option<PathBuf>,
-        /// Open entry-kind registry key.
-        #[arg(long)]
+        /// Force an interpreted kind or exe. With stdin, prompt is also valid.
+        #[arg(long, add = ArgValueCandidates::new(add_kind_candidates))]
         kind: Option<String>,
         /// Display name. The source stem is the default.
         #[arg(long, short = 'n')]
@@ -642,6 +642,14 @@ pub(crate) fn entry_candidates() -> Vec<CompletionCandidate> {
         |_| Vec::new(),
         |directory| entry_candidates_from(&FileStore::new(directory)),
     )
+}
+
+pub(crate) fn add_kind_candidates() -> Vec<CompletionCandidate> {
+    ForcedAddKind::ALL
+        .iter()
+        .map(|kind| CompletionCandidate::new(kind.as_str()))
+        .chain(std::iter::once(CompletionCandidate::new("prompt")))
+        .collect()
 }
 
 fn entry_candidates_from(store: &FileStore) -> Vec<CompletionCandidate> {
@@ -1170,6 +1178,13 @@ fn add_command(
     edit: bool,
 ) -> Result<(), CliError> {
     let lane = validate_add_dispatch(&options, edit)?;
+    if lane != AddLane::Command {
+        validate_explicit_add_kind(
+            options.kind.as_deref(),
+            options.executable,
+            lane == AddLane::Stdin,
+        )?;
+    }
     preflight_owned_draft_boundary(service.repository().data_dir(), &options)?;
     let no_input = options.no_input;
     if lane == AddLane::Editor && no_input {
@@ -3332,6 +3347,37 @@ fn selected_add_kind<'a>(
     Err(CliError::Usage(Message::new(
         "could not infer the entry kind; pass --kind KIND",
     )))
+}
+
+fn validate_explicit_add_kind(
+    kind: Option<&str>,
+    executable: bool,
+    allow_stdin_prompt: bool,
+) -> Result<(), CliError> {
+    let Some(value) = kind else {
+        return Ok(());
+    };
+    if allow_stdin_prompt && value == "prompt" {
+        return Ok(());
+    }
+    let Some(kind) = ForcedAddKind::parse(value) else {
+        let choices = ForcedAddKind::ALL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(CliError::Usage(
+            Message::new("Unknown kind: {}. Choose from: {}")
+                .with(value)
+                .with(choices),
+        ));
+    };
+    if executable && kind != ForcedAddKind::Executable {
+        return Err(CliError::Usage(Message::new(
+            "Use --kind or --exe, not both.",
+        )));
+    }
+    Ok(())
 }
 
 fn add_with_config(

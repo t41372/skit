@@ -1,10 +1,38 @@
 use std::path::Path;
 
-use skit_application::{add_workdir, payload_stored_name, supports_storage_modes};
+use skit_application::{ForcedAddKind, add_workdir, payload_stored_name, supports_storage_modes};
 use skit_domain::{EntryKind, StorageMode};
 
 fn kind(value: &str) -> EntryKind {
     EntryKind::parse(value).unwrap()
+}
+
+#[test]
+fn forced_add_kinds_are_closed_without_closing_stored_entry_kinds() {
+    assert_eq!(
+        ForcedAddKind::ALL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "fish",
+            "js",
+            "lua",
+            "perl",
+            "powershell",
+            "python",
+            "r",
+            "ruby",
+            "shell",
+            "ts",
+            "exe",
+        ]
+    );
+    assert_eq!(ForcedAddKind::parse("exe"), Some(ForcedAddKind::Executable));
+    for value in ["prompt", "command", "unknown"] {
+        assert_eq!(ForcedAddKind::parse(value), None, "{value}");
+        assert_eq!(kind(value).as_str(), value, "stored kinds stay open");
+    }
 }
 
 #[test]

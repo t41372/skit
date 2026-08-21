@@ -465,27 +465,33 @@ fn test_cli_add_kind_unknown_is_usage_error() {
     let before = snapshot_sandbox(&sandbox);
     let source_before = fs::read(&source).unwrap();
 
-    for language in ["en", "zh-CN", "zh-TW"] {
-        let output = sandbox
-            .command_in(language)
-            .arg("add")
-            .arg(&source)
-            .args(["--kind", "cobol", "--name", "unknown", "--no-input"])
-            .output()
-            .unwrap();
-        assert_eq!(
-            output.status.code(),
-            Some(2),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(output.stdout.is_empty());
-        assert_eq!(
-            String::from_utf8_lossy(&output.stderr).trim(),
-            unknown_add_kind_message(language, "cobol")
-        );
-        assert_eq!(snapshot_sandbox(&sandbox), before, "language={language}");
-        assert_eq!(fs::read(&source).unwrap(), source_before);
+    for kind in ["cobol", "prompt"] {
+        for language in ["en", "zh-CN", "zh-TW"] {
+            let output = sandbox
+                .command_in(language)
+                .arg("add")
+                .arg(&source)
+                .args(["--kind", kind, "--name", "unknown", "--no-input"])
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(2),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.stdout.is_empty());
+            assert_eq!(
+                String::from_utf8_lossy(&output.stderr).trim(),
+                unknown_add_kind_message(language, kind)
+            );
+            assert_eq!(
+                snapshot_sandbox(&sandbox),
+                before,
+                "kind={kind} language={language}"
+            );
+            assert_eq!(fs::read(&source).unwrap(), source_before);
+        }
     }
 }
 
