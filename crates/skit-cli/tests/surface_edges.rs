@@ -89,6 +89,31 @@ fn shell_fixture(sandbox: &Sandbox, name: &str, body: &str) -> (PathBuf, PathBuf
 }
 
 #[cfg(unix)]
+fn install_syntax_gate_bash(sandbox: &Sandbox, reject: bool) -> PathBuf {
+    let bin = sandbox.data.path().join(if reject {
+        "rejecting-shell-gate-bin"
+    } else {
+        "accepting-shell-gate-bin"
+    });
+    fs::create_dir(&bin).unwrap();
+    let bash = bin.join("bash");
+    let gate = if reject {
+        "printf '%s\\n' 'synthetic shell syntax refusal' 'ignored second line' >&2\nexit 1"
+    } else {
+        "exit 0"
+    };
+    fs::write(
+        &bash,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"-n\" ]; then\n  printf '%s\\n%s\\n' \"$0\" \"$2\" > \"$SKIT_GATE_REPORT\"\n  {gate}\nfi\n: > \"$SKIT_LAUNCH_MARKER\"\nexec /bin/sh \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&bash, fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+#[cfg(unix)]
 fn add_real_shell(sandbox: &Sandbox, name: &str, body: &str) -> PathBuf {
     let source = sandbox.data.path().join(format!("{name}.sh"));
     fs::write(&source, body).unwrap();
@@ -814,6 +839,135 @@ fn a_run_with_injected_values_uses_a_private_staged_source() {
         .filter(|item| item.file_name().to_string_lossy().starts_with(".run-"))
         .count();
     assert_eq!(leftovers, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_execute_syntax_gate_failure_never_launches() {
+    let sandbox = Sandbox::new();
+    let source = add_real_shell(
+        &sandbox,
+        "shell-gate-refusal",
+        "#!/usr/bin/env bash\nTITLE=hello\nprintf '%s\\n' \"$TITLE\"\n",
+    );
+    manage_shell_params(&sandbox, "shell-gate-refusal", &["TITLE"]);
+    let bin = install_syntax_gate_bash(&sandbox, true);
+    let signals = TempDir::new().unwrap();
+    let report = signals.path().join("gate-report");
+    let launched = signals.path().join("launched");
+    let source_before = fs::read(&source).unwrap();
+    let data_before = snapshot_user_data(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+
+    for (locale, expected) in [
+        (
+            "en",
+            "skit refused to run its own injected copy: bash rejected the injected copy: synthetic shell syntax refusal",
+        ),
+        (
+            "zh-CN",
+            "skit 拒绝运行自己注入出来的副本:bash 拒绝了注入后的副本:synthetic shell syntax refusal",
+        ),
+        (
+            "zh-TW",
+            "skit 拒絕執行自己注入出來的副本:bash 拒絕了注入後的副本:synthetic shell syntax refusal",
+        ),
+    ] {
+        let output = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .env("PATH", &bin)
+            .env("SKIT_GATE_REPORT", &report)
+            .env("SKIT_LAUNCH_MARKER", &launched)
+            .args([
+                "run",
+                "shell-gate-refusal",
+                "--set",
+                "TITLE=x",
+                "--no-input",
+            ])
+            .output()
+            .unwrap();
+        let text = output_text(&output);
+
+        assert_eq!(output.status.code(), Some(125), "{text}");
+        assert!(text.contains(expected), "{locale}:\n{text}");
+        assert!(!text.contains("ignored second line"), "{locale}:\n{text}");
+        assert!(!text.contains("--resync"), "{locale}:\n{text}");
+        assert!(!launched.exists(), "the rejected source reached launch");
+        let report_text = fs::read_to_string(&report).unwrap();
+        let mut lines = report_text.lines();
+        assert_eq!(lines.next().map(Path::new), Some(bin.join("bash").as_path()));
+        let staged = PathBuf::from(lines.next().expect("the gate reports its staged source"));
+        assert!(lines.next().is_none());
+        assert!(!staged.exists(), "the rejected staged source survived");
+        assert_eq!(fs::read(&source).unwrap(), source_before);
+        assert_eq!(snapshot_user_data(sandbox.data.path()), data_before);
+        assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+        assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+        assert!(!sandbox.data.path().join("scripts/shell-gate-refusal/node_modules").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_execute_surfaces_the_self_location_warning() {
+    for (locale, self_location, expected) in [
+        (
+            "en",
+            "HERE=$0",
+            "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values run from a temporary copy — so it sees the copy's path, not the original's. Rewriting a constant as NAME=\"${NAME:-value}\" delivers the value through the environment instead, with no copy at all (`skit params <script> --normalize NAME` does the rewrite for you on a stored copy).",
+        ),
+        (
+            "zh-CN",
+            "if false; then printf '%s\\n' \"$BASH_SOURCE\"; fi",
+            "⚠ 这个脚本会读自己的位置($0 / $BASH_SOURCE),而注入后的值是从临时副本运行的——所以它看到的是副本的路径,不是原文件的。把常量改写成 NAME=\"${NAME:-value}\" 就能改用环境变量传值,完全不写副本(`skit params <script> --normalize NAME` 会在已保存的副本上帮你完成这个改写)。",
+        ),
+        (
+            "zh-TW",
+            "if false; then printf '%s\\n' \"${BASH_SOURCE[0]}\"; fi",
+            "⚠ 這個腳本會讀自己的位置($0 / $BASH_SOURCE),而注入後的值是從臨時副本執行的——所以它看到的是副本的路徑,不是原檔案的。把常數改寫成 NAME=\"${NAME:-value}\" 就能改用環境變數傳值,完全不寫副本(`skit params <script> --normalize NAME` 會在儲存的副本上幫你做這個改寫)。",
+        ),
+    ] {
+        let sandbox = Sandbox::new();
+        let name = format!("self-location-{}", locale.to_ascii_lowercase());
+        let source = add_real_shell(
+            &sandbox,
+            &name,
+            &format!(
+                "#!/usr/bin/env bash\n{self_location}\nWIDTH=800\nprintf 'width=%s\\n' \"$WIDTH\"\n"
+            ),
+        );
+        manage_shell_params(&sandbox, &name, &["WIDTH"]);
+        let bin = install_syntax_gate_bash(&sandbox, false);
+        let signals = TempDir::new().unwrap();
+        let report = signals.path().join("gate-report");
+        let launched = signals.path().join("launched");
+        let source_before = fs::read(&source).unwrap();
+        let data_before = snapshot_user_data(sandbox.data.path());
+
+        let output = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .env("PATH", &bin)
+            .env("SKIT_GATE_REPORT", &report)
+            .env("SKIT_LAUNCH_MARKER", &launched)
+            .args(["run", &name, "--set", "WIDTH=1200", "--no-input"])
+            .output()
+            .unwrap();
+        let text = output_text(&output);
+
+        assert!(output.status.success(), "{locale}:\n{text}");
+        assert!(text.contains(expected), "{locale}:\n{text}");
+        assert!(text.contains("width=1200"), "{locale}:\n{text}");
+        assert!(launched.is_file());
+        let staged = fs::read_to_string(&report).unwrap();
+        let staged = PathBuf::from(staged.lines().nth(1).expect("the gate reports the source"));
+        assert!(!staged.exists(), "the accepted staged source survived launch");
+        assert_eq!(fs::read(&source).unwrap(), source_before);
+        assert_eq!(snapshot_user_data(sandbox.data.path()), data_before);
+    }
 }
 
 #[cfg(unix)]

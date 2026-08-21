@@ -799,37 +799,7 @@ fn test_offline_gate_refuses_a_corrupted_injection() {
     // Python monkeypatches `inject.quote` to emit an unterminated quote and expects InjectSyntaxError.
 }
 
-#[test]
-#[ignore = "UNMAPPED: gate 2 is the interpreter's own `bash -n` re-check, which spawns bash -> Tier 3/4 (skit-runtime); Python also monkeypatches `_gate_reparse` and `quote`. skit-language performs no interpreter spawn."]
-fn test_interpreter_gate_refuses_what_the_offline_gate_missed() {
-    // Python pretends the offline re-parse passed and proves `bash -n` still stops the launch.
-}
-
-#[test]
-#[ignore = "UNMAPPED: the `bash -n` interpreter gate (and skipping it when the shell is not installed) is a runtime spawn concern -> Tier 3/4. skit-language's plan_injection_for_interpreter uses the interpreter only to pick the preamble keyword; it never runs the shell, so there is no gate to skip."]
-fn test_interpreter_gate_is_skipped_when_the_shell_is_not_installed() {
-    // Python injects with interpreter="skit-no-such-shell" and asserts result.path is not None.
-}
-
-#[test]
-#[ignore = "UNMAPPED: Python monkeypatches subprocess.run to raise and asserts the run continues (gate 1 already passed). The subprocess spawn is the runtime tier -> Tier 3/4."]
-fn test_interpreter_gate_survives_a_spawn_failure() {
-    // Python: the `bash -n` spawn raising OSError must not fail the injection.
-}
-
-#[test]
-#[ignore = "UNMAPPED: Python monkeypatches subprocess.run to return returncode 1 with empty stderr and asserts InjectSyntaxError without crashing. Runtime spawn -> Tier 3/4."]
-fn test_interpreter_gate_reports_an_empty_stderr_without_crashing() {
-    // Python drives the `bash -n` gate's empty-stderr branch.
-}
-
 // ---------------------------------------------------------------- $0 warning
-
-#[test]
-#[ignore = "UNMAPPED: the `$0` warning STRING (the `NAME=\"${NAME:-value}\"` advice, \"on a stored copy\") is rendered in the CLI/UI tier -> Tier 4. skit-language's observable half is analysis().uses_self_location, covered by port_test_shell_analyzer.rs (test_uses_self_location_*)."]
-fn test_self_location_warns_when_a_temp_copy_is_written() {
-    // Python asserts result.warnings carries the $0 advice string.
-}
 
 #[test]
 fn test_self_location_does_not_warn_for_env_delivery() {
@@ -970,14 +940,6 @@ fn test_execute_maps_a_drifted_shell_definition_to_drift() {}
 #[test]
 #[ignore = "UNMAPPED: `skit run --set input-2=Lovelace` maps a positional gap to the FAIL_BAD_VALUE exit code -> Tier 4 (skit-cli). The gap refusal is covered by test_multi_variable_read_refuses_a_positional_gap."]
 fn test_execute_reports_a_positional_gap_as_a_bad_value() {}
-
-#[test]
-#[ignore = "UNMAPPED: flows.execute surfaces the $0 warning through its `emit` callback -> Tier 4 (skit-cli/flows/UI). uses_self_location is the skit-language half (port_test_shell_analyzer.rs)."]
-fn test_execute_surfaces_the_self_location_warning() {}
-
-#[test]
-#[ignore = "UNMAPPED: a syntax-gate failure must map to FAIL_DRIFT WITHOUT a `--resync` hint and never launch -> Tier 4 (skit-cli/flows); Python also monkeypatches inject.quote to force the corruption."]
-fn test_execute_syntax_gate_failure_never_launches() {}
 
 #[test]
 #[ignore = "UNMAPPED: an entry whose kind grew an analyzer but no injector must degrade, not crash (store.add_script fish + flows.execute) -> Tier 4 (skit-cli/flows). skit-language returns UnsupportedKind for kinds without an injector, but the graceful-degradation path is in flows."]
