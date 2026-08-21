@@ -374,6 +374,15 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
   (`b777d3c`). Final cleanup now reports real unlink/rmtree failures, treats a concurrent NotFound
   as success, preserves a committed replacement environment after a partial cleanup, and leaves a
   typed quarantine that the next operation repairs (`13c04fe`).
+- **JS injection ownership is complete.** The 37-row frozen module has 33 unique executable owners
+  and 4 structured stronger-owner closures. The CLI resolves one exact runtime, stages and checks
+  the injected source before dependency mutation, and drops the temporary guard on every refusal.
+  Node rejects before package.json, dependency locks, markers, node_modules, or launch. Successful
+  mjs runs create the module manifest only after the gate. Dependency-backed copies prefer entry
+  adjacency and fall back to the OS private temp directory on a real allocation failure. Drift and
+  injected-copy failures use exact three-locale exit-125 wrappers; only drift includes `--resync`.
+  Real runtime and E2E owners are active with an availability condition. Native Windows full-suite
+  verification remains the platform gate.
 - **TUI path completion is complete.** `port_test_path_tui.rs` now has 62 executable contracts and
   4 honest cross-crate closures. The restored ghost completion uses a typed 2,000-entry bounded
   scanner, no cache, two bounded workers, complete-request latest-wins, dim suffix rendering, and

@@ -55,7 +55,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs + crates/skit-cli/tests/port_test_fish_manage.rs | done (45) · managed env delivery executable `c592560` · 18 white-box scanner, 1 real-runtime CLI |
 | test_powershell.py | 35 | language + form + application ports + CLI manifest | done (20 executable / 15 architecture-closed) · global exact-name uniqueness enforced `51494e0` · A+B+runtime-scalar defaults fixed · C `[bool]` native checkbox kept |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
-| test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs + crates/skit-cli/tests/port_test_js_inject_cli.rs | in progress (18 executable / 19 deferred) · ascii-escape gap fixed · faithful TS-suffix, Unix-0600, and bad-value prelaunch owners imported `af90a10`; native Windows runtime verification pending |
+| test_js_inject.py | 37 | language + runtime + `port_test_js_inject_cli*.rs` + exact manifest | implementation parity: 33 unique executable owners + 4 structured stronger-owner closures · resolved runtime identity and Node gate A+B · stage/gate-before-dependencies CLI Batch C · exact three-locale drift/refusal voice · native Windows runtime verification pending |
 | test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs + skit-runtime private transaction owners + crates/skit-store/tests/mutations.rs | implementation parity (91 executable / 49 classified cross-crate or private closures; 0 ABSENT/FAILING) · installer failures capture typed exit/stderr and keep rollback atomic `b1ad9ac`; six cleanup owners exercise real unlink/rmtree/symlink races, NotFound success, partial-delete quarantine, and self-heal `13c04fe`; cheap freshness/TUI preflight `ab4d93a`/`e276058`; every-launch one-hour strict sweep `e62e36e`/`df0c171`; captured diagnostics and install-only announcements `b6073df`/`536d1e4`; split, manifest, and installer helpers `647a31f`/`5265eeb` |
 | test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs + crates/skit-language/tests/edge_contract.rs + real CLI/store owners | implementation parity: 37 baseline executable/rehomed + 1 architecture closure + 7 Batch A + 14 Batch C + 6 Batch B + 9 Batch D = 74 · no ABSENT/FAILING or cross-crate runtime stubs remain · needs receipts `744b3c4` · bun run + JS refusal `19e5ab8` · detection `98efbb4` · add-kind validation `dc1bac7`/`b99f36a` · final launch/config owners `2791482`/`1285121` · typed Windows policy is host-neutral tested; real Windows host remains a CI gate |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
@@ -577,9 +577,13 @@ last-write-wins, TS annotations, `enum`-under-js → SyntaxError, reconcile, the
 engine round-trip + shebang placement, and the full `parseArgs` surface matrix (degrade-whole-spec
 vs skip-just-field, Absent cases). 4 more `#[ignore]` are CLI/registry integration → Tier 4.
 
-### test_js_inject.py → port_test_js_inject.rs (16 done · THIRD REAL GAP · 21 deferred)
+### test_js_inject.py → language + runtime + CLI exact owners (37 accounted)
 
-37 ported / 16 passed / 21 `#[ignore]`. Bucket 1 surfaced the third real gap:
+The exact manifest now owns all 37 frozen names once: 33 are executable and 4 have structured
+stronger-owner closures. The deferred audit classified 20 rows as 4 closures, 2 stale exact
+rehomes, 3 runtime-gated rehomes, and 11 real product gaps. It includes one weak active byte owner
+that the original 19-row deferred list missed. The byte-only Rust test now has a Rust-additive name;
+the frozen const owner starts a real child.
 
 - **Fixed: the JS injector emitted raw UTF-8 in a string literal instead of the oracle's ensure_ascii
   form.** The oracle renders a string as `json.dumps(value)` (default `ensure_ascii=True`), escaping
@@ -591,15 +595,21 @@ vs skip-just-field, Absent cases). 4 more `#[ignore]` are CLI/registry integrati
   (serde_json for the quote/backslash/control escapes, then non-ASCII folded to `\uXXXX` with UTF-16
   surrogate pairs above the BMP), so ASCII values stay byte-identical and non-ASCII matches
   `json.dumps`. Verified against the oracle; workspace green, clippy clean.
-- **Reclassified `test_injected_string_reaches_the_child`.** The agent mis-bucketed this run_js
-  execution test as a byte assertion on raw UTF-8 (Rust's then-current output, not the oracle's). It
-  is a genuine runtime test (asserts node stdout); its escaped-byte contract is covered by
-  `test_cjk_and_emoji_escape_to_valid_js`, so it moves to a Tier-3/4 `#[ignore]` runtime-defer.
-
-Bucket 2 (1 remaining): `test_injected_const_reaches_the_child` (int lands, ASCII, byte-established).
-Bucket 3 (21 deferred to Tier 3/4): `_resolve_runner`/`_gate_node` (`node --check`), temp-copy file
-facts incl. **`test_injected_copy_is_0600` (MUST-VERIFY secret handling)**, the offline-gate
-escaper seam, and `flows.execute`/`skit run` end-to-end.
+- **Batch A+B closed the runtime seam.** One resolved value keeps normalized deno/bun/node identity
+  and the exact executable path. The best-effort Node gate applies only to js/mjs/cjs under Node,
+  drains stderr while the child runs, takes the first stderr line on rejection, and drops its owned
+  temporary source on every refusal. TypeScript, non-Node, spawn failure, and timeout keep v0.4
+  behavior.
+- **Batch C closed composition.** CLI injection now stages and gates before dependency locks,
+  package manifests, markers, or node_modules. Drift and injected-copy failures exit 125 with exact
+  English, Simplified Chinese, and Traditional Chinese wrappers. The drift wrapper alone points to
+  `skit params NAME --resync`. Dependency-backed copies prefer entry-directory adjacency and fall
+  back to the OS private temporary directory when that allocation fails. Successful mjs launch
+  proves the Node gate ran before package.json and the manifest exists before the child starts.
+- **Platform gates stay explicit.** Real runtime const/string and add→manage→run owners are active
+  and conditionally return only when no resolver candidate is installed. Linux runs the real Node
+  mjs ordering owner. Native Windows must run the full CLI/runtime/language suite to verify
+  close-before-unlink, PATHEXT resolution, suffixes, and 0600-equivalent private-file behavior.
 
 ### test_fish.py → port_test_fish.rs / port_test_fish_manage.rs (45 done · 19 deferred · no gap)
 
