@@ -1813,14 +1813,18 @@ fn plain_preset_collection_saves_typed_nonsecrets_in_three_locales() {
             locale,
         );
         cli.wait_for("Plain value");
+        let checkpoint = cli.checkpoint();
         cli.send(b"\r");
-        cli.wait_for("ENABLED");
+        cli.wait_for_after(checkpoint, "ENABLED");
+        let checkpoint = cli.checkpoint();
         cli.send(b"\r");
-        cli.wait_for("TOKEN");
+        cli.wait_for_after(checkpoint, "TOKEN: ");
+        let checkpoint = cli.checkpoint();
         cli.send(b"secret-value\r");
-        cli.wait_for("OPTIONAL_SECRET");
+        cli.wait_for_after(checkpoint, "OPTIONAL_SECRET: ");
+        let checkpoint = cli.checkpoint();
         cli.send(b"\r");
-        cli.wait_for("COLOR (red/blue)");
+        cli.wait_for_after(checkpoint, "COLOR (red/blue)");
         let checkpoint = cli.checkpoint();
         cli.send(b"\r");
         let tail = cli.wait_for_exit_after(checkpoint);
