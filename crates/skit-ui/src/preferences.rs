@@ -725,24 +725,22 @@ impl PreferencesView {
                     PreferencesField::BashPath => return PreferencesEffect::None,
                 }
                 self.clear_error_for(field);
-                self.rehome_hidden_focus(field);
             }
             PreferencesAction::SetMirrorUrl { field, value } => {
-                match field {
+                let (focused, url) = match field {
                     PreferencesField::PypiMirror => {
-                        self.focused = PreferencesControlId::PypiUrl;
-                        self.draft.pypi_url = value;
+                        (PreferencesControlId::PypiUrl, &mut self.draft.pypi_url)
                     }
                     PreferencesField::GithubMirror => {
-                        self.focused = PreferencesControlId::GithubUrl;
-                        self.draft.github_url = value;
+                        (PreferencesControlId::GithubUrl, &mut self.draft.github_url)
                     }
                     PreferencesField::NpmMirror => {
-                        self.focused = PreferencesControlId::NpmUrl;
-                        self.draft.npm_url = value;
+                        (PreferencesControlId::NpmUrl, &mut self.draft.npm_url)
                     }
                     PreferencesField::BashPath => return PreferencesEffect::None,
-                }
+                };
+                self.focused = focused;
+                *url = value;
                 self.clear_error_for(field);
             }
             PreferencesAction::Focus(id) => {
@@ -821,40 +819,15 @@ impl PreferencesView {
         }
     }
 
-    fn rehome_hidden_focus(&mut self, field: PreferencesField) {
-        let (url, choice) = match field {
-            PreferencesField::PypiMirror => (
-                PreferencesControlId::PypiUrl,
-                PreferencesControlId::PypiChoice,
-            ),
-            PreferencesField::GithubMirror => (
-                PreferencesControlId::GithubUrl,
-                PreferencesControlId::GithubChoice,
-            ),
-            PreferencesField::NpmMirror => (
-                PreferencesControlId::NpmUrl,
-                PreferencesControlId::NpmChoice,
-            ),
-            PreferencesField::BashPath => return,
-        };
-        if self.focused == url && !self.has_control(url) {
-            self.focused = choice;
-        }
-    }
-
     fn move_focus(&mut self, delta: isize) {
         let controls = self.controls();
         let current = controls
             .iter()
             .position(|control| control.id == self.focused)
             .unwrap_or_default();
-        let next = if delta.is_negative() {
-            current.saturating_sub(delta.unsigned_abs())
-        } else {
-            current
-                .saturating_add(delta as usize)
-                .min(controls.len().saturating_sub(1))
-        };
+        let next = current
+            .saturating_add_signed(delta)
+            .min(controls.len().saturating_sub(1));
         if let Some(control) = controls.get(next) {
             self.focused = control.id;
         }
@@ -993,7 +966,7 @@ mod tests {
 
     use skit_application::preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesField, PreferencesSnapshot,
+        PreferencesDraft, PreferencesError, PreferencesField, PreferencesSnapshot,
     };
     use skit_application::{AgentScope, AgentTarget};
 
@@ -1177,40 +1150,222 @@ mod tests {
         let form = view
             .control(PreferencesControlId::InteractiveForm)
             .expect("interactive-form control");
-        let PreferencesControlKind::Choice(choice) = &form.kind else {
-            panic!("interactive form must be a choice");
-        };
-        assert_eq!(
-            choice
-                .options
-                .iter()
-                .map(|option| (option.value.as_str(), option.label.as_str()))
-                .collect::<Vec<_>>(),
-            [
-                ("tui", "Mini form — opens in place, fully clickable"),
-                (
-                    "plain",
-                    "Line-by-line prompts — plainest, best over slow terminals",
-                ),
-            ]
-        );
+        assert!(matches!(
+            &form.kind,
+            PreferencesControlKind::Choice(choice)
+                if choice.options.iter().map(|option| (option.value.as_str(), option.label.as_str())).collect::<Vec<_>>()
+                    == [
+                        ("tui", "Mini form — opens in place, fully clickable"),
+                        ("plain", "Line-by-line prompts — plainest, best over slow terminals"),
+                    ]
+        ));
         let after = view
             .control(PreferencesControlId::AfterRun)
             .expect("after-run control");
-        let PreferencesControlKind::Choice(choice) = &after.kind else {
-            panic!("after-run must be a choice");
-        };
+        assert!(matches!(
+            &after.kind,
+            PreferencesControlKind::Choice(choice)
+                if choice.options.iter().map(|option| option.label.as_str()).collect::<Vec<_>>()
+                    == [
+                        "Quit skit — leave the run's output in the terminal",
+                        "Return to the Library immediately",
+                    ]
+        ));
+    }
+
+    #[test]
+    fn every_preference_action_keeps_typed_focus_validation_and_serialization() {
+        let mut view = view(true);
+        assert_eq!(view.sections()[5].id, PreferencesSectionId::Bash);
+
+        for (action, focused) in [
+            (
+                PreferencesAction::SetLanguage("zh-TW".to_owned()),
+                PreferencesControlId::Language,
+            ),
+            (
+                PreferencesAction::SetInteractiveForm(InteractiveFormChoice::Plain),
+                PreferencesControlId::InteractiveForm,
+            ),
+            (
+                PreferencesAction::SetAfterRun(AfterRunChoice::Stay),
+                PreferencesControlId::AfterRun,
+            ),
+            (
+                PreferencesAction::SetJavascript(JavascriptChoice::Deno),
+                PreferencesControlId::Javascript,
+            ),
+            (
+                PreferencesAction::SetBashPath("C:/Git/bin/bash.exe".to_owned()),
+                PreferencesControlId::BashPath,
+            ),
+            (
+                PreferencesAction::SetMirrorMaster(false),
+                PreferencesControlId::MirrorMaster,
+            ),
+        ] {
+            assert_eq!(view.update(action), PreferencesEffect::None);
+            assert_eq!(view.focused(), focused);
+            let encoded = serde_json::to_vec(&view).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<PreferencesView>(&encoded).unwrap(),
+                view
+            );
+        }
+        assert_eq!(view.draft().language, "zh-TW");
+        assert_eq!(view.draft().form, InteractiveFormChoice::Plain);
+        assert_eq!(view.draft().after_run, AfterRunChoice::Stay);
+        assert_eq!(view.draft().javascript, JavascriptChoice::Deno);
+        assert!(!view.draft().mirror_master);
+        let controls = view.controls();
+        assert!(matches!(
+            controls.iter().find(|control| control.id == PreferencesControlId::InteractiveForm).map(|control| &control.kind),
+            Some(PreferencesControlKind::Choice(choice)) if choice.selected == "plain"
+        ));
+        assert!(matches!(
+            controls.iter().find(|control| control.id == PreferencesControlId::AfterRun).map(|control| &control.kind),
+            Some(PreferencesControlKind::Choice(choice)) if choice.selected == "stay"
+        ));
+        assert!(matches!(
+            controls.iter().find(|control| control.id == PreferencesControlId::Javascript).map(|control| &control.kind),
+            Some(PreferencesControlKind::Choice(choice)) if choice.selected == "deno"
+        ));
+        assert!(matches!(
+            controls.iter().find(|control| control.id == PreferencesControlId::MirrorMaster).map(|control| &control.kind),
+            Some(PreferencesControlKind::Choice(choice)) if choice.selected == "off"
+        ));
+
+        for (runtime, expected) in [
+            (JavascriptChoice::Bun, "bun"),
+            (JavascriptChoice::Node, "node"),
+        ] {
+            view.update(PreferencesAction::SetJavascript(runtime));
+            assert!(matches!(
+                view.control(PreferencesControlId::Javascript).map(|control| control.kind),
+                Some(PreferencesControlKind::Choice(choice)) if choice.selected == expected
+            ));
+        }
+
+        view.update(PreferencesAction::ChooseMirror {
+            field: PreferencesField::NpmMirror,
+            choice: MirrorChoice::Custom,
+        });
+        assert_eq!(view.focused(), PreferencesControlId::NpmChoice);
+        assert!(view.has_control(PreferencesControlId::NpmUrl));
+        view.update(PreferencesAction::SetMirrorUrl {
+            field: PreferencesField::NpmMirror,
+            value: "https://npm.example".to_owned(),
+        });
+        assert_eq!(view.focused(), PreferencesControlId::NpmUrl);
+        assert_eq!(view.draft().npm_url, "https://npm.example");
+        view.update(PreferencesAction::ChooseMirror {
+            field: PreferencesField::NpmMirror,
+            choice: MirrorChoice::Off,
+        });
+        assert_eq!(view.focused(), PreferencesControlId::NpmChoice);
+        assert!(!view.has_control(PreferencesControlId::NpmUrl));
+
+        view.update(PreferencesAction::ChooseMirror {
+            field: PreferencesField::PypiMirror,
+            choice: MirrorChoice::Preset("tsinghua".to_owned()),
+        });
+        assert!(matches!(
+            view.control(PreferencesControlId::PypiChoice).map(|control| control.kind),
+            Some(PreferencesControlKind::Choice(choice)) if choice.selected == "tsinghua"
+        ));
+        view.update(PreferencesAction::ChooseMirror {
+            field: PreferencesField::PypiMirror,
+            choice: MirrorChoice::Custom,
+        });
+        view.update(PreferencesAction::SetMirrorUrl {
+            field: PreferencesField::PypiMirror,
+            value: "https://pypi.example/simple".to_owned(),
+        });
+        assert_eq!(view.focused(), PreferencesControlId::PypiUrl);
+        assert_eq!(view.draft().pypi_url, "https://pypi.example/simple");
+        view.update(PreferencesAction::SetMirrorUrl {
+            field: PreferencesField::GithubMirror,
+            value: "https://github.example".to_owned(),
+        });
+        assert_eq!(view.draft().github_url, "https://github.example");
+
+        let before = serde_json::to_value(&view).unwrap();
         assert_eq!(
-            choice
-                .options
-                .iter()
-                .map(|option| option.label.as_str())
-                .collect::<Vec<_>>(),
-            [
-                "Quit skit — leave the run's output in the terminal",
-                "Return to the Library immediately",
-            ]
+            view.update(PreferencesAction::ChooseMirror {
+                field: PreferencesField::BashPath,
+                choice: MirrorChoice::Off,
+            }),
+            PreferencesEffect::None
         );
+        assert_eq!(serde_json::to_value(&view).unwrap(), before);
+        assert_eq!(
+            view.update(PreferencesAction::SetMirrorUrl {
+                field: PreferencesField::BashPath,
+                value: "ignored".to_owned(),
+            }),
+            PreferencesEffect::None
+        );
+        assert_eq!(serde_json::to_value(&view).unwrap(), before);
+
+        for (field, choice, expected_focus) in [
+            (
+                PreferencesField::PypiMirror,
+                MirrorChoice::Custom,
+                PreferencesControlId::PypiUrl,
+            ),
+            (
+                PreferencesField::GithubMirror,
+                MirrorChoice::Off,
+                PreferencesControlId::GithubChoice,
+            ),
+            (
+                PreferencesField::NpmMirror,
+                MirrorChoice::Custom,
+                PreferencesControlId::NpmUrl,
+            ),
+        ] {
+            view.update(PreferencesAction::ChooseMirror { field, choice });
+            assert_eq!(
+                view.update(PreferencesAction::ValidationFailed(
+                    PreferencesError::CustomUrlRequired { field },
+                )),
+                PreferencesEffect::None
+            );
+            assert_eq!(view.focused(), expected_focus);
+            assert_eq!(view.error().map(PreferencesError::field), Some(field));
+        }
+        for (field, expected_focus) in [
+            (
+                PreferencesField::PypiMirror,
+                PreferencesControlId::PypiChoice,
+            ),
+            (PreferencesField::NpmMirror, PreferencesControlId::NpmChoice),
+        ] {
+            view.update(PreferencesAction::ChooseMirror {
+                field,
+                choice: MirrorChoice::Off,
+            });
+            view.update(PreferencesAction::ValidationFailed(
+                PreferencesError::CustomUrlRequired { field },
+            ));
+            assert_eq!(view.focused(), expected_focus);
+        }
+        assert_eq!(
+            view.update(PreferencesAction::ValidationFailed(
+                PreferencesError::BashPathMissing {
+                    path: "C:/missing/bash.exe".to_owned(),
+                },
+            )),
+            PreferencesEffect::None
+        );
+        assert_eq!(view.focused(), PreferencesControlId::BashPath);
+        view.update(PreferencesAction::SetBashPath(
+            "C:/Git/bin/bash.exe".to_owned(),
+        ));
+        assert!(view.error().is_none());
+
+        view.update(PreferencesAction::Next);
+        assert_ne!(view.focused(), PreferencesControlId::BashPath);
     }
 
     #[test]
@@ -1287,6 +1442,7 @@ mod tests {
                 base: PathBuf::from("/work/.codex"),
             },
         ]));
+        assert_eq!(view.agent_skill_install().unwrap().targets().len(), 2);
         assert_eq!(view.agent_skill_install().unwrap().selected(), Some(0));
 
         assert_eq!(

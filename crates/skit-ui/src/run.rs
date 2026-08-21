@@ -846,12 +846,12 @@ impl RunFormView {
         let Some(field) = self.fields.get_mut(index) else {
             return;
         };
-        if !field.resettable() {
-            return;
-        }
         let Some(value) = field.default.clone() else {
             return;
         };
+        if !field.resettable() {
+            return;
+        }
         field.control.set_value(&value);
         field.validation_error = None;
     }

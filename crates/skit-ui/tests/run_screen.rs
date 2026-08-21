@@ -7,9 +7,9 @@ use skit_domain::{
 };
 use skit_ui::{
     Action, CommandContext, Effect, FormControl, FormInputKind, FormPurpose, LibraryState,
-    ModalState, RunFieldRole, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
-    RunPathInsertMode, RunTokenOption, RunValidationError, RunnerEditorOwner, Screen, UiCommand,
-    UiKey, command_specs,
+    ModalState, RunDegradationNotice, RunFieldRole, RunFormContext, RunFormOptions, RunFormView,
+    RunPathContext, RunPathInsertMode, RunTokenOption, RunValidationError, RunnerEditorOwner,
+    Screen, UiCommand, UiKey, command_specs,
 };
 use skit_ui::{FieldValue, TypedValue};
 
@@ -704,6 +704,170 @@ fn reset_restores_only_defaults_that_the_main_form_can_represent() {
     assert!(fields[0].resettable());
     assert_eq!(fields[1].control.value(), "");
     assert!(!fields[1].resettable());
+}
+
+#[test]
+fn run_edge_actions_keep_typed_values_and_refuse_corrupt_choice_state() {
+    for (option, insertion) in [
+        (RunTokenOption::FileOrFolder, None),
+        (RunTokenOption::Environment, None),
+        (RunTokenOption::RuntimeDirectory, Some("{cwd}")),
+        (
+            RunTokenOption::FixedDirectory {
+                path: "/invoke".to_owned(),
+            },
+            Some("/invoke"),
+        ),
+        (RunTokenOption::Today, Some("{today}")),
+        (RunTokenOption::Now, Some("{now}")),
+        (RunTokenOption::Home, Some("~")),
+    ] {
+        assert_eq!(option.insertion(), insertion);
+    }
+
+    let mut amount = ParamDecl::new("amount");
+    amount.parameter_type = ParameterType::Float;
+    amount.default = Some(ParameterValue::Float(1.5));
+    let mut mode = ParamDecl::new("mode");
+    mode.parameter_type = ParameterType::Choice;
+    mode.choices = vec!["safe".to_owned(), "fast".to_owned()];
+    let presets = BTreeMap::from([(
+        "bad".to_owned(),
+        BTreeMap::from([("mode".to_owned(), "missing".to_owned())]),
+    )]);
+    let mut form = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[amount, mode],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &presets,
+        "",
+    )
+    .with_options(RunFormOptions {
+        fixed_values: BTreeMap::from([("fixed".to_owned(), "kept".to_owned())]),
+        ..RunFormOptions::default()
+    });
+    form.degraded_reason = Some("dynamic parser".to_owned());
+    assert_eq!(
+        form.degradation_notice(),
+        Some(RunDegradationNotice::DynamicArguments)
+    );
+    form.degraded_reason = Some("subcommands".to_owned());
+    assert_eq!(
+        form.degradation_notice(),
+        Some(RunDegradationNotice::Subcommands)
+    );
+    assert_eq!(form.fields()[1].default.as_deref(), Some("1.5"));
+    assert!(form.focused_token_options().is_none());
+
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Run(Box::new(form))));
+    state.update(Action::FocusField(1));
+    state.update(Action::Input('x'));
+    state.update(Action::Backspace);
+    assert_eq!(state.run_form().unwrap().fields()[1].control.value(), "1.5");
+    let before_choice = state.run_form().unwrap().fields()[2].control.clone();
+    state.update(Action::FocusField(2));
+    state.update(Action::SelectFieldOption {
+        field: 2,
+        value: "missing".to_owned(),
+    });
+    assert_eq!(state.run_form().unwrap().fields()[2].control, before_choice);
+    state.update(Action::SelectFieldOption {
+        field: 0,
+        value: "bad".to_owned(),
+    });
+    assert_eq!(state.run_form().unwrap().fields()[2].control, before_choice);
+    state.update(Action::ResetRunField(2));
+    state.update(Action::ResetRunField(99));
+    state.update(Action::SetRunGlobCount {
+        field: 99,
+        value: "missing".to_owned(),
+        count: 1,
+    });
+    state.update(Action::SetRunPickedPathAndCloseModal {
+        field: 99,
+        path: "missing".to_owned(),
+    });
+    assert_eq!(state.run_form().unwrap().fields()[2].control, before_choice);
+
+    state.update(Action::OpenRunPresetSave);
+    state.update(Action::SetModalInput("fresh".to_owned()));
+    assert!(matches!(
+        state.update(Action::Submit),
+        Effect::SaveRunPreset { values, .. }
+            if values.get("fixed").is_some_and(|value| value == "kept")
+    ));
+    state.update(Action::RunPresetSaved {
+        name: "fresh".to_owned(),
+        presets: BTreeMap::from([(
+            "fresh".to_owned(),
+            BTreeMap::from([("amount".to_owned(), "2.5".to_owned())]),
+        )]),
+        message: "saved".to_owned(),
+    });
+    assert!(
+        state
+            .run_form()
+            .unwrap()
+            .preset_names()
+            .any(|name| name == "fresh")
+    );
+
+    let mut encoded = serde_json::to_value(state.run_form().unwrap()).unwrap();
+    encoded["fields"][2]["control"]["choice"]["selected"] =
+        serde_json::Value::String("corrupt".to_owned());
+    let corrupt: RunFormView = serde_json::from_value(encoded).unwrap();
+    let mut corrupt_state = LibraryState::default();
+    corrupt_state.update(Action::Present(Screen::Run(Box::new(corrupt))));
+    assert_eq!(corrupt_state.update(Action::Submit), Effect::None);
+    assert_eq!(
+        corrupt_state.run_form().unwrap().fields()[2].validation_error,
+        Some(RunValidationError::InvalidChoice)
+    );
+
+    let environment_form = RunFormView::from_declarations(
+        "env-demo",
+        "Env Demo",
+        &[ParamDecl::new("value")],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: None,
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: None,
+            env: BTreeMap::from([
+                ("HOME_PATH".to_owned(), "/home/demo".to_owned()),
+                ("PATH".to_owned(), "/bin".to_owned()),
+            ]),
+            today: "2026-08-08".to_owned(),
+            now: "10-11-12".to_owned(),
+        },
+    });
+    let mut environment_state = LibraryState::default();
+    environment_state.update(Action::Present(Screen::Run(Box::new(environment_form))));
+    environment_state.update(Action::OpenRunTokenMenuFor(0));
+    environment_state.update(Action::OpenRunEnvironmentPicker(0));
+    environment_state.update(Action::SetRunEnvironmentQuery(String::new()));
+    assert!(matches!(
+        environment_state.modal(),
+        Some(ModalState::RunEnvironmentPicker { visible, .. })
+            if visible == &["HOME_PATH", "PATH"]
+    ));
+    environment_state.update(Action::SetRunEnvironmentQuery("path".to_owned()));
+    assert!(matches!(
+        environment_state.modal(),
+        Some(ModalState::RunEnvironmentPicker { visible, .. })
+            if visible == &["PATH", "HOME_PATH"]
+    ));
 }
 
 #[test]
