@@ -438,9 +438,14 @@ fn doctor_rebuild_prints_registered_corruption_warnings_in_every_locale_without_
         let sandbox = Sandbox::new();
         sandbox.install_private_uv_probe();
         sandbox.ok(&["add", "--cmd", "true", "--name", "Broken", "--no-input"]);
+        sandbox.ok(&["add", "--cmd", "true", "--name", "Good", "--no-input"]);
         let meta = sandbox.data.path().join("scripts/broken/meta.toml");
-        fs::write(&meta, b"name = [broken").unwrap();
+        let mut corrupt = fs::read(&meta).unwrap();
+        corrupt.extend_from_slice(b"dependencies = 5\n");
+        fs::write(&meta, corrupt).unwrap();
         let meta_before = fs::read(&meta).unwrap();
+        let good_meta = sandbox.data.path().join("scripts/good/meta.toml");
+        let good_meta_before = fs::read(&good_meta).unwrap();
         let registry_path = sandbox.data.path().join("registry.toml");
         let registry_before = fs::read(&registry_path).unwrap();
         assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
@@ -461,12 +466,18 @@ fn doctor_rebuild_prints_registered_corruption_warnings_in_every_locale_without_
         );
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(text.contains(expected), "locale={locale}\n{text}");
+        assert!(text.contains("dependencies"), "locale={locale}\n{text}");
         assert_eq!(fs::read(&meta).unwrap(), meta_before);
+        assert_eq!(fs::read(&good_meta).unwrap(), good_meta_before);
         assert_ne!(
             fs::read(&registry_path).unwrap(),
             registry_before,
             "the explicit rebuild must replace its derived registry"
         );
+        let listing = sandbox.json(&["list", "--json"]);
+        let rows = listing.as_array().unwrap();
+        assert_eq!(rows.len(), 1, "locale={locale}: {listing}");
+        assert_eq!(rows[0]["name"], "Good", "locale={locale}: {listing}");
         assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
         assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
         assert_eq!(fs::read_dir(meta.parent().unwrap()).unwrap().count(), 1);
