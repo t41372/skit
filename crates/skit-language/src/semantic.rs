@@ -1059,17 +1059,16 @@ fn filename_literals(document: &ParsedDocument) -> Vec<String> {
         if node.kind() != "call" {
             return;
         }
-        let Some(arguments) = node.child_by_field_name("arguments") else {
-            return;
-        };
+        let arguments = node
+            .child_by_field_name("arguments")
+            .expect("a parsed Python call has an argument list");
         for argument in named_children(arguments) {
             let value_node = if argument.kind() == "keyword_argument" {
-                argument.child_by_field_name("value")
+                argument
+                    .child_by_field_name("value")
+                    .expect("a parsed keyword argument has a value")
             } else {
-                Some(argument)
-            };
-            let Some(value_node) = value_node else {
-                continue;
+                argument
             };
             let Some(PythonLiteral::Value(ParameterValue::String(value))) =
                 python_literal(document, value_node)
@@ -1130,8 +1129,8 @@ fn imported_frameworks(document: &ParsedDocument) -> Vec<String> {
 }
 
 fn imported_roots(document: &ParsedDocument, statement: tree_sitter::Node<'_>) -> Vec<String> {
-    match statement.kind() {
-        "import_statement" => children_by_field_name(statement, "name")
+    if statement.kind() == "import_statement" {
+        children_by_field_name(statement, "name")
             .into_iter()
             .filter_map(|name| {
                 let module = if name.kind() == "aliased_import" {
@@ -1141,14 +1140,15 @@ fn imported_roots(document: &ParsedDocument, statement: tree_sitter::Node<'_>) -
                 };
                 first_identifier(document, module)
             })
-            .collect(),
-        "import_from_statement" => statement
+            .collect()
+    } else {
+        debug_assert_eq!(statement.kind(), "import_from_statement");
+        statement
             .child_by_field_name("module_name")
             .filter(|module| module.kind() != "relative_import")
             .and_then(|module| first_identifier(document, module))
             .into_iter()
-            .collect(),
-        _ => Vec::new(),
+            .collect()
     }
 }
 
@@ -1190,7 +1190,19 @@ fn scope_binds_input(document: &ParsedDocument, scope: tree_sitter::Node<'_>) ->
     {
         return true;
     }
-    let body = scope.child_by_field_name("body").unwrap_or(scope);
+    let body = if matches!(
+        scope.kind(),
+        "list_comprehension"
+            | "set_comprehension"
+            | "dictionary_comprehension"
+            | "generator_expression"
+    ) {
+        // A comprehension target is a sibling of its element expression in the syntax tree, but
+        // both share the comprehension's local scope.
+        scope
+    } else {
+        scope.child_by_field_name("body").unwrap_or(scope)
+    };
     body_binds_name(document, body, "input", body.id() == scope.id())
 }
 
@@ -1295,6 +1307,9 @@ fn target_binds_name(
 ) -> bool {
     if node.kind() == "identifier" {
         return text(document, node) == expected;
+    }
+    if matches!(node.kind(), "attribute" | "subscript") {
+        return false;
     }
     named_children(node)
         .into_iter()
@@ -1790,9 +1805,11 @@ fn parameter_name_node(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<
                     .find(|child| child.kind() == "identifier")
             })
         }
-        "list_splat" | "dictionary_splat" => named_children(node)
-            .into_iter()
-            .find(|child| child.kind() == "identifier"),
+        "list_splat" | "dictionary_splat" | "list_splat_pattern" | "dictionary_splat_pattern" => {
+            named_children(node)
+                .into_iter()
+                .find(|child| child.kind() == "identifier")
+        }
         _ => None,
     }
 }
@@ -1848,14 +1865,9 @@ fn decorated_functions(document: &ParsedDocument) -> Vec<DecoratedFunction<'_>> 
             return;
         }
         let children = named_children(node);
-        let Some(function) = node.child_by_field_name("definition").or_else(|| {
-            children
-                .iter()
-                .copied()
-                .find(|child| child.kind() == "function_definition")
-        }) else {
-            return;
-        };
+        let function = node
+            .child_by_field_name("definition")
+            .expect("a parsed decorated definition has a definition");
         let decorators = children
             .into_iter()
             .filter(|child| child.kind() == "decorator")
@@ -2958,6 +2970,81 @@ mod tests {
         assert_eq!(read_radix(&mut short, 2, 16), None);
         let mut invalid = "gg".chars().peekable();
         assert_eq!(read_radix(&mut invalid, 2, 16), None);
+    }
+
+    #[test]
+    fn python_input_binding_targets_cover_comprehensions_decorators_and_attributes() {
+        for source in [
+            "values = [input() for input in items]\n",
+            "def outer(*input, **rest):\n    return input()\n",
+            "class input:\n    pass\ninput()\n",
+            "@decorator\ndef input():\n    pass\ninput()\n",
+            "for input in values:\n    pass\ninput()\n",
+            "(input := factory())\ninput()\n",
+        ] {
+            let ParseOutcome::Parsed(document) = parse_document("python", source) else {
+                panic!("the binding fixture must parse");
+            };
+            assert!(
+                document
+                    .analysis()
+                    .candidates
+                    .iter()
+                    .all(|candidate| candidate.declaration.binding != ParameterBinding::Input),
+                "{source}"
+            );
+        }
+
+        for source in [
+            "obj.input = replacement\ninput()\n",
+            "values[input] = replacement\ninput()\n",
+        ] {
+            let ParseOutcome::Parsed(document) = parse_document("python", source) else {
+                panic!("the nonbinding fixture must parse");
+            };
+            assert_eq!(
+                document
+                    .analysis()
+                    .candidates
+                    .iter()
+                    .filter(|candidate| candidate.declaration.binding == ParameterBinding::Input)
+                    .count(),
+                1,
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_constant_binding_counts_distinguish_real_targets_from_attribute_reads() {
+        let source = concat!(
+            "CLEAN = 1\n",
+            "obj.CLEAN = 2\n",
+            "items[CLEAN] = 3\n",
+            "LAMBDA = 4\n",
+            "callback = lambda LAMBDA: LAMBDA\n",
+            "STAR = 5\n",
+            "KW = 6\n",
+            "def consume(*STAR, **KW):\n    return STAR, KW\n",
+        );
+        let ParseOutcome::Parsed(document) = parse_document("python", source) else {
+            panic!("the constant fixture must parse");
+        };
+
+        let environment = constant_environment(&document);
+        assert_eq!(environment.get("CLEAN"), Some(&ParameterValue::Integer(1)));
+        assert!(!environment.contains_key("LAMBDA"));
+        assert!(!environment.contains_key("STAR"));
+        assert!(!environment.contains_key("KW"));
+    }
+
+    #[test]
+    fn typed_python_strings_escape_tabs_and_unicode_line_boundaries() {
+        let declaration = ParamDecl::new("VALUE");
+        assert_eq!(
+            typed_python_literal(&declaration, "left\tright\u{2029}tail").unwrap(),
+            "'left\\tright\\u2029tail'"
+        );
     }
 
     #[test]
