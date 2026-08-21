@@ -38,8 +38,9 @@ use std::{
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
     process::Output,
+    sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -105,6 +106,36 @@ fn combined(output: &Output) -> String {
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     text
+}
+
+fn tree_snapshot(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let relative = path.strip_prefix(root).unwrap().to_owned();
+            if path.is_dir() {
+                output.push((relative, None));
+                visit(root, &path, output);
+            } else {
+                output.push((relative, Some(fs::read(path).unwrap())));
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
+}
+
+fn sandbox_snapshot(sandbox: &Sandbox) -> [Vec<(PathBuf, Option<Vec<u8>>)>; 5] {
+    [
+        tree_snapshot(sandbox.data.path()),
+        tree_snapshot(sandbox.state.path()),
+        tree_snapshot(sandbox.config.path()),
+        tree_snapshot(sandbox.home.path()),
+        tree_snapshot(sandbox.project.path()),
+    ]
 }
 
 /// Resolve one named target through the public plan and return its `skills_dir`.
@@ -396,57 +427,42 @@ fn test_cli_bare_non_interactive_refuses() {
     // assert_cmd's stdin is not a tty, so bare mode is non-interactive: it refuses (exit 2) rather
     // than guessing, and writes nothing anywhere.
     let sandbox = Sandbox::new();
+    let before = sandbox_snapshot(&sandbox);
     sandbox
         .command()
         .args(["agent", "install"])
         .assert()
         .code(2);
-    assert_eq!(fs::read_dir(sandbox.home.path()).unwrap().count(), 0);
+    assert_eq!(sandbox_snapshot(&sandbox), before);
 }
 
 #[test]
 fn test_cli_bare_interactive_no_candidates_exits_1() {
     // Interactive (pty) but no marker directories exist: exit 1, and the message steers to --to.
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    let data = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
-    let config = TempDir::new().unwrap();
-    let (code, output) = run_agent_install_pty(
-        home.path(),
-        project.path(),
-        data.path(),
-        state.path(),
-        config.path(),
-        &[],
-    );
+    let sandbox = Sandbox::new();
+    let before = sandbox_snapshot(&sandbox);
+    let (code, output) = run_agent_install_pty(&sandbox, "en", &[]);
     assert_eq!(code, 1, "{output}");
     assert!(output.contains("--to"), "{output}");
+    assert_eq!(sandbox_snapshot(&sandbox), before);
 }
 
 #[test]
 fn test_cli_bare_interactive_picks_and_confirms() {
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    let data = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
-    let config = TempDir::new().unwrap();
-    fs::create_dir(home.path().join(".claude")).unwrap();
-    fs::create_dir(project.path().join(".agents")).unwrap();
+    let sandbox = Sandbox::new();
+    fs::create_dir(sandbox.home.path().join(".claude")).unwrap();
+    fs::create_dir(sandbox.project.path().join(".agents")).unwrap();
     let (code, output) = run_agent_install_pty(
-        home.path(),
-        project.path(),
-        data.path(),
-        state.path(),
-        config.path(),
-        &[b"2\n", b"y\n"],
+        &sandbox,
+        "en",
+        &[("Install where?", b"2\n"), ("Write the skill into", b"y\n")],
     );
     assert_eq!(code, 0, "{output}");
     // The menu text is part of the contract a mouse-less user reads. `_agent_pick_target`'s exact
     // pin is white-box, so it is salvaged here as full-line assertions. The pty rewrites \n to
     // \r\n, so each line is matched on its own, never across a boundary.
-    let claude_skills = home.path().join(".claude").join("skills");
-    let agents_skills = project.path().join(".agents").join("skills");
+    let claude_skills = sandbox.home.path().join(".claude").join("skills");
+    let agents_skills = sandbox.project.path().join(".agents").join("skills");
     assert!(
         output.contains("Agent directories on this machine:"),
         "{output}"
@@ -470,19 +486,13 @@ fn test_cli_bare_interactive_picks_and_confirms() {
 
 #[test]
 fn test_cli_bare_interactive_backing_out_writes_nothing() {
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    let data = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
-    let config = TempDir::new().unwrap();
-    fs::create_dir(home.path().join(".claude")).unwrap();
+    let sandbox = Sandbox::new();
+    fs::create_dir(sandbox.home.path().join(".claude")).unwrap();
+    let before = sandbox_snapshot(&sandbox);
     let (code, output) = run_agent_install_pty(
-        home.path(),
-        project.path(),
-        data.path(),
-        state.path(),
-        config.path(),
-        &[b"1\n", b"n\n"],
+        &sandbox,
+        "en",
+        &[("Install where?", b"1\n"), ("Write the skill into", b"n\n")],
     );
     assert_eq!(code, 0, "{output}");
     assert!(
@@ -490,9 +500,89 @@ fn test_cli_bare_interactive_backing_out_writes_nothing() {
         "{output}"
     );
     assert!(
-        !home.path().join(".claude").join("skills").exists(),
+        !sandbox.home.path().join(".claude").join("skills").exists(),
         "{output}"
     );
+    assert_eq!(sandbox_snapshot(&sandbox), before);
+}
+
+#[test]
+fn test_cli_bare_interactive_default_reprompt_and_eof_are_localized() {
+    for (locale, install_prompt, invalid, confirm, cancelled, aborted) in [
+        (
+            "en",
+            "Install where?",
+            "Choose a number from 1 to 2.",
+            "Write the skill into",
+            "Cancelled — nothing was written.",
+            "operation cancelled",
+        ),
+        (
+            "zh-CN",
+            "安装到哪里？",
+            "请选择 1 到 2 之间的数字。",
+            "将 Skill 写入",
+            "已取消，未写入任何内容。",
+            "操作已取消",
+        ),
+        (
+            "zh-TW",
+            "要安裝到哪裡？",
+            "請選擇 1 到 2 之間的數字。",
+            "要將 Skill 寫入",
+            "已取消，未寫入任何內容。",
+            "操作已取消",
+        ),
+    ] {
+        let single = Sandbox::new();
+        fs::create_dir(single.home.path().join(".claude")).unwrap();
+        let data_before = tree_snapshot(single.data.path());
+        let state_before = tree_snapshot(single.state.path());
+        let config_before = tree_snapshot(single.config.path());
+        let project_before = tree_snapshot(single.project.path());
+        let (code, output) = run_agent_install_pty(
+            &single,
+            locale,
+            &[(install_prompt, b"\n"), (confirm, b"y\n")],
+        );
+        assert_eq!(code, 0, "{locale}: {output}");
+        assert!(output.contains("[1-1]"), "{locale}: {output}");
+        assert_eq!(tree_snapshot(single.data.path()), data_before);
+        assert_eq!(tree_snapshot(single.state.path()), state_before);
+        assert_eq!(tree_snapshot(single.config.path()), config_before);
+        assert_eq!(tree_snapshot(single.project.path()), project_before);
+        assert_eq!(
+            fs::read(single.home.path().join(".claude/skills/skit/SKILL.md")).unwrap(),
+            BUNDLED_SKILL.as_bytes()
+        );
+
+        let eof = Sandbox::new();
+        fs::create_dir(eof.home.path().join(".claude")).unwrap();
+        let before = sandbox_snapshot(&eof);
+        let (code, output) = run_agent_install_pty(&eof, locale, &[(install_prompt, b"\x04")]);
+        assert_eq!(code, 130, "{locale}: {output}");
+        assert!(output.contains(aborted), "{locale}: {output}");
+        assert_eq!(sandbox_snapshot(&eof), before);
+
+        let reprompt = Sandbox::new();
+        fs::create_dir(reprompt.home.path().join(".claude")).unwrap();
+        fs::create_dir(reprompt.project.path().join(".agents")).unwrap();
+        let before = sandbox_snapshot(&reprompt);
+        let (code, output) = run_agent_install_pty(
+            &reprompt,
+            locale,
+            &[
+                (install_prompt, b"9\n"),
+                (invalid, b""),
+                (install_prompt, b"2\n"),
+                (confirm, b"n\n"),
+            ],
+        );
+        assert_eq!(code, 0, "{locale}: {output}");
+        assert!(output.contains(invalid), "{locale}: {output}");
+        assert!(output.contains(cancelled), "{locale}: {output}");
+        assert_eq!(sandbox_snapshot(&reprompt), before);
+    }
 }
 
 #[test]
@@ -511,18 +601,14 @@ fn test_agent_pick_target_backing_out_returns_none() {
 // --------------------------------------------------------------------------
 // pty harness for the interactive bare-mode lanes
 //
-// Timing copied verbatim from `terminal_pty.rs::run_pty_configured` (the proven-non-flaky
-// configuration): 40ms settle, 120ms per input chunk, no cursor-query answer, and the slave is
-// dropped before the reader thread starts.
+// Each answer waits for the prompt that owns it. This keeps invalid-input reprompts and EOF
+// behavior deterministic without guessing how long the child takes to start.
 // --------------------------------------------------------------------------
 
 fn run_agent_install_pty(
-    home: &Path,
-    cwd: &Path,
-    data: &Path,
-    state: &Path,
-    config: &Path,
-    input: &[&[u8]],
+    sandbox: &Sandbox,
+    locale: &str,
+    input: &[(&str, &[u8])],
 ) -> (u32, String) {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -535,33 +621,61 @@ fn run_agent_install_pty(
     let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
     command.args(["agent", "install"]);
     command.env("TERM", "xterm-256color");
-    command.env("SKIT_LANG", "en");
-    command.env("SKIT_DATA_DIR", data);
-    command.env("SKIT_STATE_DIR", state);
-    command.env("SKIT_CONFIG_DIR", config);
-    command.env("HOME", home);
-    command.env("USERPROFILE", home);
-    command.cwd(cwd);
+    command.env("SKIT_LANG", locale);
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("HOME", sandbox.home.path());
+    command.env("USERPROFILE", sandbox.home.path());
+    command.cwd(sandbox.project.path());
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader().unwrap();
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let reader_output = Arc::clone(&output);
     let drain = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).unwrap();
-        bytes
+        let mut bytes = [0_u8; 1024];
+        loop {
+            match reader.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => reader_output
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&bytes[..read]),
+            }
+        }
     });
     let mut writer = pair.master.take_writer().unwrap();
-    thread::sleep(Duration::from_millis(40));
-    for bytes in input {
-        thread::sleep(Duration::from_millis(120));
-        if writer.write_all(bytes).is_err() {
-            break;
+    let mut checkpoint = 0;
+    for (prompt, answer) in input {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let bytes = output.lock().unwrap();
+            let position = bytes[checkpoint..]
+                .windows(prompt.len())
+                .position(|window| window == prompt.as_bytes());
+            let shown = String::from_utf8_lossy(&bytes).into_owned();
+            drop(bytes);
+            if let Some(position) = position {
+                checkpoint += position + prompt.len();
+                break;
+            }
+            assert!(Instant::now() < deadline, "did not see {prompt:?}: {shown}");
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "child exited before {prompt:?}: {shown}"
+            );
+            thread::sleep(Duration::from_millis(10));
         }
-        let _ = writer.flush();
+        if !answer.is_empty() {
+            writer.write_all(answer).unwrap();
+            writer.flush().unwrap();
+        }
     }
     let status = child.wait().unwrap();
     drop(writer);
-    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    drain.join().unwrap();
+    let output = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
     (status.exit_code(), output)
 }
