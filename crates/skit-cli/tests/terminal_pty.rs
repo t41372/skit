@@ -1873,6 +1873,7 @@ fn inline_run_accepts_a_real_path_ghost_with_right_before_launch() {
     let config = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
     let marker = home.path().join("path-value.txt");
+    fs::write(home.path().join("d0.txt"), "stale-prefix decoy").unwrap();
     fs::write(home.path().join("data.csv"), "input").unwrap();
     write_path_completion_entry(data.path(), &marker);
     let data_before = tree_snapshot(data.path());
@@ -1889,9 +1890,14 @@ fn inline_run_accepts_a_real_path_ghost_with_right_before_launch() {
     );
     tui.answer_cursor_query_after(0);
     tui.wait_for("Run Path completion");
-    let typed = tui.checkpoint();
-    tui.send(b"da");
-    let _ = tui.wait_for_after(typed, "ta.csv");
+    // Type one real key at a time. `d0.txt` makes the old `d` ghost disjoint from the current
+    // `data.csv` ghost, so even PTY bytes delivered after a checkpoint cannot impersonate `da`.
+    let typed_d = tui.checkpoint();
+    tui.send(b"d");
+    let _ = tui.wait_for_after(typed_d, "0.txt");
+    let typed_a = tui.checkpoint();
+    tui.send(b"a");
+    let _ = tui.wait_for_after(typed_a, "ta.csv");
     assert_eq!(tree_snapshot(data.path()), data_before);
     assert_eq!(tree_snapshot(state.path()), state_before);
     assert_eq!(tree_snapshot(config.path()), config_before);
