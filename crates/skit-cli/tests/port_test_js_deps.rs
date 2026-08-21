@@ -58,10 +58,13 @@ use skit_application::{
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_language::external_dependencies;
 use skit_runtime::{
-    DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, JavaScriptModuleType,
-    ProgramProbe, clear_javascript_dependencies, ensure_javascript_dependencies_for_module,
+    DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
+    JavaScriptModuleType, ProgramProbe, clear_javascript_dependencies,
+    ensure_javascript_dependencies_for_module,
+    ensure_javascript_dependencies_for_module_with_reporter,
     ensure_javascript_dependencies_with_environment, javascript_dependencies_need_install,
-    javascript_dependency_manifest, javascript_module_type, preflight_javascript_dependencies,
+    javascript_dependency_failure_detail, javascript_dependency_manifest, javascript_module_type,
+    preflight_javascript_dependencies,
 };
 use skit_store::{FileConfigStore, FileStore};
 
@@ -526,6 +529,14 @@ fn test_ensure_installed_installer_failure_carries_its_stderr() {
     );
     assert!(stderr.contains("Not Found - GET"), "{stderr}");
     assert!(stderr.contains("skit-no-such-pkg-e2e-xyz"), "{stderr}");
+    assert!(
+        stderr.starts_with("Installing dependencies (npm)…\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Installing dependencies failed (npm): npm error 404 Not Found - GET"),
+        "{stderr}"
+    );
     assert!(!stderr.contains("A complete log"), "{stderr}");
     assert_eq!(fs::read(&source_path).unwrap(), source_before);
     assert_eq!(fs::read(entry_dir.join("meta.toml")).unwrap(), meta_before);
@@ -1387,17 +1398,83 @@ fn test_install_lock_path_survives_entry_directory_removal() {}
 // Installer diagnostics, ANSI cleanup, clear locking, and TUI resilience
 // ============================================================================
 
-#[test]
-#[ignore = "ABSENT (library seam): _failure_detail extracts the most informative, ANSI-stripped cause line from real npm/deno/bun stderr, dropping log-pointer and hint boilerplate. The Rust runner discards stderr entirely. MUST-FIX: port _failure_detail. Python ref deps.py:255-313, test_js_deps.py:1350-1377."]
-fn test_failure_detail_against_real_installer_output() {}
+const REAL_NPM_E404: &[u8] = concat!(
+    "npm error code E404\n",
+    "npm error 404 Not Found - GET https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz - Not found\n",
+    "npm error 404\n",
+    "npm error 404  The requested resource 'skit-no-such-pkg-e2e-xyz@*' could not be found or you do not have permission to access it.\n",
+    "npm error 404 Note that you can also install from a\n",
+    "npm error 404 tarball, folder, http url, or git url.\n",
+    "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+)
+.as_bytes();
+
+const REAL_DENO_MISSING: &[u8] = concat!(
+    "\x1b[0m\x1b[32mDownload\x1b[0m https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz\n",
+    "\x1b[0m\x1b[1m\x1b[31merror\x1b[0m: npm package 'skit-no-such-pkg-e2e-xyz' does not exist.\n",
+)
+.as_bytes();
+
+const REAL_BUN_MISSING: &[u8] = concat!(
+    "Resolving dependencies\n",
+    "Resolved, downloaded and extracted [1]\n",
+    "error: GET https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz - 404\n",
+    "error: skit-no-such-pkg-e2e-xyz@* failed to resolve\n",
+)
+.as_bytes();
+
+const REAL_NPM_ERESOLVE: &[u8] = concat!(
+    "npm error code ERESOLVE\n",
+    "npm error ERESOLVE unable to resolve dependency tree\n",
+    "npm error Could not resolve dependency:\n",
+    "npm error Fix the upstream dependency conflict, or retry this command with --force.\n",
+    "npm error For a full report see:\n",
+    "npm error /tmp/eresolve-report.txt\n",
+    "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+)
+.as_bytes();
+
+const REAL_NPM_ECONNREFUSED: &[u8] = concat!(
+    "npm error code ECONNREFUSED\n",
+    "npm error FetchError: request to http://127.0.0.1:9/chalk failed, reason: connect ECONNREFUSED 127.0.0.1:9\n",
+    "npm error     at ClientRequest.emit (node:events:509:20)\n",
+    "npm error If you are behind a proxy, check npm help config\n",
+    "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+)
+.as_bytes();
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail names the missing package from each installer's stderr. No stderr channel on the Rust runner. MUST-FIX per above. Python ref test_js_deps.py:1380-1382."]
-fn test_failure_detail_names_the_missing_package() {}
+fn test_failure_detail_against_real_installer_output() {
+    for (stderr, expected) in [
+        (REAL_NPM_E404, "Not Found - GET"),
+        (REAL_DENO_MISSING, "does not exist"),
+        (REAL_BUN_MISSING, "failed to resolve"),
+        (REAL_NPM_ERESOLVE, "dependency conflict"),
+        (REAL_NPM_ECONNREFUSED, "connect ECONNREFUSED"),
+    ] {
+        let detail = javascript_dependency_failure_detail(stderr);
+        assert!(detail.contains(expected), "{detail:?}");
+        assert!(!detail.contains('\x1b'), "{detail:?}");
+        assert!(!detail.contains("A complete log"), "{detail:?}");
+        assert!(!detail.contains("behind a proxy"), "{detail:?}");
+    }
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail degrades empty/content-free stderr to '?'. No stderr channel on the Rust runner. MUST-FIX per above. Python ref deps.py:311-313, test_js_deps.py:1385-1387."]
-fn test_failure_detail_empty_stderr_degrades() {}
+fn test_failure_detail_names_the_missing_package() {
+    for stderr in [REAL_NPM_E404, REAL_DENO_MISSING, REAL_BUN_MISSING] {
+        assert!(javascript_dependency_failure_detail(stderr).contains("skit-no-such-pkg-e2e-xyz"));
+    }
+}
+
+#[test]
+fn test_failure_detail_empty_stderr_degrades() {
+    assert_eq!(javascript_dependency_failure_detail(b""), "?");
+    assert_eq!(
+        javascript_dependency_failure_detail(b"npm error 404\n\n"),
+        "?"
+    );
+}
 
 #[test]
 #[ignore = "PRIVATE HELPER (white-box): clear() wraps clean() in the same per-entry install lock. The Rust dependency_lock is private with no observable held-during-clear surface. Python ref deps.py:316-322, test_js_deps.py:1390-1407."]
@@ -1559,8 +1636,39 @@ fn test_install_lock_never_unlinks_its_persistent_inode() {}
 fn test_i18n_gate_catches_an_unquoted_continuation_line() {}
 
 #[test]
-#[ignore = "ABSENT (library seam): a captured install announces itself with one stderr line ('Installing dependencies (npm)…'); the short-circuit path prints nothing. The Rust materializer prints no announce line and its runner streams nothing. MUST-FIX: port the announce discipline. Python ref deps.py:389-394, test_js_deps.py:1704-1716."]
-fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {}
+fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    let mut announcements = Vec::new();
+    ensure_javascript_dependencies_for_module_with_reporter(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        None,
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+        &mut |installer| announcements.push(installer.to_owned()),
+    )
+    .unwrap();
+    assert_eq!(announcements, ["npm"]);
+
+    ensure_javascript_dependencies_for_module_with_reporter(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        None,
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+        &mut |installer| announcements.push(installer.to_owned()),
+    )
+    .unwrap();
+    assert_eq!(announcements, ["npm"], "a fresh marker must stay silent");
+    assert_eq!(runner.calls().len(), 1);
+    drop(root);
+}
 
 #[test]
 fn test_corrupted_marker_triggers_reinstall_not_a_persistent_crash() {
@@ -2005,8 +2113,13 @@ fn test_ensure_installed_writes_the_module_type_into_the_manifest() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail drops bare report/log paths even without a cause-keyword line, keeping the last informative line. No stderr channel on the Rust runner. MUST-FIX: port _failure_detail. Python ref deps.py:282-313, test_js_deps.py:1805-1813."]
-fn test_failure_detail_drops_bare_paths_even_without_a_cause_line() {}
+fn test_failure_detail_drops_bare_paths_even_without_a_cause_line() {
+    let stderr = b"npm error something odd happened\nnpm error /var/log/npm/report.txt\nnpm error C:\\Users\\u\\report.txt\n";
+    assert_eq!(
+        javascript_dependency_failure_detail(stderr),
+        "npm error something odd happened"
+    );
+}
 
 #[test]
 fn test_module_type_for_a_bare_dotfile_name() {
@@ -2018,36 +2131,131 @@ fn test_module_type_for_a_bare_dotfile_name() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail filters each noise marker so a real cause line still wins. No stderr channel on the Rust runner. MUST-FIX per above. Python ref deps.py:264-313, test_js_deps.py:1849-1863."]
-fn test_failure_detail_filters_each_noise_marker() {}
+fn test_failure_detail_filters_each_noise_marker() {
+    for marker in [
+        "A complete log of this run",
+        "Note that you can also install",
+        "tarball, folder, http url",
+        "For a full report see",
+        "If you are behind a proxy",
+    ] {
+        let stderr = format!("npm error install failed for pkg\nnpm error failed: {marker}\n");
+        assert_eq!(
+            javascript_dependency_failure_detail(stderr.as_bytes()),
+            "npm error install failed for pkg"
+        );
+    }
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail skips (not breaks on) a noise line before the cause. No stderr channel on the Rust runner. MUST-FIX per above. Python ref test_js_deps.py:1866-1872."]
-fn test_failure_detail_noise_before_the_cause_still_finds_the_cause() {}
+fn test_failure_detail_noise_before_the_cause_still_finds_the_cause() {
+    assert_eq!(
+        javascript_dependency_failure_detail(
+            b"npm error A complete log of this run can be found in: /x.log\nnpm error something odd happened\n"
+        ),
+        "npm error something odd happened"
+    );
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail drops every npm prefix noise shape (stack frame, lone brace, lowercase Windows drive). No stderr channel on the Rust runner. MUST-FIX per above. Python ref deps.py:282-290, test_js_deps.py:1875-1885."]
-fn test_failure_detail_drops_every_npm_prefix_noise_shape() {}
+fn test_failure_detail_drops_every_npm_prefix_noise_shape() {
+    assert_eq!(
+        javascript_dependency_failure_detail(
+            b"npm error something odd happened\nnpm error at Object.fn (/x.js:1:1)\nnpm error {\nnpm error }\nnpm error c:\\Users\\u\\report.txt\n"
+        ),
+        "npm error something odd happened"
+    );
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail reproduces the deno cause line exactly (ANSI removed, not substituted). No stderr channel on the Rust runner. MUST-FIX per above. Python ref test_js_deps.py:1888-1894."]
-fn test_failure_detail_deno_line_is_reproduced_exactly() {}
+fn test_failure_detail_deno_line_is_reproduced_exactly() {
+    assert_eq!(
+        javascript_dependency_failure_detail(REAL_DENO_MISSING),
+        "error: npm package 'skit-no-such-pkg-e2e-xyz' does not exist."
+    );
+}
 
 #[test]
-#[ignore = "ABSENT (subprocess-contract seam): the installer subprocess runs captured (capture_output=True, check=False). The marker now lands inside node_modules as required, but SystemDependencyCommandRunner still uses Command::status() and does not capture output. MUST-FIX: return captured stderr for the failure-detail contracts. Python ref deps.py:395-414, test_js_deps.py:1897-1915."]
-fn test_install_subprocess_contract_and_marker_dir_reuse() {}
+fn test_dependency_failure_messages_verbatim() {
+    assert_eq!(
+        DependencyError::InstallerNotFound {
+            name: "npm".to_owned()
+        }
+        .to_string(),
+        "npm is needed to install this script's dependencies, but it isn't on your PATH."
+    );
+    assert_eq!(
+        DependencyError::InstallerStartFailed {
+            installer: "npm".to_owned(),
+            reason: "Exec format error".to_owned(),
+        }
+        .to_string(),
+        "Couldn't run npm: Exec format error"
+    );
+    assert_eq!(
+        DependencyError::InstallFailed {
+            installer: "npm".to_owned(),
+            exit_code: Some(1),
+            detail: "npm error it failed".to_owned(),
+        }
+        .to_string(),
+        "Installing dependencies failed (npm): npm error it failed"
+    );
+}
 
 #[test]
-#[ignore = "ABSENT (library seam + verbatim messages): require_installer's and ensure_installed's exact English sentences ('npm is needed to install…', 'Couldn't run npm: …', 'Installing dependencies failed (npm): …'). require_installer has no public Rust surface and the DependencyError sentences differ verbatim. MUST-FIX: port the verbatim installer messages. Python ref deps.py:227-234, 404-412, test_js_deps.py:1918-1948."]
-fn test_dependency_failure_messages_verbatim() {}
+#[cfg(unix)]
+fn test_install_announce_line_verbatim() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "announce.js", "console.log('ok');\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "chalk", "--no-input"])
+        .assert()
+        .success();
+    let bin = TempDir::new().unwrap();
+    for (name, body) in [
+        ("node", "#!/bin/sh\nexit 0\n"),
+        ("npm", "#!/bin/sh\n/bin/mkdir -p node_modules\nexit 0\n"),
+    ] {
+        let path = bin.path().join(name);
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let first = sandbox
+        .skit()
+        .env("PATH", bin.path())
+        .args(["run", "announce", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(first.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(first.stderr).unwrap(),
+        "Installing dependencies (npm)…\n"
+    );
+
+    let second = sandbox
+        .skit()
+        .env("PATH", bin.path())
+        .args(["run", "announce", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(second.status.code(), Some(0));
+    assert!(second.stderr.is_empty(), "fresh launch must stay silent");
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): the install-announce line is exactly 'Installing dependencies (npm)…\\n' on stderr. The Rust materializer prints no announce line. MUST-FIX: port the announce discipline. Python ref deps.py:389-394, test_js_deps.py:1951-1957."]
-fn test_install_announce_line_verbatim() {}
-
-#[test]
-#[ignore = "ABSENT (library seam): _failure_detail survives invalid UTF-8 bytes (replacement char, never a raise). No stderr channel on the Rust runner. MUST-FIX: port _failure_detail. Python ref deps.py:300, test_js_deps.py:1974-1979."]
-fn test_failure_detail_survives_invalid_utf8_bytes() {}
+fn test_failure_detail_survives_invalid_utf8_bytes() {
+    let detail = javascript_dependency_failure_detail(b"npm error caf\xe9 install failed\n");
+    assert!(detail.contains("install failed"), "{detail:?}");
+    assert!(detail.contains('\u{fffd}'), "{detail:?}");
+}
 
 // ============================================================================
 // module-typed entries with NO deps still need their package.json "type"
