@@ -390,6 +390,50 @@ fn source_helpers_preserve_bytes_names_and_storage_conventions() {
     ));
 }
 
+#[cfg(unix)]
+#[test]
+fn source_intake_errors_keep_real_files_and_typed_resolution_context() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
+
+    let root = TempDir::new().unwrap();
+    let directory = root.path().join("directory");
+    fs::create_dir(&directory).unwrap();
+    let error = read_source(&directory, false, true).unwrap_err();
+    assert_eq!(
+        error.message().localize(Locale::En),
+        format!("Not a file: {}", directory.display())
+    );
+    let snapshot = read_source(&directory, true, false).unwrap();
+    assert!(snapshot.bytes.is_empty());
+    assert!(!snapshot.is_regular);
+    let error = read_source(&directory, false, false).unwrap_err();
+    assert!(
+        error
+            .message()
+            .localize(Locale::En)
+            .starts_with(&format!("Can't read {}: ", directory.display()))
+    );
+
+    let missing = root.path().join("missing.py");
+    let error = resolve_add_source(&missing).unwrap_err();
+    assert_eq!(
+        error.message().localize(Locale::En),
+        format!("File not found: {}", missing.display())
+    );
+    let invalid = root
+        .path()
+        .join(OsString::from_vec(b"invalid-\0-path.py".to_vec()));
+    let error = resolve_add_source(&invalid).unwrap_err();
+    assert!(matches!(
+        error,
+        CliError::Source {
+            operation: "resolve",
+            ..
+        }
+    ));
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
 #[test]
 fn add_uses_the_shared_kind_aware_description_and_keeps_an_explicit_empty_value() {
     let root = TempDir::new().unwrap();
@@ -554,6 +598,64 @@ fn test_ask_kind_plain_returns_the_picked_language() {
             CliError::AddCancelled
         ));
     }
+}
+
+#[test]
+fn closed_add_intake_values_are_typed_before_dispatch() {
+    for (value, expected) in [
+        ("1", PlainAddChoice::Path),
+        (" 2 ", PlainAddChoice::Script),
+        ("3", PlainAddChoice::Prompt),
+        ("4", PlainAddChoice::Command),
+    ] {
+        assert_eq!(PlainAddChoice::parse(value).unwrap(), expected);
+    }
+    let error = PlainAddChoice::parse("5").unwrap_err();
+    for (locale, expected) in [
+        (Locale::En, "Choose a number from 1 to 4."),
+        (Locale::ZhCn, "请选择 1 到 4 之间的数字。"),
+        (Locale::ZhTw, "請選擇 1 到 4 之間的數字。"),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
+    }
+
+    let mut without_default = String::new();
+    dialoguer::theme::Theme::format_input_prompt(
+        &AddChoiceTheme,
+        &mut without_default,
+        "Which one?",
+        None,
+    )
+    .unwrap();
+    assert_eq!(without_default, "Which one? [1/2/3/4]: ");
+    let mut with_default = String::new();
+    dialoguer::theme::Theme::format_input_prompt(
+        &AddChoiceTheme,
+        &mut with_default,
+        "Which one?",
+        Some("1"),
+    )
+    .unwrap();
+    assert_eq!(with_default, "Which one? [1/2/3/4] (1): ");
+
+    assert_eq!(
+        selected_add_kind(Some("shell"), Some("python"), None, true).unwrap(),
+        "shell"
+    );
+    assert_eq!(
+        selected_add_kind(None, Some("python"), Some(KnownEntryKind::Prompt), false).unwrap(),
+        "python"
+    );
+    assert_eq!(
+        selected_add_kind(None, None, Some(KnownEntryKind::Prompt), false).unwrap(),
+        "prompt"
+    );
+    assert_eq!(selected_add_kind(None, None, None, true).unwrap(), "python");
+    let error = selected_add_kind(None, None, None, false).unwrap_err();
+    assert_eq!(
+        error.message().localize(Locale::En),
+        "could not infer the entry kind; pass --kind KIND"
+    );
 }
 
 #[test]
@@ -5825,7 +5927,12 @@ fn add_plain_draft_pty_child() {
     };
     let store = FileStore::new(&data_dir);
     let service = LibraryService::new(store.clone());
-    let result = add_plain_draft(&service, &config_dir, kind);
+    let result = if std::env::var_os("SKIT_PLAIN_DRAFT_BARE").is_some_and(|value| !value.is_empty())
+    {
+        bare_add_plain(&service, &config_dir)
+    } else {
+        add_plain_draft(&service, &config_dir, kind)
+    };
     let marker = match result {
         Ok(()) => match service.show(expected_name.trim()) {
             Ok(entry) => format!(
@@ -5886,6 +5993,15 @@ impl PlainDraftSandbox {
     }
 
     fn spawn(&self, kind: &str, expected_name: &str) -> MirrorPromptPty {
+        self.spawn_with(kind, expected_name, false)
+    }
+
+    fn spawn_bare(&self, kind: &str, expected_name: &str) -> MirrorPromptPty {
+        self.spawn_with(kind, expected_name, true)
+    }
+
+    fn spawn_with(&self, kind: &str, expected_name: &str, bare: bool) -> MirrorPromptPty {
+        let bare = if bare { "1" } else { "" };
         MirrorPromptPty::spawn_test(
             "cli::tests::add_plain_draft_pty_child",
             "en",
@@ -5895,6 +6011,7 @@ impl PlainDraftSandbox {
                 ("SKIT_CONFIG_DIR", self.config.path().to_str().unwrap()),
                 ("SKIT_PLAIN_DRAFT_KIND", kind),
                 ("SKIT_PLAIN_DRAFT_EXPECTED_NAME", expected_name),
+                ("SKIT_PLAIN_DRAFT_BARE", bare),
             ],
         )
     }
@@ -6107,6 +6224,127 @@ fn add_plain_draft_real_pty_covers_preflight_author_commit_and_failure_cleanup()
     assert!(output.contains("File not found:"), "{output}");
     inspect_error.assert_no_drafts();
     inspect_error.assert_no_state();
+}
+
+#[cfg(unix)]
+#[test]
+fn bare_plain_editor_choices_reach_the_same_typed_draft_commit() {
+    for (choice, kind, name, expected_kind, editor_body, expected_bytes) in [
+        (
+            "2\n",
+            "script",
+            "Bare Script",
+            "python",
+            "printf \"print('bare')\\n\" >> \"$1\"",
+            b"#!/usr/bin/env python3\nprint('bare')\n".as_slice(),
+        ),
+        (
+            "3\n",
+            "prompt",
+            "Bare Prompt",
+            "prompt",
+            "printf \"Review bare.\\n\" >> \"$1\"",
+            b"# New prompt\n\nReview bare.\n".as_slice(),
+        ),
+    ] {
+        let sandbox = PlainDraftSandbox::new();
+        sandbox.editor("bare-editor.sh", editor_body);
+        let config_before = fs::read(sandbox.config.path().join("config.toml")).unwrap();
+        let mut child = sandbox.spawn_bare(kind, name);
+        child.wait_for("Which one? [1/2/3/4] (1):");
+        child.send(choice);
+        child.wait_for("Name in skit");
+        child.send(&format!("{name}\n"));
+        let (output, marker) = child.finish();
+        assert!(marker.contains(&format!("ok|name={name}|kind={expected_kind}|source=")));
+        assert!(output.contains("What would you like to add?"), "{output}");
+        let entry = sandbox.service().show(name).unwrap();
+        assert_eq!(entry.meta.kind.as_str(), expected_kind);
+        assert_eq!(
+            fs::read(source_path(sandbox.service().repository(), &entry).unwrap()).unwrap(),
+            expected_bytes
+        );
+        sandbox.assert_no_drafts();
+        sandbox.assert_no_state();
+        assert_eq!(
+            fs::read(sandbox.config.path().join("config.toml")).unwrap(),
+            config_before
+        );
+    }
+}
+
+#[test]
+#[ignore = "runs only as the child of the process-isolated TERM adapter owner"]
+fn wants_tui_form_term_child() {
+    let result = wants_tui_form(Path::new(
+        &std::env::var_os("SKIT_TERM_CHILD_CONFIG").unwrap(),
+    ))
+    .unwrap();
+    fs::write(
+        std::env::var_os("SKIT_TERM_CHILD_RESULT").unwrap(),
+        result.to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn add_intake_refusals_and_term_selection_are_no_write_and_localized() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path().join("data"));
+    let service = LibraryService::new(store);
+    let config = root.path().join("config");
+    let mut options = empty_add_options();
+    options.source = Some(PathBuf::from("-"));
+    options.name = Some("Pipe".to_owned());
+    options.reference = true;
+    let error = add_with_config(&service, &config, options).unwrap_err();
+    for (locale, expected) in [
+        (
+            Locale::En,
+            "--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",
+        ),
+        (
+            Locale::ZhCn,
+            "--ref 在这里无法应用——stdin 会撰写一份全新副本，而 --ref/--exe 需要现成的文件(未添加任何内容)。",
+        ),
+        (
+            Locale::ZhTw,
+            "--ref 在這裡無法套用——stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案(未加入任何內容)。",
+        ),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
+    }
+    assert!(!root.path().join("data").exists());
+
+    fs::create_dir_all(&config).unwrap();
+    fs::write(
+        config.join("config.toml"),
+        "form = \"tui\"\nfuture = \"keep\"\n",
+    )
+    .unwrap();
+    let config_before = fs::read(config.join("config.toml")).unwrap();
+    let result_dir = TempDir::new().unwrap();
+    let result = result_dir.path().join("result");
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "cli::tests::wants_tui_form_term_child",
+            "--nocapture",
+        ])
+        .env("TERM", "dumb")
+        .env("SKIT_TERM_CHILD_CONFIG", &config)
+        .env("SKIT_TERM_CHILD_RESULT", &result)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(result).unwrap(), "false");
+    assert_eq!(fs::read(config.join("config.toml")).unwrap(), config_before);
 }
 
 #[derive(Debug)]

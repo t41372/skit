@@ -1101,49 +1101,50 @@ fn validate_add_dispatch(options: &AddOptions, edit: bool) -> Result<AddLane, Cl
         AddLane::Bare
     };
 
-    let dependencies_explicit = options.dependencies_explicit || !options.dependencies.is_empty();
-    let given = [
-        ("--ref", options.reference),
-        ("--exe", options.executable),
-        ("--kind", options.kind.is_some()),
-        ("--runner", options.runner.is_some()),
-        ("--no-interpolate", options.no_interpolate),
-        ("--dep", dependencies_explicit),
-        ("--python", options.requires_python.is_some()),
-    ];
-    let accepts = |flag: &str| match lane {
-        AddLane::Command => false,
-        AddLane::Stdin => matches!(
-            flag,
-            "--kind" | "--runner" | "--no-interpolate" | "--dep" | "--python"
-        ),
-        AddLane::Editor => matches!(flag, "--dep" | "--python"),
-        AddLane::PromptEditor => matches!(flag, "--runner" | "--no-interpolate"),
-        AddLane::Path | AddLane::Bare => true,
+    let flag_policy: Option<(&str, &[&str])> = match lane {
+        AddLane::Command => Some(("a --cmd template takes only --name/--description", &[])),
+        AddLane::Stdin => Some((
+            "stdin authors a brand-new copy, and --ref/--exe need an existing file",
+            &[
+                "--kind",
+                "--runner",
+                "--no-interpolate",
+                "--dep",
+                "--python",
+            ],
+        )),
+        AddLane::Editor => Some((
+            "--edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt",
+            &["--dep", "--python"],
+        )),
+        AddLane::PromptEditor => Some((
+            "a drafted prompt takes only --name/--description/--runner/--no-interpolate",
+            &["--runner", "--no-interpolate"],
+        )),
+        AddLane::Path | AddLane::Bare => None,
     };
-    let refused = given
+    if let Some((hint, accepted)) = flag_policy {
+        let dependencies_explicit =
+            options.dependencies_explicit || !options.dependencies.is_empty();
+        let refused = [
+            ("--ref", options.reference),
+            ("--exe", options.executable),
+            ("--kind", options.kind.is_some()),
+            ("--runner", options.runner.is_some()),
+            ("--no-interpolate", options.no_interpolate),
+            ("--dep", dependencies_explicit),
+            ("--python", options.requires_python.is_some()),
+        ]
         .into_iter()
-        .filter_map(|(flag, present)| (present && !accepts(flag)).then_some(flag))
+        .filter_map(|(flag, present)| (present && !accepted.contains(&flag)).then_some(flag))
         .collect::<Vec<_>>();
-    if !refused.is_empty() {
-        let hint = match lane {
-            AddLane::Command => "a --cmd template takes only --name/--description",
-            AddLane::Stdin => {
-                "stdin authors a brand-new copy, and --ref/--exe need an existing file"
-            }
-            AddLane::Editor => {
-                "--edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt"
-            }
-            AddLane::PromptEditor => {
-                "a drafted prompt takes only --name/--description/--runner/--no-interpolate"
-            }
-            AddLane::Path | AddLane::Bare => unreachable!("these lanes accept the matrix flags"),
-        };
-        return Err(CliError::Usage(
-            Message::new("{} can't apply here — {} (nothing was added).")
-                .with(refused.join(", "))
-                .with(text(active_locale(), hint)),
-        ));
+        if !refused.is_empty() {
+            return Err(CliError::Usage(
+                Message::new("{} can't apply here — {} (nothing was added).")
+                    .with(refused.join(", "))
+                    .with(text(active_locale(), hint)),
+            ));
+        }
     }
 
     if lane == AddLane::Path
@@ -1628,6 +1629,28 @@ fn ask_plain_kind(selector: &PlainKindSelector) -> Result<KnownEntryKind, CliErr
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlainAddChoice {
+    Path,
+    Script,
+    Prompt,
+    Command,
+}
+
+impl PlainAddChoice {
+    fn parse(value: &str) -> Result<Self, CliError> {
+        match value.trim() {
+            "1" => Ok(Self::Path),
+            "2" => Ok(Self::Script),
+            "3" => Ok(Self::Prompt),
+            "4" => Ok(Self::Command),
+            _ => Err(CliError::Usage(Message::new(
+                "Choose a number from 1 to 4.",
+            ))),
+        }
+    }
+}
+
 struct AddChoiceTheme;
 
 impl dialoguer::theme::Theme for AddChoiceTheme {
@@ -1671,14 +1694,14 @@ fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Res
         .with_prompt(text(locale, "Which one?").into_owned())
         .default("1".to_owned())
         .validate_with(|value: &String| {
-            matches!(value.trim(), "1" | "2" | "3" | "4")
-                .then_some(())
-                .ok_or_else(|| text(locale, "Choose a number from 1 to 4.").into_owned())
+            PlainAddChoice::parse(value)
+                .map(|_| ())
+                .map_err(|error| error.message().localize(locale))
         })
         .interact_text()
         .map_err(add_dialoguer_error)?;
-    match choice.trim() {
-        "1" => {
+    match PlainAddChoice::parse(&choice)? {
+        PlainAddChoice::Path => {
             let path = add_plain_text("Path to the file")?;
             if path.trim().is_empty() {
                 return Err(CliError::AddCancelled);
@@ -1691,9 +1714,9 @@ fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Res
                 },
             )
         }
-        "2" => add_plain_draft(service, config_dir, DraftKind::Script),
-        "3" => add_plain_draft(service, config_dir, DraftKind::Prompt),
-        "4" => {
+        PlainAddChoice::Script => add_plain_draft(service, config_dir, DraftKind::Script),
+        PlainAddChoice::Prompt => add_plain_draft(service, config_dir, DraftKind::Prompt),
+        PlainAddChoice::Command => {
             let template = add_plain_text("Command template")?;
             if template.trim().is_empty() {
                 return Err(CliError::AddCancelled);
@@ -1713,7 +1736,6 @@ fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Res
                 },
             )
         }
-        _ => unreachable!("the dialoguer validator accepts only four choices"),
     }
 }
 
@@ -1764,12 +1786,25 @@ fn add_plain_text(prompt: &'static str) -> Result<String, CliError> {
 }
 
 fn add_dialoguer_error(error: dialoguer::Error) -> CliError {
+    map_dialoguer_error(error, DialoguerAbort::Add)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DialoguerAbort {
+    Add,
+    Operation,
+}
+
+fn map_dialoguer_error(error: dialoguer::Error, abort: DialoguerAbort) -> CliError {
     let error = io::Error::from(error);
     if matches!(
         error.kind(),
         io::ErrorKind::Interrupted | io::ErrorKind::UnexpectedEof
     ) {
-        CliError::AddCancelled
+        match abort {
+            DialoguerAbort::Add => CliError::AddCancelled,
+            DialoguerAbort::Operation => CliError::Aborted,
+        }
     } else {
         CliError::Io(error)
     }
@@ -3215,6 +3250,26 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
     add_with_config(service, &config_dir, options)
 }
 
+fn selected_add_kind<'a>(
+    explicit: Option<&'a str>,
+    inferred: Option<&'a str>,
+    picked: Option<KnownEntryKind>,
+    from_stdin: bool,
+) -> Result<&'a str, CliError> {
+    if let Some(kind) = explicit.or(inferred) {
+        return Ok(kind);
+    }
+    if let Some(kind) = picked {
+        return Ok(kind.as_str());
+    }
+    if from_stdin {
+        return Ok("python");
+    }
+    Err(CliError::Usage(Message::new(
+        "could not infer the entry kind; pass --kind KIND",
+    )))
+}
+
 fn add_with_config(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
@@ -3511,16 +3566,7 @@ fn add_with_config(
             .with(file.to_string_lossy()),
         ));
     }
-    let kind = kind
-        .as_deref()
-        .or(inferred)
-        .or(picked_kind.map(KnownEntryKind::as_str))
-        .or(from_stdin.then_some("python"))
-        .ok_or_else(|| {
-            CliError::Usage(Message::new(
-                "could not infer the entry kind; pass --kind KIND",
-            ))
-        })?;
+    let kind = selected_add_kind(kind.as_deref(), inferred, picked_kind, from_stdin)?;
     let name = name.unwrap_or_else(|| source_default_name(&source, kind == "prompt"));
     let kind =
         EntryKind::parse(kind.to_owned()).map_err(|error| RepositoryError::InvalidMutation {
@@ -6306,20 +6352,12 @@ fn collect_preset_value(
 }
 
 fn dialoguer_error(error: dialoguer::Error) -> CliError {
-    let error = io::Error::from(error);
-    if matches!(
-        error.kind(),
-        io::ErrorKind::Interrupted | io::ErrorKind::UnexpectedEof
-    ) {
-        CliError::Aborted
-    } else {
-        CliError::Io(error)
-    }
+    map_dialoguer_error(error, DialoguerAbort::Operation)
 }
 
 #[cfg(test)]
 mod dialoguer_error_tests {
-    use super::{CliError, dialoguer_error};
+    use super::{CliError, add_dialoguer_error, dialoguer_error};
     use std::io;
 
     #[test]
@@ -6329,10 +6367,21 @@ mod dialoguer_error_tests {
                 dialoguer_error(dialoguer::Error::from(io::Error::from(kind))),
                 CliError::Aborted
             ));
+            assert!(matches!(
+                add_dialoguer_error(dialoguer::Error::from(io::Error::from(kind))),
+                CliError::AddCancelled
+            ));
         }
         assert!(matches!(
             dialoguer_error(dialoguer::Error::from(io::Error::other("test dialoguer failure"))),
             CliError::Io(error) if error.kind() == io::ErrorKind::Other
+        ));
+        assert!(matches!(
+            add_dialoguer_error(dialoguer::Error::from(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid terminal text",
+            ))),
+            CliError::Io(error) if error.kind() == io::ErrorKind::InvalidData
         ));
     }
 }
