@@ -266,7 +266,7 @@ This session (2026-08-11 through 2026-08-14), in order — each closed the named
 | `6b5c6f0` | terminal workflow: carry snapshot and delete identities through CLI/TUI effects, refresh Changed rows, remove direct unlink surrogates, and prove the real live-host draft resume | owned-draft stage D |
 | `7f163eb` | consume claim cleanup: group identity/modified/permissions/source facts in one private claim and satisfy hard Clippy gates | owned-draft refinement |
 | `86f54a4` | cleanup warning localization: compose the localized warning prefix with the localized changed-draft message and satisfy the catalog scanner | final fix-pass cleanup |
-| `d9a78d0` / `8d3622d` | editor process root: activate all four frozen helper owners at public CLI/PTY boundaries; pass the real stored copy path; accept ordinary nonzero editor status in CLI/TUI authoring; preserve the exact launch/read errors; finalize in-place copy edits through an identity/meta CAS that updates only hash/projection and never replaces user bytes | 4 absent owners promoted + 1 race regression |
+| `4832197` / `cd15b26` / `40fa612` | editor process root: activate all four frozen helper owners at public CLI/PTY boundaries; pass the real stored copy path; accept ordinary nonzero editor status in CLI/TUI authoring; preserve the exact launch/read errors; finalize in-place copy edits through a repository-owned claim and identity/meta CAS; return the locked current bytes used for hash, validation, and reporting without replacing user bytes | 4 absent owners promoted + transaction race regressions |
 
 PR #44 is complete upstream at fixed head `005bc9b7365fca1cfa7173acb61a2e8629f03bc9`.
 Review only the diff from the previous pin `38260ff881420fbd06f95b5b9243e0caa610e370`;
@@ -384,7 +384,7 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
 - **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 
-The remaining explicit ABSENT-marker backlog is now 23 JS-dependency rows and no editor rows. The two
+The explicit JS-dependency and editor ABSENT-marker backlogs are now closed. The two
 source-default guards were rehomed to real
 `skit-language` semantic units, and the language capability-stripping monkeypatch was classified as
 a framework-injection closure (`694a717`). The JS three-way audit classified its 35 rows as 5 with
@@ -393,10 +393,9 @@ freshness/preflight, launch sweep, diagnostics, and announce behavior. The sourc
 a parser-backed resync data-loss risk on syntax errors in addition to the seven stale stubs; the
 shared typed editor now closes that whole root, including partial warnings, rebind, operation order,
 final-secret scrubbing, state purge, and TUI receipts (`95c8465`..`4c1689a`). The editor helper
-root is now closed by public process owners and the external-edit transaction (`d9a78d0` /
-`8d3622d`). The remaining JS rows must be implemented or moved to their real owners before the
-ledger can call them closed. Do not turn them into fake REAL owners merely to reduce the ignored
-count.
+root is now closed by public process owners and the external-edit transaction (`4832197` /
+`cd15b26` / `40fa612`). JavaScript freshness, launch sweep, captured diagnostics, announce
+discipline, and helper surfaces close the other audited root (`ab4d93a`..`5265eeb`).
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
   port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job
@@ -533,9 +532,11 @@ The ledger has the authoritative per-module adjudication log.
 - **`resolve_editor_argv` / `launch_editor` / `report_saved_edit`** (cli.rs) are the editor process
   seams. `open_editor_in` deliberately accepts an ordinary nonzero editor status, as v0.4 does.
   Copy edit passes the real stored source path and uses `prepare_external_copy_edit` /
-  `finalize_external_copy_edit`: the post-editor transaction verifies identity and complete held
-  metadata, then updates only source hash and registry projection. It never rewrites or rolls back
-  the editor's bytes.
+  `finalize_external_copy_edit`: an opaque repository claim prevents a frontend from substituting
+  another path. The post-editor transaction verifies the exact stored path, identity, and complete
+  held metadata, then reads and hashes the current bytes under the same lock. Validation and the
+  success report use that returned snapshot. The transaction updates only source hash and registry
+  projection. It never rewrites or rolls back the editor's bytes.
 - **Message hole order:** all oracle zh translations so far keep the En `{}` hole order, so
   positional holes suffice. If you hit a translation that reorders holes, that's the deferred
   "positional→named format holes" work item — surface it, don't bodge it.
