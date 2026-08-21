@@ -1673,6 +1673,141 @@ fn test_add_not_py_file_warning_escapes_markup_in_filename() {
 }
 
 #[test]
+fn params_command_matrix_updates_every_declared_axis_and_preserves_machine_shape() {
+    let root = sandbox();
+    let (code, out) = run(skit(&root).args(["add", "--cmd", "echo {topic}", "--name", "matrix"]));
+    assert_eq!(code, 0, "{out}");
+
+    let (code, out) = run(skit(&root).args([
+        "params",
+        "matrix",
+        "--add",
+        "topic",
+        "--add",
+        "extra",
+        "--type",
+        "extra=int",
+        "--default",
+        "extra=3",
+        "--deliver",
+        "extra=env",
+        "--env-target",
+        "extra=EXTRA",
+        "--help-text",
+        "extra=Number of runs",
+        "--prompt",
+        "extra=Count",
+        "--required",
+        "extra",
+        "--add",
+        "choice",
+        "--type",
+        "choice=choice",
+        "--choices",
+        "choice=a,b",
+        "--default",
+        "choice=a",
+        "--add",
+        "secret",
+        "--secret",
+        "secret",
+        "--env-source",
+        "secret=TOKEN",
+        "--add",
+        "items",
+        "--multiple",
+        "items",
+        "--repeat",
+        "items",
+        "--flag",
+        "items=--item",
+        "--add",
+        "verbose",
+        "--type",
+        "verbose=bool",
+        "--flag",
+        "verbose=--verbose",
+        "--action",
+        "verbose=store_true",
+    ]));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("Declared parameters"), "{out}");
+
+    let output = skit(&root)
+        .args(["params", "matrix", "--json"])
+        .output()
+        .expect("skit runs");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rows = payload["parameters"].as_array().unwrap();
+    let row = |name: &str| {
+        rows.iter()
+            .find(|row| row["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}: {payload}"))
+    };
+    assert_eq!(row("topic")["delivery"], "placeholder");
+    assert_eq!(row("extra")["type"], "int");
+    assert_eq!(row("extra")["default"], 3);
+    assert_eq!(row("extra")["delivery"], "env");
+    assert_eq!(row("extra")["env_target"], "EXTRA");
+    assert_eq!(row("extra")["required"], true);
+    assert_eq!(row("choice")["choices"], serde_json::json!(["a", "b"]));
+    assert_eq!(row("secret")["secret"], true);
+    assert_eq!(row("secret")["env_source"], "TOKEN");
+    assert_eq!(row("items")["multiple"], true);
+    assert_eq!(row("items")["repeat"], true);
+    assert_eq!(row("items")["flag"], "--item");
+    assert_eq!(row("verbose")["action"], "store_true");
+
+    let (code, out) = run(skit(&root).args([
+        "params",
+        "matrix",
+        "--optional",
+        "extra",
+        "--no-secret",
+        "secret",
+        "--no-multiple",
+        "items",
+        "--no-repeat",
+        "items",
+        "--rm",
+        "choice",
+    ]));
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(skit(&root).args(["params", "matrix", "--workdir", "invoke"]));
+    assert_eq!(code, 0, "{out}");
+    let output = skit(&root)
+        .args(["params", "matrix", "--json"])
+        .output()
+        .expect("skit runs");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rows = payload["parameters"].as_array().unwrap();
+    assert!(rows.iter().all(|row| row["name"] != "choice"));
+    assert!(
+        rows.iter()
+            .find(|row| row["name"] == "extra")
+            .unwrap()
+            .get("required")
+            .is_none()
+    );
+    let secret = rows.iter().find(|row| row["name"] == "secret").unwrap();
+    assert!(secret.get("secret").is_none());
+    assert!(secret.get("env_source").is_none());
+    let items = rows.iter().find(|row| row["name"] == "items").unwrap();
+    assert_eq!(items["multiple"], false);
+    assert_eq!(items["repeat"], false);
+
+    let before = snapshot_tree(root.path());
+    let (code, out) = run(skit(&root).args(["params", "matrix", "--add", "extra"]));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("extra is already declared; skipped."), "{out}");
+    assert_eq!(snapshot_tree(root.path()), before);
+}
+
+#[test]
 fn test_remove_escapes_markup_in_name() {
     let root = sandbox();
     run(skit(&root).args(["add", "--cmd", "echo hi", "--name", "[blue]hi[/blue]"]));
