@@ -308,7 +308,7 @@ fn test_interpreter_launch_describe_is_side_effect_free() {
 #[test]
 #[ignore = "CROSS-CRATE (skit-store): the strategy `target()` projection (script path an entry \
 launches, used by `skit list` to mark a gone file) is `launch_target` in \
-crates/skit-store/src/library_surface.rs, not reachable from skit-runtime."]
+the application Library surface and store snapshot adapter, not reachable from skit-runtime."]
 fn test_interpreter_launch_target_is_script_path() {}
 
 #[test]
@@ -534,7 +534,7 @@ fn test_runner_preflight_checks_script_and_runner() {
 
 #[test]
 #[ignore = "CROSS-CRATE (skit-store): the runner `target()` projection is `launch_target` in \
-crates/skit-store/src/library_surface.rs, not reachable from skit-runtime."]
+the application Library surface and store snapshot adapter, not reachable from skit-runtime."]
 fn test_runner_target_is_script_path() {}
 
 // ==========================================================================

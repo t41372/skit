@@ -18,22 +18,22 @@
 //! - `UvMetadata.dependencies` is a plain `Vec<String>`, so Python's "meta.dependencies is None"
 //!   maps to an empty vec (there is no Option to invent).
 //!
-//! The gate lives in the caller: Python's `effective_uv_metadata` guards on
-//! `kind == "python" and mode == "copy"` INSIDE the helper. In Rust that gate lives one tier up in
-//! skit-store's private `effective_settings` (`library_surface.rs:148`), and the npm dependency
-//! sweep + the `--python`-inapplicable refusal live in the CLI `deps` composition
+//! Python's `effective_uv_metadata` guards on `kind == "python" and mode == "copy"` inside the
+//! helper. Rust now keeps that same gate in `effective_entry_settings`, while the npm dependency
+//! sweep and the `--python`-inapplicable refusal live in the CLI `deps` composition
 //! (`skit-cli/src/cli.rs:3441`, `:3487`). The pure skit-language functions ported here know nothing
-//! of kind/mode, so the kind/mode-gated Python tests are cross-crate, not observable here.
+//! of storage adapters.
 //!
 //! Buckets (26 Python defs):
-//! - REAL asserting (11): section 5's six `effective_uv_metadata` read branches that a pure
-//!   `(source, stored)` pair reaches, and section 4's five python-copy grammar cases that
-//!   `plan_uv_metadata_edit` computes.
-//! - CROSS-CRATE `#[ignore]` (15): the CLI end-to-end reads/writes (skit-cli-rs), the settings-screen
-//!   prefill/diff (skit-ui), the npm node_modules sweep (skit-cli-rs), and the two kind/mode gates
-//!   that live in skit-store's `effective_settings`. Each stub names its owning tier.
+//! - REAL asserting (13): section 5's eight effective-read branches and section 4's five
+//!   python-copy grammar cases that `plan_uv_metadata_edit` computes.
+//! - CROSS-CRATE `#[ignore]` (13): the CLI end-to-end reads/writes (skit-cli-rs), the
+//!   settings-screen prefill/diff (skit-ui), and the npm node_modules sweep (skit-cli-rs).
 
-use skit_language::{UvMetadata, effective_uv_metadata_bytes, plan_uv_metadata_edit};
+use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
+use skit_language::{
+    UvMetadata, effective_entry_settings, effective_uv_metadata_bytes, plan_uv_metadata_edit,
+};
 
 /// A stored (meta) value with both axes set.
 fn stored(dependencies: &[&str], requires_python: &str) -> UvMetadata {
@@ -43,6 +43,16 @@ fn stored(dependencies: &[&str], requires_python: &str) -> UvMetadata {
             .map(|value| (*value).to_owned())
             .collect(),
         requires_python: requires_python.to_owned(),
+    }
+}
+
+fn entry(kind: &str, mode: StorageMode, settings: EntrySettings) -> Entry {
+    let mut meta = EntryMeta::minimal("Demo", EntryKind::parse(kind).unwrap());
+    meta.mode = mode;
+    settings.write_to_meta(&mut meta);
+    Entry {
+        slug: Slug::parse("demo").unwrap(),
+        meta,
     }
 }
 
@@ -152,9 +162,8 @@ fn test_deps_read_meta_carried_entry_is_unchanged() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs + skit-store): the js kind/mode gate that makes the helper \
-return meta verbatim lives in skit-store's effective_settings (library_surface.rs:150); the CLI \
-`deps --json` that prints it is skit-cli. The pure tier cannot observe the kind gate."]
+#[ignore = "CROSS-CRATE (skit-cli-rs): `deps --json` printing the JS metadata is a CLI surface. \
+The language-owned kind gate is executable in test_effective_js_entry_reads_meta_only."]
 fn test_deps_read_js_entry_falls_through_to_meta() {
     // WHY: a non-python (npm) kind never reads a PEP 723 block — the helper returns meta verbatim,
     // with no constraint axis at all.
@@ -362,19 +371,37 @@ fn test_effective_both_blank_returns_empty() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-store): the `mode == \"copy\"` short-circuit lives in skit-store's \
-effective_settings (library_surface.rs:150), NOT in the pure helper. At the pure tier the block \
-would be read; the reference-mode gate is the caller's. Owning tier: skit-store."]
 fn test_effective_reference_mode_python_reads_meta_only() {
     // WHY: reference mode short-circuits the block read: even if the original file carries a block,
     // the helper reports meta — reference deps live only in meta.
+    let settings = EntrySettings {
+        dependencies: vec!["requests".to_owned()],
+        requires_python: ">=3.11".to_owned(),
+        ..EntrySettings::default()
+    };
+    let reference = entry("python", StorageMode::Reference, settings.clone());
+    let decoy = br#"# /// script
+# dependencies = ["decoy"]
+# requires-python = ">=9.9"
+# ///
+"#;
+    assert_eq!(effective_entry_settings(&reference, Some(decoy)), settings);
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-store): the `kind == \"python\"` gate lives in skit-store's \
-effective_settings (library_surface.rs:150), NOT in the pure helper. Owning tier: skit-store."]
 fn test_effective_js_entry_reads_meta_only() {
     // WHY: a non-python kind fails the `kind == "python"` guard => meta verbatim, no block read.
+    let settings = EntrySettings {
+        dependencies: vec!["chalk".to_owned()],
+        ..EntrySettings::default()
+    };
+    let javascript = entry("js", StorageMode::Copy, settings.clone());
+    let decoy = br#"# /// script
+# dependencies = ["decoy"]
+# requires-python = ">=9.9"
+# ///
+"#;
+    assert_eq!(effective_entry_settings(&javascript, Some(decoy)), settings);
 }
 
 #[test]

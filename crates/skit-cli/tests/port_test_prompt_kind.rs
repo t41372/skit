@@ -570,8 +570,8 @@ fn test_check_argv_length_refuses_nul_before_subprocess() {
 #[ignore = "UNMAPPED (absent): the oracle's spec_for(kind) returns a spec ROW with family / \
             has_original_file / stored_name / editable / supports_modes / takes_argv / \
             placeholder_params / analyzer / params_io. The Rust rewrite has no such struct; the \
-            facts are spread across skit-store::stored_filename (== \"prompt.md\"), \
-            library_surface::has_original_file, and skit-language::placeholder_params. No single \
+            facts are spread across skit-store::stored_filename (== \"prompt.md\"), the \
+            application Library projection, and skit-language::placeholder_params. No single \
             observable equivalent."]
 fn test_prompt_spec_shape() {}
 

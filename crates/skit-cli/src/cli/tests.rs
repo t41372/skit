@@ -6362,7 +6362,7 @@ fn the_library_surface_carries_every_detail_fact_the_frontend_renders() {
     // The stored copy is gone, so the launch target is missing.
     fs::remove_file(store.payload_path(&tool).unwrap()).unwrap();
 
-    let surface = skit_store::library_surface(&store, state_dir.path(), config_dir.path()).unwrap();
+    let surface = crate::library_surface(&store, state_dir.path(), config_dir.path()).unwrap();
 
     let detail = surface.details.get(&tool.slug).expect("no detail row");
     assert!(!detail.added_at.is_empty());

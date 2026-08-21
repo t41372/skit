@@ -2662,6 +2662,7 @@ dependencies = [
  "shlex",
  "skit-application",
  "skit-domain",
+ "skit-form",
  "skit-i18n",
  "skit-language",
  "skit-runtime",

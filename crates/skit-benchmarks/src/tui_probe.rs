@@ -5,11 +5,18 @@ use std::{fs, path::Path, time::Instant};
 use ratatui_core::{backend::TestBackend, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
-use skit_application::form_state::FormStateService;
-use skit_store::{FileFormStateStore, FileStore};
+use skit_application::{
+    RepositoryError,
+    form_state::FormStateService,
+    library_detail::{LibrarySurface, LibrarySurfaceService},
+};
+use skit_form::FormLibraryProjector;
+use skit_language::effective_entry_settings;
+use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
 use skit_tui::{EventHandling, TuiSession, ViewGeometry};
 use skit_ui::{Action, LibraryState};
 use thiserror::Error;
+use time::OffsetDateTime;
 
 /// Measured spans and the raw process status used for peak RSS.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -140,7 +147,7 @@ pub fn run_for_dirs(
     let store = FileStore::new(data);
     // The product builds this exact projection before it draws its first frame, so the probe must
     // build it too. A scan-only measurement under-reports the work a real start does.
-    let surface = skit_store::library_surface(&store, state_dir, config_dir)
+    let surface = library_surface(&store, state_dir, config_dir)
         .map_err(|error| TuiProbeError::Store(error.to_string()))?;
     if !surface.scan.diagnostics.is_empty() {
         return Err(TuiProbeError::Diagnostics(surface.scan.diagnostics.len()));
@@ -218,6 +225,28 @@ pub fn run_for_dirs(
         .then(|| fs::read_to_string(status).ok())
         .flatten();
     ProbeResult::new(first_idle_ms, select_ms, search_ms, status_text)
+}
+
+fn library_surface(
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+) -> Result<LibrarySurface, RepositoryError> {
+    let form_state = FileFormStateStore::new(state_dir);
+    let form_projector = FormLibraryProjector;
+    let configured_runners = FileConfigStore::new(config_dir.to_path_buf())
+        .runners()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|runner| runner.name)
+        .collect::<Vec<_>>();
+    LibrarySurfaceService::new(
+        store,
+        &form_state,
+        &form_projector,
+        effective_entry_settings,
+    )
+    .load_at(&configured_runners, OffsetDateTime::now_utc())
 }
 
 fn validate_selection(before: Option<usize>, after: Option<usize>) -> Result<(), TuiProbeError> {
@@ -370,7 +399,7 @@ mod tests {
         ));
 
         let store = skit_store::FileStore::new(&dirs.data);
-        let surface = skit_store::library_surface(&store, &dirs.state, &dirs.config).unwrap();
+        let surface = super::library_surface(&store, &dirs.state, &dirs.config).unwrap();
         let mut state = skit_ui::LibraryState::from_library_surface(surface);
         let backend = ratatui_core::backend::TestBackend::new(120, 40);
         let mut terminal =

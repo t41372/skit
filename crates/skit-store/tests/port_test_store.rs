@@ -847,7 +847,7 @@ fn test_a_corrupt_index_lists_nothing_and_preserves_the_bad_bytes() {
 
 #[ignore = "UNMAPPED -> higher layer. add_exe's forced reference mode plus DirectLaunch \
             target(spec_for('exe')) is add orchestration + the launcher; the store-level launch \
-            target is projected by library_surface::launch_target and tested there."]
+            target state is tested through LibraryDetailRepository."]
 #[test]
 fn test_exe_is_always_reference_mode() {}
 

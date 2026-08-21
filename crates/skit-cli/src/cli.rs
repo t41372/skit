@@ -57,10 +57,11 @@ use skit_i18n::{
 };
 use skit_language::{
     LosslessSource, ParseOutcome, UvMetadata, UvMetadataEditError, cli_params, decode_prompt,
-    detect_candidates, effective_uv_metadata_bytes, external_dependencies_at,
-    has_uv_metadata_block_bytes, infer_draft_kind, infer_kind, managed_params,
-    normalize_shell_default, parse_document, placeholder_params, plan_uv_metadata_edit,
-    python_version_pin, read_uv_metadata, shebang_program, split_pep508_requirements,
+    detect_candidates, effective_entry_settings, effective_uv_metadata_bytes,
+    external_dependencies_at, has_uv_metadata_block_bytes, infer_draft_kind, infer_kind,
+    managed_params, normalize_shell_default, parse_document, placeholder_params,
+    plan_uv_metadata_edit, python_version_pin, read_uv_metadata, shebang_program,
+    split_pep508_requirements,
     suggest_description, validate_pep440_specifiers, validate_pep508_requirement,
     write_managed_params, write_managed_params_bytes, write_uv_metadata,
 };
@@ -3041,20 +3042,8 @@ fn nonempty(value: &str) -> Option<&str> {
 }
 
 fn effective_settings(store: &FileStore, entry: &Entry) -> EntrySettings {
-    let mut settings = EntrySettings::from_meta(&entry.meta);
-    if entry.meta.kind.as_str() == "python" && entry.meta.mode == StorageMode::Copy {
-        let source = source_path(store, entry).and_then(|path| fs::read(path).ok());
-        let effective = effective_uv_metadata_bytes(
-            source.as_deref(),
-            &UvMetadata {
-                dependencies: settings.dependencies.clone(),
-                requires_python: settings.requires_python.clone(),
-            },
-        );
-        settings.dependencies = effective.dependencies;
-        settings.requires_python = effective.requires_python;
-    }
-    settings
+    let source = source_path(store, entry).and_then(|path| fs::read(path).ok());
+    effective_entry_settings(entry, source.as_deref())
 }
 
 fn uv_edit_error(name: &str, error: UvMetadataEditError) -> CliError {
@@ -7256,7 +7245,7 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
     let store = service.repository();
     let state_dir = resolve_state_dir()?;
     let config_dir = resolve_config_dir()?;
-    let surface = skit_store::library_surface(store, &state_dir, &config_dir)?;
+    let surface = crate::library_surface(store, &state_dir, &config_dir)?;
     let rerunnable = tui_rerunnable(&surface.scan, &state_dir);
     let mut state = LibraryState::from_library_surface(surface);
     let _ = state.update(UiAction::ReplaceRerunnable(rerunnable));
@@ -7280,7 +7269,7 @@ fn tui_effect(
         UiEffect::Reload => {
             // The reload must carry the same complete projection the first load carried. A
             // scan-only reload would drop every detail fact and put the list back in slug order.
-            let surface = skit_store::library_surface(store, state_dir, config_dir)?;
+            let surface = crate::library_surface(store, state_dir, config_dir)?;
             let rerunnable = tui_rerunnable(&surface.scan, state_dir);
             Ok(UiAction::ReplaceSurface {
                 surface,
@@ -7476,7 +7465,7 @@ fn tui_add_effect(
                         message,
                     });
                 };
-                let surface = match skit_store::library_surface(store, state_dir, config_dir) {
+                let surface = match crate::library_surface(store, state_dir, config_dir) {
                     Ok(surface) => surface,
                     Err(error) => {
                         message.push('\n');
@@ -9578,7 +9567,7 @@ fn tui_complete(
     // detail pane with no facts for anything a mutation touched — a freshly added entry showed its
     // name, kind and description and nothing else.
     let config_dir = resolve_config_dir()?;
-    let surface = skit_store::library_surface(service.repository(), state_dir, &config_dir)?;
+    let surface = crate::library_surface(service.repository(), state_dir, &config_dir)?;
     let rerunnable = tui_rerunnable(&surface.scan, state_dir);
     Ok(UiAction::Complete {
         surface: Some(surface),

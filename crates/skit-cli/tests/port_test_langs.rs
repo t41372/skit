@@ -27,7 +27,7 @@
 //! - Python `spec.editable`   -> `canonical_stored_filename(kind).is_some()`.
 //! - Python `launcher.build_command` -> `skit_runtime::build_launch_plan`.
 //! - Python `launcher.describe_command` -> `skit_runtime::build_launch_preview` (`.display`).
-//! - Python `launcher.target_missing`/`missing_marker` -> `skit_store::library_surface`
+//! - Python `launcher.target_missing`/`missing_marker` -> `skit_cli::library_surface`
 //!   detail `missing_target`.
 //! - Python `entry.script_path` -> `FileStore::entry_dir_path(slug).join(stored name)`.
 //! - Python `store.add_exe` / CLI `params` / `doctor` -> the real `skit` binary via assert_cmd.
@@ -52,6 +52,7 @@ use tempfile::TempDir;
 
 use skit_application::delivery::Assembly;
 use skit_application::{canonical_stored_filename, payload_stored_name, supports_storage_modes};
+use skit_cli::library_surface;
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
@@ -60,7 +61,7 @@ use skit_language::{cli_params, detect_candidates, managed_params, write_managed
 use skit_runtime::{
     LaunchError, LaunchPaths, ProgramProbe, build_launch_plan, build_launch_preview,
 };
-use skit_store::{FileStore, library_surface};
+use skit_store::FileStore;
 
 /// The oracle's `registry.KNOWN_KINDS` frozenset, in oracle order.
 const KNOWN_KINDS: [&str; 13] = [
