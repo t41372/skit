@@ -662,6 +662,56 @@ fn test_resolve_editor_all_whitespace_candidates_use_platform_default() {
         "all-blank candidates must resolve the platform default vi"
     );
     assert!(sandbox.stored_script("a").contains("import rich"));
+
+    // A configured comment-only command wins precedence, but shlex parses it to no argv. The same
+    // platform fallback applies after parsing. Nonempty environment editors must not win.
+    let comment = Sandbox::new();
+    comment.add_python("comment", "print(1)\n");
+    comment
+        .command()
+        .args(["config", "editor", "# no editor command"])
+        .assert()
+        .success();
+    let config_before = fs::read(comment.config.path().join("config.toml")).unwrap();
+    let comment_sentinel = comment.scratch.path().join("comment-vi.launched");
+    let comment_bin = comment.scratch.path().join("comment-pathbin");
+    fs::create_dir_all(&comment_bin).unwrap();
+    let comment_content = comment.scratch.path().join("comment-vi.content");
+    fs::write(&comment_content, "print('comment fallback')\n").unwrap();
+    write_exec(
+        &comment_bin.join("vi"),
+        &format!(
+            "#!/bin/sh\ntouch '{}'\ncat '{}' > \"$1\"\n",
+            comment_sentinel.display(),
+            comment_content.display()
+        ),
+    );
+    let comment_path = format!(
+        "{}:{}",
+        comment_bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = comment
+        .command()
+        .env("VISUAL", "/bin/false")
+        .env("EDITOR", "/bin/false")
+        .env("PATH", comment_path)
+        .args(["edit", "comment"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert!(
+        comment_sentinel.exists(),
+        "a parsed empty argv must launch the platform default vi"
+    );
+    assert_eq!(
+        comment.stored_script("comment"),
+        "print('comment fallback')\n"
+    );
+    assert_eq!(
+        fs::read(comment.config.path().join("config.toml")).unwrap(),
+        config_before
+    );
 }
 
 #[test]
