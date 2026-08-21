@@ -7464,6 +7464,155 @@ fn cli_commit_carries_the_initial_claim_through_postcommit_cleanup() {
     assert_eq!(service.show("Claimed").unwrap().slug, created.slug);
 }
 
+#[cfg(any(unix, windows))]
+#[test]
+fn cli_cleanup_receipts_keep_the_committed_entry_and_changed_draft_in_every_locale() {
+    let changed = TempDir::new().unwrap();
+    const ORIGINAL: &[u8] = b"print('original')\n";
+    const REPLACEMENT: &[u8] = b"print('replacement')\n";
+    let claim = owned_draft_snapshot(&changed, "skit-new-receipt.py", ORIGINAL);
+    let source = claim.path.clone();
+    let staged = source.with_extension("replacement");
+    let store = FileStore::new(changed.path());
+    let service = LibraryService::new(store.clone());
+    let create = skit_application::CreateEntry {
+        name: "Changed receipt".to_owned(),
+        kind: EntryKind::parse("python").unwrap(),
+        mode: StorageMode::Copy,
+        source: claim.source_record.clone(),
+        workdir: "invoke".to_owned(),
+        description: String::new(),
+        payload: Some(skit_application::EntryPayload {
+            bytes: claim.bytes.clone(),
+            stored_name: Some("script.py".to_owned()),
+            permissions: claim.permissions,
+        }),
+        settings: EntrySettings::default(),
+    };
+    let (created, cleanup) = commit_add_source_after(&service, create, Some(claim), || {
+        fs::write(&staged, REPLACEMENT).unwrap();
+        fs::remove_file(&source).unwrap();
+        fs::rename(&staged, &source).unwrap();
+    })
+    .unwrap();
+    let cleanup = cleanup.expect("a copied owned draft must request cleanup");
+    assert!(matches!(cleanup, Ok(DraftConsumeOutcome::Changed)));
+    for (locale, expected) in [
+        (
+            Locale::En,
+            format!(
+                "warning: The kept draft changed before cleanup. skit kept it at {}.",
+                source.display()
+            ),
+        ),
+        (
+            Locale::ZhCn,
+            format!(
+                "警告：保留的草稿在清理前发生了更改。skit 将它保留在 {}。",
+                source.display()
+            ),
+        ),
+        (
+            Locale::ZhTw,
+            format!(
+                "警告：保留的草稿在清理前發生了變更。skit 將它保留在 {}。",
+                source.display()
+            ),
+        ),
+    ] {
+        assert_eq!(
+            draft_cleanup_warning_line(&cleanup, &source, locale).as_deref(),
+            Some(expected.as_str())
+        );
+        report_draft_cleanup_warning(Some(&cleanup), &source, locale);
+    }
+    assert_eq!(fs::read(&source).unwrap(), REPLACEMENT);
+    assert_eq!(
+        fs::read(store.payload_path(&created).unwrap()).unwrap(),
+        ORIGINAL
+    );
+    assert_eq!(service.show("Changed receipt").unwrap().slug, created.slug);
+
+    let failed = TempDir::new().unwrap();
+    let claim = owned_draft_snapshot(&failed, "skit-new-error-receipt.py", ORIGINAL);
+    let source = claim.path.clone();
+    let store = FileStore::new(failed.path());
+    let service = LibraryService::new(store.clone());
+    let create = skit_application::CreateEntry {
+        name: "Error receipt".to_owned(),
+        kind: EntryKind::parse("python").unwrap(),
+        mode: StorageMode::Copy,
+        source: claim.source_record.clone(),
+        workdir: "invoke".to_owned(),
+        description: String::new(),
+        payload: Some(skit_application::EntryPayload {
+            bytes: claim.bytes.clone(),
+            stored_name: Some("script.py".to_owned()),
+            permissions: claim.permissions,
+        }),
+        settings: EntrySettings::default(),
+    };
+    let parked = failed.path().join("drafts-old");
+    let drafts_path = failed.path().join("drafts");
+    let (created, cleanup) = commit_add_source_after(&service, create, Some(claim), || {
+        fs::rename(&drafts_path, &parked).unwrap();
+        fs::write(&drafts_path, b"not a directory").unwrap();
+    })
+    .unwrap();
+    let cleanup = cleanup.expect("a copied owned draft must request cleanup");
+    assert!(
+        cleanup.is_err(),
+        "an unowned drafts path must refuse cleanup"
+    );
+    for (locale, expected) in [
+        (
+            Locale::En,
+            format!(
+                "warning: skit's drafts path is not an owned directory: {}",
+                drafts_path.display()
+            ),
+        ),
+        (
+            Locale::ZhCn,
+            format!(
+                "警告：skit 的草稿路径不是其自有目录：{}",
+                drafts_path.display()
+            ),
+        ),
+        (
+            Locale::ZhTw,
+            format!(
+                "警告：skit 的草稿路徑不是其自有目錄：{}",
+                drafts_path.display()
+            ),
+        ),
+    ] {
+        assert_eq!(
+            draft_cleanup_warning_line(&cleanup, &source, locale).as_deref(),
+            Some(expected.as_str())
+        );
+        report_draft_cleanup_warning(Some(&cleanup), &source, locale);
+    }
+    assert_eq!(
+        fs::read(parked.join("skit-new-error-receipt.py")).unwrap(),
+        ORIGINAL
+    );
+    assert_eq!(
+        fs::read(store.payload_path(&created).unwrap()).unwrap(),
+        ORIGINAL
+    );
+    assert_eq!(service.show("Error receipt").unwrap().slug, created.slug);
+
+    for cleanup in [
+        Ok(DraftConsumeOutcome::Removed),
+        Ok(DraftConsumeOutcome::AlreadyMissing),
+    ] {
+        assert!(draft_cleanup_warning_line(&cleanup, &source, Locale::En).is_none());
+        report_draft_cleanup_warning(Some(&cleanup), &source, Locale::En);
+    }
+    report_draft_cleanup_warning(None, &source, Locale::En);
+}
+
 #[test]
 fn owned_draft_consume_refuses_outside_and_parked_files() {
     let root = TempDir::new().unwrap();

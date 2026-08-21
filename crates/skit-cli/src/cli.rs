@@ -3756,19 +3756,38 @@ fn add_with_config(
     };
     let (entry, cleanup) = commit_add_source(service, create, source_claim)?;
     print_add_summary(service.repository(), &entry)?;
-    if let Some(cleanup) = cleanup {
-        match cleanup {
-            Ok(DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing) => {}
-            Ok(DraftConsumeOutcome::Changed) => humanerrln!(
-                "warning: {}",
-                Message::new("The kept draft changed before cleanup. skit kept it at {}.")
-                    .with(source.display())
-                    .localize(active_locale())
-            ),
-            Err(error) => humanerrln!("warning: {}", error.message().localize(active_locale())),
-        }
-    }
+    report_draft_cleanup_warning(cleanup.as_ref(), &source, active_locale());
     Ok(())
+}
+
+fn report_draft_cleanup_warning(
+    cleanup: Option<&Result<DraftConsumeOutcome, CliError>>,
+    source: &Path,
+    locale: Locale,
+) {
+    let Some(cleanup) = cleanup else {
+        return;
+    };
+    if let Some(line) = draft_cleanup_warning_line(cleanup, source, locale) {
+        eprintln!("{line}");
+    }
+}
+
+fn draft_cleanup_warning_line(
+    cleanup: &Result<DraftConsumeOutcome, CliError>,
+    source: &Path,
+    locale: Locale,
+) -> Option<String> {
+    let warning = match cleanup {
+        Ok(DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing) => return None,
+        Ok(DraftConsumeOutcome::Changed) => {
+            Message::new("The kept draft changed before cleanup. skit kept it at {}.")
+                .with(source.display())
+        }
+        Err(error) => error.message(),
+    };
+    let warning = warning.localize(locale);
+    Some(format_text(locale, "warning: {}", &[&warning]))
 }
 
 type DraftCleanupResult = Option<Result<DraftConsumeOutcome, CliError>>;
