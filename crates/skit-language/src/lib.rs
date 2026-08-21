@@ -41,6 +41,9 @@ use serde_json::Value as JsonValue;
 use skit_domain::{
     Entry, EntrySettings, StorageMode,
     parameters::{ParamDecl, ParameterType, ParameterValue, synthesized_placeholder},
+    parameters::{
+        SourceNormalizationRefusal, SourceNormalizationRefusalKind, SourceNormalizationResult,
+    },
 };
 use skit_i18n::{Localize, Message};
 use thiserror::Error;
@@ -750,13 +753,68 @@ fn python_cookie_can_follow(first_line: &str) -> bool {
 
 /// Convert one shell constant to an environment-default expression.
 pub fn normalize_shell_default(text: &str, name: &str) -> Result<String, LanguageError> {
+    let result = normalize_shell_defaults(text, &[name.to_owned()])?;
+    if result.normalized.is_empty() {
+        if result
+            .refused
+            .first()
+            .is_some_and(|refusal| refusal.kind == SourceNormalizationRefusalKind::SyntaxError)
+        {
+            return Err(LanguageError::InvalidSource {
+                kind: "shell".to_owned(),
+            });
+        }
+        return Err(LanguageError::BindingNotFound {
+            name: name.to_owned(),
+        });
+    }
+    Ok(result.source)
+}
+
+/// Plan all requested shell environment-default normalizations against one source identity.
+pub fn normalize_shell_defaults(
+    text: &str,
+    names: &[String],
+) -> Result<SourceNormalizationResult, LanguageError> {
     let ParseOutcome::Parsed(document) = parse_document("shell", text) else {
-        return Err(LanguageError::InvalidSource {
-            kind: "shell".to_owned(),
+        return Ok(SourceNormalizationResult {
+            source: text.to_owned(),
+            normalized: Vec::new(),
+            refused: names
+                .iter()
+                .map(|name| SourceNormalizationRefusal {
+                    name: name.clone(),
+                    kind: SourceNormalizationRefusalKind::SyntaxError,
+                })
+                .collect(),
         });
     };
-    let output = document.plan_shell_normalization(name)?.apply(text)?;
-    validate_rewritten_source("shell", output)
+    let mut plans = Vec::new();
+    let mut normalized = Vec::new();
+    let mut refused = Vec::new();
+    for name in names {
+        match document.plan_shell_normalization_typed(name) {
+            Ok(plan) => {
+                plans.push(plan);
+                normalized.push(name.clone());
+            }
+            Err(kind) => refused.push(SourceNormalizationRefusal {
+                name: name.clone(),
+                kind,
+            }),
+        }
+    }
+    let source = if plans.is_empty() {
+        text.to_owned()
+    } else {
+        let plan = SourceEditPlan::combine(text, plans)?;
+        validate_rewritten_source("shell", plan.apply(text)?)?
+    };
+    Ok(SourceNormalizationResult {
+        source,
+        normalized,
+        refused,
+    })
 }
 
 fn metadata_leader(kind: &str) -> Option<&'static str> {

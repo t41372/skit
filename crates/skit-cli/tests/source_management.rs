@@ -28,6 +28,310 @@ impl Sandbox {
             .env("SKIT_LANG", "en");
         command
     }
+
+    fn command_in(&self, locale: &str) -> assert_cmd::Command {
+        let mut command = self.command();
+        command.env("SKIT_LANG", locale);
+        command
+    }
+
+    fn add_copy(&self, file: &str, name: &str, source: &str) {
+        let original = self.data.path().join(file);
+        fs::write(&original, source).unwrap();
+        self.command()
+            .args(["add", original.to_str().unwrap(), "--name", name])
+            .assert()
+            .success();
+    }
+}
+
+#[test]
+fn test_normalize_mixed_batch_reports_each_name() {
+    let sandbox = Sandbox::new();
+    sandbox.add_copy(
+        "mixed.sh",
+        "Mixed",
+        "#!/usr/bin/env bash\nWIDTH=800\nreadonly MAX=100\n",
+    );
+    let stored = sandbox.data.path().join("scripts/mixed/script.sh");
+    sandbox
+        .command()
+        .args(["params", "mixed", "--manage", "WIDTH"])
+        .assert()
+        .success();
+    let source_before = fs::read_to_string(&stored).unwrap();
+    let output = sandbox
+        .command()
+        .args([
+            "params",
+            "mixed",
+            "--normalize",
+            "WIDTH",
+            "--normalize",
+            "MAX",
+            "--normalize",
+            "NOPE",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let parameters = json["parameters"].as_array().unwrap();
+    assert!(parameters.iter().any(|row| {
+        row["name"] == "WIDTH" && row["binding"] == "envdefault" && row["delivery"] == "env"
+    }));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("MAX is readonly"), "{stderr}");
+    assert!(stderr.contains("NOPE isn't a plain constant"), "{stderr}");
+    assert!(!stderr.contains("WIDTH"), "{stderr}");
+    assert_eq!(
+        fs::read_to_string(stored).unwrap(),
+        source_before
+            .replace("kind = \"const\"", "kind = \"envdefault\"")
+            .replace("WIDTH=800", "WIDTH=\"${WIDTH:-800}\"")
+    );
+}
+
+#[test]
+fn test_cli_normalize_reports_refusals() {
+    let cases = [
+        (
+            "en",
+            "MAX is readonly, so the script could never take a value from the environment; skipped.",
+        ),
+        (
+            "zh-CN",
+            "MAX 是 readonly,脚本永远不可能从环境变量取值;已跳过。",
+        ),
+        (
+            "zh-TW",
+            "MAX 是 readonly,腳本永遠不可能從環境變數取值;已略過。",
+        ),
+    ];
+    for (locale, expected) in cases {
+        let sandbox = Sandbox::new();
+        sandbox.add_copy("readonly.sh", "Readonly", "readonly MAX=100\n");
+        let stored = sandbox.data.path().join("scripts/readonly/script.sh");
+        let source_before = fs::read(&stored).unwrap();
+        let meta = sandbox.data.path().join("scripts/readonly/meta.toml");
+        let meta_before = fs::read(&meta).unwrap();
+        let output = sandbox
+            .command_in(locale)
+            .args(["params", "readonly", "--normalize", "MAX"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty());
+        assert_eq!(String::from_utf8(output.stderr).unwrap().trim(), expected);
+        assert_eq!(fs::read(stored).unwrap(), source_before);
+        assert_eq!(fs::read(meta).unwrap(), meta_before);
+    }
+}
+
+#[test]
+fn test_cli_normalize_refuses_a_non_shell_kind() {
+    let cases = [
+        (
+            "en",
+            "Plain has no --normalize: it is a shell idiom (VAR=value -> VAR=\"${VAR:-value}\").",
+        ),
+        (
+            "zh-CN",
+            "Plain 没有 --normalize:那是 shell 的写法(VAR=value -> VAR=\"${VAR:-value}\")。",
+        ),
+        (
+            "zh-TW",
+            "Plain 沒有 --normalize:那是 shell 的寫法(VAR=value -> VAR=\"${VAR:-value}\")。",
+        ),
+    ];
+    for (locale, expected) in cases {
+        let sandbox = Sandbox::new();
+        sandbox.add_copy("plain.py", "Plain", "WIDTH = 800\n");
+        let stored = sandbox.data.path().join("scripts/plain/script.py");
+        let source_before = fs::read(&stored).unwrap();
+        let meta = sandbox.data.path().join("scripts/plain/meta.toml");
+        let meta_before = fs::read(&meta).unwrap();
+        let output = sandbox
+            .command_in(locale)
+            .args(["params", "plain", "--normalize", "WIDTH"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(String::from_utf8(output.stderr).unwrap().trim(), expected);
+        assert_eq!(fs::read(stored).unwrap(), source_before);
+        assert_eq!(fs::read(meta).unwrap(), meta_before);
+    }
+}
+
+#[test]
+fn normalize_receipt_is_exact_in_each_supported_locale() {
+    let cases = [
+        (
+            "en",
+            "Normalized WIDTH in Tool: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).",
+        ),
+        (
+            "zh-CN",
+            "已规范化 Tool 中的 WIDTH:今后用环境变量传值(不再写临时副本,$0 也仍指向你的真实文件)。",
+        ),
+        (
+            "zh-TW",
+            "已正規化 Tool 中的 WIDTH:今後用環境變數傳值(不再寫臨時副本,$0 也仍指向你的真實檔案)。",
+        ),
+    ];
+    for (locale, expected) in cases {
+        let sandbox = Sandbox::new();
+        sandbox.add_copy("tool.sh", "Tool", "WIDTH=800\n");
+        sandbox
+            .command()
+            .args(["params", "tool", "--manage", "WIDTH"])
+            .assert()
+            .success();
+        let output = sandbox
+            .command_in(locale)
+            .args(["params", "tool", "--normalize", "WIDTH"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stderr.is_empty());
+        assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), expected);
+    }
+}
+
+#[test]
+fn test_cli_normalize_refuses_reference_mode() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.data.path().join("reference.sh");
+    fs::write(&original, "WIDTH=800\n").unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            original.to_str().unwrap(),
+            "--ref",
+            "--name",
+            "Reference",
+        ])
+        .assert()
+        .success();
+    let original_before = fs::read(&original).unwrap();
+    let meta = sandbox.data.path().join("scripts/reference/meta.toml");
+    let meta_before = fs::read(&meta).unwrap();
+    let output = sandbox
+        .command()
+        .args(["params", "reference", "--normalize", "WIDTH"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().trim(),
+        "Reference is in reference mode, and skit never writes the original file. Change the line to VAR=\"${VAR:-value}\" in the source directly."
+    );
+    assert_eq!(fs::read(original).unwrap(), original_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
+}
+
+#[test]
+fn test_cli_normalize_without_a_stored_copy() {
+    let sandbox = Sandbox::new();
+    sandbox.add_copy("missing.sh", "Missing", "WIDTH=800\n");
+    let entry_dir = sandbox.data.path().join("scripts/missing");
+    fs::remove_file(entry_dir.join("script.sh")).unwrap();
+    let meta_before = fs::read(entry_dir.join("meta.toml")).unwrap();
+    let output = sandbox
+        .command()
+        .args(["params", "missing", "--normalize", "WIDTH"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().trim(),
+        "Missing has no stored copy to edit."
+    );
+    assert_eq!(fs::read(entry_dir.join("meta.toml")).unwrap(), meta_before);
+
+    let unknown = sandbox
+        .command()
+        .args(["params", "unknown", "--normalize", "WIDTH"])
+        .output()
+        .unwrap();
+    assert_eq!(unknown.status.code(), Some(1));
+    assert!(unknown.stdout.is_empty());
+    assert!(
+        String::from_utf8(unknown.stderr)
+            .unwrap()
+            .contains("entry not found: unknown")
+    );
+}
+
+#[test]
+fn normalize_refuses_non_utf8_copy_without_rewriting_source_or_meta() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.data.path().join("binary.sh");
+    fs::write(&original, b"WIDTH=800\n\xff").unwrap();
+    sandbox
+        .command()
+        .args(["add", original.to_str().unwrap(), "--name", "Binary"])
+        .assert()
+        .success();
+    let entry_dir = sandbox.data.path().join("scripts/binary");
+    let source = entry_dir.join("script.sh");
+    let source_before = fs::read(&source).unwrap();
+    let meta = entry_dir.join("meta.toml");
+    let meta_before = fs::read(&meta).unwrap();
+    let output = sandbox
+        .command()
+        .args(["params", "binary", "--normalize", "WIDTH"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().trim(),
+        "Binary isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy."
+    );
+    assert_eq!(fs::read(source).unwrap(), source_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
+}
+
+#[test]
+fn test_cli_normalize_warning_renderer_covers_every_code() {
+    let cases = [
+        ("absent", "", "X", "X isn't a plain constant"),
+        ("duplicate", "X=1\nX=2\n", "X", "assigned more than once"),
+        ("readonly", "readonly X=1\n", "X", "X is readonly"),
+        (
+            "already",
+            "X=\"${X:-1}\"\n",
+            "X",
+            "X already reads from the environment",
+        ),
+        (
+            "unsafe",
+            "X='a$b'\n",
+            "X",
+            "can't be moved into ${...:-...}",
+        ),
+        ("syntax", "if {\nX=1\n", "X", "Could not parse the script"),
+    ];
+    for (file, source, name, expected) in cases {
+        let sandbox = Sandbox::new();
+        sandbox.add_copy(&format!("{file}.sh"), file, source);
+        let output = sandbox
+            .command()
+            .args(["params", file, "--normalize", name])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{file}");
+        assert!(output.stdout.is_empty(), "{file}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains(expected), "{file}: {stderr}");
+    }
 }
 
 #[test]
@@ -267,18 +571,27 @@ fn a_legacy_non_rider_stays_declared_without_becoming_an_effective_parameter() {
 }
 
 #[test]
-fn shell_normalize_is_explicit_and_never_changes_the_original() {
+fn test_cli_normalize_turns_a_const_into_an_env_param() {
     let sandbox = Sandbox::new();
     let original = sandbox.data.path().join("tool.sh");
-    fs::write(&original, "NAME=world\necho \"$NAME\"\n").unwrap();
+    fs::write(
+        &original,
+        "#!/usr/bin/env bash\nWIDTH=800\nDEPTH=3\necho \"$WIDTH $DEPTH\"\n",
+    )
+    .unwrap();
     sandbox
         .command()
         .args(["add", original.to_str().unwrap(), "--name", "Tool"])
         .assert()
         .success();
+    sandbox
+        .command()
+        .args(["params", "tool", "--manage", "WIDTH", "--manage", "DEPTH"])
+        .assert()
+        .success();
     let normalized = sandbox
         .command()
-        .args(["params", "tool", "--normalize", "NAME"])
+        .args(["params", "tool", "--normalize", "WIDTH"])
         .output()
         .unwrap();
     assert!(normalized.status.success());
@@ -291,18 +604,72 @@ fn shell_normalize_is_explicit_and_never_changes_the_original() {
         !normalized_output.contains("Updated "),
         "{normalized_output}"
     );
-    // The canonical form keeps the expansion inside double quotes, so a default that holds
-    // spaces or globs stays one word (`src/skit/langs/shell/normalize.py:125` emits
-    // `f'"${{{name}:-{literal}}}"'`).
-    assert!(
-        fs::read_to_string(sandbox.data.path().join("scripts/tool/script.sh"))
+    let stored = fs::read_to_string(sandbox.data.path().join("scripts/tool/script.sh")).unwrap();
+    assert!(stored.contains("WIDTH=\"${WIDTH:-800}\""));
+    assert!(stored.contains("DEPTH=3"));
+    assert!(stored.contains("kind = \"envdefault\""));
+    let shown: Value = serde_json::from_slice(
+        &sandbox
+            .command()
+            .args(["show", "tool", "--json"])
+            .output()
             .unwrap()
-            .contains("NAME=\"${NAME:-world}\"")
+            .stdout,
+    )
+    .unwrap();
+    let fields = shown["fields"].as_array().unwrap();
+    assert!(
+        fields
+            .iter()
+            .any(|field| field["key"] == "WIDTH" && field["source"] == "env")
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|field| field["key"] == "DEPTH" && field["source"] == "inject")
     );
     assert_eq!(
         fs::read_to_string(original).unwrap(),
-        "NAME=world\necho \"$NAME\"\n"
+        "#!/usr/bin/env bash\nWIDTH=800\nDEPTH=3\necho \"$WIDTH $DEPTH\"\n"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_normalized_param_runs_through_the_environment() {
+    let sandbox = Sandbox::new();
+    sandbox.add_copy(
+        "runner.sh",
+        "Runner",
+        "#!/usr/bin/env bash\nWIDTH=800\necho \"w=$WIDTH\"\n",
+    );
+    sandbox
+        .command()
+        .args(["params", "runner", "--manage", "WIDTH"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .args(["params", "runner", "--normalize", "WIDTH"])
+        .assert()
+        .success();
+    let output = sandbox
+        .command()
+        .args(["run", "runner", "--set", "WIDTH=1200", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(text.contains("w=1200"), "{text}");
+    assert!(text.contains("WIDTH=1200"), "{text}");
+    // Rust launches every copy entry from an identity-checked `.run-*` snapshot. The important
+    // normalization contract is that parameter delivery needs no second injected source rewrite.
+    assert!(text.contains("scripts/runner/.run-"), "{text}");
+    assert!(!text.contains(".injected-"), "{text}");
 }
 
 #[test]

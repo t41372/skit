@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     io::{Read as _, Write as _},
     path::Path,
@@ -2523,7 +2523,8 @@ fn tui_source_controls_change_only_the_stored_copy() {
         .commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)
         .unwrap();
     let source = fs::read_to_string(&stored).unwrap();
-    let (source, managed, warnings, applied) = prepare_source_management(
+    let prepared = prepare_source_management(
+        "Tool",
         "shell",
         StorageMode::Copy,
         source,
@@ -2534,9 +2535,9 @@ fn tui_source_controls_change_only_the_stored_copy() {
         &[],
     )
     .unwrap();
-    assert!(warnings.is_empty());
-    assert!(applied);
-    let rewritten = write_managed_params("shell", &source, &managed).unwrap();
+    assert!(prepared.warnings.is_empty());
+    assert!(prepared.applied);
+    let rewritten = write_managed_params("shell", &prepared.source, &prepared.managed).unwrap();
     let claimed = service.claim_identity(&entry).unwrap();
     entry = service
         .commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)
@@ -2547,7 +2548,8 @@ fn tui_source_controls_change_only_the_stored_copy() {
     );
 
     let source = fs::read_to_string(&stored).unwrap();
-    let (source, managed, warnings, applied) = prepare_source_management(
+    let prepared = prepare_source_management(
+        "Tool",
         "shell",
         StorageMode::Copy,
         source,
@@ -2555,9 +2557,11 @@ fn tui_source_controls_change_only_the_stored_copy() {
         &["NAME".to_owned()],
     )
     .unwrap();
-    assert!(warnings.is_empty());
-    assert!(applied);
-    let rewritten = write_managed_params("shell", &source, &managed).unwrap();
+    assert!(prepared.warnings.is_empty());
+    assert!(prepared.normalization_refusals.is_empty());
+    assert_eq!(prepared.normalized, ["NAME"]);
+    assert!(prepared.applied);
+    let rewritten = write_managed_params("shell", &prepared.source, &prepared.managed).unwrap();
     let claimed = service.claim_identity(&entry).unwrap();
     service
         .commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)
@@ -2876,6 +2880,67 @@ fn params_host_updates_managed_secrets_and_skips_an_invalid_environment_source_w
     .unwrap();
     assert_eq!(fs::read(&stored).unwrap(), source_before);
     assert_eq!(fs::read(&meta).unwrap(), meta_before);
+}
+
+#[test]
+fn normalize_commit_cas_keeps_a_racing_source_and_projection_whole() {
+    let root = TempDir::new().unwrap();
+    let data = root.path().join("data");
+    let store = FileStore::new(&data);
+    let service = LibraryService::new(store.clone());
+    let entry = service
+        .add(CreateEntry {
+            name: "Normalize race".to_owned(),
+            kind: EntryKind::parse("shell").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"WIDTH=800\n".to_vec(),
+                stored_name: Some("script.sh".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let source = store.entry_dir_path(&entry.slug).join("script.sh");
+    let meta = store.entry_dir_path(&entry.slug).join("meta.toml");
+    let newest_meta = RefCell::new(Vec::new());
+
+    let error = commit_source_management_copy_edit_with_hook(
+        &service,
+        &entry,
+        b"WIDTH=\"${WIDTH:-800}\"\n",
+        || {
+            let competitor = service.claim_identity(&entry).unwrap();
+            service
+                .commit_copy_edit(&competitor, b"WIDTH=900\n", &entry.meta.source_hash)
+                .unwrap();
+            *newest_meta.borrow_mut() = fs::read(&meta).unwrap();
+        },
+    )
+    .unwrap_err();
+
+    let detail = error.message().localize(Locale::En);
+    assert!(
+        detail.contains("source changed while this edit was underway"),
+        "{detail}"
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"WIDTH=900\n");
+    assert_eq!(fs::read(&meta).unwrap(), *newest_meta.borrow());
+    assert_eq!(
+        service.show("normalize-race").unwrap().meta.source_hash,
+        skit_store::content_hash(b"WIDTH=900\n")
+    );
+    assert_eq!(
+        fs::read_dir(store.entry_dir_path(&entry.slug))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|row| row.file_name().to_string_lossy().into_owned())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["meta.toml".to_owned(), "script.sh".to_owned()])
+    );
 }
 
 #[test]

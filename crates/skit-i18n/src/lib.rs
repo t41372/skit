@@ -2476,6 +2476,56 @@ const CATALOG: &[Translation] = &[
         "--normalize 必須作為單獨的 params 操作執行",
     ),
     row!(
+        "{} has no --normalize: it is a shell idiom (VAR=value -> VAR=\"${VAR:-value}\").",
+        "{} 没有 --normalize:那是 shell 的写法(VAR=value -> VAR=\"${VAR:-value}\")。",
+        "{} 沒有 --normalize:那是 shell 的寫法(VAR=value -> VAR=\"${VAR:-value}\")。",
+    ),
+    row!(
+        "{} is in reference mode, and skit never writes the original file. Change the line to VAR=\"${VAR:-value}\" in the source directly.",
+        "{} 是 reference 模式;skit 绝不写原文件。请直接把原文件里那行改成 VAR=\"${VAR:-value}\"。",
+        "{} 是 reference 模式;skit 絕不寫原檔案。請直接把原檔案裡那行改成 VAR=\"${VAR:-value}\"。",
+    ),
+    row!(
+        "{} isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy.",
+        "{} 不是有效的 UTF-8，--normalize 无法安全改写；什么都没改——它的常量会继续用临时副本注入。",
+        "{} 不是有效的 UTF-8，--normalize 無法安全改寫；什麼都沒改——它的常數會繼續用臨時副本注入。",
+    ),
+    row!(
+        "{} isn't a plain constant with a literal value, so there's nothing to normalize; skipped.",
+        "{} 不是带字面值的普通常量,没有可以规范化的东西;已跳过。",
+        "{} 不是帶字面值的普通常數,沒有可以正規化的東西;已略過。",
+    ),
+    row!(
+        "{} is assigned more than once at the top level; normalizing it would change which value wins. Skipped.",
+        "{} 在顶层被赋值多次;规范化会改变最终生效的值。已跳过。",
+        "{} 在頂層被賦值多次;正規化會改變最終生效的值。已略過。",
+    ),
+    row!(
+        "{} is readonly, so the script could never take a value from the environment; skipped.",
+        "{} 是 readonly,脚本永远不可能从环境变量取值;已跳过。",
+        "{} 是 readonly,腳本永遠不可能從環境變數取值;已略過。",
+    ),
+    row!(
+        "{} already reads from the environment; nothing to do.",
+        "{} 已经从环境变量读取了;无需处理。",
+        "{} 已經從環境變數讀取了;無需處理。",
+    ),
+    row!(
+        "{}'s value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.",
+        "{} 的值里有无法安全放进 ${...:-...} 的字符(} \" ` $ \\ 或换行);已跳过——它会继续用临时副本注入。",
+        "{} 的值裡有無法安全放進 ${...:-...} 的字元(} \" ` $ \\ 或換行);已略過——它會繼續用臨時副本注入。",
+    ),
+    row!(
+        "Could not parse the script (syntax error); nothing was normalized.",
+        "无法解析脚本(语法错误);没有做任何规范化。",
+        "無法解析腳本(語法錯誤);沒有做任何正規化。",
+    ),
+    row!(
+        "Normalized {} in {}: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).",
+        "已规范化 {name} 中的 {names}:今后用环境变量传值(不再写临时副本,$0 也仍指向你的真实文件)。",
+        "已正規化 {name} 中的 {names}:今後用環境變數傳值(不再寫臨時副本,$0 也仍指向你的真實檔案)。",
+    ),
+    row!(
         "--raw runs the script as-is; --set, --preset, and --save-preset do not apply.",
         "--raw 会原样运行脚本;--set、--preset、--save-preset 都不适用。",
         "--raw 會原樣執行腳本;--set、--preset、--save-preset 都不適用。",
@@ -3992,7 +4042,14 @@ pub const fn catalog() -> &'static [Translation] {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Message {
     template: &'static str,
-    values: Vec<Value>,
+    values: Vec<MessageValue>,
+}
+
+/// One positional or named message value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MessageValue {
+    name: Option<&'static str>,
+    value: Value,
 }
 
 /// One value in a message.
@@ -4032,7 +4089,20 @@ impl Message {
     /// Add one value for the next `{}` hole.
     #[must_use]
     pub fn with(mut self, value: impl Display) -> Self {
-        self.values.push(Value::Text(value.to_string()));
+        self.values.push(MessageValue {
+            name: None,
+            value: Value::Text(value.to_string()),
+        });
+        self
+    }
+
+    /// Add one named value that a translation can place in a different order.
+    #[must_use]
+    pub fn named(mut self, name: &'static str, value: impl Display) -> Self {
+        self.values.push(MessageValue {
+            name: Some(name),
+            value: Value::Text(value.to_string()),
+        });
         self
     }
 
@@ -4050,7 +4120,10 @@ impl Message {
     /// Use this when one typed error contains another.
     #[must_use]
     pub fn nested(mut self, value: Self) -> Self {
-        self.values.push(Value::Nested(value));
+        self.values.push(MessageValue {
+            name: None,
+            value: Value::Nested(value),
+        });
         self
     }
 
@@ -4066,16 +4139,26 @@ impl Message {
         let values = self
             .values
             .iter()
-            .map(|value| match value {
+            .map(|argument| match &argument.value {
                 Value::Text(text) => text.clone(),
                 Value::Nested(message) => message.localize(locale),
             })
             .collect::<Vec<_>>();
-        let values = values
+        let positional = values
             .iter()
             .map(|value| value as &dyn Display)
             .collect::<Vec<_>>();
-        format_text(locale, self.template, &values)
+        if self.values.iter().all(|value| value.name.is_some()) {
+            let named = self
+                .values
+                .iter()
+                .zip(&values)
+                .map(|(argument, value)| (argument.name.unwrap_or_default(), value as &dyn Display))
+                .collect::<Vec<_>>();
+            format_named_text(locale, self.template, &named)
+        } else {
+            format_text(locale, self.template, &positional)
+        }
     }
 }
 
@@ -4219,6 +4302,38 @@ pub fn format_text(locale: Locale, english: &str, values: &[&dyn Display]) -> St
         output.push_str("{}");
         output.push_str(part);
     }
+    output
+}
+
+/// Translate one template and replace named holes without inspecting inserted values.
+#[must_use]
+pub fn format_named_text(locale: Locale, english: &str, values: &[(&str, &dyn Display)]) -> String {
+    let template = text(locale, english);
+    let has_named_hole = values
+        .iter()
+        .any(|(name, _)| template.contains(&format!("{{{name}}}")));
+    if !has_named_hole {
+        let positional = values.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+        return format_text(locale, english, &positional);
+    }
+    let mut output = String::with_capacity(template.len());
+    let mut rest = template.as_ref();
+    while let Some(open) = rest.find('{') {
+        output.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        let Some(close) = after_open.find('}') else {
+            output.push_str(&rest[open..]);
+            return output;
+        };
+        let name = &after_open[..close];
+        if let Some((_, value)) = values.iter().find(|(candidate, _)| *candidate == name) {
+            let _ = write!(output, "{value}");
+        } else {
+            output.push_str(&rest[open..open + close + 2]);
+        }
+        rest = &after_open[close + 1..];
+    }
+    output.push_str(rest);
     output
 }
 

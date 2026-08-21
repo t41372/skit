@@ -13,7 +13,8 @@ pub use declarations::{declared_for_template, declared_from_meta};
 pub use edit::{
     DeclaredEditContext, DeclaredEditRequest, DeclaredEditResult, DeclaredEditWarning,
     DeclaredRowFinishError, NamedEdit, SourceEditRequest, SourceEditResult, SourceEditWarning,
-    SourceManageResult, SourceManageWarning, as_param_type, edit_declared,
+    SourceManageResult, SourceManageWarning, SourceNormalizationRefusal,
+    SourceNormalizationRefusalKind, SourceNormalizationResult, as_param_type, edit_declared,
     finish_declared_parameter_edit, finish_declared_row, manage_source_candidates,
 };
 pub use secrets::{is_secret_name, synthesized_placeholder};

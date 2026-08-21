@@ -728,7 +728,7 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     assert_eq!(python_deps["dependencies"], serde_json::json!([]));
     assert_eq!(python_deps["requires_python"], "");
     sandbox.ok(&["params", "python-deps", "--workdir", "invoke"]);
-    sandbox.code(&["params", "python-deps", "--normalize", "NAME"], 2);
+    sandbox.code(&["params", "python-deps", "--normalize", "NAME"], 1);
 
     let javascript = sandbox.source("deps.js", b"console.log('ok');\n");
     sandbox.ok(&["add", &javascript, "--name", "JavaScript deps"]);
@@ -830,7 +830,10 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
     sandbox.ok(&["params", "managed", "--manage", "NAME"]);
     sandbox.ok(&["params", "managed", "--resync"]);
     sandbox.code(&["params", "reference", "--resync"], 1);
-    sandbox.code(&["params", "managed", "--normalize", "missing"], 2);
+    sandbox.warn(
+        &["params", "managed", "--normalize", "missing"],
+        "missing isn't a plain constant",
+    );
     sandbox.ok(&["params", "managed", "--normalize", "NAME"]);
 
     sandbox.ok(&[

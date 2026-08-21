@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use skit_domain::parameters::{
     NamedEdit, ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-    SourceEditRequest, SourceEditResult, SourceEditWarning, coerce_default, is_secret_name,
+    SourceEditRequest, SourceEditResult, SourceEditWarning, SourceNormalizationRefusalKind,
+    coerce_default, is_secret_name,
 };
 
 use crate::LanguageError;
@@ -284,6 +285,25 @@ impl SourceEditPlan {
             .collect();
         super::apply_source_edits(source, edits)
     }
+
+    pub(crate) fn combine(
+        source: &str,
+        plans: impl IntoIterator<Item = Self>,
+    ) -> Result<Self, LanguageError> {
+        let mut edits = Vec::new();
+        for plan in plans {
+            if plan.source != source {
+                return Err(LanguageError::SourceChanged);
+            }
+            edits.extend(plan.edits);
+        }
+        let plan = Self {
+            source: source.to_owned(),
+            edits,
+        };
+        plan.apply(source)?;
+        Ok(plan)
+    }
 }
 
 /// One parser-owned source document.
@@ -443,6 +463,14 @@ impl ParsedDocument {
                 kind: "powershell".to_owned(),
             }),
         }
+    }
+
+    pub(crate) fn plan_shell_normalization_typed(
+        &self,
+        name: &str,
+    ) -> Result<SourceEditPlan, SourceNormalizationRefusalKind> {
+        debug_assert_eq!(self.kind, ParserKind::Shell);
+        shell::normalize_typed(self, name)
     }
 }
 

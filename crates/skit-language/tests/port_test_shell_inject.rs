@@ -42,10 +42,12 @@ use std::collections::BTreeMap;
 
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    SourceNormalizationRefusalKind,
 };
 use skit_language::{
     LanguageError, ParseOutcome, ParsedDocument, SemanticCandidate, ShellInputError,
-    SourceEditPlan, normalize_shell_default, parse_document, source_is_valid,
+    SourceEditPlan, normalize_shell_default, normalize_shell_defaults, parse_document,
+    source_is_valid,
 };
 
 // ---------------------------------------------------------------- helpers
@@ -908,15 +910,29 @@ fn test_normalize_on_an_unparseable_script_changes_nothing() {
 }
 
 #[test]
-fn test_normalize_mixed_batch_reports_each_name() {
-    // Python normalizes ["WIDTH", "MAX", "NOPE"] in one batch: WIDTH normalized, MAX refused
-    // (readonly), NOPE refused (not-a-const). Ported as three single-name calls (batch is Tier 3/4).
+fn rust_additive_normalize_batch_has_typed_per_item_results() {
     let src = "#!/usr/bin/env bash\nWIDTH=800\nreadonly MAX=100\n";
-    let out = normalize_shell_default(src, "WIDTH").unwrap();
-    assert!(out.contains("WIDTH=\"${WIDTH:-800}\""));
-    assert!(out.contains("readonly MAX=100")); // untouched
-    assert!(normalize_shell_default(src, "MAX").is_err()); // readonly:MAX
-    assert!(normalize_shell_default(src, "NOPE").is_err()); // not-a-const:NOPE
+    let result = normalize_shell_defaults(
+        src,
+        &["WIDTH".to_owned(), "MAX".to_owned(), "NOPE".to_owned()],
+    )
+    .unwrap();
+    assert_eq!(result.normalized, ["WIDTH"]);
+    assert_eq!(
+        result
+            .refused
+            .iter()
+            .map(|refusal| (refusal.kind, refusal.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (SourceNormalizationRefusalKind::Readonly, "MAX"),
+            (SourceNormalizationRefusalKind::NotAConst, "NOPE"),
+        ]
+    );
+    assert_eq!(
+        result.source,
+        "#!/usr/bin/env bash\nWIDTH=\"${WIDTH:-800}\"\nreadonly MAX=100\n"
+    );
 }
 
 // ---------------------------------------------------------------- flows.execute integration
@@ -950,34 +966,6 @@ fn test_execute_without_an_injector_does_not_crash() {}
 #[test]
 #[ignore = "UNMAPPED: `skit run --dry-run` transparency line shows the ORIGINAL script path (no temp copy) -> Tier 4 (skit-cli)."]
 fn test_cli_dry_run_shows_the_command() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize` writes the envdefault back to the stored copy + updates the [tool.skit] block + `skit show --json` -> Tier 4 (skit-cli). The normalize bytes are covered by test_normalize_makes_the_param_an_envdefault."]
-fn test_cli_normalize_turns_a_const_into_an_env_param() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit run` after `--normalize` delivers through the environment (env prefix + ORIGINAL path in the transparency line) -> Tier 4 (skit-cli)."]
-fn test_cli_normalized_param_runs_through_the_environment() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize MAX` reports the readonly refusal + leaves the file untouched -> Tier 4 (skit-cli). The refusal is covered by test_normalize_refuses_and_leaves_the_source_untouched."]
-fn test_cli_normalize_reports_refusals() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize` on a non-shell (python) kind exits 1 -> Tier 4 (skit-cli). skit-language's plan_shell_normalization returns UnsupportedKind for non-shell, but the CLI gate is above it."]
-fn test_cli_normalize_refuses_a_non_shell_kind() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize` refuses reference mode (no stored copy to edit) exits 1 -> Tier 4 (skit-cli/store)."]
-fn test_cli_normalize_refuses_reference_mode() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize` with the stored copy deleted exits 1 with `no stored copy` -> Tier 4 (skit-cli/store)."]
-fn test_cli_normalize_without_a_stored_copy() {}
-
-#[test]
-#[ignore = "UNMAPPED: cli._render_normalize_warning renders every refusal code -> Tier 4 (skit-cli). The refusal codes themselves are the CLI's string rendering of what skit-language returns as one error."]
-fn test_cli_normalize_warning_renderer_covers_every_code() {}
 
 // ---------------------------------------------------------------- remaining pure-logic
 

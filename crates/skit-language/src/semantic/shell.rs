@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, is_secret_name,
+    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    SourceNormalizationRefusalKind, is_secret_name,
 };
 
 use super::{
@@ -726,6 +727,15 @@ pub(super) fn normalize(
     document: &ParsedDocument,
     name: &str,
 ) -> Result<SourceEditPlan, LanguageError> {
+    normalize_typed(document, name).map_err(|_| LanguageError::BindingNotFound {
+        name: name.to_owned(),
+    })
+}
+
+pub(super) fn normalize_typed(
+    document: &ParsedDocument,
+    name: &str,
+) -> Result<SourceEditPlan, SourceNormalizationRefusalKind> {
     let assignments = top_level_assignments(document)
         .into_iter()
         .filter(|(assignment, _)| {
@@ -736,37 +746,29 @@ pub(super) fn normalize(
         })
         .collect::<Vec<_>>();
     let [(assignment, readonly)] = assignments.as_slice() else {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
+        return Err(if assignments.is_empty() {
+            SourceNormalizationRefusalKind::NotAConst
+        } else {
+            SourceNormalizationRefusalKind::MultipleAssignments
         });
     };
     if *readonly {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::Readonly);
     }
     let Some(value) = assignment.child_by_field_name("value") else {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::NotAConst);
     };
     if references(document, value, name) {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::AlreadyEnv);
     }
     let Some(literal) = literal_text(document, value).filter(|value| !value.is_empty()) else {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::NotAConst);
     };
     if literal
         .chars()
         .any(|character| "}\"`$\\\n;|&()<>".contains(character))
     {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::UnsafeLiteral);
     }
     Ok(SourceEditPlan {
         source: document.source.clone(),

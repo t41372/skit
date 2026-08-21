@@ -45,7 +45,8 @@ use skit_domain::{
     parameters::{
         DeclaredEditContext, DeclaredEditRequest, DeclaredEditWarning, NamedEdit, ParamDecl,
         ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, SourceEditRequest,
-        SourceEditWarning, as_param_type, coerce_default, edit_declared, synthesized_placeholder,
+        SourceEditWarning, SourceNormalizationRefusal, SourceNormalizationRefusalKind,
+        as_param_type, coerce_default, edit_declared, synthesized_placeholder,
     },
 };
 use skit_form::{
@@ -61,7 +62,7 @@ use skit_language::{
     LosslessSource, ParseOutcome, UvMetadata, UvMetadataEditError, cli_params, decode_prompt,
     detect_candidates, edit_source_declarations, effective_entry_settings,
     effective_uv_metadata_bytes, external_dependencies_at, has_uv_metadata_block_bytes,
-    infer_draft_kind, infer_kind, managed_params, normalize_shell_default, parse_document,
+    infer_draft_kind, infer_kind, managed_params, normalize_shell_defaults, parse_document,
     placeholder_params, plan_uv_metadata_edit, python_version_pin, read_uv_metadata,
     shebang_program, split_pep508_requirements, suggest_description, validate_pep440_specifiers,
     validate_pep508_requirement, write_managed_params, write_managed_params_bytes,
@@ -4917,17 +4918,38 @@ fn reconcile_template_parameters(template: &str, current: &[ParamDecl]) -> Vec<P
 }
 
 fn prepare_source_management(
+    entry_name: &str,
     kind: &str,
     mode: StorageMode,
     mut source: String,
     request: &SourceEditRequest,
     normalize: &[String],
-) -> Result<(String, Vec<ParamDecl>, Vec<SourceEditWarning>, bool), CliError> {
+) -> Result<PreparedSourceManagement, CliError> {
     if request.is_empty() && normalize.is_empty() {
         let managed = managed_params(kind, &source);
-        return Ok((source, managed, Vec::new(), false));
+        return Ok(PreparedSourceManagement {
+            source,
+            managed,
+            ..PreparedSourceManagement::default()
+        });
+    }
+    if !normalize.is_empty() && kind != "shell" {
+        return Err(CliError::Failure(
+            Message::new(
+                "{} has no --normalize: it is a shell idiom (VAR=value -> VAR=\"${VAR:-value}\").",
+            )
+            .with(entry_name),
+        ));
     }
     if mode == StorageMode::Reference {
+        if !normalize.is_empty() {
+            return Err(CliError::Failure(
+                Message::new(
+                    "{} is in reference mode, and skit never writes the original file. Change the line to VAR=\"${VAR:-value}\" in the source directly.",
+                )
+                .with(entry_name),
+            ));
+        }
         return Err(CliError::Failure(Message::new(
             "source management applies only to a stored copy",
         )));
@@ -4942,26 +4964,58 @@ fn prepare_source_management(
         managed = result.declarations;
         warnings = result.warnings;
     }
-    for name in normalize {
-        applied = true;
-        if kind != "shell" {
-            return Err(CliError::Usage(Message::new(
-                "--normalize applies only to shell entries",
-            )));
-        }
-        source = normalize_shell_default(&source, name)
-            .map_err(|error| CliError::Usage(error.message()))?;
-        let normalized = detect_candidates(kind, &source)
-            .into_iter()
+    let normalization = if normalize.is_empty() {
+        None
+    } else {
+        Some(
+            normalize_shell_defaults(&source, normalize)
+                .map_err(|error| CliError::Failure(error.message()))?,
+        )
+    };
+    if let Some(normalization) = &normalization {
+        source.clone_from(&normalization.source);
+        applied |= !normalization.normalized.is_empty();
+    }
+    let normalized_candidates = normalization
+        .as_ref()
+        .filter(|result| !result.normalized.is_empty())
+        .map(|_| detect_candidates(kind, &source))
+        .unwrap_or_default();
+    for name in normalization.iter().flat_map(|result| &result.normalized) {
+        let normalized = normalized_candidates
+            .iter()
             .find(|item| item.name == *name)
-            .ok_or_else(|| CliError::Usage(Message::new("could not normalize {}").with(name)))?;
+            .cloned()
+            .ok_or_else(|| CliError::Failure(Message::new("could not normalize {}").with(name)))?;
         if let Some(item) = managed.iter_mut().find(|item| item.name == *name) {
             *item = normalized;
         } else {
             managed.push(normalized);
         }
     }
-    Ok((source, managed, warnings, applied))
+    Ok(PreparedSourceManagement {
+        source,
+        managed,
+        warnings,
+        normalization_refusals: normalization
+            .as_ref()
+            .map(|result| result.refused.clone())
+            .unwrap_or_default(),
+        normalized: normalization
+            .map(|result| result.normalized)
+            .unwrap_or_default(),
+        applied,
+    })
+}
+
+#[derive(Debug, Default)]
+struct PreparedSourceManagement {
+    source: String,
+    managed: Vec<ParamDecl>,
+    warnings: Vec<SourceEditWarning>,
+    normalization_refusals: Vec<SourceNormalizationRefusal>,
+    normalized: Vec<String>,
+    applied: bool,
 }
 
 fn rollback_source_edit_after_state_failure(
@@ -4976,6 +5030,25 @@ fn rollback_source_edit_after_state_failure(
     let claimed = service.claim_identity(updated)?;
     service.commit_copy_edit(&claimed, original_bytes, &updated.meta.source_hash)?;
     Ok(())
+}
+
+fn commit_source_management_copy_edit(
+    service: &LibraryService<FileStore>,
+    entry: &Entry,
+    bytes: &[u8],
+) -> Result<Entry, CliError> {
+    commit_source_management_copy_edit_with_hook(service, entry, bytes, || {})
+}
+
+fn commit_source_management_copy_edit_with_hook(
+    service: &LibraryService<FileStore>,
+    entry: &Entry,
+    bytes: &[u8],
+    hook: impl FnOnce(),
+) -> Result<Entry, CliError> {
+    let claimed = service.claim_identity(entry)?;
+    hook();
+    Ok(service.commit_copy_edit(&claimed, bytes, &entry.meta.source_hash)?)
 }
 
 fn source_edit_state_rollback<'a>(
@@ -5138,7 +5211,20 @@ fn params(
                 Message::new("{} has no stored copy to edit.").with(&held.meta.name),
             ));
         }
-        source.ok().flatten().unwrap_or_default()
+        match source {
+            Ok(source) => source.unwrap_or_default(),
+            Err(error)
+                if !args.normalize.is_empty() && error.kind() == io::ErrorKind::InvalidData =>
+            {
+                return Err(CliError::Failure(
+                    Message::new(
+                        "{} isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy.",
+                    )
+                    .with(&held.meta.name),
+                ));
+            }
+            Err(_) => String::new(),
+        }
     };
     if has_metadata_schema_operation {
         return edit_declared_params(service, held, settings, &original_source, args);
@@ -5182,14 +5268,20 @@ fn params(
         prompts,
         env_sources,
     };
-    let (mut source, prepared_managed, source_edit_warnings, source_edit_applied) =
-        prepare_source_management(
-            held.meta.kind.as_str(),
-            held.meta.mode,
-            original_source.clone(),
-            &source_request,
-            &args.normalize,
-        )?;
+    let prepared_source = prepare_source_management(
+        &held.meta.name,
+        held.meta.kind.as_str(),
+        held.meta.mode,
+        original_source.clone(),
+        &source_request,
+        &args.normalize,
+    )?;
+    let mut source = prepared_source.source;
+    let prepared_managed = prepared_source.managed;
+    let source_edit_warnings = prepared_source.warnings;
+    let normalization_refusals = prepared_source.normalization_refusals;
+    let normalized_names = prepared_source.normalized;
+    let source_edit_applied = prepared_source.applied;
     let mut declarations = if source_parameter_kind && has_source_schema_operation {
         form_params_from_managed(prepared_managed, &settings)
     } else {
@@ -5219,6 +5311,12 @@ fn params(
         eprintln!(
             "{}",
             source_edit_warning_message(warning).localize(active_locale())
+        );
+    }
+    for refusal in &normalization_refusals {
+        eprintln!(
+            "{}",
+            source_normalization_refusal_message(refusal).localize(active_locale())
         );
     }
 
@@ -5270,12 +5368,8 @@ fn params(
                         if !source_changed {
                             return Ok((held.clone(), false));
                         }
-                        let claimed = service.claim_identity(&held)?;
-                        let updated = service.commit_copy_edit(
-                            &claimed,
-                            source.as_bytes(),
-                            &held.meta.source_hash,
-                        )?;
+                        let updated =
+                            commit_source_management_copy_edit(service, &held, source.as_bytes())?;
                         Ok((updated, true))
                     },
                     |state| scrub_secrets(&declarations, state),
@@ -5285,8 +5379,7 @@ fn params(
             held = updated;
             report_purged_secrets(purged, args.json);
         } else if source != original_source {
-            let claimed = service.claim_identity(&held)?;
-            held = service.commit_copy_edit(&claimed, source.as_bytes(), &held.meta.source_hash)?;
+            held = commit_source_management_copy_edit(service, &held, source.as_bytes())?;
         }
     } else if changed {
         if !(prompt_schema_was_hidden && has_interpolation_policy) {
@@ -5328,6 +5421,19 @@ fn params(
         }
         let claimed = service.claim_identity(&held)?;
         held = service.update_settings(&claimed, &settings, &workdir)?;
+    }
+    if !args.normalize.is_empty() && !args.json {
+        if !normalized_names.is_empty() {
+            let locale = active_locale();
+            let names = normalized_names.join(", ");
+            let message = Message::new(
+                "Normalized {} in {}: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).",
+            )
+            .named("names", names)
+            .named("name", &held.meta.name);
+            println!("{}", message.localize(locale));
+        }
+        return Ok(());
     }
     if has_managed_edit_operation && !args.json {
         let names = declarations
@@ -5661,6 +5767,34 @@ fn source_edit_warning_message(warning: &SourceEditWarning) -> Message {
             "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
         )
         .with(name),
+    }
+}
+
+fn source_normalization_refusal_message(refusal: &SourceNormalizationRefusal) -> Message {
+    match refusal.kind {
+        SourceNormalizationRefusalKind::NotAConst => Message::new(
+            "{} isn't a plain constant with a literal value, so there's nothing to normalize; skipped.",
+        )
+        .with(&refusal.name),
+        SourceNormalizationRefusalKind::MultipleAssignments => Message::new(
+            "{} is assigned more than once at the top level; normalizing it would change which value wins. Skipped.",
+        )
+        .with(&refusal.name),
+        SourceNormalizationRefusalKind::Readonly => Message::new(
+            "{} is readonly, so the script could never take a value from the environment; skipped.",
+        )
+        .with(&refusal.name),
+        SourceNormalizationRefusalKind::AlreadyEnv => {
+            Message::new("{} already reads from the environment; nothing to do.")
+                .with(&refusal.name)
+        }
+        SourceNormalizationRefusalKind::UnsafeLiteral => Message::new(
+            "{}'s value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.",
+        )
+        .with(&refusal.name),
+        SourceNormalizationRefusalKind::SyntaxError => {
+            Message::new("Could not parse the script (syntax error); nothing was normalized.")
+        }
     }
 }
 
@@ -9682,6 +9816,7 @@ fn selected_prompt_runner_preflight_message(
 #[derive(Debug, Default, Eq, PartialEq)]
 struct SettingsSaveOutcome {
     warnings: Vec<SourceEditWarning>,
+    normalization_refusals: Vec<SourceNormalizationRefusal>,
     purged_secrets: BTreeSet<String>,
 }
 
@@ -9937,6 +10072,7 @@ fn tui_submit_settings(
     let source_requested =
         !source_request.is_empty() || !tui_value(values, "source:normalize").is_empty();
     let mut source_edit_warnings = Vec::new();
+    let mut normalization_refusals = Vec::new();
     let mut source_state_purge = None;
     if let Some(original_bytes) = original_source.as_deref() {
         let mut working = rewritten_source
@@ -9944,14 +10080,26 @@ fn tui_submit_settings(
             .unwrap_or_else(|| original_bytes.to_vec());
         let view = LosslessSource::from_bytes(&working);
         let original_text = view.normalized_text().to_owned();
-        let (rewritten, mut managed, warnings, source_edit_applied) = prepare_source_management(
+        let prepared = prepare_source_management(
+            &entry.meta.name,
             entry.meta.kind.as_str(),
             entry.meta.mode,
             original_text.clone(),
             &source_request,
             &tui_list(values, "source:normalize"),
         )?;
-        source_edit_warnings = warnings;
+        let rewritten = prepared.source;
+        let mut managed = prepared.managed;
+        source_edit_warnings = prepared.warnings;
+        normalization_refusals = prepared.normalization_refusals;
+        if prepared.normalized.is_empty()
+            && let Some(refusal) = normalization_refusals.first()
+        {
+            return Err(CliError::Failure(source_normalization_refusal_message(
+                refusal,
+            )));
+        }
+        let source_edit_applied = prepared.applied;
         // The block's own rows are edited on the block's own set. Unticking one here is the
         // unmanage: version 0.4 rewrites the block from the rows that survived
         // (`src/skit/tui_settings.py:1061`, `:1074`).
@@ -10065,6 +10213,7 @@ fn tui_submit_settings(
     }
     Ok(SettingsSaveOutcome {
         warnings: source_edit_warnings,
+        normalization_refusals,
         purged_secrets,
     })
 }
@@ -10076,6 +10225,12 @@ fn settings_saved_message(outcome: &SettingsSaveOutcome, locale: Locale) -> Stri
             .warnings
             .iter()
             .map(|warning| source_edit_warning_message(warning).localize(locale)),
+    );
+    lines.extend(
+        outcome
+            .normalization_refusals
+            .iter()
+            .map(|refusal| source_normalization_refusal_message(refusal).localize(locale)),
     );
     if !outcome.purged_secrets.is_empty() {
         lines.push(purged_secrets_message(&outcome.purged_secrets).localize(locale));

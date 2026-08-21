@@ -139,6 +139,35 @@ fn formatted_messages_translate_the_template_without_translating_user_values() {
 }
 
 #[test]
+fn named_message_values_reorder_without_rewriting_user_text() {
+    let template = "Normalized {} in {}: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).";
+    let message = skit_i18n::Message::new(template)
+        .named("names", "WIDTH")
+        .named("name", "Tool");
+    assert_eq!(
+        message.localize(Locale::En),
+        "Normalized WIDTH in Tool: delivered as environment variables from now on (no temporary copy, and $0 stays your real file)."
+    );
+    assert_eq!(
+        message.localize(Locale::ZhCn),
+        "已规范化 Tool 中的 WIDTH:今后用环境变量传值(不再写临时副本,$0 也仍指向你的真实文件)。"
+    );
+    assert_eq!(
+        message.localize(Locale::ZhTw),
+        "已正規化 Tool 中的 WIDTH:今後用環境變數傳值(不再寫臨時副本,$0 也仍指向你的真實檔案)。"
+    );
+
+    let literal_holes = skit_i18n::Message::new(template)
+        .named("names", "WIDTH {name}")
+        .named("name", "Tool {names}");
+    assert!(
+        literal_holes
+            .localize(Locale::ZhTw)
+            .starts_with("已正規化 Tool {names} 中的 WIDTH {name}:")
+    );
+}
+
+#[test]
 fn owned_draft_cleanup_warning_is_complete_in_every_locale() {
     let source = "The kept draft changed before cleanup. skit kept it at {}.";
     let path = "/data/drafts/skit-new-task.py";

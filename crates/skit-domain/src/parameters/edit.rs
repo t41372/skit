@@ -16,6 +16,58 @@ pub struct NamedEdit<T> {
     pub value: T,
 }
 
+/// One reason that an opt-in source normalization left a requested name unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceNormalizationRefusalKind {
+    /// No top-level literal assignment has this name.
+    NotAConst,
+    /// More than one top-level assignment has this name.
+    MultipleAssignments,
+    /// The selected assignment cannot be reassigned.
+    Readonly,
+    /// The selected assignment already reads its value from the environment.
+    AlreadyEnv,
+    /// Moving the literal into an environment-default expression would change its meaning.
+    UnsafeLiteral,
+    /// The source did not parse, so no edit was safe.
+    SyntaxError,
+}
+
+impl SourceNormalizationRefusalKind {
+    /// Return the stable compatibility code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NotAConst => "not-a-const",
+            Self::MultipleAssignments => "multiple-assignments",
+            Self::Readonly => "readonly",
+            Self::AlreadyEnv => "already-env",
+            Self::UnsafeLiteral => "unsafe-literal",
+            Self::SyntaxError => "syntax-error",
+        }
+    }
+}
+
+/// One named source normalization refusal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceNormalizationRefusal {
+    /// Requested parameter name.
+    pub name: String,
+    /// Stable refusal reason.
+    pub kind: SourceNormalizationRefusalKind,
+}
+
+/// The complete result of one atomic source normalization plan.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceNormalizationResult {
+    /// Rewritten source, or the original source when no name was accepted.
+    pub source: String,
+    /// Accepted names in request order.
+    pub normalized: Vec<String>,
+    /// Refused names and reasons in request order.
+    pub refused: Vec<SourceNormalizationRefusal>,
+}
+
 impl<T> NamedEdit<T> {
     /// Build one name-keyed edit.
     pub fn new(name: impl Into<String>, value: impl Into<T>) -> Self {
