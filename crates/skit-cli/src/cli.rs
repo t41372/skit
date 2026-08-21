@@ -6320,6 +6320,26 @@ fn dialoguer_error(error: dialoguer::Error) -> CliError {
     }
 }
 
+#[cfg(test)]
+mod dialoguer_error_tests {
+    use super::{CliError, dialoguer_error};
+    use std::io;
+
+    #[test]
+    fn eof_and_interrupt_abort_while_other_dialoguer_io_stays_typed() {
+        for kind in [io::ErrorKind::UnexpectedEof, io::ErrorKind::Interrupted] {
+            assert!(matches!(
+                dialoguer_error(dialoguer::Error::from(io::Error::from(kind))),
+                CliError::Aborted
+            ));
+        }
+        assert!(matches!(
+            dialoguer_error(dialoguer::Error::from(io::Error::other("test dialoguer failure"))),
+            CliError::Io(error) if error.kind() == io::ErrorKind::Other
+        ));
+    }
+}
+
 fn doctor(
     service: &LibraryService<FileStore>,
     store: &FileStore,
