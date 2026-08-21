@@ -1848,8 +1848,11 @@ fn inline_run_accepts_a_real_path_ghost_with_right_before_launch() {
     assert_eq!(tree_snapshot(state.path()), state_before);
     assert_eq!(tree_snapshot(config.path()), config_before);
 
+    let accepted = tui.checkpoint();
     tui.send(b"\x1b[C");
-    thread::sleep(Duration::from_millis(50));
+    // Ratatui repaints only the suffix whose ghost style changed. This output confirms that the
+    // Right event reached a completed render before the run chord arrives.
+    let _ = tui.wait_for_after(accepted, "ta.csv");
     let launch = tui.checkpoint();
     tui.send(&[0x12]);
     let (code, output) = tui.wait_for_exit_status_after(launch);

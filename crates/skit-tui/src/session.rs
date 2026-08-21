@@ -151,7 +151,9 @@ struct PathSuggestionSession {
     requests: Option<mpsc::SyncSender<PathSuggestionJob>>,
     results: Option<mpsc::Receiver<PathSuggestionResult>>,
     generation: u64,
-    expected: Option<(u64, usize, String)>,
+    expected: Option<(u64, usize, PathCompletionRequest)>,
+    in_flight: bool,
+    retry_pending: bool,
     visible: Option<VisiblePathSuggestion>,
 }
 
@@ -206,22 +208,29 @@ impl PathSuggestionSession {
         let current_matches = self
             .expected
             .as_ref()
-            .is_some_and(|(_, target, value)| *target == field && value == &request.value);
+            .is_some_and(|(_, target, expected)| *target == field && expected == &request);
         if current_matches {
             return;
         }
         self.generation = self.generation.wrapping_add(1);
         let generation = self.generation;
-        let value = request.value.clone();
         self.visible = None;
         let job = PathSuggestionJob {
             generation,
             field,
-            request: Box::new(request),
+            request: Box::new(request.clone()),
         };
         match self.requests.as_ref().map(|sender| sender.try_send(job)) {
-            Some(Ok(())) => self.expected = Some((generation, field, value)),
-            Some(Err(mpsc::TrySendError::Full(_))) => self.expected = None,
+            Some(Ok(())) => {
+                self.expected = Some((generation, field, request));
+                self.in_flight = true;
+                self.retry_pending = false;
+            }
+            Some(Err(mpsc::TrySendError::Full(_))) => {
+                self.expected = None;
+                self.in_flight = false;
+                self.retry_pending = true;
+            }
             Some(Err(mpsc::TrySendError::Disconnected(_))) | None => self.clear(),
         }
     }
@@ -235,10 +244,10 @@ impl PathSuggestionSession {
             let is_current = self
                 .expected
                 .as_ref()
-                .is_some_and(|(generation, field, value)| {
+                .is_some_and(|(generation, field, request)| {
                     *generation == result.generation
                         && *field == result.field
-                        && *value == result.value
+                        && request.value == result.value
                 });
             if !is_current {
                 continue;
@@ -253,6 +262,7 @@ impl PathSuggestionSession {
                     },
                 )
             });
+            self.in_flight = false;
             changed = true;
         }
         changed
@@ -263,7 +273,9 @@ impl PathSuggestionSession {
             (visible.field == field
                 && visible.value == value
                 && self.expected.as_ref().is_some_and(|expected| {
-                    expected.0 == visible.generation && expected.1 == field && expected.2 == value
+                    expected.0 == visible.generation
+                        && expected.1 == field
+                        && expected.2.value == value
                 }))
             .then_some(visible.suggestion.as_str())
         })
@@ -277,7 +289,13 @@ impl PathSuggestionSession {
 
     fn clear(&mut self) {
         self.expected = None;
+        self.in_flight = false;
+        self.retry_pending = false;
         self.visible = None;
+    }
+
+    fn has_pending_work(&self) -> bool {
+        self.in_flight || self.retry_pending
     }
 }
 
@@ -460,6 +478,12 @@ impl TuiSession {
     #[must_use]
     pub fn refresh_background(&mut self) -> bool {
         self.path_suggestions.refresh()
+    }
+
+    /// Report whether the terminal must poll for path-completion progress.
+    #[must_use]
+    pub(crate) fn has_pending_path_completion(&self) -> bool {
+        self.path_suggestions.has_pending_work()
     }
 
     /// Dispatch one terminal event through the active mature widget first.
@@ -2894,4 +2918,79 @@ pub(crate) fn radio_style() -> ButtonStyle {
         .focused(SELECT_FG, SELECT_BG)
         .unfocused(Color::White, Color::Reset)
         .toggled(SELECT_FG, SELECT_BG)
+}
+
+#[cfg(test)]
+mod path_suggestion_tests {
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+    };
+
+    use skit_application::{
+        path_completion::{PathCompletionContext, PathCompletionKind},
+        tokens::TokenContext,
+    };
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct ContextProvider;
+
+    impl PathCompletionProvider for ContextProvider {
+        fn complete(&self, request: &PathCompletionRequest) -> Option<String> {
+            if request.context.workdir.as_path() == Path::new("/old") {
+                thread::sleep(Duration::from_millis(75));
+                Some("old.txt".to_owned())
+            } else {
+                Some("new.txt".to_owned())
+            }
+        }
+    }
+
+    fn request(workdir: &str) -> PathCompletionRequest {
+        PathCompletionRequest {
+            value: "n".to_owned(),
+            kind: PathCompletionKind::Path,
+            shlexy: false,
+            placeholder_braces: false,
+            dialect: PathInputDialect::Posix,
+            context: PathCompletionContext {
+                workdir: PathBuf::from(workdir),
+                invoke_cwd: PathBuf::from("/invoke"),
+                tokens: TokenContext {
+                    cwd: "/invoke".to_owned(),
+                    home: None,
+                    env: BTreeMap::new(),
+                    today: "2026-08-21".to_owned(),
+                    now: "12-00-00".to_owned(),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn same_value_in_a_new_context_replaces_the_old_pending_request() {
+        let mut suggestions = PathSuggestionSession::new(Arc::new(ContextProvider));
+        assert!(!suggestions.has_pending_work());
+        suggestions.ensure(0, Some(request("/old")));
+        assert!(suggestions.has_pending_work());
+        suggestions.ensure(0, Some(request("/new")));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while suggestions.visible(0, "n") != Some("new.txt") {
+            let _ = suggestions.refresh();
+            assert!(Instant::now() < deadline, "new context did not complete");
+            thread::yield_now();
+        }
+        assert!(!suggestions.has_pending_work());
+
+        thread::sleep(Duration::from_millis(100));
+        let _ = suggestions.refresh();
+        assert_eq!(suggestions.visible(0, "n"), Some("new.txt"));
+        assert!(!suggestions.has_pending_work());
+
+        suggestions.clear();
+        assert!(!suggestions.has_pending_work());
+    }
 }

@@ -23,6 +23,33 @@ use thiserror::Error;
 
 use crate::{EventHandling, TuiSession, ViewGeometry, render_with_session};
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalEventWait {
+    Blocking,
+    Poll(Duration),
+}
+
+const fn terminal_event_wait(path_completion_pending: bool) -> TerminalEventWait {
+    if path_completion_pending {
+        TerminalEventWait::Poll(Duration::from_millis(25))
+    } else {
+        TerminalEventWait::Blocking
+    }
+}
+
+fn read_terminal_event(wait: TerminalEventWait) -> io::Result<Option<event::Event>> {
+    match wait {
+        TerminalEventWait::Blocking => event::read().map(Some),
+        TerminalEventWait::Poll(duration) => {
+            if event::poll(duration)? {
+                event::read().map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
 fn dispatch_event(
     session: &mut TuiSession,
     event: event::Event,
@@ -159,10 +186,12 @@ where
         terminal.draw(|frame| {
             geometry = render_with_session(frame, &state, locale, &mut session);
         })?;
-        if !event::poll(Duration::from_millis(25))? {
+        let Some(event) =
+            read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
+        else {
             continue;
-        }
-        if let Some(action) = dispatch_event(&mut session, event::read()?, &state, &geometry) {
+        };
+        if let Some(action) = dispatch_event(&mut session, event, &state, &geometry) {
             let mut outcome = observe(&action);
             let effect = state.update(action);
             match effect {
@@ -346,10 +375,12 @@ where
         terminal.draw(|frame| {
             geometry = render_with_session(frame, &state, locale, &mut session);
         })?;
-        if !event::poll(Duration::from_millis(25))? {
+        let Some(event) =
+            read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
+        else {
             continue;
-        }
-        if let Some(action) = dispatch_event(&mut session, event::read()?, &state, &geometry) {
+        };
+        if let Some(action) = dispatch_event(&mut session, event, &state, &geometry) {
             if action == Action::Quit {
                 break None;
             }
@@ -443,6 +474,15 @@ mod tests {
 
     fn harmless_host(_effect: Effect) -> Result<Action, HostError> {
         Ok(Action::ClearStatus)
+    }
+
+    #[test]
+    fn terminal_waits_for_input_without_pending_path_work() {
+        assert_eq!(terminal_event_wait(false), TerminalEventWait::Blocking);
+        assert_eq!(
+            terminal_event_wait(true),
+            TerminalEventWait::Poll(Duration::from_millis(25))
+        );
     }
 
     #[test]
