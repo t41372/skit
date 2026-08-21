@@ -1,8 +1,9 @@
 use std::sync::Mutex;
 
 use skit_application::{
-    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, LibraryScan,
-    LibraryService, PreparedEntryUpdateError, RepositoryError, SourcePermissions, UpdateEntry,
+    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, ExternalCopyEdit,
+    LibraryScan, LibraryService, PreparedEntryUpdateError, RepositoryError, SourcePermissions,
+    UpdateEntry,
 };
 use skit_domain::{
     Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode,
@@ -108,6 +109,31 @@ impl EntryMutationRepository for RecordingRepository {
         ));
         Ok(self.entry.clone())
     }
+
+    fn prepare_external_copy_edit(
+        &self,
+        entry: &Entry,
+    ) -> Result<ExternalCopyEdit, RepositoryError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("prepare-external-edit:{}", entry.slug));
+        Ok(ExternalCopyEdit::new(
+            self.entry.clone(),
+            "/tmp/script.py".into(),
+        ))
+    }
+
+    fn finalize_external_copy_edit(
+        &self,
+        edit: &ExternalCopyEdit,
+    ) -> Result<Entry, RepositoryError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("finalize-external-edit:{}", edit.entry().slug));
+        Ok(self.entry.clone())
+    }
 }
 
 fn entry() -> Entry {
@@ -180,6 +206,13 @@ fn mutation_use_cases_delegate_every_value_to_the_port() {
             .unwrap(),
         expected
     );
+    let external = service.prepare_external_copy_edit(&expected).unwrap();
+    assert_eq!(external.entry(), &expected);
+    assert_eq!(external.path(), std::path::Path::new("/tmp/script.py"));
+    assert_eq!(
+        service.finalize_external_copy_edit(&external).unwrap(),
+        expected
+    );
     assert_eq!(
         service.repository().calls.lock().unwrap().as_slice(),
         [
@@ -191,6 +224,8 @@ fn mutation_use_cases_delegate_every_value_to_the_port() {
             "rename:alpha:Renamed",
             "remove:alpha",
             "edit:alpha:edited:sha256:base",
+            "prepare-external-edit:alpha",
+            "finalize-external-edit:alpha",
         ]
     );
 }

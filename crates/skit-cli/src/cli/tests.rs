@@ -450,6 +450,8 @@ fn source_intake_errors_keep_real_files_and_typed_resolution_context() {
     assert!(snapshot.bytes.is_empty());
     assert!(!snapshot.is_regular);
     let error = read_source(&directory, false, false).unwrap_err();
+    assert!(matches!(error, CliError::SourceRead { .. }));
+    assert!(std::error::Error::source(&error).is_some());
     assert!(
         error
             .message()
@@ -1972,7 +1974,7 @@ printf "print('written')\n" >> "$1"
 
 #[cfg(unix)]
 #[test]
-fn tui_author_draft_launch_error_cleanup_keeps_an_editor_replacement() {
+fn tui_author_draft_accepts_nonzero_and_keeps_an_editor_replacement() {
     use std::os::unix::fs::PermissionsExt as _;
 
     let root = TempDir::new().unwrap();
@@ -1989,16 +1991,11 @@ fn tui_author_draft_launch_error_cleanup_keeps_an_editor_replacement() {
         .set("editor", editor.to_str().unwrap())
         .unwrap();
 
-    let error = tui_author_draft(&data_dir, &config_dir, DraftKind::Script).unwrap_err();
-    let message = error.message().localize(Locale::En);
-    assert!(message.contains("warning:"), "{message}");
-    assert!(message.contains("changed before cleanup"), "{message}");
-    let drafts = tui_drafts(&data_dir);
-    assert_eq!(drafts.len(), 1);
-    assert_eq!(
-        fs::read(&drafts[0].path).unwrap(),
-        b"print('replacement')\n"
-    );
+    let source = tui_author_draft(&data_dir, &config_dir, DraftKind::Script)
+        .unwrap()
+        .expect("a nonzero editor that wrote content completed the draft");
+    assert_eq!(source.bytes, b"print('replacement')\n");
+    assert_eq!(fs::read(&source.path).unwrap(), source.bytes);
 }
 
 #[cfg(any(unix, windows))]
@@ -10247,7 +10244,7 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
     let editor = root.path().join("editor.sh");
     fs::write(
         &editor,
-        "#!/bin/sh\nprintf \"print('after')\\n\" > \"$1\"\n",
+        "#!/bin/sh\nprintf \"print('after')\\n\" > \"$1\"\nexit 7\n",
     )
     .unwrap();
     let mut permissions = fs::metadata(&editor).unwrap().permissions();

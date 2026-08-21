@@ -30,17 +30,14 @@
 //!
 //! Buckets (recorded per test in the porting ledger):
 //! - REAL: an asserting test that drives the observable behavior (exit code, stored state,
-//!   summary lines). For the CLI success flows the oracle's white-box "opened path" capture is
-//!   replaced by its observable equivalent — the stored copy is updated / the entry lands with the
-//!   right kind — because the path a mocked editor received is not observable end to end. The
-//!   oracle's exact success verb ("Saved a") IS asserted verbatim; where the Rust CLI prints a
-//!   different verb ("Edited") that is recorded as a FAILING CONTRACT, not a silent softening.
-//!   Data/kind/exit assertions are kept verbatim.
-//! - ABSENT (kind=absent): `open_in_editor` and `open_entry_in_editor` have no public equivalent on
-//!   the Rust surface. Their remaining direct helper contracts stay as compiling `#[ignore]`
-//!   trailheads. Editor resolution now has one private composition helper. Its nine exact frozen
-//!   owners live beside that helper in `src/cli/tests.rs`; the public tests here keep the real
-//!   config, environment, platform-default, raw-fallback, and launch contracts.
+//!   summary lines, exact editor argv, and post-editor failures). The editor-process contracts use
+//!   the public CLI boundary. They do not replace observable behavior with a private helper test.
+//!   The oracle's exact success verb ("Saved a") is asserted verbatim. Data, kind, path, and exit
+//!   assertions are kept.
+//! - ARCHITECTURE: Rust does not expose the Python helper functions or exception classes. Their
+//!   behavior is owned by public process tests. Typed Rust errors retain the operating-system cause.
+//!   Editor resolution has one private composition helper; its nine exact frozen owners live beside
+//!   that helper in `src/cli/tests.rs`.
 //! - DIVERGENCE (kind=divergence): the CLI API exists and the assertion compiles but the Rust
 //!   behavior differs from the oracle (verified against the built binary). The full asserting body
 //!   is kept intact behind `#[ignore = "FAILING CONTRACT (divergence): …"]`; deleting the ignore
@@ -57,7 +54,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use skit_store::FileConfigStore;
+use skit_store::{FileConfigStore, content_hash};
 use tempfile::TempDir;
 
 // --------------------------------------------------------------------------
@@ -125,6 +122,23 @@ impl Sandbox {
                 "--name",
                 name,
                 "--ref",
+                "--no-input",
+            ])
+            .assert()
+            .success();
+    }
+
+    /// Add a prompt copy through the real non-interactive add lane.
+    fn add_prompt(&self, name: &str, body: &str) {
+        let source = self.scratch.path().join(format!("{name}.prompt.md"));
+        fs::write(&source, body).unwrap();
+        self.command()
+            .args([
+                "add",
+                source.to_str().unwrap(),
+                "--prompt",
+                "--name",
+                name,
                 "--no-input",
             ])
             .assert()
@@ -219,6 +233,45 @@ fn touch_only_editor(scratch: &Path, tag: &str, sentinel: &Path) -> PathBuf {
         &format!("#!/bin/sh\ntouch '{}'\n", sentinel.display()),
     );
     script
+}
+
+/// A process probe that records its complete argv, optionally writes or deletes the final target,
+/// and exits with the requested status.
+fn process_editor(
+    scratch: &Path,
+    tag: &str,
+    capture: &Path,
+    content: Option<&str>,
+    delete_target: bool,
+    exit_code: i32,
+) -> PathBuf {
+    assert!(content.is_none() || !delete_target);
+    let action = if let Some(content) = content {
+        let content_file = scratch.join(format!("{tag}.process-content"));
+        fs::write(&content_file, content).unwrap();
+        format!("cat '{}' > \"$target\"", content_file.display())
+    } else if delete_target {
+        "rm -f \"$target\"".to_owned()
+    } else {
+        ":".to_owned()
+    };
+    let script = scratch.join(format!("{tag}.process-editor.sh"));
+    write_exec(
+        &script,
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > '{}'\nfor target do :; done\n{action}\nexit {exit_code}\n",
+            capture.display(),
+        ),
+    );
+    script
+}
+
+fn captured_argv(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn capturing_touch_only_editor(
@@ -670,60 +723,166 @@ fn test_resolve_editor_unbalanced_quotes_falls_back_to_raw() {
 }
 
 // ==========================================================================
-// editor.open_in_editor — ABSENT (kind=absent): no public open_in_editor.
+// editor.open_in_editor — public process owners.
 //
-// The launch (argv = [*resolve_editor(), path]; subprocess.run; OSError -> EditorError) is inlined
-// in cli.rs via ProcessCommand::new(argv[0]).args(...).arg(target).status() and the OSError branch
-// becomes source_error("start editor for", …) (cli.rs:3362-3373). No public function returns the
-// editor's exit code or raises a typed EditorError. MUST-FIX: expose open_in_editor
-// (src/skit/editor.py:63-81). Message DIVERGES: "could not start editor for <path>: <err>" vs the
-// oracle's "Could not launch the editor (<cmd>): <err>. Set one with: skit config editor <cmd>".
+// Rust keeps the launch helper private. These owners drive `skit edit` and true-PTY `skit add -e`
+// so argv, child status, launch failure, and every caller's disposition stay observable.
 // ==========================================================================
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public open_in_editor. MUST-FIX: src/skit/editor.py:69-81 (argv appends path; returns returncode)."]
 fn test_open_in_editor_appends_path_and_returns_code() {
     // The resolved argv gets the file path appended; the editor's exit code is returned.
-    //   fake_run captures argv; delenv VISUAL; setenv EDITOR=nano
-    //   assert open_in_editor(f) == 0
-    //   assert captured["argv"] == ["nano", str(f)]; captured["check"] is False
+    // Drive the public edit lane so the owner also proves that a copy opens its real stored path.
+    let sandbox = Sandbox::new();
+    sandbox.add_python("a", "print(1)\n");
+    let capture = sandbox.scratch.path().join("append.argv");
+    let editor = process_editor(sandbox.scratch.path(), "append", &capture, None, false, 0);
+    sandbox
+        .config_store()
+        .set("editor", &format!("\"{}\" --wait", editor.display()))
+        .unwrap();
+
+    let output = sandbox
+        .command()
+        .args(["edit", "a", "--no-input"])
+        .output()
+        .unwrap();
+
+    let expected = sandbox.data.path().join("scripts/a/script.py");
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert_eq!(
+        captured_argv(&capture),
+        [
+            editor.display().to_string(),
+            "--wait".to_owned(),
+            expected.display().to_string(),
+        ]
+    );
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public open_in_editor. MUST-FIX: src/skit/editor.py:81 (non-zero returned, not raised)."]
 fn test_open_in_editor_returns_nonzero_without_raising() {
     // A non-zero editor exit is returned, never raised (some editors exit non-zero on close).
-    //   returncode = 3; setenv EDITOR=nano
-    //   assert open_in_editor(...) == 3
+    // Existing-entry edit and interactive authoring must both accept that ordinary child status.
+    let edit = Sandbox::new();
+    edit.add_python("a", "print(1)\n");
+    let edit_capture = edit.scratch.path().join("nonzero-edit.argv");
+    let edit_editor = process_editor(
+        edit.scratch.path(),
+        "nonzero-edit",
+        &edit_capture,
+        None,
+        false,
+        3,
+    );
+    let output = edit
+        .command()
+        .env("EDITOR", &edit_editor)
+        .args(["edit", "a", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert_eq!(captured_argv(&edit_capture).len(), 2);
+
+    let add = Sandbox::new();
+    let add_capture = add.scratch.path().join("nonzero-add.argv");
+    let add_editor = process_editor(
+        add.scratch.path(),
+        "nonzero-add",
+        &add_capture,
+        Some("print('exit three')\n"),
+        false,
+        3,
+    );
+    let (code, text) = run_pty(
+        &["add", "-e", "--name", "exit-three"],
+        add.data.path(),
+        add.state.path(),
+        add.config.path(),
+        Some(&add_editor),
+        &[],
+    );
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(add.stored_script("exit-three"), "print('exit three')\n");
+    assert_eq!(captured_argv(&add_capture).len(), 2);
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public open_in_editor, and the Rust launch-failure message DIVERGES (source_error 'could not start editor for …' vs the oracle string). MUST-FIX: src/skit/editor.py:74-81 (exact EditorError message)."]
 fn test_open_in_editor_launch_failure_message_exact() {
     // A launch failure raises EditorError naming the command (argv minus path) and the OS error.
-    //   config.save_editor("code --wait"); subprocess.run raises FileNotFoundError("boom-err")
-    //   with pytest.raises(EditorError) as e: open_in_editor(...)
-    //   assert "Could not launch the editor (code --wait): boom-err." in str(e.value)
-    //   assert "skit config editor <cmd>" in str(e.value); "XX" not in str(e.value)
+    let sandbox = Sandbox::new();
+    sandbox.add_python("a", "print(1)\n");
+    let missing = sandbox.scratch.path().join("missing-editor");
+    let command = format!("{} --wait", missing.display());
+    sandbox.config_store().set("editor", &command).unwrap();
+    let os_error = std::process::Command::new(&missing)
+        .arg("--wait")
+        .status()
+        .unwrap_err()
+        .to_string();
+
+    let output = sandbox
+        .command()
+        .args(["edit", "a", "--no-input"])
+        .output()
+        .unwrap();
+    let text = combined(&output);
+    let expected = format!(
+        "Could not launch the editor ({command}): {os_error}. Set one with: skit config editor <cmd>"
+    );
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains(&expected),
+        "expected {expected:?} in {text:?}"
+    );
+    assert!(!text.contains("XX"), "{text}");
 }
 
 // ==========================================================================
-// editor.open_entry_in_editor — ABSENT (kind=absent): no public open_entry_in_editor.
+// editor.open_entry_in_editor — public post-editor validation owner.
 //
-// The post-edit prompt-encoding revalidation (open the editor, then re-read a prompt body and wrap
-// an OSError as EditedSourceError "Can't read <path>: <err>") is not exposed on the Rust surface;
-// the `edit` command handles prompt entries inline. MUST-FIX: expose open_entry_in_editor
-// (src/skit/editor.py:84-108).
+// Rust maps Python's helper and exception class to the public `skit edit` disposition. The typed
+// CLI error retains the I/O cause and the localized process output keeps the exact read-failure
+// semantics.
 // ==========================================================================
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public open_entry_in_editor / EditedSourceError. MUST-FIX: src/skit/editor.py:94-108 (post-edit prompt re-read; OSError -> EditedSourceError)."]
 fn test_open_entry_prompt_removed_by_editor_is_a_clean_edited_source_error() {
     // An editor that deletes its target -> post-edit validation reports it cleanly.
-    //   open_in_editor := remove_target (unlinks path, returns 0)
-    //   with pytest.raises(EditedSourceError) as e: open_entry_in_editor(path, kind="prompt")
-    //   assert "Can't read" in str(e.value); str(path) in str(e.value)
-    //   assert isinstance(e.value.__cause__, FileNotFoundError)
+    for (locale, prefix, separator) in [
+        ("en", "Can't read", ":"),
+        ("zh-CN", "无法读取", "："),
+        ("zh-TW", "無法讀取", "："),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.add_prompt("review", "Review this\n");
+        let capture = sandbox.scratch.path().join("removed.argv");
+        let editor = process_editor(sandbox.scratch.path(), "removed", &capture, None, true, 0);
+        let target = sandbox.data.path().join("scripts/review/prompt.md");
+
+        let output = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .env("EDITOR", &editor)
+            .args(["edit", "review", "--no-input"])
+            .output()
+            .unwrap();
+        let text = combined(&output);
+        assert_eq!(output.status.code(), Some(1), "{locale}: {text}");
+        assert!(
+            text.contains(&format!("{prefix} {}{separator}", target.display())),
+            "{locale}: {text}"
+        );
+        assert_eq!(
+            captured_argv(&capture),
+            [editor.display().to_string(), target.display().to_string()],
+            "{locale}"
+        );
+        assert!(
+            !target.exists(),
+            "{locale}: the editor's deletion was undone"
+        );
+    }
 }
 
 // ==========================================================================
@@ -778,17 +937,17 @@ fn test_save_editor_clear_when_absent_does_not_raise() {
 
 #[test]
 fn test_edit_opens_copy_source() {
-    // edit opens the copy's stored source; a change is saved back and reported with "Saved a". (The
-    // oracle's white-box opened-path capture == scripts/a/script.py is observed here as the stored
-    // copy being updated.)
+    // edit opens the copy's stored source itself; a temp surrogate is not the same public contract.
     let sandbox = Sandbox::new();
     sandbox.add_python("a", "print(1)\n");
-    let sentinel = sandbox.scratch.path().join("a.launched");
-    let editor = writing_editor(
+    let capture = sandbox.scratch.path().join("copy-source.argv");
+    let editor = process_editor(
         sandbox.scratch.path(),
-        "a",
-        "import rich\nprint('x')\n",
-        &sentinel,
+        "copy-source",
+        &capture,
+        Some("import rich\nprint('x')\n"),
+        false,
+        0,
     );
     let output = sandbox
         .command()
@@ -797,8 +956,57 @@ fn test_edit_opens_copy_source() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
+    assert_eq!(
+        captured_argv(&capture),
+        [
+            editor.display().to_string(),
+            sandbox
+                .data
+                .path()
+                .join("scripts/a/script.py")
+                .display()
+                .to_string(),
+        ]
+    );
     assert!(sandbox.stored_script("a").contains("import rich"));
+    assert!(
+        sandbox
+            .stored_meta("a")
+            .contains(&content_hash(b"import rich\nprint('x')\n"))
+    );
     assert!(combined(&output).contains("Saved a")); // the oracle's success verb
+}
+
+#[test]
+fn copy_edit_metadata_race_preserves_the_editors_bytes() {
+    let sandbox = Sandbox::new();
+    sandbox.add_python("race", "print('base')\n");
+    let source = sandbox.data.path().join("scripts/race/script.py");
+    let original_hash = content_hash(b"print('base')\n");
+    let editor = sandbox.scratch.path().join("race-editor.sh");
+    write_exec(
+        &editor,
+        &format!(
+            "#!/bin/sh\nprintf \"print('editor wins')\\n\" > \"$1\"\n'{}' describe race concurrent >/dev/null 2>&1\n",
+            env!("CARGO_BIN_EXE_skit"),
+        ),
+    );
+
+    let output = sandbox
+        .command()
+        .env("EDITOR", &editor)
+        .args(["edit", "race", "--no-input"])
+        .output()
+        .unwrap();
+    let text = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("entry \"race\" changed"), "{text}");
+    assert_eq!(fs::read(&source).unwrap(), b"print('editor wins')\n");
+    let metadata = sandbox.stored_meta("race");
+    assert!(metadata.contains("description = \"concurrent\""));
+    assert!(metadata.contains(&original_hash));
+    assert!(!metadata.contains(&content_hash(b"print('editor wins')\n")));
 }
 
 #[test]

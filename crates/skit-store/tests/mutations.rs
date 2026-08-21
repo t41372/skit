@@ -10,8 +10,8 @@ use std::{
 
 use serde_json::json;
 use skit_application::{
-    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, RepositoryError,
-    SourcePermissions, UpdateEntry,
+    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, ExternalCopyEdit,
+    RepositoryError, SourcePermissions, UpdateEntry,
 };
 use skit_domain::{
     EntryKind, EntrySettings, StorageMode,
@@ -488,6 +488,170 @@ fn copy_edit_is_identity_and_source_compare_and_swap() {
     assert_eq!(
         fs::read(root.path().join("scripts/edit/script.py")).unwrap(),
         b"next"
+    );
+}
+
+#[test]
+fn external_copy_edit_finalize_hashes_the_editors_current_bytes_without_rewriting_them() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::write(&source, b"written by editor").unwrap();
+
+    let finalized = store.finalize_external_copy_edit(&edit).unwrap();
+
+    assert_eq!(fs::read(&source).unwrap(), b"written by editor");
+    assert_eq!(
+        finalized.meta.source_hash,
+        content_hash(b"written by editor")
+    );
+    assert_eq!(store.resolve("External").unwrap(), finalized);
+}
+
+#[test]
+fn external_copy_edit_finalize_refuses_a_metadata_race_and_preserves_the_editors_bytes() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External Race", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::write(&source, b"written by editor").unwrap();
+    let raced = store
+        .describe(edit.entry(), "changed concurrently")
+        .unwrap();
+
+    let error = store.finalize_external_copy_edit(&edit).unwrap_err();
+
+    assert!(matches!(error, RepositoryError::StaleEntry { .. }));
+    assert_eq!(fs::read(&source).unwrap(), b"written by editor");
+    assert_eq!(
+        store.resolve("External Race").unwrap().meta.description,
+        raced.meta.description
+    );
+    assert_eq!(
+        store.resolve("External Race").unwrap().meta.source_hash,
+        claimed.meta.source_hash
+    );
+}
+
+#[test]
+fn external_copy_edit_finalize_failure_never_restores_or_replaces_editor_output() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External Failure", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::write(&source, b"written by editor").unwrap();
+    let registry = root.path().join("registry.toml");
+    fs::remove_file(&registry).unwrap();
+    fs::create_dir(&registry).unwrap();
+    let corrupt = root.path().join("registry.toml.corrupt");
+    fs::create_dir(&corrupt).unwrap();
+    fs::write(corrupt.join("occupied"), b"keep").unwrap();
+
+    assert!(store.finalize_external_copy_edit(&edit).is_err());
+
+    assert_eq!(fs::read(&source).unwrap(), b"written by editor");
+    let metadata =
+        fs::read_to_string(root.path().join("scripts/external-failure/meta.toml")).unwrap();
+    assert!(metadata.contains(&claimed.meta.source_hash));
+    assert!(!metadata.contains(&content_hash(b"written by editor")));
+}
+
+#[test]
+fn concurrent_external_edit_finalizers_allow_one_metadata_cas_winner() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External CAS", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::write(&source, b"written by editor").unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let handles = [(), ()].map(|()| {
+        let store = store.clone();
+        let edit = edit.clone();
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store.finalize_external_copy_edit(&edit)
+        })
+    });
+    barrier.wait();
+
+    let results = handles.map(|handle| handle.join().unwrap());
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| matches!(result, Err(RepositoryError::StaleEntry { .. })))
+            .count(),
+        1
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"written by editor");
+    assert_eq!(
+        store.resolve("External CAS").unwrap().meta.source_hash,
+        content_hash(b"written by editor")
+    );
+}
+
+#[test]
+fn external_copy_edit_finalize_reports_a_missing_payload_without_recreating_it() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External Gone", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::remove_file(&source).unwrap();
+    let metadata = fs::read(root.path().join("scripts/external-gone/meta.toml")).unwrap();
+
+    let error = store.finalize_external_copy_edit(&edit).unwrap_err();
+
+    assert!(matches!(
+        error,
+        RepositoryError::Io {
+            operation: "read",
+            ..
+        }
+    ));
+    assert!(!source.exists());
+    assert_eq!(
+        fs::read(root.path().join("scripts/external-gone/meta.toml")).unwrap(),
+        metadata
+    );
+}
+
+#[test]
+fn external_copy_edit_finalize_refuses_a_forged_path_outside_the_claimed_entry() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External Bound", b"base")).unwrap())
+        .unwrap();
+    let outside = root.path().join("outside.py");
+    fs::write(&outside, b"outside").unwrap();
+    let metadata = fs::read(root.path().join("scripts/external-bound/meta.toml")).unwrap();
+    let forged = ExternalCopyEdit::new(claimed, outside.clone());
+
+    let error = store.finalize_external_copy_edit(&forged).unwrap_err();
+
+    assert!(matches!(error, RepositoryError::InvalidMutation { .. }));
+    assert_eq!(fs::read(&outside).unwrap(), b"outside");
+    assert_eq!(
+        fs::read(root.path().join("scripts/external-bound/meta.toml")).unwrap(),
+        metadata
     );
 }
 
