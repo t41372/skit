@@ -1,4 +1,4 @@
-# skit Rust rewrite — session handoff (2026-08-19)
+# skit Rust rewrite — session handoff (2026-08-20)
 
 **Read this first, then `docs/design/python-test-port-ledger.md` (the authoritative per-module
 record + fix-list).** This file is SELF-CONTAINED: it does not depend on any `.claude` memory (that
@@ -24,7 +24,11 @@ PR/main/Python body comparison; the raw split files and manifests were rejected.
 editor, JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
-implementation divergences are closed; next run the Phase 3 release gates.** The user
+implementation divergences are closed. Phase 3 is in progress: the first workspace coverage run
+found 2,514 executable-source gaps without relaxing the checker; domain, application, form, and
+runtime are now at 0 gaps in fresh reports. Supply-chain, docs, wheel smoke, and benchmark gates
+are green. The merged workspace coverage gate is still red, and mutation remains blocked on user
+approval.** The user
 chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (done).
 
@@ -380,6 +384,15 @@ The ledger has the authoritative per-module adjudication log.
 - Phase 3 gates: 100% executable-source line coverage (`cargo llvm-cov` + `scripts/check_coverage.sh`
   — do NOT relax it), i18n completeness (3 locales), ASD-STE100 English, cargo deny/audit, zizmor,
   docs build, benchmark budget, Maturin wheel + `uv tool install` smoke.
+- **Phase 3 checkpoint (2026-08-20):** the first full LCOV run executed the workspace tests but the
+  checker correctly failed on 2,514 uncovered executable lines. Do not add exclusions or weaken
+  `scripts/check_coverage.sh`. Fresh crate reports now show `skit-domain`, `skit-application`,
+  `skit-form`, and `skit-runtime` at 0 gaps. The store configuration edge batch and two Python
+  literal/escape batches are also landed; confirm their final contribution in the next merged
+  workspace report. `cargo deny`, `cargo audit --deny warnings`, and zizmor are green. The docs
+  type-check/build, release wheel build plus isolated `uv tool install` smoke, 112 benchmark
+  metrics, all 8 enforced benchmark budgets, and `cargo bench` are green. The current work is the
+  remaining language/store/UI/TUI/CLI/benchmark coverage, followed by one fresh merged LCOV gate.
 - **User's hands-on test** fits AFTER the fix pass restores behavior, BEFORE mutation.
 - Mutation (`cargo mutants`) is **BLOCKED on explicit user approval** — it invalidates on any
   change, so it runs only after behavior is frozen; ~4.5h local, likely on another box/modal.com.
