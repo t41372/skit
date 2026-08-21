@@ -6,7 +6,7 @@
 
 mod config;
 mod fs_ops;
-mod library_surface;
+mod library_snapshot;
 mod mutations;
 mod path_glob;
 mod paths;
@@ -21,7 +21,6 @@ pub use config::{
 };
 #[doc(hidden)]
 pub use fs_ops::replace_with_retry_impl;
-pub use library_surface::{library_surface, library_surface_at};
 pub use mutations::{
     FileAgentSkillStore, FileRunnerManagementStore, PreparedLaunch, RegistryRebuildProblem,
     RegistryRebuildReport, RunnerManagementStoreError, RunnerRemovalCas, content_hash,

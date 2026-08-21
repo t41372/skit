@@ -2,9 +2,10 @@ use std::fs;
 
 use skit_application::{
     CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
+    library_detail::{LibraryDetailRepository as _, LibraryTargetState},
 };
 use skit_domain::{EntryKind, EntrySettings, Slug, StorageMode};
-use skit_store::{FileStore, library_surface};
+use skit_store::FileStore;
 use tempfile::TempDir;
 
 fn copied_shell(name: &str, bytes: &[u8]) -> CreateEntry {
@@ -53,20 +54,19 @@ fn library_reference_targets_keep_empty_and_explicit_source_meanings() {
     let store = FileStore::new(root.path());
     store.rebuild_registry().unwrap();
 
-    let surface = library_surface(
-        &store,
-        &root.path().join("state"),
-        &root.path().join("config"),
-    )
-    .unwrap();
+    let snapshots = store.detail_snapshots().unwrap();
+    let target = |slug: &str| {
+        &snapshots
+            .iter()
+            .find(|snapshot| snapshot.entry.slug == Slug::parse(slug).unwrap())
+            .unwrap()
+            .target
+    };
 
+    assert_eq!(target("empty-exe"), &LibraryTargetState::Present);
     assert_eq!(
-        surface.details[&Slug::parse("empty-exe").unwrap()].missing_target,
-        None
-    );
-    assert_eq!(
-        surface.details[&Slug::parse("missing-shell").unwrap()].missing_target,
-        Some("/definitely/missing/skit-coverage.sh".to_owned())
+        target("missing-shell"),
+        &LibraryTargetState::Missing("/definitely/missing/skit-coverage.sh".into())
     );
 }
 

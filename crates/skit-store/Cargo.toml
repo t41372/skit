@@ -23,10 +23,6 @@ toml.workspace = true
 toml_edit.workspace = true
 skit-domain.workspace = true
 skit-application.workspace = true
-# The Library projection reconciles each entry's form against its stored source. skit-runtime
-# does not depend on this crate, so the launch path keeps its parser-free rule.
-skit-form.workspace = true
-skit-language.workspace = true
 
 [dev-dependencies]
 skit-i18n.workspace = true

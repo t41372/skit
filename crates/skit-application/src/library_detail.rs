@@ -151,9 +151,10 @@ where
                 LibraryTargetState::NotApplicable | LibraryTargetState::Present => None,
             },
             drifted: form.drifted,
-            original_file_preserved: kind != "command"
-                && !entry.meta.source.is_empty()
-                && snapshot.original_source_exists,
+            original_file_preserved: original_file_preserved(
+                entry,
+                snapshot.original_source_exists,
+            ),
         }
     }
 }
@@ -179,6 +180,10 @@ fn last_run(now: OffsetDateTime, last_run: &LastRunState) -> Option<LibraryLastR
         at,
         exit: last_run.exit,
     })
+}
+
+fn original_file_preserved(entry: &Entry, original_source_exists: bool) -> bool {
+    entry.meta.kind.as_str() != "command" && !entry.meta.source.is_empty() && original_source_exists
 }
 
 /// Localized relative-time shape for one recorded launch.
@@ -300,4 +305,83 @@ pub struct LibrarySurface {
     pub scan: LibraryScan,
     /// Complete detail facts indexed by stable entry identity.
     pub details: BTreeMap<Slug, LibraryEntryDetail>,
+}
+
+#[cfg(test)]
+mod tests {
+    use skit_domain::{EntryKind, EntryMeta};
+
+    use super::*;
+
+    #[test]
+    fn prompt_runner_pins_are_classified_against_configured_names() {
+        let configured = vec!["claude".to_owned()];
+        assert_eq!(
+            prompt_runner("", &configured),
+            LibraryPromptRunner::PickOnRunForm
+        );
+        assert_eq!(
+            prompt_runner("claude", &configured),
+            LibraryPromptRunner::Configured("claude".to_owned())
+        );
+        assert_eq!(
+            prompt_runner("removed", &configured),
+            LibraryPromptRunner::Missing("removed".to_owned())
+        );
+    }
+
+    #[test]
+    fn one_clock_read_resolves_every_last_run_age_shape() {
+        let now = OffsetDateTime::parse("2026-08-09T12:00:00Z", &Rfc3339).unwrap();
+        let at = |value: &str| LastRunState {
+            at: Some(value.to_owned()),
+            exit: Some(0),
+            values: None,
+        };
+        assert!(last_run(now, &LastRunState::default()).is_none());
+        assert_eq!(
+            last_run(now, &at("2026-08-09T11:59:30Z")).unwrap().age,
+            LibraryRunAge::JustNow
+        );
+        assert_eq!(
+            last_run(now, &at("2026-08-09T11:00:00Z")).unwrap().age,
+            LibraryRunAge::Minutes(60)
+        );
+        assert_eq!(
+            last_run(now, &at("2026-08-08T12:00:00Z")).unwrap().age,
+            LibraryRunAge::Hours(24)
+        );
+        assert_eq!(
+            last_run(now, &at("2026-07-09T12:00:00Z")).unwrap().age,
+            LibraryRunAge::Days(31)
+        );
+        assert_eq!(
+            last_run(now, &at("not a timestamp")).unwrap().age,
+            LibraryRunAge::Raw("not a timestamp".to_owned())
+        );
+    }
+
+    #[test]
+    fn removal_reassurance_requires_a_noncommand_original_that_exists() {
+        let entry = |kind: &str, source: &str| Entry {
+            slug: Slug::parse("demo").unwrap(),
+            meta: EntryMeta {
+                source: source.to_owned(),
+                ..EntryMeta::minimal("Demo", EntryKind::parse(kind).unwrap())
+            },
+        };
+        assert!(original_file_preserved(
+            &entry("shell", "/original/demo.sh"),
+            true
+        ));
+        assert!(!original_file_preserved(
+            &entry("command", "/original/demo.sh"),
+            true
+        ));
+        assert!(!original_file_preserved(
+            &entry("shell", "/original/demo.sh"),
+            false
+        ));
+        assert!(!original_file_preserved(&entry("shell", ""), true));
+    }
 }
