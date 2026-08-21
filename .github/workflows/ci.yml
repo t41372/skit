@@ -71,8 +71,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install Python 3.13 for benchmark source validation
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
       - name: Run all tests
         run: cargo test --locked --workspace --all-targets --all-features
+      - name: Compile every Python benchmark subject with CPython 3.13
+        run: cargo test --locked -p skit-benchmarks --test source_contract test_python_compiles -- --exact --ignored
 
   coverage:
     name: coverage (100% executable-source line gate)
