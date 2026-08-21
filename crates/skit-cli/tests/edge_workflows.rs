@@ -417,6 +417,50 @@ fn doctor_human_report_exposes_each_repair_axis() {
 }
 
 #[test]
+fn doctor_rebuild_prints_registered_corruption_warnings_in_every_locale_without_rewriting_data() {
+    for (locale, expected) in [
+        ("en", "WARN entry \"broken\" has corrupt metadata:"),
+        ("zh-CN", "警告 条目 \"broken\" 的元数据已损坏："),
+        ("zh-TW", "警告 項目 \"broken\" 的中繼資料已損毀："),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.ok(&["add", "--cmd", "true", "--name", "Broken", "--no-input"]);
+        let meta = sandbox.data.path().join("scripts/broken/meta.toml");
+        fs::write(&meta, b"name = [broken").unwrap();
+        let meta_before = fs::read(&meta).unwrap();
+        let registry_path = sandbox.data.path().join("registry.toml");
+        let registry_before = fs::read(&registry_path).unwrap();
+        assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+
+        let output = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .args(["doctor", "--rebuild"])
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "locale={locale}\nstdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(expected), "locale={locale}\n{text}");
+        assert_eq!(fs::read(&meta).unwrap(), meta_before);
+        assert_ne!(
+            fs::read(&registry_path).unwrap(),
+            registry_before,
+            "the explicit rebuild must replace its derived registry"
+        );
+        assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(meta.parent().unwrap()).unwrap().count(), 1);
+    }
+}
+
+#[test]
 fn doctor_reports_missing_uv_for_an_empty_library() {
     let sandbox = Sandbox::new();
     let empty_path = TempDir::new().unwrap();

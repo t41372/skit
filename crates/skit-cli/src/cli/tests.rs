@@ -3023,12 +3023,18 @@ fn doctor_source_and_size_helpers_are_total_on_missing_corrupt_and_nested_paths(
     assert_eq!(directory_size(root.path()), 6);
     #[cfg(unix)]
     {
+        use std::os::unix::net::UnixListener;
+
         std::os::unix::fs::symlink(root.path().join("one"), root.path().join("link")).unwrap();
         assert_eq!(directory_size(&root.path().join("link")), 0);
         assert_eq!(directory_size(root.path()), 10);
         std::os::unix::fs::symlink(root.path().join("nested"), root.path().join("dir-link"))
             .unwrap();
         assert_eq!(directory_size(root.path()), 10);
+        let socket = UnixListener::bind(root.path().join("health.sock")).unwrap();
+        assert_eq!(directory_size(root.path()), 10);
+        assert!(root.path().join("health.sock").exists());
+        drop(socket);
     }
 
     let library = root.path().join("library");
