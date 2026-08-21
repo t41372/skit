@@ -52,7 +52,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (85) · read enumeration and attached-value flags promoted `952394e` · 1 white-box, 6 → Tier 4 |
 | test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs + crates/skit-cli/tests/surface_edges.rs | done (58) · 1 host-tool gate · 28 → Tier 3/4 |
 | test_shell_getopts.py | 11 | crates/skit-language/tests/port_test_shell_getopts.rs | done (9) · 2 cross-crate (plan/assemble) · no gap |
-| test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs + crates/skit-cli/tests/port_test_fish_manage.rs | implementation parity complete (46 executable / 18 architecture closures) · managed env delivery executable `c592560` · the exact runtime owner resolves Fish with production `SystemProbe` and runs the real CLI; pinned CI setup makes Linux/macOS execution mandatory while Windows keeps the oracle's honest availability condition |
+| test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs + crates/skit-cli/tests/port_test_fish_manage.rs | implementation parity complete (46 executable / 18 architecture closures) · managed env delivery executable `c592560` · the exact runtime owner resolves Fish with production `SystemProbe` and runs the real CLI; the pinned matrix job sets a dedicated mandatory-runtime flag after installation, while every other job and Windows keep the oracle's honest availability condition |
 | test_powershell.py | 35 | language + form + application ports + CLI manifest | done (20 executable / 15 architecture-closed) · global exact-name uniqueness enforced `51494e0` · A+B+runtime-scalar defaults fixed · C `[bool]` native checkbox kept |
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | language + runtime + `port_test_js_inject_cli*.rs` + exact manifest | implementation parity: 33 unique executable owners + 4 structured stronger-owner closures · resolved runtime identity and Node gate A+B · stage/gate-before-dependencies CLI Batch C · exact three-locale drift/refusal voice · native Windows runtime verification pending |
@@ -261,18 +261,22 @@ prompt-separator escaping round-trip. The 2 `#[ignore]` probe the Python-private
 `pep723._structural_bracket_delta`; the Rust writer parses the block as TOML, so there is no public
 equivalent — the observable round-trip is covered by the passing tests.
 
-### test_pep723_split.py → port_test_pep723_split.rs (18 executable · 6 closures)
+### test_pep723_split.py → port_test_pep723_split.rs (17 executable · 7 closures · 2 additive)
 
 All 24 names are accounted for. The 14 frozen `split_requirements` owners call the public shared
 `skit_language::split_pep508_requirements`; CLI, Add, and Settings use the same helper. Twelve inputs
 already matched. The trailing-comma and nested-bracket owners added a parser-first structural
-fallback without bypassing intake PEP 508 validation. Three TOML escaping owners remain active.
+fallback without bypassing intake PEP 508 validation. Three TOML escaping owners remain active. An
+additive owner pins version 0.4's documented direct-URL comma limitation so the public helper does
+not incorrectly promise that it preserves that unsupported shape.
 
-The `// /// script` owner is also executable. npm dependencies remain entry metadata in the Rust
-architecture, but an authored bare `dependencies = []` field is user data. A real JS managed-params
-add/remove round-trip preserves that field and restores the complete shebang source byte-for-byte.
-PR44's params-only substitute did not own this contract. The six remaining names are frozen
-Python-private regex/helper or stronger CLI/store closures; none is an ignored product gap.
+The exact `// /// script` owner is a structured architecture closure. It calls Python-private generic
+injection and parsing helpers, but npm dependencies remain entry metadata in the Rust product and no
+public caller injects or reads a bare source field. A separately named additive owner proves that an
+authored `dependencies = []` field remains user data: a real JS managed-params add/remove round-trip
+preserves it and restores the complete shebang source byte-for-byte. The seven closed names are
+Python-private regex/helper, this private slash helper, or stronger CLI/store closures; none is an
+ignored product gap.
 
 ### test_powershell.py → language/form/application ports (20 executable · 15 architecture-closed)
 
@@ -669,5 +673,7 @@ shares none of it, so each scanner behavior is instead exercised through the pub
 (e.g. the tokenizer's quote/comment/escape handling shows up in the detection and corpus tests). The
 offline manage/plan/assemble contract has a unique CLI owner (`c592560`). The exact runtime owner now
 uses `SystemProbe` for the oracle's availability condition and runs `skit run --set` through the real
-CLI composition root. The pinned CI action installs Fish before tests on Linux and macOS; native
-Windows keeps the oracle's availability gate because the action does not support Windows.
+CLI composition root. The pinned CI action installs Fish on Linux and macOS, then sets
+`SKIT_REQUIRE_FISH_RUNTIME=1` before the matrix workspace test. Only that explicit contract makes a
+missing Fish binary fail. Other jobs and native Windows keep the oracle's availability gate, so a
+generic `CI` variable cannot make an unrelated test or coverage job depend on an undeclared tool.
