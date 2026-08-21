@@ -9,9 +9,9 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+atomicwrites.workspace = true
 skit-i18n.workspace = true
 glob.workspace = true
-fs-id.workspace = true
 hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -23,6 +23,9 @@ toml.workspace = true
 toml_edit.workspace = true
 skit-domain.workspace = true
 skit-application.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+fs-id.workspace = true
 
 [dev-dependencies]
 skit-i18n.workspace = true

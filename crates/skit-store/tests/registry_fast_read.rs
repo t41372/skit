@@ -272,7 +272,13 @@ fn a_same_size_replacement_with_restored_mtime_invalidates_the_row() {
         .unwrap()
         .set_times(fs::FileTimes::new().set_modified(original_mtime))
         .unwrap();
-    fs::rename(staged, &meta).unwrap();
+    skit_store::replace_with_retry_impl(
+        atomicwrites::replace_atomic,
+        std::thread::sleep,
+        &staged,
+        &meta,
+    )
+    .unwrap();
 
     let scan = store.scan().unwrap();
 

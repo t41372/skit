@@ -24,7 +24,6 @@ path = "src/main.rs"
 clap.workspace = true
 clap_complete.workspace = true
 dialoguer.workspace = true
-fs-id.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rpassword.workspace = true
@@ -44,6 +43,9 @@ skit-store.workspace = true
 skit-ui.workspace = true
 skit-tui.workspace = true
 skit-benchmarks = { workspace = true, optional = true }
+
+[target.'cfg(windows)'.dependencies]
+fs-id.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

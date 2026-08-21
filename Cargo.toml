@@ -25,6 +25,7 @@ repository = "https://github.com/t41372/skit"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
+atomicwrites = "0.4.4"
 clap = { version = "4.6.6", features = ["derive"] }
 clap_complete = { version = "4.6.9", features = ["unstable-dynamic"] }
 dialoguer = { version = "0.12.0", default-features = false, features = ["password"] }

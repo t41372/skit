@@ -44,16 +44,11 @@ pub fn replace_with_retry_impl(
     rename(src, dst)
 }
 
-/// `fs::rename` that rides out transient Windows sharing violations. After the retries are
+/// Atomic replacement that rides out transient Windows sharing violations. After the retries are
 /// exhausted, the final attempt's error propagates -- a target held open indefinitely (antivirus,
 /// an actual leak) must stay loud.
 fn replace_with_retry(src: &Path, dst: &Path) -> io::Result<()> {
-    replace_with_retry_impl(
-        |src, dst| fs::rename(src, dst),
-        std::thread::sleep,
-        src,
-        dst,
-    )
+    replace_with_retry_impl(atomicwrites::replace_atomic, std::thread::sleep, src, dst)
 }
 
 #[derive(Debug)]
