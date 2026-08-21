@@ -1,0 +1,252 @@
+use std::{collections::BTreeMap, fs};
+
+use skit_application::{
+    CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
+    form_state::{FormStateRepository as _, FormStateService, StateWriteError, scrub_secrets},
+};
+use skit_domain::{
+    EntryKind, EntrySettings, StorageMode,
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery},
+};
+use skit_store::{CoordinatedStateError, FileFormStateStore, FileStore};
+use tempfile::TempDir;
+
+fn tree_paths(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn visit(root: &std::path::Path, path: &std::path::Path, output: &mut Vec<std::path::PathBuf>) {
+        let mut entries = fs::read_dir(path)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>();
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            output.push(path.strip_prefix(root).unwrap().to_path_buf());
+            if path.is_dir() {
+                visit(root, &path, output);
+            }
+        }
+    }
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output
+}
+
+fn registry_product_rows(bytes: &[u8]) -> toml::Table {
+    let mut document = toml::from_str::<toml::Table>(&String::from_utf8_lossy(bytes)).unwrap();
+    if let Some(row) = document
+        .get_mut("entries")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|entries| entries.get_mut("coherent"))
+        .and_then(toml::Value::as_table_mut)
+    {
+        row.remove("mtime_ns");
+        row.remove("skit_cache");
+    }
+    document
+}
+
+#[test]
+fn failed_state_commit_rolls_back_a_real_copy_edit_byte_exactly() {
+    let root = TempDir::new().unwrap();
+    let data = root.path().join("data");
+    let state_root = root.path().join("state");
+    let store = FileStore::new(&data);
+    let entry = store
+        .create(CreateEntry {
+            name: "Coherent".to_owned(),
+            kind: EntryKind::parse("shell").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"TOKEN=public\n".to_vec(),
+                stored_name: Some("script.sh".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    store.claim_identity(&entry).unwrap();
+    let source_path = data.join("scripts/coherent/script.sh");
+    let meta_path = data.join("scripts/coherent/meta.toml");
+    let source_before = fs::read(&source_path).unwrap();
+    let meta_before = fs::read(&meta_path).unwrap();
+    let registry_path = data.join("registry.toml");
+    let registry_before = fs::read(&registry_path).unwrap();
+    let tree_before = tree_paths(&data);
+    let mut public = ParamDecl::new("TOKEN");
+    public.binding = ParameterBinding::Const;
+    public.delivery = ParameterDelivery::Inject;
+    let state_store = FileFormStateStore::new(&state_root);
+    FormStateService::new(state_store.clone())
+        .save_last(
+            &entry.slug,
+            &[public.clone()],
+            Some(&BTreeMap::from([(
+                "TOKEN".to_owned(),
+                "plaintext".to_owned(),
+            )])),
+            None,
+            false,
+        )
+        .unwrap();
+    let state_path = state_root.join("values/coherent.toml");
+    let state_before = fs::read(&state_path).unwrap();
+    let mut secret = public;
+    secret.secret = true;
+
+    let error = state_store
+        .update_after_external_commit_with(
+            &entry.slug,
+            || store.commit_copy_edit(&entry, b"TOKEN=secret\n", &entry.meta.source_hash),
+            |state| scrub_secrets(&[secret], state),
+            |updated| {
+                store
+                    .commit_copy_edit(updated, &source_before, &updated.meta.source_hash)
+                    .map(|_| ())
+            },
+            |path, _| {
+                Err(StateWriteError::Io {
+                    operation: "write",
+                    path: path.display().to_string(),
+                    reason: "injected state replacement failure".to_owned(),
+                })
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CoordinatedStateError::StateAfterCommit { rollback: None, .. }
+    ));
+    assert_eq!(fs::read(source_path).unwrap(), source_before);
+    assert_eq!(fs::read(meta_path).unwrap(), meta_before);
+    let registry_after = fs::read(registry_path).unwrap();
+    assert_eq!(
+        registry_product_rows(&registry_after),
+        registry_product_rows(&registry_before),
+        "rollback may refresh only the rebuildable cache proof"
+    );
+    assert_eq!(tree_paths(&data), tree_before);
+    assert_eq!(fs::read(state_path).unwrap(), state_before);
+}
+
+#[test]
+fn external_commit_failure_does_not_write_prepared_state() {
+    let root = TempDir::new().unwrap();
+    let state_store = FileFormStateStore::new(root.path());
+    let slug = skit_domain::Slug::parse("commit-failure").unwrap();
+
+    let error = state_store
+        .update_after_external_commit_with(
+            &slug,
+            || Err::<(), _>("commit failed"),
+            |state| {
+                state
+                    .values
+                    .insert("TOKEN".to_owned(), "plaintext".to_owned());
+            },
+            |_| Ok::<(), &str>(()),
+            |_, _| panic!("state must not write when the external commit fails"),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CoordinatedStateError::Commit("commit failed")
+    ));
+    assert!(!root.path().join("values/commit-failure.toml").exists());
+}
+
+#[test]
+fn rollback_failure_is_kept_with_the_state_failure() {
+    let root = TempDir::new().unwrap();
+    let state_store = FileFormStateStore::new(root.path());
+    let slug = skit_domain::Slug::parse("rollback-failure").unwrap();
+
+    let error = state_store
+        .update_after_external_commit_with(
+            &slug,
+            || Ok::<_, &str>(()),
+            |state| {
+                state
+                    .values
+                    .insert("TOKEN".to_owned(), "plaintext".to_owned());
+            },
+            |_| Err("rollback failed"),
+            |path, _| {
+                Err(StateWriteError::Io {
+                    operation: "write",
+                    path: path.display().to_string(),
+                    reason: "state failed".to_owned(),
+                })
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CoordinatedStateError::StateAfterCommit {
+            rollback: Some("rollback failed"),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn unreadable_state_refuses_before_the_external_commit() {
+    let root = TempDir::new().unwrap();
+    let state_store = FileFormStateStore::new(root.path());
+    let slug = skit_domain::Slug::parse("unreadable").unwrap();
+    let state_path = root.path().join("values/unreadable.toml");
+    fs::create_dir_all(&state_path).unwrap();
+
+    let error = state_store
+        .update_after_external_commit(
+            &slug,
+            || -> Result<(), &str> {
+                panic!("external commit ran before the state read succeeded")
+            },
+            |state| {
+                state
+                    .values
+                    .insert("TOKEN".to_owned(), "plaintext".to_owned());
+            },
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CoordinatedStateError::State(StateWriteError::Io {
+            operation: "read",
+            ..
+        })
+    ));
+    assert!(state_path.is_dir());
+    assert_eq!(fs::read_dir(state_path).unwrap().count(), 0);
+}
+
+#[test]
+fn refused_state_update_keeps_the_document_byte_and_semantic_exact() {
+    let root = TempDir::new().unwrap();
+    let state_store = FileFormStateStore::new(root.path());
+    let slug = skit_domain::Slug::parse("refused-update").unwrap();
+    let state_path = root.path().join("values/refused-update.toml");
+    fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    let original = b"unknown = 'keep me'\n\n[values]\nTOKEN='plaintext'\n";
+    fs::write(&state_path, original).unwrap();
+    let semantic_before = state_store.load(&slug);
+
+    let result = state_store
+        .try_update(&slug, |state| {
+            state.values.clear();
+            Err::<(), _>("schema changed while the run was active")
+        })
+        .unwrap();
+
+    assert_eq!(result, Err("schema changed while the run was active"));
+    assert_eq!(fs::read(&state_path).unwrap(), original);
+    assert_eq!(state_store.load(&slug), semantic_before);
+}

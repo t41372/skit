@@ -859,6 +859,15 @@ fn data_directory_mode_and_error_taxonomy_helpers_are_stable() {
             ExitClass::Skit.code(),
         ),
         (
+            CliError::StateRollback {
+                state: StateWriteError::Encode {
+                    reason: "state".to_owned(),
+                },
+                rollback: Box::new(CliError::Failure(Message::new("rollback"))),
+            },
+            ExitClass::Skit.code(),
+        ),
+        (
             source_error("read", Path::new("source"), io::Error::other("source")),
             ExitClass::Failure.code(),
         ),
@@ -2390,7 +2399,7 @@ fn tui_source_controls_change_only_the_stored_copy() {
         .commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)
         .unwrap();
     let source = fs::read_to_string(&stored).unwrap();
-    let (source, managed, warnings) = prepare_source_management(
+    let (source, managed, warnings, applied) = prepare_source_management(
         "shell",
         StorageMode::Copy,
         source,
@@ -2402,6 +2411,7 @@ fn tui_source_controls_change_only_the_stored_copy() {
     )
     .unwrap();
     assert!(warnings.is_empty());
+    assert!(applied);
     let rewritten = write_managed_params("shell", &source, &managed).unwrap();
     let claimed = service.claim_identity(&entry).unwrap();
     entry = service
@@ -2413,7 +2423,7 @@ fn tui_source_controls_change_only_the_stored_copy() {
     );
 
     let source = fs::read_to_string(&stored).unwrap();
-    let (source, managed, warnings) = prepare_source_management(
+    let (source, managed, warnings, applied) = prepare_source_management(
         "shell",
         StorageMode::Copy,
         source,
@@ -2422,6 +2432,7 @@ fn tui_source_controls_change_only_the_stored_copy() {
     )
     .unwrap();
     assert!(warnings.is_empty());
+    assert!(applied);
     let rewritten = write_managed_params("shell", &source, &managed).unwrap();
     let claimed = service.claim_identity(&entry).unwrap();
     service
@@ -5485,6 +5496,17 @@ fn every_cli_error_localizes_and_keeps_its_values() {
         &["unsupported value"],
     );
     assert_localized(
+        &CliError::StateRollback {
+            state: StateWriteError::Encode {
+                reason: "state encoding".to_owned(),
+            },
+            rollback: Box::new(CliError::State(StateWriteError::Encode {
+                reason: "rollback encoding".to_owned(),
+            })),
+        },
+        &["state encoding", "rollback encoding"],
+    );
+    assert_localized(
         &CliError::Usage(Message::new("unknown preset: {}").with("nightly")),
         &["nightly"],
     );
@@ -5501,6 +5523,35 @@ fn every_cli_error_localizes_and_keeps_its_values() {
     );
     assert_localized(&CliError::DataDirectoryUnavailable, &[]);
     assert_localized(&CliError::DirectoryUnavailable("state"), &["state"]);
+
+    let mapped = coordinated_state_error(CoordinatedStateError::StateAfterCommit {
+        state: StateWriteError::Encode {
+            reason: "state encoding".to_owned(),
+        },
+        rollback: Some(CliError::State(StateWriteError::Encode {
+            reason: "rollback encoding".to_owned(),
+        })),
+    });
+    assert!(matches!(mapped, CliError::StateRollback { .. }));
+    assert!(matches!(
+        coordinated_state_error(CoordinatedStateError::State(StateWriteError::Encode {
+            reason: "state".to_owned(),
+        })),
+        CliError::State(_)
+    ));
+    assert!(matches!(
+        coordinated_state_error(CoordinatedStateError::Commit(CliError::Aborted)),
+        CliError::Aborted
+    ));
+    assert!(matches!(
+        coordinated_state_error(CoordinatedStateError::StateAfterCommit {
+            state: StateWriteError::Encode {
+                reason: "state".to_owned(),
+            },
+            rollback: None,
+        }),
+        CliError::State(_)
+    ));
 }
 
 #[test]
@@ -6015,26 +6066,156 @@ fn tui_settings_resync_returns_a_localized_warning_for_the_completion_receipt() 
         &[("source:resync", "true")],
     );
 
-    let warnings =
+    let outcome =
         tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values).unwrap();
 
     assert_eq!(
-        warnings,
+        outcome.warnings,
         [skit_domain::parameters::SourceEditWarning::ResyncDropped {
             name: "GONE".to_owned()
         }]
     );
     assert_eq!(
-        settings_saved_message(&warnings, Locale::En),
-        "Settings saved\nDropped GONE: it no longer exists in the script."
+        settings_saved_message(&outcome, Locale::En),
+        "Settings saved — Dropped GONE: it no longer exists in the script."
     );
     assert_eq!(
-        settings_saved_message(&warnings, Locale::ZhCn),
-        "设置已保存\n已移除 GONE：它已不存在于脚本中。"
+        settings_saved_message(&outcome, Locale::ZhCn),
+        "设置已保存 — 已移除 GONE：它已不存在于脚本中。"
     );
     assert_eq!(
-        settings_saved_message(&warnings, Locale::ZhTw),
-        "設定已儲存\n已移除 GONE：它已不存在於指令稿中。"
+        settings_saved_message(&outcome, Locale::ZhTw),
+        "設定已儲存 — 已移除 GONE：它已不存在於指令稿中。"
+    );
+}
+
+#[test]
+fn tui_settings_source_secret_transition_purges_every_state_surface() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let mut city = ParamDecl::new("CITY");
+    city.binding = ParameterBinding::Const;
+    city.delivery = ParameterDelivery::Inject;
+    let source =
+        write_managed_params("python", "CITY = \"Taipei\"\nprint(CITY)\n", &[city]).unwrap();
+    let entry = service
+        .add(CreateEntry {
+            name: "Secret transition".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: source.into_bytes(),
+                stored_name: Some("script.py".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let state_path = state_dir
+        .join("values")
+        .join(format!("{}.toml", entry.slug.as_str()));
+    fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    fs::write(
+        &state_path,
+        "[values]\nCITY = \"last-leak\"\nKEEP = \"public\"\n\n[presets.saved]\nCITY = \"preset-leak\"\nKEEP = \"public\"\n\n[last_run.values]\nCITY = \"run-leak\"\nKEEP = \"public\"\n",
+    )
+    .unwrap();
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        entry.slug.as_str(),
+        &[("parameter:CITY:secret", "true")],
+    );
+
+    let outcome =
+        tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values).unwrap();
+
+    assert!(outcome.warnings.is_empty());
+    assert_eq!(outcome.purged_secrets, BTreeSet::from(["CITY".to_owned()]));
+    assert_eq!(
+        settings_saved_message(&outcome, Locale::En),
+        "Settings saved — Removed previously stored plaintext value(s) for now-secret parameter(s): CITY"
+    );
+    assert_eq!(
+        settings_saved_message(&outcome, Locale::ZhCn),
+        "设置已保存 — 已移除下列刚设为机密的参数先前以明文存储的值:CITY"
+    );
+    assert_eq!(
+        settings_saved_message(&outcome, Locale::ZhTw),
+        "設定已儲存 — 已移除下列剛設為機密的參數先前以明文儲存的值:CITY"
+    );
+    let state = fs::read_to_string(state_path).unwrap();
+    assert!(!state.contains("CITY"), "{state}");
+    assert!(!state.contains("leak"), "{state}");
+    assert!(state.contains("KEEP = \"public\""), "{state}");
+}
+
+#[test]
+fn tui_mixed_source_and_metadata_save_commits_nothing_when_state_lock_fails() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let mut city = ParamDecl::new("CITY");
+    city.binding = ParameterBinding::Const;
+    city.delivery = ParameterDelivery::Inject;
+    let source =
+        write_managed_params("python", "CITY = \"Taipei\"\nprint(CITY)\n", &[city]).unwrap();
+    let entry = service
+        .add(CreateEntry {
+            name: "Mixed rollback".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: "before".to_owned(),
+            payload: Some(EntryPayload {
+                bytes: source.into_bytes(),
+                stored_name: Some("script.py".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let entry_dir = data_dir.join("scripts").join(entry.slug.as_str());
+    let source_path = entry_dir.join("script.py");
+    let meta_path = entry_dir.join("meta.toml");
+    let registry_path = data_dir.join("registry.toml");
+    let source_before = fs::read(&source_path).unwrap();
+    let meta_before = fs::read(&meta_path).unwrap();
+    let registry_before = fs::read(&registry_path).unwrap();
+    let values_path = state_dir
+        .join("values")
+        .join(format!("{}.toml", entry.slug.as_str()));
+    fs::create_dir_all(values_path.parent().unwrap()).unwrap();
+    fs::write(&values_path, "[values]\nCITY = \"plaintext\"\n").unwrap();
+    fs::write(state_dir.join(".locks"), "not a directory").unwrap();
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        entry.slug.as_str(),
+        &[("description", "after"), ("parameter:CITY:secret", "true")],
+    );
+
+    let error = tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values)
+        .unwrap_err();
+
+    assert!(matches!(error, CliError::State(_)), "{error:?}");
+    assert_eq!(fs::read(source_path).unwrap(), source_before);
+    assert_eq!(fs::read(meta_path).unwrap(), meta_before);
+    assert_eq!(fs::read(registry_path).unwrap(), registry_before);
+    assert_eq!(
+        fs::read_to_string(values_path).unwrap(),
+        "[values]\nCITY = \"plaintext\"\n"
     );
 }
 
@@ -8303,7 +8484,9 @@ fn test_tree_snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
     }
 
     let mut rows = BTreeMap::new();
-    visit(root, root, &mut rows);
+    if root.exists() {
+        visit(root, root, &mut rows);
+    }
     rows
 }
 

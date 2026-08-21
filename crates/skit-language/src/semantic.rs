@@ -550,9 +550,11 @@ pub fn edit_source_declarations(
         }
     };
     let mut warnings = Vec::new();
+    let mut applied = false;
 
     if request.resync {
         if let Some(report) = report {
+            applied = true;
             apply_source_resync(&mut declarations, report, &mut warnings);
         } else {
             warnings.push(SourceEditWarning::ResyncSkipped);
@@ -561,6 +563,7 @@ pub fn edit_source_declarations(
 
     for name in &request.remove {
         if let Some(index) = declarations.iter().position(|row| row.name == *name) {
+            applied = true;
             declarations.remove(index);
         } else {
             warnings.push(SourceEditWarning::NotManaged { name: name.clone() });
@@ -571,6 +574,7 @@ pub fn edit_source_declarations(
         if declarations.iter().any(|row| row.name == *name) {
             warnings.push(SourceEditWarning::AlreadyManaged { name: name.clone() });
         } else if let Some(candidate) = candidates.iter().find(|row| row.name == *name) {
+            applied = true;
             declarations.push(candidate.clone());
         } else {
             warnings.push(SourceEditWarning::NotCandidate { name: name.clone() });
@@ -579,6 +583,7 @@ pub fn edit_source_declarations(
 
     for name in &request.secret {
         if let Some(row) = declarations.iter_mut().find(|row| row.name == *name) {
+            applied = true;
             row.secret = true;
         } else {
             warnings.push(SourceEditWarning::NotManaged { name: name.clone() });
@@ -586,6 +591,7 @@ pub fn edit_source_declarations(
     }
     for name in &request.no_secret {
         if let Some(row) = declarations.iter_mut().find(|row| row.name == *name) {
+            applied = true;
             row.secret = false;
             row.env_source.clear();
         } else {
@@ -602,6 +608,7 @@ pub fn edit_source_declarations(
     }
     for edit in unique_named_edits(&request.prompts) {
         if let Some(row) = declarations.iter_mut().find(|row| row.name == edit.name) {
+            applied = true;
             row.prompt.clone_from(&edit.value);
         } else {
             warnings.push(SourceEditWarning::NotManaged {
@@ -617,6 +624,7 @@ pub fn edit_source_declarations(
             continue;
         };
         if row.secret {
+            applied = true;
             row.env_source = edit.value.trim().to_owned();
         } else {
             warnings.push(SourceEditWarning::EnvSourceNotSecret {
@@ -627,6 +635,7 @@ pub fn edit_source_declarations(
 
     Ok(SourceEditResult {
         changed: declarations != stored,
+        applied,
         declarations,
         warnings,
     })

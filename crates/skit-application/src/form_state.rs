@@ -110,6 +110,11 @@ pub trait FormStateRepository: Debug {
     where
         F: FnOnce(&mut PersistedFormState) -> T;
 
+    /// Attempt one mutation and leave persistence byte-identical when the closure refuses.
+    fn try_update<T, E, F>(&self, slug: &Slug, update: F) -> Result<Result<T, E>, StateWriteError>
+    where
+        F: FnOnce(&mut PersistedFormState) -> Result<T, E>;
+
     /// Remove all per-entry state while holding the same transaction lock used by updates.
     fn forget(&self, slug: &Slug) -> Result<(), StateWriteError>;
 }
@@ -252,6 +257,53 @@ where
             state.last_run.at = Some(at);
             state.last_run.exit = Some(exit);
             state.last_run.values = values;
+        })
+    }
+
+    /// Commit all state from one completed run against declarations read under the state lock.
+    ///
+    /// A source edit uses the same adapter lock for its secrecy commit and purge. Resolving the
+    /// current declarations inside this update prevents a run that started with an older public
+    /// schema from restoring plaintext after the field becomes secret.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_completed_run_with<E>(
+        &self,
+        slug: &Slug,
+        exit: i64,
+        at: &str,
+        values: Option<&BTreeMap<String, String>>,
+        extra_args: Option<Vec<String>>,
+        extra_args_raw: bool,
+        preset_name: Option<&str>,
+        declarations: impl FnOnce() -> Result<Vec<ParamDecl>, E>,
+    ) -> Result<Result<(), E>, StateWriteError> {
+        let values = values.cloned();
+        let at = at.to_owned();
+        let preset_name = preset_name.map(str::to_owned);
+        self.repository.try_update(slug, move |state| {
+            if let Some(values) = values.as_ref() {
+                let declarations = match declarations() {
+                    Ok(declarations) => declarations,
+                    Err(error) => return Err(error),
+                };
+                let _ = scrub_secrets(&declarations, state);
+                state.values = remembered_values(&declarations, values);
+                if let Some(extra_args) = extra_args {
+                    state.extra_args = extra_args;
+                    state.extra_args_raw = !state.extra_args.is_empty() && extra_args_raw;
+                }
+                if let Some(name) = preset_name {
+                    state
+                        .presets
+                        .insert(name, preset_values(&declarations, values));
+                }
+                state.last_run.values = Some(preset_values(&declarations, values));
+            } else {
+                state.last_run.values = None;
+            }
+            state.last_run.at = Some(at);
+            state.last_run.exit = Some(exit);
+            Ok(())
         })
     }
 

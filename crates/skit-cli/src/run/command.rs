@@ -631,19 +631,25 @@ pub(crate) fn run_with_roots(
     }
     let exit = execute_launch(&plan)?;
     let slug = &entry.slug;
-    let fields = &declarations;
-    if !args.raw {
-        state.purge_secrets(&entry.slug, &declarations)?;
-        state.save_last(slug, fields, Some(&raw_values), new_tail, false)?;
-        if let Some(name) = args.save_preset.as_deref() {
-            state.save_preset(&entry.slug, name, &declarations, &raw_values)?;
-        }
-    }
     let at = OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned());
     let recorded_values = (!args.raw).then_some(&raw_values);
-    state.record_run(slug, i64::from(exit), &at, fields, recorded_values)?;
+    state.record_completed_run_with(
+        slug,
+        i64::from(exit),
+        &at,
+        recorded_values,
+        new_tail,
+        false,
+        args.save_preset.as_deref(),
+        || -> Result<Vec<ParamDecl>, RunError> {
+            let current = service.show(slug.as_str())?;
+            let settings = EntrySettings::from_meta(&current.meta);
+            let (source, _) = source_snapshot(data_store, &current, &settings)?;
+            Ok(form_params(current.meta.kind.as_str(), &source, &settings))
+        },
+    )??;
     Ok(exit)
 }
 

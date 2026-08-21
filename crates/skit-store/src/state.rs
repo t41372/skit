@@ -16,6 +16,22 @@ pub struct FileFormStateStore {
     state_dir: PathBuf,
 }
 
+/// Failure from a state update coordinated with one external commit.
+#[derive(Debug)]
+pub enum CoordinatedStateError<E> {
+    /// The state lock or initial read failed before the external commit ran.
+    State(StateWriteError),
+    /// The external commit failed before state changed.
+    Commit(E),
+    /// State could not commit after the external commit. The optional error is a failed rollback.
+    StateAfterCommit {
+        /// State persistence failure.
+        state: StateWriteError,
+        /// External rollback failure. `None` means rollback succeeded.
+        rollback: Option<E>,
+    },
+}
+
 impl FileFormStateStore {
     /// Use the supplied skit state root (the parent of `values/` and `.locks/`).
     #[must_use]
@@ -35,6 +51,60 @@ impl FileFormStateStore {
         self.state_dir
             .join(".locks")
             .join(format!("{}.values.lock", slug.as_str()))
+    }
+
+    /// Hold the state lock across an external commit and its dependent state mutation.
+    ///
+    /// If state persistence fails, `rollback` runs before the state lock is released. A concurrent
+    /// run therefore cannot restore a stale public value between a secrecy commit and its purge.
+    pub fn update_after_external_commit<C, T, E>(
+        &self,
+        slug: &Slug,
+        commit: impl FnOnce() -> Result<C, E>,
+        update: impl FnOnce(&mut PersistedFormState) -> T,
+        rollback: impl FnOnce(&C) -> Result<(), E>,
+    ) -> Result<(C, T), CoordinatedStateError<E>> {
+        self.update_after_external_commit_with(slug, commit, update, rollback, |path, bytes| {
+            atomic_write_bytes(path, bytes)
+                .map_err(|error| io_error("write", path, error.to_string()))
+        })
+    }
+
+    /// Injectable state-writer variant of [`Self::update_after_external_commit`].
+    #[doc(hidden)]
+    pub fn update_after_external_commit_with<C, T, E>(
+        &self,
+        slug: &Slug,
+        commit: impl FnOnce() -> Result<C, E>,
+        update: impl FnOnce(&mut PersistedFormState) -> T,
+        rollback: impl FnOnce(&C) -> Result<(), E>,
+        write_state: impl FnOnce(&std::path::Path, &[u8]) -> Result<(), StateWriteError>,
+    ) -> Result<(C, T), CoordinatedStateError<E>> {
+        let lock_path = self.lock_path(slug);
+        let _lock = acquire_lock(&lock_path).map_err(|error| {
+            CoordinatedStateError::State(io_error("lock", &lock_path, error.to_string()))
+        })?;
+        let path = self.values_path(slug);
+        let mut document = load_document_for_write(&path).map_err(CoordinatedStateError::State)?;
+        sanitize_document(&mut document);
+        let mut state = state_from_document(&document);
+        let before = state.clone();
+        let result = update(&mut state);
+        if state == before {
+            let committed = commit().map_err(CoordinatedStateError::Commit)?;
+            return Ok((committed, result));
+        }
+        merge_state(&mut document, &before, &state);
+        let encoded =
+            toml::to_string_pretty(&document).expect("a parsed TOML value tree must serialize");
+        let committed = commit().map_err(CoordinatedStateError::Commit)?;
+        if let Err(error) = write_state(&path, encoded.as_bytes()) {
+            return Err(CoordinatedStateError::StateAfterCommit {
+                state: error,
+                rollback: rollback(&committed).err(),
+            });
+        }
+        Ok((committed, result))
     }
 }
 
@@ -57,7 +127,7 @@ impl FormStateRepository for FileFormStateStore {
         let _lock = acquire_lock(&lock_path)
             .map_err(|error| io_error("lock", &lock_path, error.to_string()))?;
         let path = self.values_path(slug);
-        let mut document = load_document(&path);
+        let mut document = load_document_for_write(&path)?;
         sanitize_document(&mut document);
         let mut state = state_from_document(&document);
         let before = state.clone();
@@ -68,6 +138,30 @@ impl FormStateRepository for FileFormStateStore {
         atomic_write_bytes(&path, encoded.as_bytes())
             .map_err(|error| io_error("write", &path, error.to_string()))?;
         Ok(result)
+    }
+
+    fn try_update<T, E, F>(&self, slug: &Slug, update: F) -> Result<Result<T, E>, StateWriteError>
+    where
+        F: FnOnce(&mut PersistedFormState) -> Result<T, E>,
+    {
+        let lock_path = self.lock_path(slug);
+        let _lock = acquire_lock(&lock_path)
+            .map_err(|error| io_error("lock", &lock_path, error.to_string()))?;
+        let path = self.values_path(slug);
+        let mut document = load_document_for_write(&path)?;
+        sanitize_document(&mut document);
+        let mut state = state_from_document(&document);
+        let before = state.clone();
+        let result = match update(&mut state) {
+            Ok(result) => result,
+            Err(error) => return Ok(Err(error)),
+        };
+        merge_state(&mut document, &before, &state);
+        let encoded =
+            toml::to_string_pretty(&document).expect("a parsed TOML value tree must serialize");
+        atomic_write_bytes(&path, encoded.as_bytes())
+            .map_err(|error| io_error("write", &path, error.to_string()))?;
+        Ok(Ok(result))
     }
 
     fn forget(&self, slug: &Slug) -> Result<(), StateWriteError> {
@@ -88,6 +182,14 @@ fn load_document(path: &std::path::Path) -> Table {
         .ok()
         .and_then(|text| toml::from_str::<Table>(&text).ok())
         .unwrap_or_default()
+}
+
+fn load_document_for_write(path: &std::path::Path) -> Result<Table, StateWriteError> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(toml::from_str::<Table>(&text).unwrap_or_default()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Table::new()),
+        Err(error) => Err(io_error("read", path, error.to_string())),
+    }
 }
 
 fn sanitize_document(document: &mut Table) {

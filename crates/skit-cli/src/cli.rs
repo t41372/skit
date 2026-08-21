@@ -22,7 +22,7 @@ use skit_application::{
     RepositoryError, RepositoryOperation, SourceIdentity, SourcePermissions, UpdateEntry,
     add_workdir, detect_agent_targets,
     form_feedback::GlobCountPort,
-    form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill},
+    form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill, scrub_secrets},
     health::{
         HealthInspection, HealthIssue, HealthIssueKind, HealthRebuild, HealthRebuildOutcome,
         HealthService, HealthSnapshot, MirrorHealth, UvHealth,
@@ -73,9 +73,10 @@ use skit_runtime::{
     resolve_javascript_runtime,
 };
 use skit_store::{
-    CONFIG_KEYS, ConfigError, FileAgentSkillStore, FileConfigStore, FileFormStateStore,
-    FileGlobExpander, FilePromptSelectionStore, FileRunnerManagementStore, PromptRunner,
-    RunnerManagementStoreError, RunnerRemovalCas, SystemDirectoryReader, expand_user_path,
+    CONFIG_KEYS, ConfigError, CoordinatedStateError, FileAgentSkillStore, FileConfigStore,
+    FileFormStateStore, FileGlobExpander, FilePromptSelectionStore, FileRunnerManagementStore,
+    PromptRunner, RunnerManagementStoreError, RunnerRemovalCas, SystemDirectoryReader,
+    expand_user_path,
 };
 use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
@@ -4660,10 +4661,10 @@ fn prepare_source_management(
     mut source: String,
     request: &SourceEditRequest,
     normalize: &[String],
-) -> Result<(String, Vec<ParamDecl>, Vec<SourceEditWarning>), CliError> {
+) -> Result<(String, Vec<ParamDecl>, Vec<SourceEditWarning>, bool), CliError> {
     if request.is_empty() && normalize.is_empty() {
         let managed = managed_params(kind, &source);
-        return Ok((source, managed, Vec::new()));
+        return Ok((source, managed, Vec::new(), false));
     }
     if mode == StorageMode::Reference {
         return Err(CliError::Failure(Message::new(
@@ -4672,13 +4673,16 @@ fn prepare_source_management(
     }
     let mut managed = managed_params(kind, &source);
     let mut warnings = Vec::new();
+    let mut applied = false;
     if !request.is_empty() {
         let result = edit_source_declarations(kind, &source, &managed, request)
             .map_err(|error| CliError::Usage(error.message()))?;
+        applied = result.applied;
         managed = result.declarations;
         warnings = result.warnings;
     }
     for name in normalize {
+        applied = true;
         if kind != "shell" {
             return Err(CliError::Usage(Message::new(
                 "--normalize applies only to shell entries",
@@ -4696,7 +4700,7 @@ fn prepare_source_management(
             managed.push(normalized);
         }
     }
-    Ok((source, managed, warnings))
+    Ok((source, managed, warnings, applied))
 }
 
 fn params(
@@ -4896,13 +4900,14 @@ fn params(
         prompts,
         env_sources,
     };
-    let (mut source, prepared_managed, source_edit_warnings) = prepare_source_management(
-        held.meta.kind.as_str(),
-        held.meta.mode,
-        original_source.clone(),
-        &source_request,
-        &args.normalize,
-    )?;
+    let (mut source, prepared_managed, source_edit_warnings, source_edit_applied) =
+        prepare_source_management(
+            held.meta.kind.as_str(),
+            held.meta.mode,
+            original_source.clone(),
+            &source_request,
+            &args.normalize,
+        )?;
     let mut declarations = if source_parameter_kind && has_source_schema_operation {
         form_params_from_managed(prepared_managed, &settings)
     } else {
@@ -4972,17 +4977,45 @@ fn params(
         } else {
             original_source.clone()
         };
-        if source != original_source {
+        if source_edit_applied && declarations.iter().any(|declaration| declaration.secret) {
+            let source_changed = source != original_source;
+            let state = FileFormStateStore::new(resolve_state_dir()?);
+            let original_bytes = original_source.as_bytes();
+            let ((updated, _), purged) = state
+                .update_after_external_commit(
+                    &held.slug,
+                    || -> Result<(Entry, bool), CliError> {
+                        if !source_changed {
+                            return Ok((held.clone(), false));
+                        }
+                        let claimed = service.claim_identity(&held)?;
+                        let updated = service.commit_copy_edit(
+                            &claimed,
+                            source.as_bytes(),
+                            &held.meta.source_hash,
+                        )?;
+                        Ok((updated, true))
+                    },
+                    |state| scrub_secrets(&declarations, state),
+                    |(updated, changed)| -> Result<(), CliError> {
+                        if !changed {
+                            return Ok(());
+                        }
+                        let claimed = service.claim_identity(updated)?;
+                        service.commit_copy_edit(
+                            &claimed,
+                            original_bytes,
+                            &updated.meta.source_hash,
+                        )?;
+                        Ok(())
+                    },
+                )
+                .map_err(coordinated_state_error)?;
+            held = updated;
+            report_purged_secrets(purged, args.json);
+        } else if source != original_source {
             let claimed = service.claim_identity(&held)?;
             held = service.commit_copy_edit(&claimed, source.as_bytes(), &held.meta.source_hash)?;
-        }
-        let has_valid_secret_transition = managed
-            .iter()
-            .any(|item| item.secret && args.secret.contains(&item.name));
-        if has_valid_secret_transition {
-            let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
-            let purged = state.purge_secrets(&held.slug, &declarations)?;
-            report_purged_secrets(purged, args.json);
         }
     } else if changed {
         if !(prompt_schema_was_hidden && has_interpolation_policy) {
@@ -5403,11 +5436,34 @@ fn report_purged_secrets(purged: BTreeSet<String>, json: bool) {
     if json || purged.is_empty() {
         return;
     }
-    let names = purged.into_iter().collect::<Vec<_>>().join(", ");
-    humanln!(
-        "Removed previously stored plaintext value(s) for now-secret parameter(s): {}",
-        names
+    println!(
+        "{}",
+        purged_secrets_message(&purged).localize(active_locale())
     );
+}
+
+fn purged_secrets_message(purged: &BTreeSet<String>) -> Message {
+    let names = purged.iter().cloned().collect::<Vec<_>>().join(", ");
+    Message::new("Removed previously stored plaintext value(s) for now-secret parameter(s): {}")
+        .with(names)
+}
+
+fn coordinated_state_error(error: CoordinatedStateError<CliError>) -> CliError {
+    match error {
+        CoordinatedStateError::State(error) => CliError::State(error),
+        CoordinatedStateError::Commit(error) => error,
+        CoordinatedStateError::StateAfterCommit {
+            state,
+            rollback: None,
+        } => CliError::State(state),
+        CoordinatedStateError::StateAfterCommit {
+            state,
+            rollback: Some(rollback),
+        } => CliError::StateRollback {
+            state,
+            rollback: Box::new(rollback),
+        },
+    }
 }
 
 fn human_parameter_declarations(
@@ -9130,12 +9186,12 @@ fn tui_submit(
             tui_complete(service, state_dir, "Entry added")
         }
         FormPurpose::Settings => {
-            let warnings =
+            let outcome =
                 tui_submit_settings(service, store, state_dir, tui_selector(&selector)?, values)?;
             tui_complete(
                 service,
                 state_dir,
-                &settings_saved_message(&warnings, active_locale()),
+                &settings_saved_message(&outcome, active_locale()),
             )
         }
         FormPurpose::Preferences => {
@@ -9267,13 +9323,19 @@ fn selected_prompt_runner_preflight_message(
     Some(format_text(locale, "Error: {}", &[&detail]))
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+struct SettingsSaveOutcome {
+    warnings: Vec<SourceEditWarning>,
+    purged_secrets: BTreeSet<String>,
+}
+
 fn tui_submit_settings(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     state_dir: &Path,
     selector: &str,
     values: &SubmittedValues,
-) -> Result<Vec<SourceEditWarning>, CliError> {
+) -> Result<SettingsSaveOutcome, CliError> {
     let entry = service.show(selector)?;
     // Only an axis a person moved travels. Every read below therefore asks whether the key is
     // present before it changes anything: an absent key means "nobody touched this", and reading it
@@ -9519,13 +9581,14 @@ fn tui_submit_settings(
     let source_requested =
         !source_request.is_empty() || !tui_value(values, "source:normalize").is_empty();
     let mut source_edit_warnings = Vec::new();
+    let mut source_state_purge = None;
     if let Some(original_bytes) = original_source.as_deref() {
         let mut working = rewritten_source
             .take()
             .unwrap_or_else(|| original_bytes.to_vec());
         let view = LosslessSource::from_bytes(&working);
         let original_text = view.normalized_text().to_owned();
-        let (rewritten, mut managed, warnings) = prepare_source_management(
+        let (rewritten, mut managed, warnings, source_edit_applied) = prepare_source_management(
             entry.meta.kind.as_str(),
             entry.meta.mode,
             original_text.clone(),
@@ -9556,6 +9619,7 @@ fn tui_submit_settings(
             working = view.restore_bytes(&rewritten);
         }
         let before_managed = managed_params(entry.meta.kind.as_str(), &rewritten);
+        let managed_changed = managed != before_managed;
         if source_requested || source_text_changed || managed != before_managed {
             working = write_managed_params_bytes(entry.meta.kind.as_str(), &working, &managed)
                 .map_err(|error| CliError::Usage(error.message()))?;
@@ -9563,6 +9627,7 @@ fn tui_submit_settings(
         if working != original_bytes {
             rewritten_source = Some(working);
         }
+        source_state_purge = Some((managed, source_edit_applied || managed_changed));
     } else if source_requested {
         return Err(CliError::Usage(Message::new(
             "the stored source is not valid UTF-8",
@@ -9586,15 +9651,62 @@ fn tui_submit_settings(
         || update.settings != stored_settings
         || update.workdir != entry.meta.workdir
         || update.source.is_some();
-    let entry = if entry_changed {
-        update_entry_with_javascript_cleanup(service, store, &entry, update, clear_javascript)?
-    } else {
-        entry
-    };
-    let state = FormStateService::new(FileFormStateStore::new(state_dir));
-    if declarations != original_declarations {
-        state.purge_secrets(&entry.slug, &declarations)?;
+    let purge_declarations = match source_state_purge {
+        Some((managed, true)) => Some(managed),
+        Some((_, false)) if declarations == original_declarations => None,
+        Some((_, false)) | None if declarations != original_declarations => {
+            Some(declarations.clone())
+        }
+        None | Some((_, false)) => None,
     }
+    .filter(|declarations| declarations.iter().any(|declaration| declaration.secret));
+    let state_store = FileFormStateStore::new(state_dir);
+    let old_entry = entry.clone();
+    let source_changed = update.source.is_some();
+    let (entry, purged_secrets) = if entry_changed && purge_declarations.is_some() {
+        let purge_declarations = purge_declarations.as_deref().unwrap_or_default();
+        state_store
+            .update_after_external_commit(
+                &entry.slug,
+                || {
+                    update_entry_with_javascript_cleanup(
+                        service,
+                        store,
+                        &entry,
+                        update,
+                        clear_javascript,
+                    )
+                },
+                |state| scrub_secrets(purge_declarations, state),
+                |updated| -> Result<(), CliError> {
+                    let claimed = service.claim_identity(updated)?;
+                    let rollback = UpdateEntry {
+                        name: old_entry.meta.name.clone(),
+                        description: old_entry.meta.description.clone(),
+                        settings: EntrySettings::from_meta(&old_entry.meta),
+                        workdir: old_entry.meta.workdir.clone(),
+                        source: source_changed.then(|| original_source.clone()).flatten(),
+                        expected_source_hash: updated.meta.source_hash.clone(),
+                    };
+                    service.update_entry(&claimed, rollback)?;
+                    Ok(())
+                },
+            )
+            .map_err(coordinated_state_error)?
+    } else {
+        let entry = if entry_changed {
+            update_entry_with_javascript_cleanup(service, store, &entry, update, clear_javascript)?
+        } else {
+            entry
+        };
+        let purged = if let Some(declarations) = purge_declarations.as_deref() {
+            FormStateService::new(state_store.clone()).purge_secrets(&entry.slug, declarations)?
+        } else {
+            BTreeSet::new()
+        };
+        (entry, purged)
+    };
+    let state = FormStateService::new(state_store);
     // An unticked preset is deleted, and only an unticked one travels. Version 0.4 deletes at the
     // end of the save, from the names the user actually saw (`src/skit/tui_settings.py:1114-1120`).
     // The name is in the key, so a preset added or removed while the screen was open cannot shift
@@ -9607,17 +9719,24 @@ fn tui_submit_settings(
             state.delete_preset(&entry.slug, preset)?;
         }
     }
-    Ok(source_edit_warnings)
+    Ok(SettingsSaveOutcome {
+        warnings: source_edit_warnings,
+        purged_secrets,
+    })
 }
 
-fn settings_saved_message(warnings: &[SourceEditWarning], locale: Locale) -> String {
+fn settings_saved_message(outcome: &SettingsSaveOutcome, locale: Locale) -> String {
     let mut lines = vec![text(locale, "Settings saved").into_owned()];
     lines.extend(
-        warnings
+        outcome
+            .warnings
             .iter()
             .map(|warning| source_edit_warning_message(warning).localize(locale)),
     );
-    lines.join("\n")
+    if !outcome.purged_secrets.is_empty() {
+        lines.push(purged_secrets_message(&outcome.purged_secrets).localize(locale));
+    }
+    lines.join(" — ")
 }
 
 fn tui_complete(
@@ -9995,6 +10114,11 @@ enum CliError {
     Config(#[from] ConfigError),
     #[error(transparent)]
     State(#[from] StateWriteError),
+    #[error("State commit failed: {state}. Rollback also failed: {rollback}.")]
+    StateRollback {
+        state: StateWriteError,
+        rollback: Box<CliError>,
+    },
     #[error("{0}")]
     Usage(Message),
     #[error("{0}")]
@@ -10029,6 +10153,11 @@ impl Localize for CliError {
             Self::Tui(error) => error.message(),
             Self::Config(error) => error.message(),
             Self::State(error) => error.message(),
+            Self::StateRollback { state, rollback } => {
+                Message::new("State commit failed: {}. Rollback also failed: {}.")
+                    .nested(state.message())
+                    .nested(rollback.message())
+            }
             Self::Usage(message) => message.clone(),
             Self::Failure(message) => message.clone(),
             Self::ConfirmationRequired => {
@@ -10070,6 +10199,7 @@ impl CliError {
             | Self::Io(_)
             | Self::Tui(_)
             | Self::State(_)
+            | Self::StateRollback { .. }
             | Self::DataDirectoryUnavailable
             | Self::DirectoryUnavailable(_) => ExitClass::Skit.code() as i32,
             Self::Source { .. } => ExitClass::Failure.code() as i32,

@@ -212,7 +212,8 @@ fn source_shared_edits_warn_and_commit_valid_siblings_without_persisting_secrets
         fs::read(&original).unwrap(),
         b"TOKEN = 'value'\nprint(TOKEN)\n"
     );
-    let state = fs::read_to_string(sandbox.state.path().join("values/managed.toml")).unwrap();
+    let state =
+        fs::read_to_string(sandbox.state.path().join("values/managed.toml")).unwrap_or_default();
     assert!(!state.contains("TOKEN"), "{state}");
     assert!(!state.contains("value"), "{state}");
     assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);

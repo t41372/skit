@@ -314,6 +314,8 @@ pub struct SourceEditResult {
     pub warnings: Vec<SourceEditWarning>,
     /// Whether the semantic row list changed.
     pub changed: bool,
+    /// Whether at least one requested operation addressed a valid source row or refresh.
+    pub applied: bool,
 }
 
 /// Add detected candidates without letting one bad requested name abort valid siblings.

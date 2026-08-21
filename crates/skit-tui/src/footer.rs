@@ -730,4 +730,48 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         }));
     }
+
+    #[test]
+    fn one_line_settings_receipts_render_the_warning_in_three_locales() {
+        for (locale, status, warning) in [
+            (
+                Locale::En,
+                "Settings saved — Dropped GONE: it no longer exists in the script.",
+                "Dropped GONE",
+            ),
+            (
+                Locale::ZhCn,
+                "设置已保存 — 已移除 GONE：它已不存在于脚本中。",
+                "已移除 GONE",
+            ),
+            (
+                Locale::ZhTw,
+                "設定已儲存 — 已移除 GONE：它已不存在於指令稿中。",
+                "已移除 GONE",
+            ),
+        ] {
+            let mut state = LibraryState::default();
+            state.update(skit_ui::Action::SetStatus(status.to_owned()));
+            let mut session = FooterSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = session.render(frame, frame.area(), &state, locale);
+                })
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                rendered
+                    .replace(' ', "")
+                    .contains(&warning.replace(' ', "")),
+                "{rendered}"
+            );
+        }
+    }
 }

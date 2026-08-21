@@ -675,6 +675,74 @@ fn one_valid_secret_transition_purges_every_final_secret_legacy_value() {
 }
 
 #[test]
+fn managing_a_secret_candidate_purges_its_complete_legacy_state_and_reports_it() {
+    let sandbox = Sandbox::new();
+    sandbox.add_job_source("API_KEY = \"source-default\"\nprint(API_KEY)\n");
+    let state = sandbox.state.path().join("values/job.toml");
+    fs::create_dir_all(state.parent().unwrap()).unwrap();
+    fs::write(
+        &state,
+        "[values]\nAPI_KEY = \"last-leak\"\nKEEP = \"public\"\n\n[presets.saved]\nAPI_KEY = \"preset-leak\"\nKEEP = \"public\"\n\n[last_run]\nat = \"2026-08-21T00:00:00Z\"\nexit = 0\n\n[last_run.values]\nAPI_KEY = \"run-leak\"\nKEEP = \"public\"\n",
+    )
+    .unwrap();
+
+    let output = sandbox
+        .command()
+        .args(["params", "job", "--manage", "API_KEY"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    let receipt = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        receipt.contains(
+            "Removed previously stored plaintext value(s) for now-secret parameter(s): API_KEY"
+        ),
+        "{}",
+        combine(&output)
+    );
+    let state = fs::read_to_string(state).unwrap();
+    assert!(!state.contains("API_KEY"), "{state}");
+    assert!(!state.contains("leak"), "{state}");
+    assert!(state.contains("KEEP = \"public\""), "{state}");
+}
+
+#[test]
+fn an_unrelated_source_tweak_purges_every_final_secret_legacy_value() {
+    let sandbox = Sandbox::new();
+    let mut api_key = const_decl("API_KEY", ParameterType::Str);
+    api_key.secret = true;
+    let mut city = const_decl("CITY", ParameterType::Str);
+    city.prompt = "City".to_owned();
+    let source = write_managed_params(
+        "python",
+        "API_KEY = \"source-default\"\nCITY = \"Taipei\"\nprint(API_KEY, CITY)\n",
+        &[api_key, city],
+    )
+    .unwrap();
+    sandbox.add_job_source(&source);
+    let state = sandbox.state.path().join("values/job.toml");
+    fs::create_dir_all(state.parent().unwrap()).unwrap();
+    fs::write(
+        &state,
+        "[values]\nAPI_KEY = \"last-leak\"\nCITY = \"Taipei\"\n\n[presets.saved]\nAPI_KEY = \"preset-leak\"\nCITY = \"Taipei\"\n",
+    )
+    .unwrap();
+
+    let output = sandbox
+        .command()
+        .args(["params", "job", "--prompt", "CITY=Where?"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    let state = fs::read_to_string(state).unwrap();
+    assert!(!state.contains("API_KEY"), "{state}");
+    assert!(!state.contains("leak"), "{state}");
+    assert!(state.contains("CITY = \"Taipei\""), "{state}");
+}
+
+#[test]
 fn source_edit_order_is_resync_then_unmanage_manage_and_tweak() {
     let result = edit_source_declarations(
         "python",

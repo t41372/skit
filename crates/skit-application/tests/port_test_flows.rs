@@ -282,6 +282,22 @@ impl FormStateRepository for MemoryState {
         Ok(update(state))
     }
 
+    fn try_update<T, E, F>(&self, slug: &Slug, update: F) -> Result<Result<T, E>, StateWriteError>
+    where
+        F: FnOnce(&mut PersistedFormState) -> Result<T, E>,
+    {
+        let mut states = self.states.lock().unwrap();
+        let state = states.entry(slug.as_str().to_owned()).or_default();
+        let before = state.clone();
+        match update(state) {
+            Ok(result) => Ok(Ok(result)),
+            Err(error) => {
+                *state = before;
+                Ok(Err(error))
+            }
+        }
+    }
+
     fn forget(&self, slug: &Slug) -> Result<(), StateWriteError> {
         self.states.lock().unwrap().remove(slug.as_str());
         Ok(())

@@ -31,4 +31,4 @@ pub use path_glob::FileGlobExpander;
 pub use paths::{expand_user_path, stored_filename, stored_filenames};
 pub use prompt_selection::FilePromptSelectionStore;
 pub use read::FileStore;
-pub use state::FileFormStateStore;
+pub use state::{CoordinatedStateError, FileFormStateStore};

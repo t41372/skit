@@ -67,6 +67,13 @@ impl FormStateRepository for MemoryState {
         panic!("the Library read must not update state")
     }
 
+    fn try_update<T, E, F>(&self, _slug: &Slug, _update: F) -> Result<Result<T, E>, StateWriteError>
+    where
+        F: FnOnce(&mut PersistedFormState) -> Result<T, E>,
+    {
+        panic!("the Library read must not update state")
+    }
+
     fn forget(&self, _slug: &Slug) -> Result<(), StateWriteError> {
         panic!("the Library read must not remove state")
     }
