@@ -2957,7 +2957,6 @@ mod path_suggestion_tests {
             dialect: PathInputDialect::Posix,
             context: PathCompletionContext {
                 workdir: PathBuf::from(workdir),
-                invoke_cwd: PathBuf::from("/invoke"),
                 tokens: TokenContext {
                     cwd: "/invoke".to_owned(),
                     home: None,

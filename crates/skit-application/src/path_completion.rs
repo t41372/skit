@@ -31,9 +31,7 @@ pub enum PathCompletionKind {
 pub struct PathCompletionContext {
     /// Directory in which the child resolves bare relative paths.
     pub workdir: PathBuf,
-    /// Directory represented by `{cwd}`.
-    pub invoke_cwd: PathBuf,
-    /// Deterministic token expansion inputs.
+    /// Deterministic token expansion inputs, including the only `{cwd}` authority.
     pub tokens: TokenContext,
 }
 
@@ -83,6 +81,30 @@ impl DirectoryEntry {
     }
 }
 
+/// Name policy that lets a filesystem adapter skip metadata probes for impossible matches.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DirectoryReadFilter {
+    prefix: String,
+    include_hidden: bool,
+}
+
+impl DirectoryReadFilter {
+    /// Construct one prefix and hidden-name policy.
+    #[must_use]
+    pub fn new(prefix: impl Into<String>, include_hidden: bool) -> Self {
+        Self {
+            prefix: prefix.into(),
+            include_hidden,
+        }
+    }
+
+    /// Report whether a directory name can match the current completion request.
+    #[must_use]
+    pub fn accepts(&self, name: &str) -> bool {
+        (self.include_hidden || !name.starts_with('.')) && name.starts_with(&self.prefix)
+    }
+}
+
 /// A directory could not produce a complete trustworthy scan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DirectoryReadError {
@@ -92,11 +114,14 @@ pub enum DirectoryReadError {
 
 /// Filesystem port for bounded directory enumeration.
 pub trait DirectoryReader: Debug + Send + Sync {
-    /// Read at most `scan_cap` entries in filesystem iteration order.
+    /// Examine at most `scan_cap` entries in filesystem iteration order.
+    ///
+    /// Apply `filter` after an entry counts toward the cap but before filesystem metadata probes.
     fn read_directory(
         &self,
         path: &Path,
         scan_cap: usize,
+        filter: &DirectoryReadFilter,
     ) -> Result<Vec<DirectoryEntry>, DirectoryReadError>;
 }
 
@@ -166,14 +191,12 @@ fn complete_with(
         return None;
     }
     let (base, prefix) = lookup(piece, request)?;
+    let filter = DirectoryReadFilter::new(prefix, prefix.starts_with('.'));
     let mut matches = reader
-        .read_directory(&base, scan_cap)
+        .read_directory(&base, scan_cap, &filter)
         .ok()?
         .into_iter()
-        .filter(|entry| {
-            (!entry.name.starts_with('.') || prefix.starts_with('.'))
-                && entry.name.starts_with(prefix)
-        })
+        .filter(|entry| filter.accepts(&entry.name))
         .collect::<Vec<_>>();
     matches.sort_by(|left, right| left.name.cmp(&right.name));
     for entry in matches {

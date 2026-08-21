@@ -47,8 +47,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use ratatui_core::{
@@ -296,7 +296,6 @@ fn completion_request(
         },
         context: PathCompletionContext {
             workdir: workdir.to_path_buf(),
-            invoke_cwd: invoke_cwd.to_path_buf(),
             tokens: TokenContext {
                 cwd: invoke_cwd.display().to_string(),
                 home: None,
@@ -316,8 +315,19 @@ fn completion_session() -> TuiSession {
     TuiSession::with_path_completion(Arc::new(PathCompletionService::new(SystemDirectoryReader)))
 }
 
+static COMPLETION_WORKER_TEST: Mutex<()> = Mutex::new(());
+
+fn completion_worker_test() -> MutexGuard<'static, ()> {
+    COMPLETION_WORKER_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn wait_for_completion(session: &mut TuiSession) {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // A full workspace run can oversubscribe the host before this test's two fresh workers get a
+    // time slice. Poll the actual result checkpoint and keep a generous failure deadline; do not
+    // add a fixed delay to the successful path.
+    let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
         if session.refresh_background() {
             return;
@@ -350,11 +360,18 @@ impl DirectoryReader for FixedDirectoryReader {
         &self,
         _path: &Path,
         scan_cap: usize,
+        filter: &skit_application::path_completion::DirectoryReadFilter,
     ) -> Result<Vec<DirectoryEntry>, DirectoryReadError> {
         if let Some(error) = &self.failure {
             return Err(*error);
         }
-        Ok(self.entries.iter().take(scan_cap).cloned().collect())
+        Ok(self
+            .entries
+            .iter()
+            .take(scan_cap)
+            .filter(|entry| filter.accepts(&entry.name))
+            .cloned()
+            .collect())
     }
 }
 
@@ -1035,6 +1052,7 @@ fn test_picker_missing_workdir_opens_at_ancestor_with_notice() {
 
 #[test]
 fn test_path_fields_render_hint_and_suggester() {
+    let _workers = completion_worker_test();
     let (_tmp, root) = tree();
     let mut state = form_state(
         &[param("src", ParameterType::Path, false)],
@@ -1066,6 +1084,7 @@ fn test_path_fields_render_hint_and_suggester() {
 
 #[test]
 fn right_accepts_only_the_current_ghost_at_the_end_of_the_input() {
+    let _workers = completion_worker_test();
     let (_tmp, root) = tree();
     let mut state = form_state(
         &[param("src", ParameterType::Path, false)],
@@ -1099,6 +1118,7 @@ fn right_accepts_only_the_current_ghost_at_the_end_of_the_input() {
 
 #[test]
 fn stale_out_of_order_completion_never_replaces_the_latest_ghost() {
+    let _workers = completion_worker_test();
     let root = tempfile::tempdir().unwrap();
     let mut state = form_state(
         &[param("src", ParameterType::Path, false)],
@@ -1143,6 +1163,7 @@ fn stale_out_of_order_completion_never_replaces_the_latest_ghost() {
 
 #[test]
 fn secret_fields_never_dispatch_a_filesystem_completion_request() {
+    let _workers = completion_worker_test();
     let calls = Arc::new(AtomicUsize::new(0));
     let provider = CountingProvider {
         calls: Arc::clone(&calls),
@@ -1159,6 +1180,7 @@ fn secret_fields_never_dispatch_a_filesystem_completion_request() {
 
 #[test]
 fn a_slow_completion_worker_does_not_block_escape() {
+    let _workers = completion_worker_test();
     let released = Arc::new(AtomicBool::new(false));
     let provider = SlowProvider {
         released: Arc::clone(&released),
@@ -1183,6 +1205,7 @@ fn a_slow_completion_worker_does_not_block_escape() {
 
 #[test]
 fn path_hint_and_existing_browse_door_stay_complete_in_three_locales() {
+    let _workers = completion_worker_test();
     let (_tmp, root) = tree();
     for (locale, path_label, browse_label) in [
         (Locale::En, "path", "browse"),

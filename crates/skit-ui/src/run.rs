@@ -767,7 +767,6 @@ impl RunFormView {
             dialect,
             context: PathCompletionContext {
                 workdir: PathBuf::from(&paths.workdir),
-                invoke_cwd: PathBuf::from(&paths.invoke_cwd),
                 tokens: context.tokens.clone(),
             },
         })
