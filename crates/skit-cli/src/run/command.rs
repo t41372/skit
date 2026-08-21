@@ -952,19 +952,35 @@ fn new_injected_file(
     suffix: &str,
     adjacent_to_modules: bool,
 ) -> Result<tempfile::NamedTempFile, RunError> {
+    new_injected_file_with_ops(
+        entry_dir,
+        suffix,
+        adjacent_to_modules,
+        |builder, directory| builder.tempfile_in(directory),
+        |builder| builder.tempfile(),
+    )
+}
+
+fn new_injected_file_with_ops<E, S>(
+    entry_dir: &Path,
+    suffix: &str,
+    adjacent_to_modules: bool,
+    mut create_in_entry: E,
+    mut create_in_system_temp: S,
+) -> Result<tempfile::NamedTempFile, RunError>
+where
+    E: FnMut(&mut tempfile::Builder<'_, '_>, &Path) -> io::Result<tempfile::NamedTempFile>,
+    S: FnMut(&mut tempfile::Builder<'_, '_>) -> io::Result<tempfile::NamedTempFile>,
+{
     let mut builder = tempfile::Builder::new();
     builder.prefix(".injected-").suffix(suffix);
     let file = if adjacent_to_modules {
-        builder
-            .tempfile_in(entry_dir)
-            .or_else(|_| builder.tempfile())
+        create_in_entry(&mut builder, entry_dir).or_else(|_| create_in_system_temp(&mut builder))
     } else {
         // The OS temp directory is the normal home for a source that can contain plaintext secret
         // values. Keep the oracle's entry-directory fallback for a broken TMPDIR. A later
         // successful run removes an aged fallback after an abnormal process exit.
-        builder
-            .tempfile()
-            .or_else(|_| builder.tempfile_in(entry_dir))
+        create_in_system_temp(&mut builder).or_else(|_| create_in_entry(&mut builder, entry_dir))
     };
     file.map_err(|source| RunError::Stage {
         path: entry_dir.display().to_string(),
@@ -1328,6 +1344,8 @@ fn platform_state_dir() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+
     use super::*;
     use skit_application::{
         CreateEntry, EntryMutationRepository as _, EntryPayload, RepositoryError,
@@ -1669,11 +1687,7 @@ mod tests {
         assert!(!stale.exists());
         assert!(!stale_launch_snapshot.exists());
         assert!(live.exists());
-        assert!(
-            !staged.path.starts_with(&directory),
-            "ordinary injected sources belong in the OS private temp directory: {}",
-            staged.path.display()
-        );
+        assert!(!staged.path.starts_with(&directory));
         assert!(
             staged
                 .path
@@ -1787,11 +1801,7 @@ mod tests {
                 }))
             });
             assert!(matches!(result, Err(RunError::Stage { .. })));
-            assert!(
-                !failed_path.exists(),
-                "a failed private-source write left {}",
-                failed_path.display()
-            );
+            assert!(!failed_path.exists());
         }
         assert_eq!(
             source_text(
@@ -1825,6 +1835,68 @@ mod tests {
             read_bytes(&directory.join("missing")),
             Err(RunError::Read { .. })
         ));
+    }
+
+    #[test]
+    fn prompt_missing_drift_never_becomes_a_requested_source_binding() {
+        assert_eq!(
+            requested_drifted_parameter(
+                &["name=value".to_owned()],
+                &[FormDrift::PromptMissing {
+                    names: vec!["name".to_owned()],
+                }],
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn staged_source_creation_reports_the_entry_path_after_both_locations_fail() {
+        let root = TempDir::new().unwrap();
+        let events = RefCell::new(Vec::new());
+        for adjacent in [true, false] {
+            events.borrow_mut().clear();
+            let error = new_injected_file_with_ops(
+                root.path(),
+                ".js",
+                adjacent,
+                |_, _| {
+                    events.borrow_mut().push("entry");
+                    Err(io::Error::other("entry temp failure"))
+                },
+                |_| {
+                    events.borrow_mut().push("system");
+                    Err(io::Error::other("system temp failure"))
+                },
+            )
+            .unwrap_err();
+
+            assert!(matches!(
+                error,
+                RunError::Stage { ref path, .. } if path == &root.path().display().to_string()
+            ));
+            assert_eq!(injected_stage_failure_path(&error), None);
+            assert_eq!(
+                events.borrow().as_slice(),
+                if adjacent {
+                    ["entry", "system"].as_slice()
+                } else {
+                    ["system", "entry"].as_slice()
+                }
+            );
+        }
+        assert!(root.path().read_dir().unwrap().next().is_none());
+    }
+
+    fn injected_stage_failure_path(error: &RunError) -> Option<PathBuf> {
+        match error {
+            RunError::Stage { path, source }
+                if source.to_string() == "injected staged-source write failure" =>
+            {
+                Some(PathBuf::from(path))
+            }
+            _ => None,
+        }
     }
 
     #[test]
@@ -1903,14 +1975,8 @@ mod tests {
             },
         )
         .unwrap_err();
-        let failed_path = match &error {
-            RunError::Stage { path, source }
-                if source.to_string() == "injected staged-source write failure" =>
-            {
-                PathBuf::from(path)
-            }
-            other => panic!("expected the injected stage fault, got {other:?}"),
-        };
+        let failed_path = injected_stage_failure_path(&error)
+            .expect("the injected staged-source write fault must keep its path");
         assert_eq!(error.exit_code(), 125);
         assert!(
             !marker.exists(),

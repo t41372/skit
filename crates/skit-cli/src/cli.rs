@@ -4277,6 +4277,17 @@ fn edit_with_config(
     selector: &str,
     no_input: bool,
 ) -> Result<(), CliError> {
+    edit_with_config_with_claim_hook(service, store, config_dir, selector, no_input, || {})
+}
+
+fn edit_with_config_with_claim_hook(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    config_dir: &Path,
+    selector: &str,
+    no_input: bool,
+    after_reference_claim: impl FnOnce(),
+) -> Result<(), CliError> {
     let held = match service.show(selector) {
         Ok(entry) => entry,
         Err(RepositoryError::NotFound { .. }) => {
@@ -4352,6 +4363,7 @@ fn edit_with_config(
             ));
         }
         let held = service.claim_identity(&held)?;
+        after_reference_claim();
         let source = PathBuf::from(&held.meta.source);
         if !source.exists() {
             return Err(CliError::Failure(
@@ -4670,8 +4682,27 @@ fn commit_entry_with_javascript_cleanup(
     update: UpdateEntry,
     clear_javascript: bool,
 ) -> Result<CommittedEntryUpdate, CliError> {
+    commit_entry_with_javascript_cleanup_with_hook(
+        service,
+        store,
+        entry,
+        update,
+        clear_javascript,
+        |_| {},
+    )
+}
+
+fn commit_entry_with_javascript_cleanup_with_hook(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: UpdateEntry,
+    clear_javascript: bool,
+    after_prepare: impl FnOnce(&Entry),
+) -> Result<CommittedEntryUpdate, CliError> {
     let (claimed, before_source, mut cleanup) =
         prepare_entry_javascript_cleanup(service, store, entry, &update, clear_javascript)?;
+    after_prepare(&claimed);
     match service.update_entry(&claimed, update) {
         Ok(updated) => Ok(CommittedEntryUpdate {
             entry: updated,
@@ -4720,10 +4751,27 @@ fn rollback_committed_entry_update(
 
 fn finalize_committed_entry_update(
     service: &LibraryService<FileStore>,
-    mut committed: CommittedEntryUpdate,
+    committed: CommittedEntryUpdate,
 ) -> Result<Entry, CliError> {
-    if let Err(primary) = committed.finalize_cleanup() {
-        let rollback = rollback_committed_entry_update(&mut committed, service);
+    finalize_committed_entry_update_with_ops(
+        service,
+        committed,
+        CommittedEntryUpdate::finalize_cleanup,
+        rollback_committed_entry_update,
+    )
+}
+
+fn finalize_committed_entry_update_with_ops(
+    service: &LibraryService<FileStore>,
+    mut committed: CommittedEntryUpdate,
+    finalize: impl FnOnce(&mut CommittedEntryUpdate) -> Result<(), CliError>,
+    rollback: impl FnOnce(
+        &mut CommittedEntryUpdate,
+        &LibraryService<FileStore>,
+    ) -> ExternalRollbackOutcome<CliError>,
+) -> Result<Entry, CliError> {
+    if let Err(primary) = finalize(&mut committed) {
+        let rollback = rollback(&mut committed, service);
         return match rollback.into_error() {
             None => Err(primary),
             Some(rollback) => Err(CliError::Rollback {
@@ -4894,6 +4942,27 @@ fn prepare_source_management(
         }
     }
     Ok((source, managed, warnings, applied))
+}
+
+fn rollback_source_edit_after_state_failure(
+    service: &LibraryService<FileStore>,
+    committed: &mut (Entry, bool),
+    original_bytes: &[u8],
+) -> Result<(), CliError> {
+    let (updated, changed) = committed;
+    if !*changed {
+        return Ok(());
+    }
+    let claimed = service.claim_identity(updated)?;
+    service.commit_copy_edit(&claimed, original_bytes, &updated.meta.source_hash)?;
+    Ok(())
+}
+
+fn source_edit_state_rollback<'a>(
+    service: &'a LibraryService<FileStore>,
+    original_bytes: &'a [u8],
+) -> impl FnOnce(&mut (Entry, bool)) -> Result<(), CliError> + 'a {
+    move |committed| rollback_source_edit_after_state_failure(service, committed, original_bytes)
 }
 
 fn params(
@@ -5190,18 +5259,7 @@ fn params(
                         Ok((updated, true))
                     },
                     |state| scrub_secrets(&declarations, state),
-                    |(updated, changed)| -> Result<(), CliError> {
-                        if !*changed {
-                            return Ok(());
-                        }
-                        let claimed = service.claim_identity(updated)?;
-                        service.commit_copy_edit(
-                            &claimed,
-                            original_bytes,
-                            &updated.meta.source_hash,
-                        )?;
-                        Ok(())
-                    },
+                    source_edit_state_rollback(service, original_bytes),
                 )
                 .map_err(coordinated_state_error)?;
             held = updated;
@@ -7750,46 +7808,73 @@ fn tui_add_effect(
                 }
             }
             AddEffect::Complete(raw_slug) => {
-                let mut message = text(locale, "Entry added").into_owned();
-                for warning in &warnings {
-                    message.push('\n');
-                    message.push_str(&format_text(locale, "warning: {}", &[warning]));
-                }
-                let Ok(slug) = Slug::parse(raw_slug) else {
-                    return Ok(UiAction::Complete {
-                        surface: None,
-                        rerunnable: None,
-                        message,
-                    });
-                };
-                let surface = match crate::library_surface(store, state_dir, config_dir) {
-                    Ok(surface) => surface,
-                    Err(error) => {
-                        message.push('\n');
-                        message.push_str(&format_text(
-                            locale,
-                            "warning: {}",
-                            &[&error.message().localize(locale)],
-                        ));
-                        return Ok(UiAction::Complete {
-                            surface: None,
-                            rerunnable: None,
-                            message,
-                        });
-                    }
-                };
-                let rerunnable = tui_rerunnable(&surface.scan, state_dir);
-                return Ok(UiAction::AddCompleted {
-                    surface,
-                    rerunnable,
-                    slug,
-                    message,
-                });
+                return complete_add_effect_with(
+                    store,
+                    state_dir,
+                    config_dir,
+                    &raw_slug,
+                    locale,
+                    &warnings,
+                    crate::library_surface,
+                );
             }
             AddEffect::Cancel => return Ok(UiAction::AddCancelled),
         }
     }
     Ok(UiAction::ClearStatus)
+}
+
+fn complete_add_effect_with(
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    raw_slug: &str,
+    locale: Locale,
+    warnings: &[String],
+    load_surface: impl FnOnce(
+        &FileStore,
+        &Path,
+        &Path,
+    ) -> Result<
+        skit_application::library_detail::LibrarySurface,
+        RepositoryError,
+    >,
+) -> Result<UiAction, CliError> {
+    let mut message = text(locale, "Entry added").into_owned();
+    for warning in warnings {
+        message.push('\n');
+        message.push_str(&format_text(locale, "warning: {}", &[warning]));
+    }
+    let Ok(slug) = Slug::parse(raw_slug) else {
+        return Ok(UiAction::Complete {
+            surface: None,
+            rerunnable: None,
+            message,
+        });
+    };
+    let surface = match load_surface(store, state_dir, config_dir) {
+        Ok(surface) => surface,
+        Err(error) => {
+            message.push('\n');
+            message.push_str(&format_text(
+                locale,
+                "warning: {}",
+                &[&error.message().localize(locale)],
+            ));
+            return Ok(UiAction::Complete {
+                surface: None,
+                rerunnable: None,
+                message,
+            });
+        }
+    };
+    let rerunnable = tui_rerunnable(&surface.scan, state_dir);
+    Ok(UiAction::AddCompleted {
+        surface,
+        rerunnable,
+        slug,
+        message,
+    })
 }
 
 fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, CliError> {
@@ -7868,6 +7953,15 @@ fn tui_author_draft(
     config_dir: &Path,
     kind: DraftKind,
 ) -> Result<Option<AddSourceSnapshot>, CliError> {
+    tui_author_draft_with_failure_hook(data_dir, config_dir, kind, |_| {})
+}
+
+fn tui_author_draft_with_failure_hook(
+    data_dir: &Path,
+    config_dir: &Path,
+    kind: DraftKind,
+    on_editor_failure: impl FnOnce(&AddSourceSnapshot),
+) -> Result<Option<AddSourceSnapshot>, CliError> {
     let drafts_dir = create_owned_drafts_dir(data_dir)?;
     let (suffix, starter) = match kind {
         DraftKind::Script => (".py", b"#!/usr/bin/env python3\n".to_vec()),
@@ -7891,6 +7985,7 @@ fn tui_author_draft(
     let initial = tui_add_source(data_dir, &path)?;
 
     if let Err(error) = open_editor_in(config_dir, &path) {
+        on_editor_failure(&initial);
         return match discard_authored_draft(data_dir, &initial) {
             Ok(()) => Err(error),
             Err(cleanup) => Err(CliError::Failure(

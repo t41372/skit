@@ -2044,6 +2044,109 @@ fn tui_author_draft_unchanged_cleanup_keeps_a_postinspection_replacement() {
 }
 
 #[test]
+fn reference_edit_rechecks_the_source_after_its_identity_claim() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("referenced.py");
+    fs::write(&source, b"print('before')\n").unwrap();
+    FileConfigStore::new(&config_dir)
+        .set("editor", "editor-must-not-run")
+        .unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let entry = service
+        .add(CreateEntry {
+            name: "Reference race".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Reference,
+            source: source.display().to_string(),
+            workdir: "origin".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let meta_path = store.entry_dir_path(&entry.slug).join("meta.toml");
+    let registry_path = data_dir.join("registry.toml");
+    let meta_before = fs::read(&meta_path).unwrap();
+    let registry_before = fs::read(&registry_path).unwrap();
+
+    let error = edit_with_config_with_claim_hook(
+        &service,
+        &store,
+        &config_dir,
+        entry.slug.as_str(),
+        true,
+        || fs::remove_file(&source).unwrap(),
+    )
+    .unwrap_err();
+
+    for (locale, expected) in [
+        (
+            Locale::En,
+            format!(
+                "Reference race: the referenced source file is gone: {}",
+                source.display()
+            ),
+        ),
+        (
+            Locale::ZhCn,
+            format!("Reference race:reference 原文件已消失:{}", source.display()),
+        ),
+        (
+            Locale::ZhTw,
+            format!("Reference race:reference 原檔已消失:{}", source.display()),
+        ),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
+    }
+    assert_eq!(fs::read(meta_path).unwrap(), meta_before);
+    assert_eq!(fs::read(registry_path).unwrap(), registry_before);
+}
+
+#[test]
+fn authored_draft_aggregates_editor_and_changed_cleanup_failures() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let config_dir = root.path().join("config");
+    FileConfigStore::new(&config_dir)
+        .set(
+            "editor",
+            root.path().join("missing-editor").to_str().unwrap(),
+        )
+        .unwrap();
+
+    let error =
+        tui_author_draft_with_failure_hook(&data_dir, &config_dir, DraftKind::Script, |snapshot| {
+            let replacement = snapshot.path.with_extension("replacement");
+            fs::write(&replacement, b"print('replacement')\n").unwrap();
+            fs::remove_file(&snapshot.path).unwrap();
+            fs::rename(replacement, &snapshot.path).unwrap();
+        })
+        .unwrap_err();
+
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        let message = error.message().localize(locale);
+        assert!(message.contains("missing-editor"), "{locale:?}: {message}");
+        assert!(
+            message.contains(if locale == Locale::En {
+                "warning"
+            } else {
+                "警告"
+            }),
+            "{locale:?}: {message}"
+        );
+    }
+    let drafts = fs::read_dir(data_dir.join("drafts"))
+        .unwrap()
+        .flatten()
+        .map(|item| fs::read(item.path()).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(drafts, [b"print('replacement')\n".to_vec()]);
+}
+
+#[test]
 fn tui_settings_offers_a_declared_row_exactly_the_axes_version_04_makes_editable() {
     let root = TempDir::new().unwrap();
     let directory = root.path().join("scripts").join("alpha");
@@ -2773,6 +2876,77 @@ fn params_host_updates_managed_secrets_and_skips_an_invalid_environment_source_w
     .unwrap();
     assert_eq!(fs::read(&stored).unwrap(), source_before);
     assert_eq!(fs::read(&meta).unwrap(), meta_before);
+}
+
+#[test]
+fn params_state_rollback_restores_exact_source_and_refuses_a_newer_entry() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path().join("data"));
+    let service = LibraryService::new(store.clone());
+    let entry = service
+        .add(CreateEntry {
+            name: "Params rollback".to_owned(),
+            kind: EntryKind::parse("shell").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: "before".to_owned(),
+            payload: Some(EntryPayload {
+                bytes: b"NAME=before\necho \"$NAME\"\n".to_vec(),
+                stored_name: Some("script.sh".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let source_path = store.payload_path(&entry).unwrap();
+    let meta_path = store.entry_dir_path(&entry.slug).join("meta.toml");
+    let source_before = fs::read(&source_path).unwrap();
+    let meta_before = fs::read(&meta_path).unwrap();
+    let claimed = service.claim_identity(&entry).unwrap();
+    let updated = service
+        .commit_copy_edit(
+            &claimed,
+            b"NAME=secret\necho \"$NAME\"\n",
+            &entry.meta.source_hash,
+        )
+        .unwrap();
+    let mut committed = (updated, true);
+
+    source_edit_state_rollback(&service, &source_before)(&mut committed).unwrap();
+
+    assert_eq!(fs::read(&source_path).unwrap(), source_before);
+    assert_eq!(fs::read(&meta_path).unwrap(), meta_before);
+
+    let current = service.show(entry.slug.as_str()).unwrap();
+    let mut unchanged = (current.clone(), false);
+    source_edit_state_rollback(&service, b"unused")(&mut unchanged).unwrap();
+    assert_eq!(service.show(entry.slug.as_str()).unwrap(), current);
+
+    let claimed = service.claim_identity(&current).unwrap();
+    let updated = service
+        .commit_copy_edit(
+            &claimed,
+            b"NAME=transaction\necho \"$NAME\"\n",
+            &current.meta.source_hash,
+        )
+        .unwrap();
+    let newest = service
+        .commit_copy_edit(
+            &updated,
+            b"NAME=newest\necho \"$NAME\"\n",
+            &updated.meta.source_hash,
+        )
+        .unwrap();
+    let mut raced = (updated, true);
+    let error = source_edit_state_rollback(&service, &source_before)(&mut raced).unwrap_err();
+
+    assert!(matches!(error, CliError::Repository(_)), "{error:?}");
+    assert_eq!(service.show(entry.slug.as_str()).unwrap(), newest);
+    assert_eq!(
+        fs::read(source_path).unwrap(),
+        b"NAME=newest\necho \"$NAME\"\n"
+    );
 }
 
 #[test]
@@ -4335,6 +4509,79 @@ fn javascript_tui_preflight_skips_dependency_checks_outside_owned_dependency_cop
     }
 }
 
+#[derive(Debug)]
+struct OfflineDependencyRunner;
+
+impl skit_runtime::DependencyCommandRunner for OfflineDependencyRunner {
+    fn run(
+        &self,
+        command: &skit_runtime::DependencyCommand,
+    ) -> io::Result<skit_runtime::DependencyCommandOutput> {
+        fs::create_dir_all(command.cwd.join("node_modules"))?;
+        Ok(skit_runtime::DependencyCommandOutput {
+            success: true,
+            exit_code: Some(0),
+            stderr: Vec::new(),
+        })
+    }
+}
+
+#[test]
+fn javascript_tui_preflight_accepts_a_fresh_private_dependency_tree_without_writes() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let entry = service
+        .add(CreateEntry {
+            name: "Fresh JavaScript preflight".to_owned(),
+            kind: EntryKind::parse("js").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"console.log('ok');\n".to_vec(),
+                stored_name: Some("script.js".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                dependencies: vec!["chalk".to_owned()],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let probe = HealthProbe {
+        programs: BTreeMap::from([
+            ("node".to_owned(), PathBuf::from("/runtime/node")),
+            ("npm".to_owned(), PathBuf::from("/runtime/npm")),
+        ]),
+        ..HealthProbe::default()
+    };
+    skit_runtime::ensure_javascript_dependencies(
+        &store.entry_dir_path(&entry.slug),
+        "node",
+        &["chalk".to_owned()],
+        &probe,
+        &OfflineDependencyRunner,
+    )
+    .unwrap();
+    let before = test_tree_snapshot(root.path());
+
+    tui_preflight_effect_with_probe(
+        &service,
+        &store,
+        &UiEffect::Open {
+            request: HostRequest::Run,
+            selector: Some(entry.slug.as_str().to_owned()),
+        },
+        &probe,
+    )
+    .unwrap();
+
+    assert_eq!(test_tree_snapshot(root.path()), before);
+}
+
 #[test]
 fn tui_rerun_replays_only_honest_valid_state_and_falls_back_to_the_form() {
     let root = TempDir::new().unwrap();
@@ -5408,6 +5655,193 @@ fn prepared_cleanup_rollback_refuses_to_clobber_a_newer_entry_update() {
     );
 }
 
+fn javascript_cleanup_transaction_fixture(
+    root: &TempDir,
+    name: &str,
+) -> (FileStore, LibraryService<FileStore>, Entry) {
+    let store = FileStore::new(root.path().join("data"));
+    let service = LibraryService::new(store.clone());
+    let entry = service
+        .add(CreateEntry {
+            name: name.to_owned(),
+            kind: EntryKind::parse("js").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: "before".to_owned(),
+            payload: Some(EntryPayload {
+                bytes: b"console.log('before');\n".to_vec(),
+                stored_name: Some("script.js".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                dependencies: vec!["chalk".to_owned()],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    fs::create_dir(entry_dir.join("node_modules")).unwrap();
+    fs::write(entry_dir.join("node_modules/chalk.js"), b"offline chalk\n").unwrap();
+    fs::write(entry_dir.join("package.json"), b"old manifest\n").unwrap();
+    (store, service, entry)
+}
+
+fn cleanup_update(entry: &Entry) -> UpdateEntry {
+    UpdateEntry {
+        name: entry.meta.name.clone(),
+        description: "transaction".to_owned(),
+        settings: EntrySettings::default(),
+        workdir: entry.meta.workdir.clone(),
+        source: Some(b"console.log('transaction');\n".to_vec()),
+        expected_source_hash: entry.meta.source_hash.clone(),
+    }
+}
+
+#[test]
+fn prepared_cleanup_rolls_back_after_the_entry_commit_loses_its_cas() {
+    for (clear, corrupt_backup) in [(false, false), (true, false), (true, true)] {
+        let root = TempDir::new().unwrap();
+        let (store, service, entry) =
+            javascript_cleanup_transaction_fixture(&root, "Commit CAS failure");
+        let entry_dir = store.entry_dir_path(&entry.slug);
+        let update = cleanup_update(&entry);
+        let mut newest = None;
+
+        let error = commit_entry_with_javascript_cleanup_with_hook(
+            &service,
+            &store,
+            &entry,
+            update,
+            clear,
+            |claimed| {
+                if corrupt_backup {
+                    fs::remove_file(entry_dir.join(".skit-deps.backup/package.json")).unwrap();
+                }
+                newest = Some(
+                    service
+                        .commit_copy_edit(
+                            claimed,
+                            b"console.log('newest concurrent source');\n",
+                            &claimed.meta.source_hash,
+                        )
+                        .unwrap(),
+                );
+            },
+        )
+        .unwrap_err();
+
+        if clear && corrupt_backup {
+            assert!(matches!(error, CliError::Rollback { .. }), "{error:?}");
+            assert!(entry_dir.join(".skit-deps.backup").exists());
+        } else {
+            assert!(matches!(error, CliError::Repository(_)), "{error:?}");
+            if clear {
+                assert_eq!(
+                    fs::read(entry_dir.join("package.json")).unwrap(),
+                    b"old manifest\n"
+                );
+                assert!(entry_dir.join("node_modules/chalk.js").is_file());
+            }
+        }
+        let newest = newest.unwrap();
+        assert_eq!(
+            service.show(entry.slug.as_str()).unwrap().meta.description,
+            newest.meta.description
+        );
+        assert_eq!(
+            fs::read(store.payload_path(&newest).unwrap()).unwrap(),
+            b"console.log('newest concurrent source');\n"
+        );
+    }
+}
+
+#[test]
+fn cleanup_rollback_reports_derived_failure_separately_from_authoritative_cas() {
+    for concurrent in [false, true] {
+        let root = TempDir::new().unwrap();
+        let (store, service, entry) =
+            javascript_cleanup_transaction_fixture(&root, "Rollback outcome");
+        let entry_dir = store.entry_dir_path(&entry.slug);
+        let mut committed = commit_entry_with_javascript_cleanup(
+            &service,
+            &store,
+            &entry,
+            cleanup_update(&entry),
+            true,
+        )
+        .unwrap();
+        let newest = concurrent.then(|| {
+            service
+                .commit_copy_edit(
+                    &committed.entry,
+                    b"console.log('newest concurrent source');\n",
+                    &committed.entry.meta.source_hash,
+                )
+                .unwrap()
+        });
+        fs::remove_file(entry_dir.join(".skit-deps.backup/package.json")).unwrap();
+
+        let rollback = rollback_committed_entry_update(&mut committed, &service);
+
+        assert_eq!(rollback.authoritative_restored(), !concurrent);
+        assert!(rollback.into_error().is_some());
+        let current = service.show(entry.slug.as_str()).unwrap();
+        assert_eq!(
+            current.meta.description,
+            if concurrent { "transaction" } else { "before" }
+        );
+        let expected_source = newest
+            .as_ref()
+            .map_or(b"console.log('before');\n".as_slice(), |_| {
+                b"console.log('newest concurrent source');\n".as_slice()
+            });
+        assert_eq!(
+            fs::read(store.payload_path(&current).unwrap()).unwrap(),
+            expected_source
+        );
+        assert!(entry_dir.join(".skit-deps.backup").exists());
+    }
+}
+
+#[test]
+fn finalize_aggregates_primary_and_rollback_failures() {
+    let root = TempDir::new().unwrap();
+    let (store, service, entry) =
+        javascript_cleanup_transaction_fixture(&root, "Finalize aggregation");
+    let committed = commit_entry_with_javascript_cleanup(
+        &service,
+        &store,
+        &entry,
+        cleanup_update(&entry),
+        false,
+    )
+    .unwrap();
+
+    let error = finalize_committed_entry_update_with_ops(
+        &service,
+        committed,
+        |_| {
+            Err(CliError::Failure(
+                Message::new("warning: {}").with("primary finalize failure"),
+            ))
+        },
+        |_, _| {
+            ExternalRollbackOutcome::restored_with_error(CliError::Failure(
+                Message::new("warning: {}").with("rollback failure"),
+            ))
+        },
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, CliError::Rollback { .. }), "{error:?}");
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        let message = error.message().localize(locale);
+        assert!(message.contains("primary finalize failure"), "{message}");
+        assert!(message.contains("rollback failure"), "{message}");
+    }
+}
+
 #[test]
 fn tui_settings_refuse_a_taken_name_before_javascript_dependency_cleanup() {
     let root = TempDir::new().unwrap();
@@ -6442,6 +6876,66 @@ fn tui_settings_source_secret_transition_purges_every_state_surface() {
     let state = fs::read_to_string(state_path).unwrap();
     assert!(!state.contains("CITY"), "{state}");
     assert!(!state.contains("leak"), "{state}");
+    assert!(state.contains("KEEP = \"public\""), "{state}");
+}
+
+#[test]
+fn tui_settings_noop_resync_still_purges_plaintext_for_an_existing_secret() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let mut city = ParamDecl::new("CITY");
+    city.binding = ParameterBinding::Const;
+    city.delivery = ParameterDelivery::Inject;
+    city.secret = true;
+    let source = write_managed_params(
+        "python",
+        "CITY = \"Taipei\"\nprint(CITY)\n",
+        std::slice::from_ref(&city),
+    )
+    .unwrap();
+    let entry = service
+        .add(CreateEntry {
+            name: "Existing secret noop".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: source.into_bytes(),
+                stored_name: Some("script.py".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    let source_path = entry_dir.join("script.py");
+    let meta_path = entry_dir.join("meta.toml");
+    let source_before = fs::read(&source_path).unwrap();
+    let meta_before = fs::read(&meta_path).unwrap();
+    let state_path = state_dir.join("values/existing-secret-noop.toml");
+    fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    fs::write(&state_path, "[values]\nCITY='plaintext'\nKEEP='public'\n").unwrap();
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        entry.slug.as_str(),
+        &[("source:resync", "true")],
+    );
+
+    let outcome =
+        tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values).unwrap();
+
+    assert_eq!(outcome.purged_secrets, BTreeSet::from(["CITY".to_owned()]));
+    assert_eq!(fs::read(source_path).unwrap(), source_before);
+    assert_eq!(fs::read(meta_path).unwrap(), meta_before);
+    let state = fs::read_to_string(state_path).unwrap();
+    assert!(!state.contains("CITY"));
     assert!(state.contains("KEEP = \"public\""), "{state}");
 }
 
@@ -10799,6 +11293,55 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
         service.show(created.slug.as_str()).unwrap().slug,
         created.slug
     );
+}
+
+#[test]
+fn completed_add_keeps_success_and_localizes_a_refresh_failure() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path().join("data"));
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+
+    for (locale, warning) in [
+        (
+            Locale::En,
+            "warning: could not scan broken-root: injected refresh failure",
+        ),
+        (
+            Locale::ZhCn,
+            "警告：无法扫描 broken-root：injected refresh failure",
+        ),
+        (
+            Locale::ZhTw,
+            "警告：無法掃描 broken-root：injected refresh failure",
+        ),
+    ] {
+        let action = complete_add_effect_with(
+            &store,
+            &state_dir,
+            &config_dir,
+            "valid-slug",
+            locale,
+            &[],
+            |_, _, _| {
+                Err(RepositoryError::Io {
+                    operation: "scan",
+                    path: "broken-root".to_owned(),
+                    reason: "injected refresh failure".to_owned(),
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            action,
+            UiAction::Complete {
+                surface: None,
+                rerunnable: None,
+                message: format!("{}\n{warning}", text(locale, "Entry added")),
+            }
+        );
+    }
 }
 
 #[test]
