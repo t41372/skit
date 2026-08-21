@@ -22,6 +22,12 @@ expect_text .github/workflows/release.yml 'pypa/gh-action-pypi-publish@dc37677b2
 expect_text pyproject.toml '{ path = "tests/corpus/**/*", format = "sdist" }'
 expect_text .github/workflows/ci.yml 'cargo test --locked -p skit-language --test corpus'
 expect_text .github/workflows/ci.yml 'fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0'
+expect_text .github/workflows/ci.yml 'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0'
+expect_text .github/workflows/ci.yml 'node-version: "26.7.0"'
+expect_text .github/workflows/ci.yml 'run: node --version'
+expect_text .github/workflows/docs.yml 'run: npm install --global npm@12.0.2'
+expect_text .github/workflows/ci.yml 'test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored'
+expect_text .github/workflows/ci.yml 'test_the_preamble_runs_on_every_supported_dialect -- --exact --ignored'
 fish_action_line="$(
   grep -Fn 'uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0' \
     .github/workflows/ci.yml | cut -d: -f1
@@ -59,6 +65,65 @@ test "$fish_action_line" -lt "$fish_flag_line" && test "$fish_flag_line" -lt "$f
   echo 'Fish must be installed before the workspace test step' >&2
   exit 1
 }
+node_action_line="$(
+  grep -Fn 'uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0' \
+    .github/workflows/ci.yml | cut -d: -f1
+)"
+node_check_line="$(grep -Fn 'run: node --version' .github/workflows/ci.yml | cut -d: -f1)"
+test "$(printf '%s\n' "$node_action_line" | sed '/^$/d' | wc -l)" -eq 1 || {
+  echo '.github/workflows/ci.yml must install Node.js exactly once in the test matrix' >&2
+  exit 1
+}
+test "$(printf '%s\n' "$node_check_line" | sed '/^$/d' | wc -l)" -eq 1 || {
+  echo '.github/workflows/ci.yml must verify Node.js exactly once in the test matrix' >&2
+  exit 1
+}
+test "$node_action_line" -lt "$node_check_line" && test "$node_check_line" -lt "$fish_test_line" || {
+  echo 'Node.js must be installed and verified before the workspace test step' >&2
+  exit 1
+}
+docs_node_line="$(
+  grep -Fn 'uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0' \
+    .github/workflows/docs.yml | cut -d: -f1
+)"
+docs_npm_line="$(grep -Fn 'run: npm install --global npm@12.0.2' \
+  .github/workflows/docs.yml | cut -d: -f1)"
+docs_ci_line="$(grep -Fn 'run: npm ci' .github/workflows/docs.yml | cut -d: -f1)"
+test "$(printf '%s\n' "$docs_npm_line" | sed '/^$/d' | wc -l)" -eq 1 &&
+  test "$docs_node_line" -lt "$docs_npm_line" && test "$docs_npm_line" -lt "$docs_ci_line" || {
+  echo 'the documented npm release must be installed once before docs dependencies' >&2
+  exit 1
+}
+windows_uv_line="$(
+  grep -Fn 'test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored' \
+    .github/workflows/ci.yml | cut -d: -f1
+)"
+test "$(printf '%s\n' "$windows_uv_line" | sed '/^$/d' | wc -l)" -eq 1 || {
+  echo '.github/workflows/ci.yml must run the native Windows uv gate exactly once' >&2
+  exit 1
+}
+sed -n "$((windows_uv_line - 2)),$((windows_uv_line - 1))p" .github/workflows/ci.yml |
+  grep -Fq "if: runner.os == 'Windows'" || {
+    echo 'the uv directory-sync gate must run only on Windows' >&2
+    exit 1
+  }
+shell_install_line="$(grep -Fn 'sudo apt-get update && sudo apt-get install --yes zsh' \
+  .github/workflows/ci.yml | cut -d: -f1)"
+shell_gate_line="$(
+  grep -Fn 'test_the_preamble_runs_on_every_supported_dialect -- --exact --ignored' \
+    .github/workflows/ci.yml | cut -d: -f1
+)"
+test "$(printf '%s\n' "$shell_install_line" | sed '/^$/d' | wc -l)" -eq 1 &&
+  test "$(printf '%s\n' "$shell_gate_line" | sed '/^$/d' | wc -l)" -eq 1 &&
+  test "$shell_install_line" -lt "$shell_gate_line" || {
+  echo 'the Linux shell matrix must be installed before its one native gate' >&2
+  exit 1
+}
+sed -n "$((shell_gate_line - 2)),$((shell_gate_line - 1))p" .github/workflows/ci.yml |
+  grep -Fq "if: runner.os == 'Linux'" || {
+    echo 'the complete POSIX shell gate must run on Linux' >&2
+    exit 1
+  }
 expect_text CONTRIBUTING.md 'Node.js 26.7.0 and npm 12.0.2 or later'
 expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
 expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'

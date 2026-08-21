@@ -75,6 +75,12 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13"
+      - name: Install Node.js for JavaScript runtime parity
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "26.7.0"
+      - name: Verify the Node.js runtime
+        run: node --version
       - name: Install Fish for runtime parity
         if: runner.os != 'Windows'
         uses: fish-actions/install-fish@d6d9d26231a15f8d9a6b3e74b3db45512440e3e8 # v1.1.0
@@ -84,6 +90,15 @@ jobs:
         run: echo "SKIT_REQUIRE_FISH_RUNTIME=1" >> "$GITHUB_ENV"
       - name: Run all tests
         run: cargo test --locked --workspace --all-targets --all-features
+      - name: Run the native Windows uv durability gate
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p skit-runtime test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored
+      - name: Install the Linux shell matrix
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes zsh
+      - name: Run every supported POSIX shell
+        if: runner.os == 'Linux'
+        run: cargo test --locked -p skit-cli-rs --test surface_edges test_the_preamble_runs_on_every_supported_dialect -- --exact --ignored
       - name: Compile every Python benchmark subject with CPython 3.13
         run: cargo test --locked -p skit-benchmarks --test source_contract test_python_compiles -- --exact --ignored
 

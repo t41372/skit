@@ -47,6 +47,9 @@ jobs:
           node-version: '26.7.0'
           cache: npm
           cache-dependency-path: docs/package-lock.json
+      - name: Install the documented npm release
+        # npm cannot install itself from package-lock.json. Pin the only package and version.
+        run: npm install --global npm@12.0.2 # zizmor: ignore[adhoc-packages]
       - name: Install dependencies
         run: npm ci
         working-directory: docs

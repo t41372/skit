@@ -26,9 +26,11 @@ recovered by the Rust coverage and mutation gates (Phase 3), which are the equiv
 the Rust toolchain. Any behavioral assertion found only in a mut/cov module is pulled into the
 behavior port of its sibling.
 
-Coverage checkpoint (2026-08-21): a fresh committed-state workspace LCOV run at `4b1d003` passed
-every target and feature. `scripts/check_coverage.sh` reported complete executable-source line
-coverage without a new exclusion. The cargo-mutants gate still waits for explicit user approval.
+Coverage checkpoint (2026-08-21): after the later independent-review fixes, a fresh
+committed-state workspace LCOV run again exercised every target and feature.
+`scripts/check_coverage.sh` reported complete executable-source line coverage without a new
+exclusion. The default-parallel workspace suite reported 4,014 passed, 0 failed, and 542 classified
+ignores. The cargo-mutants gate still waits for explicit user approval.
 
 ## Port order
 

@@ -15,6 +15,9 @@ members = [
 ]
 default-members = ["crates/skit-cli"]
 
+[profile.release]
+strip = true
+
 [workspace.package]
 version = "0.5.0"
 edition = "2024"
