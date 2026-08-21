@@ -3,6 +3,7 @@ name: Release
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
 
 permissions: {}
 
@@ -12,7 +13,7 @@ concurrency:
 
 jobs:
   verify:
-    name: Verify the release tag
+    name: Verify the release source
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -22,6 +23,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Compare the tag and package versions
+        if: github.event_name == 'push'
         shell: bash
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -54,6 +56,20 @@ jobs:
           manylinux: ${{ matrix.manylinux }}
           maturin-version: v1.14.1
           rust-toolchain: 1.97.1
+      - name: Install uv for the native Linux smoke test
+        if: matrix.target == 'x86_64' && matrix.manylinux == 'auto'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+          enable-cache: false
+      - name: Smoke-test the native Linux wheel
+        if: matrix.target == 'x86_64' && matrix.manylinux == 'auto'
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          uv tool install --force --from "$wheel" skit-cli
+          skit --version
+          skit --help >/dev/null
       - name: Upload the wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -87,6 +103,18 @@ jobs:
           args: --locked --release --out dist
           maturin-version: v1.14.1
           rust-toolchain: 1.97.1
+      - name: Install uv for the native Windows smoke test
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+          enable-cache: false
+      - name: Smoke-test the native Windows wheel
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem dist -Filter *.whl | Select-Object -First 1
+          uv tool install --force --from $wheel.FullName skit-cli
+          skit --version
+          skit --help > $null
       - name: Upload the wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -120,6 +148,18 @@ jobs:
           args: --locked --release --out dist
           maturin-version: v1.14.1
           rust-toolchain: 1.97.1
+      - name: Install uv for the native macOS smoke test
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+          enable-cache: false
+      - name: Smoke-test the native macOS wheel
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          uv tool install --force --from "$wheel" skit-cli
+          skit --version
+          skit --help >/dev/null
       - name: Upload the wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -152,9 +192,41 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  verify-artifacts:
+    name: Verify the complete distribution set
+    needs: [linux, windows, macos, sdist]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download all distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          path: dist/
+          merge-multiple: true
+      - name: Verify every wheel and the source archive
+        shell: bash
+        run: |
+          wheel_count="$(find dist -maxdepth 1 -name '*.whl' | wc -l)"
+          sdist_count="$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)"
+          test "$wheel_count" -eq 8
+          test "$sdist_count" -eq 1
+          while IFS= read -r wheel; do
+            unzip -t "$wheel"
+            unzip -Z1 "$wheel" | grep -Eq '[.]dist-info/METADATA$'
+            unzip -Z1 "$wheel" | grep -Eq '[.]data/scripts/skit([.]exe)?$'
+          done < <(find dist -maxdepth 1 -name '*.whl' -print | sort)
+          archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          archive_files="$(tar -tzf "$archive")"
+          grep -Eq '/Cargo[.]lock$' <<<"$archive_files"
+          grep -Eq '/skills/skit/SKILL[.]md$' <<<"$archive_files"
+          grep -Eq '/tests/corpus/' <<<"$archive_files"
+
   publish:
     name: Publish to PyPI
-    needs: [linux, windows, macos, sdist]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [verify-artifacts]
     runs-on: ubuntu-latest
     environment:
       name: pypi

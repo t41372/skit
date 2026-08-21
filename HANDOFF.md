@@ -269,17 +269,21 @@ do not replay its 500+ commits or merge its 198 split test/support paths. The pr
 snapshot remains on `integration/pr44-20260812` at `a6e0513`, but it is not the final PR head.
 
 Remote PR status was checked read-only on 2026-08-21. PR #44 remains an open draft at the fixed
-head above, with its CodeRabbit status green. PR #45 remains an open draft, but its remote head is
-the older `865e568cc70d15824880b0dc876c6060dc1cdce8`. Do not treat that head's red checks as evidence
-about the current local branch. The remote docs, CodeQL, dependency/workflow audit, and wheel plus
-`uv tool` jobs passed. Its Linux coverage and three-platform test failures came from fixtures or
-platform code that later local commits changed. CodSpeed ran plain `cargo bench` and failed because
-the instrumented workspace variable was absent. The local workflow now installs matching
+head above, with its CodeRabbit status green and its merge state conflicting. PR #45 remains an
+open draft, but its remote head is the older
+`865e568cc70d15824880b0dc876c6060dc1cdce8`, 134 local commits behind the current branch. GitHub has
+no object or checks for the current local candidate. The stale PR #45 rollup has 9 failures, 7
+successes, and 1 skipped job; do not treat it as evidence about the current local branch. The remote
+docs, CodeQL, dependency/workflow audit, and wheel plus `uv tool` jobs passed. Its Linux failures
+were three stale workflow fixtures; macOS failures were noncanonical temp paths and Linux-only
+benchmark expectations; Windows failed on unstable metadata APIs that the portable identity work
+removed. Coverage stopped on the same stale Linux fixtures. CodSpeed ran plain `cargo bench` and
+failed because the instrumented workspace variable was absent. The local workflow now installs matching
 `cargo-codspeed` 5.0.1, builds in simulation mode, and runs the instrumented binaries; it still
 needs a fresh remote proof. The mutation baseline also ran benchmark tests in a copied tree without
 `.git`, which made five baseline tests fail before mutation scoring. The benchmark tests now build
 their own committed temporary repository. The normal suite and an explicit source copy without
-`.git` both pass 56/56; no mutation run was started. Do not push merely to refresh these checks
+`.git` both pass; no current-candidate mutation run has started. Do not push merely to refresh these checks
 while the fix pass is still changing. A push starts the mutation workflow and invalidates its result
 on the next source change.
 
@@ -495,7 +499,13 @@ The ledger has the authoritative per-module adjudication log.
   toolchain; the docs workflow now pins Node 26.7.0 and npm 12.0.2 in the required order. The test
   matrix pins Node 26.7.0 before the workspace suite, runs the ignored uv directory-sync owner on
   native Windows, and installs zsh before the real bash/sh/zsh/dash child gate on Linux. The tooling
-  contract pins their presence, platform conditions, uniqueness, and order.
+  contract pins their presence, platform conditions, uniqueness, and order; the Windows step uses
+  the fully qualified owner and fails if Cargo reports zero tests. The release workflow now supports
+  a safe build-only manual dispatch. It installs and smokes every native-compatible Linux, Windows,
+  and macOS wheel, verifies all 8 wheel archives plus the sdist and its Cargo lock, Agent Skill, and
+  corpus, and permits PyPI publication only on a version-tag push. All 12 localized screenshots are
+  visible through locale-matched 2x2 grids in the three repository READMEs; the old attachment
+  videos and stale GIF remain absent.
   Maturin 1.14.1 built a 6,192,096-byte wheel and a 1,714,592-byte sdist on the exact candidate.
   Isolated uv 0.12.3 installs of both distributions passed version/help, a real add/manage/run
   smoke, and an embedded-Agent-Skill byte comparison. The extracted sdist passed corpus 7/7,
@@ -641,8 +651,8 @@ The ledger has the authoritative per-module adjudication log.
 - **Ledger (authoritative):** `docs/design/python-test-port-ledger.md` — every module, its
   crate/file, status (`**X FIXED <sha>**` convention), and the adjudication log with per-divergence
   oracle refs.
-- **Contract matrix:** `docs/design/rust-contract-matrix.md` (22 rows, still "In progress" — a
-  release blocker until Complete with evidence).
+- **Contract matrix:** `docs/design/rust-contract-matrix.md` (21 rows; every remaining `In progress`
+  row is a release blocker until executable or external evidence closes it).
 - **AGENTS.md / CLAUDE.md:** product rules, trust model (skit is a launcher, NOT a sandbox — do not
   add sanitization/threat-mitigation for trusted local content), architecture, gates. Commands to
   run gates are in AGENTS.md "## Commands".

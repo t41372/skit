@@ -882,7 +882,7 @@ mod private_tests {
 
     #[cfg(windows)]
     #[test]
-    #[ignore = "native Windows gate: run with cargo test --target x86_64-pc-windows-msvc -p skit-runtime test_extract_uv_skips_dir_fsync_on_windows -- --ignored; target: x86_64-pc-windows-msvc"]
+    #[ignore = "native Windows gate: run with cargo test --target x86_64-pc-windows-msvc -p skit-runtime uv::private_tests::test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored; target: x86_64-pc-windows-msvc"]
     fn test_extract_uv_skips_dir_fsync_on_windows() {
         let root = TempDir::new().unwrap();
         let missing_directory = root.path().join("must-not-be-opened");

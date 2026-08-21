@@ -92,7 +92,11 @@ jobs:
         run: cargo test --locked --workspace --all-targets --all-features
       - name: Run the native Windows uv durability gate
         if: runner.os == 'Windows'
-        run: cargo test --locked -p skit-runtime test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored
+        run: |
+          $output = cargo test --locked -p skit-runtime uv::private_tests::test_extract_uv_skips_dir_fsync_on_windows -- --exact --ignored 2>&1
+          $output | Write-Output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not ($output -match '1 passed; 0 failed')) { throw 'the native Windows uv gate ran zero tests' }
       - name: Install the Linux shell matrix
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes zsh

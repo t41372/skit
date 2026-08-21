@@ -30,7 +30,14 @@ Not a terminal person? That is fine — skit works like a GUI app that happens t
 
 Your AI agent gets the same library: you use it from a menu, agents use it through a deterministic CLI and a skill, so scripts get saved and reused.
 
-<video src="https://github.com/user-attachments/assets/8a1f27cd-f2f2-42db-977a-b4f8ea207340" controls></video>
+### The interface
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-en.png" alt="skit library" width="49%">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-en.png" alt="skit run form" width="49%">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-en.png" alt="skit Add workflow" width="49%">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-en.png" alt="skit settings" width="49%">
+</p>
 
 ## What it does
 
