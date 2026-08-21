@@ -17,7 +17,7 @@ pub use semantic::{
     BindingIdentity, CliSurface, DegradationReason, DynamicCliSurface, ParseFailure, ParseOutcome,
     ParsedDocument, ReconcilePair, ReconcileReport, SemanticAnalysis, SemanticCandidate,
     SemanticField, SourceEdit, SourceEditPlan, SourceParameterSemantics, SourceSpan,
-    StaticCliSurface, parse_document, source_parameter_semantics,
+    StaticCliSurface, edit_source_declarations, parse_document, source_parameter_semantics,
 };
 pub use source_text::{
     LosslessSource, NewlineStyle, has_uv_metadata_block_bytes, write_managed_params_bytes,

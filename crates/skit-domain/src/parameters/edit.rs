@@ -219,6 +219,103 @@ pub struct SourceManageResult {
     pub warnings: Vec<SourceManageWarning>,
 }
 
+/// One complete edit request for a schema stored in source text.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SourceEditRequest {
+    /// Refresh stored bindings from the current parser result.
+    pub resync: bool,
+    /// Detected candidate names to manage, in option order.
+    pub add: Vec<String>,
+    /// Managed names to remove, in option order.
+    pub remove: Vec<String>,
+    /// Names to mark secret, in option order.
+    pub secret: Vec<String>,
+    /// Names to make public, in option order.
+    pub no_secret: Vec<String>,
+    /// Prompt edits in option order.
+    pub prompts: Vec<NamedEdit<String>>,
+    /// Secret environment-source edits in option order.
+    pub env_sources: Vec<NamedEdit<String>>,
+}
+
+impl SourceEditRequest {
+    /// Return whether this request changes no source declaration.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        !self.resync
+            && self.add.is_empty()
+            && self.remove.is_empty()
+            && self.secret.is_empty()
+            && self.no_secret.is_empty()
+            && self.prompts.is_empty()
+            && self.env_sources.is_empty()
+    }
+}
+
+/// One recoverable source edit problem.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SourceEditWarning {
+    /// A syntax error prevented the requested refresh.
+    ResyncSkipped,
+    /// A refresh removed a binding that no longer exists.
+    ResyncDropped { name: String },
+    /// A refresh moved an input binding to its current call site.
+    ResyncRebound { name: String },
+    /// The requested candidate is already managed.
+    AlreadyManaged { name: String },
+    /// The current parser result has no requested candidate.
+    NotCandidate { name: String },
+    /// The requested name is not managed.
+    NotManaged { name: String },
+    /// An environment source named no managed row.
+    EnvSourceNotManaged { name: String },
+    /// An environment source named a public row.
+    EnvSourceNotSecret { name: String },
+}
+
+impl SourceEditWarning {
+    /// Return the affected name when this warning has one.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            Self::ResyncSkipped => None,
+            Self::ResyncDropped { name }
+            | Self::ResyncRebound { name }
+            | Self::AlreadyManaged { name }
+            | Self::NotCandidate { name }
+            | Self::NotManaged { name }
+            | Self::EnvSourceNotManaged { name }
+            | Self::EnvSourceNotSecret { name } => Some(name),
+        }
+    }
+
+    /// Return the stable machine code for this warning.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::ResyncSkipped => "resync-skipped",
+            Self::ResyncDropped { .. } => "resync-dropped",
+            Self::ResyncRebound { .. } => "resync-rebound",
+            Self::AlreadyManaged { .. } => "already-managed",
+            Self::NotCandidate { .. } => "not-a-candidate",
+            Self::NotManaged { .. } => "not-managed",
+            Self::EnvSourceNotManaged { .. } => "env-source-not-managed",
+            Self::EnvSourceNotSecret { .. } => "env-source-not-secret",
+        }
+    }
+}
+
+/// Complete result of one I/O-free source schema edit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceEditResult {
+    /// Final unique rows in stable order.
+    pub declarations: Vec<ParamDecl>,
+    /// Recoverable problems in deterministic operation order.
+    pub warnings: Vec<SourceEditWarning>,
+    /// Whether the semantic row list changed.
+    pub changed: bool,
+}
+
 /// Add detected candidates without letting one bad requested name abort valid siblings.
 pub fn manage_source_candidates(
     managed: &[ParamDecl],

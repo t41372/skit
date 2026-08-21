@@ -21,7 +21,9 @@ use skit_domain::parameters::{
     NamedEdit, ParamDecl, ParameterBinding, ParameterType, SourceEditRequest, SourceEditResult,
     SourceEditWarning,
 };
-use skit_language::{ParseOutcome, ReconcileReport, edit_source_declarations, parse_document};
+use skit_language::{
+    LanguageError, ParseOutcome, ReconcileReport, edit_source_declarations, parse_document,
+};
 
 /// Python `reconcile.reconcile(text, specs)`: parse, reconcile against the current source, or return
 /// the conservative all-missing report when the source has a syntax error.
@@ -692,4 +694,61 @@ fn test_no_secret_also_clears_the_env_source() {
     );
     assert!(!result.declarations[0].secret);
     assert!(result.declarations[0].env_source.is_empty());
+}
+
+#[test]
+fn source_edit_collects_remove_prompt_and_environment_warnings_without_losing_valid_siblings() {
+    let mut secret = const_spec("API");
+    secret.secret = true;
+    let public = const_spec("CITY");
+    let result = edit(
+        "API = \"x\"\nCITY = \"Taipei\"\n",
+        &[secret, public],
+        SourceEditRequest {
+            remove: vec!["GONE".to_owned()],
+            prompts: vec![
+                NamedEdit::new("API", "Old: "),
+                NamedEdit::new("API", "New: "),
+            ],
+            env_sources: vec![
+                NamedEdit::new("API", " API_TOKEN "),
+                NamedEdit::new("CITY", "CITY_TOKEN"),
+                NamedEdit::new("GHOST", "GHOST_TOKEN"),
+            ],
+            ..SourceEditRequest::default()
+        },
+    );
+    assert_eq!(result.declarations[0].prompt, "New: ");
+    assert_eq!(result.declarations[0].env_source, "API_TOKEN");
+    assert_eq!(
+        result.warnings,
+        [
+            SourceEditWarning::NotManaged {
+                name: "GONE".to_owned()
+            },
+            SourceEditWarning::EnvSourceNotSecret {
+                name: "CITY".to_owned()
+            },
+            SourceEditWarning::EnvSourceNotManaged {
+                name: "GHOST".to_owned()
+            }
+        ]
+    );
+}
+
+#[test]
+fn source_edit_refuses_a_kind_without_a_parser() {
+    let error = edit_source_declarations(
+        "future-kind",
+        "opaque",
+        &[const_spec("CITY")],
+        &SourceEditRequest::default(),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        LanguageError::UnsupportedKind {
+            kind: "future-kind".to_owned()
+        }
+    );
 }

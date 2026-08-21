@@ -7,8 +7,9 @@
 
 use skit_domain::parameters::{
     DeclaredEditContext, DeclaredEditRequest, DeclaredEditWarning, NamedEdit, ParamDecl,
-    ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, SourceManageWarning,
-    as_param_type, coerce_default, edit_declared, manage_source_candidates,
+    ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, SourceEditRequest,
+    SourceEditWarning, SourceManageWarning, as_param_type, coerce_default, edit_declared,
+    manage_source_candidates,
 };
 
 fn named(values: &[(&str, &str)]) -> Vec<NamedEdit<String>> {
@@ -77,6 +78,74 @@ fn source_manage_collects_warnings_and_keeps_valid_siblings_in_request_order() {
     assert_eq!(result.warnings[0].code(), "already-managed");
     assert_eq!(result.warnings[1].name(), "NOPE");
     assert_eq!(result.warnings[1].code(), "not-a-candidate");
+}
+
+#[test]
+fn source_edit_request_and_warning_contracts_cover_the_closed_set() {
+    assert!(SourceEditRequest::default().is_empty());
+    assert!(
+        !SourceEditRequest {
+            resync: true,
+            ..SourceEditRequest::default()
+        }
+        .is_empty()
+    );
+    let warnings = [
+        (SourceEditWarning::ResyncSkipped, None, "resync-skipped"),
+        (
+            SourceEditWarning::ResyncDropped {
+                name: "dropped".to_owned(),
+            },
+            Some("dropped"),
+            "resync-dropped",
+        ),
+        (
+            SourceEditWarning::ResyncRebound {
+                name: "rebound".to_owned(),
+            },
+            Some("rebound"),
+            "resync-rebound",
+        ),
+        (
+            SourceEditWarning::AlreadyManaged {
+                name: "managed".to_owned(),
+            },
+            Some("managed"),
+            "already-managed",
+        ),
+        (
+            SourceEditWarning::NotCandidate {
+                name: "candidate".to_owned(),
+            },
+            Some("candidate"),
+            "not-a-candidate",
+        ),
+        (
+            SourceEditWarning::NotManaged {
+                name: "missing".to_owned(),
+            },
+            Some("missing"),
+            "not-managed",
+        ),
+        (
+            SourceEditWarning::EnvSourceNotManaged {
+                name: "env-missing".to_owned(),
+            },
+            Some("env-missing"),
+            "env-source-not-managed",
+        ),
+        (
+            SourceEditWarning::EnvSourceNotSecret {
+                name: "public".to_owned(),
+            },
+            Some("public"),
+            "env-source-not-secret",
+        ),
+    ];
+    for (warning, name, code) in warnings {
+        assert_eq!(warning.name(), name);
+        assert_eq!(warning.code(), code);
+    }
 }
 
 #[test]

@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, coerce_default,
-    is_secret_name,
+    NamedEdit, ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    SourceEditRequest, SourceEditResult, SourceEditWarning, coerce_default, is_secret_name,
 };
 
 use crate::LanguageError;
@@ -517,6 +517,191 @@ pub fn parse_document(kind: &str, source: &str) -> ParseOutcome {
         source: source.to_owned(),
         tree,
     })
+}
+
+/// Apply one complete source-schema edit without performing I/O.
+///
+/// The operation parses the current source once. It applies refresh, remove, add, and tweak
+/// operations in that fixed order. Syntax failure skips only the refresh so explicit sibling edits
+/// can still succeed.
+pub fn edit_source_declarations(
+    kind: &str,
+    source: &str,
+    stored: &[ParamDecl],
+    request: &SourceEditRequest,
+) -> Result<SourceEditResult, LanguageError> {
+    let mut declarations = unique_source_rows(stored);
+    let (report, candidates) = match parse_document(kind, source) {
+        ParseOutcome::Parsed(document) => {
+            let analysis = document.analysis();
+            let report = reconcile_analysis(&analysis, &declarations);
+            let candidates = analysis
+                .candidates
+                .into_iter()
+                .map(|candidate| candidate.declaration)
+                .collect();
+            (Some(report), candidates)
+        }
+        ParseOutcome::SyntaxError(_) => (None, Vec::new()),
+        ParseOutcome::ParserUnavailable(_) => {
+            return Err(LanguageError::UnsupportedKind {
+                kind: kind.to_owned(),
+            });
+        }
+    };
+    let mut warnings = Vec::new();
+
+    if request.resync {
+        if let Some(report) = report {
+            apply_source_resync(&mut declarations, report, &mut warnings);
+        } else {
+            warnings.push(SourceEditWarning::ResyncSkipped);
+        }
+    }
+
+    for name in &request.remove {
+        if let Some(index) = declarations.iter().position(|row| row.name == *name) {
+            declarations.remove(index);
+        } else {
+            warnings.push(SourceEditWarning::NotManaged { name: name.clone() });
+        }
+    }
+
+    for name in &request.add {
+        if declarations.iter().any(|row| row.name == *name) {
+            warnings.push(SourceEditWarning::AlreadyManaged { name: name.clone() });
+        } else if let Some(candidate) = candidates.iter().find(|row| row.name == *name) {
+            declarations.push(candidate.clone());
+        } else {
+            warnings.push(SourceEditWarning::NotCandidate { name: name.clone() });
+        }
+    }
+
+    for name in &request.secret {
+        if let Some(row) = declarations.iter_mut().find(|row| row.name == *name) {
+            row.secret = true;
+        } else {
+            warnings.push(SourceEditWarning::NotManaged { name: name.clone() });
+        }
+    }
+    for name in &request.no_secret {
+        if let Some(row) = declarations.iter_mut().find(|row| row.name == *name) {
+            row.secret = false;
+            row.env_source.clear();
+        } else {
+            warnings.push(SourceEditWarning::NotManaged { name: name.clone() });
+        }
+    }
+    for name in &request.secret {
+        if let Some(row) = declarations
+            .iter_mut()
+            .find(|row| row.name == *name && row.secret)
+        {
+            row.default = None;
+        }
+    }
+    for edit in unique_named_edits(&request.prompts) {
+        if let Some(row) = declarations.iter_mut().find(|row| row.name == edit.name) {
+            row.prompt.clone_from(&edit.value);
+        } else {
+            warnings.push(SourceEditWarning::NotManaged {
+                name: edit.name.clone(),
+            });
+        }
+    }
+    for edit in unique_named_edits(&request.env_sources) {
+        let Some(row) = declarations.iter_mut().find(|row| row.name == edit.name) else {
+            warnings.push(SourceEditWarning::EnvSourceNotManaged {
+                name: edit.name.clone(),
+            });
+            continue;
+        };
+        if row.secret {
+            row.env_source = edit.value.trim().to_owned();
+        } else {
+            warnings.push(SourceEditWarning::EnvSourceNotSecret {
+                name: edit.name.clone(),
+            });
+        }
+    }
+
+    Ok(SourceEditResult {
+        changed: declarations != stored,
+        declarations,
+        warnings,
+    })
+}
+
+fn apply_source_resync(
+    declarations: &mut Vec<ParamDecl>,
+    report: ReconcileReport,
+    warnings: &mut Vec<SourceEditWarning>,
+) {
+    let missing = report
+        .missing
+        .into_iter()
+        .map(|row| row.name)
+        .collect::<BTreeSet<_>>();
+    let changed = report
+        .changed
+        .into_iter()
+        .map(|pair| (pair.stored.name, pair.current.declaration))
+        .collect::<BTreeMap<_, _>>();
+    let rebound = report
+        .rebound
+        .into_iter()
+        .map(|pair| (pair.stored.name, pair.current.declaration))
+        .collect::<BTreeMap<_, _>>();
+    let current_defaults = report.current_defaults;
+    declarations.retain_mut(|row| {
+        if missing.contains(&row.name) {
+            warnings.push(SourceEditWarning::ResyncDropped {
+                name: row.name.clone(),
+            });
+            return false;
+        }
+        if let Some(candidate) = changed.get(&row.name) {
+            row.parameter_type = candidate.parameter_type;
+            row.default = (!row.secret).then(|| candidate.default.clone()).flatten();
+        } else if let Some(default) = current_defaults.get(&row.name) {
+            row.default = Some(default.clone());
+        } else if let Some(candidate) = rebound.get(&row.name) {
+            row.order = candidate.order;
+            row.prompt.clone_from(&candidate.prompt);
+            warnings.push(SourceEditWarning::ResyncRebound {
+                name: row.name.clone(),
+            });
+        }
+        true
+    });
+}
+
+fn unique_source_rows(rows: &[ParamDecl]) -> Vec<ParamDecl> {
+    let mut output = Vec::new();
+    let mut positions = BTreeMap::<String, usize>::new();
+    for row in rows {
+        if let Some(index) = positions.get(&row.name).copied() {
+            output[index] = row.clone();
+        } else {
+            positions.insert(row.name.clone(), output.len());
+            output.push(row.clone());
+        }
+    }
+    output
+}
+
+fn unique_named_edits<T>(edits: &[NamedEdit<T>]) -> Vec<&NamedEdit<T>> {
+    let mut positions = BTreeMap::<String, usize>::new();
+    let mut output = Vec::<&NamedEdit<T>>::new();
+    for edit in edits {
+        if let Some(index) = positions.get(&edit.name).copied() {
+            output[index] = edit;
+        } else {
+            positions.insert(edit.name.clone(), output.len());
+            output.push(edit);
+        }
+    }
+    output
 }
 
 fn first_fatal_error<'tree>(
