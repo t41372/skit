@@ -2161,6 +2161,25 @@ fn tui_parameter_rows_merge_edits_onto_the_declaration_that_owns_them() {
     assert_eq!(declaration.action, "append");
     assert_eq!(declaration.flag, "--token");
 
+    // Clearing a default and changing a flag use the same row-owned edit. Neither change may
+    // rebuild or replace the declaration that owns the other stored axes.
+    let mut editable = stored.clone();
+    editable.default = Some(ParameterValue::String("stored".to_owned()));
+    let clear_and_flag = BTreeMap::from([
+        ("parameter:token:default".to_owned(), FieldValue::text("")),
+        ("parameter:token:flag".to_owned(), FieldValue::text("-t")),
+    ]);
+    let mut declarations = vec![editable];
+    tui_apply_parameter_edits(&clear_and_flag, &mut declarations).unwrap();
+    assert_eq!(declarations[0].default, None);
+    assert_eq!(declarations[0].flag, "-t");
+    assert_eq!(declarations[0].binding, ParameterBinding::EnvDefault);
+    assert_eq!(declarations[0].delivery, ParameterDelivery::Env);
+    assert!(declarations[0].multiple);
+    assert!(declarations[0].repeat);
+    assert_eq!(declarations[0].env_target, "TOKEN_TARGET");
+    assert_eq!(declarations[0].action, "append");
+
     // A row's edit reaches that row and no other, even when a neighbour shares every axis name.
     let mut neighbours = vec![ParamDecl::new("first"), ParamDecl::new("second")];
     let one_row = BTreeMap::from([(
