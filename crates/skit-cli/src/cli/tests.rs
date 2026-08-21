@@ -6498,3 +6498,221 @@ fn show_formatters_cover_empty_defaults_prompt_help_types_actions_and_every_drif
     );
     assert!(error.message().localize(Locale::En).contains("future"));
 }
+
+#[test]
+fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let config_dir = root.path().join("config");
+    fs::create_dir_all(&config_dir).unwrap();
+    let config_path = config_dir.join("config.toml");
+    fs::write(
+        &config_path,
+        concat!(
+            "[prompt]\n",
+            "runners_seeded = true\n",
+            "runners = [\n",
+            "  { name = \"agent\", argv = [\"agent\", \"{{prompt}}\"] },\n",
+            "  { name = \"broken\", argv = [\"broken\"] },\n",
+            "  \"not-a-table\",\n",
+            "]\n",
+        ),
+    )
+    .unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store);
+
+    let rows = tui_runner_rows(&service, &config_dir).unwrap();
+    let agent = rows
+        .iter()
+        .find(|row| row.name.as_deref() == Some("agent"))
+        .expect("the named runner row must be visible");
+    let action = tui_save_runner(
+        &service,
+        &config_dir,
+        RunnerSaveRequest {
+            name: "agent".to_owned(),
+            argv: vec![
+                "agent".to_owned(),
+                "--updated".to_owned(),
+                "{{prompt}}".to_owned(),
+            ],
+            target: RunnerSaveTarget::Named {
+                name: "agent".to_owned(),
+                expected: agent.key_identities.clone(),
+            },
+        },
+        RunnerSaveOwner::Manager,
+    )
+    .unwrap();
+    assert!(matches!(
+        action,
+        UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+            selected_name: Some(ref name),
+            ref message,
+            ..
+        }) if name == "agent" && message.contains("updated")
+    ));
+    assert_eq!(
+        FileConfigStore::new(&config_dir).runners().unwrap()[0].argv,
+        ["agent", "--updated", "{{prompt}}"]
+    );
+
+    let broken = tui_runner_rows(&service, &config_dir)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.name.as_deref() == Some("broken"))
+        .expect("the malformed named row must be visible");
+    let action = tui_save_runner(
+        &service,
+        &config_dir,
+        RunnerSaveRequest {
+            name: "repaired".to_owned(),
+            argv: vec!["repaired".to_owned(), "{{prompt}}".to_owned()],
+            target: RunnerSaveTarget::RawRow {
+                expected: broken.identity,
+            },
+        },
+        RunnerSaveOwner::Editor(skit_ui::RunnerEditorOwner::Add),
+    )
+    .unwrap();
+    assert!(matches!(
+        action,
+        UiAction::RunnerEditorSaved {
+            owner: skit_ui::RunnerEditorOwner::Add,
+            ref name,
+            ..
+        } if name == "repaired"
+    ));
+    assert!(
+        FileConfigStore::new(&config_dir)
+            .runners()
+            .unwrap()
+            .iter()
+            .any(|runner| runner.name == "repaired")
+    );
+
+    let raw_row = tui_runner_rows(&service, &config_dir)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.reason.as_deref() == Some("row-not-table"))
+        .expect("the malformed scalar row must remain visible");
+    let action = tui_remove_runner(
+        &service,
+        &config_dir,
+        RunnerRemoveRequest::RawRow {
+            expected: raw_row.identity,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        action,
+        UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+            ref message,
+            ..
+        }) if message.contains("row 2")
+    ));
+
+    let stale = RunnerRowIdentity {
+        index: Some(1),
+        snapshot_token: "stale".to_owned(),
+    };
+    let before = fs::read(&config_path).unwrap();
+    let action = tui_save_runner(
+        &service,
+        &config_dir,
+        RunnerSaveRequest {
+            name: "never-written".to_owned(),
+            argv: vec!["never-written".to_owned(), "{{prompt}}".to_owned()],
+            target: RunnerSaveTarget::RawRow { expected: stale },
+        },
+        RunnerSaveOwner::Editor(skit_ui::RunnerEditorOwner::Add),
+    )
+    .unwrap();
+    assert!(matches!(action, UiAction::RunnerEditorSaveFailed { .. }));
+    assert_eq!(fs::read(&config_path).unwrap(), before);
+
+    let agent = tui_runner_rows(&service, &config_dir)
+        .unwrap()
+        .into_iter()
+        .find(|row| row.name.as_deref() == Some("agent"))
+        .expect("updated named runner remains visible");
+    let action = tui_remove_runner(
+        &service,
+        &config_dir,
+        RunnerRemoveRequest::Named {
+            name: "agent".to_owned(),
+            expected: agent.key_identities,
+            expected_pinned_count: 0,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        action,
+        UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+            selected_name: None,
+            ref message,
+            ..
+        }) if message.contains("agent")
+    ));
+    assert!(
+        FileConfigStore::new(&config_dir)
+            .runners()
+            .unwrap()
+            .iter()
+            .all(|runner| runner.name != "agent")
+    );
+
+    let stale_remove = RunnerRemoveRequest::Named {
+        name: "repaired".to_owned(),
+        expected: vec![RunnerRowIdentity {
+            index: Some(0),
+            snapshot_token: "stale".to_owned(),
+        }],
+        expected_pinned_count: 0,
+    };
+    let before = fs::read(&config_path).unwrap();
+    assert!(matches!(
+        tui_remove_runner(&service, &config_dir, stale_remove).unwrap(),
+        UiAction::Runners(RunnerManagerAction::MutationFailed(_))
+    ));
+    assert_eq!(fs::read(&config_path).unwrap(), before);
+
+    fs::write(&config_path, "language = \"zh-TW\"\nprompt = \"garbage\"\n").unwrap();
+    let raw = tui_runner_rows(&service, &config_dir)
+        .unwrap()
+        .pop()
+        .expect("the malformed prompt container is one raw row");
+    assert_eq!(raw.identity.index, None);
+    let action = tui_remove_runner(
+        &service,
+        &config_dir,
+        RunnerRemoveRequest::RawRow {
+            expected: raw.identity,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        action,
+        UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+            ref message,
+            ..
+        }) if message.contains("container")
+    ));
+    let document = fs::read_to_string(&config_path).unwrap();
+    assert!(document.contains("language = \"zh-TW\""));
+    assert!(document.contains("runners = []"));
+
+    let raw_stale = RunnerRemoveRequest::RawRow {
+        expected: RunnerRowIdentity {
+            index: None,
+            snapshot_token: "stale".to_owned(),
+        },
+    };
+    let before = fs::read(&config_path).unwrap();
+    assert!(matches!(
+        tui_remove_runner(&service, &config_dir, raw_stale).unwrap(),
+        UiAction::Runners(RunnerManagerAction::MutationFailed(_))
+    ));
+    assert_eq!(fs::read(&config_path).unwrap(), before);
+}
