@@ -29,18 +29,18 @@
 //!   defaultless candidate without adding a production injection API.
 //! - Bucket 3 (cross-crate): `assemble` (split into `skit-application` `run_inputs` token
 //!   expansion + `delivery::assemble` routing), `remembered_values`/`save_after_run`
-//!   (`skit-application` `form_state` + the `skit-store` state adapter), and `edit_specs --resync`
-//!   (no pure library equivalent; the only analog is `skit-cli` private `prepare_source_management`,
-//!   which also diverges — see the resync stubs). `#[ignore]` stubs naming the owning tier.
+//!   (`skit-application` `form_state` + the `skit-store` state adapter). Parser-backed source edits
+//!   use the I/O-free `skit-language::edit_source_declarations` operation.
 
 use std::collections::BTreeMap;
 
 use skit_domain::EntrySettings;
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    SourceEditRequest, SourceEditWarning,
 };
 use skit_form::{FormSource, PreparedField, form_plan};
-use skit_language::{ParseOutcome, parse_document};
+use skit_language::{ParseOutcome, edit_source_declarations, parse_document};
 
 // Block default "hello" is a stale manage-time cache; the body now says "bonjour". The
 // script is the truth: the run form must prefill "bonjour", and injecting "bonjour" is a
@@ -201,10 +201,6 @@ fn test_reconcile_omits_current_default_for_a_type_changed_const() {
 // --------------------------------------------------------------------------
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-cli): the pure `analysis.edit_specs(text, specs, resync=True)` has \
-no library equivalent; the only analog is private `prepare_source_management` (crates/skit-cli/\
-src/cli.rs:3559). Its behavior overlaps here (CITY ok -> default refreshed to \"Taipei\"; RETRIES \
-type-changed -> takes type+default from candidate), but it is unreachable from a library test."]
 fn test_resync_writes_source_default_into_ok_and_type_changed_specs() {
     // One resync exercises both write paths: an ok const's default follows the source, and
     // a type-changed const takes BOTH its type and its default from the candidate.
@@ -212,21 +208,100 @@ fn test_resync_writes_source_default_into_ok_and_type_changed_specs() {
     //   specs = [const CITY str default "old-city", const RETRIES int default 3]
     //   result = analysis.edit_specs(text, specs, resync=True)
     //   by["CITY"].(type, default)    == ("str", "Taipei")  # ok: default refreshed
-    //   by["RETRIES"].(type, default) == ("str", "three")   # changed: type+default
+    let source = "CITY = \"Taipei\"\nRETRIES = \"three\"\nprint(CITY, RETRIES)\n";
+    let mut city = const_decl("CITY", ParameterType::Str);
+    city.default = Some(ParameterValue::String("old-city".to_owned()));
+    let mut retries = const_decl("RETRIES", ParameterType::Int);
+    retries.default = Some(ParameterValue::Integer(3));
+    let result = edit_source_declarations(
+        "python",
+        source,
+        &[city, retries],
+        &SourceEditRequest {
+            resync: true,
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    let city = result
+        .declarations
+        .iter()
+        .find(|declaration| declaration.name == "CITY")
+        .unwrap();
+    let retries = result
+        .declarations
+        .iter()
+        .find(|declaration| declaration.name == "RETRIES")
+        .unwrap();
+    assert_eq!(city.parameter_type, ParameterType::Str);
+    assert_eq!(
+        city.default,
+        Some(ParameterValue::String("Taipei".to_owned()))
+    );
+    assert_eq!(retries.parameter_type, ParameterType::Str);
+    assert_eq!(
+        retries.default,
+        Some(ParameterValue::String("three".to_owned()))
+    );
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-cli) + DIVERGENCE: the resync rebind semantics exist nowhere in \
-Rust. `prepare_source_management` (crates/skit-cli/src/cli.rs:3579-3597) keeps the stored prompt \
-on a name-matched input (`if !current.prompt.is_empty() { candidate.prompt = current.prompt; }`) \
-and emits no warnings, so it would keep input-2's prompt \"Old label: \" and never produce \
-\"resync-rebound:input-2\". The oracle re-anchors input-2 by position to \"New label: \"."]
 fn test_resync_current_default_and_rebind_and_untouched_input_share_one_pass() {
     // The resync elif chain, exercised end to end in one call:
     //   CITY    -> current_defaults elif (its literal moved) -> default "Taipei"
     //   input-1 -> exact prompt match, falls through untouched -> (order 0, "Name: ")
     //   input-2 -> its prompt no longer resolves, re-anchored by position (rebind) ->
-    //              (order 1, "New label: "), and "resync-rebound:input-2" in result.warnings
+    let source = concat!(
+        "CITY = \"Taipei\"\n",
+        "who = input(\"Name: \")\n",
+        "pw = input(\"New label: \")\n",
+        "print(CITY, who, pw)\n",
+    );
+    let mut city = const_decl("CITY", ParameterType::Str);
+    city.default = Some(ParameterValue::String("old".to_owned()));
+    let mut first = ParamDecl::new("input-1");
+    first.binding = ParameterBinding::Input;
+    first.delivery = ParameterDelivery::Inject;
+    first.order = 0;
+    first.prompt = "Name: ".to_owned();
+    let mut second = ParamDecl::new("input-2");
+    second.binding = ParameterBinding::Input;
+    second.delivery = ParameterDelivery::Inject;
+    second.order = 1;
+    second.prompt = "Old label: ".to_owned();
+    let result = edit_source_declarations(
+        "python",
+        source,
+        &[city, first, second],
+        &SourceEditRequest {
+            resync: true,
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    let by_name = result
+        .declarations
+        .iter()
+        .map(|declaration| (declaration.name.as_str(), declaration))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        by_name["CITY"].default,
+        Some(ParameterValue::String("Taipei".to_owned()))
+    );
+    assert_eq!(
+        (by_name["input-1"].order, by_name["input-1"].prompt.as_str()),
+        (0, "Name: ")
+    );
+    assert_eq!(
+        (by_name["input-2"].order, by_name["input-2"].prompt.as_str()),
+        (1, "New label: ")
+    );
+    assert_eq!(
+        result.warnings,
+        [SourceEditWarning::ResyncRebound {
+            name: "input-2".to_owned()
+        }]
+    );
 }
 
 // --------------------------------------------------------------------------

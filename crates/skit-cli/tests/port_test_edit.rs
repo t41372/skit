@@ -12,11 +12,8 @@
 //!   codes (`resync-dropped:`, `already-managed:`, `not-a-candidate:`, `not-managed:`), and the
 //!   input list is never mutated.
 //!
-//!   The complete Rust surface is still split, but source candidate additions now use the public
-//!   domain operation `manage_source_candidates`, including typed `already-managed` and
-//!   `not-a-candidate` warnings. The canonical add-warning owner below drives that operation through
-//!   the public CLI. The remaining full resync/remove/tweak owners stay ignored until one complete
-//!   public edit result owns those operations too.
+//!   These owners call the frontend-neutral source edit operation. Public-process tests below prove
+//!   that the CLI persists the same result without changing reference sources or read-only views.
 //!
 //! - **CLI end-to-end** (Python `CliRunner`): these drive the real `skit` binary via `assert_cmd`
 //!   inside a fresh three-directory sandbox (`SKIT_DATA_DIR`/`SKIT_STATE_DIR`/`SKIT_CONFIG_DIR`).
@@ -45,8 +42,11 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::path::PathBuf;
 
-use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
-use skit_language::{managed_params, write_managed_params};
+use skit_domain::parameters::{
+    NamedEdit, ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, SourceEditRequest,
+    SourceEditWarning,
+};
+use skit_language::{edit_source_declarations, managed_params, write_managed_params};
 use tempfile::TempDir;
 
 /// The oracle's module-level SCRIPT fixture (`tests/test_edit.py:13`): two managed candidates —
@@ -141,8 +141,12 @@ impl Sandbox {
     /// Build the fixture entry: write the block-carrying SCRIPT and add it as a copy named `job`.
     /// The oracle's `store.add_python(..., mode="copy")` — done here through the real add lane.
     fn add_job(&self) -> std::path::PathBuf {
+        self.add_job_source(&fixture_source())
+    }
+
+    fn add_job_source(&self, source: &str) -> std::path::PathBuf {
         let script = self.data.path().join("job.py");
-        fs::write(&script, fixture_source()).unwrap();
+        fs::write(&script, source).unwrap();
         self.command()
             .args([
                 "add",
@@ -174,16 +178,11 @@ fn combine(output: &std::process::Output) -> String {
 
 // ---------- reconcile.edit_specs pure logic ----------
 //
-// ABSENT (kind="absent"): a complete pure `reconcile.edit_specs` function and its combined
-// `EditResult{specs,warnings}` contract do not yet exist on the Rust public surface. Candidate
-// additions are public through `manage_source_candidates`; resync/remove and shared tweaks remain
-// split across the composition root. MUST-FIX for the remaining owners: expose a complete pure
-// reconcile-apply that returns the warning-collecting `EditResult` (Python `src/skit/analysis.py`:
-// `edit_specs` :229, `_apply_resync` :288, `_apply_add` :352, `_apply_tweaks` :372). The call
-// cannot compile today, so each stub keeps the Python body as a comment.
+// Rust keeps the request/result types in the domain and the parser-backed operation in
+// `skit-language`. This preserves the oracle's pure boundary without exposing parser types to the
+// application or domain crates.
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public reconcile.edit_specs on the Rust surface; behavior inlined privately in cli.rs::prepare_source_management (~:3559). MUST-FIX: src/skit/analysis.py:288 (_apply_resync)."]
 fn test_resync_drops_missing_and_keeps_matching() {
     // A resync prunes a stored spec whose target vanished (GONE), keeps a matching one (CITY), and
     // records a `resync-dropped:GONE` warning. The Rust resync DOES prune the missing name
@@ -191,11 +190,36 @@ fn test_resync_drops_missing_and_keeps_matching() {
     //   specs = [spec("CITY"), spec("GONE")]
     //   res = reconcile.edit_specs(SCRIPT, specs, resync=True)
     //   assert [s.name for s in res.specs] == ["CITY"]
-    //   assert "resync-dropped:GONE" in res.warnings
+    let result = edit_source_declarations(
+        "python",
+        SCRIPT,
+        &[
+            const_decl("CITY", ParameterType::Str),
+            const_decl("GONE", ParameterType::Str),
+        ],
+        &SourceEditRequest {
+            resync: true,
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result
+            .declarations
+            .iter()
+            .map(|declaration| declaration.name.as_str())
+            .collect::<Vec<_>>(),
+        ["CITY"]
+    );
+    assert_eq!(
+        result.warnings,
+        [SourceEditWarning::ResyncDropped {
+            name: "GONE".to_owned()
+        }]
+    );
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public reconcile.edit_specs on the Rust surface. MUST-FIX: src/skit/analysis.py:316-335 (resync retype + customization preserve)."]
 fn test_resync_updates_changed_type_preserving_customization() {
     // RETRIES is int in the script but was mis-annotated as str; the user added secret/prompt.
     // Resync corrects the type to int while preserving the user's secret/prompt customization. The
@@ -206,26 +230,73 @@ fn test_resync_updates_changed_type_preserving_customization() {
     //   s = res.specs[0]
     //   assert s.type == "int"        # type corrected to match the script
     //   assert s.secret is True       # user customisation preserved
-    //   assert s.prompt == "How many? "
+    let mut retries = const_decl("RETRIES", ParameterType::Str);
+    retries.secret = true;
+    retries.prompt = "How many? ".to_owned();
+    let result = edit_source_declarations(
+        "python",
+        SCRIPT,
+        &[retries],
+        &SourceEditRequest {
+            resync: true,
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    let declaration = &result.declarations[0];
+    assert_eq!(declaration.parameter_type, ParameterType::Int);
+    assert!(declaration.secret);
+    assert_eq!(declaration.prompt, "How many? ");
+    assert_eq!(
+        declaration.default, None,
+        "a secret resync must not cache the source literal"
+    );
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public reconcile.edit_specs on the Rust surface. MUST-FIX: src/skit/analysis.py:352-369 (_apply_add appends candidate)."]
 fn test_add_brings_candidate_under_management() {
     // Adding a currently detected candidate appends it at the end with its detected type.
     //   res = reconcile.edit_specs(SCRIPT, [spec("CITY")], add=["RETRIES"])
     //   assert [s.name for s in res.specs] == ["CITY", "RETRIES"]  # newly added appended last
-    //   assert res.specs[1].type == "int"
+    let result = edit_source_declarations(
+        "python",
+        SCRIPT,
+        &[const_decl("CITY", ParameterType::Str)],
+        &SourceEditRequest {
+            add: vec!["RETRIES".to_owned()],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        result
+            .declarations
+            .iter()
+            .map(|declaration| declaration.name.as_str())
+            .collect::<Vec<_>>(),
+        ["CITY", "RETRIES"]
+    );
+    assert_eq!(result.declarations[1].parameter_type, ParameterType::Int);
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public reconcile.edit_specs on the Rust surface. MUST-FIX: src/skit/analysis.py:361-366 (add an input candidate by display name)."]
 fn test_add_input_candidate_by_display_name() {
     // An input candidate is addressable by its display name (input-1); the added spec binds as an
     // input at call order 0.
     //   res = reconcile.edit_specs(SCRIPT, [], add=["input-1"])
     //   assert res.specs[0].binding == "input"
-    //   assert res.specs[0].order == 0
+    let result = edit_source_declarations(
+        "python",
+        SCRIPT,
+        &[],
+        &SourceEditRequest {
+            add: vec!["input-1".to_owned()],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.declarations[0].binding, ParameterBinding::Input);
+    assert_eq!(result.declarations[0].order, 0);
 }
 
 #[test]
@@ -377,7 +448,6 @@ fn test_add_already_managed_and_not_candidate_warn() {
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public reconcile.edit_specs on the Rust surface. MUST-FIX: src/skit/analysis.py:271-276 (remove) + 380-399 (secret/prompt tweaks)."]
 fn test_remove_and_secret_toggles() {
     // remove drops a managed spec; --secret and a prompt map both apply in the same pass.
     //   specs = [spec("CITY"), spec("RETRIES", type="int")]
@@ -385,26 +455,190 @@ fn test_remove_and_secret_toggles() {
     //       SCRIPT, specs, remove=["CITY"], secret=["RETRIES"], prompts={"RETRIES": "N: "})
     //   assert [s.name for s in res.specs] == ["RETRIES"]
     //   assert res.specs[0].secret is True
-    //   assert res.specs[0].prompt == "N: "
+    let result = edit_source_declarations(
+        "python",
+        SCRIPT,
+        &[
+            const_decl("CITY", ParameterType::Str),
+            const_decl("RETRIES", ParameterType::Int),
+        ],
+        &SourceEditRequest {
+            remove: vec!["CITY".to_owned()],
+            secret: vec!["RETRIES".to_owned()],
+            prompts: vec![NamedEdit::new("RETRIES", "N: ")],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(result.declarations.len(), 1);
+    assert_eq!(result.declarations[0].name, "RETRIES");
+    assert!(result.declarations[0].secret);
+    assert_eq!(result.declarations[0].prompt, "N: ");
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public reconcile.edit_specs on the Rust surface. MUST-FIX: src/skit/analysis.py:385-390 (no_secret clears the mark; not-managed warning)."]
 fn test_no_secret_and_missing_name_warns() {
     // --no-secret clears the secret mark on a managed spec; an unknown name becomes a
     // `not-managed:GHOST` warning rather than a failure.
     //   res = reconcile.edit_specs(SCRIPT, [spec("CITY", secret=True)], no_secret=["CITY", "GHOST"])
     //   assert res.specs[0].secret is False
-    //   assert "not-managed:GHOST" in res.warnings
+    let mut city = const_decl("CITY", ParameterType::Str);
+    city.secret = true;
+    city.env_source = "CITY_TOKEN".to_owned();
+    let result = edit_source_declarations(
+        "python",
+        SCRIPT,
+        &[city],
+        &SourceEditRequest {
+            no_secret: vec!["CITY".to_owned(), "GHOST".to_owned()],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    assert!(!result.declarations[0].secret);
+    assert!(result.declarations[0].env_source.is_empty());
+    assert_eq!(
+        result.warnings,
+        [SourceEditWarning::NotManaged {
+            name: "GHOST".to_owned()
+        }]
+    );
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public reconcile.edit_specs on the Rust surface. MUST-FIX: src/skit/analysis.py:254-256 (per-spec shallow copy — purity)."]
 fn test_edit_specs_is_pure_no_mutation_of_input_list() {
     // edit_specs is pure: it never mutates the caller's spec objects or list.
     //   original = [spec("CITY")]
     //   reconcile.edit_specs(SCRIPT, original, remove=["CITY"])
-    //   assert [s.name for s in original] == ["CITY"]  # input list must not be mutated
+    let original = vec![const_decl("CITY", ParameterType::Str)];
+    let snapshot = original.clone();
+    let result = edit_source_declarations(
+        "python",
+        SCRIPT,
+        &original,
+        &SourceEditRequest {
+            remove: vec!["CITY".to_owned()],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    assert!(result.declarations.is_empty());
+    assert_eq!(original, snapshot);
+}
+
+#[test]
+fn syntax_error_resync_warns_and_writes_no_source_metadata_or_state() {
+    let sandbox = Sandbox::new();
+    let broken = write_managed_params(
+        "python",
+        "CITY = \"Taipei\"\nRETRIES = (3\n",
+        &[
+            const_decl("CITY", ParameterType::Str),
+            const_decl("RETRIES", ParameterType::Int),
+        ],
+    )
+    .unwrap();
+    sandbox.add_job_source(&broken);
+    let payload = sandbox.data.path().join("scripts/job/script.py");
+    let meta = sandbox.data.path().join("scripts/job/meta.toml");
+    let payload_before = fs::read(&payload).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+
+    let output = sandbox
+        .command()
+        .args(["params", "job", "--resync"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(
+            "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged."
+        ),
+        "{}",
+        combine(&output)
+    );
+    assert_eq!(fs::read(payload).unwrap(), payload_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
+    assert!(!sandbox.state.path().join("values/job.toml").exists());
+}
+
+#[test]
+fn unknown_source_tweaks_warn_keep_valid_siblings_and_keep_json_on_stdout() {
+    let sandbox = Sandbox::new();
+    let mut city = const_decl("CITY", ParameterType::Str);
+    city.secret = true;
+    city.env_source = "CITY_TOKEN".to_owned();
+    let source = write_managed_params("python", SCRIPT, &[city]).unwrap();
+    sandbox.add_job_source(&source);
+
+    let output = sandbox
+        .command()
+        .args([
+            "params",
+            "job",
+            "--no-secret",
+            "CITY",
+            "--no-secret",
+            "GHOST",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(document.is_object());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("skipped"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("GHOST isn't a managed parameter; skipped.")
+    );
+    let city = sandbox
+        .read_back()
+        .into_iter()
+        .find(|declaration| declaration.name == "CITY")
+        .unwrap();
+    assert!(!city.secret);
+    assert!(city.env_source.is_empty());
+
+    let payload = sandbox.data.path().join("scripts/job/script.py");
+    let meta = sandbox.data.path().join("scripts/job/meta.toml");
+    let payload_before = fs::read(&payload).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+    let output = sandbox
+        .command()
+        .args(["params", "job", "--no-secret", "GHOST"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    assert_eq!(fs::read(payload).unwrap(), payload_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
+    assert!(!sandbox.state.path().join("values/job.toml").exists());
+}
+
+#[test]
+fn source_edit_order_is_resync_then_unmanage_manage_and_tweak() {
+    let result = edit_source_declarations(
+        "python",
+        SCRIPT,
+        &[const_decl("CITY", ParameterType::Str)],
+        &SourceEditRequest {
+            resync: true,
+            remove: vec!["CITY".to_owned()],
+            add: vec!["CITY".to_owned()],
+            secret: vec!["CITY".to_owned()],
+            prompts: vec![NamedEdit::new("CITY", "City: ")],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    assert!(result.warnings.is_empty());
+    assert_eq!(result.declarations.len(), 1);
+    assert_eq!(result.declarations[0].name, "CITY");
+    assert!(result.declarations[0].secret);
+    assert_eq!(result.declarations[0].prompt, "City: ");
+    assert!(result.declarations[0].default.is_none());
 }
 
 // ---------- CLI end-to-end ----------

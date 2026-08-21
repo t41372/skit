@@ -5846,6 +5846,67 @@ fn tui_settings_source_requests_refuse_missing_or_unreadable_stored_copies_witho
 }
 
 #[test]
+fn tui_settings_resync_returns_a_localized_warning_for_the_completion_receipt() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let mut city = ParamDecl::new("CITY");
+    city.binding = ParameterBinding::Const;
+    city.delivery = ParameterDelivery::Inject;
+    let mut gone = city.clone();
+    gone.name = "GONE".to_owned();
+    let source =
+        write_managed_params("python", "CITY = \"Taipei\"\nprint(CITY)\n", &[city, gone]).unwrap();
+    let entry = service
+        .add(CreateEntry {
+            name: "Resync warning".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: source.into_bytes(),
+                stored_name: Some("script.py".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        entry.slug.as_str(),
+        &[("source:resync", "true")],
+    );
+
+    let warnings =
+        tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values).unwrap();
+
+    assert_eq!(
+        warnings,
+        [skit_domain::parameters::SourceEditWarning::ResyncDropped {
+            name: "GONE".to_owned()
+        }]
+    );
+    assert_eq!(
+        settings_saved_message(&warnings, Locale::En),
+        "Settings saved\nDropped GONE: it no longer exists in the script."
+    );
+    assert_eq!(
+        settings_saved_message(&warnings, Locale::ZhCn),
+        "设置已保存\n已移除 GONE：它已不存在于脚本中。"
+    );
+    assert_eq!(
+        settings_saved_message(&warnings, Locale::ZhTw),
+        "設定已儲存\n已移除 GONE：它已不存在於指令稿中。"
+    );
+}
+
+#[test]
 fn tui_settings_manage_source_parameters_without_losing_non_utf8_bytes() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
