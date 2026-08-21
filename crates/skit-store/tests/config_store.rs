@@ -33,6 +33,15 @@ fn user_path_expansion_is_shared_by_every_bash_path_door() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn non_utf8_paths_pass_through_user_expansion_byte_exact() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
+
+    let raw = Path::new(&OsString::from_vec(vec![b'~', 0xff, b'x'])).to_path_buf();
+    assert_eq!(expand_user_path(&raw), raw);
+}
+
 #[test]
 fn configuration_writes_share_the_v040_cross_process_lock_path() {
     let root = TempDir::new().unwrap();
@@ -117,6 +126,27 @@ fn language_values_keep_the_v040_supported_families_and_canonical_spelling() {
         .unwrap();
     assert!(!document.contains_key("language"));
     assert_eq!(store.get("lang").unwrap(), "");
+}
+
+#[test]
+fn blank_language_and_matching_custom_github_axes_project_canonical_values() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    fs::write(
+        &path,
+        concat!(
+            "language = \"   \"\n",
+            "[mirror]\n",
+            "python_install = \"https://mirror.example/astral-sh/python-build-standalone/\"\n",
+            "uv_binary = \"https://mirror.example/astral-sh/uv\"\n",
+        ),
+    )
+    .unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    let settings = store.settings().unwrap();
+    assert_eq!(settings["lang"], "");
+    assert_eq!(settings["mirror.github"], "https://mirror.example");
 }
 
 #[test]

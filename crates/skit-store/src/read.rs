@@ -138,25 +138,30 @@ impl FileStore {
     /// skipped; and nothing is saved unless a row actually changed. It contends on the same
     /// `registry.native.lock` writers take, so a repair never races a committing writer.
     fn repair_rows(&self, stale: &[Slug]) {
-        let Some(_lock) = try_acquire_lock(&self.data_dir().join("registry.native.lock")) else {
-            return; // busy: a read stays a read, the next listing tries again
+        let repair = match try_acquire_lock(&self.data_dir().join("registry.native.lock")) {
+            Some(lock) => Registry::read(self.data_dir()).map(|registry| (lock, registry)),
+            None => None,
         };
-        let Some(mut registry) = Registry::read(self.data_dir()) else {
-            return; // the index vanished or went corrupt since the listing read it; doctor owns that
+        let Some((_lock, mut registry)) = repair else {
+            return; // busy, missing, or corrupt: the next listing tries again
         };
         let mut changed = false;
-        for slug in stale {
-            if !registry.contains(slug) {
-                continue; // removed since the listing read the index
-            }
+        let current = stale
+            .iter()
+            .filter(|slug| registry.contains(slug))
+            .filter_map(|slug| {
+                self.read_entry((*slug).clone())
+                    .ok()
+                    .map(|entry| (slug, entry))
+            })
+            .collect::<Vec<_>>();
+        for (slug, entry) in current {
             let entry_dir = self.scripts_dir().join(slug.as_str());
-            let Ok(entry) = self.read_entry(slug.clone()) else {
-                continue; // meta corrupted or vanished meanwhile: leave it for doctor
-            };
-            match registry.reproject_if_changed(&entry, &entry_dir) {
-                Ok(true) => changed = true,
-                Ok(false) => {}
-                Err(_) => continue, // meta vanished between the read and its stat
+            if registry
+                .reproject_if_changed(&entry, &entry_dir)
+                .unwrap_or(false)
+            {
+                changed = true;
             }
         }
         if changed {
@@ -449,20 +454,32 @@ mod tests {
         let slug = Slug::parse("fast").unwrap();
         let reads = Cell::new(0_u32);
 
-        let (summary, source) = cached_or_authoritative_summary(
-            Some(&registry),
-            &slug,
-            &root.path().join("scripts/fast/meta.toml"),
-            || {
-                reads.set(reads.get() + 1);
-                store.read_entry(slug.clone())
-            },
-        )
-        .unwrap();
+        for use_cache in [true, false] {
+            let before = reads.get();
+            let (summary, source) = cached_or_authoritative_summary(
+                use_cache.then_some(&registry),
+                &slug,
+                &root.path().join("scripts/fast/meta.toml"),
+                || {
+                    reads.set(reads.get() + 1);
+                    store.read_entry(slug.clone())
+                },
+            )
+            .unwrap();
 
-        assert_eq!(summary.description, "from the cache");
-        assert!(matches!(source, SummarySource::Cache));
-        assert_eq!(reads.get(), 0, "the fast path parsed meta.toml");
+            assert_eq!(summary.description, "from the cache");
+            if use_cache {
+                assert!(matches!(source, SummarySource::Cache));
+                assert_eq!(reads.get(), before, "the fast path parsed meta.toml");
+            } else {
+                assert!(matches!(source, SummarySource::Authoritative));
+                assert_eq!(
+                    reads.get(),
+                    before + 1,
+                    "the fallback did not parse meta.toml"
+                );
+            }
+        }
     }
 
     #[test]

@@ -609,13 +609,9 @@ impl FileConfigStore {
                 return Ok(false);
             }
             let first = matches[0];
-            let replacement = rows[first].as_table().cloned().map_or_else(
-                || runner_table(&runner),
-                |mut table| {
-                    write_runner_fields(&mut table, &runner);
-                    table
-                },
-            );
+            // A matching raw runner name can only come from a table row.
+            let mut replacement = rows[first].as_table().cloned().unwrap_or_default();
+            write_runner_fields(&mut replacement, &runner);
             rows[first] = Value::Table(replacement);
             for index in matches.into_iter().skip(1).rev() {
                 rows.remove(index);
@@ -1430,17 +1426,14 @@ fn materialize_seed_runners(document: &mut Table) -> Result<(), ConfigError> {
         return Ok(());
     }
     let prompt = table_mut(document, "prompt")?;
-    if !prompt.contains_key("runners") {
-        prompt.insert(
-            "runners".to_owned(),
-            Value::Array(
-                seed_runners()
-                    .iter()
-                    .map(|runner| Value::Table(runner_table(runner)))
-                    .collect(),
-            ),
-        );
-    }
+    prompt.entry("runners".to_owned()).or_insert_with(|| {
+        Value::Array(
+            seed_runners()
+                .iter()
+                .map(|runner| Value::Table(runner_table(runner)))
+                .collect(),
+        )
+    });
     prompt.insert("runners_seeded".to_owned(), Value::Boolean(true));
     Ok(())
 }
@@ -1532,15 +1525,17 @@ fn preserve_corrupt_backup(path: &Path, original: &[u8]) -> Result<PathBuf, Conf
             .map_err(|error| io_error("backup", &target, error))?;
         target
     } else {
-        replace_existing_backup(&target, original, atomic_write_bytes, |previous, target| {
-            fs::rename(previous, target)
-        })?
+        replace_existing_backup(&target, original, atomic_write_bytes, rename_path)?
     };
     let permissions = fs::metadata(path)
         .map_err(|error| io_error("backup", path, error))?
         .permissions();
     fs::set_permissions(&saved, permissions).map_err(|error| io_error("backup", &saved, error))?;
     Ok(backup)
+}
+
+fn rename_path(previous: &Path, target: &Path) -> io::Result<()> {
+    fs::rename(previous, target)
 }
 
 fn replace_existing_backup(
@@ -1586,8 +1581,8 @@ fn io_error(operation: &'static str, path: &std::path::Path, error: std::io::Err
 #[cfg(test)]
 mod tests {
     use super::{
-        PromptRunnerIssue, container_runner_row, legacy_value_descriptor,
-        remove_malformed_runner_container, replace_existing_backup, runner_array_mut,
+        PromptRunnerIssue, atomic_write_bytes, container_runner_row, legacy_value_descriptor,
+        remove_malformed_runner_container, rename_path, replace_existing_backup, runner_array_mut,
         runner_rows_from_document, table_mut,
     };
     use skit_i18n::Locale;
@@ -1714,12 +1709,24 @@ mod tests {
             &backup,
             b"current corrupt bytes",
             |_, _| Err(io::Error::other("new backup failed")),
-            |previous, target| fs::rename(previous, target),
+            rename_path,
         )
         .unwrap_err();
 
         assert!(error.to_string().contains("new backup failed"));
         assert_eq!(fs::read(&backup).unwrap(), b"previous");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn backup_replacement_publishes_new_bytes_after_saving_the_previous_file() {
+        let root = TempDir::new().unwrap();
+        let backup = root.path().join("config.toml.bak");
+        fs::write(&backup, b"previous").unwrap();
+
+        replace_existing_backup(&backup, b"current", atomic_write_bytes, rename_path).unwrap();
+
+        assert_eq!(fs::read(&backup).unwrap(), b"current");
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
     }
 

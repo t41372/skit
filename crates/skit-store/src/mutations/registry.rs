@@ -367,13 +367,9 @@ impl MetadataFingerprint {
     #[cfg(any(unix, windows))]
     fn from_table(table: &Table, registry_mtime_ns: i64) -> Option<Self> {
         let platform = table.get("platform")?.as_str()?;
-        if platform != current_cache_platform() {
-            return None;
-        }
+        (platform == current_cache_platform()).then_some(())?;
         let file_id = table.get("file_id")?.as_str()?.to_owned();
-        if file_id.is_empty() {
-            return None;
-        }
+        (!file_id.is_empty()).then_some(())?;
         let file_size = parse_canonical(table.get("file_size")?.as_str()?)?;
         let modified_ns = parse_canonical(table.get("modified_ns")?.as_str()?)?;
         let changed_ns = parse_canonical(table.get("changed_ns")?.as_str()?)?;
@@ -452,12 +448,10 @@ impl CacheProof {
         let before = MetadataFingerprint::read(meta_path)?;
         let bytes = fs::read(meta_path).ok()?;
         let after = MetadataFingerprint::read(meta_path)?;
-        if before != after
-            || before.registry_mtime_ns != mtime_ns
-            || !ProjectedMetadata::matches_entry(&bytes, entry)
-        {
-            return None;
-        }
+        (before == after
+            && before.registry_mtime_ns == mtime_ns
+            && ProjectedMetadata::matches_entry(&bytes, entry))
+        .then_some(())?;
         let metadata_hash = content_hash(&bytes);
         let summary = summary_from_entry(entry);
         let projection_hash =
@@ -470,15 +464,11 @@ impl CacheProof {
     }
 
     fn parse(table: &Table, mtime_ns: i64) -> Option<Self> {
-        if table.get("schema")?.as_integer()? != CACHE_SCHEMA {
-            return None;
-        }
+        (table.get("schema")?.as_integer()? == CACHE_SCHEMA).then_some(())?;
         let fingerprint = MetadataFingerprint::from_table(table, mtime_ns)?;
         let metadata_hash = table.get("metadata_hash")?.as_str()?.to_owned();
         let projection_hash = table.get("projection_hash")?.as_str()?.to_owned();
-        if !is_sha256(&metadata_hash) || !is_sha256(&projection_hash) {
-            return None;
-        }
+        (is_sha256(&metadata_hash) && is_sha256(&projection_hash)).then_some(())?;
         Some(Self {
             fingerprint,
             metadata_hash,
@@ -523,9 +513,7 @@ impl CachedProjection {
         };
         let target = match mode {
             StorageMode::Copy => {
-                if row.get("target").is_some_and(|value| !value.is_str()) {
-                    return None;
-                }
+                (!row.get("target").is_some_and(|value| !value.is_str())).then_some(())?;
                 None
             }
             StorageMode::Reference => {
@@ -591,17 +579,16 @@ struct ProjectedMetadata {
 
 impl ProjectedMetadata {
     fn matches_entry(bytes: &[u8], entry: &Entry) -> bool {
-        let Ok(text) = std::str::from_utf8(bytes) else {
-            return false;
-        };
-        let Ok(meta) = toml::from_str::<Self>(text) else {
-            return false;
-        };
-        meta.name == entry.meta.name
-            && meta.kind == entry.meta.kind.as_str()
-            && meta.mode == entry.meta.mode
-            && meta.description == entry.meta.description
-            && (meta.mode == StorageMode::Copy || meta.source == entry.meta.source)
+        std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| toml::from_str::<Self>(text).ok())
+            .is_some_and(|meta| {
+                meta.name == entry.meta.name
+                    && meta.kind == entry.meta.kind.as_str()
+                    && meta.mode == entry.meta.mode
+                    && meta.description == entry.meta.description
+                    && (meta.mode == StorageMode::Copy || meta.source == entry.meta.source)
+            })
     }
 }
 

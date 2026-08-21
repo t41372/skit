@@ -274,11 +274,6 @@ fn set_last_run(document: &mut Table, before: &LastRunState, state: &LastRunStat
     if before == state {
         return;
     }
-    let has_known_state = state.at.is_some() || state.exit.is_some() || state.values.is_some();
-    if !has_known_state && !matches!(document.get("last_run"), Some(Value::Table(_))) {
-        return;
-    }
-
     let last_run = document
         .entry("last_run".to_owned())
         .or_insert_with(|| Value::Table(Table::new()));

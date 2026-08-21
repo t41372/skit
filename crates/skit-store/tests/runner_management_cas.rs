@@ -205,3 +205,35 @@ fn opaque_identity_token_includes_raw_shape_and_container_kind() {
         "opaque CAS identity must preserve the TOML value kind"
     );
 }
+
+#[test]
+fn row_cas_refuses_container_tokens_and_disappeared_arrays() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    fs::write(&path, "prompt = \"garbage\"\n").unwrap();
+    let store = FileConfigStore::new(root.path());
+    let container = store.runner_rows().unwrap().remove(0);
+    assert!(
+        !store
+            .replace_runner_row_if_unchanged(runner("fixed", "fixed"), &container)
+            .unwrap()
+    );
+
+    fs::write(
+        &path,
+        "[prompt]\nrunners = [{ name = \"old\", argv = [\"old\", \"{{prompt}}\"] }]\n",
+    )
+    .unwrap();
+    let row = store.runner_rows().unwrap().remove(0);
+    fs::write(&path, "[prompt]\nrunners = \"gone\"\n").unwrap();
+    assert!(
+        !store
+            .replace_runner_row_if_unchanged(runner("new", "new"), &row)
+            .unwrap()
+    );
+    assert!(!store.remove_runner_row_if_unchanged(&row).unwrap());
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        "[prompt]\nrunners = \"gone\"\n"
+    );
+}

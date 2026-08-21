@@ -271,14 +271,7 @@ impl EntryMutationRepository for FileStore {
                     .map_err(|error| io_error("restore incomplete removal", &trash, error));
                 let _ = sync_directory(&self.scripts_dir());
                 let _ = sync_directory(&trash_root);
-                match restored {
-                    Ok(()) => Err(incomplete),
-                    Err(rollback) => Err(RepositoryError::Rollback {
-                        path: source.display().to_string(),
-                        primary: Box::new(incomplete),
-                        rollback: Box::new(rollback),
-                    }),
-                }
+                Err(rollback_error(incomplete, restored, &source))
             }
         }
     }
@@ -474,6 +467,8 @@ impl FileStore {
                     });
             }
             // One entry skit cannot stamp must not cost the whole projection.
+            #[cfg(test)]
+            run_rebuild_before_project_hook(&metadata);
             if let Err(error) = registry.project(&entry, &item.path()) {
                 report
                     .problems
@@ -797,6 +792,24 @@ fn rebuild_error_reason(error: RepositoryError) -> String {
     }
 }
 
+#[cfg(test)]
+type RebuildBeforeProjectHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static REBUILD_BEFORE_PROJECT_HOOK: std::cell::RefCell<Option<RebuildBeforeProjectHook>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_rebuild_before_project_hook(path: &Path) {
+    REBUILD_BEFORE_PROJECT_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook(path);
+        }
+    });
+}
+
 fn write_launch_snapshot(
     source: &Path,
     snapshot: &Path,
@@ -1026,10 +1039,43 @@ fn rollback_error(
 
 #[cfg(test)]
 mod tests {
+    use skit_domain::EntryKind;
     use tempfile::TempDir;
     use time::{Date, Month};
 
     use super::*;
+
+    #[test]
+    fn rebuild_isolates_a_metadata_file_removed_after_its_authoritative_read() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        store
+            .create(CreateEntry {
+                name: "Raced".to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Copy,
+                source: String::new(),
+                workdir: "invoke".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        REBUILD_BEFORE_PROJECT_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(|path| fs::remove_file(path).unwrap()));
+        });
+
+        let report = store.rebuild_registry_report().unwrap();
+
+        assert_eq!(report.entry_count, 0);
+        assert_eq!(report.problems.len(), 1);
+        assert_eq!(
+            rebuild_error_reason(RepositoryError::NotFound {
+                query: "missing".to_owned(),
+            }),
+            "entry not found: missing"
+        );
+    }
 
     #[test]
     fn timestamp_and_metadata_encoding_report_their_boundary_failures() {
