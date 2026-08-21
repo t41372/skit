@@ -29,7 +29,7 @@ behavior port of its sibling.
 Coverage checkpoint (2026-08-21): after the later independent-review fixes, a fresh
 committed-state workspace LCOV run again exercised every target and feature.
 `scripts/check_coverage.sh` reported complete executable-source line coverage without a new
-exclusion. The default-parallel workspace suite reported 4,014 passed, 0 failed, and 542 classified
+exclusion. The default-parallel workspace suite reported 4,054 passed, 0 failed, and 526 classified
 ignores. The cargo-mutants gate still waits for explicit user approval.
 
 ## Port order
@@ -52,7 +52,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_callmatch.py | 9 | crates/skit-language/tests/port_test_callmatch.rs | done |
 | test_reconcile.py | 27 | crates/skit-language/tests/port_test_reconcile.rs | implementation parity (26 executable / 3 frontend-rendering closures, including Rust support owners) · source editor activates rebind, unknown-tweak, syntax, duplicate, and no-secret/env contracts `95c8465`..`4c1689a` |
 | test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (85) · read enumeration and attached-value flags promoted `952394e` · 1 white-box, 6 → Tier 4 |
-| test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs + crates/skit-cli/tests/surface_edges.rs | done (58) · 1 host-tool gate · 28 → Tier 3/4 |
+| test_shell_inject.py | 87 | language/form/runtime owners + crates/skit-cli/tests/surface_edges.rs and source_management.rs | implementation parity complete (74 executable / 1 host-tool gate / 12 structured cross-tier or architecture closures) · resolved-interpreter post-injection gate, self-location warning, params hint, and batch normalization are active |
 | test_shell_getopts.py | 11 | crates/skit-language/tests/port_test_shell_getopts.rs | done (9) · 2 cross-crate (plan/assemble) · no gap |
 | test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs + crates/skit-cli/tests/port_test_fish_manage.rs | implementation parity complete (46 executable / 18 architecture closures) · managed env delivery executable `c592560` · the exact runtime owner resolves Fish with production `SystemProbe` and runs the real CLI; the pinned matrix job sets a dedicated mandatory-runtime flag after installation, while every other job and Windows keep the oracle's honest availability condition |
 | test_powershell.py | 35 | language + form + application ports + CLI manifest | done (20 executable / 15 architecture-closed) · global exact-name uniqueness enforced `51494e0` · A+B+runtime-scalar defaults fixed · C `[bool]` native checkbox kept |
@@ -559,10 +559,12 @@ including exact read enumeration and attached-value flag semantics (`952394e`); 
 linked. Bucket 3 (CLI integration, 6): `params manage`/`params show`/`params resync`,
 `flows.plan_for_entry` degradation, and `drift_lines` rendering — deferred to Tier 4 (skit-cli).
 
-### test_shell_inject.py → port_test_shell_inject.rs + surface_edges.rs (58 done · 1 gate · 28 deferred)
+### test_shell_inject.py → language/form/runtime + real CLI owners (74 executable · 1 gate · 12 closures)
 
-87 ported / 58 passed / 0 failed / 29 `#[ignore]` (1 host-tool gate + 28 deferred). No injector gap: the Rust injector matches the
-oracle on every byte-establishable claim. Bucket 1 (39, pure byte-logic + typed refusal): const
+All 87 oracle names are accounted. The language file has 54 active owners and 12 structured
+cross-tier or architecture closures; 20 more observable owners run at form, runtime, or real CLI
+boundaries, and one native shell-matrix owner remains an explicit host-tool gate. No injector gap
+remains. Bucket 1 (39, pure byte-logic + typed refusal): const
 single-quoted vs int/float bare, rewrites every occurrence, quoting normalized, bad int/float →
 `InvalidValue`, readonly/missing/vanished/double-binding → `BindingNotFound`, array/valueless/env
 skipped, all `read` refusals (`Gap`/`FieldSplit`/`LineBreak`/`EdgeSpace`), CRLF+multibyte preserved,
@@ -572,16 +574,15 @@ identity binds the value (risk #2), and — verified genuine, not tautological �
 (risk #3): each payload emitted as an all-single-quoted literal and the whole copy re-parses via
 `source_is_valid` (the `bash -n` analog).
 
-Bucket 3 now has 28 deferred to Tier 3/4 (`skit run --set`, skit-runtime/flows). Five exact owners
-moved to the active real CLI/child composition target: secret reads mask the echo but deliver the value,
-loop reads consume the injected value once and return to stdin, secret-bearing staged sources are
-0600 and disappear after the child exits, the managed block composes with runtime injection, the
-strict `set -euo pipefail` path stays live. The sixth exact owner is an honest host-tool gate that
-runs bash/sh/zsh/dash with pinned paths from the production `SystemProbe`; it was executed on the
-current Linux host, but normal CI does not promise all four runtimes. **Still MUST-VERIFY at the runtime tier:**
-`test_const_payload_is_inert`/`test_read_payload_is_inert` (risk #3 — confirm no `pwned` file
-executes). The single-name `normalize_shell_default` collapses the oracle's refusal codes to Ok/Err;
-the code rendering and batch aggregation are Tier 4.
+The observable runtime group is now active. Real CLI/child composition proves masked secret reads,
+loop fallback, `0600` staged sources and cleanup, managed-block composition, strict shell execution,
+and inert payloads. The parser-free runtime runs the exact resolved interpreter with `-n` before
+launch; spawn/timeout stays best-effort, a syntax refusal drops the staged copy before dependencies
+or launch, and `$0`/`BASH_SOURCE` warnings use the same parsed form plan. Batch `--normalize`
+preserves valid siblings, emits all six typed refusal families with exact three-locale copy, and
+commits once through source identity/hash CAS. Human `params` shows the self-location hint only for
+an injectable constant; JSON stays machine-pure. The one host gate runs bash/sh/zsh/dash through
+production `SystemProbe` and is mandatory in the declared Linux CI job.
 
 ### test_argspec.py + test_argspec_click_typer.py → port_test_argspec*.rs (100 done · 1 white-box)
 

@@ -14,7 +14,7 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 ## 0. One-line status
 
 **The broad Rust port and the local implementation-fix pass are complete. The current local
-candidate passed 4,014 workspace tests with 0 failures and 542 classified ignores. A fresh
+candidate passed 4,054 workspace tests with 0 failures and 526 classified ignores. A fresh
 committed-state LCOV run covered every target and feature, and `scripts/check_coverage.sh` returned
 `complete executable-source line coverage`; no checker rule or exclusion changed. Workspace Clippy
 and Rustdoc pass with warnings denied, and 0 `FAILING CONTRACT` attributes remain. Multi-round
@@ -26,9 +26,9 @@ manifests were rejected.
 Phase 5 has re-recorded and visually checked 12 localized 1280x780 screenshots (four screens in
 English, Simplified Chinese, and Traditional Chinese). Supply-chain, workflow, English, i18n, and
 documentation, packaging, and benchmark gates pass locally. Remaining release blockers are the
-user hands-on check, native macOS/Windows and
-declared-runtime CI evidence, and the explicitly approved zero-survivor mutation run. Do not push:
-opening or updating the PR starts mutation before that approval.** The user
+user hands-on check, native macOS/Windows and declared-runtime CI evidence, and the explicitly
+approved zero-survivor mutation run. The contract matrix is now 20 Complete / 1 In progress. Do not
+push: opening or updating the PR starts mutation before that approval.** The user
 chose plan **A**:
 finish the broad port first, then keep the implementation-fix and review passes open until the
 release evidence is final.
@@ -271,7 +271,7 @@ snapshot remains on `integration/pr44-20260812` at `a6e0513`, but it is not the 
 Remote PR status was checked read-only on 2026-08-21. PR #44 remains an open draft at the fixed
 head above, with its CodeRabbit status green and its merge state conflicting. PR #45 remains an
 open draft, but its remote head is the older
-`865e568cc70d15824880b0dc876c6060dc1cdce8`, 134 local commits behind the current branch. GitHub has
+`865e568cc70d15824880b0dc876c6060dc1cdce8`, far behind the current branch. GitHub has
 no object or checks for the current local candidate. The stale PR #45 rollup has 9 failures, 7
 successes, and 1 skipped job; do not treat it as evidence about the current local branch. The remote
 docs, CodeQL, dependency/workflow audit, and wheel plus `uv tool` jobs passed. Its Linux failures
@@ -329,7 +329,7 @@ runtime-adjacency requirement, and the final shim manifest owns both paths plus 
 ```
 git status --short          # clean after the local release-evidence commit
 cargo test --locked --workspace --all-targets --all-features | <awk aggregate, §8>
-# => 4014 passed / 0 failed / 542 ignored
+# => 4054 passed / 0 failed / 526 ignored
 rg '^\s*#\[ignore = "FAILING CONTRACT' crates --glob='*.rs' | wc -l   # => 0
 ```
 
@@ -489,7 +489,7 @@ The ledger has the authoritative per-module adjudication log.
   checker returned `complete executable-source line coverage`. No executable-source gap remains.
   A later fresh workspace LCOV run on the integrated candidate again executed all targets and
   features. The checker returned `complete executable-source line coverage`; the default-parallel
-  workspace suite reported 4,014 passed, 0 failed, and 542 classified ignores. Workspace Clippy,
+  workspace suite reported 4,054 passed, 0 failed, and 526 classified ignores. Workspace Clippy,
   Rustdoc, formatting, and diff checks pass on that candidate.
 - **Local release evidence refreshed (2026-08-21):** `cargo deny --locked check`,
   `cargo audit --deny warnings`, Actionlint for all workflows, and Zizmor for workflows plus the
@@ -506,13 +506,13 @@ The ledger has the authoritative per-module adjudication log.
   corpus, and permits PyPI publication only on a version-tag push. All 12 localized screenshots are
   visible through locale-matched 2x2 grids in the three repository READMEs; the old attachment
   videos and stale GIF remain absent.
-  Maturin 1.14.1 built a 6,192,096-byte wheel and a 1,714,592-byte sdist on the exact candidate.
-  Isolated uv 0.12.3 installs of both distributions passed version/help, a real add/manage/run
-  smoke, and an embedded-Agent-Skill byte comparison. The extracted sdist passed corpus 7/7,
-  packaging 3/3, and manifest 2/2. The benchmark budget first caught a real release-profile defect:
+  Maturin 1.14.1 built a 6,229,905-byte wheel and a 1,742,189-byte sdist on the exact candidate.
+  An isolated uv tool install passed version/help, a real add/manage/run smoke, a 34-file sdist
+  corpus census, and an embedded-Agent-Skill byte comparison. The packaging and manifest owners
+  also pass. The benchmark budget first caught a real release-profile defect:
   plain `cargo build --release` did not strip the binary even though the budget explicitly measures
   a stripped release binary. `[profile.release] strip = true` is now the single Cargo policy. The
-  rebuilt binary is 18,763,248 bytes. A fresh 112-metric PR run passed all 8 evaluated enforced
+  rebuilt binary is 18,858,736 bytes. A fresh 112-metric PR run passed all 8 evaluated enforced
   budgets and all 6 evaluated target budgets; the three Python-import rows are honestly not
   applicable on this Python 3.14 host. `cargo bench --locked --workspace --all-features` also passed
   and produced 23 Criterion estimate sets.
@@ -551,20 +551,28 @@ The ledger has the authoritative per-module adjudication log.
   structured architecture closures, and three PR fixtures were rejected as invalid. The final
   denominator is 156 with no stale owner or known product gap. The Rust benchmark crate now has 128
   test bodies, and its integrated all-target/all-feature suite is green.
+  The final shell pass now owns resolved-interpreter `-n` gating, self-location warnings and params
+  hints, and multi-name normalization with typed refusal batching and one CAS commit. The final TUI
+  pass proves each shared registry action and each local Add/management/picker action by keyboard
+  and mouse at `120x30`, `46x12`, and `24x6`; compact layouts scroll instead of dropping commands.
+  The final contract matrix is 20 Complete / 1 In progress.
   A review also questioned `FileStore::scan()` repairing stale registry rows. This is not a new
   blocker: `registry.toml` is a derived index, not authoritative user data, and v0.4 explicitly
   runs `_repair_rows` under a non-blocking lock. `rust-contract-matrix.md` records this narrow
   exception to pure reads. Preserve it while moving Library projection; metadata, source, state,
   and config reads remain byte-pure.
-- **User's hands-on test** fits AFTER the fix pass restores behavior, BEFORE mutation.
+- **User's hands-on test** fits AFTER the fix pass restores behavior, BEFORE mutation. Use a real
+  terminal emulator, not `TestBackend`: resize through wide/narrow/tiny layouts, wheel-scroll the
+  footer, click a first-page action and a post-scroll action, and verify stale hit regions do not
+  fire. In each locale, inspect CJK width, emoji, focus/cursor placement, clipping, and contrast.
 - Mutation (`cargo mutants`) is **BLOCKED on explicit user approval** — it invalidates on any
   change, so it runs only after behavior is frozen; ~4.5h local, likely on another box/modal.com.
   (Local mutants runs show ~9-15% survivors on ANY branch including pristine main; the CI nightly
   on 3.13/hosted runner is the authoritative zero-survivor gate.)
 - Phase 4: multi-round read-only independent review. Phase 5: the unchanged
   `docs/assets/demo/{demo,shots}.tape` product spec now produces 12 tracked localized PNGs and three
-  deliberately untracked MP4s. Visual QA is complete. After hands-on, native-platform, packaging,
-  benchmark, and approved mutation evidence, delete `CLAUDE_HANDOFF.md`, this handoff, and mutation
+  deliberately untracked MP4s. Visual QA is complete. After hands-on, native-platform, and approved
+  mutation evidence, delete `CLAUDE_HANDOFF.md`, this handoff, and mutation
   artifacts, then open the non-draft PR.
 
 ## 7. Working mode (the user's rules — follow exactly)
@@ -642,17 +650,18 @@ The ledger has the authoritative per-module adjudication log.
   held metadata, then reads and hashes the current bytes under the same lock. Validation and the
   success report use that returned snapshot. The transaction updates only source hash and registry
   projection. It never rewrites or rolls back the editor's bytes.
-- **Message hole order:** all oracle zh translations so far keep the En `{}` hole order, so
-  positional holes suffice. If you hit a translation that reorders holes, that's the deferred
-  "positional→named format holes" work item — surface it, don't bodge it.
+- **Message hole order:** positional `{}` formatting remains for translations whose values keep
+  English order. `Message::named` and one-pass named formatting now own translations that reorder
+  values (for example normalize `{name}` / `{names}`); inserted user values are never reparsed as
+  format text. Do not add locale branches or multi-pass replacement.
 
 ## 9. Pointers
 
 - **Ledger (authoritative):** `docs/design/python-test-port-ledger.md` — every module, its
   crate/file, status (`**X FIXED <sha>**` convention), and the adjudication log with per-divergence
   oracle refs.
-- **Contract matrix:** `docs/design/rust-contract-matrix.md` (21 rows; every remaining `In progress`
-  row is a release blocker until executable or external evidence closes it).
+- **Contract matrix:** `docs/design/rust-contract-matrix.md` (21 rows: 20 Complete / 1 In progress;
+  the final row needs hands-on, native/declared-runtime CI, and approved mutation evidence).
 - **AGENTS.md / CLAUDE.md:** product rules, trust model (skit is a launcher, NOT a sandbox — do not
   add sanitization/threat-mitigation for trusted local content), architecture, gates. Commands to
   run gates are in AGENTS.md "## Commands".
