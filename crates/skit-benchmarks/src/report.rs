@@ -2,7 +2,6 @@
 
 use std::{
     fs,
-    io::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -119,30 +118,8 @@ pub fn summarize_directory(
     }
     let suites_dir = bench_dir.join("suites");
     ensure_normal_directory(&suites_dir)?;
-    let reader = fs::read_dir(&suites_dir).map_err(|source| SummaryError::Io {
-        operation: "scan",
-        path: suites_dir.clone(),
-        source,
-    })?;
-    let mut paths = Vec::new();
-    for entry in reader {
-        let path = entry
-            .map_err(|source| SummaryError::Io {
-                operation: "scan",
-                path: suites_dir.clone(),
-                source,
-            })?
-            .path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-        {
-            if !normal_file_exists(&path)? {
-                return Err(SummaryError::UnsafePath(path));
-            }
-            paths.push(path);
-        }
-    }
+    let entries = suite_entries(&suites_dir, fs::read_dir(&suites_dir))?;
+    let mut paths = collect_suite_paths(&suites_dir, entries)?;
     paths.sort();
     if paths.is_empty() {
         return Err(SummaryError::Missing(format!(
@@ -174,6 +151,47 @@ pub fn summarize_directory(
         &render_results_markdown(&results, report.as_ref()),
     )?;
     Ok(results)
+}
+
+fn suite_entries(
+    suites_dir: &Path,
+    reader: std::io::Result<fs::ReadDir>,
+) -> Result<Vec<std::io::Result<PathBuf>>, SummaryError> {
+    reader
+        .map(|entries| {
+            entries
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect()
+        })
+        .map_err(|source| SummaryError::Io {
+            operation: "scan",
+            path: suites_dir.to_path_buf(),
+            source,
+        })
+}
+
+fn collect_suite_paths(
+    suites_dir: &Path,
+    entries: impl IntoIterator<Item = std::io::Result<PathBuf>>,
+) -> Result<Vec<PathBuf>, SummaryError> {
+    let mut paths = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|source| SummaryError::Io {
+            operation: "scan",
+            path: suites_dir.to_path_buf(),
+            source,
+        })?;
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            if !normal_file_exists(&path)? {
+                return Err(SummaryError::UnsafePath(path));
+            }
+            paths.push(path);
+        }
+    }
+    Ok(paths)
 }
 
 /// Render one compact artifact summary.
@@ -276,7 +294,14 @@ fn ensure_normal_directory(path: &Path) -> Result<(), SummaryError> {
 }
 
 fn normal_file_exists(path: &Path) -> Result<bool, SummaryError> {
-    match fs::symlink_metadata(path) {
+    normal_file_exists_from(path, fs::symlink_metadata(path))
+}
+
+fn normal_file_exists_from(
+    path: &Path,
+    metadata: std::io::Result<fs::Metadata>,
+) -> Result<bool, SummaryError> {
+    match metadata {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(true),
         Ok(_) => Err(SummaryError::UnsafePath(path.to_path_buf())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -298,13 +323,8 @@ fn atomic_write(path: &Path, text: &str) -> Result<(), SummaryError> {
             path: parent.to_path_buf(),
             source,
         })?;
-    staged
-        .write_all(text.as_bytes())
-        .map_err(|source| SummaryError::Io {
-            operation: "write",
-            path: staged.path().to_path_buf(),
-            source,
-        })?;
+    let staged_path = staged.path().to_path_buf();
+    write_staged(&mut staged, &staged_path, text)?;
     staged.persist(path).map_err(|error| SummaryError::Io {
         operation: "commit",
         path: path.to_path_buf(),
@@ -313,9 +333,23 @@ fn atomic_write(path: &Path, text: &str) -> Result<(), SummaryError> {
     Ok(())
 }
 
+fn write_staged(
+    writer: &mut impl std::io::Write,
+    path: &Path,
+    text: &str,
+) -> Result<(), SummaryError> {
+    writer
+        .write_all(text.as_bytes())
+        .map_err(|source| SummaryError::Io {
+            operation: "write",
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{fs, io, path::Path};
 
     use tempfile::TempDir;
 
@@ -361,6 +395,86 @@ mod tests {
         assert!(matches!(
             super::normal_file_exists(&directory),
             Err(super::SummaryError::UnsafePath(_))
+        ));
+
+        let scan_error = super::suite_entries(
+            &directory,
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "test scan failure",
+            )),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            scan_error,
+            super::SummaryError::Io {
+                operation: "scan",
+                path,
+                ..
+            } if path == directory
+        ));
+
+        let entry_error = super::collect_suite_paths(
+            &directory,
+            [Err(io::Error::other("test directory-entry failure"))],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            entry_error,
+            super::SummaryError::Io {
+                operation: "scan",
+                path,
+                ..
+            } if path == directory
+        ));
+
+        let unsafe_json = directory.join("unexpected.json");
+        fs::create_dir(&unsafe_json).unwrap();
+        assert!(matches!(
+            super::collect_suite_paths(&directory, [Ok(unsafe_json.clone())]),
+            Err(super::SummaryError::UnsafePath(path)) if path == unsafe_json
+        ));
+        let vanished_json = directory.join("vanished.json");
+        assert!(matches!(
+            super::collect_suite_paths(&directory, [Ok(vanished_json.clone())]),
+            Err(super::SummaryError::UnsafePath(path)) if path == vanished_json
+        ));
+
+        let inspect_error = super::normal_file_exists_from(
+            &missing,
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "test inspect failure",
+            )),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            inspect_error,
+            super::SummaryError::Io {
+                operation: "inspect",
+                path,
+                ..
+            } if path == missing
+        ));
+
+        let ordinary = root.path().join("ordinary");
+        fs::write(&ordinary, "unchanged").unwrap();
+        let mut read_only = fs::File::open(&ordinary).unwrap();
+        assert!(matches!(
+            super::write_staged(&mut read_only, &ordinary, "replacement"),
+            Err(super::SummaryError::Io {
+                operation: "write",
+                ..
+            })
+        ));
+        assert_eq!(fs::read_to_string(&ordinary).unwrap(), "unchanged");
+
+        assert!(matches!(
+            super::atomic_write(&directory, "replacement"),
+            Err(super::SummaryError::Io {
+                operation: "commit",
+                ..
+            })
         ));
     }
 }
