@@ -6293,13 +6293,10 @@ fn collect_preset_value(
     locale: Locale,
 ) -> Result<String, CliError> {
     if declaration.parameter_type == ParameterType::Bool {
-        let checked = coerce_default(default, ParameterType::Bool)
-            .ok()
-            .and_then(|value| match value {
-                ParameterValue::Bool(value) => Some(value),
-                _ => None,
-            })
-            .unwrap_or(false);
+        let checked = matches!(
+            coerce_default(default, ParameterType::Bool),
+            Ok(ParameterValue::Bool(true))
+        );
         return Confirm::new()
             .with_prompt(label)
             .default(checked)
