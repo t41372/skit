@@ -316,7 +316,7 @@ pub enum RepositoryError {
     },
     /// Membership was removed, but some entry files remain for an explicit recovery.
     #[error(
-        "{name} was removed from the library, but its files could not be fully deleted: {path}"
+        "{name} was removed from the library, but its files couldn't be fully deleted: {path} — close any program using them, then delete the folder (or run `skit doctor --rebuild` to restore the entry and retry)."
     )]
     RemovalIncomplete {
         /// Display name of the removed entry.

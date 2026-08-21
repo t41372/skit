@@ -1,9 +1,13 @@
 use skit_application::path_insertion::{
-    ArgumentDialect, RunPathInsertMode, insert_picked_path_for_dialect,
+    ArgumentDialect, RunPathInsertMode, insert_picked_path, insert_picked_path_for_dialect,
 };
 
 #[test]
 fn a_single_value_is_replaced_and_parsed_values_append_one_literal_piece() {
+    assert_eq!(
+        insert_picked_path("", "reports/final.txt", RunPathInsertMode::Arguments).unwrap(),
+        "reports/final.txt"
+    );
     assert_eq!(
         insert_picked_path_for_dialect(
             "old",
@@ -67,6 +71,15 @@ fn glob_metacharacters_use_the_same_spelling_in_each_argument_dialect() {
     )
     .unwrap();
     assert_eq!(split_windows_argument(&encoded), expected);
+
+    let encoded = insert_picked_path_for_dialect(
+        "",
+        picked,
+        RunPathInsertMode::Shlex,
+        ArgumentDialect::Windows,
+    )
+    .unwrap();
+    assert_eq!(shlex::split(&encoded).unwrap(), [expected]);
 }
 
 #[test]

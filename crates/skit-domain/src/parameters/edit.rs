@@ -134,6 +134,13 @@ pub enum DeclaredEditWarning {
     BoolFlagOnByDefault { name: String },
 }
 
+/// The one invariant that can fail while one already-selected row is finalized.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeclaredRowFinishError {
+    /// Stable field name.
+    pub name: String,
+}
+
 impl DeclaredEditWarning {
     /// Return the stable affected name.
     pub fn name(&self) -> &str {
@@ -337,13 +344,19 @@ pub fn edit_declared(
 pub fn finish_declared_parameter_edit(
     declaration: &mut ParamDecl,
 ) -> Result<(), DeclaredEditWarning> {
+    finish_declared_row(declaration)
+        .map_err(|error| DeclaredEditWarning::BoolFlagOnByDefault { name: error.name })
+}
+
+/// Finish one selected row with the exact error set available at this narrow boundary.
+pub fn finish_declared_row(declaration: &mut ParamDecl) -> Result<(), DeclaredRowFinishError> {
     if declaration.parameter_type == ParameterType::Bool
         && declaration.delivery == ParameterDelivery::Flag
         && !declaration.flag.is_empty()
         && declaration.action.is_empty()
     {
         if declaration.default.as_ref().is_some_and(value_truthy) {
-            return Err(DeclaredEditWarning::BoolFlagOnByDefault {
+            return Err(DeclaredRowFinishError {
                 name: declaration.name.clone(),
             });
         }

@@ -1,6 +1,6 @@
 //! Frontend-neutral hygiene for edits to hand-declared parameter rows.
 
-use skit_domain::parameters::{DeclaredEditWarning, ParamDecl, finish_declared_parameter_edit};
+use skit_domain::parameters::{ParamDecl, finish_declared_row};
 use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
@@ -8,7 +8,9 @@ use thiserror::Error;
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum ParameterEditError {
     /// An on-by-default boolean needs a distinct flag that turns it off.
-    #[error("{name} is on by default, so its flag cannot turn it off")]
+    #[error(
+        "{name} is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-{name} and the like), with default false."
+    )]
     BoolFlagOnByDefault {
         /// Stable field name.
         name: String,
@@ -32,11 +34,6 @@ impl Localize for ParameterEditError {
 /// Parsed, hand-edited data stays open and lossless. This function applies only at an explicit
 /// edit boundary. The caller keeps the complete previous row when this function refuses it.
 pub fn finish_parameter_edit(declaration: &mut ParamDecl) -> Result<(), ParameterEditError> {
-    match finish_declared_parameter_edit(declaration) {
-        Ok(()) => Ok(()),
-        Err(DeclaredEditWarning::BoolFlagOnByDefault { name }) => {
-            Err(ParameterEditError::BoolFlagOnByDefault { name })
-        }
-        Err(warning) => unreachable!("row finalizer returned {}", warning.code()),
-    }
+    finish_declared_row(declaration)
+        .map_err(|error| ParameterEditError::BoolFlagOnByDefault { name: error.name })
 }

@@ -4,6 +4,7 @@ use skit_application::{
     AgentInstallError, AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope,
     detect_agent_targets, plan_agent_install,
 };
+use skit_i18n::{Locale, Localize as _};
 
 fn roots() -> AgentRoots {
     AgentRoots {
@@ -93,6 +94,31 @@ fn conflicting_and_unknown_explicit_selections_are_usage_errors() {
             name: "future".to_owned()
         }
     );
+}
+
+#[test]
+fn a_user_target_without_a_home_has_a_localized_usage_error() {
+    let error = plan_agent_install(
+        &AgentInstallRequest {
+            target: Some("claude".to_owned()),
+            directory: None,
+            project: false,
+            interactive: false,
+        },
+        &AgentRoots {
+            home: None,
+            cwd: PathBuf::from("/work/project"),
+        },
+        |_| false,
+    )
+    .unwrap_err();
+    assert_eq!(error, AgentInstallError::UserDirectoryUnavailable);
+    assert_eq!(
+        error.message().localize(Locale::En),
+        "could not determine the user directory"
+    );
+    assert_eq!(error.message().localize(Locale::ZhCn), "无法确定用户目录");
+    assert_eq!(error.message().localize(Locale::ZhTw), "無法確定使用者目錄");
 }
 
 #[test]
