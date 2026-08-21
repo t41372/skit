@@ -22,7 +22,10 @@ use skit_form::{
 };
 use skit_language::split_pep508_requirements;
 
-use crate::SubmittedValues;
+use crate::{
+    SubmittedValues,
+    picker::{ChoicePicker, PickerItem, PickerMode},
+};
 
 /// Stable key of the entry name field.
 pub const NAME_KEY: &str = "name";
@@ -54,6 +57,8 @@ pub const MANAGE_KEY: &str = "source:manage";
 pub const NORMALIZE_KEY: &str = "source:normalize";
 /// Stable key of the add-a-parameter box.
 pub const ADD_PARAMETER_KEY: &str = "parameter:add";
+/// Stable key of detected prompt placeholders selected for management.
+pub const PROMPT_CANDIDATES_KEY: &str = "parameter:add-detected";
 /// Stable key prefix of one preset's keep toggle. The preset's own name completes it.
 pub const PRESET_PREFIX: &str = "preset:";
 
@@ -296,6 +301,9 @@ pub struct SettingsView {
     /// (`src/skit/tui_settings.py:408-415`). The chord reaches [`RESYNC_KEY`], which exists only
     /// under the same condition, so the guard and the control cannot drift apart.
     pub resync_available: bool,
+    /// Complete body-order list of detected prompt placeholders that are not managed yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prompt_candidates: Vec<String>,
     /// Key of the control that owns the keyboard.
     ///
     /// Keyed by field rather than by index, for the reason the runner dropdown is: the focusable
@@ -340,6 +348,10 @@ pub enum SettingsAction {
     FocusPrevious,
     /// Ask the script for its parameter definitions again when the save runs.
     Resync,
+    /// Replace the settings-local detected-placeholder selection in body order.
+    SetPromptCandidates(Vec<String>),
+    /// Ask the terminal adapter to open the full detected-placeholder picker.
+    OpenPromptCandidates,
     /// Save every axis, after validation.
     Save,
     /// Leave the screen, through the discard guard when anything moved.
@@ -421,6 +433,11 @@ impl SettingsView {
             sections,
             dependency_flavor: inputs.dependency_flavor,
             resync_available,
+            prompt_candidates: if inputs.kind == "prompt" {
+                inputs.candidates.clone()
+            } else {
+                Vec::new()
+            },
             revealed,
         };
         // The keyboard lands in the section the deep link named, so the first key press acts on
@@ -682,6 +699,53 @@ impl SettingsView {
         field.set_value(FieldValue::Explicit(TypedValue::Choice(runner)));
     }
 
+    /// Return every detected, unmanaged prompt placeholder in body order.
+    #[must_use]
+    pub fn prompt_candidates(&self) -> &[String] {
+        &self.prompt_candidates
+    }
+
+    /// Report whether the full searchable picker adds reach beyond the inline preview.
+    #[must_use]
+    pub fn prompt_picker_available(&self) -> bool {
+        self.insertion_on() && self.prompt_candidates.len() > crate::PROMPT_LIST_PREVIEW_LIMIT
+    }
+
+    /// Build an isolated full-list picker from this screen's current local selection.
+    #[must_use]
+    pub fn prompt_picker(&self) -> ChoicePicker<String> {
+        let selected = self
+            .field(PROMPT_CANDIDATES_KEY)
+            .and_then(|field| field.value().explicit())
+            .and_then(|value| match value {
+                TypedValue::Choices(names) => Some(names.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        ChoicePicker::new(
+            PickerMode::Multiple,
+            self.prompt_candidates
+                .iter()
+                .map(|name| PickerItem::new(name.clone(), name.clone()))
+                .collect(),
+            selected,
+        )
+    }
+
+    /// Apply an accepted picker set locally. The outer Save remains the only persistence action.
+    pub fn set_prompt_candidates(&mut self, selected: &[String]) {
+        let selected = self
+            .prompt_candidates
+            .iter()
+            .filter(|name| selected.contains(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.set_value(
+            PROMPT_CANDIDATES_KEY,
+            FieldValue::Explicit(TypedValue::Choices(selected)),
+        );
+    }
+
     /// Apply one typed edit and report what the host must do.
     ///
     /// `Close` routes through the discard guard whenever anything moved, so leaving never drops
@@ -721,6 +785,11 @@ impl SettingsView {
                 self.focus(RESYNC_KEY);
                 SettingsEffect::None
             }
+            SettingsAction::SetPromptCandidates(selected) => {
+                self.set_prompt_candidates(&selected);
+                SettingsEffect::None
+            }
+            SettingsAction::OpenPromptCandidates => SettingsEffect::None,
             // Version 0.4 completes its validation pass before any write and returns having
             // written nothing on the first refusal (`src/skit/tui_settings.py:939-941`,
             // `:517-523`).
@@ -1157,6 +1226,22 @@ fn declared_items(inputs: &SettingsInputs, rows: Vec<ParameterRow>) -> Vec<Setti
         items.push(SettingsItem::note(
             "Off — the body travels to the agent exactly as written.",
         ));
+        if !inputs.candidates.is_empty() {
+            items.push(SettingsItem::field(Field::new(
+                PROMPT_CANDIDATES_KEY,
+                "Detected but not yet managed — tick to manage:",
+                FieldKind::MultiChoice {
+                    options: inputs
+                        .candidates
+                        .iter()
+                        .take(crate::PROMPT_LIST_PREVIEW_LIMIT)
+                        .map(ChoiceOption::plain)
+                        .collect(),
+                },
+                FieldOwner::Template,
+                FieldValue::Explicit(TypedValue::Choices(Vec::new())),
+            )));
+        }
     }
     items.extend(row_items(rows));
     items.push(SettingsItem::field(
@@ -1301,6 +1386,7 @@ mod tests {
             sections: Vec::new(),
             dependency_flavor: None,
             resync_available: false,
+            prompt_candidates: Vec::new(),
             focused: String::new(),
             revealed: None,
             stored_workdir: String::new(),

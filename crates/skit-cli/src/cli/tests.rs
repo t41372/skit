@@ -9495,6 +9495,160 @@ fn settings_host_updates_prompt_javascript_reference_python_and_source_managemen
 }
 
 #[test]
+fn settings_host_manages_detected_prompt_candidates_in_body_order_and_drops_stale_selections() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 5)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let body = format!(
+        "{{{{a}}}} {} {{{{gone}}}}\n",
+        names
+            .iter()
+            .map(|name| format!("{{{{{name}}}}}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let initial = EntrySettings {
+        interpolate: true,
+        params: vec!["a".to_owned()],
+        parameters: vec![synthesized_placeholder("a")],
+        ..EntrySettings::default()
+    };
+    let prompt = service
+        .add(CreateEntry {
+            name: "Prompt candidates".to_owned(),
+            kind: EntryKind::parse("prompt").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: body.as_bytes().to_vec(),
+                stored_name: Some("prompt.md".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: initial,
+        })
+        .unwrap();
+    let inputs = settings_inputs(&service, &store, &config_dir, &state_dir, &prompt, None).unwrap();
+    assert_eq!(
+        inputs.candidates,
+        names
+            .iter()
+            .cloned()
+            .chain(["gone".to_owned()])
+            .collect::<Vec<_>>()
+    );
+    let mut view = SettingsView::from_inputs(&inputs);
+    view.update(skit_ui::SettingsAction::SetPromptCandidates(vec![
+        names.last().unwrap().clone(),
+        names[0].clone(),
+    ]));
+    let values = view.submitted_values();
+    tui_submit_settings(&service, &store, &state_dir, prompt.slug.as_str(), &values).unwrap();
+    let saved = service.show(prompt.slug.as_str()).unwrap();
+    let saved_settings = EntrySettings::from_meta(&saved.meta);
+    assert_eq!(
+        saved_settings.params,
+        [
+            "a".to_owned(),
+            names[0].clone(),
+            names.last().unwrap().clone()
+        ]
+    );
+    for name in [&names[0], names.last().unwrap()] {
+        let row = saved_settings
+            .parameters
+            .iter()
+            .find(|row| row.name == *name)
+            .unwrap();
+        assert_eq!(row.delivery, ParameterDelivery::Placeholder);
+    }
+
+    // A picker opened before a body edit cannot turn a vanished placeholder into an Env rider.
+    let fresh_inputs =
+        settings_inputs(&service, &store, &config_dir, &state_dir, &saved, None).unwrap();
+    let mut stale_view = SettingsView::from_inputs(&fresh_inputs);
+    stale_view.update(skit_ui::SettingsAction::SetPromptCandidates(vec![
+        "gone".to_owned(),
+    ]));
+    let stale_values = stale_view.submitted_values();
+    let payload = store.payload_path(&saved).unwrap();
+    let rewritten = fs::read_to_string(&payload)
+        .unwrap()
+        .replace(" {{gone}}", "");
+    let claimed = service.claim_identity(&saved).unwrap();
+    let raced = service
+        .commit_copy_edit(&claimed, rewritten.as_bytes(), &saved.meta.source_hash)
+        .unwrap();
+    let data_before = test_tree_snapshot(&data_dir);
+    let state_before = test_tree_snapshot(&state_dir);
+    let config_before = test_tree_snapshot(&config_dir);
+
+    tui_submit_settings(
+        &service,
+        &store,
+        &state_dir,
+        raced.slug.as_str(),
+        &stale_values,
+    )
+    .unwrap();
+
+    let after = EntrySettings::from_meta(&service.show(raced.slug.as_str()).unwrap().meta);
+    assert_eq!(after, saved_settings);
+    assert!(after.parameters.iter().all(|row| row.name != "gone"));
+    assert_eq!(test_tree_snapshot(&data_dir), data_before);
+    assert_eq!(test_tree_snapshot(&state_dir), state_before);
+    assert_eq!(test_tree_snapshot(&config_dir), config_before);
+
+    let first = service
+        .add(CreateEntry {
+            name: "First prompt field".to_owned(),
+            kind: EntryKind::parse("prompt").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"Ask about {{first}}.\n".to_vec(),
+                stored_name: Some("prompt.md".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                interpolate: false,
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let inputs = settings_inputs(&service, &store, &config_dir, &state_dir, &first, None).unwrap();
+    let mut view = SettingsView::from_inputs(&inputs);
+    view.update(skit_ui::SettingsAction::SetField {
+        key: "interpolate".to_owned(),
+        value: FieldValue::boolean(true),
+    });
+    view.update(skit_ui::SettingsAction::SetPromptCandidates(vec![
+        "first".to_owned(),
+    ]));
+    tui_submit_settings(
+        &service,
+        &store,
+        &state_dir,
+        first.slug.as_str(),
+        &view.submitted_values(),
+    )
+    .unwrap();
+    let first = EntrySettings::from_meta(&service.show(first.slug.as_str()).unwrap().meta);
+    assert!(first.interpolate);
+    assert_eq!(first.params, ["first"]);
+    assert_eq!(first.parameters[0].delivery, ParameterDelivery::Placeholder);
+}
+
+#[test]
 fn settings_inputs_read_prompt_runners_and_keep_future_kinds_empty_without_hidden_writes() {
     let prompt_root = TempDir::new().unwrap();
     let prompt_data = prompt_root.path().join("data");

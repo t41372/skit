@@ -37,7 +37,10 @@ use ratatui_widgets::{
 };
 use skit_form::field::{ChoiceOption, Field, FieldKind, FieldValue, ReadOnlyReason, TypedValue};
 use skit_i18n::{Locale, format_text, text};
-use skit_ui::{SettingsAction, SettingsItem, SettingsNote, SettingsSectionId, SettingsView};
+use skit_ui::{
+    PROMPT_CANDIDATES_KEY, SettingsAction, SettingsItem, SettingsNote, SettingsSectionId,
+    SettingsView,
+};
 use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
@@ -66,6 +69,8 @@ pub enum SettingsControlId {
     },
     /// The affordance that defines a new prompt runner without leaving the screen.
     NewRunner,
+    /// Open the full searchable detected-placeholder picker.
+    ChoosePromptCandidates,
 }
 
 /// One clickable screen region.
@@ -84,6 +89,8 @@ pub enum SettingsScreenEvent {
     Action(SettingsAction),
     /// Ephemeral cursor or scroll state changed and nothing else.
     Changed,
+    /// Open the isolated full detected-placeholder picker.
+    OpenPromptCandidates,
 }
 
 /// Responsive settings geometry.
@@ -150,6 +157,8 @@ enum Item {
     },
     /// The new-runner affordance.
     NewRunner(String),
+    /// Search all detected prompt placeholders beyond the capped inline preview.
+    ChoosePromptCandidates(String),
 }
 
 /// Everything one control needs to draw itself.
@@ -325,6 +334,12 @@ impl SettingsScreenSession {
         if key.kind == KeyEventKind::Release {
             return None;
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('o')
+            && view.prompt_picker_available()
+        {
+            return Some(SettingsScreenEvent::OpenPromptCandidates);
+        }
         // The nav pair wins over every control, so a text box can never strand the keyboard.
         match key.code {
             KeyCode::Tab => return Some(SettingsScreenEvent::Action(SettingsAction::FocusNext)),
@@ -413,6 +428,10 @@ impl SettingsScreenSession {
             SettingsControlId::NewRunner => {
                 Some(SettingsScreenEvent::Action(SettingsAction::NewRunner))
             }
+            SettingsControlId::ChoosePromptCandidates if view.prompt_picker_available() => {
+                Some(SettingsScreenEvent::OpenPromptCandidates)
+            }
+            SettingsControlId::ChoosePromptCandidates => None,
         }
     }
 
@@ -601,14 +620,16 @@ fn picked(field: &Field, value: &str) -> FieldValue {
     let FieldKind::MultiChoice { options } = &field.kind else {
         return FieldValue::Explicit(TypedValue::Choice(value.to_owned()));
     };
+    let current = match field.value().explicit() {
+        Some(TypedValue::Choices(values)) => values.clone(),
+        _ => Vec::new(),
+    };
     let mut selected = options
         .iter()
-        .filter(|option| option.value != value && is_selected(field, option))
+        .filter(|option| option.value != value && current.contains(&option.value))
         .map(|option| option.value.clone())
         .collect::<Vec<_>>();
-    if !options
-        .iter()
-        .any(|option| option.value == value && is_selected(field, option))
+    if !current.iter().any(|name| name == value)
         && let Some(position) = options.iter().position(|option| option.value == value)
     {
         // Keep the field's own option order, so the stored list never depends on click order.
@@ -618,6 +639,11 @@ fn picked(field: &Field, value: &str) -> FieldValue {
             .count();
         selected.insert(ahead, value.to_owned());
     }
+    selected.extend(
+        current
+            .into_iter()
+            .filter(|name| !options.iter().any(|option| option.value == *name)),
+    );
     FieldValue::Explicit(TypedValue::Choices(selected))
 }
 
@@ -696,7 +722,8 @@ pub fn render_settings(
                     .spans
                     .insert(anchor.clone(), (item.start, end.saturating_sub(item.start)));
             }
-            Item::Spacer | Item::Copy(_) | Item::NewRunner(_) => {}
+            Item::Spacer | Item::Copy(_) | Item::NewRunner(_) | Item::ChoosePromptCandidates(_) => {
+            }
         }
     }
     let focused = view.focused().to_owned();
@@ -751,6 +778,19 @@ pub fn render_settings(
                 hits.push(SettingsHitRegion {
                     area: rect,
                     target: SettingsControlId::NewRunner,
+                });
+            }
+            Item::ChoosePromptCandidates(label) => {
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("  Ctrl+O ", Style::default().fg(ACCENT)),
+                        Span::styled(label.as_str(), Style::default().fg(Color::White)),
+                    ])),
+                    rect,
+                );
+                hits.push(SettingsHitRegion {
+                    area: rect,
+                    target: SettingsControlId::ChoosePromptCandidates,
                 });
             }
         }
@@ -834,6 +874,14 @@ fn layout_items(view: &SettingsView, locale: Locale, width: u16) -> Vec<Position
                     &mut items,
                     &mut start,
                     Item::NewRunner(text(locale, "New agent…").into_owned()),
+                    1,
+                );
+            }
+            if field.key == PROMPT_CANDIDATES_KEY && view.prompt_picker_available() {
+                push(
+                    &mut items,
+                    &mut start,
+                    Item::ChoosePromptCandidates(text(locale, "Choose variables…").into_owned()),
                     1,
                 );
             }
@@ -1113,7 +1161,7 @@ mod tests {
         ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
         Locale, MouseEvent, MouseEventKind, Rect, SettingsControlId, SettingsItem,
         SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, SettingsView,
-        TypedValue, choice_key, is_selected, option_text, render_settings,
+        TypedValue, choice_key, is_selected, option_text, picked, render_settings,
     };
 
     /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
@@ -2334,6 +2382,20 @@ mod tests {
                 KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
             ),
             Some(SettingsScreenEvent::Action(SettingsAction::FocusNext))
+        );
+        let with_hidden = Field::new(
+            "detected",
+            "Detected",
+            FieldKind::MultiChoice { options },
+            FieldOwner::Template,
+            FieldValue::Explicit(TypedValue::Choices(vec!["hidden".to_owned()])),
+        );
+        assert_eq!(
+            picked(&with_hidden, "one"),
+            FieldValue::Explicit(TypedValue::Choices(vec![
+                "one".to_owned(),
+                "hidden".to_owned()
+            ]))
         );
 
         let empty_choice = Field::new(

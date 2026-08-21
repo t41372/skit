@@ -30,10 +30,10 @@ pub use skit_form::field::{
 
 pub use settings::{
     ADD_PARAMETER_KEY, DEPENDENCIES_KEY, DESCRIPTION_KEY, DependencyFlavor, INTERPOLATE_KEY,
-    INTERPRETER_KEY, MANAGE_KEY, NAME_KEY, NEEDS_KEY, NORMALIZE_KEY, PRESET_PREFIX, PYTHON_KEY,
-    RESYNC_KEY, RUNNER_KEY, SettingsAction, SettingsEffect, SettingsError, SettingsInputs,
-    SettingsItem, SettingsNote, SettingsSection, SettingsSectionId, SettingsView, TEMPLATE_KEY,
-    WORKDIR_CUSTOM, WORKDIR_KEY, WORKDIR_PATH_KEY, preset_key,
+    INTERPRETER_KEY, MANAGE_KEY, NAME_KEY, NEEDS_KEY, NORMALIZE_KEY, PRESET_PREFIX,
+    PROMPT_CANDIDATES_KEY, PYTHON_KEY, RESYNC_KEY, RUNNER_KEY, SettingsAction, SettingsEffect,
+    SettingsError, SettingsInputs, SettingsItem, SettingsNote, SettingsSection, SettingsSectionId,
+    SettingsView, TEMPLATE_KEY, WORKDIR_CUSTOM, WORKDIR_KEY, WORKDIR_PATH_KEY, preset_key,
 };
 pub use skit_application::path_insertion::RunPathInsertMode;
 
@@ -298,6 +298,8 @@ pub enum UiCommand {
     SaveSettings,
     /// Read the script's own parameter definitions again on the next entry-settings save.
     ResyncSettings,
+    /// Open the full detected prompt-variable picker from entry settings.
+    ChooseSettingsVariables,
     /// Close entry settings, through the discard guard when anything moved.
     CloseSettings,
     /// Return to the library workflow.
@@ -357,6 +359,7 @@ impl UiCommand {
             Self::InstallAgentSkill => Action::Preferences(PreferencesAction::InstallAgentSkill),
             Self::SaveSettings => Action::Settings(SettingsAction::Save),
             Self::ResyncSettings => Action::Settings(SettingsAction::Resync),
+            Self::ChooseSettingsVariables => Action::Settings(SettingsAction::OpenPromptCandidates),
             Self::CloseSettings => Action::Settings(SettingsAction::Close),
             Self::Back | Self::CloseModal => Action::Back,
             Self::DiscardChanges => Action::DiscardChanges,
@@ -810,6 +813,14 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         CommandContext::Settings,
         &[control_binding!(UiKey::Character('r'), "Ctrl+R", "^R")],
         "Resync",
+        true,
+        false,
+    ),
+    command_spec!(
+        UiCommand::ChooseSettingsVariables,
+        CommandContext::Settings,
+        &[control_binding!(UiKey::Character('o'), "Ctrl+O", "^O")],
+        "Choose variables…",
         true,
         false,
     ),
@@ -2535,6 +2546,9 @@ impl LibraryState {
             UiCommand::ResyncSettings => self
                 .settings_view()
                 .is_some_and(|view| view.field(RESYNC_KEY).is_some()),
+            UiCommand::ChooseSettingsVariables => self
+                .settings_view()
+                .is_some_and(SettingsView::prompt_picker_available),
             UiCommand::SavePreferences
             | UiCommand::ClosePreferences
             | UiCommand::ManageAgents

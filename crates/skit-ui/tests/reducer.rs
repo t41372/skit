@@ -1387,6 +1387,7 @@ fn every_advertised_settings_key_reaches_the_reducer() {
             UiCommand::SaveSettings,
             UiCommand::NewRunner,
             UiCommand::ResyncSettings,
+            UiCommand::ChooseSettingsVariables,
             UiCommand::CloseSettings,
             UiCommand::FocusNext,
             UiCommand::FocusPrevious,
@@ -1415,6 +1416,7 @@ fn every_advertised_settings_key_reaches_the_reducer() {
     // Version 0.4 refuses to advertise a key that would silently do nothing
     // (`src/skit/tui_settings.py:408-415`).
     assert!(!state.command_enabled(UiCommand::ResyncSettings));
+    assert!(!state.command_enabled(UiCommand::ChooseSettingsVariables));
 
     // The nav pair walks the same stops the model defines.
     let first = state.settings_view().unwrap().focused().to_owned();

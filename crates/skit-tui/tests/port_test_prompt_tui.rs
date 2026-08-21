@@ -20,8 +20,8 @@
 //!   (skit-cli) — those tests are cross-crate.
 //! - Python `ScriptSettingsScreen` prompt sections -> `SettingsView::from_inputs`, the
 //!   `SettingsAction` reducer, and `submitted_values()` keyed by `RUNNER_KEY` /
-//!   `INTERPOLATE_KEY` / `ADD_PARAMETER_KEY` / `parameter:{name}:keep`. `store.resolve("p")
-//!   .meta.*` -> the axes a save carries.
+//!   `INTERPOLATE_KEY` / `ADD_PARAMETER_KEY` / `PROMPT_CANDIDATES_KEY` /
+//!   `parameter:{name}:keep`. `store.resolve("p").meta.*` -> the axes a save carries.
 //! - Python `PromptReviewScreen` -> `ReviewState` prompt lane: `prompt_candidates`,
 //!   `prompt_preview`, `prompt_is_flooded`, `interpolate`, `runner`, `runner_was_picked`,
 //!   `rescan(bytes)`, and `create_entry().settings.{params,runner,interpolate}` / `.mode`.
@@ -38,11 +38,10 @@
 //!   routing, `preflight`, `PendingRun`, `argstate`, the `store` prompt-read race, the
 //!   Library edit -> offer-picker flow, and the pin-vs-last picker default. Compiling
 //!   `#[ignore]` stubs naming the owning tier.
-//! - ABSENT (gap): the Rust prompt *settings* screen offers `MANAGE`/candidate management
-//!   only through `ADD_PARAMETER_KEY` (type a name); it has no detected-placeholder
-//!   checkboxes (`st-prompt-new-N`) and no searchable Ctrl+O candidate picker on that
-//!   screen — those exist only on the *review* lane here. Compiling `#[ignore]` stubs with
-//!   MUST-FIX notes.
+//! - Prompt Settings detected candidates are REAL: inline choices use the capped body-order
+//!   preview, while Ctrl+O and its footer mouse twin reuse `PromptCandidatePickerSession` over the
+//!   full list. The picker works on an isolated selection; Done changes only Settings-local dirty
+//!   state, and the outer Save carries `PROMPT_CANDIDATES_KEY` to the host.
 //! - DIVERGENCE (Library title — RESOLVED): the zh-CN/zh-TW Library title now localizes to the
 //!   v0.4 term 工具库/工具庫 (the catalog previously rendered 程序库/程式庫). The two title tests
 //!   below read the space-interleaved `TestBackend` buffer, as render.rs does, so they check
@@ -65,18 +64,18 @@ use skit_domain::{
 };
 use skit_i18n::Locale;
 use skit_tui::{
-    ChoicePickerGeometry, ChoicePickerHit, EventHandling, PromptCandidatePickerEvent,
+    ChoicePickerGeometry, ChoicePickerHit, EventHandling, HitTarget, PromptCandidatePickerEvent,
     PromptCandidatePickerSession, TuiSession, ViewGeometry, render_localized,
     render_prompt_candidate_picker, render_with_session,
 };
 use skit_ui::{
     ADD_PARAMETER_KEY, Action, AddAction, AddWorkflowState, Effect, FieldKind, FieldValue,
     INTERPOLATE_KEY, KnownEntryKind, LibraryEntryDetail, LibraryPromptRunner, LibraryState,
-    LibrarySurface, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_LIST_PREVIEW_LIMIT, RUNNER_KEY,
-    ReviewDefaults, ReviewLane, ReviewState, RunFieldRole, RunFormView, RunnerEditorAction,
-    RunnerEditorEffect, RunnerEditorError, RunnerEditorOwner, RunnerEditorView, Screen,
-    SettingsAction, SettingsEffect, SettingsInputs, SettingsSectionId, SettingsView,
-    SourceSnapshot, TypedValue,
+    LibrarySurface, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY, PROMPT_LIST_PREVIEW_LIMIT,
+    RUNNER_KEY, ReviewDefaults, ReviewLane, ReviewState, RunFieldRole, RunFormView,
+    RunnerEditorAction, RunnerEditorEffect, RunnerEditorError, RunnerEditorOwner, RunnerEditorView,
+    Screen, SettingsAction, SettingsEffect, SettingsInputs, SettingsSectionId, SettingsView,
+    SourceSnapshot, TypedValue, UiCommand,
 };
 
 // The seeded prompt-runner names the oracle's `config.load_prompt_runners()` returns, in
@@ -322,6 +321,20 @@ fn prompt_settings(
         configured_runners: configured.iter().map(|name| (*name).to_owned()).collect(),
         ..SettingsInputs::default()
     }
+}
+
+fn prompt_settings_candidates(names: &[String], interpolate: bool) -> SettingsInputs {
+    let mut inputs = prompt_settings(vec![placeholder("a")], "", RUNNERS, interpolate);
+    inputs.candidates = names.to_vec();
+    inputs
+}
+
+fn settings_state(inputs: SettingsInputs) -> LibraryState {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Settings(Box::new(
+        SettingsView::from_inputs(&inputs),
+    ))));
+    state
 }
 
 fn runner_options(view: &SettingsView) -> Vec<String> {
@@ -785,9 +798,24 @@ fn test_settings_pin_change_saves_even_with_insertion_off() {
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the Rust prompt settings screen (declared_items) offers no detected-placeholder checkboxes (st-prompt-new-N) to tick an unmanaged {{b}} into management — only ADD_PARAMETER_KEY (type a name). MUST-FIX: offer detected-but-unmanaged prompt placeholders on the settings screen. tests/test_prompt_tui.py:813."]
 fn test_settings_tick_to_manage_a_detected_placeholder() {
     // managed=[a], body {{a}} {{b}}: a checkbox for b appears; ticking + save manages a,b.
+    let mut view = SettingsView::from_inputs(&prompt_settings_candidates(&["b".to_owned()], true));
+    let field = view
+        .field(PROMPT_CANDIDATES_KEY)
+        .expect("the detected placeholder must be offered");
+    let FieldKind::MultiChoice { options } = &field.kind else {
+        panic!("detected placeholders need checkboxes");
+    };
+    assert_eq!(options[0].value, "b");
+    view.update(SettingsAction::SetPromptCandidates(vec!["b".to_owned()]));
+    assert_eq!(view.update(SettingsAction::Save), SettingsEffect::Save);
+    assert_eq!(
+        view.submitted_values().get(PROMPT_CANDIDATES_KEY),
+        Some(&FieldValue::Explicit(TypedValue::Choices(vec![
+            "b".to_owned()
+        ])))
+    );
 }
 
 #[test]
@@ -908,45 +936,233 @@ fn test_settings_interpolate_toggle_off_and_back_on() {
 }
 
 #[test]
-#[ignore = "ABSENT (gap): choosing first parameters in the same off->on save needs the detected-placeholder checkboxes (st-prompt-new-1) the Rust prompt settings screen does not offer. MUST-FIX: offer detected placeholders on the settings screen. tests/test_prompt_tui.py:967."]
 fn test_settings_off_to_on_can_choose_first_parameters_in_the_same_save() {
     // Turning insertion on and ticking st-prompt-new-1 in one save stores params [b].
+    let mut inputs = prompt_settings_candidates(&["a".to_owned(), "b".to_owned()], false);
+    inputs.managed.clear();
+    let mut view = SettingsView::from_inputs(&inputs);
+    assert!(!view.focusable_keys().contains(&PROMPT_CANDIDATES_KEY));
+    view.update(SettingsAction::SetField {
+        key: INTERPOLATE_KEY.to_owned(),
+        value: FieldValue::boolean(true),
+    });
+    assert!(view.focusable_keys().contains(&PROMPT_CANDIDATES_KEY));
+    view.update(SettingsAction::SetPromptCandidates(vec!["b".to_owned()]));
+    assert_eq!(view.update(SettingsAction::Save), SettingsEffect::Save);
+    let values = view.submitted_values();
+    assert_eq!(
+        values.get(INTERPOLATE_KEY),
+        Some(&FieldValue::boolean(true))
+    );
+    assert_eq!(
+        values.get(PROMPT_CANDIDATES_KEY),
+        Some(&FieldValue::Explicit(TypedValue::Choices(vec![
+            "b".to_owned()
+        ])))
+    );
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the Rust prompt settings screen shows no capped preview of detected placeholders (st-prompt-new-* checkboxes) — that inline candidate list exists only on the review lane. MUST-FIX: cap the settings detected-placeholder preview at PROMPT_LIST_PREVIEW_LIMIT. tests/test_prompt_tui.py:989."]
 fn test_settings_candidate_checkboxes_are_flood_capped() {
     // The settings detected-placeholder preview caps at LIST_PREVIEW_LIMIT checkboxes.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 9)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let view = SettingsView::from_inputs(&prompt_settings_candidates(&names, true));
+    let FieldKind::MultiChoice { options } = &view.field(PROMPT_CANDIDATES_KEY).unwrap().kind
+    else {
+        panic!("detected placeholders need checkboxes");
+    };
+    assert_eq!(options.len(), PROMPT_LIST_PREVIEW_LIMIT);
+    assert_eq!(view.prompt_candidates(), names);
+    assert!(view.prompt_picker_available());
+    let state = settings_state(prompt_settings_candidates(view.prompt_candidates(), true));
+    assert!(draw_localized(&state, 110, 40, Locale::ZhCn).contains("选 择 变 量"));
+    assert!(draw_localized(&state, 110, 40, Locale::ZhTw).contains("選 擇 變 數"));
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings screen has no searchable Ctrl+O candidate picker (PromptCandidatePickerModal) — it exists only on the review lane. MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1003."]
 fn test_settings_candidate_picker_reaches_a_hidden_name_and_waits_for_outer_save() {
     // Ctrl+O opens the picker, filters to a flooded hidden name, and its Done waits for Save.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 9)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let hidden = names.last().unwrap().clone();
+    let mut state = settings_state(prompt_settings_candidates(&names, true));
+    let mut session = TuiSession::default();
+    let (screen, geometry) = draw_with_session(&mut session, &state, 110, 40);
+    assert!(screen.contains("Choose variables"));
+    let chip = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::ChooseSettingsVariables))
+        .expect("mouse twin is visible");
+    let point = (chip.rect.x, chip.rect.y);
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_ne!(
+            session.handle_event(mouse_with_kind(kind, point.0, point.1), &state, &geometry),
+            EventHandling::Consumed
+        );
+        assert!(
+            !draw_with_session(&mut session, &state, 110, 40)
+                .0
+                .contains("Choose prompt variables")
+        );
+    }
+    assert_eq!(
+        session.handle_event(mouse(point.0, point.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert!(
+        draw_with_session(&mut session, &state, 110, 40)
+            .0
+            .contains("Choose prompt variables")
+    );
+    assert_eq!(
+        session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed
+    );
+
+    let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+    assert_eq!(
+        session.handle_event(ctrl('o'), &state, &geometry),
+        EventHandling::Consumed
+    );
+    for character in hidden.chars() {
+        assert_eq!(
+            session.handle_event(text_key(character), &state, &geometry),
+            EventHandling::Consumed
+        );
+    }
+    assert_eq!(
+        session.handle_event(text_key(' '), &state, &geometry),
+        EventHandling::Consumed
+    );
+    let EventHandling::Action(action) = session.handle_event(ctrl('s'), &state, &geometry) else {
+        panic!("Done must publish a settings-local selection");
+    };
+    assert_eq!(state.update(action), Effect::None);
+    assert!(matches!(state.screen(), Screen::Settings(_)));
+    let view = state.settings_view().unwrap();
+    assert_eq!(
+        view.field(PROMPT_CANDIDATES_KEY).unwrap().value(),
+        &FieldValue::Explicit(TypedValue::Choices(vec![hidden.clone()]))
+    );
+    let Effect::Submit { values, .. } = state.update(Action::Settings(SettingsAction::Save)) else {
+        panic!("outer Save owns persistence");
+    };
+    assert_eq!(
+        values.get(PROMPT_CANDIDATES_KEY),
+        Some(&FieldValue::Explicit(TypedValue::Choices(vec![hidden])))
+    );
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings screen has no searchable candidate picker whose selection a discard can drop (_pending_prompt_candidates). MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1031."]
 fn test_settings_candidate_picker_selection_is_discardable() {
     // Selecting all in the settings picker then discarding leaves params unchanged.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 2)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let mut state = settings_state(prompt_settings_candidates(&names, true));
+    let mut session = TuiSession::default();
+    let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+    assert_eq!(
+        session.handle_event(ctrl('o'), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(ctrl('a'), &state, &geometry),
+        EventHandling::Consumed
+    );
+    let EventHandling::Action(action) = session.handle_event(ctrl('s'), &state, &geometry) else {
+        panic!("Done must publish the selection");
+    };
+    state.update(action);
+    assert!(state.settings_view().unwrap().is_dirty());
+    state.update(Action::Settings(SettingsAction::Close));
+    assert!(state.modal().is_some());
+    state.update(Action::DiscardChanges);
+    assert!(!matches!(state.screen(), Screen::Settings(_)));
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings screen has no candidate picker whose Cancel/unchanged-Done are no-ops (_pending_prompt_candidates stays empty, _dirty stays false). MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1064."]
 fn test_settings_candidate_picker_cancel_and_unchanged_done_are_noops() {
     // The settings picker's Cancel and an unchanged Done both leave the screen clean.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 2)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let mut state = settings_state(prompt_settings_candidates(&names, true));
+    let mut session = TuiSession::default();
+    let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+    let _ = session.handle_event(ctrl('o'), &state, &geometry);
+    assert_eq!(
+        session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert!(!state.settings_view().unwrap().is_dirty());
+    let _ = session.handle_event(ctrl('o'), &state, &geometry);
+    let EventHandling::Action(action) = session.handle_event(ctrl('s'), &state, &geometry) else {
+        panic!("unchanged Done still closes the picker");
+    };
+    state.update(action);
+    assert!(!state.settings_view().unwrap().is_dirty());
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings screen has no candidate picker that tolerates a preview recompose behind it. MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1090."]
 fn test_settings_candidate_picker_tolerates_preview_recompose() {
     // A queued settings Ctrl+O/Done straddles a responsive recompose and still survives.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 2)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let mut state = settings_state(prompt_settings_candidates(&names, true));
+    let mut session = TuiSession::default();
+    let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+    let _ = session.handle_event(ctrl('o'), &state, &geometry);
+    let small = draw_with_session(&mut session, &state, 48, 9).1;
+    let _ = session.handle_event(ctrl('a'), &state, &small);
+    let wide = draw_with_session(&mut session, &state, 120, 32).1;
+    let EventHandling::Action(action) = session.handle_event(ctrl('s'), &state, &wide) else {
+        panic!("Done must survive recompose");
+    };
+    state.update(action);
+    assert_eq!(
+        state
+            .settings_view()
+            .unwrap()
+            .field(PROMPT_CANDIDATES_KEY)
+            .unwrap()
+            .value(),
+        &FieldValue::Explicit(TypedValue::Choices(names))
+    );
+    let json = serde_json::to_string(state.settings_view().unwrap()).unwrap();
+    let restored: SettingsView = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, *state.settings_view().unwrap());
+    assert!(restored.prompt_picker_available());
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings Ctrl+O 'Choose variables' key has no counterpart — the searchable candidate picker exists only on the review lane. MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1116."]
 fn test_settings_choose_variables_key_is_harmless_when_off_or_short() {
     // Ctrl+O is a harmless no-op on the settings screen when insertion is off or short.
+    for inputs in [
+        prompt_settings_candidates(
+            &(0..PROMPT_LIST_PREVIEW_LIMIT + 1)
+                .map(|index| format!("u{index}"))
+                .collect::<Vec<_>>(),
+            false,
+        ),
+        prompt_settings_candidates(&["b".to_owned()], true),
+    ] {
+        let state = settings_state(inputs);
+        assert!(!state.command_enabled(UiCommand::ChooseSettingsVariables));
+        let mut session = TuiSession::default();
+        let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+        let _ = session.handle_event(ctrl('o'), &state, &geometry);
+        assert!(
+            !draw_with_session(&mut session, &state, 110, 40)
+                .0
+                .contains("Choose prompt variables")
+        );
+    }
 }
 
 #[test]

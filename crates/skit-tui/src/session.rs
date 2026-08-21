@@ -105,6 +105,7 @@ pub struct TuiSession {
     preferences: PreferencesWidgetSession,
     settings: SettingsScreenSession,
     settings_geometry: SettingsScreenGeometry,
+    settings_prompt_overlay: Option<(PromptCandidatePickerSession, ChoicePickerGeometry)>,
     add: AddScreenSession,
     add_geometry: AddScreenGeometry,
     add_overlay: Option<AddOverlay>,
@@ -385,6 +386,22 @@ impl TuiSession {
             return self.handle_add_event(event, state, view, geometry);
         }
         if let Screen::Settings(view) = state.screen() {
+            if let Some((session, geometry)) = self.settings_prompt_overlay.as_mut() {
+                return match session.handle_event(event, geometry) {
+                    Some(PromptCandidatePickerEvent::Changed) => EventHandling::Consumed,
+                    Some(PromptCandidatePickerEvent::Cancelled) => {
+                        self.settings_prompt_overlay = None;
+                        EventHandling::Consumed
+                    }
+                    Some(PromptCandidatePickerEvent::Accepted(names)) => {
+                        self.settings_prompt_overlay = None;
+                        EventHandling::Action(Action::Settings(
+                            skit_ui::SettingsAction::SetPromptCandidates(names),
+                        ))
+                    }
+                    None => EventHandling::Ignored,
+                };
+            }
             return match self
                 .settings
                 .handle_event(event.clone(), view, &self.settings_geometry)
@@ -393,8 +410,18 @@ impl TuiSession {
                     EventHandling::Action(Action::Settings(action))
                 }
                 Some(SettingsScreenEvent::Changed) => EventHandling::Consumed,
-                None => map_event(event, state, geometry)
-                    .map_or(EventHandling::Ignored, EventHandling::Action),
+                Some(SettingsScreenEvent::OpenPromptCandidates) => {
+                    self.open_settings_prompt_picker(view);
+                    EventHandling::Consumed
+                }
+                None => match map_event(event, state, geometry) {
+                    Some(Action::Settings(skit_ui::SettingsAction::OpenPromptCandidates)) => {
+                        self.open_settings_prompt_picker(view);
+                        EventHandling::Consumed
+                    }
+                    Some(action) => EventHandling::Action(action),
+                    None => EventHandling::Ignored,
+                },
             };
         }
         if let Screen::Preferences(view) = state.screen() {
@@ -434,6 +461,15 @@ impl TuiSession {
             };
         }
         map_event(event, state, geometry).map_or(EventHandling::Ignored, EventHandling::Action)
+    }
+
+    fn open_settings_prompt_picker(&mut self, view: &skit_ui::SettingsView) {
+        if view.prompt_picker_available() {
+            self.settings_prompt_overlay = Some((
+                PromptCandidatePickerSession::new(view.prompt_picker()),
+                ChoicePickerGeometry::default(),
+            ));
+        }
     }
 
     fn handle_add_event(
@@ -528,6 +564,7 @@ impl TuiSession {
             self.form.sync(form);
         } else {
             self.add_overlay = None;
+            self.settings_prompt_overlay = None;
         }
     }
 
@@ -826,6 +863,15 @@ impl TuiSession {
         view: &skit_ui::SettingsView,
         locale: Locale,
     ) -> ViewGeometry {
+        if let Some((session, geometry)) = self.settings_prompt_overlay.as_mut() {
+            *geometry = render_prompt_candidate_picker(frame, area, session, locale);
+            return ViewGeometry {
+                rows: geometry.rows,
+                first_visible: 0,
+                hits: Vec::new(),
+                detail_pane_visible: false,
+            };
+        }
         self.settings_geometry = render_settings(frame, area, view, &mut self.settings, locale);
         ViewGeometry {
             rows: self.settings_geometry.body,

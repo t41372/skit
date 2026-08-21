@@ -80,12 +80,12 @@ use skit_ui::{
     Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor,
     DraftDeleteOutcome, DraftKind, DraftSummary, Effect as UiEffect, FieldValue, FormField,
     FormPurpose, FormView, HealthAction, HealthView, HostRequest, KnownEntryKind, LibraryState,
-    PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_LIST_PREVIEW_LIMIT, PreferencesAction,
-    PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext, RunFormOptions,
-    RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest,
-    RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
-    SettingsInputs, SettingsSectionId, SettingsView, SourceSnapshot as AddSourceSnapshot,
-    SubmittedValues, TypedValue,
+    PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY, PROMPT_LIST_PREVIEW_LIMIT,
+    PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext,
+    RunFormOptions, RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView,
+    RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest,
+    RunnerSaveTarget, Screen, SettingsInputs, SettingsSectionId, SettingsView,
+    SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
 };
 use thiserror::Error;
 use unicode_width::UnicodeWidthStr as _;
@@ -7006,7 +7006,13 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
     } else {
         0
     };
-    let candidates = if source_owned {
+    let candidates = if kind == "prompt" {
+        placeholder_params("prompt", &text)
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .filter(|name| !managed.iter().any(|current| current.name == *name))
+            .collect()
+    } else if source_owned {
         detect_candidates(kind, &text)
             .into_iter()
             .map(|candidate| candidate.name)
@@ -9374,6 +9380,7 @@ fn tui_submit_settings(
     } else {
         stored_settings.parameters.clone()
     };
+    let original_declarations = declarations.clone();
     let touched_names = tui_touched_parameter_names(values);
     tui_apply_parameter_edits(values, &mut declarations)?;
     explicit_names.extend(
@@ -9384,7 +9391,18 @@ fn tui_submit_settings(
     let removed = tui_list(values, "parameter:remove");
     declarations.retain(|parameter| !removed.contains(&parameter.name));
     explicit_names.retain(|name| !removed.contains(name));
-    for name in tui_list(values, "parameter:add") {
+    let selected_detected = if settings.interpolate {
+        tui_list(values, PROMPT_CANDIDATES_KEY)
+    } else {
+        Vec::new()
+    };
+    let mut additions = placeholder_order
+        .iter()
+        .filter(|name| selected_detected.contains(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    additions.extend(tui_list(values, "parameter:add"));
+    for name in additions {
         if declarations.iter().any(|parameter| parameter.name == name) {
             return Err(CliError::Usage(
                 Message::new("parameter already exists: {}").with(name),
@@ -9523,26 +9541,33 @@ fn tui_submit_settings(
             "the stored source is not valid UTF-8",
         )));
     }
-    let entry = update_entry_with_javascript_cleanup(
-        service,
-        store,
-        &entry,
-        UpdateEntry {
-            name: name.clone(),
-            description: description.to_owned(),
-            settings: settings.clone(),
-            workdir: if values.contains_key("workdir") {
-                tui_value(values, "workdir").into_owned()
-            } else {
-                entry.meta.workdir.clone()
-            },
-            source: rewritten_source,
-            expected_source_hash: entry.meta.source_hash.clone(),
-        },
-        clear_javascript,
-    )?;
+    let workdir = if values.contains_key("workdir") {
+        tui_value(values, "workdir").into_owned()
+    } else {
+        entry.meta.workdir.clone()
+    };
+    let update = UpdateEntry {
+        name: name.clone(),
+        description: description.to_owned(),
+        settings: settings.clone(),
+        workdir: workdir.clone(),
+        source: rewritten_source,
+        expected_source_hash: entry.meta.source_hash.clone(),
+    };
+    let entry_changed = update.name != entry.meta.name
+        || update.description != entry.meta.description
+        || update.settings != stored_settings
+        || update.workdir != entry.meta.workdir
+        || update.source.is_some();
+    let entry = if entry_changed {
+        update_entry_with_javascript_cleanup(service, store, &entry, update, clear_javascript)?
+    } else {
+        entry
+    };
     let state = FormStateService::new(FileFormStateStore::new(state_dir));
-    state.purge_secrets(&entry.slug, &declarations)?;
+    if declarations != original_declarations {
+        state.purge_secrets(&entry.slug, &declarations)?;
+    }
     // An unticked preset is deleted, and only an unticked one travels. Version 0.4 deletes at the
     // end of the save, from the names the user actually saw (`src/skit/tui_settings.py:1114-1120`).
     // The name is in the key, so a preset added or removed while the screen was open cannot shift
