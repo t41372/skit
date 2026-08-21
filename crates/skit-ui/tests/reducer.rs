@@ -16,8 +16,8 @@ use skit_ui::{
     KnownEntryKind, LibraryState, MirrorHealth, ModalState, NAME_KEY, PreferencesAction,
     PreferencesView, RESYNC_KEY, RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState,
     RunFormView, RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction, RunnerManagerView,
-    RunnerSaveOwner, Screen, SettingsAction, SettingsInputs, SettingsView, SourceSnapshot,
-    UiCommand, UvHealth, command_specs,
+    RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, Screen, SettingsAction,
+    SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UvHealth, command_specs,
 };
 
 fn entry_with_kind(slug: &str, name: &str, kind: &str, description: &str) -> EntrySummary {
@@ -64,6 +64,214 @@ fn preferences_view_with_runners(runner_names: Vec<String>) -> PreferencesView {
         runner_names,
         mirror: MirrorConfiguration::default(),
     }))
+}
+
+#[test]
+fn command_mapping_and_screen_accessors_cover_every_typed_surface() {
+    for command in [
+        UiCommand::Backspace,
+        UiCommand::ClearSearch,
+        UiCommand::InsertValue,
+        UiCommand::BrowsePath,
+        UiCommand::ResetDefault,
+        UiCommand::SavePreset,
+        UiCommand::SavePreferences,
+        UiCommand::ClosePreferences,
+        UiCommand::ManageAgents,
+        UiCommand::InstallAgentSkill,
+    ] {
+        assert!(command.direct_action().is_some(), "command={command:?}");
+    }
+
+    let mut state = state();
+    assert!(matches!(state.workflow().active(), Screen::Library));
+    assert!(state.preferences().is_none());
+    assert!(state.settings_view().is_none());
+    assert!(state.selected_detail().is_none());
+
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view(),
+    ))));
+    assert!(state.preferences().is_some());
+    assert_eq!(state.command_context(), CommandContext::Preferences);
+
+    state.update(Action::Present(Screen::Health(Box::new(HealthView::new(
+        HealthSnapshot {
+            uv: UvHealth::Missing,
+            entry_count: 0,
+            issues: Vec::new(),
+            invalid_runner_rows: Vec::new(),
+            mirror: MirrorHealth::Off,
+            library_path: "/data/scripts".to_owned(),
+            library_size: "0 B".to_owned(),
+            diagnostics: Vec::new(),
+        },
+    )))));
+    assert_eq!(state.command_context(), CommandContext::Health);
+    assert_eq!(
+        state.update(Action::Health(HealthAction::Jump)),
+        Effect::None
+    );
+
+    state.update(Action::Present(Screen::Runners(Box::new(
+        RunnerManagerView::new(Vec::new()),
+    ))));
+    assert_eq!(state.command_context(), CommandContext::Runners);
+    assert_eq!(
+        state.update(Action::Runners(RunnerManagerAction::ConfirmRemove)),
+        Effect::None
+    );
+
+    state.update(Action::Present(Screen::Report(ReportView {
+        title: "Report".to_owned(),
+        items: Vec::new(),
+    })));
+    let before = serde_json::to_value(&state).unwrap();
+    for action in [
+        Action::FocusField(0),
+        Action::SetFieldValue {
+            field: 0,
+            value: "ignored".to_owned(),
+        },
+        Action::Health(HealthAction::Next),
+        Action::Runners(RunnerManagerAction::Next),
+    ] {
+        assert_eq!(state.update(action), Effect::None);
+    }
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+    assert!(state.form().is_none());
+    assert!(state.run_form().is_none());
+    assert!(state.preferences().is_none());
+    assert!(state.add_workflow().is_none());
+    assert_eq!(state.focused_form_field(), None);
+
+    let mut stale = serde_json::to_value(&state).unwrap();
+    stale["input_mode"] = serde_json::json!("form");
+    let mut stale: LibraryState = serde_json::from_value(stale).unwrap();
+    let before = serde_json::to_value(&stale).unwrap();
+    for action in [Action::Paste("ignored".to_owned()), Action::Backspace] {
+        assert_eq!(stale.update(action), Effect::None);
+    }
+    assert_eq!(serde_json::to_value(&stale).unwrap(), before);
+}
+
+#[test]
+fn preset_modal_refusals_keep_the_typed_owner_and_never_submit_stale_values() {
+    let mut state = state();
+    let run = RunFormView::from_declarations(
+        "alpha",
+        "Alpha",
+        &[ParamDecl::new("value")],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    );
+    state.update(Action::Present(Screen::Run(Box::new(run))));
+    assert_eq!(state.update(Action::OpenRunPresetSave), Effect::None);
+    assert_eq!(state.command_context(), CommandContext::RunPresetName);
+    let before = serde_json::to_value(&state).unwrap();
+    assert_eq!(state.update(Action::Submit), Effect::None);
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+
+    state.update(Action::SetModalInput("named".to_owned()));
+    let mut report = LibraryState::default();
+    report.update(Action::Present(Screen::Report(ReportView {
+        title: "Report".to_owned(),
+        items: Vec::new(),
+    })));
+    let report = serde_json::to_value(report).unwrap();
+    let mut stale = serde_json::to_value(state).unwrap();
+    stale["workflow"]["active"] = report["workflow"]["active"].clone();
+    let mut state: LibraryState = serde_json::from_value(stale).unwrap();
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunPresetName { .. })
+    ));
+    assert!(matches!(state.screen(), Screen::Report(_)));
+    let before = serde_json::to_value(&state).unwrap();
+    assert_eq!(state.update(Action::Submit), Effect::None);
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+}
+
+#[test]
+fn async_management_preferences_and_form_actions_keep_effect_ordering() {
+    let identity = RunnerRowIdentity {
+        index: Some(0),
+        snapshot_token: "row".to_owned(),
+    };
+    let row = RunnerRow {
+        identity: identity.clone(),
+        name: Some("agent".to_owned()),
+        argv: Some(vec!["agent".to_owned(), "{{prompt}}".to_owned()]),
+        reason: None,
+        descriptor: "agent".to_owned(),
+        key_identities: vec![identity.clone()],
+        pinned_count: 2,
+    };
+    let mut state = state();
+    state.update(Action::Present(Screen::Runners(Box::new(
+        RunnerManagerView::new(vec![row]),
+    ))));
+    state.update(Action::Runners(RunnerManagerAction::ActivateSelected));
+    state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
+    assert_eq!(
+        state.update(Action::Runners(RunnerManagerAction::ConfirmRemove)),
+        Effect::RemoveRunner(RunnerRemoveRequest::Named {
+            name: "agent".to_owned(),
+            expected: vec![identity],
+            expected_pinned_count: 2,
+        })
+    );
+    state.update(Action::Runners(RunnerManagerAction::CancelRemove));
+    assert_eq!(
+        state.update(Action::Runners(RunnerManagerAction::Back)),
+        Effect::None
+    );
+    assert_eq!(state.screen(), &Screen::Library);
+
+    assert_eq!(
+        state.update(Action::RunnerEditor(RunnerEditorAction::Cancel)),
+        Effect::None
+    );
+    assert_eq!(
+        state.update(Action::Settings(SettingsAction::Save)),
+        Effect::None
+    );
+
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view(),
+    ))));
+    assert_eq!(
+        state.update(Action::Preferences(
+            PreferencesAction::AgentSkillInstalled {
+                message: "Installed".to_owned(),
+            }
+        )),
+        Effect::None
+    );
+    assert_eq!(state.status(), Some("Installed"));
+    assert_eq!(
+        state.update(Action::Preferences(PreferencesAction::ManageAgents)),
+        Effect::Preferences(skit_ui::PreferencesEffect::ManageAgents)
+    );
+
+    let form = FormView {
+        purpose: FormPurpose::Rename,
+        title: "Rename".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
+        selector: Some("alpha".to_owned()),
+        fields: vec![FormField::text("name", "Name", "Alpha")],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    };
+    state.update(Action::Present(Screen::Form(form)));
+    assert_eq!(state.focused_form_field(), Some(0));
+    state.update(Action::Paste(" X".to_owned()));
+    state.update(Action::Backspace);
+    assert_eq!(state.form().unwrap().fields[0].value, "Alpha ");
 }
 
 #[test]
@@ -884,6 +1092,7 @@ fn shared_runner_editor_returns_to_run_and_add_owners_without_losing_typed_state
             ..
         }) if selector == "demo"
     ));
+    assert_eq!(state.command_context(), CommandContext::RunnerEditor);
     state.update(Action::RunnerEditor(RunnerEditorAction::SetName(
         "local".to_owned(),
     )));

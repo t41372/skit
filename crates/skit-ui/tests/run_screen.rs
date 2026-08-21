@@ -871,6 +871,122 @@ fn run_edge_actions_keep_typed_values_and_refuse_corrupt_choice_state() {
 }
 
 #[test]
+fn serialized_async_run_edges_reject_stale_and_corrupt_targets() {
+    let form = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[ParamDecl::new("path")],
+        &BTreeMap::new(),
+        &["agent".to_owned()],
+        "agent",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: None,
+            env: BTreeMap::new(),
+            today: "2026-08-08".to_owned(),
+            now: "10-11-12".to_owned(),
+        },
+    });
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Run(Box::new(form))));
+    state.update(Action::OpenRunRunnerEditor);
+
+    let mut stale_json = serde_json::to_value(&state).unwrap();
+    stale_json["workflow"]["active"]["run"]["selector"] =
+        serde_json::Value::String("other".to_owned());
+    let mut stale: LibraryState = serde_json::from_value(stale_json).unwrap();
+    assert_eq!(
+        stale.update(Action::RunnerEditorSaved {
+            owner: RunnerEditorOwner::Run {
+                selector: "demo".to_owned(),
+            },
+            name: "new-agent".to_owned(),
+            message: "saved".to_owned(),
+        }),
+        Effect::None
+    );
+    assert!(matches!(
+        &stale.run_form().unwrap().fields()[0].control,
+        FormControl::Choice(choice) if !choice.options.contains(&"new-agent".to_owned())
+    ));
+    assert_eq!(stale.status(), Some("saved"));
+
+    let mut corrupt_json = serde_json::to_value(&state).unwrap();
+    corrupt_json["workflow"]["active"]["run"]["fields"][0]["control"] = serde_json::json!({
+        "text": {
+            "value": "corrupt",
+            "kind": "text",
+            "secret": false,
+            "multiline": false
+        }
+    });
+    let mut corrupt: LibraryState = serde_json::from_value(corrupt_json).unwrap();
+    corrupt.update(Action::RunnerEditorSaved {
+        owner: RunnerEditorOwner::Run {
+            selector: "demo".to_owned(),
+        },
+        name: "new-agent".to_owned(),
+        message: "saved".to_owned(),
+    });
+    assert!(matches!(
+        &corrupt.run_form().unwrap().fields()[0].control,
+        FormControl::Text(text) if text.value == "corrupt"
+    ));
+
+    let mut secret_json = serde_json::to_value(corrupt.run_form().unwrap()).unwrap();
+    let extra = secret_json["fields"].as_array().unwrap().len() - 1;
+    secret_json["fields"][extra]["control"]["text"]["secret"] = serde_json::Value::Bool(true);
+    let secret: RunFormView = serde_json::from_value(secret_json).unwrap();
+    assert_eq!(
+        secret.secret_names().collect::<Vec<_>>(),
+        Vec::<&str>::new()
+    );
+
+    let mut picker = LibraryState::default();
+    picker.update(Action::Present(Screen::Run(Box::new(
+        state.run_form().unwrap().clone(),
+    ))));
+    assert!(picker.command_enabled(UiCommand::BrowsePath));
+    picker.update(Action::FocusField(1));
+    picker.update(Action::Paste("x".to_owned()));
+    picker.update(Action::Backspace);
+    picker.update(Action::OpenRunTokenMenuFor(1));
+    assert!(matches!(
+        picker.update(Action::SetRunFieldValueAndCloseModal {
+            field: 1,
+            value: "*.rs".to_owned(),
+        }),
+        Effect::CountRunGlob { field: 1, .. }
+    ));
+    picker.update(Action::OpenRunTokenMenuFor(1));
+    picker.update(Action::OpenRunFilePicker(1));
+    let before = picker.run_form().unwrap().fields()[1].control.value();
+    let mut picker_json = serde_json::to_value(&picker).unwrap();
+    picker_json["modal"]["run_file_picker"]["field"] = serde_json::Value::from(99);
+    let mut picker: LibraryState = serde_json::from_value(picker_json).unwrap();
+    assert_eq!(
+        picker.update(Action::SetRunPickedPathAndCloseModal {
+            field: 99,
+            path: "missing".to_owned(),
+        }),
+        Effect::None
+    );
+    assert_eq!(
+        picker.run_form().unwrap().fields()[1].control.value(),
+        before
+    );
+}
+
+#[test]
 fn live_feedback_expands_tokens_and_requests_glob_counts_through_a_typed_port() {
     let mut paths = ParamDecl::new("paths");
     paths.multiple = true;
