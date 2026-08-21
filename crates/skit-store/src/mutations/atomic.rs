@@ -100,6 +100,17 @@ pub(super) fn write_new_file(path: &Path, payload: &EntryPayload) -> Result<(), 
         .create_new(true)
         .open(path)
         .map_err(|error| io_error("create", path, error))?;
+    #[cfg(test)]
+    if FAIL_NEXT_NEW_FILE_WRITE.replace(false) {
+        let partial = payload.bytes.len().min(4);
+        file.write_all(&payload.bytes[..partial])
+            .map_err(|error| io_error("write", path, error))?;
+        return Err(io_error(
+            "write",
+            path,
+            io::Error::other("injected payload write failure"),
+        ));
+    }
     file.write_all(&payload.bytes)
         .map_err(|error| io_error("write", path, error))?;
     apply_permissions(&file, payload.permissions, path)?;

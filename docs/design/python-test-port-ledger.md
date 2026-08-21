@@ -133,8 +133,24 @@ Interpreter Batch D closes the final nine launch/config rows:
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
 | test_store.py | 78 | crates/skit-cli/tests/port_test_store_manifest.rs + owning store/language/application/runtime/CLI targets | implementation parity (73 executable REAL / 5 semantic or version closures) · the manifest proves 78 occurrences, 78 unique names, the exact oracle set, and the 73/5 split · Windows PATHEXT inference uses a pure application policy with real CLI metadata/environment composition (`0e4a698`/`8a15675`) · recursive size and v0.4 display thresholds run at the private CLI owners (`e326985`) · 15 public add contracts run through the real binary and FileStore (`cebb661`) · registry fallback, repair, corruption, and race owners remain canonical in skit-store, including the final repair-race batch (`fae2d20`) · real Windows-host CLI execution remains a CI gate |
-| test_store_fix.py | 38 | crates/skit-store/tests/port_test_store.rs + crates/skit-store/tests/port_test_store_fix_metadata.rs + owning CLI targets | in progress · Metadata Batch 1 activates 12/12 exact corruption owners: missing required name/kind and wrong-typed `dependencies`/`params` now share the authoritative read chokepoint across scan, resolve, doctor rebuild, and three-locale diagnostics; valid siblings, open kinds, unknown TOML, and metadata bytes remain intact · remaining 26 classified for later batches |
+| test_store_fix.py | 38 | crates/skit-store/tests/port_test_store_fix_metadata.rs + crates/skit-store/tests/port_test_store_fix_filesystem.rs + store private atomic owner + owning application/CLI targets | in progress (16 exact executable + 6 semantic closures = 22/38 accounted; 16 remain) · Metadata Batch 1 activates 12 exact corruption owners across scan, resolve, doctor rebuild, and three-locale diagnostics while preserving valid siblings, open kinds, unknown TOML, and metadata bytes · Batch 2 activates four exact filesystem/recovery/atomic owners: a lost index cannot cause slug overwrite, a corrupt orphan stays isolated and reserved, a corrupt index moves byte-exact to `.corrupt` on read, and a real partial payload-write failure leaves no entry or staged bytes and permits a clean retry |
 | test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs + `fs_ops` owner | done (17) · both atomic writers share temp cleanup and Windows retry · S2/A2 gaps resolved (c04395c) · 15 deferred (crash-injection/Windows) |
+
+The six `test_store_fix.py` semantic closures stay at stronger existing owners instead of gaining
+duplicate exact names:
+
+- The lost-index name collision maps to
+  `mutation_refusals::an_unindexed_legacy_name_still_blocks_a_duplicate_create`.
+- The private forced-slug nonempty-directory defense maps to the public allocator and commit owners
+  `mutation_refusals::colliding_slug_bases_receive_deterministic_numeric_suffixes` and
+  `registry_edge_contracts::empty_stale_directories_are_reused_but_regular_files_stay_reserved`.
+- Empty stale directories and stray regular files share the latter public filesystem owner.
+- The Python add-time explicit-workdir keyword splits into
+  `payload_policy::add_workdir_keeps_script_prompt_executable_and_command_lanes_distinct` and
+  `mutations::combined_update_commits_metadata_and_source_under_one_identity_check`; the repository
+  preserves a caller's explicit workdir but does not own add orchestration.
+- Corrupt-index doctor recovery maps to
+  `port_test_store::test_a_corrupt_index_lists_nothing_and_preserves_the_bad_bytes`.
 
 The five `test_store.py` closures retain their ignored bodies and exact oracle names:
 
