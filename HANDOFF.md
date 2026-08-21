@@ -372,14 +372,18 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
   persists a secret — fix `stage_injected_source` (crates/skit-cli/src/run/command.rs:686-693
   region). settings-save npm-clear atomic refusal (tui_submit_settings never clears node_modules);
   `deps`-clear must sweep node_modules.
-- **TUI: 0 path_tui + 0 tui_nav + 0 draft_and_reader_tui + 0 reset_default_ui.** Path, field,
-  Settings, reset-default, and real-host draft workflows are green.
+- **TUI path completion is still a release blocker.** `port_test_path_tui.rs` is 32 active / 29
+  ignored. Twenty-five ignored owners cover the shipped v0.4 ghost completion while typing,
+  including async capped scans, universal/path activation, hidden/error behavior, Right-arrow
+  acceptance, secret exclusion, and a vanished reference-origin form. The picker, field browser,
+  `tui_nav`, `draft_and_reader_tui`, and reset-default work are green, but they do not replace this
+  feature. A Phase 4 audit rejected the prior ABSENT/architecture classification.
 - **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 
-There is no per-file implementation backlog. The remaining ignored rows are frozen-name records
-with explicit non-divergence classifications; do not turn them into fake REAL owners merely to
-reduce the ignored count.
+Apart from the PathSuggester group above, there is no known per-file implementation backlog. The
+other remaining ignored rows are frozen-name records with explicit non-divergence classifications;
+do not turn them into fake REAL owners merely to reduce the ignored count.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
   port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job
@@ -418,10 +422,14 @@ The ledger has the authoritative per-module adjudication log.
   Settings use one identity-gated JavaScript cleanup-before-update transaction; editor command
   parsing now follows the host POSIX or Windows dialect. JavaScript installer failures now retain
   the actionable child stderr line and keep rollback atomic. Source candidate management now warns
-  per invalid item while valid siblings commit once (`85ecf69`). Remaining adjudicated work includes
-  the Prompt Settings placeholder picker, interactive add dependency questions, and moving Library
-  projection orchestration out of `skit-store`. The final coverage, supply-chain, docs, package,
-  benchmark, and hands-on gates are not valid until these changes stop.
+  per invalid item while valid siblings commit once (`85ecf69`). Interactive Python dependency and
+  version questions are now owned by real three-language PTY contracts (`cf33d82`). Library
+  projection orchestration moved out of `skit-store` (`f5bba41`..`75fd38e`), but independent review
+  found that its two repository reads must become one coherent refresh before approval. The Prompt
+  Settings placeholder picker activated its eight owners (`c4b8659`), but its short-list keyboard
+  navigation, row order/overflow hint, and duplicate/dead chooser route are under follow-up review.
+  A further audit reopened the 25-owner PathSuggester group described above. The final coverage,
+  supply-chain, docs, package, benchmark, and hands-on gates are not valid until these changes stop.
   A review also questioned `FileStore::scan()` repairing stale registry rows. This is not a new
   blocker: `registry.toml` is a derived index, not authoritative user data, and v0.4 explicitly
   runs `_repair_rows` under a non-blocking lock. `rust-contract-matrix.md` records this narrow
