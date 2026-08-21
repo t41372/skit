@@ -13,7 +13,9 @@ Branch: `rewrite/rust-ratatui-complete-20260808-codex`. The oracle is this repo 
 
 ## 0. One-line status
 
-**Port COMPLETE. Impl-fix pass COMPLETE: 135 fix commits landed, 282 FAILING CONTRACTs closed
+**The broad port surface is complete. Phase 4 independent review REOPENED the implementation-fix
+pass after the Phase 3 coverage checkpoint. The earlier pass landed 135 fix commits and closed 282
+FAILING CONTRACTs
 (265 removed, translated, or un-ignored + 17 re-labeled architecture closures). Cross-crate and
 absent stubs are promoted only at their real owners;
 2 owed white-box units added. The last fully green recorded baseline was workspace
@@ -24,15 +26,18 @@ PR/main/Python body comparison; the raw split files and manifests were rejected.
 editor, JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
-implementation divergences are closed. The Phase 3 executable-source coverage gate is COMPLETE at
+implementation divergences were closed at that checkpoint. The Phase 3 executable-source coverage
+gate was COMPLETE at
 `4b1d003`: a fresh committed-state workspace LCOV run executed every target and feature, and
 `scripts/check_coverage.sh` returned `complete executable-source line coverage`. No checker rule or
-exclusion changed. Final CLI full, fmt, workspace Clippy with warnings as errors, and workspace
-Rustdoc with warnings as errors are green. Supply-chain, docs, wheel smoke, and benchmark gates were
-green at the preceding checkpoint and must be rerun once on the final release candidate. Mutation
-remains blocked on user approval.** The user
+exclusion changed. Production has changed since that proof, so coverage and every release gate must
+run again on the final candidate. Phase 4 has already fixed shared atomic-temp cleanup (`619e55d`),
+injected-source secret staging (`42f5f6d`), copy-mode Unix permission bits (`72646e2`), JavaScript
+dependency cleanup before Settings save (`fd50836`), and Windows editor command parsing
+(`cf8ebba`). More review findings remain in §6. Mutation remains blocked on user approval.** The user
 chose plan **A**:
-finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (done).
+finish the broad port first, then keep the implementation-fix and review passes open until the
+release evidence is final.
 
 ---
 
@@ -404,6 +409,17 @@ The ledger has the authoritative per-module adjudication log.
   zizmor are green. The docs type-check/build, release wheel build plus isolated
   `uv tool install` smoke, 112 benchmark metrics, all 8 enforced benchmark budgets, and
   `cargo bench` were green at the preceding checkpoint. Rerun these on the final release candidate.
+- **Phase 4 review reopened the fix pass (2026-08-21):** independent read-only reviews found real
+  defects after the 100% line-coverage checkpoint. Fixed on the current branch: one shared atomic
+  writer now cleans failed temp files and retries Windows replacement; injected sources use the OS
+  private temp directory unless npm resolution needs entry-directory adjacency; generic copy mode
+  preserves complete Unix mode bits while prompt snapshots keep the v0.4 `0o777` mask; CLI and TUI
+  Settings use one identity-gated JavaScript cleanup-before-update transaction; editor command
+  parsing now follows the host POSIX or Windows dialect. The JavaScript installer stderr contract is
+  in progress. Remaining adjudicated work includes the Prompt Settings placeholder picker,
+  interactive add dependency questions, source-schema partial-warning behavior, and moving Library
+  projection orchestration out of `skit-store`. The final coverage, supply-chain, docs, package,
+  benchmark, and hands-on gates are not valid until these changes stop.
 - **User's hands-on test** fits AFTER the fix pass restores behavior, BEFORE mutation.
 - Mutation (`cargo mutants`) is **BLOCKED on explicit user approval** — it invalidates on any
   change, so it runs only after behavior is frozen; ~4.5h local, likely on another box/modal.com.
