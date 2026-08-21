@@ -5282,11 +5282,21 @@ fn params(
     let normalization_refusals = prepared_source.normalization_refusals;
     let normalized_names = prepared_source.normalized;
     let source_edit_applied = prepared_source.applied;
-    let mut declarations = if source_parameter_kind && has_source_schema_operation {
-        form_params_from_managed(prepared_managed, &settings)
-    } else {
-        form_params(held.meta.kind.as_str(), &source, &settings)
-    };
+    let (mut declarations, uses_self_location, has_injectable_const) =
+        if source_parameter_kind && has_source_schema_operation {
+            (
+                form_params_from_managed(prepared_managed, &settings),
+                false,
+                false,
+            )
+        } else {
+            let plan = form_plan(held.meta.kind.as_str(), &source, &settings);
+            (
+                plan.declarations(),
+                plan.uses_self_location,
+                plan.has_injectable_const,
+            )
+        };
     let template_placeholder_order = match held.meta.kind.as_str() {
         "command" => placeholder_params("command", &settings.template)
             .into_iter()
@@ -5464,7 +5474,15 @@ fn params(
     } else if human_command_read {
         write_human_command_params(&held, &settings, &declarations)
     } else {
-        write_params(&held, &source, &settings, &declarations, args.json)
+        write_params(
+            &held,
+            &source,
+            &settings,
+            &declarations,
+            uses_self_location,
+            has_injectable_const,
+            args.json,
+        )
     }
 }
 
@@ -5714,7 +5732,7 @@ fn edit_declared_params(
             effective.push(row.clone());
         }
     }
-    write_params(&held, source, &settings, &effective, true)
+    write_params(&held, source, &settings, &effective, false, false, true)
 }
 
 fn collect_named_values(raw: &[String], flag: &str) -> (Vec<NamedEdit<String>>, Vec<String>) {
@@ -6061,6 +6079,8 @@ fn write_params(
     source: &str,
     settings: &EntrySettings,
     declarations: &[ParamDecl],
+    uses_self_location: bool,
+    has_injectable_const: bool,
     json: bool,
 ) -> Result<(), CliError> {
     if !json && entry.meta.kind.as_str() == "prompt" && !settings.interpolate {
@@ -6266,6 +6286,16 @@ fn write_params(
                     unmanaged.join(", ")
                 );
             }
+        }
+        if entry.meta.kind.as_str() == "shell"
+            && entry.meta.mode == StorageMode::Copy
+            && uses_self_location
+            && has_injectable_const
+        {
+            humanln!(
+                "This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME=\"${NAME:-value}\" delivers the value through the environment with no copy at all — `skit params {} --normalize NAME` does the rewrite for you on the stored copy.",
+                entry.meta.name
+            );
         }
         if entry.meta.kind.as_str() == "prompt" {
             humanln!(

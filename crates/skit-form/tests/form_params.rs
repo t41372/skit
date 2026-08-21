@@ -639,6 +639,27 @@ printf '%s %s\n' "$WIDTH" "$BASH_SOURCE"
 }
 
 #[test]
+fn unmanaged_shell_form_plan_keeps_self_location_in_the_same_projection() {
+    let plan = form_plan(
+        "shell",
+        "#!/usr/bin/env bash\nHERE=$(dirname \"$0\")\nREGION=us-east-1\n",
+        &EntrySettings::default(),
+    );
+
+    assert!(plan.fields.is_empty());
+    assert!(plan.uses_self_location);
+    assert!(plan.has_injectable_const);
+
+    let environment_default = form_plan(
+        "shell",
+        "#!/usr/bin/env bash\nHERE=$(dirname \"$0\")\nMODE=\"${MODE:-auto}\"\n",
+        &EntrySettings::default(),
+    );
+    assert!(environment_default.uses_self_location);
+    assert!(!environment_default.has_injectable_const);
+}
+
+#[test]
 fn syntax_errors_keep_managed_metadata_visible_as_drift_without_inventing_fields() {
     let source = r#"# /// script
 # [tool.skit]

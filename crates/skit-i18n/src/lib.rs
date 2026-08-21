@@ -2526,6 +2526,11 @@ const CATALOG: &[Translation] = &[
         "已正規化 {name} 中的 {names}:今後用環境變數傳值(不再寫臨時副本,$0 也仍指向你的真實檔案)。",
     ),
     row!(
+        "This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME=\"${NAME:-value}\" delivers the value through the environment with no copy at all — `skit params {} --normalize NAME` does the rewrite for you on the stored copy.",
+        "这个脚本会读取自己的位置($0 / BASH_SOURCE)。注入常量时它会从临时副本运行,因此看到的是那个副本的路径。把常量改写成 NAME=\"${NAME:-value}\",值就会改由环境变量传递,完全不产生副本——`skit params {} --normalize NAME` 会在存储的副本上帮你完成改写。",
+        "這個腳本會讀取自己的位置($0 / BASH_SOURCE)。注入常數時它會從臨時副本執行,因此看到的是那個副本的路徑。把常數改寫成 NAME=\"${NAME:-value}\",值就會改由環境變數傳遞,完全不產生副本——`skit params {} --normalize NAME` 會在儲存的副本上幫你完成改寫。",
+    ),
+    row!(
         "--raw runs the script as-is; --set, --preset, and --save-preset do not apply.",
         "--raw 会原样运行脚本;--set、--preset、--save-preset 都不适用。",
         "--raw 會原樣執行腳本;--set、--preset、--save-preset 都不適用。",

@@ -157,6 +157,8 @@ pub struct FormPlan {
     pub degradation: Option<DegradationReason>,
     /// Whether the parsed source reads its own location.
     pub uses_self_location: bool,
+    /// Whether a parsed constant would require a rewritten temporary copy.
+    pub has_injectable_const: bool,
 }
 
 impl FormPlan {
@@ -373,10 +375,24 @@ fn project_cli_surface(surface: CliSurface) -> CliFormProjection {
 /// Project a language CLI surface without collapsing absent, empty, and dynamic states.
 #[must_use]
 pub fn cli_form_projection(kind: &str, text: &str) -> CliFormProjection {
+    cli_form_facts(kind, text).0
+}
+
+fn cli_form_facts(kind: &str, text: &str) -> (CliFormProjection, bool, bool) {
     let ParseOutcome::Parsed(document) = parse_document(kind, text) else {
-        return CliFormProjection::Absent;
+        return (CliFormProjection::Absent, false, false);
     };
-    project_cli_surface(document.cli_surface())
+    let analysis = document.analysis();
+    let uses_self_location = analysis.uses_self_location;
+    let has_injectable_const = analysis.candidates.iter().any(|candidate| {
+        candidate.declaration.binding == ParameterBinding::Const
+            && candidate.declaration.delivery == ParameterDelivery::Inject
+    });
+    (
+        project_cli_surface(document.cli_surface()),
+        uses_self_location,
+        has_injectable_const,
+    )
 }
 
 /// Build the fields that one entry exposes to all frontends.
@@ -424,6 +440,7 @@ pub fn form_plan(kind: &str, text: &str, settings: &EntrySettings) -> FormPlan {
             },
             degradation: None,
             uses_self_location: false,
+            has_injectable_const: false,
         };
     }
     if kind == "command" {
@@ -449,25 +466,37 @@ pub fn form_plan(kind: &str, text: &str, settings: &EntrySettings) -> FormPlan {
 
     let riders = declared_riders(&settings.parameters, &BTreeSet::new());
     if !riders.is_empty() {
+        let (_, uses_self_location, has_injectable_const) = cli_form_facts(kind, text);
         return FormPlan {
             source: FormSource::Declared,
             fields: prepared(riders),
+            uses_self_location,
+            has_injectable_const,
             ..FormPlan::default()
         };
     }
 
-    match cli_form_projection(kind, text) {
+    let (cli_surface, uses_self_location, has_injectable_const) = cli_form_facts(kind, text);
+    match cli_surface {
         CliFormProjection::Static { fields, .. } => FormPlan {
             source: FormSource::Reader,
             fields: prepared(fields),
+            uses_self_location,
+            has_injectable_const,
             ..FormPlan::default()
         },
         CliFormProjection::Dynamic { reason, .. } => FormPlan {
             source: FormSource::Reader,
             degradation: Some(reason),
+            uses_self_location,
+            has_injectable_const,
             ..FormPlan::default()
         },
-        CliFormProjection::Absent => FormPlan::default(),
+        CliFormProjection::Absent => FormPlan {
+            uses_self_location,
+            has_injectable_const,
+            ..FormPlan::default()
+        },
     }
 }
 
@@ -560,9 +589,18 @@ fn declared_riders(declared: &[ParamDecl], taken: &BTreeSet<String>) -> Vec<Para
 
 fn managed_form_plan(kind: &str, text: &str, managed: &[ParamDecl]) -> FormPlan {
     let parsed = parse_document(kind, text);
-    let uses_self_location = match &parsed {
-        ParseOutcome::Parsed(document) => document.analysis().uses_self_location,
-        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => false,
+    let (uses_self_location, has_injectable_const) = match &parsed {
+        ParseOutcome::Parsed(document) => {
+            let analysis = document.analysis();
+            (
+                analysis.uses_self_location,
+                analysis.candidates.iter().any(|candidate| {
+                    candidate.declaration.binding == ParameterBinding::Const
+                        && candidate.declaration.delivery == ParameterDelivery::Inject
+                }),
+            )
+        }
+        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => (false, false),
     };
     let mut report = match &parsed {
         ParseOutcome::Parsed(document) => reconciliation_from_language(document.reconcile(managed)),
@@ -619,6 +657,7 @@ fn managed_form_plan(kind: &str, text: &str, managed: &[ParamDecl]) -> FormPlan 
         drift,
         degradation: None,
         uses_self_location,
+        has_injectable_const,
     }
 }
 

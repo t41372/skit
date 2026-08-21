@@ -181,6 +181,45 @@ fn test_params_does_not_warn_when_the_script_never_self_locates() {
 }
 
 #[test]
+fn params_self_location_hint_requires_a_temp_copy_const() {
+    let sandbox = Sandbox::new();
+    sandbox.add_copy(
+        "envloc.sh",
+        "envloc",
+        "#!/usr/bin/env bash\nHERE=$(dirname \"$0\")\nMODE=\"${MODE:-auto}\"\necho \"$HERE $MODE\"\n",
+    );
+
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let before = (
+            snapshot_tree(sandbox.data.path()),
+            snapshot_tree(sandbox.state.path()),
+            snapshot_tree(sandbox.config.path()),
+        );
+        let output = sandbox
+            .command_in(locale)
+            .args(["params", "envloc"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("MODE"), "{locale}:\n{stdout}");
+        assert!(!stdout.contains("locates itself"), "{locale}:\n{stdout}");
+        assert!(!stdout.contains("读取自己的位置"), "{locale}:\n{stdout}");
+        assert!(!stdout.contains("讀取自己的位置"), "{locale}:\n{stdout}");
+        assert!(!stdout.contains("--normalize NAME"), "{locale}:\n{stdout}");
+        assert_eq!(
+            (
+                snapshot_tree(sandbox.data.path()),
+                snapshot_tree(sandbox.state.path()),
+                snapshot_tree(sandbox.config.path()),
+            ),
+            before
+        );
+    }
+}
+
+#[test]
 fn test_normalize_mixed_batch_reports_each_name() {
     let sandbox = Sandbox::new();
     sandbox.add_copy(
