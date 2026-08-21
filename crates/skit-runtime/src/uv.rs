@@ -473,7 +473,12 @@ fn sync_directory(_path: &Path) -> Result<(), UvBootstrapError> {
 
 #[cfg(target_os = "linux")]
 fn host_uses_musl() -> bool {
-    fs::read_dir("/lib").is_ok_and(|entries| {
+    host_uses_musl_in(Path::new("/lib"))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn host_uses_musl_in(lib_dir: &Path) -> bool {
+    fs::read_dir(lib_dir).is_ok_and(|entries| {
         entries.filter_map(Result::ok).any(|entry| {
             entry
                 .file_name()
@@ -494,6 +499,29 @@ mod private_tests {
     use flate2::{Compression, write::GzEncoder};
     use std::{net::TcpListener, thread};
     use tempfile::TempDir;
+
+    #[test]
+    fn test_is_musl_true_when_ld_musl_present() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("ld-musl-x86_64.so.1"), b"").unwrap();
+
+        assert!(host_uses_musl_in(root.path()));
+    }
+
+    #[test]
+    fn test_is_musl_false_when_ld_musl_absent() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("ld-linux-x86-64.so.2"), b"").unwrap();
+
+        assert!(!host_uses_musl_in(root.path()));
+    }
+
+    #[test]
+    fn test_is_musl_false_when_lib_dir_missing() {
+        let root = TempDir::new().unwrap();
+
+        assert!(!host_uses_musl_in(&root.path().join("missing")));
+    }
 
     #[test]
     fn unpinned_triple_fails_closed_with_a_typed_error() {

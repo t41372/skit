@@ -264,24 +264,6 @@ fn test_triple_linux_aarch64() {
 // ---- _triple / _is_musl: musl (Alpine) detection ----------
 
 #[test]
-#[ignore = "CROSS-CRATE (white-box): the private in-crate helper host_uses_musl (crates/skit-runtime/src/uv.rs:441-450) is cfg-gated to linux and hardcodes /lib with no injectable seam. Its logic (presence of /lib/ld-musl-*.so.1) matches the oracle, but the public surface takes `musl: bool` explicitly (UvTarget::from_parts), so the filesystem-probe assertion can't be driven from an integration test."]
-fn test_is_musl_true_when_ld_musl_present() {
-    // Oracle: a fake /lib containing ld-musl-x86_64.so.1 -> _is_musl() is True.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): private host_uses_musl (crates/skit-runtime/src/uv.rs:441-450), hardcoded /lib, no injectable seam."]
-fn test_is_musl_false_when_ld_musl_absent() {
-    // Oracle: an empty /lib (no ld-musl-*.so.1) -> _is_musl() is False.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): private host_uses_musl (crates/skit-runtime/src/uv.rs:441-450); read_dir on a missing /lib returns false, not an error, matching the oracle."]
-fn test_is_musl_false_when_lib_dir_missing() {
-    // Oracle: a missing /lib (minimal container) must not raise — just means "not musl".
-}
-
-#[test]
 fn test_triple_linux_musl_x86_64() {
     // On a musl userland (e.g. Alpine), the target must be musl, not gnu — a gnu uv binary cannot
     // exec without glibc's dynamic loader.
