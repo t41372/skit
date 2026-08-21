@@ -7,9 +7,10 @@ use tempfile::TempDir;
 
 #[cfg(unix)]
 use std::{
+    io::{self, Read as _},
     os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Child, Command, Output, Stdio},
     thread,
     time::Duration,
 };
@@ -137,6 +138,130 @@ fn wait_for_file(path: &Path) -> bool {
             false
         }
     })
+}
+
+#[cfg(unix)]
+fn read_complete_staged_path(report: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(report).ok()?;
+    let path = text.strip_suffix('\n')?;
+    (!path.is_empty() && !path.contains('\n')).then(|| PathBuf::from(path))
+}
+
+#[cfg(unix)]
+fn wait_for_complete_staged_path(report: &Path) -> Option<PathBuf> {
+    (0..500).find_map(|_| {
+        let path = read_complete_staged_path(report);
+        if path.is_none() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        path
+    })
+}
+
+#[cfg(unix)]
+fn wait_for_child(child: &mut Child) -> io::Result<std::process::ExitStatus> {
+    for _ in 0..500 {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        }
+    }
+    let kill_error = child.kill().err();
+    match child.wait() {
+        Ok(status) => Ok(status),
+        Err(error) => Err(kill_error.unwrap_or(error)),
+    }
+}
+
+#[cfg(unix)]
+struct ChildCleanupGuard {
+    child: Option<Child>,
+    release: PathBuf,
+}
+
+#[cfg(unix)]
+impl ChildCleanupGuard {
+    fn new(child: Child, release: PathBuf) -> Self {
+        Self {
+            child: Some(child),
+            release,
+        }
+    }
+
+    fn finish(mut self) -> io::Result<Output> {
+        fs::write(&self.release, [])?;
+        let child = self.child.as_mut().expect("child guard owns one process");
+        let status = wait_for_child(child)?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        if let Some(mut pipe) = child.stdout.take() {
+            pipe.read_to_end(&mut stdout)?;
+        }
+        if let Some(mut pipe) = child.stderr.take() {
+            pipe.read_to_end(&mut stderr)?;
+        }
+        self.child.take();
+        Ok(Output {
+            status,
+            stdout,
+            stderr,
+        })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ChildCleanupGuard {
+    fn drop(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        let _ = fs::write(&self.release, []);
+        let _ = wait_for_child(child);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn staged_report_checkpoint_and_child_cleanup_are_panic_safe() {
+    let signals = TempDir::new().unwrap();
+    let report = signals.path().join("report");
+    fs::write(&report, []).unwrap();
+    assert_eq!(read_complete_staged_path(&report), None);
+    fs::write(&report, "/tmp/.injected-checkpoint.sh").unwrap();
+    assert_eq!(read_complete_staged_path(&report), None);
+    fs::write(&report, "/tmp/.injected-checkpoint.sh\n").unwrap();
+    assert_eq!(
+        read_complete_staged_path(&report),
+        Some(PathBuf::from("/tmp/.injected-checkpoint.sh"))
+    );
+
+    let ready = signals.path().join("ready");
+    let release = signals.path().join("release");
+    let completed = signals.path().join("completed");
+    let mut ready_seen = false;
+    let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(": > \"$READY\"; while [ ! -f \"$RELEASE\" ]; do sleep 0.01; done; : > \"$COMPLETED\"")
+            .env("READY", &ready)
+            .env("RELEASE", &release)
+            .env("COMPLETED", &completed)
+            .spawn()
+            .unwrap();
+        let _child = ChildCleanupGuard::new(child, release.clone());
+        ready_seen = wait_for_file(&ready);
+        panic!("exercise the staged-child unwind checkpoint");
+    }));
+
+    assert!(unwind.is_err());
+    assert!(ready_seen);
+    assert!(release.is_file());
+    assert!(completed.is_file());
 }
 
 #[cfg(unix)]
@@ -843,7 +968,8 @@ fn test_secret_value_never_reaches_stdout() {
         concat!(
             "#!/usr/bin/env bash\n",
             "API_KEY=changeme\n",
-            "printf '%s\\n' \"$0\" > \"$SKIT_STAGE_REPORT\"\n",
+            "printf '%s\\n' \"$0\" > \"${SKIT_STAGE_REPORT}.pending\"\n",
+            "mv \"${SKIT_STAGE_REPORT}.pending\" \"$SKIT_STAGE_REPORT\"\n",
             "while [ ! -f \"$SKIT_STAGE_RELEASE\" ]; do sleep 0.01; done\n",
             "printf 'done\\n'\n",
         ),
@@ -871,31 +997,33 @@ fn test_secret_value_never_reaches_stdout() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let child = ChildCleanupGuard::new(child, release);
+    let staged = wait_for_complete_staged_path(&report);
+    let observation = staged.as_ref().map(|path| {
+        (
+            path.is_file(),
+            fs::metadata(path).map(|metadata| metadata.permissions().mode() & 0o777),
+            fs::read_to_string(path).map(|text| text.contains("s3cr3t")),
+        )
+    });
+    let output = child.finish();
 
-    if !wait_for_file(&report) {
-        fs::write(&release, []).unwrap();
-        let output = child.wait_with_output().unwrap();
-        panic!(
-            "shell child did not report its staged path: {}",
-            output_text(&output)
-        );
-    }
-    let staged = PathBuf::from(fs::read_to_string(&report).unwrap().trim());
     assert!(
-        staged.is_file(),
+        staged.is_some(),
+        "shell child did not publish a complete staged path"
+    );
+    let staged = staged.unwrap();
+    let (was_file, mode, contained_secret) = observation.unwrap();
+    assert!(
+        was_file,
         "staged source vanished before the child completed"
     );
-    assert_eq!(
-        fs::metadata(&staged).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    assert_eq!(mode.unwrap(), 0o600);
     assert!(
-        fs::read_to_string(&staged).unwrap().contains("s3cr3t"),
+        contained_secret.unwrap(),
         "the real secret must reach the private staged source"
     );
-
-    fs::write(&release, []).unwrap();
-    let output = child.wait_with_output().unwrap();
+    let output = output.unwrap();
     let text = output_text(&output);
     assert!(output.status.success(), "{text}");
     assert!(text.lines().any(|line| line == "done"), "{text}");
