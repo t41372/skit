@@ -510,7 +510,10 @@ fn source_error(error: crate::sources::SourceError) -> SuiteError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        path::Path,
+    };
 
     use crate::{SuiteKind, SuiteOutput};
 
@@ -522,6 +525,105 @@ mod tests {
             skipped: Vec::new(),
             raw: BTreeMap::new(),
         }
+    }
+
+    fn context(workdir: &Path) -> crate::runner::RunContext {
+        crate::runner::RunContext {
+            repo_root: workdir.to_path_buf(),
+            out_dir: workdir.join("out"),
+            workdir: workdir.to_path_buf(),
+            datasets: BTreeMap::new(),
+            skit: workdir.join("skit"),
+            harness: workdir.join("skit-bench"),
+            python: None,
+            uv: None,
+            bash: None,
+            node: None,
+            hyperfine: None,
+            strace: None,
+            cargo: None,
+            rustc: None,
+        }
+    }
+
+    #[test]
+    fn test_analyzer_source_filenames_share_one_registry() {
+        use crate::sources::{LANGUAGES, extension};
+
+        let root = tempfile::TempDir::new().unwrap();
+        let context = context(root.path());
+        let materialized = super::materialize_sources(&context).unwrap();
+        let expected_keys = LANGUAGES
+            .iter()
+            .flat_map(|language| {
+                super::SOURCE_LINES
+                    .iter()
+                    .map(move |lines| format!("{language}:{lines}:valid"))
+                    .chain(std::iter::once(format!(
+                        "{language}:{}:broken",
+                        super::BROKEN_LINES
+                    )))
+            })
+            .collect::<BTreeSet<_>>();
+        let expected_names = LANGUAGES
+            .iter()
+            .flat_map(|language| {
+                super::SOURCE_LINES
+                    .iter()
+                    .map(move |lines| format!("{language}_{lines}.{}", extension(language)))
+                    .chain(std::iter::once(format!(
+                        "{language}_{}_broken.{}",
+                        super::BROKEN_LINES,
+                        extension(language)
+                    )))
+            })
+            .collect::<BTreeSet<_>>();
+        let registered_names = materialized
+            .values()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<BTreeSet<_>>();
+        let directory_names = std::fs::read_dir(context.workdir.join("sources"))
+            .unwrap()
+            .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(
+            materialized.keys().cloned().collect::<BTreeSet<_>>(),
+            expected_keys
+        );
+        assert_eq!(registered_names, expected_names);
+        assert_eq!(directory_names, expected_names);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_cold_parse_keeps_raw_samples() {
+        use crate::{
+            SuiteKind, SuiteOutput,
+            suites::tests::{Fixture, plan},
+        };
+
+        let fixture = Fixture::new();
+        let source = fixture.context.workdir.join("cold.py");
+        std::fs::write(&source, "print('cold')\n").unwrap();
+        let mut measured = output();
+        super::cold_analyzer(
+            &fixture.context,
+            &plan(SuiteKind::Micro, &[0]),
+            "python",
+            &source,
+            &mut measured,
+        )
+        .unwrap();
+        let measured = SuiteOutput::from_json(&measured.to_json().unwrap()).unwrap();
+
+        assert_eq!(
+            measured.raw["analyze_cold"]["python"]["samples_ms"],
+            serde_json::json!([1.25, 1.25, 1.25, 1.25, 1.25])
+        );
+        let metric = &measured.metrics["micro.analyze_cold.python.median_ms"];
+        assert_eq!(metric.value, 1.25);
+        assert_eq!(metric.n, 5);
     }
 
     #[test]
