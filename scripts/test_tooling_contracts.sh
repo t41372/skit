@@ -11,6 +11,16 @@ expect_text() {
 }
 
 expect_text Cargo.toml 'tree-sitter = "0.26.12"'
+setup_uv_pin='astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1'
+test "$(rg -F "$setup_uv_pin" .github/workflows | wc -l)" -eq 7 || {
+  echo 'every setup-uv use must share the pinned v10.0.1 action' >&2
+  exit 1
+}
+if rg -q 'astral-sh/setup-uv@(?!20cfd1bf945f4377ade1205e4dbc17946fc9a30d)' \
+  .github/workflows --pcre2; then
+  echo 'a workflow uses a stale or unpinned setup-uv action' >&2
+  exit 1
+fi
 expect_text .github/workflows/ci.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
 expect_text .github/workflows/ci.yml 'workflow_dispatch:'
 expect_text .github/workflows/mutation.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
