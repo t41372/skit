@@ -461,7 +461,9 @@ impl LiveTui {
     }
 
     fn wait_for_after(&mut self, checkpoint: usize, needle: &str) -> String {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // A full workspace run starts many real PTYs at once. Keep the checkpoint event-driven,
+        // but allow a loaded CI host enough time to schedule the child that owns this prompt.
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             self.drain();
             let visible = self.visible_after(checkpoint);
