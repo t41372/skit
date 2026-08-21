@@ -1599,6 +1599,110 @@ fn tui_delete_changed_outcome_returns_a_refreshed_draft_claim() {
     assert_eq!(fs::read(&path).unwrap(), b"print('replacement')\n");
 }
 
+#[test]
+fn tui_draft_discovery_returns_no_rows_when_the_owned_directory_changes_before_read() {
+    let root = TempDir::new().unwrap();
+    let drafts = root.path().join("drafts");
+    let parked = root.path().join("drafts-parked");
+    fs::create_dir_all(&drafts).unwrap();
+    fs::write(drafts.join("skit-new-race.py"), b"print('parked')\n").unwrap();
+
+    let rows = tui_drafts_with_test_hook(root.path(), |verified| {
+        assert_eq!(verified, drafts);
+        fs::rename(verified, &parked).unwrap();
+        fs::write(verified, b"not a directory").unwrap();
+    });
+
+    assert!(rows.is_empty());
+    assert_eq!(
+        fs::read(parked.join("skit-new-race.py")).unwrap(),
+        b"print('parked')\n"
+    );
+    assert_eq!(fs::read(&drafts).unwrap(), b"not a directory");
+}
+
+#[cfg(unix)]
+#[test]
+fn tui_changed_draft_refresh_refuses_a_symlink_row_without_touching_either_file() {
+    use std::os::unix::fs::symlink;
+
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let drafts = data.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let path = drafts.join("skit-new-symlink-refresh.py");
+    fs::write(&path, b"print('claimed')\n").unwrap();
+    let initial = tui_drafts(data.path());
+    assert_eq!(initial.len(), 1);
+    assert_application_identity(initial[0].identity.clone());
+    let mut workflow = AddWorkflowState::new(initial.clone());
+    let _ = workflow.reduce(AddAction::SelectDraft(0));
+    let _ = workflow.reduce(AddAction::DeleteSelectedDraft);
+    let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
+
+    let outside = data.path().join("outside-replacement.py");
+    fs::write(&outside, b"print('outside')\n").unwrap();
+    fs::remove_file(&path).unwrap();
+    symlink(&outside, &path).unwrap();
+    let before = test_tree_snapshot(data.path());
+    let store = FileStore::new(data.path());
+    let service = LibraryService::new(store.clone());
+
+    let UiAction::Add(AddAction::DraftDeleted {
+        request,
+        result: Err(problem),
+    }) = tui_add_effect(&service, &store, state.path(), config.path(), effects).unwrap()
+    else {
+        panic!("a changed row that is no longer a regular draft must return a typed error");
+    };
+    assert_eq!(
+        problem,
+        format!(
+            "the kept draft changed and could not be inspected at {}",
+            path.display()
+        )
+    );
+    let _ = workflow.reduce(AddAction::DraftDeleted {
+        request,
+        result: Err(problem.clone()),
+    });
+    assert_eq!(
+        workflow.problem(),
+        Some(&skit_ui::AddProblem::DraftDeleteFailed {
+            reason: problem.clone(),
+        })
+    );
+    assert_eq!(workflow.source().listed_drafts(), initial);
+
+    let error = refreshed_draft(data.path(), &path).unwrap_err();
+    for (locale, expected) in [
+        (
+            Locale::En,
+            format!(
+                "the kept draft changed and could not be inspected at {}",
+                path.display()
+            ),
+        ),
+        (
+            Locale::ZhCn,
+            format!("保留的草稿已更改，无法在 {} 检查它", path.display()),
+        ),
+        (
+            Locale::ZhTw,
+            format!("保留的草稿已變更，無法在 {} 檢查它", path.display()),
+        ),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
+    }
+    assert_eq!(fs::read_link(&path).unwrap(), outside);
+    assert_eq!(fs::read(&outside).unwrap(), b"print('outside')\n");
+    assert_eq!(test_tree_snapshot(data.path()), before);
+    assert!(owned_draft_quarantines(data.path()).is_empty());
+    assert!(test_tree_snapshot(state.path()).is_empty());
+    assert!(test_tree_snapshot(config.path()).is_empty());
+}
+
 #[cfg(any(unix, windows))]
 #[test]
 fn tui_delete_in_place_content_and_permission_changes_return_refreshed_claims() {

@@ -8138,9 +8138,25 @@ fn tui_add_workflow(
 }
 
 fn tui_drafts(data_dir: &Path) -> Vec<DraftSummary> {
+    tui_drafts_after(data_dir, |_| {})
+}
+
+#[cfg(test)]
+fn tui_drafts_with_test_hook(
+    data_dir: &Path,
+    after_directory_check: impl FnOnce(&Path),
+) -> Vec<DraftSummary> {
+    tui_drafts_after(data_dir, after_directory_check)
+}
+
+fn tui_drafts_after(
+    data_dir: &Path,
+    after_directory_check: impl FnOnce(&Path),
+) -> Vec<DraftSummary> {
     let Some(drafts_dir) = existing_owned_drafts_dir(data_dir) else {
         return Vec::new();
     };
+    after_directory_check(&drafts_dir);
     let Ok(items) = fs::read_dir(&drafts_dir) else {
         return Vec::new();
     };
