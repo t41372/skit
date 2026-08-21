@@ -293,3 +293,161 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
         ],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+    use ratatui_crossterm::crossterm::event::{KeyEvent, MouseButton, MouseEvent};
+
+    use super::*;
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn mouse(area: Rect, kind: MouseEventKind) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn find_text(buffer: &Buffer, needle: &str) -> Rect {
+        for row in (0..buffer.area.height).rev() {
+            let text = (0..buffer.area.width)
+                .map(|column| buffer[(column, row)].symbol())
+                .collect::<String>();
+            if let Some(byte) = text.find(needle) {
+                let column = text[..byte].chars().count();
+                return Rect::new(u16::try_from(column).unwrap_or(u16::MAX), row, 1, 1);
+            }
+        }
+        Rect::default()
+    }
+
+    #[test]
+    fn confirm_remove_uses_real_dialog_buttons_tabs_and_reverse_events() {
+        let mut session = ConfirmRemoveSession::default();
+        assert_eq!(
+            session.handle_event(&key(KeyCode::Tab)),
+            ConfirmRemoveEvent::Ignored
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, "Alpha", true, Locale::En);
+            })
+            .unwrap();
+        let remove = find_text(terminal.backend().buffer(), "Remove");
+        let keep = find_text(terminal.backend().buffer(), "Keep");
+        assert!(!remove.is_empty());
+        assert!(!keep.is_empty());
+        assert!(find_text(terminal.backend().buffer(), "not present").is_empty());
+        for code in [KeyCode::Tab, KeyCode::BackTab] {
+            assert_eq!(
+                session.handle_event(&key(code)),
+                ConfirmRemoveEvent::Consumed
+            );
+        }
+        assert_eq!(
+            session.handle_event(&mouse(remove, MouseEventKind::Down(MouseButton::Left))),
+            ConfirmRemoveEvent::Submit
+        );
+        assert_eq!(
+            session.handle_event(&mouse(keep, MouseEventKind::Down(MouseButton::Left))),
+            ConfirmRemoveEvent::Close
+        );
+        for event in [
+            mouse(remove, MouseEventKind::Moved),
+            mouse(remove, MouseEventKind::Up(MouseButton::Left)),
+            key(KeyCode::Enter),
+            Event::Paste("ignored".to_owned()),
+            Event::FocusGained,
+            Event::Resize(40, 10),
+        ] {
+            assert_eq!(session.handle_event(&event), ConfirmRemoveEvent::Ignored);
+        }
+        let release = Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Tab,
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        ));
+        assert_eq!(session.handle_event(&release), ConfirmRemoveEvent::Ignored);
+
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, "Beta", false, Locale::ZhTw);
+            })
+            .unwrap();
+        assert!(!find_text(terminal.backend().buffer(), "Beta").is_empty());
+    }
+
+    #[test]
+    fn help_scrolls_by_every_advertised_key_and_wheel_then_clamps_on_growth() {
+        let mut session = HelpScreenSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(38, 6)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), Locale::ZhCn);
+            })
+            .unwrap();
+        for code in [
+            KeyCode::Down,
+            KeyCode::PageDown,
+            KeyCode::End,
+            KeyCode::Up,
+            KeyCode::PageUp,
+            KeyCode::Home,
+        ] {
+            assert!(session.handle_event(&key(code)));
+        }
+        let viewport = session.viewport;
+        assert!(session.handle_event(&mouse(viewport, MouseEventKind::ScrollDown)));
+        assert!(session.handle_event(&mouse(viewport, MouseEventKind::ScrollUp)));
+        for event in [
+            mouse(viewport, MouseEventKind::Moved),
+            key(KeyCode::Char('x')),
+            Event::Key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL)),
+            Event::Paste("ignored".to_owned()),
+            Event::FocusLost,
+            Event::Resize(80, 20),
+        ] {
+            assert!(!session.handle_event(&event));
+        }
+        assert!(session.handle_event(&key(KeyCode::End)));
+        terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                let geometry = session.render(frame, frame.area(), Locale::En);
+                assert_eq!(geometry.first_visible, 0);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn discard_overlay_keeps_both_visible_chips_clickable_in_every_locale() {
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+            for (width, height) in [(60, 12), (24, 5)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let mut geometry = ViewGeometry::default();
+                terminal
+                    .draw(|frame| {
+                        geometry = discard_changes(frame, frame.area(), locale);
+                    })
+                    .unwrap();
+                assert_eq!(geometry.hits.len(), 2);
+                assert!(geometry.hits.iter().all(|hit| !hit.rect.is_empty()));
+                assert!(matches!(
+                    geometry.hits[0].action,
+                    HitTarget::Command(UiCommand::DiscardChanges)
+                ));
+                assert!(matches!(
+                    geometry.hits[1].action,
+                    HitTarget::Command(UiCommand::KeepEditing)
+                ));
+            }
+        }
+    }
+}

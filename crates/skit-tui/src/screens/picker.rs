@@ -1000,6 +1000,7 @@ mod tests {
     use std::fs;
 
     use ratatui_core::{backend::TestBackend, terminal::Terminal};
+    use ratatui_crossterm::crossterm::event::{MouseButton, MouseEvent};
     use skit_ui::{ChoicePicker, PickerItem, PickerMode};
     use tempfile::tempdir;
 
@@ -1017,6 +1018,22 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+
+    fn control(character: char) -> Event {
+        Event::Key(KeyEvent::new(
+            KeyCode::Char(character),
+            KeyModifiers::CONTROL,
+        ))
+    }
+
+    fn mouse(area: Rect, kind: MouseEventKind) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        })
     }
 
     #[test]
@@ -1308,5 +1325,440 @@ mod tests {
             session.handle_event(mouse, &geometry),
             Some(PromptCandidatePickerEvent::Cancelled)
         );
+    }
+
+    #[test]
+    fn prompt_picker_routes_every_real_key_paste_mouse_and_empty_result() {
+        let picker = ChoicePicker::new(
+            PickerMode::Single,
+            vec![
+                PickerItem::new("alpha".to_owned(), "alpha"),
+                PickerItem::new("beta".to_owned(), "beta"),
+                PickerItem::new("gamma".to_owned(), "gamma"),
+            ],
+            Vec::new(),
+        );
+        let mut session = PromptCandidatePickerSession::new(picker);
+        let mut terminal = Terminal::new(TestBackend::new(52, 10)).unwrap();
+        let mut geometry = ChoicePickerGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry =
+                    render_prompt_candidate_picker(frame, frame.area(), &mut session, Locale::En);
+            })
+            .unwrap();
+
+        for code in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::End,
+            KeyCode::Home,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+        ] {
+            assert_eq!(
+                session.handle_event(key(code), &geometry),
+                Some(PromptCandidatePickerEvent::Changed)
+            );
+        }
+        assert_eq!(session.handle_event(control('x'), &geometry), None);
+        assert_eq!(session.handle_event(key(KeyCode::F(2)), &geometry), None);
+        assert_eq!(
+            session.handle_event(Event::Paste("be".to_owned()), &geometry),
+            Some(PromptCandidatePickerEvent::Changed)
+        );
+        assert_eq!(session.visible_names(), ["beta"]);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Backspace), &geometry),
+            Some(PromptCandidatePickerEvent::Changed)
+        );
+        assert_eq!(
+            session.handle_event(control('s'), &geometry),
+            Some(PromptCandidatePickerEvent::Accepted(vec![
+                "beta".to_owned()
+            ]))
+        );
+
+        terminal
+            .draw(|frame| {
+                geometry =
+                    render_prompt_candidate_picker(frame, frame.area(), &mut session, Locale::En);
+            })
+            .unwrap();
+        for target in [ChoicePickerHit::Search, ChoicePickerHit::Row(0)] {
+            let hit = geometry
+                .hits
+                .iter()
+                .find(|hit| hit.target == target)
+                .expect("the rendered choice target must be clickable");
+            assert_eq!(
+                session.handle_event(
+                    mouse(hit.area, MouseEventKind::Down(MouseButton::Left)),
+                    &geometry,
+                ),
+                Some(PromptCandidatePickerEvent::Changed)
+            );
+        }
+        let search = geometry.search;
+        assert_eq!(
+            session.handle_event(mouse(search, MouseEventKind::Moved), &geometry),
+            None
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(search, MouseEventKind::Up(MouseButton::Left)),
+                &geometry,
+            ),
+            None
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Esc), &geometry),
+            Some(PromptCandidatePickerEvent::Cancelled)
+        );
+
+        let empty = ChoicePicker::new(PickerMode::Single, Vec::new(), Vec::new());
+        let mut empty = PromptCandidatePickerSession::new(empty);
+        let mut empty_terminal = Terminal::new(TestBackend::new(42, 8)).unwrap();
+        empty_terminal
+            .draw(|frame| {
+                geometry =
+                    render_prompt_candidate_picker(frame, frame.area(), &mut empty, Locale::ZhCn);
+            })
+            .unwrap();
+        assert!(!buffer_text(&empty_terminal).trim().is_empty());
+        assert_eq!(
+            empty.handle_event(control('s'), &geometry),
+            Some(PromptCandidatePickerEvent::Cancelled)
+        );
+        assert_eq!(
+            empty.handle_event(control('n'), &geometry),
+            Some(PromptCandidatePickerEvent::Changed)
+        );
+    }
+
+    #[test]
+    fn file_picker_routes_multi_directory_error_locale_and_reverse_mouse_paths() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("alpha.txt"), b"a").unwrap();
+        fs::write(dir.path().join("beta.txt"), b"b").unwrap();
+        fs::create_dir(dir.path().join("folder")).unwrap();
+        fs::write(dir.path().join("folder/nested.txt"), b"n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.path().join("alpha.txt"), dir.path().join("alias")).unwrap();
+
+        let contract = PathPickerState::new(
+            PickerPurpose::Argument,
+            dir.path().to_path_buf(),
+            PathSelectionMode::File,
+            skit_ui::PathOutputPolicy::RelativeTo(dir.path().to_path_buf()),
+            true,
+        );
+        let mut session = FilePickerSession::new(contract);
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        let mut geometry = FilePickerGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = render_file_picker(frame, frame.area(), &mut session, Locale::ZhTw);
+            })
+            .unwrap();
+        #[cfg(unix)]
+        assert!(buffer_text(&terminal).contains('↗'));
+
+        assert_eq!(session.handle_event(control('x'), &geometry), None);
+        assert_eq!(session.handle_event(key(KeyCode::F(2)), &geometry), None);
+        assert_eq!(
+            session.handle_event(control('a'), &geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert!(session.explorer().selected_files.len() >= 2);
+        assert_eq!(
+            session.handle_event(control('n'), &geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert!(session.explorer().selected_files.is_empty());
+        assert_eq!(session.handle_hit(FilePickerHit::Accept), None);
+        assert_eq!(
+            session.handle_event(control('h'), &geometry),
+            Some(FilePickerEvent::Changed)
+        );
+
+        for code in [
+            KeyCode::Home,
+            KeyCode::PageUp,
+            KeyCode::End,
+            KeyCode::PageDown,
+        ] {
+            assert_eq!(
+                session.handle_event(key(code), &geometry),
+                Some(FilePickerEvent::Changed)
+            );
+        }
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char(' ')), &geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('z')), &geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Backspace), &geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Esc), &geometry),
+            Some(FilePickerEvent::Cancelled)
+        );
+
+        terminal
+            .draw(|frame| {
+                geometry = render_file_picker(frame, frame.area(), &mut session, Locale::En);
+            })
+            .unwrap();
+        let search = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.target == FilePickerHit::Search)
+            .expect("search must be a rendered mouse target")
+            .area;
+        assert_eq!(
+            session.handle_event(mouse(search, MouseEventKind::Moved), &geometry),
+            None
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(search, MouseEventKind::Up(MouseButton::Left)),
+                &geometry
+            ),
+            None
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(search, MouseEventKind::Down(MouseButton::Left)),
+                &geometry
+            ),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(session.handle_hit(FilePickerHit::Entry(usize::MAX)), None);
+        assert_eq!(session.handle_hit(FilePickerHit::CurrentDirectory), None);
+        assert_eq!(
+            session.handle_event(control('n'), &geometry),
+            Some(FilePickerEvent::Changed)
+        );
+
+        let row_indices = geometry
+            .hits
+            .iter()
+            .filter_map(|hit| match hit.target {
+                FilePickerHit::Entry(index)
+                    if visible_entries(session.explorer())
+                        .get(index)
+                        .is_some_and(|entry| entry.is_selectable()) =>
+                {
+                    Some((index, hit.area))
+                }
+                _ => None,
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(row_indices.len(), 2);
+        for (_, area) in row_indices {
+            assert_eq!(
+                session.handle_event(
+                    mouse(area, MouseEventKind::Down(MouseButton::Left)),
+                    &geometry,
+                ),
+                Some(FilePickerEvent::Changed)
+            );
+        }
+        let accepted = session
+            .handle_hit(FilePickerHit::Accept)
+            .expect("two selected files must be accepted");
+        assert!(matches!(
+            accepted,
+            FilePickerEvent::Accepted(paths)
+                if paths.len() == 2 && paths.windows(2).all(|pair| pair[0] <= pair[1])
+        ));
+
+        let mut initial_filter = PathPickerState::new(
+            PickerPurpose::Source,
+            dir.path().to_path_buf(),
+            PathSelectionMode::File,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        );
+        initial_filter.set_query("alpha");
+        let initial_filter = FilePickerSession::new(initial_filter);
+        assert_eq!(
+            visible_entries(initial_filter.explorer())
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha.txt"]
+        );
+        assert_eq!(initial_filter.io_error(), None);
+
+        let mut current_with_rows = FilePickerSession::new(PathPickerState::new(
+            PickerPurpose::Source,
+            dir.path().to_path_buf(),
+            PathSelectionMode::FileOrDirectory,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        ));
+        assert_eq!(
+            current_with_rows.handle_event(key(KeyCode::Home), &FilePickerGeometry::default()),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(
+            current_with_rows.handle_event(key(KeyCode::Down), &FilePickerGeometry::default()),
+            Some(FilePickerEvent::Changed)
+        );
+
+        let empty = tempdir().unwrap();
+        let directory_contract = PathPickerState::new(
+            PickerPurpose::WorkingDirectory,
+            empty.path().to_path_buf(),
+            PathSelectionMode::Directory,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        );
+        let mut directory = FilePickerSession::new(directory_contract);
+        let default_geometry = FilePickerGeometry::default();
+        assert_eq!(
+            directory.handle_event(key(KeyCode::Up), &default_geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(
+            directory.handle_event(key(KeyCode::Down), &default_geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(
+            directory.handle_event(key(KeyCode::End), &default_geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(
+            directory.handle_hit(FilePickerHit::Accept),
+            Some(FilePickerEvent::Accepted(vec![empty.path().to_path_buf()]))
+        );
+        assert_eq!(
+            directory.handle_event(key(KeyCode::Enter), &default_geometry),
+            Some(FilePickerEvent::Accepted(vec![empty.path().to_path_buf()]))
+        );
+        assert_eq!(
+            directory.handle_event(key(KeyCode::Char('x')), &default_geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(
+            directory.handle_event(key(KeyCode::Esc), &default_geometry),
+            Some(FilePickerEvent::Changed)
+        );
+
+        let mut empty_file = FilePickerSession::new(PathPickerState::new(
+            PickerPurpose::Source,
+            empty.path().to_path_buf(),
+            PathSelectionMode::File,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        ));
+        assert_eq!(
+            empty_file.handle_event(key(KeyCode::End), &default_geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(empty_file.handle_hit(FilePickerHit::Accept), None);
+        assert_eq!(
+            empty_file.handle_event(key(KeyCode::Char('z')), &default_geometry),
+            Some(FilePickerEvent::Changed)
+        );
+        let mut no_match = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        no_match
+            .draw(|frame| {
+                geometry = render_file_picker(frame, frame.area(), &mut empty_file, Locale::En);
+            })
+            .unwrap();
+        assert!(buffer_text(&no_match).contains("No matching entries"));
+
+        let mut directory_only = FilePickerSession::new(PathPickerState::new(
+            PickerPurpose::WorkingDirectory,
+            dir.path().to_path_buf(),
+            PathSelectionMode::Directory,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        ));
+        let file_index = visible_entries(directory_only.explorer())
+            .iter()
+            .position(|entry| entry.name == "alpha.txt")
+            .expect("the real file row must be visible");
+        assert_eq!(
+            directory_only.handle_hit(FilePickerHit::Entry(file_index)),
+            None
+        );
+
+        let nearest = FilePickerSession::new(PathPickerState::new(
+            PickerPurpose::Configuration,
+            PathBuf::from("a-path-that-does-not-exist"),
+            PathSelectionMode::FileOrDirectory,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        ));
+        assert!(nearest.current_dir().is_dir());
+
+        for purpose in [
+            PickerPurpose::Source,
+            PickerPurpose::WorkingDirectory,
+            PickerPurpose::Configuration,
+        ] {
+            let mut localized = FilePickerSession::new(PathPickerState::new(
+                purpose,
+                dir.path().to_path_buf(),
+                PathSelectionMode::FileOrDirectory,
+                skit_ui::PathOutputPolicy::Absolute,
+                false,
+            ));
+            let mut tiny = Terminal::new(TestBackend::new(18, 5)).unwrap();
+            tiny.draw(|frame| {
+                geometry = render_file_picker(frame, frame.area(), &mut localized, Locale::ZhCn);
+            })
+            .unwrap();
+            assert!(!buffer_text(&tiny).trim().is_empty());
+        }
+
+        let mut one_column = FilePickerSession::new(PathPickerState::new(
+            PickerPurpose::Source,
+            dir.path().to_path_buf(),
+            PathSelectionMode::File,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        ));
+        let mut one_column_terminal = Terminal::new(TestBackend::new(1, 4)).unwrap();
+        one_column_terminal
+            .draw(|frame| {
+                let _ = render_file_picker(frame, frame.area(), &mut one_column, Locale::En);
+            })
+            .unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let unreadable = tempdir().unwrap();
+            let original = fs::metadata(unreadable.path()).unwrap().permissions();
+            fs::set_permissions(unreadable.path(), fs::Permissions::from_mode(0o000)).unwrap();
+            let mut failed = FilePickerSession::new(PathPickerState::new(
+                PickerPurpose::Source,
+                unreadable.path().to_path_buf(),
+                PathSelectionMode::File,
+                skit_ui::PathOutputPolicy::Absolute,
+                false,
+            ));
+            fs::set_permissions(unreadable.path(), original).unwrap();
+            assert!(failed.io_error().is_some());
+            let mut failed_terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+            failed_terminal
+                .draw(|frame| {
+                    let _ = render_file_picker(frame, frame.area(), &mut failed, Locale::En);
+                })
+                .unwrap();
+            assert!(!buffer_text(&failed_terminal).trim().is_empty());
+        }
     }
 }

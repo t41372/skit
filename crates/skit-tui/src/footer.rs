@@ -150,15 +150,10 @@ impl<A: Clone> ActionFooterSession<A> {
             self.clicks.register(region.area, chip.item.action.clone());
         }
 
-        let indicator = match (
-            self.scroll.is_at_top(),
-            self.scroll.is_at_bottom(self.visible_height),
-        ) {
-            (true, true) => "",
-            (true, false) => "↓",
-            (false, true) => "↑",
-            (false, false) => "↕",
-        };
+        let at_top = self.scroll.is_at_top();
+        let at_bottom = self.scroll.is_at_bottom(self.visible_height);
+        let indicator =
+            ["", "↓", "↑", "↕"][usize::from(!at_top).saturating_mul(2) + usize::from(!at_bottom)];
         if !indicator.is_empty() {
             frame.render_widget(
                 Paragraph::new(indicator).style(Style::default().fg(PILL_FOREGROUND)),
@@ -564,6 +559,7 @@ mod tests {
         First,
         Second,
         Third,
+        Fourth,
     }
 
     fn click(column: u16, row: u16) -> MouseEvent {
@@ -619,6 +615,7 @@ mod tests {
             ActionFooterItem::new("1", "First action", TestAction::First),
             ActionFooterItem::new("2", "Second action", TestAction::Second),
             ActionFooterItem::new("3", "Third action", TestAction::Third),
+            ActionFooterItem::new("4", "Fourth action", TestAction::Fourth),
         ];
         let backend = TestBackend::new(22, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -632,9 +629,27 @@ mod tests {
             session.handle_mouse(&scroll_down(1, 0)),
             ActionFooterMouse::Scrolled
         );
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+            })
+            .unwrap();
         assert_eq!(
             session.handle_mouse(&scroll_down(1, 0)),
             ActionFooterMouse::Scrolled
+        );
+        assert_eq!(
+            session.handle_mouse(&MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            ActionFooterMouse::Ignored
+        );
+        assert_eq!(
+            session.handle_mouse(&click(80, 20)),
+            ActionFooterMouse::Ignored
         );
         terminal
             .draw(|frame| {
@@ -643,8 +658,15 @@ mod tests {
             .unwrap();
         assert_eq!(
             session.handle_mouse(&click(1, 0)),
-            ActionFooterMouse::Action(TestAction::Third)
+            ActionFooterMouse::Action(TestAction::Fourth)
         );
+
+        let mut tall = Terminal::new(TestBackend::new(22, 5)).unwrap();
+        tall.draw(|frame| {
+            session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+        })
+        .unwrap();
+        assert_eq!(session.scroll.scroll_offset(), 0);
     }
 
     #[test]
@@ -654,5 +676,58 @@ mod tests {
             ActionFooterItem::new_group("2", "Two", TestAction::Second),
         ];
         assert_eq!(action_footer_required_height(80, &items), 2);
+        assert_eq!(action_footer_required_height(0, &items), 0);
+        assert_eq!(action_footer_required_height(1, &items), 2);
+        assert_eq!(action_footer_required_height::<TestAction>(20, &[]), 0);
+        assert_eq!(action_footer_content_width(0), 0);
+        assert_eq!(action_footer_content_width(2), 2);
+    }
+
+    #[test]
+    fn complete_footer_wheel_clamps_when_the_terminal_grows() {
+        use skit_application::LibraryScan;
+        use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
+
+        let state = LibraryState::from_scan(LibraryScan {
+            entries: vec![EntrySummary {
+                slug: Slug::parse("alpha").unwrap(),
+                name: "Alpha".to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Copy,
+                description: String::new(),
+                target: None,
+            }],
+            diagnostics: Vec::new(),
+        });
+        let mut session = FooterSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), &state, Locale::En);
+            })
+            .unwrap();
+        for _ in 0..4 {
+            let _ = session.handle_mouse(&MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: session.viewport.x,
+                row: session.viewport.y,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+        assert!(session.scroll.scroll_offset() > 0);
+        let mut grown = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        grown
+            .draw(|frame| {
+                let hits = session.render(frame, frame.area(), &state, Locale::ZhCn);
+                assert!(!hits.is_empty());
+            })
+            .unwrap();
+        assert_eq!(session.scroll.scroll_offset(), 0);
+        assert!(!session.handle_mouse(&MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }));
     }
 }

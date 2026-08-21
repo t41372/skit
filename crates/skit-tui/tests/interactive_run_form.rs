@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};
+use ratatui_core::{
+    backend::TestBackend, buffer::Buffer, layout::Rect, style::Color, terminal::Terminal,
+};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -303,9 +305,41 @@ fn every_visible_run_field_affordance_has_a_typed_mouse_action() {
             .expect("the visible field chip must expose its typed click region");
         assert_eq!(
             session.handle_event(mouse(area.x, area.y), &state, &geometry),
-            EventHandling::Action(expected)
+            EventHandling::Action(expected.clone())
         );
+        assert_eq!(
+            skit_tui::map_event(mouse(area.x, area.y), &state, &geometry),
+            Some(expected)
+        );
+        for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+            assert_eq!(
+                skit_tui::map_event(
+                    Event::Mouse(MouseEvent {
+                        kind,
+                        column: area.x,
+                        row: area.y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    &state,
+                    &geometry,
+                ),
+                None
+            );
+        }
     }
+
+    let mut stale = geometry.clone();
+    stale.hits.push(skit_tui::HitRegion {
+        rect: Rect::new(0, 0, 1, 1),
+        action: HitTarget::RunFieldCommand {
+            field: 7,
+            command: UiCommand::Back,
+        },
+    });
+    assert_eq!(
+        skit_tui::map_event(mouse(0, 0), &state, &stale),
+        Some(Action::Back)
+    );
 
     let area = geometry
         .hits

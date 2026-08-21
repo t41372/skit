@@ -561,4 +561,130 @@ fn library_detail_uses_mature_keyboard_and_mouse_scrolling_after_pointer_focus()
         lines(at_bottom.backend().buffer()),
         "mouse scrolling must change the visible wrapped detail viewport"
     );
+
+    let (grown, _) = draw_with_session(&view, &mut session, 100, 50);
+    assert!(
+        lines(grown.backend().buffer()).join("\n").contains("TOP"),
+        "a grown detail viewport must clamp its old scroll offset"
+    );
+    for event in [
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 75,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        }),
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: 75,
+            row: 7,
+            modifiers: KeyModifiers::NONE,
+        }),
+    ] {
+        assert_eq!(
+            session.handle_event(event, &view, &geometry),
+            EventHandling::Ignored
+        );
+    }
+    assert!(matches!(
+        session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 2,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Action(Action::SelectVisible(_))
+    ));
+    assert!(matches!(
+        session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: 2,
+                row: 7,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &view,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Next)
+    ));
+}
+
+#[test]
+fn library_detail_renders_overflow_parameters_and_every_last_run_age_and_exit_shape() {
+    let item = entry(
+        "history",
+        "History",
+        "python",
+        StorageMode::Copy,
+        "History detail",
+        None,
+    );
+    let parameters = (0..7)
+        .map(|index| LibraryParameterDetail {
+            key: format!("p{index}"),
+            value: if index == 0 {
+                String::new()
+            } else {
+                index.to_string()
+            },
+            secret: false,
+        })
+        .collect();
+    let hours = LibraryState::from_surface(
+        LibraryScan {
+            entries: vec![item.clone()],
+            diagnostics: Vec::new(),
+        },
+        BTreeMap::from([(
+            item.slug.clone(),
+            LibraryEntryDetail {
+                parameters,
+                last_run: Some(LibraryLastRun {
+                    at: "2026-08-20T00:00:00Z".to_owned(),
+                    age: LibraryRunAge::Hours(3),
+                    exit: None,
+                }),
+                ..LibraryEntryDetail::default()
+            },
+        )]),
+    );
+    let rendered = lines(draw(&hours, 220, 40, Locale::En).backend().buffer()).join("\n");
+    assert!(rendered.contains("Parameters  p0  p1=1"), "{rendered}");
+    assert!(rendered.contains('…'), "{rendered}");
+    assert!(
+        rendered.contains("Last run  3 h ago · ✗ failed (code None)"),
+        "{rendered}"
+    );
+
+    for (age, expected) in [
+        (LibraryRunAge::Raw("earlier".to_owned()), "earlier"),
+        (LibraryRunAge::JustNow, "just now"),
+        (LibraryRunAge::Days(2), "2 d ago"),
+    ] {
+        let raw = LibraryState::from_surface(
+            LibraryScan {
+                entries: vec![item.clone()],
+                diagnostics: Vec::new(),
+            },
+            BTreeMap::from([(
+                item.slug.clone(),
+                LibraryEntryDetail {
+                    last_run: Some(LibraryLastRun {
+                        at: "2026-08-20T00:00:00Z".to_owned(),
+                        age,
+                        exit: Some(0),
+                    }),
+                    ..LibraryEntryDetail::default()
+                },
+            )]),
+        );
+        let rendered = lines(draw(&raw, 180, 30, Locale::En).backend().buffer()).join("\n");
+        assert!(rendered.contains(expected), "{rendered}");
+        assert!(rendered.contains('✓'), "{rendered}");
+    }
 }
