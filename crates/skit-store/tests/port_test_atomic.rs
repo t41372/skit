@@ -212,13 +212,6 @@ fn test_advisory_file_lock_serializes_two_waiting_threads() {
     worker.join().unwrap();
 }
 
-#[ignore = "UNMAPPED: crash-release-flock needs a child process that acquires skit's lock then \
-            hard-exits (os._exit). There is no public API to acquire-and-hold the lock without a \
-            full mutation, and no helper binary may be added. Release-on-close is a kernel \
-            guarantee that std File::lock inherits; not a skit-specific behavior."]
-#[test]
-fn test_advisory_file_lock_is_released_by_kernel_after_process_crash() {}
-
 #[ignore = "UNMAPPED: Windows msvcrt one-byte-seek/retry/unlock seam. The POSIX build uses flock \
             (std File::lock); there is no msvcrt path to exercise."]
 #[test]

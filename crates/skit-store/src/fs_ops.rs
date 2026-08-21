@@ -362,6 +362,46 @@ mod tests {
         assert!(!root.path().join("registry.lock").exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_advisory_file_lock_is_released_by_kernel_after_process_crash() {
+        const LOCK_ENV: &str = "SKIT_ATOMIC_CRASH_LOCK";
+        const READY_ENV: &str = "SKIT_ATOMIC_CRASH_READY";
+
+        if let (Some(lock), Some(ready)) = (std::env::var_os(LOCK_ENV), std::env::var_os(READY_ENV))
+        {
+            let _held = acquire_lock(Path::new(&lock)).unwrap();
+            std::fs::write(ready, b"locked").unwrap();
+            std::process::exit(23);
+        }
+
+        let root = TempDir::new().unwrap();
+        let lock = root.path().join("config.lock");
+        let ready = root.path().join("child-ready");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("fs_ops::tests::test_advisory_file_lock_is_released_by_kernel_after_process_crash")
+            .arg("--nocapture")
+            .env(LOCK_ENV, &lock)
+            .env(READY_ENV, &ready)
+            .status()
+            .unwrap();
+
+        assert_eq!(status.code(), Some(23));
+        assert_eq!(std::fs::read(&ready).unwrap(), b"locked");
+
+        let store = crate::FileConfigStore::new(root.path());
+        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        thread::spawn(move || done_tx.send(store.set("form", "plain")).unwrap());
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the kernel must release the crashed child's lock immediately")
+            .unwrap();
+
+        assert!(lock.is_file());
+        assert_eq!(std::fs::metadata(lock).unwrap().len(), 1);
+    }
+
     #[test]
     fn try_lock_treats_an_unopenable_path_as_not_acquired() {
         // WHY (test_try_lock_treats_an_unopenable_lock_file_as_not_acquired): an unopenable lock file
