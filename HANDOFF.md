@@ -278,12 +278,13 @@ head above, with its CodeRabbit status green. PR #45 remains an open draft, but 
 the older `865e568cc70d15824880b0dc876c6060dc1cdce8`. Do not treat that head's red checks as evidence
 about the current local branch. The remote docs, CodeQL, dependency/workflow audit, and wheel plus
 `uv tool` jobs passed. Its Linux coverage and three-platform test failures came from fixtures or
-platform code that later local commits changed. Two independent release-workflow failures still
-need a fresh fix and proof: CodSpeed ran plain `cargo bench` and failed because the instrumented
-workspace variable was absent, and the mutation baseline ran benchmark tests in a copied tree
-without `.git`, which made five baseline tests fail before mutation scoring. Do not push merely to
-refresh these checks while the fix pass is still changing. A push starts the mutation workflow and
-invalidates its result on the next source change.
+platform code that later local commits changed. CodSpeed ran plain `cargo bench` and failed because
+the instrumented workspace variable was absent. The local workflow now installs matching
+`cargo-codspeed` 5.0.1, builds in simulation mode, and runs the instrumented binaries; it still
+needs a fresh remote proof. The mutation baseline also ran benchmark tests in a copied tree without
+`.git`, which made five baseline tests fail before mutation scoring; that release-workflow defect
+remains. Do not push merely to refresh these checks while the fix pass is still changing. A push
+starts the mutation workflow and invalidates its result on the next source change.
 
 The final increment has 1,110 unique `test_*` names: 969 already exist on this branch, 471 of those
 are ignored/ledger owners, and six names are duplicated inside the PR increment itself. The raw
