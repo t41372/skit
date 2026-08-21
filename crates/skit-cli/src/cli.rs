@@ -7482,12 +7482,10 @@ fn existing_owned_drafts_dir(data_dir: &Path) -> Option<PathBuf> {
 fn create_owned_drafts_dir(data_dir: &Path) -> Result<PathBuf, CliError> {
     fs::create_dir_all(data_dir).map_err(|error| source_error("create", data_dir, error))?;
     let raw = data_dir.join("drafts");
-    match fs::symlink_metadata(&raw) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir(&raw).map_err(|error| source_error("create", &raw, error))?;
-        }
-        Err(error) => return Err(source_error("inspect", &raw, error)),
+    // Only absence authorizes creation. Every present or unreadable shape must prove that it is the
+    // owned directory below. This keeps the probe and the final ownership check on one policy.
+    if fs::symlink_metadata(&raw).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
+        fs::create_dir(&raw).map_err(|error| source_error("create", &raw, error))?;
     }
     existing_owned_drafts_dir(data_dir).ok_or_else(|| {
         CliError::Failure(

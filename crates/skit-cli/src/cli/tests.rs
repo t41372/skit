@@ -7444,6 +7444,104 @@ fn owned_draft_snapshot(root: &TempDir, name: &str, bytes: &[u8]) -> AddSourceSn
     snapshot
 }
 
+#[cfg(unix)]
+#[test]
+fn owned_draft_creation_refuses_missing_unowned_and_invalid_roots_without_any_write() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt as _, os::unix::fs::symlink};
+
+    let claim_root = TempDir::new().unwrap();
+    let original =
+        owned_draft_snapshot(&claim_root, "skit-new-shape-claim.py", b"print('claim')\n");
+    let claim_before = test_tree_snapshot(claim_root.path());
+    let missing_parent = TempDir::new().unwrap();
+    let missing_data = missing_parent.path().join("missing-data");
+    let mut forged = original.clone();
+    forged.path = missing_data.join("drafts/skit-new-shaped.py");
+    forged.source_record = forged.path.display().to_string();
+    assert!(!has_owned_draft_shape(&missing_data, &forged.path));
+    let error = consume_owned_draft(&missing_data, &forged).unwrap_err();
+    for (locale, expected) in [
+        (
+            Locale::En,
+            "refusing to remove a file outside skit's drafts directory",
+        ),
+        (Locale::ZhCn, "拒绝删除 skit 草稿目录以外的文件"),
+        (Locale::ZhTw, "拒絕移除 skit 草稿目錄以外的檔案"),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
+    }
+    assert!(!missing_data.exists());
+    assert_eq!(test_tree_snapshot(claim_root.path()), claim_before);
+
+    let file_root = TempDir::new().unwrap();
+    let file_data = file_root.path().join("data");
+    fs::create_dir_all(&file_data).unwrap();
+    let file_path = file_data.join("drafts");
+    fs::write(&file_path, b"user file\n").unwrap();
+    let file_before = test_tree_snapshot(file_root.path());
+    let error = create_owned_drafts_dir(&file_data).unwrap_err();
+    for (locale, expected) in [
+        (
+            Locale::En,
+            format!(
+                "skit's drafts path is not an owned directory: {}",
+                file_path.display()
+            ),
+        ),
+        (
+            Locale::ZhCn,
+            format!("skit 的草稿路径不是其自有目录：{}", file_path.display()),
+        ),
+        (
+            Locale::ZhTw,
+            format!("skit 的草稿路徑不是其自有目錄：{}", file_path.display()),
+        ),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
+    }
+    assert_eq!(test_tree_snapshot(file_root.path()), file_before);
+
+    let link_root = TempDir::new().unwrap();
+    let link_data = link_root.path().join("data");
+    let outside = link_root.path().join("outside");
+    fs::create_dir_all(&link_data).unwrap();
+    fs::create_dir_all(&outside).unwrap();
+    let outside_file = outside.join("skit-new-outside.py");
+    fs::write(&outside_file, b"print('outside')\n").unwrap();
+    let link_path = link_data.join("drafts");
+    symlink(&outside, &link_path).unwrap();
+    let link_before = test_tree_snapshot(link_root.path());
+    let error = create_owned_drafts_dir(&link_data).unwrap_err();
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        let message = error.message().localize(locale);
+        assert!(
+            message.contains(&link_path.display().to_string()),
+            "{message}"
+        );
+    }
+    assert_eq!(fs::read_link(&link_path).unwrap(), outside);
+    assert_eq!(fs::read(&outside_file).unwrap(), b"print('outside')\n");
+    assert_eq!(test_tree_snapshot(link_root.path()), link_before);
+
+    let invalid_root = TempDir::new().unwrap();
+    let invalid = invalid_root
+        .path()
+        .join(OsString::from_vec(b"data-with-\0-nul".to_vec()));
+    let invalid_before = test_tree_snapshot(invalid_root.path());
+    let error = create_owned_drafts_dir(&invalid).unwrap_err();
+    assert!(matches!(
+        &error,
+        CliError::Source {
+            operation: "create",
+            ..
+        }
+    ));
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        assert!(!error.message().localize(locale).is_empty());
+    }
+    assert_eq!(test_tree_snapshot(invalid_root.path()), invalid_before);
+}
+
 #[cfg(any(unix, windows))]
 #[test]
 fn owned_draft_consume_is_idempotent_and_requires_the_exact_snapshot() {
