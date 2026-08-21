@@ -1581,10 +1581,11 @@ fn write_python_entry(data: &Path) {
 /// (`src/skit/uvman.py:85-86`), and reports the self-install guidance when refused
 /// (`src/skit/uvman.py:252-256`).
 #[test]
-fn a_first_python_run_asks_before_it_downloads_a_private_uv() {
+fn test_declined_raises_with_guidance() {
     let empty_path = TempDir::new().unwrap();
     let ask = "Download uv";
     let declined = "Download declined.";
+    let guidance = "Download declined. Install uv yourself (https://docs.astral.sh/uv/getting-started/installation/) and skit will pick it up automatically.";
 
     // Every case points the uv mirror at a refused local port, so no case can reach the network
     // even if the question stops working.
@@ -1598,6 +1599,14 @@ fn a_first_python_run_asks_before_it_downloads_a_private_uv() {
             "[mirror]\nenabled = true\nuv_binary = \"https://127.0.0.1:9/astral-sh/uv\"\n",
         )
         .unwrap();
+        let source = data.path().join("scripts/bootstrap/script.py");
+        let metadata = data.path().join("scripts/bootstrap/meta.toml");
+        let registry = data.path().join("registry.toml");
+        let source_before = fs::read(&source).unwrap();
+        let metadata_before = fs::read(&metadata).unwrap();
+        let registry_before = fs::read(&registry).unwrap();
+        let state_before = tree_snapshot(state.path());
+        let config_before = tree_snapshot(config.path());
         // Ctrl+R submits the launch form, and the consent question follows it.
         let (code, output) = run_pty_configured(
             &["run", "bootstrap"],
@@ -1611,6 +1620,11 @@ fn a_first_python_run_asks_before_it_downloads_a_private_uv() {
             },
         );
         assert!(!data.path().join("bin/uv").exists(), "{output}");
+        assert_eq!(fs::read(source).unwrap(), source_before);
+        assert_eq!(fs::read(metadata).unwrap(), metadata_before);
+        assert_eq!(fs::read(registry).unwrap(), registry_before);
+        assert_eq!(tree_snapshot(state.path()), state_before);
+        assert_eq!(tree_snapshot(config.path()), config_before);
         (code, output)
     };
 
@@ -1619,6 +1633,7 @@ fn a_first_python_run_asks_before_it_downloads_a_private_uv() {
         assert!(output.contains(ask), "{output}");
         assert!(output.contains("This won't touch your PATH"), "{output}");
         assert!(output.contains(declined), "{output}");
+        assert!(output.contains(guidance), "{output}");
         // A launch failure exits 125 (`src/skit/flows.py:868`).
         assert_eq!(code, 125, "{output}");
         assert!(!output.contains("First run — downloading uv"), "{output}");
@@ -1630,6 +1645,38 @@ fn a_first_python_run_asks_before_it_downloads_a_private_uv() {
     assert!(!output.contains(declined), "{output}");
     assert!(output.contains("First run — downloading uv"), "{output}");
     assert_eq!(code, 125, "{output}");
+}
+
+#[test]
+fn test_consent_eof_is_yes() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let empty_path = TempDir::new().unwrap();
+    write_python_entry(data.path());
+    fs::write(
+        config.path().join("config.toml"),
+        "[mirror]\nenabled = true\nuv_binary = \"https://127.0.0.1:9/astral-sh/uv\"\n",
+    )
+    .unwrap();
+
+    let (code, output) = run_pty_configured(
+        &["run", "bootstrap"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\x12", b"\x04"],
+        true,
+        |command| {
+            command.env("PATH", empty_path.path());
+        },
+    );
+
+    assert_eq!(code, 125, "{output}");
+    assert!(output.contains("Download uv"), "{output}");
+    assert!(output.contains("First run — downloading uv"), "{output}");
+    assert!(!output.contains("Download declined."), "{output}");
+    assert!(!data.path().join("bin/uv").exists(), "{output}");
 }
 
 /// The running binary must feed the Library detail pane, not only the reducer tests.

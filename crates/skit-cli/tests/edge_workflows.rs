@@ -1,8 +1,11 @@
-use std::fs;
+use std::{fs, net::TcpListener};
 
 use assert_cmd::Command;
 use serde_json::Value;
+use skit_store::FileConfigStore;
 use tempfile::TempDir;
+
+const OFFICIAL_UV_BASE: &str = "https://github.com/astral-sh/uv/releases/download";
 
 struct Sandbox {
     data: TempDir,
@@ -1080,12 +1083,24 @@ fn run_pipeline_materializes_javascript_and_preserves_trusted_command_semantics(
     sandbox.ok(&["run", "unsafe-command", "--set", "value=x", "--no-input"]);
 }
 
-#[test]
-fn first_python_run_announces_private_uv_before_a_local_refused_download() {
+fn dead_proxy() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{address}")
+}
+
+fn bootstrap_fixture() -> (Sandbox, TempDir) {
     let sandbox = Sandbox::new();
     let empty_path = TempDir::new().unwrap();
     let python = sandbox.source("bootstrap.py", b"print('ok')\n");
     sandbox.ok(&["add", &python, "--name", "Bootstrap"]);
+    (sandbox, empty_path)
+}
+
+#[test]
+fn test_consent_non_interactive_auto_yes() {
+    let (sandbox, empty_path) = bootstrap_fixture();
     sandbox.ok(&["config", "mirror.github", "https://127.0.0.1:9"]);
     sandbox.ok(&["config", "mirror", "on"]);
     sandbox
@@ -1101,4 +1116,111 @@ fn first_python_run_announces_private_uv_before_a_local_refused_download() {
         .stderr(predicates::prelude::PredicateBooleanExt::not(
             predicates::str::contains("Download uv"),
         ));
+}
+
+#[test]
+fn test_download_url_uses_configured_mirror() {
+    let (sandbox, empty_path) = bootstrap_fixture();
+    sandbox.ok(&["config", "mirror.github", "https://127.0.0.1:9"]);
+    let mirror = FileConfigStore::new(sandbox.config.path())
+        .mirror()
+        .unwrap();
+    assert!(mirror.enabled);
+    assert_eq!(mirror.uv_binary, "https://127.0.0.1:9/astral-sh/uv");
+
+    let output = sandbox
+        .command()
+        .env("PATH", empty_path.path())
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("no_proxy", "127.0.0.1,localhost")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("https_proxy")
+        .env_remove("ALL_PROXY")
+        .env_remove("all_proxy")
+        .args(["run", "bootstrap", "--no-input"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert_eq!(output.status.code(), Some(125), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "https://127.0.0.1:9/astral-sh/uv/{}/uv-",
+            skit_runtime::UV_VERSION
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn test_download_url_defaults_to_github_without_mirror() {
+    let (sandbox, empty_path) = bootstrap_fixture();
+    assert_eq!(
+        FileConfigStore::new(sandbox.config.path())
+            .mirror()
+            .unwrap(),
+        Default::default()
+    );
+    let proxy = dead_proxy();
+    let output = sandbox
+        .command()
+        .env("PATH", empty_path.path())
+        .env("HTTPS_PROXY", &proxy)
+        .env("https_proxy", &proxy)
+        .env("ALL_PROXY", &proxy)
+        .env("all_proxy", &proxy)
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .args(["run", "bootstrap", "--no-input"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert_eq!(output.status.code(), Some(125), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "{OFFICIAL_UV_BASE}/{}/uv-",
+            skit_runtime::UV_VERSION
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn test_download_url_github_when_uv_binary_blank() {
+    let (sandbox, empty_path) = bootstrap_fixture();
+    fs::write(
+        sandbox.config.path().join("config.toml"),
+        "[mirror]\nenabled = true\nuv_binary = \"\"\n",
+    )
+    .unwrap();
+    let mirror = FileConfigStore::new(sandbox.config.path())
+        .mirror()
+        .unwrap();
+    assert!(mirror.enabled);
+    assert!(mirror.uv_binary.is_empty());
+
+    let proxy = dead_proxy();
+    let output = sandbox
+        .command()
+        .env("PATH", empty_path.path())
+        .env("HTTPS_PROXY", &proxy)
+        .env("https_proxy", &proxy)
+        .env("ALL_PROXY", &proxy)
+        .env("all_proxy", &proxy)
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .args(["run", "bootstrap", "--no-input"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert_eq!(output.status.code(), Some(125), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "{OFFICIAL_UV_BASE}/{}/uv-",
+            skit_runtime::UV_VERSION
+        )),
+        "{stderr}"
+    );
 }

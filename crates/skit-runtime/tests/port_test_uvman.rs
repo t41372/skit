@@ -212,38 +212,6 @@ fn test_pinned_sha256_matches_live_sidecar() {
 // ---- Download consent (_ask_consent) ----------
 
 #[test]
-#[ignore = "CROSS-CRATE: the interactive tty/stdin/EOF consent (_ask_consent, uvman.py:63-88) is skit-cli's TerminalUvConsent (crates/skit-cli/src/run/command.rs:757). skit-runtime exposes only the UvDownloadConsent trait + AllowUvDownload (the never-ask/`nobody to ask` branch)."]
-fn test_consent_non_interactive_auto_yes() {
-    // Oracle: pipe / CI context (neither stdin nor stderr is a tty) -> honour A9 zero-friction, do
-    // not block waiting for input; _ask_consent returns True.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE: interactive consent answers (bare Enter/y/Y/yes = yes, n/N/no = no, whitespace stripped) are skit-cli's TerminalUvConsent (crates/skit-cli/src/run/command.rs:757)."]
-fn test_consent_interactive_answers() {
-    // Oracle parametrization: "" -> True (default Y), "y"/"Y"/"yes" -> True, "n"/"N"/"no" -> False,
-    // "  n  " -> False (leading/trailing whitespace stripped).
-}
-
-#[test]
-#[ignore = "CROSS-CRATE: EOF-counts-as-consent (semi-interactive terminal, uvman.py:83-87) is skit-cli's TerminalUvConsent (crates/skit-cli/src/run/command.rs:757)."]
-fn test_consent_eof_is_yes() {
-    // Oracle: isatty True but input() raises EOFError -> return True so the first run doesn't hang.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE: the decline->raise flow (ensure_uv_downloaded raising UvDeclinedError, uvman.py:251-256) is wired in skit-cli (crates/skit-cli/src/run/command.rs:733). This crate owns only the Declined message asserted below, which is verbatim identical to the oracle's."]
-fn test_declined_raises_with_guidance() {
-    // Declining the download raises UvDeclinedError, and the message includes self-install guidance.
-    assert_eq!(
-        UvBootstrapError::Declined.to_string(),
-        "Download declined. Install uv yourself \
-         (https://docs.astral.sh/uv/getting-started/installation/) and skit will pick it up \
-         automatically.",
-    );
-}
-
-#[test]
 #[ignore = "CROSS-CRATE: quiet=True consent-bypass (uvman.py:251) is skit-cli's job — ensure_managed_uv takes no consent argument; consent is checked before it in crates/skit-cli/src/run/command.rs:733."]
 fn test_quiet_skips_consent() {
     // Oracle: quiet=True (programmatic call) bypasses consent entirely; _ask_consent is never called.
@@ -395,32 +363,6 @@ fn test_ensure_uv_network_error_wrapped() {
     let data_dir = TempDir::new().unwrap();
     let error = ensure_managed_uv(data_dir.path(), Some(dead_mirror().as_str())).unwrap_err();
     assert!(matches!(error, UvBootstrapError::Download { .. }));
-}
-
-#[test]
-fn test_download_url_uses_configured_mirror() {
-    // A configured uv_binary mirror base is used as the download root. (The config plumbing that
-    // resolves an enabled, non-blank uv_binary to this base lives in skit-cli / skit-store; here we
-    // pass the resolved base directly — the oracle's config.UV_BINARY_MIRROR.)
-    let base = "https://mirror.nju.edu.cn/github-release/astral-sh/uv";
-    let target = UvTarget::from_parts("aarch64", "darwin", false).unwrap();
-    let url = uv_asset(&target, Some(base)).unwrap().url;
-    assert!(url.starts_with(base));
-    assert!(url.contains(&format!("{UV_VERSION}/uv-aarch64-apple-darwin.tar.gz")));
-}
-
-#[test]
-fn test_download_url_defaults_to_github_without_mirror() {
-    let target = UvTarget::from_parts("x86_64", "linux", false).unwrap();
-    let url = uv_asset(&target, None).unwrap().url;
-    assert!(url.starts_with("https://github.com/astral-sh/uv/releases/download"));
-    assert!(url.ends_with(".tar.gz"));
-}
-
-#[test]
-#[ignore = "CROSS-CRATE: (e) mirror enabled but uv_binary blank -> fall back to the GitHub base. The blank -> None resolution is in skit-cli (crates/skit-cli/src/run/command.rs:413-414) and skit-store's config load blanks a non-https uv_binary (crates/skit-store/src/config.rs:1033). uv_asset itself only sees an already-resolved Option<&str>."]
-fn test_download_url_github_when_uv_binary_blank() {
-    // Oracle: MirrorConfig(enabled=True, uv_binary="") -> download_url returns the GitHub base.
 }
 
 // ---- SHA256 pinning + checksum verification (no network) ----------

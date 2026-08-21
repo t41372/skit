@@ -2024,7 +2024,7 @@ mod bootstrap_tests {
     /// Version 0.4 treats end of input as consent and refuses only on an explicit no
     /// (`src/skit/uvman.py:85-88`).
     #[test]
-    fn only_an_explicit_no_declines_and_end_of_input_consents() {
+    fn test_consent_interactive_answers() {
         assert!(consent_from_answer(None));
         for consenting in ["", "\n", " ", "y", "Y", "yes", "sure", "nope"] {
             assert!(consent_from_answer(Some(consenting)), "{consenting:?}");
