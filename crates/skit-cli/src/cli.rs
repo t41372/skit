@@ -4417,6 +4417,25 @@ fn deps(
     store: &FileStore,
     args: DepsArgs,
 ) -> Result<(), CliError> {
+    deps_with_source_reader(service, store, args, |path| fs::read(path))
+}
+
+#[cfg(test)]
+fn deps_with_test_source_reader(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    args: DepsArgs,
+    read_source: impl FnOnce(&Path) -> io::Result<Vec<u8>>,
+) -> Result<(), CliError> {
+    deps_with_source_reader(service, store, args, read_source)
+}
+
+fn deps_with_source_reader(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    args: DepsArgs,
+    read_source: impl FnOnce(&Path) -> io::Result<Vec<u8>>,
+) -> Result<(), CliError> {
     let held = service.show(&args.selector)?;
     let original_settings = EntrySettings::from_meta(&held.meta);
     let mut settings = original_settings.clone();
@@ -4472,10 +4491,11 @@ fn deps(
         ));
     }
     let python_copy = kind == "python" && held.meta.mode == StorageMode::Copy;
-    let source = python_copy
-        .then(|| source_path(store, &held))
-        .flatten()
-        .and_then(|path| fs::read(path).ok());
+    let source = if python_copy {
+        source_path(store, &held).and_then(|path| read_source(&path).ok())
+    } else {
+        None
+    };
     let stored_uv = UvMetadata {
         dependencies: settings.dependencies.clone(),
         requires_python: settings.requires_python.clone(),
