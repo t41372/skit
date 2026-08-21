@@ -28,12 +28,12 @@ use skit_language::{
 };
 use skit_runtime::{
     DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
-    LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
+    InterpreterPolicy, LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
     SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, UvDownloadConsent,
-    build_launch_plan, build_launch_preview, ensure_javascript_dependencies_for_module,
-    ensure_managed_uv, execute_launch, javascript_dependency_install_announcement,
-    javascript_module_type, managed_uv_path, resolve_javascript_runtime,
-    sweep_stale_injected_sources,
+    build_launch_plan_with_interpreter_policy, build_launch_preview,
+    ensure_javascript_dependencies_for_module, ensure_managed_uv, execute_launch,
+    javascript_dependency_install_announcement, javascript_module_type, managed_uv_path,
+    resolve_javascript_runtime, sweep_stale_injected_sources,
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
@@ -321,7 +321,13 @@ pub(crate) fn run_with_roots(
         });
     }
     let config = FileConfigStore::new(config_dir);
-    let mut entry = apply_runtime_defaults(held.clone(), &config.settings()?);
+    let config_settings = config.settings()?;
+    let mut entry = apply_runtime_defaults(held.clone(), &config_settings);
+    let configured_bash = config_settings
+        .get("shell.bash_path")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let interpreter_policy = InterpreterPolicy::for_current_host(configured_bash);
     let mut settings = EntrySettings::from_meta(&entry.meta);
     let state = FormStateService::new(FileFormStateStore::new(state_dir));
     let saved = state.load(&entry.slug);
@@ -485,12 +491,13 @@ pub(crate) fn run_with_roots(
             &SystemProbe,
         )?;
     } else if !needs_uv_bootstrap {
-        let _ = build_launch_plan(
+        let _ = build_launch_plan_with_interpreter_policy(
             &entry,
             &paths,
             &assembly,
             prompt_body.as_deref(),
             runner.as_ref(),
+            &interpreter_policy,
             &SystemProbe,
         )?;
     }
@@ -588,12 +595,13 @@ pub(crate) fn run_with_roots(
             &SystemProbe,
         )?
     } else {
-        build_launch_plan(
+        build_launch_plan_with_interpreter_policy(
             &entry,
             &paths,
             &assembly,
             prompt_body.as_deref(),
             runner.as_ref(),
+            &interpreter_policy,
             &SystemProbe,
         )?
     };
@@ -736,18 +744,13 @@ pub(crate) fn apply_sets(
 
 fn apply_runtime_defaults(mut entry: Entry, config: &BTreeMap<String, String>) -> Entry {
     let mut settings = EntrySettings::from_meta(&entry.meta);
-    if settings.interpreter.is_empty() {
-        let key = match entry.meta.kind.as_str() {
-            "shell" => Some("shell.bash_path"),
-            "js" | "ts" => Some("js.runner"),
-            _ => None,
-        };
-        if let Some(value) = key.and_then(|key| config.get(key))
-            && !value.is_empty()
-        {
-            settings.interpreter.clone_from(value);
-            settings.write_to_meta(&mut entry.meta);
-        }
+    if settings.interpreter.is_empty()
+        && matches!(entry.meta.kind.as_str(), "js" | "ts")
+        && let Some(value) = config.get("js.runner")
+        && !value.is_empty()
+    {
+        settings.interpreter.clone_from(value);
+        settings.write_to_meta(&mut entry.meta);
     }
     entry
 }
@@ -1191,7 +1194,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_defaults_apply_only_to_unpinned_shell_and_javascript_entries() {
+    fn runtime_defaults_apply_only_to_unpinned_javascript_entries() {
         let config = BTreeMap::from([
             ("shell.bash_path".to_owned(), "/opt/bash".to_owned()),
             ("js.runner".to_owned(), "bun".to_owned()),
@@ -1200,10 +1203,7 @@ mod tests {
         let javascript = apply_runtime_defaults(entry("js", ""), &config);
         let pinned = apply_runtime_defaults(entry("ts", "deno"), &config);
 
-        assert_eq!(
-            EntrySettings::from_meta(&shell.meta).interpreter,
-            "/opt/bash"
-        );
+        assert!(EntrySettings::from_meta(&shell.meta).interpreter.is_empty());
         assert_eq!(
             EntrySettings::from_meta(&javascript.meta).interpreter,
             "bun"

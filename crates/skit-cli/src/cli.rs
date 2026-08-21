@@ -67,10 +67,10 @@ use skit_language::{
     write_uv_metadata,
 };
 use skit_runtime::{
-    DependencyError, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe,
-    SystemProbe, clear_javascript_dependencies, managed_uv_path, network_looks_blocked,
-    preflight_javascript_dependencies_for_module, project_launch_workdir,
-    resolve_javascript_runtime,
+    DependencyError, InterpreterPlatform, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe,
+    SystemNetworkProbe, SystemProbe, clear_javascript_dependencies, managed_uv_path,
+    network_looks_blocked, preflight_javascript_dependencies_for_module, project_launch_workdir,
+    resolve_interpreter, resolve_javascript_runtime,
 };
 use skit_store::{
     CONFIG_KEYS, ConfigError, CoordinatedStateError, FileAgentSkillStore, FileConfigStore,
@@ -6812,16 +6812,19 @@ fn doctor_launch_block_with_store<P: ProgramProbe>(
         // missing-target sweep already covers that here). uv is a run-time concern:
         // a run bootstraps it, so its absence never blocks a launch.
         "python" => None,
-        "shell" => Some(if settings.interpreter.is_empty() {
+        "shell" => {
+            let name = interpreter_name(settings, "bash");
             let configured = config.get("shell.bash_path")?;
-            if configured.is_empty() {
-                "bash".to_owned()
-            } else {
-                configured
+            match resolve_interpreter(
+                &name,
+                InterpreterPlatform::current(),
+                (!configured.is_empty()).then(|| Path::new(&configured)),
+                probe,
+            ) {
+                Ok(_) => None,
+                Err(error) => return Ok(Some(error.message())),
             }
-        } else {
-            settings.interpreter.clone()
-        }),
+        }
         "fish" => Some(interpreter_name(settings, "fish")),
         "powershell" => Some(interpreter_name(settings, "pwsh")),
         "ruby" => Some(interpreter_name(settings, "ruby")),

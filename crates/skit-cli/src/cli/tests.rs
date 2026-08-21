@@ -2934,12 +2934,25 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
     config
         .set("shell.bash_path", custom_bash.to_str().unwrap())
         .unwrap();
-    assert!(
-        doctor_launch_block(&entry, &EntrySettings::default(), &config, &probe)
-            .unwrap()
-            .unwrap()
-            .localize(Locale::En)
-            .contains(custom_bash.to_str().unwrap())
+    let configured_result =
+        doctor_launch_block(&entry, &EntrySettings::default(), &config, &probe).unwrap();
+    if cfg!(windows) {
+        assert_eq!(configured_result, None);
+    } else {
+        let message = configured_result.unwrap().localize(Locale::En);
+        assert!(message.contains("bash"), "{message}");
+        assert!(
+            !message.contains(custom_bash.to_str().unwrap()),
+            "{message}"
+        );
+    }
+    probe.programs.insert(
+        "bash".to_owned(),
+        root.path().join("path-first-custom-bash"),
+    );
+    assert_eq!(
+        doctor_launch_block(&entry, &EntrySettings::default(), &config, &probe).unwrap(),
+        None
     );
 
     // A python entry is never launch-blocked over uv: the oracle python preflight

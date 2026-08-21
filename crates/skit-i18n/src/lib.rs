@@ -3139,6 +3139,11 @@ const CATALOG: &[Translation] = &[
         "找不到必要程式：{}",
     ),
     row!(
+        "{} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>",
+        "此系统上没有 {}。请安装 Git for Windows（自带的 bash 即可）或 WSL，或用 skit config shell.bash_path <path> 指定一个。",
+        "此系統上沒有 {}。請安裝 Git for Windows（內附的 bash 即可）或 WSL，或用 skit config shell.bash_path <path> 指定一個。",
+    ),
+    row!(
         "No JavaScript runtime found (looked for: {}). Install deno, bun, or node — or pick one with: skit config js.runner <name>",
         "找不到 JavaScript 运行时（查找过：{}）。请安装 deno、bun 或 node——或用 skit config js.runner <name> 指定一个。",
         "找不到 JavaScript 執行環境（查找過：{}）。請安裝 deno、bun 或 node——或用 skit config js.runner <name> 指定一個。",

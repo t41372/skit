@@ -57,9 +57,9 @@ use std::{
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_runtime::{
-    InterpreterPlatform, LaunchError, LaunchPaths, ProgramProbe, SystemProbe, build_launch_plan,
-    build_launch_preview, execute_launch, project_launch_workdir, resolve_interpreter,
-    resolve_launch_workdir,
+    InterpreterPlatform, InterpreterPolicy, LaunchError, LaunchPaths, ProgramProbe, SystemProbe,
+    build_launch_plan, build_launch_plan_with_interpreter_policy, build_launch_preview,
+    execute_launch, project_launch_workdir, resolve_interpreter, resolve_launch_workdir,
 };
 use tempfile::TempDir;
 
@@ -144,6 +144,37 @@ fn test_resolve_bash_on_win32_uses_config_path_when_it_exists() {
         )
         .unwrap(),
         configured
+    );
+
+    let script = "/data/scripts/demo/script.sh";
+    let mut launch_probe = probe_for(script);
+    launch_probe.files.push(configured.clone());
+    let plan = build_launch_plan_with_interpreter_policy(
+        &entry("shell"),
+        &paths(script),
+        &Assembly::default(),
+        None,
+        None,
+        &InterpreterPolicy::new(InterpreterPlatform::Windows, Some(configured.clone())),
+        &launch_probe,
+    )
+    .unwrap();
+    assert_eq!(plan.program, configured);
+
+    let configured_directory = PathBuf::from("C:/hand-edited/git-bin");
+    let directory_probe = FakeProbe {
+        dirs: vec![configured_directory.clone()],
+        ..FakeProbe::default()
+    };
+    assert_eq!(
+        resolve_interpreter(
+            "sh",
+            InterpreterPlatform::Windows,
+            Some(&configured_directory),
+            &directory_probe,
+        )
+        .unwrap(),
+        configured_directory
     );
 
     probe.programs.insert(

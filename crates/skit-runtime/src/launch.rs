@@ -81,6 +81,60 @@ impl ProgramProbe for SystemProbe {
     }
 }
 
+/// Platform branch used by interpreter resolution.
+///
+/// Keeping this value explicit lets all hosts test the Windows policy without pretending that
+/// their local filesystem has Windows semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterpreterPlatform {
+    /// Resolve with the Git for Windows fallback policy.
+    Windows,
+    /// Resolve only through `PATH`.
+    Other,
+}
+
+impl InterpreterPlatform {
+    /// Return the platform of this build.
+    #[must_use]
+    pub const fn current() -> Self {
+        if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// Interpreter resolution inputs supplied by a frontend composition root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InterpreterPolicy {
+    platform: InterpreterPlatform,
+    windows_bash_path: Option<PathBuf>,
+}
+
+impl InterpreterPolicy {
+    /// Construct a policy for an explicit platform and configured fallback.
+    #[must_use]
+    pub fn new(platform: InterpreterPlatform, windows_bash_path: Option<PathBuf>) -> Self {
+        Self {
+            platform,
+            windows_bash_path,
+        }
+    }
+
+    /// Construct the host policy from the configured Windows bash path.
+    #[must_use]
+    pub fn for_current_host(windows_bash_path: Option<PathBuf>) -> Self {
+        Self::new(InterpreterPlatform::current(), windows_bash_path)
+    }
+}
+
+impl Default for InterpreterPolicy {
+    fn default() -> Self {
+        Self::for_current_host(None)
+    }
+}
+
 /// Hold an immutable process plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchPlan {
@@ -106,6 +160,12 @@ struct PromptProcessPlan {
     warning: Option<LaunchWarning>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PromptBodies<'a> {
+    actual: Option<&'a str>,
+    display: Option<&'a str>,
+}
+
 /// Report a launch refusal or process failure.
 #[derive(Debug, Error)]
 pub enum LaunchError {
@@ -121,6 +181,11 @@ pub enum LaunchError {
     /// A required runtime or command is not on PATH.
     #[error("required program was not found: {name}")]
     ProgramNotFound { name: String },
+    /// A Windows shell is neither on PATH nor at the configured fallback path.
+    #[error(
+        "{name} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>"
+    )]
+    WindowsShellMissing { name: String },
     /// No JavaScript runtime candidate resolved on PATH.
     #[error(
         "No JavaScript runtime found (looked for: {names}). Install deno, bun, or node — or pick one with: skit config js.runner <name>"
@@ -193,6 +258,10 @@ impl Localize for LaunchError {
             Self::ProgramNotFound { name } => {
                 Message::new("required program was not found: {}").with(name)
             }
+            Self::WindowsShellMissing { name } => Message::new(
+                "{} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>",
+            )
+            .with(name),
             Self::JsRuntimeMissing { names } => Message::new(
                 "No JavaScript runtime found (looked for: {}). Install deno, bun, or node — or pick one with: skit config js.runner <name>",
             )
@@ -243,6 +312,7 @@ impl LaunchError {
             Self::TargetMissing { .. } => 127,
             Self::TargetNotExecutable { .. }
             | Self::ProgramNotFound { .. }
+            | Self::WindowsShellMissing { .. }
             | Self::JsRuntimeMissing { .. }
             | Self::MissingNeed { .. }
             | Self::PromptRunnerRequired
@@ -269,13 +339,37 @@ pub fn build_launch_plan<P: ProgramProbe>(
     prompt_runner: Option<&PromptRunner>,
     probe: &P,
 ) -> Result<LaunchPlan, LaunchError> {
-    build_launch_plan_inner(
+    build_launch_plan_with_interpreter_policy(
         entry,
         paths,
         assembly,
         prompt_body,
-        None,
         prompt_runner,
+        &InterpreterPolicy::default(),
+        probe,
+    )
+}
+
+/// Build one immutable process plan with frontend-supplied interpreter configuration.
+pub fn build_launch_plan_with_interpreter_policy<P: ProgramProbe>(
+    entry: &Entry,
+    paths: &LaunchPaths,
+    assembly: &Assembly,
+    prompt_body: Option<&str>,
+    prompt_runner: Option<&PromptRunner>,
+    interpreter_policy: &InterpreterPolicy,
+    probe: &P,
+) -> Result<LaunchPlan, LaunchError> {
+    build_launch_plan_inner(
+        entry,
+        paths,
+        assembly,
+        PromptBodies {
+            actual: prompt_body,
+            display: None,
+        },
+        prompt_runner,
+        interpreter_policy,
         probe,
     )
 }
@@ -301,9 +395,12 @@ pub fn build_launch_preview<P: ProgramProbe>(
         entry,
         paths,
         assembly,
-        prompt_body,
-        prompt_display_body,
+        PromptBodies {
+            actual: prompt_body,
+            display: prompt_display_body,
+        },
         prompt_runner,
+        &InterpreterPolicy::default(),
         &PreviewProbe { local: probe },
     )
 }
@@ -382,9 +479,9 @@ fn build_launch_plan_inner<P: ProgramProbe>(
     entry: &Entry,
     paths: &LaunchPaths,
     assembly: &Assembly,
-    prompt_body: Option<&str>,
-    prompt_display_body: Option<&str>,
+    prompt_bodies: PromptBodies<'_>,
     prompt_runner: Option<&PromptRunner>,
+    interpreter_policy: &InterpreterPolicy,
     probe: &P,
 ) -> Result<LaunchPlan, LaunchError> {
     let settings = EntrySettings::from_meta(&entry.meta);
@@ -399,20 +496,55 @@ fn build_launch_plan_inner<P: ProgramProbe>(
     let mut warnings = Vec::new();
     let (program, args, display_args) = match kind {
         "python" => python_plan(paths, assembly, &settings, probe)?,
-        "shell" => interpreted_plan(paths, assembly, interpreter(&settings, "bash"), &[], probe)?,
-        "fish" => interpreted_plan(paths, assembly, interpreter(&settings, "fish"), &[], probe)?,
-        "powershell" => powershell_plan(paths, assembly, &settings, probe)?,
-        "ruby" => interpreted_plan(paths, assembly, interpreter(&settings, "ruby"), &[], probe)?,
-        "perl" => interpreted_plan(paths, assembly, interpreter(&settings, "perl"), &[], probe)?,
-        "lua" => interpreted_plan(paths, assembly, interpreter(&settings, "lua"), &[], probe)?,
-        "r" => r_plan(paths, assembly, &settings, probe)?,
+        "shell" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "bash"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "fish" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "fish"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "powershell" => powershell_plan(paths, assembly, &settings, interpreter_policy, probe)?,
+        "ruby" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "ruby"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "perl" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "perl"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "lua" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "lua"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "r" => r_plan(paths, assembly, &settings, interpreter_policy, probe)?,
         "js" | "ts" => javascript_plan(paths, assembly, &settings, probe)?,
         "exe" => direct_plan(entry, assembly, probe)?,
         "command" => command_plan(assembly, &settings, probe)?,
         "prompt" => {
             let plan = prompt_plan(
-                prompt_body,
-                prompt_display_body,
+                prompt_bodies.actual,
+                prompt_bodies.display,
                 prompt_runner,
                 assembly,
                 probe,
@@ -477,10 +609,16 @@ fn interpreted_plan<P: ProgramProbe>(
     assembly: &Assembly,
     interpreter: &str,
     interpreter_args: &[&str],
+    interpreter_policy: &InterpreterPolicy,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     require_file(&paths.script, probe)?;
-    let program = require_program(interpreter, probe)?;
+    let program = resolve_interpreter(
+        interpreter,
+        interpreter_policy.platform,
+        interpreter_policy.windows_bash_path.as_deref(),
+        probe,
+    )?;
     let mut prefix = interpreter_args
         .iter()
         .map(|value| (*value).to_owned())
@@ -497,6 +635,7 @@ fn powershell_plan<P: ProgramProbe>(
     paths: &LaunchPaths,
     assembly: &Assembly,
     settings: &EntrySettings,
+    interpreter_policy: &InterpreterPolicy,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     interpreted_plan(
@@ -504,6 +643,7 @@ fn powershell_plan<P: ProgramProbe>(
         assembly,
         interpreter(settings, "pwsh"),
         &["-File"],
+        interpreter_policy,
         probe,
     )
 }
@@ -512,6 +652,7 @@ fn r_plan<P: ProgramProbe>(
     paths: &LaunchPaths,
     assembly: &Assembly,
     settings: &EntrySettings,
+    interpreter_policy: &InterpreterPolicy,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     interpreted_plan(
@@ -519,6 +660,7 @@ fn r_plan<P: ProgramProbe>(
         assembly,
         interpreter(settings, "Rscript"),
         &[],
+        interpreter_policy,
         probe,
     )
 }
@@ -1007,6 +1149,33 @@ fn require_program<P: ProgramProbe>(name: &str, probe: &P) -> Result<PathBuf, La
         .ok_or_else(|| LaunchError::ProgramNotFound {
             name: name.to_owned(),
         })
+}
+
+/// Resolve one interpreted program with the version 0.4 Windows shell fallback policy.
+///
+/// `PATH` always wins. Only bash-compatible shell names use `windows_bash_path`, and only on
+/// Windows. A hand-edited configured fallback is accepted when that filesystem object exists;
+/// config authoring applies its stricter regular-file validation before this resolver.
+pub fn resolve_interpreter<P: ProgramProbe>(
+    name: &str,
+    platform: InterpreterPlatform,
+    windows_bash_path: Option<&Path>,
+    probe: &P,
+) -> Result<PathBuf, LaunchError> {
+    if let Some(program) = probe.find_program(name) {
+        return Ok(program);
+    }
+    if platform == InterpreterPlatform::Windows && matches!(name, "bash" | "sh" | "zsh") {
+        if let Some(configured) = windows_bash_path.filter(|path| probe.exists(path)) {
+            return Ok(configured.to_path_buf());
+        }
+        return Err(LaunchError::WindowsShellMissing {
+            name: name.to_owned(),
+        });
+    }
+    Err(LaunchError::ProgramNotFound {
+        name: name.to_owned(),
+    })
 }
 
 /// Resolve the child working directory with the same rules used by launch planning.
