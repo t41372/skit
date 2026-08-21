@@ -890,6 +890,58 @@ fn adapter_only_error_paths_do_not_require_process_global_configuration() {
 }
 
 #[test]
+fn onboarding_candidate_labels_project_input_and_unset_shapes_in_every_locale() {
+    let plan = onboarding_plan(
+        "python",
+        concat!(
+            "first = input(\"Name?\")\n",
+            "password = input(\"Password?\")\n",
+            "COUNT = 0\n",
+            "COUNT += 1\n",
+        ),
+    );
+    let password = plan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.declaration.name == "input-2")
+        .expect("the analyzer must publish the second input call");
+    assert_eq!(password.declaration.binding, ParameterBinding::Input);
+    assert_eq!(password.declaration.order, 1);
+    assert!(password.declaration.secret);
+    for (locale, expected) in [
+        (Locale::En, "input() #2: \"Password?\" (secret)"),
+        (Locale::ZhCn, "input() 第 2 个：\"Password?\" (机密)"),
+        (Locale::ZhTw, "input() 第 2 個：\"Password?\" (機密)"),
+    ] {
+        assert_eq!(onboarding_candidate_label(locale, password), expected);
+    }
+
+    let count = plan
+        .candidates
+        .iter()
+        .find(|candidate| candidate.declaration.name == "COUNT")
+        .expect("the analyzer must publish the constant");
+    assert_eq!(
+        count.demotion,
+        Some(skit_language::DegradationReason::Accumulator)
+    );
+    let mut unset = count.clone();
+    unset.declaration.default = None;
+    unset.demotion = None;
+    for (locale, expected) in [
+        (Locale::En, "COUNT (int) = not set"),
+        (Locale::ZhCn, "COUNT（int）= 未设置"),
+        (Locale::ZhTw, "COUNT（int）= 未設定"),
+    ] {
+        assert_eq!(onboarding_candidate_label(locale, &unset), expected);
+    }
+    assert!(
+        onboarding_candidate_label(Locale::En, count)
+            .ends_with(" — ⚠ looks like a loop accumulator — probably not a parameter")
+    );
+}
+
+#[test]
 fn test_axis_display_helpers_exact() {
     let displayed = |store: &FileConfigStore, key: &str| {
         let raw = store.get(key).unwrap();
