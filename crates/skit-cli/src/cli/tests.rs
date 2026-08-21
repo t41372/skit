@@ -8018,6 +8018,80 @@ fn settings_host_updates_prompt_javascript_reference_python_and_source_managemen
             .unwrap()
             .contains("${NAME:-world}")
     );
+
+    let managed_source = |default: &str| {
+        let mut managed = ParamDecl::new("NAME");
+        managed.binding = ParameterBinding::Const;
+        managed.delivery = ParameterDelivery::Inject;
+        managed.default = Some(ParameterValue::String(default.to_owned()));
+        (
+            managed.clone(),
+            write_managed_params("shell", "NAME=world\necho \"$NAME\"\n", &[managed]).unwrap(),
+        )
+    };
+    let (mut collision, collision_source) = managed_source("world");
+    collision.binding = ParameterBinding::None;
+    let refused = service
+        .add(CreateEntry {
+            name: "Refused source binding".to_owned(),
+            kind: EntryKind::parse("shell").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: collision_source.into_bytes(),
+                stored_name: Some("script.sh".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                parameters: vec![collision],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let refused_payload = source_path(&store, &refused).unwrap();
+    let refused_meta = refused_payload.parent().unwrap().join("meta.toml");
+    let refused_payload_before = fs::read(&refused_payload).unwrap();
+    let refused_meta_before = fs::read(&refused_meta).unwrap();
+    let mut values = SubmittedValues::new();
+    set(&mut values, "source:resync", "true");
+    set(&mut values, "parameter:NAME:help", "refused");
+    assert!(
+        tui_submit_settings(&service, &store, &state_dir, refused.slug.as_str(), &values,).is_err()
+    );
+    assert_eq!(fs::read(&refused_payload).unwrap(), refused_payload_before);
+    assert_eq!(fs::read(&refused_meta).unwrap(), refused_meta_before);
+
+    let (managed, updated_source) = managed_source("world");
+    let updated = service
+        .add(CreateEntry {
+            name: "Updated source binding".to_owned(),
+            kind: EntryKind::parse("shell").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: updated_source.into_bytes(),
+                stored_name: Some("script.sh".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                parameters: vec![managed],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let updated_payload = source_path(&store, &updated).unwrap();
+    let before = fs::read(&updated_payload).unwrap();
+    let mut values = SubmittedValues::new();
+    set(&mut values, "source:resync", "true");
+    set(&mut values, "parameter:NAME:default", "updated");
+    tui_submit_settings(&service, &store, &state_dir, updated.slug.as_str(), &values).unwrap();
+    let after = fs::read(&updated_payload).unwrap();
+    assert_ne!(after, before);
+    assert!(String::from_utf8(after).unwrap().contains("updated"));
 }
 
 #[cfg(unix)]
