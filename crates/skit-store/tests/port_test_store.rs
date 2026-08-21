@@ -186,16 +186,6 @@ fn legacy_row(name: &str, kind: &str, description: &str) -> Value {
 // add_python / basic store behavior (add-orchestration lives in skit-ui/cli; the store slices port)
 // ===========================================================================
 
-#[ignore = "UNMAPPED -> higher layer. `store.add_python` is add orchestration in skit-ui::add / \
-            skit-cli: it opens the file, hashes it, extracts the docstring description \
-            (skit-language::description), resolves the source path, and chooses the stored name. \
-            skit-store only takes a prepared CreateEntry. Its store-level guarantees (byte-exact \
-            stored copy + source_hash) are covered by mutations.rs::\
-            create_is_atomic_mints_identity_and_preserves_payload_bytes and port_test_atomic.rs; \
-            the docstring-description assertion has no store analog."]
-#[test]
-fn test_add_copy_preserves_original_verbatim() {}
-
 #[test]
 fn test_add_reference_points_to_origin() {
     // WHY (store slice): a reference add copies NO payload into the store and launches the origin
@@ -287,18 +277,6 @@ fn test_remove_copy_does_not_touch_original() {
     assert!(original.exists());
 }
 
-#[ignore = "UNMAPPED -> higher layer. add_command's defaults (workdir=invoke via \
-            skit-application::add_workdir, template placement) are add orchestration; skit-store \
-            create only round-trips whatever settings/workdir it is given."]
-#[test]
-fn test_add_command_entry() {}
-
-#[ignore = "UNMAPPED -> higher layer. The non-empty-template rule is enforced by the add-command \
-            use case (skit-ui/cli); skit-store create accepts any settings and does not validate \
-            the template."]
-#[test]
-fn test_command_requires_nonempty_template() {}
-
 #[test]
 fn test_doctor_rebuild_from_meta() {
     // WHY: with the index gone, a listing (registry-backed) is empty; `rebuild` reprojects every
@@ -349,27 +327,6 @@ fn test_doctor_reports_missing_reference() {
     )));
 }
 
-#[ignore = "UNMAPPED -> higher layer. Leaving the description empty on a syntax error is \
-            skit-language::description / skit-ui add resilience; skit-store stores whatever \
-            description it is handed."]
-#[test]
-fn test_syntax_error_script_still_addable() {}
-
-#[ignore = "UNMAPPED -> higher layer. Missing-source detection lives in the add use case that reads \
-            the file (skit-ui/cli); skit-store create takes bytes and never opens the source path."]
-#[test]
-fn test_add_python_missing_file_raises() {}
-
-#[ignore = "UNMAPPED -> higher layer. add_exe's forced reference mode and description passthrough \
-            are add orchestration; skit-store create round-trips a prepared exe CreateEntry."]
-#[test]
-fn test_add_exe_roundtrip() {}
-
-#[ignore = "UNMAPPED -> higher layer. The missing-source check is in the add use case, not a store \
-            responsibility."]
-#[test]
-fn test_add_exe_missing_file_raises() {}
-
 #[test]
 fn test_list_entries_skips_corrupt_meta() {
     // WHY: the whole-entry directory scan silently skips a directory whose meta.toml is corrupt and
@@ -414,13 +371,6 @@ fn test_doctor_rebuild_corrupt_meta() {
     assert!(slugs.contains(&"corrupt"));
 }
 
-#[ignore = "UNMAPPED -> higher layer. Rewriting the copy's script body with a PEP 723 block is \
-            skit-language injection orchestrated by skit-ui/cli; skit-store persists dependency \
-            metadata in meta.toml (update_settings/update_entry) but never edits the script source. \
-            Confirmed: no pep723/inject write path exists in skit-store/src."]
-#[test]
-fn test_update_dependencies_copy_mode() {}
-
 #[test]
 fn test_resolve_not_found_raises() {
     // WHY: a selector that matches nothing is a typed NotFound, not a crash.
@@ -441,54 +391,20 @@ fn test_resolve_not_found_raises() {
 // add_script — the generic Tier-0 add orchestration (skit-ui/cli + skit-language).
 // ===========================================================================
 
-#[ignore = "UNMAPPED -> higher layer. add_script is add orchestration: comment-extracted \
-            description (skit-language), workdir defaults (skit-application::add_workdir), and the \
-            stored filename. The store-level byte-exact copy + source_hash are covered by \
-            port_test_atomic.rs and mutations.rs."]
-#[test]
-fn test_add_script_copy_is_byte_identical_and_records_hash() {}
-
-#[ignore = "UNMAPPED -> higher layer. add_script's reference workdir default (origin) and no-copy \
-            are add orchestration; the store no-copy-on-reference slice is ported in \
-            test_add_reference_points_to_origin."]
-#[test]
-fn test_add_script_reference_points_to_origin() {}
-
 #[ignore = "UNMAPPED -> higher layer. The explicit-workdir override is an add-orchestration input; \
             skit-store round-trips whatever workdir it is given."]
 #[test]
 fn test_add_script_explicit_workdir_override() {}
-
-#[ignore = "UNMAPPED -> higher layer. 'explicit description wins over comment extraction' is an \
-            add-orchestration precedence rule; the store stores what it is handed."]
-#[test]
-fn test_add_script_explicit_name_and_description() {}
 
 #[ignore = "UNMAPPED -> higher layer. Recording a passed interpreter is add orchestration; the \
             store round-trips settings.interpreter (mutations.rs create test)."]
 #[test]
 fn test_add_script_records_interpreter() {}
 
-#[ignore = "UNMAPPED -> higher layer. The interpreted/copyable-kind allowlist is an add-use-case \
-            rule (skit-ui/cli). skit-store keeps kinds OPEN-ENDED for v0.4 compatibility \
-            (EntryKind::parse accepts any non-blank kind), so create does NOT reject 'martian'."]
-#[test]
-fn test_add_script_unknown_kind_raises() {}
-
 #[ignore = "UNMAPPED -> higher layer. Same add-use-case allowlist; the store accepts 'exe' as an \
             open kind, so create does not reject it here."]
 #[test]
 fn test_add_script_non_interpreted_kind_raises() {}
-
-#[ignore = "UNMAPPED -> higher layer. The missing-source check is in the add use case that reads \
-            the file; not a store responsibility."]
-#[test]
-fn test_add_script_missing_file_raises() {}
-
-#[ignore = "UNMAPPED -> higher layer. The '--' comment description and the stored filename are add \
-            orchestration (skit-language + skit-ui/cli)."]
-#[test]
-fn test_add_script_lua_uses_double_dash_description() {}
 
 // ===========================================================================
 // list_summaries — the listing view, served from the index (the pure store contract).
@@ -780,12 +696,6 @@ fn test_a_corrupt_index_lists_nothing_and_preserves_the_bad_bytes() {
         .collect();
     assert_eq!(names, ["doomed".to_owned()]);
 }
-
-#[ignore = "UNMAPPED -> higher layer. add_exe's forced reference mode plus DirectLaunch \
-            target(spec_for('exe')) is add orchestration + the launcher; the store-level launch \
-            target state is tested through LibraryDetailRepository."]
-#[test]
-fn test_exe_is_always_reference_mode() {}
 
 #[test]
 fn test_an_entry_whose_meta_is_gone_is_not_listed() {
