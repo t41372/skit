@@ -6131,12 +6131,10 @@ fn prompt_runner_pin_count(
         .iter()
         .filter(|summary| summary.kind.as_str() == "prompt")
     {
-        match service.show(summary.slug.as_str()) {
-            Ok(entry) if EntrySettings::from_meta(&entry.meta).runner == runner => {
-                count += 1;
-            }
-            Ok(_) | Err(RepositoryError::NotFound { .. }) => {}
-            Err(_) => {}
+        if let Ok(entry) = service.show(summary.slug.as_str())
+            && EntrySettings::from_meta(&entry.meta).runner == runner
+        {
+            count += 1;
         }
     }
     Ok(count)

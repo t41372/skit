@@ -3532,6 +3532,7 @@ fn tui_host_opens_every_frontend_neutral_screen_and_handles_simple_effects() {
 fn tui_runner_host_preserves_editor_input_on_stale_rows_and_rechecks_prompt_pins() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
     let config_dir = root.path().join("config");
     fs::create_dir_all(&config_dir).unwrap();
     fs::write(
@@ -3613,14 +3614,19 @@ fn tui_runner_host_preserves_editor_input_on_stale_rows_and_rechecks_prompt_pins
         .unwrap();
     assert_eq!(row.pinned_count, 1);
     add_pinned_prompt("Second prompt");
-    let action = tui_remove_runner(
+    assert_eq!(prompt_runner_pin_count(&service, "agent").unwrap(), 2);
+    let data_before = test_tree_snapshot(&data_dir);
+    let config_before = fs::read(config_dir.join("config.toml")).unwrap();
+    let action = tui_effect(
         &service,
+        &store,
+        &state_dir,
         &config_dir,
-        RunnerRemoveRequest::Named {
+        UiEffect::RemoveRunner(RunnerRemoveRequest::Named {
             name: "agent".to_owned(),
             expected: row.key_identities,
             expected_pinned_count: row.pinned_count,
-        },
+        }),
     )
     .unwrap();
     assert!(matches!(
@@ -3631,6 +3637,12 @@ fn tui_runner_host_preserves_editor_input_on_stale_rows_and_rechecks_prompt_pins
         FileConfigStore::new(&config_dir).runners().unwrap().len(),
         1
     );
+    assert_eq!(test_tree_snapshot(&data_dir), data_before);
+    assert_eq!(
+        fs::read(config_dir.join("config.toml")).unwrap(),
+        config_before
+    );
+    assert!(!state_dir.exists());
 }
 
 #[test]
