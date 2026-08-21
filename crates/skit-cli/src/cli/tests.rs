@@ -4034,6 +4034,7 @@ fn tui_rerun_replays_only_honest_valid_state_and_falls_back_to_the_form() {
             &state_dir,
             &config_dir,
             fresh.slug.as_str(),
+            Locale::En,
         )
         .unwrap(),
         UiAction::SetStatus(message) if message.contains("hasn't run yet")
@@ -4083,6 +4084,7 @@ fn tui_rerun_replays_only_honest_valid_state_and_falls_back_to_the_form() {
             &state_dir,
             &config_dir,
             prompt.slug.as_str(),
+            Locale::En,
         )
         .unwrap(),
         UiAction::Present(Screen::Run(_))
@@ -4093,6 +4095,81 @@ fn tui_rerun_replays_only_honest_valid_state_and_falls_back_to_the_form() {
     assert!(rerunnable.contains(&runnable.slug));
     assert!(rerunnable.contains(&invalid.slug));
     assert!(!rerunnable.contains(&fresh.slug));
+}
+
+#[test]
+fn tui_rerun_localizes_runner_failures_without_writing() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let state = FormStateService::new(FileFormStateStore::new(&state_dir));
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::write(
+        config_dir.join("config.toml"),
+        "[prompt]\nrunners_seeded = true\nrunners = []\n",
+    )
+    .unwrap();
+    let entry = service
+        .add(CreateEntry {
+            name: "Missing runner".to_owned(),
+            kind: EntryKind::parse("prompt").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"Review this.\n".to_vec(),
+                stored_name: Some("prompt.md".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                runner: "missing-agent".to_owned(),
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    state
+        .record_run(
+            &entry.slug,
+            0,
+            "2026-08-08T00:00:00Z",
+            &[],
+            Some(&BTreeMap::new()),
+        )
+        .unwrap();
+    let before = test_tree_snapshot(root.path());
+
+    for (locale, expected) in [
+        (
+            Locale::En,
+            "Error: The runner missing-agent isn't configured (known: —). Manage runners with: skit runner list",
+        ),
+        (
+            Locale::ZhCn,
+            "错误：执行器 missing-agent 未配置(已知:—)。管理执行器:skit runner list",
+        ),
+        (
+            Locale::ZhTw,
+            "錯誤：執行器 missing-agent 未設定(已知:—)。管理執行器:skit runner list",
+        ),
+    ] {
+        assert_eq!(
+            tui_rerun(
+                &service,
+                &store,
+                &state_dir,
+                &config_dir,
+                entry.slug.as_str(),
+                locale,
+            )
+            .unwrap(),
+            UiAction::SetStatus(expected.to_owned())
+        );
+        assert_eq!(test_tree_snapshot(root.path()), before);
+    }
 }
 
 #[test]

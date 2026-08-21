@@ -7125,7 +7125,14 @@ fn tui_effect(
                 rerunnable,
             })
         }
-        UiEffect::Rerun { selector } => tui_rerun(service, store, state_dir, config_dir, &selector),
+        UiEffect::Rerun { selector } => tui_rerun(
+            service,
+            store,
+            state_dir,
+            config_dir,
+            &selector,
+            active_locale(),
+        ),
         UiEffect::Open { request, selector } => {
             let screen = tui_open(service, store, state_dir, config_dir, request, selector)?;
             Ok(match screen {
@@ -7835,6 +7842,7 @@ fn tui_rerun(
     state_dir: &Path,
     config_dir: &Path,
     selector: &str,
+    locale: Locale,
 ) -> Result<UiAction, CliError> {
     let entry = service.show(selector)?;
     let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
@@ -7843,7 +7851,7 @@ fn tui_rerun(
         && saved.last_run.values.is_none()
     {
         return Ok(UiAction::SetStatus(format_text(
-            active_locale(),
+            locale,
             "{} hasn't run yet — press Enter to fill the form first.",
             &[&entry.meta.name],
         )));
@@ -7886,11 +7894,7 @@ fn tui_rerun(
         Ok(exit) => tui_complete(
             service,
             state_dir,
-            &format_text(
-                active_locale(),
-                "Run finished with exit status {}",
-                &[&exit],
-            ),
+            &format_text(locale, "Run finished with exit status {}", &[&exit]),
         ),
         Err(RunError::Inputs(skit_application::run_inputs::RunInputError::Preparation(_))) => {
             Ok(UiAction::Present(tui_open(
@@ -7903,9 +7907,9 @@ fn tui_rerun(
             )?))
         }
         Err(error) => Ok(UiAction::SetStatus(format_text(
-            active_locale(),
+            locale,
             "Error: {}",
-            &[&error.message().localize(active_locale())],
+            &[&error.message().localize(locale)],
         ))),
     }
 }
