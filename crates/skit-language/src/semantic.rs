@@ -533,7 +533,7 @@ fn first_fatal_error<'tree>(
     if node.is_error() && kind == "powershell" && powershell::recoverable_error(source, node) {
         return None;
     }
-    if node.is_error() || (node.is_missing() && !(kind == "powershell" && node.kind() == ";")) {
+    if node.is_error() || node.is_missing() {
         return Some(node);
     }
     let mut cursor = node.walk();
