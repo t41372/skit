@@ -8,6 +8,7 @@ mod config;
 mod fs_ops;
 mod library_snapshot;
 mod mutations;
+mod path_completion;
 mod path_glob;
 mod paths;
 mod prompt_selection;
@@ -25,6 +26,7 @@ pub use mutations::{
     FileAgentSkillStore, FileRunnerManagementStore, PreparedLaunch, RegistryRebuildProblem,
     RegistryRebuildReport, RunnerManagementStoreError, RunnerRemovalCas, content_hash,
 };
+pub use path_completion::SystemDirectoryReader;
 pub use path_glob::FileGlobExpander;
 pub use paths::{expand_user_path, stored_filename, stored_filenames};
 pub use prompt_selection::FilePromptSelectionStore;

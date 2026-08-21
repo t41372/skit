@@ -11,6 +11,7 @@ pub mod health;
 pub mod library_detail;
 mod mutations;
 pub mod parameter_edit;
+pub mod path_completion;
 pub mod path_insertion;
 mod payload_policy;
 pub mod preferences;
