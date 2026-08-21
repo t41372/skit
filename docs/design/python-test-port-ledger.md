@@ -134,7 +134,7 @@ Interpreter Batch D closes the final nine launch/config rows:
 | --- | --- | --- | --- |
 | test_store.py | 78 | crates/skit-cli/tests/port_test_store_manifest.rs + owning store/language/application/runtime/CLI targets | implementation parity (73 executable REAL / 5 semantic or version closures) · the manifest proves 78 occurrences, 78 unique names, the exact oracle set, and the 73/5 split · Windows PATHEXT inference uses a pure application policy with real CLI metadata/environment composition (`0e4a698`/`8a15675`) · recursive size and v0.4 display thresholds run at the private CLI owners (`e326985`) · 15 public add contracts run through the real binary and FileStore (`cebb661`) · registry fallback, repair, corruption, and race owners remain canonical in skit-store, including the final repair-race batch (`fae2d20`) · real Windows-host CLI execution remains a CI gate |
 | test_store_fix.py | 38 | final exact manifest + metadata/filesystem/add-deps CLI/store owners + private atomic/lock/mutation owners | implementation parity complete (32 executable exact owners / 6 structured stronger-owner or architecture closures) · Batch 1 owns 12 metadata-corruption rows · Batch 2 owns four filesystem/recovery/atomic rows · Batch 3 owns 13 copy/reference workdir, strict byte-fidelity, PEP 723, refusal, and newline rows, including one private test-only resolved-source read fault seam with no public API · Batch 4 owns three persistent-lock and concurrent-add rows · the final manifest rejects duplicate, missing, extra, overlapping, empty-reason, and empty-stronger-owner accounting; 0 rows remain |
-| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs + `fs_ops` actual-operations owners | in progress (21 exact owners / 11 architecture or platform closures; 20 host-active + 1 non-Unix gate) · Atomic Batch A moves ten durability/retry names to the real shared writer: temp sync precedes replace, parent sync follows it and stays best-effort, every failure cleans the temp without clobbering the target, and bounded sharing-violation retries preserve exact backoff · Batch B proves permission apply/skip/failure through that writer and proves a public config-lock open failure leaves the same store ready to retry · the operations seam stays crate-private · native crash/lock and Windows permission rows remain |
+| test_atomic.py | 32 | final exact manifest + crates/skit-store/tests/port_test_atomic.rs + `fs_ops` actual-operations owners | implementation parity complete (22 exact owners / 10 structured architecture closures; 15 common exact + 7 target-gated exact) · Atomic Batch A owns durability and retry order/faults through the shared writer · Batch B owns permission apply/skip/failure and public lock-open retry · Batch C owns real child-process POSIX crash release, cross-platform readonly preservation through FileFormStateStore/FileStore, and four native Windows additive lock/permission gates · the final manifest rejects duplicate/missing names, ignored exact owners, empty closure stubs, overlap, and empty reasons/stronger owners · real Windows-host execution remains a CI gate |
 
 The six `test_store_fix.py` semantic closures stay at stronger existing owners instead of gaining
 duplicate exact names:
@@ -310,14 +310,16 @@ gaps, all now resolved or recorded:
   `docs/behavior-changes.md`; `test_bool_default_is_carried` asserts the kept behavior with a
   BEHAVIOR-CHANGE note. Reversible on request.
 
-### test_atomic.py → port_test_atomic.rs + fs_ops owner (21 exact / 11 deferred) — Tier 2
+### test_atomic.py → final manifest + port_test_atomic.rs + fs_ops owner (22 exact / 10 closures) — Tier 2
 
-All 32 frozen names occur once. Twenty-one have exact owners; twenty execute on Unix and the
-directory-sync skip owner executes on non-Unix hosts. Eleven remain explicit architecture or
-platform closures. The Rust atomic mechanism is `pub(crate)`: public store owners assert the user
-data outcome, while syscall order/fault owners run beside the actual shared writer rather than
-exporting a second atomic implementation. This is the data-safety tier; the port surfaced three
-real concerns:
+All 32 frozen names occur once. Twenty-two have exact owners: 15 are common and 7 are explicit
+target gates (six Unix and one non-Unix). Linux executes 21 exact owners. Ten rows are structured
+architecture closures with nonempty reasons and stronger owners. The final manifest rejects a
+duplicate, missing or extra name, overlap between categories, an ignored exact owner, an empty
+closure body, or empty closure metadata. The Rust atomic mechanism is `pub(crate)`: public store
+owners assert the user-data outcome, while syscall order/fault owners run beside the actual shared
+writer rather than exporting a second atomic implementation. This is the data-safety tier; the port
+surfaced four real concerns:
 
 - **FIXED — `.tmp` leak on an fsync failure.** The state/config writer already removed its temp on
   every write, sync, and replace error, but the entry/registry/Agent writer returned early on write
@@ -339,6 +341,15 @@ real concerns:
   apply operation, and that an apply error still publishes the new bytes without temp residue.
   The public `FileConfigStore` owner also makes `config.lock` a directory, observes a typed write
   error with no config write, removes the obstruction, and succeeds through the same store.
+- **RESOLVED (Atomic Batch C) — crash release and native platform ownership.** The POSIX frozen
+  owner starts the existing store test executable as a child, acquires skit's real `config.lock`,
+  writes a ready marker, and hard-exits without Drop. The parent then completes a bounded public
+  `FileConfigStore` transaction on that same persistent lock path. The frozen preservation owner is
+  cross-platform and replaces real readonly state and stored-copy files through
+  `FileFormStateStore` and `FileStore`. Native Windows additive owners pin LockFileEx-backed
+  block/release with a persistent sentinel, readonly preservation, missing-target apply skip, and a
+  best-effort injected pre-replace permission failure with no temp residue. Linux does not claim
+  those Windows owners ran; a real Windows host remains the gate.
 - **RESOLVED (c04395c) — opportunistic read-path registry self-heal.** `_repair_rows` +
   `try_advisory_file_lock` are translated: `FileStore::scan` re-projects a stale row from its meta
   under a NON-BLOCKING lock (new `try_acquire_lock`), saving only on change, and `resolve` uses the
@@ -348,10 +359,12 @@ real concerns:
   `rust-contract-matrix.md` "reads never migrate" line is rescoped to user data (the registry is the
   oracle-defined self-heal exception).
 
-Still deferred: Windows permission semantics; native lock/crash gates; and Python's remaining
-thread-mutex/msvcrt-specific implementation rows, where Rust uses kernel file locks and RAII
-instead. The fsync/replace and permission ordering/failure rows are no longer source comments,
-success-only public outcomes, or pure-helper surrogates.
+The remaining ten rows are architecture closures, not product gaps. They cover Python's private
+msvcrt call sequence, errno classifier, thread-mutex layer, and post-replace Windows chmod design;
+Rust uses `File::lock`/LockFileEx, RAII descriptors, and temp-handle permission application before
+replace. Four crate-private try-lock names retain stronger executable owners at the production
+self-heal seam. The manifest keeps every closure nonempty and fail-closed if someone forces ignored
+tests to run.
 
 ## Adjudication log
 

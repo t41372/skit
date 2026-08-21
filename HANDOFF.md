@@ -445,6 +445,15 @@ discipline, and helper surfaces close the other audited root (`ab4d93a`..`5265ee
   fault-only owner injects OSError at the private resolved-copy read inside the complete deps
   handler. No public test API or permission trick was added. The final manifest rejects duplicate,
   missing, extra, overlapping, or unstructured accounting. No rows remain.
+- **`test_atomic.py` ownership is complete.** The stale 13-passed / 19-ignored baseline is retired.
+  Its 32 frozen names now have 22 exact owners (15 common and 7 target-gated) and 10 structured
+  architecture closures. Shared-writer owners cover file/parent sync order, temp cleanup,
+  replacement retry, permission application, and no-clobber outcomes. A real child hard-exit owns
+  POSIX kernel-lock release, and real `FileFormStateStore` / `FileStore` replacements own portable
+  readonly preservation. Native Windows additive owners cover lock blocking/release with a
+  persistent sentinel and all three permission outcomes. The final manifest rejects duplicate,
+  missing, ignored-exact, empty-stub, overlap, or unstructured accounting. Windows execution is a
+  real-host gate; Linux results do not substitute for it.
 
 The ledger has the authoritative per-module adjudication log.
 

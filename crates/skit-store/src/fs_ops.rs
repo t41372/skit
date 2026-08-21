@@ -362,6 +362,34 @@ mod tests {
         assert!(!root.path().join("registry.lock").exists());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_lock_blocks_then_resumes_and_keeps_the_sentinel() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("windows.native.lock");
+        let first = acquire_lock(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), [0]);
+
+        let worker_path = path.clone();
+        let (attempting_tx, attempting_rx) = mpsc::sync_channel(1);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            attempting_tx.send(()).unwrap();
+            let second = acquire_lock(&worker_path).unwrap();
+            entered_tx.send(()).unwrap();
+            drop(second);
+        });
+
+        attempting_rx.recv().unwrap();
+        assert!(entered_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(first);
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+
+        assert!(path.is_file());
+        assert_eq!(std::fs::read(path).unwrap(), [0]);
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_advisory_file_lock_is_released_by_kernel_after_process_crash() {
@@ -839,6 +867,80 @@ mod tests {
         .unwrap();
 
         assert_eq!(attempted_mode.get(), Some(0o711));
+        assert_eq!(std::fs::read(&target).unwrap(), b"new\n");
+        assert_eq!(names(&root), ["target"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_atomic_write_preserves_existing_readonly_attribute() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"old\n").unwrap();
+        let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&target, permissions).unwrap();
+
+        atomic_write_bytes(&target, b"new\n").unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"new\n");
+        assert!(std::fs::metadata(&target).unwrap().permissions().readonly());
+        assert_eq!(names(&root), ["target"]);
+        let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(target, permissions).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_missing_target_skips_permission_apply() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        let applied = Cell::new(false);
+
+        atomic_with_permission_ops(
+            &target,
+            b"new\n",
+            |path| std::fs::metadata(path).map(|metadata| metadata.permissions()),
+            |_, _| {
+                applied.set(true);
+                Ok(())
+            },
+            atomicwrites::replace_atomic,
+            |_| unreachable!("Windows does not synchronize the parent directory"),
+        )
+        .unwrap();
+
+        assert!(!applied.get());
+        assert_eq!(std::fs::read(&target).unwrap(), b"new\n");
+        assert_eq!(names(&root), ["target"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_native_permission_apply_failure_is_best_effort_and_cleans_temp() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"old\n").unwrap();
+        let attempted = Cell::new(false);
+
+        atomic_with_permission_ops(
+            &target,
+            b"new\n",
+            |path| Ok(std::fs::metadata(path)?.permissions()),
+            |_, _| {
+                attempted.set(true);
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected Windows permission apply failure",
+                ))
+            },
+            atomicwrites::replace_atomic,
+            |_| unreachable!("Windows does not synchronize the parent directory"),
+        )
+        .unwrap();
+
+        assert!(attempted.get());
         assert_eq!(std::fs::read(&target).unwrap(), b"new\n");
         assert_eq!(names(&root), ["target"]);
     }

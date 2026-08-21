@@ -39,7 +39,7 @@ const ORACLE: [&str; 32] = [
     "test_try_lock_treats_an_unopenable_lock_file_as_not_acquired",
 ];
 
-const ACTIVE_EXACT: [&str; 17] = [
+const ACTIVE_EXACT: [&str; 15] = [
     "test_load_toml_recoverable_missing_file_returns_empty_no_backup",
     "test_load_toml_recoverable_valid_file_returns_doc_no_backup",
     "test_load_toml_recoverable_corrupt_file_backs_up_and_returns_empty",
@@ -50,8 +50,6 @@ const ACTIVE_EXACT: [&str; 17] = [
     "test_atomic_write_bytes_fsyncs_before_replace",
     "test_atomic_write_text_fsyncs_before_replace",
     "test_atomic_write_toml_fsyncs_before_replace",
-    "test_atomic_write_bytes_fsyncs_parent_dir_after_replace",
-    "test_atomic_write_bytes_dir_fsync_failure_is_swallowed",
     "test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file",
     "test_atomic_write_text_keep_mode_preserves_existing_mode",
     "test_replace_retries_through_transient_permission_error",
@@ -65,11 +63,21 @@ struct TargetGate {
     owner: &'static str,
 }
 
-const TARGET_GATED_EXACT: [TargetGate; 5] = [
+const TARGET_GATED_EXACT: [TargetGate; 7] = [
     TargetGate {
         name: "test_advisory_file_lock_is_released_by_kernel_after_process_crash",
         target: "Unix: the frozen oracle explicitly exercises POSIX flock crash release",
         owner: "crates/skit-store/src/fs_ops.rs::test_advisory_file_lock_is_released_by_kernel_after_process_crash",
+    },
+    TargetGate {
+        name: "test_atomic_write_bytes_fsyncs_parent_dir_after_replace",
+        target: "Unix: production synchronizes the parent directory only on Unix",
+        owner: "crates/skit-store/src/fs_ops.rs::test_atomic_write_bytes_fsyncs_parent_dir_after_replace",
+    },
+    TargetGate {
+        name: "test_atomic_write_bytes_dir_fsync_failure_is_swallowed",
+        target: "Unix: only the Unix writer performs the best-effort parent directory sync",
+        owner: "crates/skit-store/src/fs_ops.rs::test_atomic_write_bytes_dir_fsync_failure_is_swallowed",
     },
     TargetGate {
         name: "test_atomic_write_bytes_skips_dir_fsync_on_windows",

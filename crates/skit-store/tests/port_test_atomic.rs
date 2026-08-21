@@ -4,13 +4,11 @@
 //! The Python module unit-tests `skit.atomic` directly: `load_toml_recoverable`,
 //! `advisory_file_lock` / `try_advisory_file_lock`, `atomic_write_bytes/text/toml`,
 //! `atomic_write_text_keep_mode`, and the internal `_replace_with_retry` / `_try_native_lock`
-//! / `_fsync_dir` seams. The Rust rewrite has NO equivalent public "atomic" module: the atomic
-//! write/replace, the corrupt-TOML backup, and the file lock are internal helpers
-//! (`crates/skit-store/src/fs_ops.rs`, `src/mutations/atomic.rs`, `src/config.rs`) that are only
-//! reachable through the public stores `FileConfigStore` and `FileStore`. Every port therefore
-//! drives the mechanism through the closest public seam. Each test keeps its exact Python name and
-//! carries a WHY comment. Tests use `tempfile::TempDir`, never real user directories, matching the
-//! existing skit-store test harness (`tests/mutations.rs`, `tests/config_store.rs`).
+//! / `_fsync_dir` seams. The Rust rewrite has no equivalent public "atomic" module. Public outcome
+//! owners use `FileConfigStore`, `FileFormStateStore`, and `FileStore`; syscall-order and fault
+//! owners run beside the crate-private shared writer, using its actual algorithm with controlled
+//! operations. Each test keeps its exact Python name and carries a WHY comment. Tests use
+//! `tempfile::TempDir`, never real user directories, matching the existing skit-store test harness.
 //!
 //! FINDINGS the supervisor must read (see the flagged tests below):
 //!   * DATA-SAFETY: the temp-fsync cleanup owner moved to the shared atomic primitive's unit tests,
@@ -22,6 +20,8 @@
 //!     real wrapper calls. The try-lock is crate-private (its production caller is the read-path
 //!     self-heal), so its contract is proven by `fs_ops.rs` unit tests and by the self-heal tests in
 //!     `port_test_store.rs` rather than the try-lock stubs below.
+//!   * ACCOUNTING: `port_test_atomic_manifest.rs` requires all 32 frozen names exactly once as 15
+//!     common exact owners, 7 target-gated exact owners, and 10 structured architecture closures.
 
 use std::{
     fs::{self, OpenOptions},
@@ -30,9 +30,12 @@ use std::{
     time::Duration,
 };
 
-use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
-use skit_domain::{Entry, EntryKind, EntrySettings, StorageMode};
-use skit_store::{FileConfigStore, FileStore};
+use skit_application::{
+    CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions,
+    form_state::FormStateRepository,
+};
+use skit_domain::{Entry, EntryKind, EntrySettings, Slug, StorageMode};
+use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -65,6 +68,16 @@ fn create_entry(root: &TempDir, name: &str, bytes: &[u8], mode: u32) -> (FileSto
     };
     let entry = store.create(create).unwrap();
     (store, entry)
+}
+
+fn set_readonly(path: &std::path::Path, readonly: bool) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(readonly);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+fn architecture_closure() -> ! {
+    panic!("architecture closure; see port_test_atomic_manifest")
 }
 
 // ===========================================================================
@@ -215,13 +228,17 @@ fn test_advisory_file_lock_serializes_two_waiting_threads() {
 #[ignore = "UNMAPPED: Windows msvcrt one-byte-seek/retry/unlock seam. The POSIX build uses flock \
             (std File::lock); there is no msvcrt path to exercise."]
 #[test]
-fn test_windows_locking_uses_one_byte_seek_retry_and_unlock() {}
+fn test_windows_locking_uses_one_byte_seek_retry_and_unlock() {
+    architecture_closure()
+}
 
 #[ignore = "UNMAPPED: `_try_native_lock`'s errno classification (EAGAIN retryable vs EBADF/ENOSPC \
             loud) is a non-blocking-lock concept. Rust has only the blocking `File::lock()` and no \
             errno-classifying try seam."]
 #[test]
-fn test_native_lock_distinguishes_contention_from_unexpected_os_errors() {}
+fn test_native_lock_distinguishes_contention_from_unexpected_os_errors() {
+    architecture_closure()
+}
 
 #[test]
 fn test_advisory_lock_open_failure_releases_its_thread_mutex() {
@@ -248,7 +265,9 @@ fn test_advisory_lock_open_failure_releases_its_thread_mutex() {
             lock drops its File, closing the fd via RAII, and there is no thread mutex; there is \
             also no seam to force `File::lock()` itself to fail on POSIX."]
 #[test]
-fn test_advisory_lock_native_failure_closes_fd_and_releases_mutex() {}
+fn test_advisory_lock_native_failure_closes_fd_and_releases_mutex() {
+    architecture_closure()
+}
 
 // ===========================================================================
 // atomic_write_text_keep_mode — preserve an existing file's permission bits across the replace.
@@ -256,47 +275,79 @@ fn test_advisory_lock_native_failure_closes_fd_and_releases_mutex() {}
 // file BEFORE the rename (`preserve_permissions_best_effort`), reachable via `commit_copy_edit`.
 // ===========================================================================
 
-#[cfg(unix)]
 #[test]
 fn test_atomic_write_text_keep_mode_preserves_existing_mode() {
-    // WHY: an existing file's bits survive the atomic replace. The stored script is set to a
-    // non-default 0o750; after a copy-edit the new content lands AND 0o750 is preserved exactly
-    // (the writer would otherwise strand the file at the temp's create-time mode).
-    use std::os::unix::fs::PermissionsExt as _;
-
+    // Both public adapters use the shared atomic writer. A readonly state file and a readonly
+    // stored copy must keep that portable permission after replacement while the new bytes land.
     let root = TempDir::new().unwrap();
+
+    let state_root = root.path().join("state");
+    let state_store = FileFormStateStore::new(&state_root);
+    let state_slug = Slug::parse("permission-state").unwrap();
+    state_store
+        .update(&state_slug, |state| {
+            state.values.insert("before".to_owned(), "1".to_owned());
+        })
+        .unwrap();
+    let state_path = state_root.join("values/permission-state.toml");
+    set_readonly(&state_path, true);
+
+    state_store
+        .update(&state_slug, |state| {
+            state.values.insert("after".to_owned(), "2".to_owned());
+        })
+        .unwrap();
+
+    assert!(fs::metadata(&state_path).unwrap().permissions().readonly());
+    assert_eq!(
+        state_store
+            .load(&state_slug)
+            .values
+            .get("after")
+            .map(String::as_str),
+        Some("2")
+    );
+
     let (store, entry) = create_entry(&root, "Script", b"old\n", 0o644);
     let script = root.path().join("scripts/script/script.py");
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o750)).unwrap();
+    set_readonly(&script, true);
 
     store
         .commit_copy_edit(&entry, b"new content\n", &entry.meta.source_hash)
         .unwrap();
 
     assert_eq!(fs::read(&script).unwrap(), b"new content\n");
-    assert_eq!(
-        fs::metadata(&script).unwrap().permissions().mode() & 0o777,
-        0o750 // bits preserved exactly, not reset to the temp file's mode
-    );
+    assert!(fs::metadata(&script).unwrap().permissions().readonly());
+
+    // Windows does not remove readonly files during recursive cleanup. Restore only after the
+    // assertions so this temporary fixture cannot leak.
+    set_readonly(&state_path, false);
+    set_readonly(&script, false);
 }
 
 #[ignore = "UNMAPPED: Windows-only. Python restores bits with a post-rename os.chmod because \
             Windows lacks os.fchmod. Rust uses one cross-platform path — File::set_permissions on \
             the temp handle before the rename — with no fchmod-vs-chmod split to exercise on POSIX."]
 #[test]
-fn test_atomic_write_text_keep_mode_falls_back_to_chmod_on_windows() {}
+fn test_atomic_write_text_keep_mode_falls_back_to_chmod_on_windows() {
+    architecture_closure()
+}
 
 #[ignore = "UNMAPPED: Windows-only fallback guard (skip the post-rename chmod when the target \
             vanished, so None is never handed to os.chmod). Rust has no post-rename Windows chmod \
             branch on POSIX to exercise."]
 #[test]
-fn test_keep_mode_windows_fallback_is_skipped_when_there_is_no_mode() {}
+fn test_keep_mode_windows_fallback_is_skipped_when_there_is_no_mode() {
+    architecture_closure()
+}
 
 #[ignore = "UNMAPPED: Windows-only. The post-rename restore's best-effort suppression is the \
             Windows chmod branch, not built or reachable on POSIX; the POSIX swallow is covered in \
             the keep_mode suppression note above."]
 #[test]
-fn test_keep_mode_windows_fallback_suppresses_a_chmod_failure() {}
+fn test_keep_mode_windows_fallback_suppresses_a_chmod_failure() {
+    architecture_closure()
+}
 
 // ===========================================================================
 // try_advisory_file_lock — the never-waits variant for read-path writes.
@@ -313,20 +364,28 @@ fn test_keep_mode_windows_fallback_suppresses_a_chmod_failure() {}
             declines. try_acquire_lock is crate-private (read-path self-heal caller), so the \
             acquire/second-taker-declines contract is proven in-crate, not through this external stub."]
 #[test]
-fn test_try_lock_acquires_when_free_and_excludes_a_second_taker() {}
+fn test_try_lock_acquires_when_free_and_excludes_a_second_taker() {
+    architecture_closure()
+}
 
 #[ignore = "RESOLVED (A2) -> fs_ops.rs unit test try_lock_declines_while_the_blocking_lock_is_held \
             (crate-private try_acquire_lock)."]
 #[test]
-fn test_try_lock_declines_while_the_blocking_lock_is_held() {}
+fn test_try_lock_declines_while_the_blocking_lock_is_held() {
+    architecture_closure()
+}
 
 #[ignore = "RESOLVED (A2): the cross-process decline-when-native-lock-held path is proven through \
             the read-path self-heal in port_test_store.rs::test_a_listing_never_blocks_on_the_\
             registry_lock (a held flock makes the listing's try_acquire_lock decline)."]
 #[test]
-fn test_try_lock_declines_when_only_the_native_lock_is_held() {}
+fn test_try_lock_declines_when_only_the_native_lock_is_held() {
+    architecture_closure()
+}
 
 #[ignore = "RESOLVED (A2) -> fs_ops.rs unit test try_lock_treats_an_unopenable_path_as_not_acquired \
             (crate-private try_acquire_lock)."]
 #[test]
-fn test_try_lock_treats_an_unopenable_lock_file_as_not_acquired() {}
+fn test_try_lock_treats_an_unopenable_lock_file_as_not_acquired() {
+    architecture_closure()
+}
