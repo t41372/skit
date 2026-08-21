@@ -21,14 +21,11 @@
 //! Buckets:
 //! - Bucket 1 (target/URL/checksum/atomic-install byte logic): the bulk of real asserting tests
 //!   below, driving the real public API.
-//! - Bucket 2 (cross-crate / white-box, `#[ignore]`d): interactive consent (`_ask_consent`) lives in
-//!   skit-cli's `TerminalUvConsent` (`crates/skit-cli/src/run/command.rs`); musl detection is the
-//!   private, `/lib`-hardcoded `host_uses_musl` with no injectable seam; the fsync spy tests target
-//!   internals with no public seam; the blank-`uv_binary` fallback is resolved in skit-cli/skit-store.
-//! - Bucket 3 (divergences, `#[ignore]`d): three oracle behaviors the Rust surface does not match —
-//!   the checksum error drops the expected/actual digests, a directory-fsync failure is propagated
-//!   rather than swallowed, and an unpinned triple is a construction-time `expect` panic rather than
-//!   a typed fail-closed error. See the module notes in the port ledger.
+//! - Bucket 2 (owning private/cross-crate targets): consent and mirror composition live in existing
+//!   skit-cli policy, PTY, and workflow targets. Musl detection and install durability run against
+//!   crate-private typed seams in `uv.rs`. The frozen exact names stay unique across those owners.
+//! - Bucket 3 (semantic closures and platform gates, `#[ignore]`d): quiet bootstrap and unpinned
+//!   construction map to stronger Rust owners. Directory-fsync omission remains a Windows-host gate.
 //! - Bucket 4 (opt-in network liveness, `#[ignore]`d): the two `@net` tests, faithful to the Python
 //!   `SKIT_NET_TESTS` skip; run them when bumping `UV_VERSION`.
 
@@ -404,88 +401,12 @@ fn test_checksum_mismatch_raises_checksum_error_not_generic() {
     assert!(!destination.path().join("uv").exists()); // a mismatched archive is never extracted
 }
 
-// ---- _extract_uv: atomic install (no partial binary survives a mid-install failure) ----------
-//
-// Rust's atomic install has no `shutil.copy2` seam to monkeypatch. These ports force the failure by
-// occupying the final `uv` path with a directory: `fs::rename(staged, target)` onto a directory
-// fails (EISDIR), which is the same failure class (the install cannot complete) the oracle simulates
-// with a mid-copy OSError. The contract under test is unchanged: no torn binary at the final path,
-// no stray staged `.tmp`, and a later attempt succeeds once the obstruction is gone.
-
-#[test]
-fn test_extract_uv_failed_copy_leaves_no_partial_binary() {
-    let archive = tar_gz_with_uv("uv", b"genuine-uv-bytes");
-    let asset = asset_for("uv.tar.gz", "uv", &archive);
-    let destination = TempDir::new().unwrap();
-    fs::create_dir(destination.path().join("uv")).unwrap(); // block the final rename
-
-    assert!(matches!(
-        install_verified_uv_archive(&archive, &asset, destination.path()),
-        Err(UvBootstrapError::Io { .. }),
-    ));
-
-    // The staged tmp file was cleaned up — nothing poisoned.
-    assert!(fs::read_dir(destination.path()).unwrap().all(|entry| {
-        !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".tmp")
-    }));
-    // The final `uv` path holds no torn binary (still the obstruction, never a partial file).
-    assert!(destination.path().join("uv").is_dir());
-}
-
-#[test]
-fn test_extract_uv_self_heals_after_interrupted_install() {
-    // After a failed install leaves no binary at dest, a fresh (unobstructed) extraction attempt must
-    // succeed cleanly — proving the failure didn't poison the destination for next time.
-    let archive = tar_gz_with_uv("uv", b"the-real-uv-binary");
-    let asset = asset_for("uv.tar.gz", "uv", &archive);
-    let destination = TempDir::new().unwrap();
-    let obstruction = destination.path().join("uv");
-    fs::create_dir(&obstruction).unwrap();
-    assert!(install_verified_uv_archive(&archive, &asset, destination.path()).is_err());
-
-    fs::remove_dir(&obstruction).unwrap(); // clear the obstruction (restore a clean dest)
-    let installed = install_verified_uv_archive(&archive, &asset, destination.path()).unwrap();
-    assert_eq!(installed, destination.path().join("uv"));
-    assert_eq!(fs::read(&installed).unwrap(), b"the-real-uv-binary");
-}
-
 // ---- _extract_uv: staged-file fsync (durability across power loss) ----------
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): the oracle spies on os.fsync vs os.replace call order. Rust's install does file.sync_all() before fs::rename in one private closure (crates/skit-runtime/src/uv.rs:335-337) with no seam to observe the ordering from an integration test. The ordering is correct in code."]
-fn test_extract_uv_fsyncs_staged_file_before_replace() {
-    // Oracle: os.fsync of the staged file must run before os.replace commits the rename.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): the directory-fsync swallow is implemented — install_verified_uv_archive wraps the post-rename sync_directory in `let _ =` (crates/skit-runtime/src/uv.rs), matching uvman.py:210-212 contextlib.suppress — but no public API can force sync_directory to fail, so the asserting body is not drivable from an integration test."]
-fn test_extract_uv_dir_fsync_failure_is_swallowed() {
-    // Oracle: the post-replace directory fsync is best-effort; a failure there must not fail the
-    // install (dest's content durability was already secured by the staged-file fsync).
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): a staged-file fsync failure must propagate AND compose with the cleanup-on-failure. Rust does exactly this — file.sync_all()? propagates and the closure's `if result.is_err() { remove_file(staged) }` cleans up (crates/skit-runtime/src/uv.rs:335-343) — but there is no seam to force sync_all to fail from an integration test."]
-fn test_extract_uv_staged_fsync_failure_triggers_existing_cleanup() {
-    // Oracle: a failure fsync'ing the staged file's data propagates and the staged tmp file is
-    // unlinked; dest_dir is left as if the install never started.
-}
 
 #[test]
 #[ignore = "CROSS-CRATE (white-box + platform): directory fsync must not even be attempted on Windows. Rust cfg-gates it to a no-op — sync_directory is `#[cfg(not(unix))] -> Ok(())` (crates/skit-runtime/src/uv.rs:435-438) — matching the oracle, but there is no fsync spy seam and this can't be observed from a POSIX runner."]
 fn test_extract_uv_skips_dir_fsync_on_windows() {
     // Oracle: on win32 only the staged file is fsync'd, never the directory.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): the end-to-end self-heal needs a fake-served archive to reach install. The public path (ensure_managed_uv) fetches from a real URL and verifies against the real pinned checksum for the current triple, so a fake archive can't pass the gate; the injectable fetch (ensure_managed_uv_from_asset) is private. The self-heal contract is covered at install level (test_extract_uv_self_heals_after_interrupted_install) and by in-crate private_tests (crates/skit-runtime/src/uv.rs:531-554)."]
-fn test_ensure_uv_downloaded_atomic_install_self_heals() {
-    // Oracle: a flaky first install raises but leaves no binary; the next call re-downloads and
-    // installs successfully.
 }
 
 #[test]

@@ -281,6 +281,19 @@ fn ensure_managed_uv_from_asset<F>(
 where
     F: FnOnce(&UvAsset) -> Result<Vec<u8>, UvBootstrapError>,
 {
+    let mut operations = SystemUvInstallOperations;
+    ensure_managed_uv_from_asset_with_operations(data_dir, asset, fetch, &mut operations)
+}
+
+fn ensure_managed_uv_from_asset_with_operations<F>(
+    data_dir: &Path,
+    asset: &UvAsset,
+    fetch: F,
+    operations: &mut impl UvInstallOperations,
+) -> Result<PathBuf, UvBootstrapError>
+where
+    F: FnOnce(&UvAsset) -> Result<Vec<u8>, UvBootstrapError>,
+{
     let destination = managed_uv_path(data_dir);
     let bin = destination
         .parent()
@@ -300,7 +313,7 @@ where
         return Ok(destination);
     }
     let archive = fetch(asset)?;
-    install_verified_uv_archive(&archive, asset, bin)
+    install_verified_uv_archive_with_operations(&archive, asset, bin, operations)
 }
 
 fn download_archive(asset: &UvAsset) -> Result<Vec<u8>, UvBootstrapError> {
@@ -338,6 +351,43 @@ pub fn install_verified_uv_archive(
     asset: &UvAsset,
     destination_dir: &Path,
 ) -> Result<PathBuf, UvBootstrapError> {
+    let mut operations = SystemUvInstallOperations;
+    install_verified_uv_archive_with_operations(archive, asset, destination_dir, &mut operations)
+}
+
+trait UvInstallOperations {
+    fn write_staged(&mut self, file: &mut File, path: &Path, bytes: &[u8]) -> io::Result<()>;
+    fn sync_staged(&mut self, file: &File, path: &Path) -> io::Result<()>;
+    fn replace(&mut self, staged: &Path, target: &Path) -> io::Result<()>;
+    fn sync_directory(&mut self, path: &Path) -> io::Result<()>;
+}
+
+struct SystemUvInstallOperations;
+
+impl UvInstallOperations for SystemUvInstallOperations {
+    fn write_staged(&mut self, file: &mut File, _path: &Path, bytes: &[u8]) -> io::Result<()> {
+        file.write_all(bytes)
+    }
+
+    fn sync_staged(&mut self, file: &File, _path: &Path) -> io::Result<()> {
+        file.sync_all()
+    }
+
+    fn replace(&mut self, staged: &Path, target: &Path) -> io::Result<()> {
+        fs::rename(staged, target)
+    }
+
+    fn sync_directory(&mut self, path: &Path) -> io::Result<()> {
+        sync_directory(path)
+    }
+}
+
+fn install_verified_uv_archive_with_operations(
+    archive: &[u8],
+    asset: &UvAsset,
+    destination_dir: &Path,
+    operations: &mut impl UvInstallOperations,
+) -> Result<PathBuf, UvBootstrapError> {
     let actual = hex_digest(archive);
     if actual != asset.checksum {
         return Err(UvBootstrapError::Checksum {
@@ -360,16 +410,20 @@ pub fn install_verified_uv_archive(
             .write(true)
             .open(&staged)
             .map_err(|source| io_error("create staged", &staged, source))?;
-        file.write_all(&bytes)
+        operations
+            .write_staged(&mut file, &staged, &bytes)
             .map_err(|source| io_error("write staged", &staged, source))?;
         set_executable(&file, &staged)?;
-        file.sync_all()
+        operations
+            .sync_staged(&file, &staged)
             .map_err(|source| io_error("sync staged", &staged, source))?;
-        fs::rename(&staged, &target).map_err(|source| io_error("install", &target, source))?;
+        operations
+            .replace(&staged, &target)
+            .map_err(|source| io_error("install", &target, source))?;
         // Best-effort: persist the rename's directory entry too. The staged-file sync
         // already secured the content, so a failure here must not fail an install
         // whose rename landed.
-        let _ = sync_directory(destination_dir);
+        let _ = operations.sync_directory(destination_dir);
         Ok(target)
     })();
     if result.is_err() {
@@ -460,14 +514,12 @@ fn set_executable(_file: &File, _path: &Path) -> Result<(), UvBootstrapError> {
 }
 
 #[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<(), UvBootstrapError> {
-    File::open(path)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|source| io_error("sync directory", path, source))
+fn sync_directory(path: &Path) -> io::Result<()> {
+    File::open(path).and_then(|directory| directory.sync_all())
 }
 
 #[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> Result<(), UvBootstrapError> {
+fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
@@ -499,6 +551,334 @@ mod private_tests {
     use flate2::{Compression, write::GzEncoder};
     use std::{net::TcpListener, thread};
     use tempfile::TempDir;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum InstallFault {
+        None,
+        PartialWriteOnce,
+        StagedSync,
+        Replace,
+        DirectorySync,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum InstallEvent {
+        Write,
+        StagedSync,
+        Replace,
+        DirectorySync,
+    }
+
+    #[derive(Debug)]
+    struct RecordingInstallOperations {
+        events: Vec<InstallEvent>,
+        fault: InstallFault,
+        writes: usize,
+    }
+
+    impl RecordingInstallOperations {
+        fn new(fault: InstallFault) -> Self {
+            Self {
+                events: Vec::new(),
+                fault,
+                writes: 0,
+            }
+        }
+    }
+
+    impl UvInstallOperations for RecordingInstallOperations {
+        fn write_staged(&mut self, file: &mut File, _path: &Path, bytes: &[u8]) -> io::Result<()> {
+            self.events.push(InstallEvent::Write);
+            self.writes += 1;
+            if self.fault == InstallFault::PartialWriteOnce && self.writes == 1 {
+                std::io::Write::write_all(file, &bytes[..bytes.len().min(4)])?;
+                return Err(io::Error::other("simulated ENOSPC after a partial write"));
+            }
+            std::io::Write::write_all(file, bytes)
+        }
+
+        fn sync_staged(&mut self, file: &File, _path: &Path) -> io::Result<()> {
+            self.events.push(InstallEvent::StagedSync);
+            if self.fault == InstallFault::StagedSync {
+                return Err(io::Error::other("simulated staged fsync EIO"));
+            }
+            file.sync_all()
+        }
+
+        fn replace(&mut self, staged: &Path, target: &Path) -> io::Result<()> {
+            self.events.push(InstallEvent::Replace);
+            if self.fault == InstallFault::Replace {
+                return Err(io::Error::other("simulated atomic replace failure"));
+            }
+            fs::rename(staged, target)
+        }
+
+        fn sync_directory(&mut self, _path: &Path) -> io::Result<()> {
+            self.events.push(InstallEvent::DirectorySync);
+            if self.fault == InstallFault::DirectorySync {
+                return Err(io::Error::other("simulated directory fsync failure"));
+            }
+            Ok(())
+        }
+    }
+
+    fn durability_fixture() -> (Vec<u8>, UvAsset, &'static [u8]) {
+        let executable_name = if cfg!(windows) { "uv.exe" } else { "uv" };
+        let bytes = b"complete verified uv";
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut tar = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(
+            &mut header,
+            format!("release/{executable_name}"),
+            bytes.as_slice(),
+        )
+        .unwrap();
+        let archive = tar.into_inner().unwrap().finish().unwrap();
+        let asset = test_asset("https://example.invalid/uv.tar.gz".to_owned(), &archive);
+        let asset = UvAsset {
+            executable_name: executable_name.to_owned(),
+            ..asset
+        };
+        (archive, asset, bytes)
+    }
+
+    fn assert_no_staged_file(directory: &Path, executable_name: &str) {
+        let prefix = format!(".{executable_name}.");
+        assert!(fs::read_dir(directory).unwrap().all(|entry| {
+            let name = entry.unwrap().file_name();
+            let name = name.to_string_lossy();
+            !(name.starts_with(&prefix) && name.ends_with(".tmp"))
+        }));
+    }
+
+    #[test]
+    fn test_extract_uv_failed_copy_leaves_no_partial_binary() {
+        let (archive, asset, _) = durability_fixture();
+        let destination = TempDir::new().unwrap();
+        let mut operations = RecordingInstallOperations::new(InstallFault::PartialWriteOnce);
+
+        let error = install_verified_uv_archive_with_operations(
+            &archive,
+            &asset,
+            destination.path(),
+            &mut operations,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            UvBootstrapError::Io {
+                operation: "write staged",
+                ..
+            }
+        ));
+        assert!(!destination.path().join(&asset.executable_name).exists());
+        assert_no_staged_file(destination.path(), &asset.executable_name);
+    }
+
+    #[test]
+    fn test_extract_uv_self_heals_after_interrupted_install() {
+        let (archive, asset, bytes) = durability_fixture();
+        let destination = TempDir::new().unwrap();
+        let mut operations = RecordingInstallOperations::new(InstallFault::PartialWriteOnce);
+
+        assert!(
+            install_verified_uv_archive_with_operations(
+                &archive,
+                &asset,
+                destination.path(),
+                &mut operations,
+            )
+            .is_err()
+        );
+        let installed = install_verified_uv_archive_with_operations(
+            &archive,
+            &asset,
+            destination.path(),
+            &mut operations,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(installed).unwrap(), bytes);
+        assert_no_staged_file(destination.path(), &asset.executable_name);
+    }
+
+    #[test]
+    fn test_extract_uv_fsyncs_staged_file_before_replace() {
+        let (archive, asset, bytes) = durability_fixture();
+        let destination = TempDir::new().unwrap();
+        let mut operations = RecordingInstallOperations::new(InstallFault::None);
+
+        let installed = install_verified_uv_archive_with_operations(
+            &archive,
+            &asset,
+            destination.path(),
+            &mut operations,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(installed).unwrap(), bytes);
+        assert_eq!(
+            operations.events,
+            [
+                InstallEvent::Write,
+                InstallEvent::StagedSync,
+                InstallEvent::Replace,
+                InstallEvent::DirectorySync,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_uv_dir_fsync_failure_is_swallowed() {
+        let (archive, asset, bytes) = durability_fixture();
+        let destination = TempDir::new().unwrap();
+        let mut operations = RecordingInstallOperations::new(InstallFault::DirectorySync);
+
+        let installed = install_verified_uv_archive_with_operations(
+            &archive,
+            &asset,
+            destination.path(),
+            &mut operations,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(installed).unwrap(), bytes);
+        assert_no_staged_file(destination.path(), &asset.executable_name);
+    }
+
+    #[test]
+    fn test_extract_uv_staged_fsync_failure_triggers_existing_cleanup() {
+        let (archive, asset, _) = durability_fixture();
+        let destination = TempDir::new().unwrap();
+        let mut operations = RecordingInstallOperations::new(InstallFault::StagedSync);
+
+        let error = install_verified_uv_archive_with_operations(
+            &archive,
+            &asset,
+            destination.path(),
+            &mut operations,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            UvBootstrapError::Io {
+                operation: "sync staged",
+                ..
+            }
+        ));
+        assert!(!destination.path().join(&asset.executable_name).exists());
+        assert_no_staged_file(destination.path(), &asset.executable_name);
+    }
+
+    #[test]
+    fn test_ensure_uv_downloaded_atomic_install_self_heals() {
+        let (archive, asset, bytes) = durability_fixture();
+        let root = TempDir::new().unwrap();
+        let mut operations = RecordingInstallOperations::new(InstallFault::PartialWriteOnce);
+        let fetches = std::cell::Cell::new(0);
+
+        assert!(
+            ensure_managed_uv_from_asset_with_operations(
+                root.path(),
+                &asset,
+                |_| {
+                    fetches.set(fetches.get() + 1);
+                    Ok(archive.clone())
+                },
+                &mut operations,
+            )
+            .is_err()
+        );
+        assert!(!managed_uv_path(root.path()).exists());
+        let installed = ensure_managed_uv_from_asset_with_operations(
+            root.path(),
+            &asset,
+            |_| {
+                fetches.set(fetches.get() + 1);
+                Ok(archive.clone())
+            },
+            &mut operations,
+        )
+        .unwrap();
+
+        assert_eq!(fetches.get(), 2);
+        assert_eq!(installed, managed_uv_path(root.path()));
+        assert_eq!(fs::read(installed).unwrap(), bytes);
+        assert_no_staged_file(
+            managed_uv_path(root.path()).parent().unwrap(),
+            &asset.executable_name,
+        );
+    }
+
+    #[test]
+    fn rust_additive_uv_replace_failure_removes_the_verified_staging_file() {
+        let (archive, asset, _) = durability_fixture();
+        let destination = TempDir::new().unwrap();
+        let mut operations = RecordingInstallOperations::new(InstallFault::Replace);
+
+        let error = install_verified_uv_archive_with_operations(
+            &archive,
+            &asset,
+            destination.path(),
+            &mut operations,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            UvBootstrapError::Io {
+                operation: "install",
+                ..
+            }
+        ));
+        assert!(!destination.path().join(&asset.executable_name).exists());
+        assert_no_staged_file(destination.path(), &asset.executable_name);
+    }
+
+    #[test]
+    fn rust_additive_install_operations_start_only_after_checksum_and_archive_acceptance() {
+        let (archive, mut asset, _) = durability_fixture();
+        let destination = TempDir::new().unwrap();
+        let mut operations = RecordingInstallOperations::new(InstallFault::None);
+        asset.checksum = "00".repeat(32);
+
+        assert!(matches!(
+            install_verified_uv_archive_with_operations(
+                &archive,
+                &asset,
+                destination.path(),
+                &mut operations,
+            ),
+            Err(UvBootstrapError::Checksum { .. })
+        ));
+        assert!(operations.events.is_empty());
+
+        let invalid_archive = b"not a release archive";
+        let mut invalid_asset = test_asset(
+            "https://example.invalid/uv.tar.gz".to_owned(),
+            invalid_archive,
+        );
+        invalid_asset
+            .executable_name
+            .clone_from(&asset.executable_name);
+        assert!(matches!(
+            install_verified_uv_archive_with_operations(
+                invalid_archive,
+                &invalid_asset,
+                destination.path(),
+                &mut operations,
+            ),
+            Err(UvBootstrapError::Archive { .. })
+        ));
+        assert!(operations.events.is_empty());
+        assert!(!destination.path().join(&asset.executable_name).exists());
+    }
 
     #[test]
     fn test_is_musl_true_when_ld_musl_present() {
