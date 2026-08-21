@@ -20,8 +20,6 @@ pub use config::{
     CONFIG_KEYS, ConfigError, ConfigRecovery, FileConfigStore, MirrorSettings, PromptRunner,
     PromptRunnerRow,
 };
-#[doc(hidden)]
-pub use fs_ops::replace_with_retry_impl;
 pub use mutations::{
     FileAgentSkillStore, FileRunnerManagementStore, PreparedExternalCopyEdit, PreparedLaunch,
     RegistryRebuildProblem, RegistryRebuildReport, RunnerManagementStoreError, RunnerRemovalCas,

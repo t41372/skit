@@ -17,15 +17,14 @@
 //!     where a deterministic sync failure exercises the real cleanup path for every store adapter.
 //!   * FEATURE PARITY: RESOLVED. The Windows sharing-violation rename retry (Python's
 //!     `_replace_with_retry`, issue #4, A1) and the non-blocking `try_advisory_file_lock` (A2) now
-//!     both exist -- `fs_ops::{replace_with_retry, try_acquire_lock}`. The retry rides on Linux
-//!     through the injectable `replace_with_retry_impl` seam (the three `test_replace_*` tests
-//!     below); the try-lock is crate-private (its production caller is the read-path self-heal), so
-//!     its contract is proven by `fs_ops.rs` unit tests and by the self-heal tests in
+//!     both exist in `fs_ops`. The retry owners moved beside the actual atomic writer, where
+//!     controlled operations verify retry, cleanup, and no-clobber through the same algorithm the
+//!     real wrapper calls. The try-lock is crate-private (its production caller is the read-path
+//!     self-heal), so its contract is proven by `fs_ops.rs` unit tests and by the self-heal tests in
 //!     `port_test_store.rs` rather than the try-lock stubs below.
 
 use std::{
     fs::{self, OpenOptions},
-    path::Path,
     sync::mpsc,
     thread,
     time::Duration,
@@ -33,7 +32,7 @@ use std::{
 
 use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
 use skit_domain::{Entry, EntryKind, EntrySettings, StorageMode};
-use skit_store::{FileConfigStore, FileStore, content_hash};
+use skit_store::{FileConfigStore, FileStore};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -66,18 +65,6 @@ fn create_entry(root: &TempDir, name: &str, bytes: &[u8], mode: u32) -> (FileSto
     };
     let entry = store.create(create).unwrap();
     (store, entry)
-}
-
-/// Names in `dir` that look like the atomic writer's private temp file (`.<name>.<id>.tmp`).
-///
-/// A successful atomic write must leave none: the temp is renamed onto the target, never left as a
-/// partial commit beside it.
-fn temp_residue(dir: &Path) -> Vec<String> {
-    fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.contains(".tmp"))
-        .collect()
 }
 
 // ===========================================================================

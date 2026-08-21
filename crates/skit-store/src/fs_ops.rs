@@ -14,18 +14,21 @@ use skit_domain::EntryId;
 const REPLACE_RETRIES: u32 = 7; // sleeps: 0.01 · 0.02 · 0.04 · 0.08 · 0.16 · 0.32 · 0.64 s
 const REPLACE_BACKOFF_START: Duration = Duration::from_millis(10);
 
-/// Injectable core of [`replace_with_retry`]: `rename` and `sleep` stand in for `fs::rename` and
-/// `std::thread::sleep`, so a Linux test can drive the Windows-only sharing-violation retry/backoff
-/// that the real calls otherwise never trigger on POSIX. This mirrors the oracle's
+/// Core of the replace retry: `rename` and `sleep` stand in for the operating-system operations.
+///
+/// The atomic writer passes the real replace and sleep functions. Unit tests pass controlled
+/// operations through the same writer to verify retry, cleanup, and no-clobber behavior.
+///
+/// Controlled `rename` and `sleep` operations let a Linux test drive the Windows-only
+/// sharing-violation retry/backoff that the real calls otherwise never trigger on POSIX. This
+/// mirrors the oracle's
 /// `monkeypatch.setattr(atomic.os, "replace", ...)` / `monkeypatch.setattr(atomic.time, "sleep", ...)`
-/// (test_atomic.py ~552-608). Exposed `#[doc(hidden)] pub` (like `content_hash`) purely as that test
-/// seam; it is not part of the documented API.
+/// (test_atomic.py ~552-608).
 ///
 /// A transient `PermissionDenied` (the Windows sharing violation) is retried with exponential
 /// backoff; after the bounded retries are exhausted the final attempt's error propagates -- a target
 /// held open indefinitely (antivirus, an actual leak) must stay loud. Any other error is immediate.
-#[doc(hidden)]
-pub fn replace_with_retry_impl(
+pub(crate) fn replace_with_retry_impl(
     mut rename: impl FnMut(&Path, &Path) -> io::Result<()>,
     mut sleep: impl FnMut(Duration),
     src: &Path,
@@ -42,13 +45,6 @@ pub fn replace_with_retry_impl(
         }
     }
     rename(src, dst)
-}
-
-/// Atomic replacement that rides out transient Windows sharing violations. After the retries are
-/// exhausted, the final attempt's error propagates -- a target held open indefinitely (antivirus,
-/// an actual leak) must stay loud.
-fn replace_with_retry(src: &Path, dst: &Path) -> io::Result<()> {
-    replace_with_retry_impl(atomicwrites::replace_atomic, std::thread::sleep, src, dst)
 }
 
 #[derive(Debug)]
@@ -145,6 +141,27 @@ pub(crate) fn atomic_write_bytes_with<E>(
     map_error: impl Fn(&'static str, &Path, io::Error) -> E,
     sync_file: impl FnOnce(&File) -> io::Result<()>,
 ) -> Result<(), E> {
+    atomic_write_bytes_with_ops(
+        path,
+        bytes,
+        map_error,
+        sync_file,
+        atomicwrites::replace_atomic,
+        std::thread::sleep,
+        sync_directory,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn atomic_write_bytes_with_ops<E>(
+    path: &Path,
+    bytes: &[u8],
+    map_error: impl Fn(&'static str, &Path, io::Error) -> E,
+    sync_file: impl FnOnce(&File) -> io::Result<()>,
+    rename: impl FnMut(&Path, &Path) -> io::Result<()>,
+    sleep: impl FnMut(Duration),
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), E> {
     let parent = path.parent().ok_or_else(|| {
         map_error(
             "write",
@@ -176,13 +193,17 @@ pub(crate) fn atomic_write_bytes_with<E>(
         );
         sync_file(&file).map_err(|error| map_error("sync", &temp, error))?;
         drop(file);
-        replace_with_retry(&temp, path).map_err(|error| map_error("replace", path, error))
+        replace_with_retry_impl(rename, sleep, &temp, path)
+            .map_err(|error| map_error("replace", path, error))
     })();
     if outcome.is_err() {
         let _ = fs::remove_file(&temp);
         return outcome;
     }
-    let _ = sync_directory(parent);
+    #[cfg(unix)]
+    let _ = sync_parent(parent);
+    #[cfg(not(unix))]
+    drop(sync_parent);
     Ok(())
 }
 

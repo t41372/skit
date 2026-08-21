@@ -134,7 +134,7 @@ Interpreter Batch D closes the final nine launch/config rows:
 | --- | --- | --- | --- |
 | test_store.py | 78 | crates/skit-cli/tests/port_test_store_manifest.rs + owning store/language/application/runtime/CLI targets | implementation parity (73 executable REAL / 5 semantic or version closures) · the manifest proves 78 occurrences, 78 unique names, the exact oracle set, and the 73/5 split · Windows PATHEXT inference uses a pure application policy with real CLI metadata/environment composition (`0e4a698`/`8a15675`) · recursive size and v0.4 display thresholds run at the private CLI owners (`e326985`) · 15 public add contracts run through the real binary and FileStore (`cebb661`) · registry fallback, repair, corruption, and race owners remain canonical in skit-store, including the final repair-race batch (`fae2d20`) · real Windows-host CLI execution remains a CI gate |
 | test_store_fix.py | 38 | final exact manifest + metadata/filesystem/add-deps CLI/store owners + private atomic/lock/mutation owners | implementation parity complete (32 executable exact owners / 6 structured stronger-owner or architecture closures) · Batch 1 owns 12 metadata-corruption rows · Batch 2 owns four filesystem/recovery/atomic rows · Batch 3 owns 13 copy/reference workdir, strict byte-fidelity, PEP 723, refusal, and newline rows, including one private test-only resolved-source read fault seam with no public API · Batch 4 owns three persistent-lock and concurrent-add rows · the final manifest rejects duplicate, missing, extra, overlapping, empty-reason, and empty-stronger-owner accounting; 0 rows remain |
-| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs + `fs_ops` owner | done (17) · both atomic writers share temp cleanup and Windows retry · S2/A2 gaps resolved (c04395c) · 15 deferred (crash-injection/Windows) |
+| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs + `fs_ops` actual-operations owners | in progress (18 exact owners / 14 architecture or platform closures; 17 host-active + 1 non-Unix gate) · Atomic Batch A moves ten durability/retry names to the real shared writer: temp sync precedes replace, parent sync follows it and stays best-effort, every failure cleans the temp without clobbering the target, and bounded sharing-violation retries preserve exact backoff · the replace test seam is crate-private again · lock/crash and permission batches remain |
 
 The six `test_store_fix.py` semantic closures stay at stronger existing owners instead of gaining
 duplicate exact names:
@@ -310,22 +310,28 @@ gaps, all now resolved or recorded:
   `docs/behavior-changes.md`; `test_bool_default_is_carried` asserts the kept behavior with a
   BEHAVIOR-CHANGE note. Reversible on request.
 
-### test_atomic.py → port_test_atomic.rs + fs_ops owner (17 done · 15 deferred) — Tier 2
+### test_atomic.py → port_test_atomic.rs + fs_ops owner (18 exact / 14 deferred) — Tier 2
 
-32 ported / 13 passed / 19 `#[ignore]`. The Rust atomic mechanism is `pub(crate)`, so the port drives
-it through the public `FileConfigStore`/`FileStore` seams. This is the data-safety tier; the port
-surfaced three real concerns:
+All 32 frozen names occur once. Eighteen have exact owners; seventeen execute on Unix and the
+directory-sync skip owner executes on non-Unix hosts. Fourteen remain explicit architecture or
+platform closures. The Rust atomic mechanism is `pub(crate)`: public store owners assert the user
+data outcome, while syscall order/fault owners run beside the actual shared writer rather than
+exporting a second atomic implementation. This is the data-safety tier; the port surfaced three
+real concerns:
 
 - **FIXED — `.tmp` leak on an fsync failure.** The state/config writer already removed its temp on
   every write, sync, and replace error, but the entry/registry/Agent writer returned early on write
   or sync failure. Both adapters now use one atomic writer and the same Windows replace retry. The
   frozen fsync-failure owner moved to that shared primitive and injects a real sync error after the
   temp write. It proves the destination stays byte-exact and no temp remains.
-- **RESOLVED (c04395c) — Windows `os.replace` sharing-violation retry.** `_replace_with_retry` is
-  translated (`fs_ops.rs` `replace_with_retry` + injectable `replace_with_retry_impl`). A Linux test
-  seam drives the retry-count and backoff-sequence contracts, so `replace_retries_*` /
-  `replace_gives_up_loudly_*` are now active passing tests; only the `cfg(windows)` errno mapping
-  stays Windows-CI-deferred.
+- **RESOLVED (c04395c + Atomic Batch A) — Windows replace retry and complete atomic consequences.**
+  The production wrapper calls one crate-private operations seam with real open, write, permission,
+  file-sync, replace, sleep, and directory-sync operations. Exact tests drive controlled operations
+  through that same algorithm: successful transient retries publish the new bytes; exhaustion and
+  non-permission errors keep the old target byte-exact and remove the temp; sync happens before the
+  replace; directory sync happens after it and stays best-effort. The former doc-hidden public
+  `replace_with_retry_impl` export is gone. Native Windows still owns the sharing-violation and
+  no-directory-sync platform gate.
 - **RESOLVED (c04395c) — opportunistic read-path registry self-heal.** `_repair_rows` +
   `try_advisory_file_lock` are translated: `FileStore::scan` re-projects a stale row from its meta
   under a NON-BLOCKING lock (new `try_acquire_lock`), saving only on change, and `resolve` uses the
@@ -335,11 +341,10 @@ surfaced three real concerns:
   `rust-contract-matrix.md` "reads never migrate" line is rescoped to user data (the registry is the
   oracle-defined self-heal exception).
 
-Also deferred (`#[ignore]`): crash-injection ordering/swallow tests (no public fsync/rename seam;
-each carries a MUST-VERIFY note pinning the source lines — fsync-before-rename, dir-fsync-after,
-dir-fsync-swallowed, chmod-swallowed, the last already covered by an in-module test), and Windows
-msvcrt / two-layer thread-mutex / kernel-crash-flock-release tests (Rust uses kernel flock only, no
-in-process mutex layer, RAII fd cleanup).
+Still deferred: permission-application ordering/failure and Windows permission semantics; native
+lock/crash gates; and Python's thread-mutex/msvcrt-specific implementation rows, where Rust uses
+kernel file locks and RAII instead. The fsync/replace ordering and swallow rows are no longer source
+comments or success-only surrogates.
 
 ## Adjudication log
 
