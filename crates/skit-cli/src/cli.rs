@@ -638,24 +638,20 @@ pub(crate) fn entry_candidates() -> Vec<CompletionCandidate> {
 }
 
 fn entry_candidates_from(store: &FileStore) -> Vec<CompletionCandidate> {
-    LibraryService::new(store.clone()).list().map_or_else(
-        |_| Vec::new(),
-        |scan| {
-            scan.entries
-                .into_iter()
-                .flat_map(|entry| {
-                    let help = clap::builder::StyledStr::from(format!(
-                        "{} — {}",
-                        entry.kind, entry.description
-                    ));
-                    [
-                        CompletionCandidate::new(entry.slug.as_str()).help(Some(help.clone())),
-                        CompletionCandidate::new(entry.name).help(Some(help)),
-                    ]
-                })
-                .collect()
-        },
-    )
+    LibraryService::new(store.clone())
+        .list()
+        .unwrap_or_default()
+        .entries
+        .into_iter()
+        .flat_map(|entry| {
+            let help =
+                clap::builder::StyledStr::from(format!("{} — {}", entry.kind, entry.description));
+            [
+                CompletionCandidate::new(entry.slug.as_str()).help(Some(help.clone())),
+                CompletionCandidate::new(entry.name).help(Some(help)),
+            ]
+        })
+        .collect()
 }
 
 pub(crate) fn runner_candidates() -> Vec<CompletionCandidate> {
@@ -666,15 +662,12 @@ pub(crate) fn runner_candidates() -> Vec<CompletionCandidate> {
 }
 
 fn runner_candidates_from(store: &FileConfigStore) -> Vec<CompletionCandidate> {
-    store.runners().map_or_else(
-        |_| Vec::new(),
-        |runners| {
-            runners
-                .into_iter()
-                .map(|runner| CompletionCandidate::new(runner.name))
-                .collect()
-        },
-    )
+    store
+        .runners()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|runner| CompletionCandidate::new(runner.name))
+        .collect()
 }
 
 pub(crate) fn preset_candidates() -> Vec<CompletionCandidate> {
