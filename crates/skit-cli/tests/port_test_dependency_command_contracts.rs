@@ -25,11 +25,10 @@
 //!   requires_python) and the entry's `meta.toml` (test 14's `dependencies is None`).
 //! - Python `drafts_dir()` -> `<SKIT_DATA_DIR>/drafts`.
 //!
-//! Buckets (22 tests; 18 active, 4 ignored):
-//! - Active asserting `#[test]`: 16 contracts from this oracle plus
-//!   `test_deps_need_sets_the_list` and `test_deps_clear_needs`, rehomed here from the runtime
-//!   target because the real binary/store write door is owned by skit-cli-rs. The two-flags draft
-//!   boundary is the active multi-flag ordering owner.
+//! Buckets (29 tests; 25 active, 4 ignored):
+//! - Active asserting `#[test]`: 16 contracts from this oracle plus nine needs owners rehomed from
+//!   interpreter/runtime audits because the real binary/store write door is owned by skit-cli-rs.
+//!   The two-flags draft boundary is the active multi-flag ordering owner.
 //! - CLOSURE — 4 ignored exact names: the kind-exe draft twin names the stronger canonical owner;
 //!   the Python public-store refusal cases (7, 9) have no
 //!   equivalent Rust public store seam, and their closest CLI mappings duplicate stronger
@@ -696,6 +695,180 @@ fn test_deps_clear_prints_the_deps_line() {
 // ==========================================================================
 // 5. Interpreter-oracle needs receipts — rehomed from the wrong runtime crate
 // ==========================================================================
+
+#[test]
+fn test_deps_dep_on_shell_is_refused() {
+    for (locale, expected) in [
+        (
+            "en",
+            "d doesn't take package dependencies; only --need applies\n",
+        ),
+        ("zh-CN", "d 不接受软件包依赖项；只有 --need 适用\n"),
+        ("zh-TW", "d 不接受套件相依性；只有 --need 適用\n"),
+    ] {
+        let sandbox = Sandbox::new();
+        add_shell(&sandbox, "d");
+        let data = tree_bytes(sandbox.data.path());
+        let state = tree_bytes(sandbox.state.path());
+        let config = tree_bytes(sandbox.config.path());
+
+        let output = sandbox
+            .skit_locale(locale)
+            .args(["deps", "d", "--dep", "requests"])
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(2), "{}", combine(&output));
+        assert!(output.stdout.is_empty(), "{}", combine(&output));
+        assert_eq!(String::from_utf8_lossy(&output.stderr), expected);
+        assert_eq!(tree_bytes(sandbox.data.path()), data);
+        assert_eq!(tree_bytes(sandbox.state.path()), state);
+        assert_eq!(tree_bytes(sandbox.config.path()), config);
+    }
+}
+
+#[test]
+fn test_deps_need_replaces_whole_list() {
+    let sandbox = Sandbox::new();
+    add_shell(&sandbox, "d");
+    sandbox
+        .skit()
+        .args(["deps", "d", "--need", "old"])
+        .assert()
+        .success();
+    let payload = sandbox.payload_bytes("d", "script.sh");
+    let config = tree_bytes(sandbox.config.path());
+    let state = tree_bytes(sandbox.state.path());
+
+    let output = sandbox
+        .skit()
+        .args(["deps", "d", "--need", "jq", "--need", "ffmpeg"])
+        .output()
+        .unwrap();
+
+    assert_human_output(&output, "Needs of d updated: jq, ffmpeg\n");
+    assert_eq!(
+        sandbox.deps_json("d")["needs"],
+        serde_json::json!(["jq", "ffmpeg"])
+    );
+    assert!(!sandbox.meta_toml("d").contains("old"));
+    assert_eq!(sandbox.payload_bytes("d", "script.sh"), payload);
+    assert_eq!(tree_bytes(sandbox.config.path()), config);
+    assert_eq!(tree_bytes(sandbox.state.path()), state);
+}
+
+#[test]
+fn test_deps_need_and_clear_needs_conflict() {
+    let sandbox = Sandbox::new();
+    add_shell(&sandbox, "d");
+    let data = tree_bytes(sandbox.data.path());
+    let state = tree_bytes(sandbox.state.path());
+    let config = tree_bytes(sandbox.config.path());
+
+    let output = sandbox
+        .skit()
+        .args(["deps", "d", "--need", "jq", "--clear-needs"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2), "{}", combine(&output));
+    assert!(output.stdout.is_empty(), "{}", combine(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "use --need or --clear-needs, not both\n"
+    );
+    assert_eq!(tree_bytes(sandbox.data.path()), data);
+    assert_eq!(tree_bytes(sandbox.state.path()), state);
+    assert_eq!(tree_bytes(sandbox.config.path()), config);
+}
+
+#[test]
+fn test_deps_need_works_on_python_too() {
+    let sandbox = Sandbox::new();
+    add_py(&sandbox, "p");
+    let source = sandbox.stored_copy("p");
+    let config = tree_bytes(sandbox.config.path());
+    let state = tree_bytes(sandbox.state.path());
+
+    let output = sandbox
+        .skit()
+        .args(["deps", "p", "--need", "jq"])
+        .output()
+        .unwrap();
+
+    assert_human_output(&output, "Needs of p updated: jq\n");
+    assert_eq!(sandbox.deps_json("p")["needs"], serde_json::json!(["jq"]));
+    assert_eq!(sandbox.stored_copy("p"), source);
+    assert_eq!(tree_bytes(sandbox.config.path()), config);
+    assert_eq!(tree_bytes(sandbox.state.path()), state);
+}
+
+#[test]
+fn test_deps_read_view_shows_needs_for_shell() {
+    let sandbox = Sandbox::new();
+    add_shell(&sandbox, "d");
+    sandbox
+        .skit()
+        .args(["deps", "d", "--need", "jq", "--need", "ffmpeg"])
+        .assert()
+        .success();
+    let data = tree_bytes(sandbox.data.path());
+    let state = tree_bytes(sandbox.state.path());
+    let config = tree_bytes(sandbox.config.path());
+
+    let output = sandbox.skit().args(["deps", "d"]).output().unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    assert!(output.stderr.is_empty(), "{}", combine(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Required commands: jq, ffmpeg"));
+    assert_eq!(tree_bytes(sandbox.data.path()), data);
+    assert_eq!(tree_bytes(sandbox.state.path()), state);
+    assert_eq!(tree_bytes(sandbox.config.path()), config);
+}
+
+#[test]
+fn test_deps_json_view_includes_needs() {
+    let sandbox = Sandbox::new();
+    add_shell(&sandbox, "d");
+    sandbox
+        .skit()
+        .args(["deps", "d", "--need", "jq"])
+        .assert()
+        .success();
+    let data = tree_bytes(sandbox.data.path());
+    let state = tree_bytes(sandbox.state.path());
+    let config = tree_bytes(sandbox.config.path());
+
+    assert_eq!(
+        sandbox.deps_json("d"),
+        serde_json::json!({
+            "dependencies": [],
+            "requires_python": "",
+            "needs": ["jq"],
+        })
+    );
+    assert_eq!(tree_bytes(sandbox.data.path()), data);
+    assert_eq!(tree_bytes(sandbox.state.path()), state);
+    assert_eq!(tree_bytes(sandbox.config.path()), config);
+}
+
+#[test]
+fn test_deps_read_view_needs_dash_when_empty() {
+    let sandbox = Sandbox::new();
+    add_shell(&sandbox, "d");
+    let data = tree_bytes(sandbox.data.path());
+    let state = tree_bytes(sandbox.state.path());
+    let config = tree_bytes(sandbox.config.path());
+
+    let output = sandbox.skit().args(["deps", "d"]).output().unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    assert!(output.stderr.is_empty(), "{}", combine(&output));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Required commands: —"));
+    assert_eq!(tree_bytes(sandbox.data.path()), data);
+    assert_eq!(tree_bytes(sandbox.state.path()), state);
+    assert_eq!(tree_bytes(sandbox.config.path()), config);
+}
 
 #[test]
 fn test_deps_need_sets_the_list() {

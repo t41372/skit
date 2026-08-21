@@ -57,7 +57,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs + crates/skit-cli/tests/port_test_js_inject_cli.rs | in progress (18 executable / 19 deferred) · ascii-escape gap fixed · faithful TS-suffix, Unix-0600, and bad-value prelaunch owners imported `af90a10`; native Windows runtime verification pending |
 | test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs + skit-runtime private transaction owners + crates/skit-store/tests/mutations.rs | implementation parity (91 executable / 49 classified cross-crate or private closures; 0 ABSENT/FAILING) · installer failures capture typed exit/stderr and keep rollback atomic `b1ad9ac`; six cleanup owners exercise real unlink/rmtree/symlink races, NotFound success, partial-delete quarantine, and self-heal `13c04fe`; cheap freshness/TUI preflight `ab4d93a`/`e276058`; every-launch one-hour strict sweep `e62e36e`/`df0c171`; captured diagnostics and install-only announcements `b6073df`/`536d1e4`; split, manifest, and installer helpers `647a31f`/`5265eeb` |
-| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs + crates/skit-language/tests/edge_contract.rs + real CLI/store owners | accounting: 37 executable/rehomed + 1 architecture closure + 7 Batch A stronger owners + 29 remaining audit = 74 · Batch A mapping is below · needs receipt owners `744b3c4` · bun run + JS refusal fixed `19e5ab8` · 17 frozen shebang/infer owners rehomed `98efbb4` · remaining 29: 6 stronger-owner closures, 17 exact tests-only rehomes, 6 real gaps (add-kind validation 3, Windows Bash resolution 2, shell dependency refusal copy 1) |
+| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs + crates/skit-language/tests/edge_contract.rs + real CLI/store owners | accounting: 37 executable/rehomed + 1 architecture closure + 7 Batch A + 14 Batch C + 15 remaining audit = 74 · Batch mappings are below · needs receipt owners `744b3c4` · bun run + JS refusal fixed `19e5ab8` · detection rehomes `98efbb4` · remaining 15: 1 stronger-owner closure, 9 exact tests-only rehomes, 5 real gaps (add-kind validation 3, Windows Bash resolution 2) |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
@@ -91,6 +91,21 @@ Interpreter Batch A replaces seven cross-layer runtime stubs with these stronger
   `mutations::update_settings_sets_then_clears_needs_without_losing_extensions_or_rewriting_reads`
   drives the real store update twice and asserts set, clear, omission, extension retention, and pure
   rereads.
+
+Interpreter Batch C closes fourteen CLI-owned rows without retaining runtime error-layer stubs:
+
+- The seven `test_deps_*` rows now run in `port_test_dependency_command_contracts`: six exercise
+  replace/conflict/Python/read/JSON/empty-needs behavior through the real binary, and
+  `test_deps_dep_on_shell_is_refused` pins exit 2, no-write, and exact three-locale copy.
+- `test_show_json_includes_needs` and `test_show_interpreted_header_and_source` now run in
+  `port_test_show` with JSON purity, read purity, and real human output.
+- `test_doctor_flags_missing_needs` and `test_doctor_json_needs_missing` map to
+  `port_test_healthcheck::test_collect_reports_every_category_and_excludes_double_reports`.
+- `test_show_human_prints_needs_line` maps to
+  `port_test_show::test_show_human_description_deps_presets_and_drift`.
+- `test_edit_program_refusal_is_kind_neutral` and `test_edit_command_refusal_is_kind_neutral` map
+  to `port_test_edit::test_cli_edit_command_entry_has_no_source`, which now drives both kinds and
+  proves that the editor never starts and product bytes do not change.
 
 ### Tier 2 — stateful data boundaries (`skit-store`)
 

@@ -4406,7 +4406,7 @@ fn deps(
     let package_change = dependencies_edit.is_some() || python_edit.is_some();
     if package_change && !matches!(kind.as_str(), "python" | "js" | "ts") {
         return Err(CliError::Usage(
-            Message::new("{} does not take package dependencies; only --need applies")
+            Message::new("{} doesn't take package dependencies; only --need applies")
                 .with(held.meta.name),
         ));
     }
@@ -4625,9 +4625,12 @@ fn write_deps(settings: &EntrySettings, json: bool) -> Result<(), CliError> {
             })
         );
     } else {
-        humanln!("Dependencies: {}", settings.dependencies.join(", "));
-        humanln!("Python constraint: {}", settings.requires_python);
-        humanln!("Required commands: {}", settings.needs.join(", "));
+        humanln!("Dependencies: {}", list_or_dash(&settings.dependencies));
+        humanln!(
+            "Python constraint: {}",
+            value_or_dash(&settings.requires_python)
+        );
+        humanln!("Required commands: {}", list_or_dash(&settings.needs));
     }
     Ok(())
 }

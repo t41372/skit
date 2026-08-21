@@ -358,8 +358,9 @@ fn test_collect_reports_every_category_and_excludes_double_reports() {
         report["needs_missing"]["needs_sh"],
         Value::from(vec!["ffmpeg"])
     );
-    // Strong owner for test_missing_needs_returns_the_gap: this is the public report's typed
-    // name-to-missing-tools face, not the runtime's fail-fast single-tool launch error.
+    // Strong owner for test_missing_needs_returns_the_gap, test_doctor_flags_missing_needs, and
+    // test_doctor_json_needs_missing: this is the public report's typed name-to-missing-tools face,
+    // not the runtime's fail-fast single-tool launch error.
     // needs_entries carries the ENTRY object itself, not None (the keys of needs_missing).
     assert_eq!(key_set(&report["needs_missing"]), owned(&["needs_sh"]));
     // launch_blocked names the two truly-blocked entries with a real reason...

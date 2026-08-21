@@ -905,11 +905,28 @@ fn test_cli_params_edit_reference_refused() {
 
 #[test]
 fn test_cli_edit_command_entry_has_no_source() {
-    // `skit edit` on a non-editable (command) entry must refuse before ever launching an editor.
+    // Strong owner for test_edit_program_refusal_is_kind_neutral and
+    // test_edit_command_refusal_is_kind_neutral: both non-editable kinds refuse before the editor.
     let sandbox = Sandbox::new();
     sandbox
         .command()
         .args(["add", "--cmd", "echo {x}", "--name", "ec"])
+        .assert()
+        .success();
+    let program = sandbox.data.path().join("program");
+    fs::write(&program, "#!/bin/sh\necho hi\n").unwrap();
+    #[cfg(unix)]
+    fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            program.to_str().unwrap(),
+            "--exe",
+            "--name",
+            "ep",
+            "--no-input",
+        ])
         .assert()
         .success();
     // Sentinel editor: touches a marker if launched. The Python monkeypatch's "editor must not be
@@ -924,12 +941,37 @@ fn test_cli_edit_command_entry_has_no_source() {
     .unwrap();
     #[cfg(unix)]
     fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
-    sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["edit", "ec"])
-        .assert()
-        .code(1);
+    let paths = [
+        sandbox.data.path().join("scripts/ec/meta.toml"),
+        sandbox.data.path().join("scripts/ep/meta.toml"),
+        sandbox.data.path().join("registry.toml"),
+        program,
+    ];
+    let before = paths
+        .iter()
+        .map(|path| fs::read(path).unwrap())
+        .collect::<Vec<_>>();
+    for selector in ["ec", "ep"] {
+        sandbox
+            .command()
+            .env("EDITOR", &editor)
+            .env("VISUAL", &editor)
+            .args(["edit", selector])
+            .assert()
+            .code(1)
+            .stderr(predicates::str::contains(format!(
+                "{selector} has no editable source (programs and command templates run as-is)."
+            )));
+    }
     assert!(!marker.exists(), "editor must not be launched");
+    for (path, before) in paths.iter().zip(before) {
+        assert_eq!(
+            fs::read(path).unwrap(),
+            before,
+            "{} changed",
+            path.display()
+        );
+    }
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
 }

@@ -1634,7 +1634,7 @@ fn deps_refuses_package_axes_for_kinds_without_package_management() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "does not take package dependencies",
+            "doesn't take package dependencies",
         ));
     sandbox
         .command()

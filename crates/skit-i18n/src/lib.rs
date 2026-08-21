@@ -3409,7 +3409,7 @@ const CATALOG: &[Translation] = &[
         "寫入路徑沒有父目錄",
     ),
     row!(
-        "{} does not take package dependencies; only --need applies",
+        "{} doesn't take package dependencies; only --need applies",
         "{} 不接受软件包依赖项；只有 --need 适用",
         "{} 不接受套件相依性；只有 --need 適用",
     ),
