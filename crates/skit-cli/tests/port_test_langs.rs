@@ -395,6 +395,7 @@ fn test_unknown_kind_never_reports_missing() {
     .unwrap();
 
     let store = FileStore::new(data.path());
+    store.rebuild_registry().unwrap();
     let surface = library_surface(&store, state.path(), config.path()).unwrap();
     let detail = surface
         .details
