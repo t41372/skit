@@ -2347,8 +2347,9 @@ fn tui_source_controls_change_only_the_stored_copy() {
         .commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)
         .unwrap();
     let source = fs::read_to_string(&stored).unwrap();
-    let (source, managed) =
+    let (source, managed, warnings) =
         prepare_source_management("shell", StorageMode::Copy, source, true, &[], &[], &[]).unwrap();
+    assert!(warnings.is_empty());
     let rewritten = write_managed_params("shell", &source, &managed).unwrap();
     let claimed = service.claim_identity(&entry).unwrap();
     entry = service
@@ -2360,7 +2361,7 @@ fn tui_source_controls_change_only_the_stored_copy() {
     );
 
     let source = fs::read_to_string(&stored).unwrap();
-    let (source, managed) = prepare_source_management(
+    let (source, managed, warnings) = prepare_source_management(
         "shell",
         StorageMode::Copy,
         source,
@@ -2370,6 +2371,7 @@ fn tui_source_controls_change_only_the_stored_copy() {
         &["NAME".to_owned()],
     )
     .unwrap();
+    assert!(warnings.is_empty());
     let rewritten = write_managed_params("shell", &source, &managed).unwrap();
     let claimed = service.claim_identity(&entry).unwrap();
     service

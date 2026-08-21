@@ -41,8 +41,9 @@ use skit_domain::{
     Entry, EntryKind, EntrySettings, EntrySummary, Slug, StorageMode,
     parameters::{
         DeclaredEditContext, DeclaredEditRequest, DeclaredEditWarning, NamedEdit, ParamDecl,
-        ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, as_param_type,
-        coerce_default, edit_declared, synthesized_placeholder,
+        ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, SourceManageWarning,
+        as_param_type, coerce_default, edit_declared, manage_source_candidates,
+        synthesized_placeholder,
     },
 };
 use skit_form::{
@@ -4578,10 +4579,10 @@ fn prepare_source_management(
     manage: &[String],
     unmanage: &[String],
     normalize: &[String],
-) -> Result<(String, Vec<ParamDecl>), CliError> {
+) -> Result<(String, Vec<ParamDecl>, Vec<SourceManageWarning>), CliError> {
     if !resync && manage.is_empty() && unmanage.is_empty() && normalize.is_empty() {
         let managed = managed_params(kind, &source);
-        return Ok((source, managed));
+        return Ok((source, managed, Vec::new()));
     }
     if mode == StorageMode::Reference {
         return Err(CliError::Failure(Message::new(
@@ -4609,19 +4610,8 @@ fn prepare_source_management(
             })
             .collect();
     }
-    for name in manage {
-        if managed.iter().any(|item| item.name == *name) {
-            continue;
-        }
-        let candidate = candidates
-            .iter()
-            .find(|item| item.name == *name)
-            .cloned()
-            .ok_or_else(|| {
-                CliError::Usage(Message::new("unknown source parameter: {}").with(name))
-            })?;
-        managed.push(candidate);
-    }
+    let result = manage_source_candidates(&managed, &candidates, manage);
+    managed = result.declarations;
     if !unmanage.is_empty() {
         managed.retain(|item| !unmanage.contains(&item.name));
     }
@@ -4643,7 +4633,7 @@ fn prepare_source_management(
             managed.push(normalized);
         }
     }
-    Ok((source, managed))
+    Ok((source, managed, result.warnings))
 }
 
 fn params(
@@ -4814,7 +4804,7 @@ fn params(
     } else {
         None
     };
-    let (mut source, prepared_managed) = prepare_source_management(
+    let (mut source, prepared_managed, source_manage_warnings) = prepare_source_management(
         held.meta.kind.as_str(),
         held.meta.mode,
         original_source.clone(),
@@ -4845,6 +4835,8 @@ fn params(
         .map(|item| item.name.clone())
         .collect::<BTreeSet<_>>();
     let mut changed = false;
+    let mut malformed_source_values = Vec::new();
+    let mut shared_parameter_warnings = Vec::new();
 
     if source_parameter_kind && has_shared_parameter_tweaks {
         let mut prompts = Vec::new();
@@ -4853,10 +4845,7 @@ fn params(
                 .split_once('=')
                 .filter(|(name, _)| !name.trim().is_empty())
             else {
-                humanerrln!(
-                    "Ignored a malformed value: {} (expected NAME=text).",
-                    format!("--prompt: {spec}")
-                );
+                malformed_source_values.push(format!("--prompt: {spec}"));
                 continue;
             };
             prompts.push(NamedEdit::new(name, value));
@@ -4901,14 +4890,24 @@ fn params(
                 Vec::<String>::new(),
             ),
         );
-        for warning in &result.warnings {
-            eprintln!(
-                "{}",
-                declared_edit_warning_message(warning).localize(active_locale())
-            );
-        }
+        shared_parameter_warnings = result.warnings;
         changed |= result.changed;
         declarations = result.declarations;
+    }
+    for item in malformed_source_values {
+        humanerrln!("Ignored a malformed value: {} (expected NAME=text).", item);
+    }
+    for warning in &source_manage_warnings {
+        eprintln!(
+            "{}",
+            source_manage_warning_message(warning).localize(active_locale())
+        );
+    }
+    for warning in &shared_parameter_warnings {
+        eprintln!(
+            "{}",
+            declared_edit_warning_message(warning).localize(active_locale())
+        );
     }
 
     let mut workdir = held.meta.workdir.clone();
@@ -5299,6 +5298,18 @@ fn collect_named_values(raw: &[String], flag: &str) -> (Vec<NamedEdit<String>>, 
         }
     }
     (edits, malformed)
+}
+
+fn source_manage_warning_message(warning: &SourceManageWarning) -> Message {
+    match warning {
+        SourceManageWarning::AlreadyManaged { name } => {
+            Message::new("{} is already managed; skipped.").with(name)
+        }
+        SourceManageWarning::NotCandidate { name } => {
+            Message::new("{} isn't a detectable parameter in the current script; skipped.")
+                .with(name)
+        }
+    }
 }
 
 fn declared_edit_warning_message(warning: &DeclaredEditWarning) -> Message {
@@ -9389,7 +9400,7 @@ fn tui_submit_settings(
             .unwrap_or_else(|| original_bytes.to_vec());
         let view = LosslessSource::from_bytes(&working);
         let original_text = view.normalized_text().to_owned();
-        let (rewritten, mut managed) = prepare_source_management(
+        let (rewritten, mut managed, _source_manage_warnings) = prepare_source_management(
             entry.meta.kind.as_str(),
             entry.meta.mode,
             original_text.clone(),

@@ -7,8 +7,8 @@
 
 use skit_domain::parameters::{
     DeclaredEditContext, DeclaredEditRequest, DeclaredEditWarning, NamedEdit, ParamDecl,
-    ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, as_param_type,
-    coerce_default, edit_declared,
+    ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, SourceManageWarning,
+    as_param_type, coerce_default, edit_declared, manage_source_candidates,
 };
 
 fn named(values: &[(&str, &str)]) -> Vec<NamedEdit<String>> {
@@ -46,6 +46,37 @@ fn run(
 
 fn warning(name: &str, build: impl FnOnce(String) -> DeclaredEditWarning) -> DeclaredEditWarning {
     build(name.to_owned())
+}
+
+#[test]
+fn source_manage_collects_warnings_and_keeps_valid_siblings_in_request_order() {
+    let city = ParamDecl::new("CITY");
+    let mut input = ParamDecl::new("input-1");
+    input.binding = ParameterBinding::Input;
+    input.delivery = ParameterDelivery::Inject;
+
+    let result = manage_source_candidates(
+        std::slice::from_ref(&city),
+        std::slice::from_ref(&input),
+        &["CITY".to_owned(), "input-1".to_owned(), "NOPE".to_owned()],
+    );
+
+    assert_eq!(result.declarations, [city, input]);
+    assert_eq!(
+        result.warnings,
+        [
+            SourceManageWarning::AlreadyManaged {
+                name: "CITY".to_owned()
+            },
+            SourceManageWarning::NotCandidate {
+                name: "NOPE".to_owned()
+            }
+        ]
+    );
+    assert_eq!(result.warnings[0].name(), "CITY");
+    assert_eq!(result.warnings[0].code(), "already-managed");
+    assert_eq!(result.warnings[1].name(), "NOPE");
+    assert_eq!(result.warnings[1].code(), "not-a-candidate");
 }
 
 #[test]

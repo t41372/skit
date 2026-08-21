@@ -1601,6 +1601,16 @@ const CATALOG: &[Translation] = &[
         "{} 已經宣告過，已跳過。",
     ),
     row!(
+        "{} is already managed; skipped.",
+        "{} 已在管理中;已跳过。",
+        "{} 已在管理中;已略過。",
+    ),
+    row!(
+        "{} isn't a detectable parameter in the current script; skipped.",
+        "{} 在当前脚本中检测不到;已跳过。",
+        "{} 在當前腳本中偵測不到;已略過。",
+    ),
+    row!(
         "{}: that delivery isn't available for this kind; skipped.",
         "{}：该传递方式不适用于此类型，已跳过。",
         "{}：該傳遞方式不適用於此類型，已跳過。",

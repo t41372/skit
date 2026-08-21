@@ -12,16 +12,11 @@
 //!   codes (`resync-dropped:`, `already-managed:`, `not-a-candidate:`, `not-managed:`), and the
 //!   input list is never mutated.
 //!
-//!   THE RUST SURFACE HAS NO PUBLIC EQUIVALENT. The rewrite inlines this logic, privately and
-//!   partially, inside `skit-cli`'s `prepare_source_management` (resync/manage/unmanage,
-//!   `crates/skit-cli/src/cli.rs:~3559`) and `params` (`~3635`). There is no pure function to
-//!   call and no `EditResult`/warning contract anywhere public (verified: nothing in
-//!   skit-application, skit-form, or skit-language). So each pure-logic `def` becomes a compiling
-//!   `#[ignore]` stub whose body records the exact Python behavior + a MUST-FIX trailhead
-//!   (`kind="absent"`). Where the Rust inline code DOES already implement the behavior, the stub
-//!   says so rather than over-claiming a divergence; where it diverges observably (an unknown
-//!   `--manage`/malformed `--prompt` hard-errors instead of warning), the stub notes that too and
-//!   the CLI half below carries the one observable divergence assertion.
+//!   The complete Rust surface is still split, but source candidate additions now use the public
+//!   domain operation `manage_source_candidates`, including typed `already-managed` and
+//!   `not-a-candidate` warnings. The canonical add-warning owner below drives that operation through
+//!   the public CLI. The remaining full resync/remove/tweak owners stay ignored until one complete
+//!   public edit result owns those operations too.
 //!
 //! - **CLI end-to-end** (Python `CliRunner`): these drive the real `skit` binary via `assert_cmd`
 //!   inside a fresh three-directory sandbox (`SKIT_DATA_DIR`/`SKIT_STATE_DIR`/`SKIT_CONFIG_DIR`).
@@ -169,12 +164,20 @@ impl Sandbox {
     }
 }
 
+fn combine(output: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
 // ---------- reconcile.edit_specs pure logic ----------
 //
-// ABSENT (kind="absent"): the pure `reconcile.edit_specs` function and its `EditResult{specs,
-// warnings}` contract do not exist on the Rust public surface. The behavior is inlined privately in
-// `crates/skit-cli/src/cli.rs` (`prepare_source_management` ~:3559 for resync/manage/unmanage; the
-// `params` body ~:3635 for the tweaks). MUST-FIX to make these assertable: expose a pure
+// ABSENT (kind="absent"): a complete pure `reconcile.edit_specs` function and its combined
+// `EditResult{specs,warnings}` contract do not yet exist on the Rust public surface. Candidate
+// additions are public through `manage_source_candidates`; resync/remove and shared tweaks remain
+// split across the composition root. MUST-FIX for the remaining owners: expose a complete pure
 // reconcile-apply that returns the warning-collecting `EditResult` (Python `src/skit/analysis.py`:
 // `edit_specs` :229, `_apply_resync` :288, `_apply_add` :352, `_apply_tweaks` :372). The call
 // cannot compile today, so each stub keeps the Python body as a comment.
@@ -226,14 +229,151 @@ fn test_add_input_candidate_by_display_name() {
 }
 
 #[test]
-#[ignore = "ABSENT (kind=absent): no public reconcile.edit_specs on the Rust surface, and the Rust CLI DIVERGES here (an unknown --manage hard-errors, cli.rs:3606-3608, instead of warning). MUST-FIX: src/skit/analysis.py:362-369 (already-managed / not-a-candidate warnings)."]
 fn test_add_already_managed_and_not_candidate_warn() {
-    // Adding a name already managed, or a name that is not a current candidate, is not fatal: each
-    // becomes a warning and the pass continues. Rust's inline `--manage` returns CliError::Usage on
-    // the first non-candidate name and aborts the whole call — a hard error, not a per-name warning.
-    //   res = reconcile.edit_specs(SCRIPT, [spec("CITY")], add=["CITY", "NOPE"])
-    //   assert "already-managed:CITY" in res.warnings
-    //   assert "not-a-candidate:NOPE" in res.warnings
+    // Adding a name already managed, or a name that is not a current candidate, is not fatal. The
+    // valid input candidate between them still commits in the same source-CAS operation.
+    let sandbox = Sandbox::new();
+    sandbox.add_job();
+    let payload = sandbox.data.path().join("scripts/job/script.py");
+    let meta = sandbox.data.path().join("scripts/job/meta.toml");
+    let meta_before = fs::read(&meta).unwrap();
+    let state_path = sandbox.state.path().join("values/job.toml");
+    fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    fs::write(
+        &state_path,
+        "[values]\ninput-1 = \"plaintext\"\nCITY = \"public\"\n\n[presets.saved]\ninput-1 = \"plaintext\"\nCITY = \"public\"\n",
+    )
+    .unwrap();
+    let output = sandbox
+        .command()
+        .args([
+            "params",
+            "job",
+            "--manage",
+            "CITY",
+            "--manage",
+            "input-1",
+            "--manage",
+            "NOPE",
+            "--secret",
+            "input-1",
+            "--prompt",
+            "no-equals-sign",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let malformed = stderr
+        .find("Ignored a malformed value: --prompt: no-equals-sign (expected NAME=text).")
+        .unwrap_or_else(|| panic!("missing malformed warning: {stderr}"));
+    let already = stderr
+        .find("CITY is already managed; skipped.")
+        .unwrap_or_else(|| panic!("missing already-managed warning: {stderr}"));
+    let unknown = stderr
+        .find("NOPE isn't a detectable parameter in the current script; skipped.")
+        .unwrap_or_else(|| panic!("missing not-a-candidate warning: {stderr}"));
+    assert!(malformed < already && already < unknown, "{stderr}");
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("Updated job. Managed parameters: CITY, RETRIES, GONE, input-1")
+    );
+    let managed = sandbox.read_back();
+    let input = managed
+        .iter()
+        .find(|row| row.name == "input-1")
+        .expect("the valid candidate must commit");
+    assert_eq!(input.binding, ParameterBinding::Input);
+    assert_eq!(input.order, 0);
+    assert!(input.secret);
+    let mut meta_before: toml::Value =
+        toml::from_str(std::str::from_utf8(&meta_before).unwrap()).unwrap();
+    let meta_after_bytes = fs::read(&meta).unwrap();
+    let mut meta_after: toml::Value =
+        toml::from_str(std::str::from_utf8(&meta_after_bytes).unwrap()).unwrap();
+    let before_hash = meta_before.as_table_mut().unwrap().remove("source_hash");
+    let after_hash = meta_after.as_table_mut().unwrap().remove("source_hash");
+    assert_ne!(after_hash, before_hash);
+    assert_eq!(meta_after, meta_before);
+    let state = fs::read_to_string(&state_path).unwrap();
+    assert!(!state.contains("input-1"), "{state}");
+    assert!(!state.contains("plaintext"), "{state}");
+    assert!(state.contains("CITY = \"public\""), "{state}");
+
+    // An all-invalid batch warns and performs no source, metadata, or state write.
+    let payload_before = fs::read(&payload).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+    let state_before = fs::read(&state_path).unwrap();
+    let output = sandbox
+        .command()
+        .args(["params", "job", "--manage", "NOPE"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("NOPE isn't a detectable parameter in the current script; skipped.")
+    );
+    assert_eq!(fs::read(&payload).unwrap(), payload_before);
+    assert_eq!(fs::read(&meta).unwrap(), meta_before);
+    assert_eq!(fs::read(&state_path).unwrap(), state_before);
+
+    // JSON keeps the machine document on stdout. Recoverable diagnostics stay on stderr.
+    let json = Sandbox::new();
+    json.add_job();
+    let output = json
+        .command()
+        .args([
+            "params", "job", "--manage", "CITY", "--manage", "input-1", "--manage", "NOPE",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["parameters"].as_array().unwrap().len(), 4);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("skipped"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("CITY is already managed; skipped."),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("NOPE isn't a detectable parameter in the current script; skipped."),
+        "{stderr}"
+    );
+
+    for (locale, already, unknown) in [
+        (
+            "en",
+            "CITY is already managed; skipped.",
+            "NOPE isn't a detectable parameter in the current script; skipped.",
+        ),
+        (
+            "zh-CN",
+            "CITY 已在管理中;已跳过。",
+            "NOPE 在当前脚本中检测不到;已跳过。",
+        ),
+        (
+            "zh-TW",
+            "CITY 已在管理中;已略過。",
+            "NOPE 在當前腳本中偵測不到;已略過。",
+        ),
+    ] {
+        let localized = Sandbox::new();
+        localized.add_job();
+        let output = localized
+            .command()
+            .env("SKIT_LANG", locale)
+            .args(["params", "job", "--manage", "CITY", "--manage", "NOPE"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(already), "{locale}: {stderr}");
+        assert!(stderr.contains(unknown), "{locale}: {stderr}");
+    }
 }
 
 #[test]

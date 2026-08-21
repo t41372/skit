@@ -184,6 +184,64 @@ pub struct DeclaredEditResult {
     pub changed: bool,
 }
 
+/// One recoverable source-candidate management problem.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SourceManageWarning {
+    /// The requested name is already in the managed source block.
+    AlreadyManaged { name: String },
+    /// The current parser result has no candidate with the requested name.
+    NotCandidate { name: String },
+}
+
+impl SourceManageWarning {
+    /// Return the affected public parameter name.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::AlreadyManaged { name } | Self::NotCandidate { name } => name,
+        }
+    }
+
+    /// Return the stable warning code used by adapters and inventories.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::AlreadyManaged { .. } => "already-managed",
+            Self::NotCandidate { .. } => "not-a-candidate",
+        }
+    }
+}
+
+/// Result of adding detected source candidates to one managed declaration list.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SourceManageResult {
+    /// Original rows followed by each valid newly managed candidate.
+    pub declarations: Vec<ParamDecl>,
+    /// Recoverable problems in request order.
+    pub warnings: Vec<SourceManageWarning>,
+}
+
+/// Add detected candidates without letting one bad requested name abort valid siblings.
+pub fn manage_source_candidates(
+    managed: &[ParamDecl],
+    candidates: &[ParamDecl],
+    requested: &[String],
+) -> SourceManageResult {
+    let mut declarations = managed.to_vec();
+    let mut warnings = Vec::new();
+    for name in requested {
+        if declarations.iter().any(|item| item.name == *name) {
+            warnings.push(SourceManageWarning::AlreadyManaged { name: name.clone() });
+        } else if let Some(candidate) = candidates.iter().find(|item| item.name == *name) {
+            declarations.push(candidate.clone());
+        } else {
+            warnings.push(SourceManageWarning::NotCandidate { name: name.clone() });
+        }
+    }
+    SourceManageResult {
+        declarations,
+        warnings,
+    }
+}
+
 /// Parse one value from the public closed parameter-type set.
 pub fn as_param_type(value: &str) -> Option<ParameterType> {
     match value {

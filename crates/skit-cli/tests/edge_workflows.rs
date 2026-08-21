@@ -795,7 +795,10 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
 
     let managed = sandbox.source("managed.sh", b"NAME=old\necho \"$NAME\"\n");
     sandbox.ok(&["add", &managed, "--name", "Managed"]);
-    sandbox.code(&["params", "managed", "--manage", "missing"], 2);
+    sandbox.warn(
+        &["params", "managed", "--manage", "missing"],
+        "missing isn't a detectable parameter in the current script; skipped.",
+    );
     sandbox.ok(&["params", "managed", "--manage", "NAME"]);
     sandbox.ok(&["params", "managed", "--manage", "NAME"]);
     sandbox.ok(&["params", "managed", "--resync"]);
