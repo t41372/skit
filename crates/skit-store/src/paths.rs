@@ -111,6 +111,7 @@ pub(crate) fn is_support_file(name: &str) -> bool {
         || name.starts_with(".skit-deps")
         // one run's staged injected source
         || name.starts_with(".run-")
+        || name.starts_with(".injected-")
         // an atomic replacement sibling left by an interrupted write
         || (name.starts_with('.') && name.ends_with(".tmp"))
 }

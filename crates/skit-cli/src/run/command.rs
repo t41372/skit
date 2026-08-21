@@ -1,8 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
-    fs::OpenOptions,
-    io,
+    env, fs, io,
     io::{IsTerminal as _, Write as _},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -19,7 +17,7 @@ use skit_application::{
     tokens::TokenContext,
 };
 use skit_domain::{
-    Entry, EntryId, EntrySettings,
+    Entry, EntrySettings,
     parameters::{ParamDecl, ParameterDelivery},
 };
 use skit_form::form_params;
@@ -802,42 +800,73 @@ fn stage_injected_source(
     declarations: &[skit_domain::parameters::ParamDecl],
     assembly: &skit_application::delivery::Assembly,
 ) -> Result<Option<StagedSource>, RunError> {
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    // This call runs for every non-dry launch. Recover only aged injected copies, so a crashed
+    // process cannot leave values in the persistent entry directory forever and a concurrent run's
+    // live copy stays intact.
+    sweep_staged_sources(&entry_dir, !assembly.inject_values.is_empty());
     if assembly.inject_values.is_empty() {
         return Ok(None);
     }
     let kind = entry.meta.kind.as_str();
-    let interpreter = EntrySettings::from_meta(&entry.meta).interpreter;
+    let settings = EntrySettings::from_meta(&entry.meta);
+    let interpreter = settings.interpreter.as_str();
     let rewritten = inject_values_for_interpreter(
         kind,
         source,
         declarations,
         &assembly.inject_values,
-        (!interpreter.is_empty()).then_some(interpreter.as_str()),
+        (!interpreter.is_empty()).then_some(interpreter),
     )?;
-    let entry_dir = store.entry_dir_path(&entry.slug);
-    sweep_staged_sources(&entry_dir);
     let original = launch_payload_path(store, entry)?;
     let suffix = original
         .extension()
         .and_then(|value| value.to_str())
         .map_or(String::new(), |value| format!(".{value}"));
-    let path = entry_dir.join(format!(".run-{}{}", EntryId::generate().as_str(), suffix));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    let stage_error = |source| RunError::Stage {
+    let adjacent_to_modules = matches!(kind, "js" | "ts")
+        && entry.meta.mode == skit_domain::StorageMode::Copy
+        && !settings.dependencies.is_empty();
+    let file = new_injected_file(&entry_dir, &suffix, adjacent_to_modules)?;
+    finish_staged_source(file, rewritten.as_bytes(), |file, bytes| {
+        file.write_all(bytes).and_then(|()| file.sync_all())
+    })
+    .map(Some)
+}
+
+fn new_injected_file(
+    entry_dir: &Path,
+    suffix: &str,
+    adjacent_to_modules: bool,
+) -> Result<tempfile::NamedTempFile, RunError> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".injected-").suffix(suffix);
+    let file = if adjacent_to_modules {
+        builder.tempfile_in(entry_dir)
+    } else {
+        // The OS temp directory is the normal home for a source that can contain plaintext secret
+        // values. Keep the oracle's entry-directory fallback for a broken TMPDIR; the aged sweep
+        // above makes that fallback recoverable after an abnormal process exit.
+        builder
+            .tempfile()
+            .or_else(|_| builder.tempfile_in(entry_dir))
+    };
+    file.map_err(|source| RunError::Stage {
+        path: entry_dir.display().to_string(),
+        source,
+    })
+}
+
+fn finish_staged_source(
+    mut file: tempfile::NamedTempFile,
+    bytes: &[u8],
+    write_and_sync: impl FnOnce(&mut fs::File, &[u8]) -> io::Result<()>,
+) -> Result<StagedSource, RunError> {
+    let path = file.path().to_path_buf();
+    write_and_sync(file.as_file_mut(), bytes).map_err(|source| RunError::Stage {
         path: path.display().to_string(),
         source,
-    };
-    let mut file = options.open(&path).map_err(stage_error)?;
-    file.write_all(rewritten.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(stage_error)?;
-    Ok(Some(StagedSource { path }))
+    })?;
+    Ok(StagedSource { path, _file: file })
 }
 
 /// Ask for consent, announce the first private uv download, then pin the installed path.
@@ -925,7 +954,7 @@ fn pin_interpreter(settings: &mut EntrySettings, entry: &mut Entry, path: &Path)
     settings.write_to_meta(&mut entry.meta);
 }
 
-fn sweep_staged_sources(entry_dir: &Path) {
+fn sweep_staged_sources(entry_dir: &Path, include_launch_snapshots: bool) {
     // A directory skit cannot list holds nothing skit owns.
     let items = fs::read_dir(entry_dir).into_iter().flatten();
     let cutoff = SystemTime::now()
@@ -933,10 +962,10 @@ fn sweep_staged_sources(entry_dir: &Path) {
         .unwrap_or(SystemTime::UNIX_EPOCH);
     for item in items.flatten() {
         let path = item.path();
-        let is_staged = item
-            .file_name()
-            .to_str()
-            .is_some_and(|name| name.starts_with(".run-"));
+        let is_staged = item.file_name().to_str().is_some_and(|name| {
+            name.starts_with(".injected-")
+                || (include_launch_snapshots && name.starts_with(".run-"))
+        });
         let is_stale_file = item
             .metadata()
             .ok()
@@ -952,12 +981,7 @@ fn sweep_staged_sources(entry_dir: &Path) {
 #[derive(Debug)]
 struct StagedSource {
     path: PathBuf,
-}
-
-impl Drop for StagedSource {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
+    _file: tempfile::NamedTempFile,
 }
 
 fn configured_runner(config: &FileConfigStore, name: &str) -> Result<PromptRunner, RunError> {
@@ -1335,12 +1359,25 @@ mod tests {
         let directory = root.path().join("scripts/demo");
         fs::create_dir_all(&directory).unwrap();
         fs::write(directory.join("script.sh"), "NAME=old\n").unwrap();
-        let stale = directory.join(".run-stale.sh");
-        let live = directory.join(".run-live.sh");
+        let stale = directory.join(".injected-stale.sh");
+        let live = directory.join(".injected-live.sh");
+        let stale_launch_snapshot = directory.join(".run-stale.sh");
         fs::write(&stale, "stale secret").unwrap();
         fs::write(&live, "live secret").unwrap();
+        fs::write(&stale_launch_snapshot, "stale launch bytes").unwrap();
         let stale_file = fs::File::options().write(true).open(&stale).unwrap();
         stale_file
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH)
+                    .set_accessed(SystemTime::UNIX_EPOCH),
+            )
+            .unwrap();
+        let stale_launch_file = fs::File::options()
+            .write(true)
+            .open(&stale_launch_snapshot)
+            .unwrap();
+        stale_launch_file
             .set_times(
                 fs::FileTimes::new()
                     .set_modified(SystemTime::UNIX_EPOCH)
@@ -1364,7 +1401,21 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(!stale.exists());
+        assert!(!stale_launch_snapshot.exists());
         assert!(live.exists());
+        assert!(
+            !staged.path.starts_with(&directory),
+            "ordinary injected sources belong in the OS private temp directory: {}",
+            staged.path.display()
+        );
+        assert!(
+            staged
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".injected-")
+        );
         assert_eq!(fs::read_to_string(&staged.path).unwrap(), "NAME='new'\n");
         #[cfg(unix)]
         {
@@ -1378,17 +1429,94 @@ mod tests {
         drop(staged);
         assert!(!staged_path.exists());
 
+        // A later run is the crash-recovery boundary even when it needs no injection itself.
+        let recovered = directory.join(".injected-crashed.sh");
+        fs::write(&recovered, "crashed secret").unwrap();
+        let recovered_file = fs::File::options().write(true).open(&recovered).unwrap();
+        recovered_file
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH)
+                    .set_accessed(SystemTime::UNIX_EPOCH),
+            )
+            .unwrap();
         assert!(
             stage_injected_source(
                 &store,
                 &shell,
                 "NAME=old\n",
-                &[declaration],
+                std::slice::from_ref(&declaration),
                 &skit_application::delivery::Assembly::default(),
             )
             .unwrap()
             .is_none()
         );
+        assert!(!recovered.exists());
+
+        let mut javascript = entry("js", "node");
+        fs::write(directory.join("script.js"), "const NAME = 'old';\n").unwrap();
+        let staged = stage_injected_source(
+            &store,
+            &javascript,
+            "const NAME = 'old';\n",
+            std::slice::from_ref(&declaration),
+            &skit_application::delivery::Assembly {
+                inject_values: BTreeMap::from([("NAME".to_owned(), "new".to_owned())]),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            !staged.path.starts_with(&directory),
+            "dependency-free JavaScript must not persist its injected values"
+        );
+        drop(staged);
+
+        let mut settings = EntrySettings::from_meta(&javascript.meta);
+        settings.dependencies = vec!["chalk".to_owned()];
+        settings.write_to_meta(&mut javascript.meta);
+        let staged = stage_injected_source(
+            &store,
+            &javascript,
+            "const NAME = 'old';\n",
+            &[declaration],
+            &skit_application::delivery::Assembly {
+                inject_values: BTreeMap::from([("NAME".to_owned(), "new".to_owned())]),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            staged.path.parent(),
+            Some(directory.as_path()),
+            "npm-backed JavaScript must remain adjacent to node_modules"
+        );
+        drop(staged);
+
+        for fail_after_write in [false, true] {
+            let file = new_injected_file(&directory, ".sh", true).unwrap();
+            let failed_path = file.path().to_path_buf();
+            let result = finish_staged_source(file, b"SECRET='plaintext'\n", |file, bytes| {
+                if fail_after_write {
+                    file.write_all(bytes)?;
+                } else {
+                    file.write_all(&bytes[..6])?;
+                }
+                Err(io::Error::other(if fail_after_write {
+                    "simulated sync failure"
+                } else {
+                    "simulated write failure"
+                }))
+            });
+            assert!(matches!(result, Err(RunError::Stage { .. })));
+            assert!(
+                !failed_path.exists(),
+                "a failed private-source write left {}",
+                failed_path.display()
+            );
+        }
         assert_eq!(
             source_text(
                 &store,
@@ -1556,10 +1684,13 @@ mod tests {
 
         let root = TempDir::new().unwrap();
         let store = FileStore::new(root.path());
-        let shell = entry("shell", "bash");
-        let entry_dir = store.entry_dir_path(&shell.slug);
+        let mut javascript = entry("js", "node");
+        let mut settings = EntrySettings::from_meta(&javascript.meta);
+        settings.dependencies = vec!["chalk".to_owned()];
+        settings.write_to_meta(&mut javascript.meta);
+        let entry_dir = store.entry_dir_path(&javascript.slug);
         fs::create_dir_all(&entry_dir).unwrap();
-        fs::write(entry_dir.join("script.sh"), "NAME=old\n").unwrap();
+        fs::write(entry_dir.join("script.js"), "const NAME = 'old';\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
@@ -1572,8 +1703,14 @@ mod tests {
         assembly
             .inject_values
             .insert("NAME".to_owned(), "updated".to_owned());
-        let error = stage_injected_source(&store, &shell, "NAME=old\n", &[declaration], &assembly)
-            .unwrap_err();
+        let error = stage_injected_source(
+            &store,
+            &javascript,
+            "const NAME = 'old';\n",
+            &[declaration],
+            &assembly,
+        )
+        .unwrap_err();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
