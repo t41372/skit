@@ -1135,6 +1135,75 @@ fn tui_run_forms_preserve_saved_values_but_never_prefill_secrets() {
 }
 
 #[test]
+fn plain_run_form_projects_prompts_saved_values_and_runner_defaults() {
+    let entry = Entry {
+        slug: Slug::parse("plain").unwrap(),
+        meta: EntryMeta::minimal("Plain", EntryKind::parse("prompt").unwrap()),
+    };
+    let named = ParamDecl::new("name");
+    let mut prompted = ParamDecl::new("count");
+    prompted.prompt = "How many?".to_owned();
+    let mut secret = ParamDecl::new("token");
+    secret.prompt = "API token".to_owned();
+    secret.secret = true;
+    let declarations = [named, prompted, secret];
+    let saved = BTreeMap::from([
+        ("name".to_owned(), "Ada".to_owned()),
+        ("count".to_owned(), "4".to_owned()),
+        ("token".to_owned(), "do-not-prefill".to_owned()),
+    ]);
+    let runners = ["alpha".to_owned(), "beta".to_owned()];
+
+    let missing_default = plain_run_form_view(&entry, &declarations, &saved, &runners, "missing");
+    assert_eq!(missing_default.purpose, FormPurpose::Run);
+    assert_eq!(missing_default.title, "Run {}");
+    assert_eq!(missing_default.title_arguments, ["Plain"]);
+    assert_eq!(missing_default.selector.as_deref(), Some("plain"));
+    assert_eq!(missing_default.submit_label, "Run");
+    let field = |key: &str| {
+        missing_default
+            .fields
+            .iter()
+            .find(|field| field.key == key)
+            .unwrap()
+    };
+    assert_eq!(field("value:name").label, "name");
+    assert_eq!(field("value:name").value, "Ada");
+    assert!(!field("value:name").translate_label);
+    assert_eq!(field("value:count").label, "How many?");
+    assert_eq!(field("value:count").value, "4");
+    assert!(!field("value:count").translate_label);
+    assert_eq!(field("value:token").label, "API token");
+    assert!(field("value:token").secret);
+    assert!(field("value:token").value.is_empty());
+    assert!(!field("value:token").translate_label);
+    assert_eq!(field("_skit_runner").label, "Prompt runner choices: {}");
+    assert_eq!(field("_skit_runner").label_arguments, ["alpha, beta"]);
+    assert_eq!(field("_skit_runner").value, "alpha");
+    assert!(field("_skit_runner").translate_label);
+
+    let valid_default = plain_run_form_view(&entry, &declarations, &saved, &runners, "beta");
+    assert_eq!(
+        valid_default
+            .fields
+            .iter()
+            .find(|field| field.key == "_skit_runner")
+            .unwrap()
+            .value,
+        "beta"
+    );
+
+    let no_runners = plain_run_form_view(&entry, &declarations, &saved, &[], "missing");
+    assert_eq!(no_runners.fields.len(), declarations.len());
+    assert!(
+        no_runners
+            .fields
+            .iter()
+            .all(|field| field.key != "_skit_runner")
+    );
+}
+
+#[test]
 fn interactive_runner_value_tracks_selection_separately_from_the_default() {
     let mut args = RunArgs {
         selector: "prompt".to_owned(),
