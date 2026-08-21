@@ -25,8 +25,11 @@ editor, JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
 implementation divergences are closed. Phase 3 is in progress: the first workspace coverage run
-found 2,514 executable-source gaps without relaxing the checker; domain, application, form,
-runtime, language, store, and UI are now at 0 gaps in fresh reports. Supply-chain, docs, wheel
+found 2,514 executable-source gaps without relaxing the checker. The merged fresh report at
+`fede179` had 95 gaps. Subsequent disjoint fresh runs closed the 7 `skit-i18n` gaps, the 1
+`skit-ui` gap, and 24 more `skit-cli/src/cli.rs` gaps. Current evidence therefore leaves 63 CLI
+lines; every other executable source is at 0. Run another merged report before treating 63 as the
+final gate result. Supply-chain, docs, wheel
 smoke, and benchmark gates are green. The merged workspace coverage gate is still red, and
 mutation remains blocked on user approval.** The user
 chose plan **A**:
@@ -394,7 +397,10 @@ The ledger has the authoritative per-module adjudication log.
   covers real front doors, typed filesystem failures and races, Hyperfine/merge invariants,
   deterministic Rust tool discovery, suite adapters, footprint retries, and a real single-suite
   execute/publication path. The remaining large root is `skit-cli`: its fresh gap count moved from
-  542 to 388, and `run/command.rs` is now 0. Finish `cli.rs`, then run one fresh merged LCOV gate.
+  542 to 87 in the merged `fede179` report, and `run/command.rs` is now 0. Six subsequent disjoint
+  batches closed the final 8 non-CLI lines and 24 CLI lines with fresh scoped evidence, so the
+  current remaining set is 63 CLI lines. This count is not a substitute for the next merged LCOV
+  run. Finish those lines, then run the merged hard gate again.
   `cargo deny`, `cargo audit --deny warnings`, and
   zizmor are green. The docs type-check/build, release wheel build plus isolated
   `uv tool install` smoke, 112 benchmark metrics, all 8 enforced benchmark budgets, and
