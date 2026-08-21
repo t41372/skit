@@ -182,7 +182,7 @@ impl JavaScriptSyntaxGateRunner for RealNodeGate {
 }
 
 #[test]
-fn test_mjs_origin_esm_copy_survives_gate2_before_any_package_json() {
+fn rust_additive_mjs_gate_accepts_esm_before_any_package_json() {
     let Some(program) = skit_runtime::SystemProbe.find_program("node") else {
         return;
     };

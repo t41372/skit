@@ -1479,6 +1479,15 @@ mod tests {
         drop(staged);
         assert!(!staged_path.exists());
 
+        let not_a_directory = root.path().join("not-a-directory");
+        fs::write(&not_a_directory, "occupied").unwrap();
+        let fallback = new_injected_file(&not_a_directory, ".js", true).unwrap();
+        assert!(
+            !fallback.path().starts_with(&not_a_directory),
+            "an unavailable entry-directory target must fall back to the OS private temp directory"
+        );
+        drop(fallback);
+
         // A later run is the crash-recovery boundary even when it needs no injection itself.
         let recovered = directory.join(".injected-crashed.sh");
         fs::write(&recovered, "crashed secret").unwrap();

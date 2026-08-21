@@ -13,6 +13,7 @@ const TARGETS: &[&str] = &[
     "crates/skit-language/tests/port_test_js_inject.rs",
     "crates/skit-runtime/tests/javascript_syntax_gate.rs",
     "crates/skit-cli/tests/port_test_js_inject_cli.rs",
+    "crates/skit-cli/tests/port_test_js_inject_cli_batch_c.rs",
 ];
 
 const EXECUTABLE: &[&str] = &[
@@ -42,12 +43,18 @@ const EXECUTABLE: &[&str] = &[
     "test_gate_node_raises_on_nonzero_with_empty_stderr",
     "test_gate_node_survives_a_spawn_failure",
     "test_gate2_failure_removes_the_temp_copy",
+    "test_injected_copy_carries_the_origins_module_flavor",
+    "test_execute_runs_a_js_entry_offline_plan",
+    "test_injected_const_reaches_the_child",
+    "test_injected_string_reaches_the_child",
+    "test_run_injects_and_executes_end_to_end",
+    "test_execute_maps_a_drifted_js_definition_to_drift",
+    "test_execute_syntax_gate_failure_never_launches",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum GapState {
     Executable,
-    Open,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,9 +64,11 @@ enum Disposition {
     },
     StaleExactRehome {
         target: &'static str,
+        state: GapState,
     },
     RuntimeGatedRehome {
         target: &'static str,
+        state: GapState,
     },
     RealProductGap {
         target: &'static str,
@@ -102,30 +111,35 @@ const AUDITED: &[AuditedOwner] = &[
         name: "test_injected_copy_carries_the_origins_module_flavor",
         disposition: Disposition::StaleExactRehome {
             target: "Batch C: cross-platform staged-path owner for js/mjs/cjs/ts/mts/cts",
+            state: GapState::Executable,
         },
     },
     AuditedOwner {
         name: "test_execute_runs_a_js_entry_offline_plan",
         disposition: Disposition::StaleExactRehome {
             target: "Batch C: skit-form FormSource::Inject owner",
+            state: GapState::Executable,
         },
     },
     AuditedOwner {
         name: "test_injected_string_reaches_the_child",
         disposition: Disposition::RuntimeGatedRehome {
             target: "Batch C: real node, deno, or bun output owner",
+            state: GapState::Executable,
         },
     },
     AuditedOwner {
         name: "test_run_injects_and_executes_end_to_end",
         disposition: Disposition::RuntimeGatedRehome {
             target: "Batch C: real CLI add, params --manage, and run owner",
+            state: GapState::Executable,
         },
     },
     AuditedOwner {
         name: "test_injected_const_reaches_the_child",
         disposition: Disposition::RuntimeGatedRehome {
             target: "Batch C: real node, deno, or bun output owner; the byte-only assertion is Rust-additive",
+            state: GapState::Executable,
         },
     },
     AuditedOwner {
@@ -195,14 +209,14 @@ const AUDITED: &[AuditedOwner] = &[
         name: "test_execute_maps_a_drifted_js_definition_to_drift",
         disposition: Disposition::RealProductGap {
             target: "Batch C: CLI drift error projection with --resync guidance",
-            state: GapState::Open,
+            state: GapState::Executable,
         },
     },
     AuditedOwner {
         name: "test_execute_syntax_gate_failure_never_launches",
         disposition: Disposition::RealProductGap {
             target: "Batch C: CLI injection-syntax error projection without --resync guidance",
-            state: GapState::Open,
+            state: GapState::Executable,
         },
     },
 ];
@@ -295,7 +309,13 @@ fn test_js_inject_frozen_names_are_exactly_and_uniquely_accounted() {
         .filter(|owner| {
             !matches!(
                 owner.disposition,
-                Disposition::RealProductGap {
+                Disposition::StaleExactRehome {
+                    state: GapState::Executable,
+                    ..
+                } | Disposition::RuntimeGatedRehome {
+                    state: GapState::Executable,
+                    ..
+                } | Disposition::RealProductGap {
                     state: GapState::Executable,
                     ..
                 }
@@ -309,8 +329,8 @@ fn test_js_inject_frozen_names_are_exactly_and_uniquely_accounted() {
     for owner in AUDITED {
         match owner.disposition {
             Disposition::StrongerOwnerClosure { reason } => assert!(!reason.trim().is_empty()),
-            Disposition::StaleExactRehome { target }
-            | Disposition::RuntimeGatedRehome { target }
+            Disposition::StaleExactRehome { target, .. }
+            | Disposition::RuntimeGatedRehome { target, .. }
             | Disposition::RealProductGap { target, .. } => assert!(!target.trim().is_empty()),
         }
     }
