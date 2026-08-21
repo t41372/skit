@@ -36,10 +36,11 @@ use std::collections::BTreeMap;
 
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    SourceEditRequest,
 };
 use skit_language::{
-    ParseOutcome, ReconcileReport, managed_params, parse_document, source_parameter_semantics,
-    write_managed_params,
+    ParseOutcome, ReconcileReport, edit_source_declarations, managed_params, parse_document,
+    source_parameter_semantics, write_managed_params,
 };
 
 // A secret const whose source literal is the empty string — the shape that made the "skip a value
@@ -128,6 +129,14 @@ fn reconcile(kind: &str, source: &str, specs: &[ParamDecl]) -> ReconcileReport {
         ParseOutcome::Parsed(document) => document.reconcile(specs),
         _ => ReconcileReport::from_syntax_error(specs),
     }
+}
+
+fn const_decl(name: &str, parameter_type: ParameterType) -> ParamDecl {
+    let mut declaration = ParamDecl::new(name);
+    declaration.binding = ParameterBinding::Const;
+    declaration.delivery = ParameterDelivery::Inject;
+    declaration.parameter_type = parameter_type;
+    declaration
 }
 
 /// Python `_envdefault(name, type_="str", default=None)`.
@@ -375,18 +384,82 @@ fn test_run_save_preset_stores_a_default_equal_value_verbatim() {
 // --------------------------------------------------------------------------
 
 #[test]
-#[ignore = "CROSS-CRATE: analysis.edit_specs(resync=.., secret=..) has no skit-language equivalent; \
-            the resync/secret spec-edit logic is inlined in skit-cli (crates/skit-cli/src/cli.rs)."]
 fn test_resync_and_secret_in_one_edit_drops_the_refreshed_literal() {
     // A single edit that both resyncs the public default AND marks the field secret must not cache
     // the refreshed source literal into the secret block (edited.default is None, no "default" key).
+    let mut declaration = const_decl("CITY", ParameterType::Str);
+    declaration.default = Some(ParameterValue::String("old".to_owned()));
+    let result = edit_source_declarations(
+        "python",
+        "CITY = \"sk-live-source\"\n",
+        &[declaration],
+        &SourceEditRequest {
+            resync: true,
+            secret: vec!["CITY".to_owned()],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    let edited = &result.declarations[0];
+    assert!(edited.secret);
+    assert!(edited.default.is_none());
+    let block = edited.to_block_map();
+    assert!(!block.contains_key("default"));
+    assert!(!format!("{block:?}").contains("sk-live-source"));
 }
 
 #[test]
-#[ignore = "CROSS-CRATE: analysis.edit_specs has no skit-language equivalent; spec-edit logic is \
-            inlined in skit-cli."]
 fn test_final_no_secret_in_same_edit_keeps_the_public_default() {
     // `--secret X --no-secret X` ends public and must keep its public default ("new").
+    let mut declaration = const_decl("CITY", ParameterType::Str);
+    declaration.default = Some(ParameterValue::String("old".to_owned()));
+    let result = edit_source_declarations(
+        "python",
+        "CITY = \"new\"\n",
+        &[declaration],
+        &SourceEditRequest {
+            resync: true,
+            secret: vec!["CITY".to_owned()],
+            no_secret: vec!["CITY".to_owned()],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    let edited = &result.declarations[0];
+    assert!(!edited.secret);
+    assert_eq!(
+        edited.default,
+        Some(ParameterValue::String("new".to_owned()))
+    );
+}
+
+#[test]
+fn adding_a_detected_secret_candidate_never_serializes_its_source_literal() {
+    let result = edit_source_declarations(
+        "python",
+        "API_KEY = \"sk-live-candidate\"\nprint(API_KEY)\n",
+        &[],
+        &SourceEditRequest {
+            add: vec!["API_KEY".to_owned()],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+    let declaration = &result.declarations[0];
+    assert!(declaration.secret);
+    assert!(declaration.default.is_none());
+    assert!(!declaration.to_block_map().contains_key("default"));
+
+    let written = write_managed_params(
+        "python",
+        "API_KEY = \"sk-live-candidate\"\nprint(API_KEY)\n",
+        &result.declarations,
+    )
+    .unwrap();
+    let close = written.rfind("# ///").unwrap();
+    let block = &written[..close];
+    assert!(!block.contains("default ="), "{block}");
+    assert!(!block.contains("sk-live-candidate"), "{block}");
 }
 
 // --------------------------------------------------------------------------
