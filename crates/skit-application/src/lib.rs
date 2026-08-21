@@ -28,7 +28,8 @@ pub use agent_skill::{
     detect_agent_targets, plan_agent_install,
 };
 pub use mutations::{
-    CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions, UpdateEntry,
+    CreateEntry, EntryMutationRepository, EntryPayload, PreparedEntryUpdateError,
+    SourcePermissions, UpdateEntry,
 };
 pub use payload_policy::{
     add_workdir, canonical_stored_filename, payload_stored_name, supports_storage_modes,

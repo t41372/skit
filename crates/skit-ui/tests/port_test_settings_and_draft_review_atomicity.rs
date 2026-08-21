@@ -35,15 +35,15 @@
 //!   `dependencies_text()` a `ReviewState` opens with, computed by `external_dependencies_at`
 //!   (`skit-language`), which drops a PEP 508-illegal name and a sibling local module the same way.
 //!
-//! Buckets (16 Python defs -> 16 `#[test]`): 8 asserting (all passing), 7 `#[ignore]` cross-crate
-//! stubs, and 1 `#[ignore]` ABSENT gap. The settings deps/python REFUSAL atomicity IS present at
+//! Buckets (16 Python defs -> 15 `#[test]` here + 1 asserting skit-cli owner): 8 asserting here,
+//! 1 asserting at the composition root, and 7 `#[ignore]` cross-crate stubs. The settings
+//! deps/python REFUSAL atomicity IS present at
 //! the skit-cli tier: `tui_submit_settings` runs `validate_pep508_requirement` /
 //! `validate_pep440_specifiers` before its single atomic `update_entry`, so a bad requirement or
-//! constraint refuses the whole save with nothing written (`cli.rs:7171-7184`, ahead of the write
-//! at `cli.rs:7322-7337`). But the oracle's npm-clear-first atomic refusal is ABSENT from that path
-//! — `tui_submit_settings` performs no node_modules clear (the MUST-FIX gap documented in
-//! `test_settings_failed_npm_clear_commits_no_other_form_edits`). Each stub names its owning tier in
-//! its `#[ignore]`.
+//! constraint refuses the whole save with nothing written. The npm-clear-first canonical owner is
+//! rehomed to `skit-cli::cli::tests::test_settings_failed_npm_clear_commits_no_other_form_edits`,
+//! where the real FileStore and JavaScript cleanup adapter are observable. Each remaining stub
+//! names its owning tier in its `#[ignore]`.
 
 use std::path::{Path, PathBuf};
 
@@ -222,26 +222,6 @@ fn test_settings_npm_deps_are_not_pep508_validated() {
     );
     // Committed, not refused.
     assert_eq!(view.update(SettingsAction::Save), SettingsEffect::Save);
-}
-
-#[test]
-#[ignore = "ABSENT (MUST-FIX gap): the settings-save path performs no node_modules clear, so the oracle's npm-clear-first atomic refusal is not implemented anywhere in the Rust settings-save path."]
-fn test_settings_failed_npm_clear_commits_no_other_form_edits() {
-    // WHY (oracle, tui_settings.py:1022-1037): an explicit npm clear runs FIRST because clearing
-    // node_modules is the one caught, fallible cleanup; when it fails ("node_modules is busy"),
-    // NO other form edit lands — not the rename, description, workdir, interpreter, a param prompt,
-    // nor the deps clear.
-    //
-    // ABSENT from the Rust settings-save path — this is NOT a cross-crate stub. `tui_submit_settings`
-    // (cli.rs:7101-7353) runs one atomic `service.update_entry` (cli.rs:7322-7337) and never calls
-    // `clear_javascript_dependencies`. A js entry whose `#st-deps` was emptied takes the non-python
-    // branch (cli.rs:7185-7192), which only writes the empty-deps metadata: no node_modules cleanup
-    // and no caught-failure refusal. The sole production caller of `clear_javascript_dependencies`
-    // is the standalone `deps` command (cli.rs:3492), which clears before its own metadata write —
-    // NOT the settings-save path. So the oracle's "clear npm first, and if that fails refuse the
-    // whole save committing nothing" contract has no owner in the settings-save path — a MUST-FIX
-    // gap. The skit-ui reducer performs no filesystem cleanup or store writes, so there is nothing
-    // at this tier to assert live.
 }
 
 #[test]

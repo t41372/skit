@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, LibraryScan,
-    LibraryService, RepositoryError, SourcePermissions, UpdateEntry,
+    LibraryService, PreparedEntryUpdateError, RepositoryError, SourcePermissions, UpdateEntry,
 };
 use skit_domain::{
     Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode,
@@ -39,6 +39,14 @@ impl EntryMutationRepository for RecordingRepository {
             .lock()
             .unwrap()
             .push(format!("claim:{}", entry.slug));
+        Ok(self.entry.clone())
+    }
+
+    fn preflight_update_entry(&self, entry: &Entry, name: &str) -> Result<Entry, RepositoryError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("preflight:{}:{name}", entry.slug));
         Ok(self.entry.clone())
     }
 
@@ -224,4 +232,51 @@ fn settings_policy_refuses_invalid_workdirs_and_parameter_invariants_before_the_
         Err(RepositoryError::InvalidMutation { .. })
     ));
     assert!(service.repository().calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn prepared_updates_claim_before_preparation_and_never_write_after_a_preparation_failure() {
+    let expected = entry();
+    let service = LibraryService::new(RecordingRepository {
+        entry: expected.clone(),
+        calls: Mutex::new(Vec::new()),
+    });
+    let update = UpdateEntry {
+        name: expected.meta.name.clone(),
+        description: "changed".to_owned(),
+        settings: EntrySettings::default(),
+        workdir: "invoke".to_owned(),
+        source: None,
+        expected_source_hash: String::new(),
+    };
+
+    let error = service
+        .update_entry_after_preparation(&expected, update.clone(), |_| Err("cleanup refused"))
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        PreparedEntryUpdateError::Preparation("cleanup refused")
+    );
+    assert_eq!(
+        service.repository().calls.lock().unwrap().as_slice(),
+        ["preflight:alpha:Alpha"]
+    );
+
+    service.repository().calls.lock().unwrap().clear();
+    let mut prepared_slug = None;
+    assert_eq!(
+        service
+            .update_entry_after_preparation(&expected, update, |claimed| {
+                prepared_slug = Some(claimed.slug.clone());
+                Ok::<_, &str>(())
+            })
+            .unwrap(),
+        expected
+    );
+    assert_eq!(prepared_slug.as_ref(), Some(&expected.slug));
+    assert_eq!(
+        service.repository().calls.lock().unwrap().as_slice(),
+        ["preflight:alpha:Alpha", "update:alpha:Alpha"]
+    );
 }

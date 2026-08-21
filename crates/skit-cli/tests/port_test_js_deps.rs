@@ -1493,6 +1493,40 @@ fn test_deps_command_empty_dep_clears_and_sweeps() {
     assert!(combine(view.get_output()).contains("\"dependencies\":[]"));
     // Oracle: clearing sweeps the materialized env, like --clear.
     assert!(!node_modules.exists());
+
+    // An explicit clear is also a cleanup request when metadata is already empty. A stale
+    // materialization can survive a crash or an older release, and clearing it must not rewrite
+    // unrelated entry or registry bytes.
+    std::fs::create_dir_all(node_modules.join("stale-package")).unwrap();
+    let entry_dir = sandbox.entry_dir("t");
+    let meta_before = std::fs::read(entry_dir.join("meta.toml")).unwrap();
+    let source_before = sandbox.stored_copy("t");
+    let registry = sandbox.data.path().join("registry.toml");
+    let registry_before = std::fs::read(&registry).unwrap();
+    let state_before = std::fs::read_dir(sandbox.state.path()).unwrap().count();
+    let config_before = std::fs::read_dir(sandbox.config.path()).unwrap().count();
+
+    sandbox
+        .skit()
+        .args(["deps", "t", "--clear"])
+        .assert()
+        .success();
+
+    assert!(!node_modules.exists());
+    assert_eq!(
+        std::fs::read(entry_dir.join("meta.toml")).unwrap(),
+        meta_before
+    );
+    assert_eq!(sandbox.stored_copy("t"), source_before);
+    assert_eq!(std::fs::read(registry).unwrap(), registry_before);
+    assert_eq!(
+        std::fs::read_dir(sandbox.state.path()).unwrap().count(),
+        state_before
+    );
+    assert_eq!(
+        std::fs::read_dir(sandbox.config.path()).unwrap().count(),
+        config_before
+    );
 }
 
 #[test]

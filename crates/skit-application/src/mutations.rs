@@ -65,6 +65,15 @@ pub struct UpdateEntry {
     pub expected_source_hash: String,
 }
 
+/// Failure from an update whose adapter preparation must finish before the entry can change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PreparedEntryUpdateError<E> {
+    /// The entry read, identity claim, name preflight, or final repository update failed.
+    Repository(RepositoryError),
+    /// The host preparation failed before the repository update started.
+    Preparation(E),
+}
+
 /// Identity-gated mutation port shared by CLI, Ratatui, and future GUI adapters.
 pub trait EntryMutationRepository: Debug {
     /// Create a new entry atomically.
@@ -72,6 +81,9 @@ pub trait EntryMutationRepository: Debug {
 
     /// Verify a held entry and stamp legacy metadata with an immutable identity.
     fn claim_identity(&self, entry: &Entry) -> Result<Entry, RepositoryError>;
+
+    /// Verify identity and name availability before a fallible external preparation.
+    fn preflight_update_entry(&self, entry: &Entry, name: &str) -> Result<Entry, RepositoryError>;
 
     /// Replace an entry description while preserving its identity.
     fn describe(&self, entry: &Entry, description: &str) -> Result<Entry, RepositoryError>;
@@ -162,6 +174,46 @@ where
     ) -> Result<Entry, RepositoryError> {
         self.repository
             .commit_copy_edit(entry, bytes, expected_source_hash)
+    }
+}
+
+impl<R> LibraryService<R>
+where
+    R: EntryMutationRepository,
+{
+    /// Claim and preflight an entry, then prepare one external adapter.
+    ///
+    /// A caller can stop after preparation when the requested external effect does not need a
+    /// metadata rewrite. If it commits an update, the repository repeats its identity and name
+    /// checks. The early checks keep a fallible preparation from changing external state when the
+    /// request is already stale or its destination name is already taken.
+    pub fn prepare_entry_update<E>(
+        &self,
+        entry: &Entry,
+        update: &UpdateEntry,
+        prepare: impl FnOnce(&Entry) -> Result<(), E>,
+    ) -> Result<Entry, PreparedEntryUpdateError<E>> {
+        validate_settings(&update.settings, &update.workdir)
+            .map_err(PreparedEntryUpdateError::Repository)?;
+        let claimed = self
+            .repository
+            .preflight_update_entry(entry, &update.name)
+            .map_err(PreparedEntryUpdateError::Repository)?;
+        prepare(&claimed).map_err(PreparedEntryUpdateError::Preparation)?;
+        Ok(claimed)
+    }
+
+    /// Prepare one external adapter, then commit the entry update.
+    pub fn update_entry_after_preparation<E>(
+        &self,
+        entry: &Entry,
+        update: UpdateEntry,
+        prepare: impl FnOnce(&Entry) -> Result<(), E>,
+    ) -> Result<Entry, PreparedEntryUpdateError<E>> {
+        let claimed = self.prepare_entry_update(entry, &update, prepare)?;
+        self.repository
+            .update_entry(&claimed, update)
+            .map_err(PreparedEntryUpdateError::Repository)
     }
 }
 

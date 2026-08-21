@@ -143,6 +143,16 @@ impl EntryMutationRepository for FileStore {
         self.stamp_identity_locked(fresh, &mut registry)
     }
 
+    fn preflight_update_entry(&self, entry: &Entry, name: &str) -> Result<Entry, RepositoryError> {
+        let name = validated_name(name)?;
+        let _entry = self.entry_lock(&entry.slug)?;
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        self.ensure_name_available(&name, Some(&fresh.slug), &registry)?;
+        Ok(fresh)
+    }
+
     fn describe(&self, entry: &Entry, description: &str) -> Result<Entry, RepositoryError> {
         let _entry = self.entry_lock(&entry.slug)?;
         let _namespace = self.namespace_lock()?;

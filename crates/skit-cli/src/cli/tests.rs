@@ -4799,6 +4799,231 @@ fn tui_python_dependencies_use_the_same_pep_723_source_as_the_cli() {
 }
 
 #[test]
+fn test_settings_failed_npm_clear_commits_no_other_form_edits() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("atomic.js");
+    fs::write(&source, "const WIDTH = 800;\nconsole.log(WIDTH);\n").unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    add_with_config(
+        &service,
+        &config_dir,
+        AddOptions {
+            source: Some(source),
+            kind: Some("js".to_owned()),
+            name: Some("Atomic JS".to_owned()),
+            description: Some("before".to_owned()),
+            reference: false,
+            command_template: None,
+            prompt: false,
+            executable: false,
+            runner: None,
+            no_interpolate: false,
+            dependencies: vec!["chalk".to_owned()],
+            dependencies_explicit: true,
+            requires_python: None,
+            no_input: false,
+        },
+    )
+    .unwrap();
+    let entry = service.show("atomic-js").unwrap();
+    assert_eq!(
+        EntrySettings::from_meta(&entry.meta).dependencies,
+        ["chalk"]
+    );
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    fs::create_dir(entry_dir.join("node_modules")).unwrap();
+    fs::write(
+        entry_dir.join("node_modules/chalk.js"),
+        b"module.exports = {};\n",
+    )
+    .unwrap();
+    // A directory at an owned-file path is the portable equivalent of a package-manager artifact
+    // that cannot be swept. It makes the real cleanup adapter refuse before it moves anything.
+    fs::create_dir(entry_dir.join("package.json")).unwrap();
+    let before = settings_axes(&service, &store, &state_dir, entry.slug.as_str());
+    let meta_before = fs::read(entry_dir.join("meta.toml")).unwrap();
+    let source_before = fs::read(entry_dir.join("script.js")).unwrap();
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        entry.slug.as_str(),
+        &[
+            ("name", "Renamed JS"),
+            ("description", "changed description"),
+            ("workdir", "store"),
+            ("interpreter", "bun"),
+            ("dependencies", ""),
+        ],
+    );
+    assert!(tui_list(&values, "dependencies").is_empty());
+
+    let error = tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values)
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("an owned dependency file is a directory"),
+        "{error}"
+    );
+    assert_eq!(
+        settings_axes(&service, &store, &state_dir, entry.slug.as_str()),
+        before
+    );
+    assert_eq!(fs::read(entry_dir.join("meta.toml")).unwrap(), meta_before);
+    assert_eq!(
+        fs::read(entry_dir.join("script.js")).unwrap(),
+        source_before
+    );
+    assert_eq!(
+        fs::read(entry_dir.join("node_modules/chalk.js")).unwrap(),
+        b"module.exports = {};\n"
+    );
+    assert!(entry_dir.join("package.json").is_dir());
+    assert!(service.show("renamed-js").is_err());
+}
+
+#[test]
+fn tui_settings_clear_materialized_javascript_dependencies_before_the_metadata_update() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("clean.js");
+    fs::write(&source, "console.log('clean');\n").unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    add_with_config(
+        &service,
+        &config_dir,
+        AddOptions {
+            source: Some(source),
+            kind: Some("js".to_owned()),
+            name: Some("Clean JS".to_owned()),
+            description: Some("before".to_owned()),
+            reference: false,
+            command_template: None,
+            prompt: false,
+            executable: false,
+            runner: None,
+            no_interpolate: false,
+            dependencies: vec!["chalk".to_owned()],
+            dependencies_explicit: true,
+            requires_python: None,
+            no_input: false,
+        },
+    )
+    .unwrap();
+    let entry = service.show("clean-js").unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    fs::create_dir(entry_dir.join("node_modules")).unwrap();
+    fs::write(
+        entry_dir.join("node_modules/chalk.js"),
+        b"module.exports = {};\n",
+    )
+    .unwrap();
+    fs::write(
+        entry_dir.join("package.json"),
+        b"{\"dependencies\":{\"chalk\":\"*\"}}\n",
+    )
+    .unwrap();
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        entry.slug.as_str(),
+        &[("description", "after"), ("dependencies", "")],
+    );
+
+    tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values).unwrap();
+
+    let updated = service.show(entry.slug.as_str()).unwrap();
+    assert_eq!(updated.meta.description, "after");
+    assert!(
+        EntrySettings::from_meta(&updated.meta)
+            .dependencies
+            .is_empty()
+    );
+    assert!(!entry_dir.join("node_modules").exists());
+    assert!(!entry_dir.join("package.json").exists());
+}
+
+#[test]
+fn tui_settings_refuse_a_taken_name_before_javascript_dependency_cleanup() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("conflict.js");
+    fs::write(&source, "console.log('conflict');\n").unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    add_with_config(
+        &service,
+        &config_dir,
+        AddOptions {
+            source: Some(source),
+            kind: Some("js".to_owned()),
+            name: Some("JS Original".to_owned()),
+            description: Some("before".to_owned()),
+            reference: false,
+            command_template: None,
+            prompt: false,
+            executable: false,
+            runner: None,
+            no_interpolate: false,
+            dependencies: vec!["chalk".to_owned()],
+            dependencies_explicit: true,
+            requires_python: None,
+            no_input: false,
+        },
+    )
+    .unwrap();
+    add_command(&service, "Taken", "echo ok");
+    let entry = service.show("js-original").unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    fs::create_dir(entry_dir.join("node_modules")).unwrap();
+    fs::write(
+        entry_dir.join("node_modules/chalk.js"),
+        b"module.exports = {};\n",
+    )
+    .unwrap();
+    let before = settings_axes(&service, &store, &state_dir, entry.slug.as_str());
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        entry.slug.as_str(),
+        &[
+            ("name", "Taken"),
+            ("description", "must not land"),
+            ("dependencies", ""),
+        ],
+    );
+
+    let error = tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &values)
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        CliError::Repository(RepositoryError::RenameConflict { .. })
+    ));
+    assert_eq!(
+        settings_axes(&service, &store, &state_dir, entry.slug.as_str()),
+        before
+    );
+    assert_eq!(
+        fs::read(entry_dir.join("node_modules/chalk.js")).unwrap(),
+        b"module.exports = {};\n"
+    );
+}
+
+#[test]
 fn tui_settings_source_refusal_does_not_commit_other_fields() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");

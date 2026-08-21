@@ -17,8 +17,9 @@ use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell,
 use dialoguer::{Confirm, Input, MultiSelect, Password};
 use skit_application::{
     AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope, AgentTarget, CreateEntry,
-    EntryPayload, ExitClass, LibraryScan, LibraryService, RepositoryError, RepositoryOperation,
-    SourceIdentity, SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
+    EntryPayload, ExitClass, LibraryScan, LibraryService, PreparedEntryUpdateError,
+    RepositoryError, RepositoryOperation, SourceIdentity, SourcePermissions, UpdateEntry,
+    add_workdir, detect_agent_targets,
     form_feedback::GlobCountPort,
     form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill},
     health::{
@@ -4384,29 +4385,24 @@ fn deps(
             .collect();
     }
 
-    if package_change
+    let clear_javascript = package_change
         && matches!(kind.as_str(), "js" | "ts")
-        && dependencies_edit.as_ref().is_some_and(Vec::is_empty)
-    {
-        // Cleanup can fail on a locked tree. Do it before metadata so the request is retryable.
-        clear_javascript_dependencies(&store.entry_dir_path(&held.slug))?;
-    }
-
-    let changed = settings != original_settings || plan.rewritten_source.is_some();
+        && dependencies_edit.as_ref().is_some_and(Vec::is_empty);
+    let update = UpdateEntry {
+        name: held.meta.name.clone(),
+        description: held.meta.description.clone(),
+        settings: settings.clone(),
+        workdir: held.meta.workdir.clone(),
+        source: plan.rewritten_source,
+        expected_source_hash: held.meta.source_hash.clone(),
+    };
+    let changed = settings != original_settings || update.source.is_some();
     let held = if changed {
-        let claimed = service.claim_identity(&held)?;
-        service.update_entry(
-            &claimed,
-            UpdateEntry {
-                name: held.meta.name.clone(),
-                description: held.meta.description.clone(),
-                settings: settings.clone(),
-                workdir: held.meta.workdir.clone(),
-                source: plan.rewritten_source,
-                expected_source_hash: held.meta.source_hash.clone(),
-            },
-        )?
+        update_entry_with_javascript_cleanup(service, store, &held, update, clear_javascript)?
     } else {
+        if clear_javascript {
+            prepare_javascript_cleanup(service, store, &held, &update, true)?;
+        }
         held
     };
     let mut output = EntrySettings::from_meta(&held.meta);
@@ -4427,6 +4423,53 @@ fn deps(
         needs_edit,
     );
     Ok(())
+}
+
+/// Commit one entry update after the shared JavaScript cleanup preflight.
+///
+/// Both the deterministic dependency command and the Settings host use this boundary. Identity and
+/// name checks happen before the fallible cleanup, and cleanup happens before metadata or source
+/// bytes can commit. A locked or malformed private dependency tree therefore leaves every form
+/// axis retryable.
+fn update_entry_with_javascript_cleanup(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: UpdateEntry,
+    clear_javascript: bool,
+) -> Result<Entry, CliError> {
+    match service.update_entry_after_preparation(entry, update, |claimed| {
+        if clear_javascript {
+            clear_javascript_dependencies(&store.entry_dir_path(&claimed.slug))
+        } else {
+            Ok(())
+        }
+    }) {
+        Ok(entry) => Ok(entry),
+        Err(PreparedEntryUpdateError::Repository(error)) => Err(error.into()),
+        Err(PreparedEntryUpdateError::Preparation(error)) => Err(error.into()),
+    }
+}
+
+/// Run the shared preflight and optional cleanup without rewriting unchanged metadata.
+fn prepare_javascript_cleanup(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: &UpdateEntry,
+    clear_javascript: bool,
+) -> Result<Entry, CliError> {
+    match service.prepare_entry_update(entry, update, |claimed| {
+        if clear_javascript {
+            clear_javascript_dependencies(&store.entry_dir_path(&claimed.slug))
+        } else {
+            Ok(())
+        }
+    }) {
+        Ok(entry) => Ok(entry),
+        Err(PreparedEntryUpdateError::Repository(error)) => Err(error.into()),
+        Err(PreparedEntryUpdateError::Preparation(error)) => Err(error.into()),
+    }
 }
 
 fn write_deps_receipts(
@@ -9159,6 +9202,8 @@ fn tui_submit_settings(
         .then_some(submitted_dependencies.clone());
     let python_edit =
         (submitted_python != baseline_settings.requires_python).then_some(submitted_python.clone());
+    let clear_javascript = matches!(entry.meta.kind.as_str(), "js" | "ts")
+        && dependencies_edit.as_ref().is_some_and(Vec::is_empty);
     if entry.meta.kind.as_str() == "python" {
         for requirement in dependencies_edit.as_deref().unwrap_or_default() {
             validate_pep508_requirement(requirement)
@@ -9372,9 +9417,10 @@ fn tui_submit_settings(
             "the stored source is not valid UTF-8",
         )));
     }
-    let claimed = service.claim_identity(&entry)?;
-    let entry = service.update_entry(
-        &claimed,
+    let entry = update_entry_with_javascript_cleanup(
+        service,
+        store,
+        &entry,
         UpdateEntry {
             name: name.clone(),
             description: description.to_owned(),
@@ -9387,6 +9433,7 @@ fn tui_submit_settings(
             source: rewritten_source,
             expected_source_hash: entry.meta.source_hash.clone(),
         },
+        clear_javascript,
     )?;
     let state = FormStateService::new(FileFormStateStore::new(state_dir));
     state.purge_secrets(&entry.slug, &declarations)?;
