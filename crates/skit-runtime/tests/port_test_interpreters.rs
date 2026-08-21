@@ -601,40 +601,6 @@ fn test_run_entry_needs_raises_before_spawn() {
 }
 
 // ==========================================================================
-// CLI: add --kind  (owned by skit-cli-rs)
-// ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit add` shebang/interpreter capture is a CliRunner \
-surface owned by skit-cli-rs."]
-fn test_cli_add_shell_script_records_interpreter() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit add --kind shell` forcing an extensionless file is a \
-CliRunner surface owned by skit-cli-rs."]
-fn test_cli_add_kind_forces_extensionless_file() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit add --kind exe` is a CliRunner surface owned by \
-skit-cli-rs."]
-fn test_cli_add_kind_exe() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit add --kind cobol` usage error (exit 2, lists valid \
-kinds) is a Clap surface owned by skit-cli-rs."]
-fn test_cli_add_kind_unknown_is_usage_error() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the `--kind` + `--exe` conflict (exit 2) is a Clap surface \
-owned by skit-cli-rs."]
-fn test_cli_add_kind_and_exe_conflict() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `--kind command` rejection is a Clap surface owned by \
-skit-cli-rs."]
-fn test_cli_add_command_kind_rejected() {}
-
-// ==========================================================================
 // E2E (POSIX): the overlay reaches a real child  (owned by skit-cli-rs)
 // ==========================================================================
 

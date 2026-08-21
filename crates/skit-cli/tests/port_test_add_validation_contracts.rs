@@ -377,6 +377,189 @@ fn read_script(sandbox: &Sandbox, slug: &str) -> String {
     fs::read_to_string(entry_dir(sandbox, slug).join("script.py")).unwrap_or_default()
 }
 
+const FORCEABLE_ADD_KINDS: &str =
+    "fish, js, lua, perl, powershell, python, r, ruby, shell, ts, exe";
+
+fn unknown_add_kind_message(language: &str, kind: &str) -> String {
+    match language {
+        "zh-CN" => format!("未知类型：{kind}。可选：{FORCEABLE_ADD_KINDS}"),
+        "zh-TW" => format!("未知類型：{kind}。可選：{FORCEABLE_ADD_KINDS}"),
+        _ => format!("Unknown kind: {kind}. Choose from: {FORCEABLE_ADD_KINDS}"),
+    }
+}
+
+fn add_kind_conflict_message(language: &str) -> &'static str {
+    match language {
+        "zh-CN" => "--kind 与 --exe 只能择一。",
+        "zh-TW" => "--kind 與 --exe 只能擇一。",
+        _ => "Use --kind or --exe, not both.",
+    }
+}
+
+// ==========================================================================
+// 0. Explicit add kinds use the same closed authoring contract as version 0.4
+// ==========================================================================
+
+#[test]
+fn test_cli_add_shell_script_records_interpreter() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.scratch.path().join("deploy.sh");
+    fs::write(&source, "#!/usr/bin/env zsh\n# Ship it\necho hi\n").unwrap();
+
+    sandbox
+        .command_in("en")
+        .arg("add")
+        .arg(&source)
+        .args(["--name", "deploy", "--no-input"])
+        .assert()
+        .success();
+
+    let entry = sandbox.show_json("deploy");
+    assert_eq!(entry["kind"], "shell");
+    assert_eq!(entry["interpreter"], "zsh");
+    assert_eq!(entry["description"], "Ship it");
+}
+
+#[test]
+fn test_cli_add_kind_forces_extensionless_file() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.scratch.path().join("build");
+    fs::write(&source, "echo building\n").unwrap();
+
+    sandbox
+        .command_in("en")
+        .arg("add")
+        .arg(&source)
+        .args(["--kind", "shell", "--name", "build", "--no-input"])
+        .assert()
+        .success();
+
+    assert_eq!(sandbox.show_json("build")["kind"], "shell");
+    assert!(entry_dir(&sandbox, "build").join("script.sh").is_file());
+}
+
+#[test]
+fn test_cli_add_kind_exe() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.scratch.path().join("thing");
+    fs::write(&source, "bytes\n").unwrap();
+
+    sandbox
+        .command_in("en")
+        .arg("add")
+        .arg(&source)
+        .args(["--kind", "exe", "--name", "thing", "--no-input"])
+        .assert()
+        .success();
+
+    let entry = sandbox.show_json("thing");
+    assert_eq!(entry["kind"], "exe");
+    assert_eq!(entry["mode"], "reference");
+}
+
+#[test]
+fn test_cli_add_kind_unknown_is_usage_error() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.scratch.path().join("unknown");
+    fs::write(&source, "bytes\n").unwrap();
+    let before = snapshot_sandbox(&sandbox);
+    let source_before = fs::read(&source).unwrap();
+
+    for language in ["en", "zh-CN", "zh-TW"] {
+        let output = sandbox
+            .command_in(language)
+            .arg("add")
+            .arg(&source)
+            .args(["--kind", "cobol", "--name", "unknown", "--no-input"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).trim(),
+            unknown_add_kind_message(language, "cobol")
+        );
+        assert_eq!(snapshot_sandbox(&sandbox), before, "language={language}");
+        assert_eq!(fs::read(&source).unwrap(), source_before);
+    }
+}
+
+#[test]
+fn test_cli_add_kind_and_exe_conflict() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.scratch.path().join("conflict");
+    fs::write(&source, "echo hi\n").unwrap();
+    let before = snapshot_sandbox(&sandbox);
+    let source_before = fs::read(&source).unwrap();
+
+    for language in ["en", "zh-CN", "zh-TW"] {
+        let output = sandbox
+            .command_in(language)
+            .arg("add")
+            .arg(&source)
+            .args([
+                "--kind",
+                "shell",
+                "--exe",
+                "--name",
+                "conflict",
+                "--no-input",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).trim(),
+            add_kind_conflict_message(language)
+        );
+        assert_eq!(snapshot_sandbox(&sandbox), before, "language={language}");
+        assert_eq!(fs::read(&source).unwrap(), source_before);
+    }
+}
+
+#[test]
+fn test_cli_add_command_kind_rejected() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.scratch.path().join("command");
+    fs::write(&source, "echo hi\n").unwrap();
+    let before = snapshot_sandbox(&sandbox);
+    let source_before = fs::read(&source).unwrap();
+
+    for language in ["en", "zh-CN", "zh-TW"] {
+        let output = sandbox
+            .command_in(language)
+            .arg("add")
+            .arg(&source)
+            .args(["--kind", "command", "--name", "command", "--no-input"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr).trim(),
+            unknown_add_kind_message(language, "command")
+        );
+        assert_eq!(snapshot_sandbox(&sandbox), before, "language={language}");
+        assert_eq!(fs::read(&source).unwrap(), source_before);
+    }
+}
+
 // ==========================================================================
 // 1. The pep723 validators (lazy `packaging` imports), in isolation
 // ==========================================================================
