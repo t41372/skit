@@ -36,18 +36,11 @@
 //!   oracle's exact success verb ("Saved a") IS asserted verbatim; where the Rust CLI prints a
 //!   different verb ("Edited") that is recorded as a FAILING CONTRACT, not a silent softening.
 //!   Data/kind/exit assertions are kept verbatim.
-//! - ABSENT (kind=absent): the `editor` module's public functions `resolve_editor`,
-//!   `open_in_editor`, `open_entry_in_editor` have NO public equivalent on the Rust surface. The
-//!   resolution + launch logic is inlined (and duplicated) privately inside skit-cli's
-//!   `edit_with_config` / `open_editor_in` (`crates/skit-cli/src/cli.rs:~3283`, `~3344`), reachable
-//!   only through a whole CLI flow, never as a unit. A `resolve_editor` case whose divergence is
-//!   observable end to end (no platform default; a blank `$VISUAL` used as-is instead of skipped;
-//!   an unbalanced-quote value hard-errored instead of falling back to raw) is driven through the
-//!   real `edit` lane with a fake editor on `PATH` and recorded as a full FAILING CONTRACT body
-//!   below — not left an ABSENT stub. The purely unit-level cases (the win32 non-posix split and
-//!   quote-strip; `open_in_editor` argv/returncode/message; `open_entry_in_editor` re-read) have no
-//!   end-to-end seam and stay compiling `#[ignore]` stubs keeping the Python body as a comment plus
-//!   a MUST-FIX trailhead.
+//! - ABSENT (kind=absent): `open_in_editor` and `open_entry_in_editor` have no public equivalent on
+//!   the Rust surface. Their remaining direct helper contracts stay as compiling `#[ignore]`
+//!   trailheads. Editor resolution now has one private composition helper. Its nine exact frozen
+//!   owners live beside that helper in `src/cli/tests.rs`; the public tests here keep the real
+//!   config, environment, platform-default, raw-fallback, and launch contracts.
 //! - DIVERGENCE (kind=divergence): the CLI API exists and the assertion compiles but the Rust
 //!   behavior differs from the oracle (verified against the built binary). The full asserting body
 //!   is kept intact behind `#[ignore = "FAILING CONTRACT (divergence): …"]`; deleting the ignore
@@ -420,43 +413,9 @@ fn run_pty_after_prompt(
 }
 
 // ==========================================================================
-// editor.resolve_editor — ABSENT (kind=absent): no public resolve_editor.
-//
-// The precedence chain (config > $VISUAL > $EDITOR > platform default) and the shlex split live
-// inline and duplicated inside `edit_with_config` (cli.rs:~3283) and `open_editor_in` (cli.rs:~3344),
-// private to the binary and reachable only by running a whole `edit`/`add -e` flow. There is no
-// `resolve_editor(...) -> Vec<String>` to call, so these unit-level defs cannot compile against the
-// Rust surface. MUST-FIX to make them assertable: expose one pure `resolve_editor` in a shared crate
-// (Python `src/skit/editor.py:34-60`). The inline Rust logic also DIVERGES from the oracle on
-// several of these — noted per stub — so the trailhead is exact.
+// editor.resolve_editor — the nine exact helper owners live beside the private CLI composition
+// helper. The public launch contracts remain below.
 // ==========================================================================
-
-#[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor; logic inlined in cli.rs edit_with_config/open_editor_in. MUST-FIX: src/skit/editor.py:34-60 (precedence config>VISUAL>EDITOR)."]
-fn test_resolve_editor_config_wins_over_env() {
-    // The config.toml `editor` outranks $VISUAL and $EDITOR.
-    //   setenv VISUAL=vim; setenv EDITOR=nano; config.save_editor("code --wait")
-    //   assert resolve_editor() == ["code", "--wait"]
-    // Rust: edit_with_config reads config editor first (matches), but as an inline flow only.
-}
-
-#[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor. MUST-FIX: src/skit/editor.py:45-48 ($VISUAL over $EDITOR + shlex split)."]
-fn test_resolve_editor_visual_over_editor() {
-    // $VISUAL outranks $EDITOR and is shlex-split.
-    //   setenv VISUAL="mvim -f"; setenv EDITOR=nano
-    //   assert resolve_editor() == ["mvim", "-f"]
-    // Rust DIVERGES: env resolution is env::var("VISUAL").or_else(|_| env::var("EDITOR")), so the
-    // precedence holds, but there is no unit surface to observe it.
-}
-
-#[test]
-#[ignore = "ABSENT (kind=absent): no public resolve_editor. MUST-FIX: src/skit/editor.py:45 ($EDITOR when $VISUAL unset)."]
-fn test_resolve_editor_editor_env_when_no_visual() {
-    // With $VISUAL unset, $EDITOR is used.
-    //   delenv VISUAL; setenv EDITOR=nano
-    //   assert resolve_editor() == ["nano"]
-}
 
 #[test]
 fn test_resolve_editor_platform_default_unix() {
@@ -498,7 +457,7 @@ fn test_resolve_editor_platform_default_unix() {
     assert!(sandbox.stored_script("a").contains("import rich"));
 }
 
-// The six platform-tokenization owners live beside the private composition helper in
+// The nine precedence and platform-tokenization owners live beside the private composition helper in
 // `src/cli/tests.rs`. Public tests below keep the real precedence and launch contracts.
 
 #[test]

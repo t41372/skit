@@ -9721,6 +9721,27 @@ fn add_host_deletes_edits_keeps_and_degrades_completion_without_pty_input() {
 }
 
 #[test]
+fn test_resolve_editor_config_wins_over_env() {
+    assert_eq!(
+        select_editor_candidate(["code --wait", "mvim -f", "nano"], "vi"),
+        "code --wait"
+    );
+}
+
+#[test]
+fn test_resolve_editor_visual_over_editor() {
+    assert_eq!(
+        select_editor_candidate(["", "mvim -f", "nano"], "vi"),
+        "mvim -f"
+    );
+}
+
+#[test]
+fn test_resolve_editor_editor_env_when_no_visual() {
+    assert_eq!(select_editor_candidate(["", "", "nano"], "vi"), "nano");
+}
+
+#[test]
 fn test_resolve_editor_platform_default_windows() {
     assert_eq!(
         editor_argv_from_candidate("", EditableArgvDialect::Windows, "notepad"),

@@ -33,6 +33,7 @@ use skit_application::{
         npm_preset_names, pypi_preset_names,
     },
     prompt_selection::PromptSelectionService,
+    runner_management::{EditableArgvDialect, split_editable_argv},
     supports_storage_modes,
     value_preparation::validate_form_value,
 };
@@ -4024,18 +4025,33 @@ fn resolve_editor_argv(config_dir: &Path) -> Vec<String> {
     let configured = FileConfigStore::new(config_dir)
         .get("editor")
         .unwrap_or_default();
-    let raw = [
-        configured,
-        env::var("VISUAL").unwrap_or_default(),
-        env::var("EDITOR").unwrap_or_default(),
-    ]
-    .into_iter()
-    .map(|candidate| candidate.trim().to_owned())
-    .find(|candidate| !candidate.is_empty())
-    .unwrap_or_else(|| platform_default_editor().to_owned());
-    let argv = shlex::split(&raw).unwrap_or_else(|| vec![raw.clone()]);
+    let visual = env::var("VISUAL").unwrap_or_default();
+    let editor = env::var("EDITOR").unwrap_or_default();
+    let raw = select_editor_candidate([&configured, &visual, &editor], platform_default_editor());
+    editor_argv_from_candidate(&raw, EditableArgvDialect::host(), platform_default_editor())
+}
+
+fn select_editor_candidate(candidates: [&str; 3], platform_default: &str) -> String {
+    candidates
+        .into_iter()
+        .map(str::trim)
+        .find(|candidate| !candidate.is_empty())
+        .unwrap_or(platform_default)
+        .to_owned()
+}
+
+fn editor_argv_from_candidate(
+    raw: &str,
+    dialect: EditableArgvDialect,
+    platform_default: &str,
+) -> Vec<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return vec![platform_default.to_owned()];
+    }
+    let argv = split_editable_argv(raw, dialect).unwrap_or_else(|_| vec![raw.to_owned()]);
     if argv.is_empty() {
-        vec![platform_default_editor().to_owned()]
+        vec![platform_default.to_owned()]
     } else {
         argv
     }
