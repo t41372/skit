@@ -22,17 +22,13 @@
 //!   `MissingNeed` (both are pre-spawn).
 //!
 //! Bucket disposition:
-//! - REAL (asserting, pass): the resolve/InterpreterLaunch/RunnerLaunch/needs cases that
-//!   the skit-runtime launch surface actually owns.
-//! - DIVERGENCE (`#[ignore]`, full body kept): two oracle contracts the Rust code breaks —
-//!   `RunnerLaunch` gives bun a `run` subcommand (Rust omits it), and the "no JS runtime"
-//!   refusal names the `skit config js.runner` escape hatch (Rust drops it).
-//! - CROSS-CRATE (`#[ignore]` stub): behavior owned by another tier this integration test
-//!   cannot reach without a forbidden dependency edit — the path-reading shebang wrapper,
-//!   the `js.runner` / Windows `shell.bash_path` config resolution, and every `CliRunner`
-//!   surface (`skit-cli-rs` / `skit-store`). Store and Library projection stubs move to their
-//!   executable stronger owners, as recorded in the port ledger.
-//!   The pure shebang and kind-inference contracts run at their public `skit-language` seams.
+//! - REAL (18 asserting, pass): the resolve/InterpreterLaunch/RunnerLaunch/needs cases that
+//!   the skit-runtime launch surface owns.
+//! - ARCHITECTURE CLOSURE (1 `#[ignore]`): the path-reading unreadable-source wrapper is split
+//!   between caller-owned I/O and skit-language's text parser.
+//! - REHOMED (55): detection, config composition, store projections, and CLI E2E contracts run at
+//!   their executable owners. This file keeps no cross-crate stub or known divergence. The port
+//!   ledger records every stronger owner and exact rehome.
 
 use std::{
     collections::BTreeMap,

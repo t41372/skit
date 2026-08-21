@@ -57,7 +57,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs + crates/skit-cli/tests/port_test_js_inject_cli.rs | in progress (18 executable / 19 deferred) · ascii-escape gap fixed · faithful TS-suffix, Unix-0600, and bad-value prelaunch owners imported `af90a10`; native Windows runtime verification pending |
 | test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs + skit-runtime private transaction owners + crates/skit-store/tests/mutations.rs | implementation parity (91 executable / 49 classified cross-crate or private closures; 0 ABSENT/FAILING) · installer failures capture typed exit/stderr and keep rollback atomic `b1ad9ac`; six cleanup owners exercise real unlink/rmtree/symlink races, NotFound success, partial-delete quarantine, and self-heal `13c04fe`; cheap freshness/TUI preflight `ab4d93a`/`e276058`; every-launch one-hour strict sweep `e62e36e`/`df0c171`; captured diagnostics and install-only announcements `b6073df`/`536d1e4`; split, manifest, and installer helpers `647a31f`/`5265eeb` |
-| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs + crates/skit-language/tests/edge_contract.rs + real CLI/store owners | accounting: 37 executable/rehomed + 1 architecture closure + 7 Batch A + 14 Batch C + 15 remaining audit = 74 · Batch mappings are below · needs receipt owners `744b3c4` · bun run + JS refusal fixed `19e5ab8` · detection rehomes `98efbb4` · remaining 15: 1 stronger-owner closure, 9 exact tests-only rehomes, 5 real gaps (add-kind validation 3, Windows Bash resolution 2) |
+| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs + crates/skit-language/tests/edge_contract.rs + real CLI/store owners | implementation parity: 37 baseline executable/rehomed + 1 architecture closure + 7 Batch A + 14 Batch C + 6 Batch B + 9 Batch D = 74 · no ABSENT/FAILING or cross-crate runtime stubs remain · needs receipts `744b3c4` · bun run + JS refusal `19e5ab8` · detection `98efbb4` · add-kind validation `dc1bac7`/`b99f36a` · final launch/config owners `2791482`/`1285121` · typed Windows policy is host-neutral tested; real Windows host remains a CI gate |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
@@ -106,6 +106,27 @@ Interpreter Batch C closes fourteen CLI-owned rows without retaining runtime err
 - `test_edit_program_refusal_is_kind_neutral` and `test_edit_command_refusal_is_kind_neutral` map
   to `port_test_edit::test_cli_edit_command_entry_has_no_source`, which now drives both kinds and
   proves that the editor never starts and product bytes do not change.
+
+Interpreter Batch B closes the six add-kind rows in
+`port_test_add_validation_contracts`: the three existing success cases keep their exact names, and
+the three former gaps now drive the real binary with three-locale usage errors and full-tree
+no-write checks. `ForcedAddKind` keeps explicit authoring closed without closing stored
+`EntryKind`; stdin keeps the version 0.4 `--kind prompt` special case.
+
+Interpreter Batch D closes the final nine launch/config rows:
+
+- Four exact Windows resolver owners run in `port_test_launcher` through the public typed
+  `InterpreterPlatform` seam. PATH wins; only bash/sh/zsh can use an existing configured object;
+  missing and unset fallbacks return the exact three-locale Git for Windows/config guidance;
+  non-bash programs keep the generic refusal.
+- `test_runner_config_override` runs through the real CLI in `port_test_config_cmd` with both deno
+  and node on PATH and proves that configured node wins.
+- The three POSIX copy-mode shell owners run a real child in `surface_edges`; they pin stdout,
+  environment delivery, normal last-run/value state, user-data/config/source stability, and dry-run
+  no-write behavior.
+- `test_e2e_run_reference_mode_shell` is closed by the stronger
+  `surface_edges::a_referenced_entry_runs_from_its_original_path_and_keeps_its_bytes`, which runs the
+  real referenced child and also pins authoritative source bytes.
 
 ### Tier 2 — stateful data boundaries (`skit-store`)
 
@@ -359,15 +380,15 @@ clean, with a careful one-way-superset note. No hidden mismatches. Two agents st
 (API): launcher_fix has no port yet (relaunched); path_type lost only its verifier.
 
 **COVERAGE OBLIGATIONS opened by cross-cutting deferral (port at the owning crate in a later wave):**
-- **interpreters DETECTION half → skit-language.** 58 of 74 tests defer the shebang_program /
-  infer_kind / shebang→kind detection to skit-language (home confirmed: lib.rs). The skit-runtime
-  port covers only the launch/invoke half (16). Needs a skit-language port covering the detection matrix.
+- **interpreters DETECTION half → skit-language (CLOSED).** The shebang_program / infer_kind /
+  shebang→kind contracts now run at the public language seams. Config, store, and CLI rows moved to
+  their consolidated owners; the one unreadable-path split remains an explicit architecture closure.
 - **uvman "no orphan checksum pin" → skit-runtime UNIT test.** The oracle's three-way
   set(TRIPLES)==set(_UV_SHA256)==produced can't assert the "_UV_SHA256 has no stale pin" direction
   from an integration test (private CHECKSUMS). Re-home that one direction to a white-box unit test.
 
-Divergences recorded (FAILING CONTRACT): interpreters refusal-message wording + bun `run` subcommand;
-uvman checksum-error type (full body) + two undrivable-from-public-API cases as documented stubs.
+Divergences recorded at this historical wave: the interpreter refusal message and bun `run`
+subcommand are now fixed. The uvman rows remain classified in their own target.
 
 **Safety incident + hardening.** One subagent (raw) ran `rm -rf .locks values` in the repo root on a
 guess. Harmless (both were skit's own regenerable runtime scratch, untracked; no tracked file lost,

@@ -401,10 +401,11 @@ discipline, and helper surfaces close the other audited root (`ab4d93a`..`5265ee
 - **Interpreter detection ownership is complete.** Seventeen frozen shebang/inference owners now
   run at the existing `skit-language` parser and classifier seams (`98efbb4`). The unreadable-path
   helper remains one honest architecture closure because Rust separates path I/O from line
-  parsing. Of the other 36 cross-crate rows, 12 have stronger consolidated owners, 18 need exact
-  tests-only rehomes, and 6 exposed real gaps: three explicit add-kind validations, two Windows
-  Bash resolution messages, and one shell dependency refusal sentence. These are implementation
-  work, not detection gaps or framework closures.
+  parsing. The complete 74-row accounting is now 37 baseline executable/rehomed + 1 architecture
+  closure + 7 Batch A + 14 Batch C + 6 Batch B + 9 Batch D. The add-kind gaps closed in
+  `dc1bac7`/`b99f36a`; the final config, POSIX E2E, and Windows interpreter owners closed in
+  `2791482`/`1285121`. No interpreter ABSENT/FAILING or cross-crate runtime stub remains. The typed
+  resolver is platform-neutral and Linux-tested, but a real Windows-host run remains a CI gate.
 
 The ledger has the authoritative per-module adjudication log.
 
@@ -457,8 +458,10 @@ The ledger has the authoritative per-module adjudication log.
   `eac38c9`). Public editor owners and the locked external-edit snapshot close the editor root
   (`a63ecb4`..`f1ee263`). The explicit `ABSENT`/`FAILING CONTRACT` marker count is zero. The final
   coverage, supply-chain, docs, package, benchmark, and hands-on gates are not valid until these
-  changes stop. The zero-marker result does not hide the six real interpreter-cluster gaps found
-  while adjudicating older `CROSS-CRATE` rows; their exact-owner batches remain open.
+  changes stop. The six real interpreter-cluster gaps found while adjudicating older
+  `CROSS-CRATE` rows are now closed (`dc1bac7`..`1285121`). The local Windows MSVC cross-check
+  reached `ring` but could not continue because this devbox has no `lib.exe`; Windows compilation
+  and real-host execution therefore remain CI gates.
   A review also questioned `FileStore::scan()` repairing stale registry rows. This is not a new
   blocker: `registry.toml` is a derived index, not authoritative user data, and v0.4 explicitly
   runs `_repair_rows` under a non-blocking lock. `rust-contract-matrix.md` records this narrow
