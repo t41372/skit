@@ -6895,6 +6895,68 @@ fn deps_keep_non_utf8_python_bytes_when_metadata_can_deliver_the_edit() {
 }
 
 #[test]
+fn test_update_dependencies_copy_sync_swallows_read_oserror() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("plain.py");
+    fs::write(&source, b"print(1)\n").unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    add_with_config(
+        &service,
+        &config_dir,
+        AddOptions {
+            source: Some(source),
+            kind: Some("python".to_owned()),
+            name: Some("plain".to_owned()),
+            description: Some(String::new()),
+            reference: false,
+            command_template: None,
+            prompt: false,
+            executable: false,
+            runner: None,
+            no_interpolate: false,
+            dependencies: Vec::new(),
+            dependencies_explicit: false,
+            requires_python: None,
+            no_input: true,
+        },
+    )
+    .unwrap();
+    let stored_path = data_dir.join("scripts/plain/script.py");
+    let before = fs::read(&stored_path).unwrap();
+    let observed = RefCell::new(None);
+
+    deps_with_test_source_reader(
+        &service,
+        &store,
+        DepsArgs {
+            selector: "plain".to_owned(),
+            dependencies: vec!["httpx".to_owned()],
+            clear: false,
+            requires_python: None,
+            needs: Vec::new(),
+            clear_needs: false,
+            json: false,
+        },
+        |path| {
+            observed.replace(Some(path.to_path_buf()));
+            Err(io::Error::other("simulated: unreadable stored copy"))
+        },
+    )
+    .unwrap();
+
+    assert_eq!(observed.into_inner(), Some(stored_path.clone()));
+    assert_eq!(fs::read(stored_path).unwrap(), before);
+    let updated = service.show("plain").unwrap();
+    assert_eq!(
+        EntrySettings::from_meta(&updated.meta).dependencies,
+        ["httpx"]
+    );
+}
+
+#[test]
 fn deps_refuse_a_non_utf8_authoritative_block_before_any_metadata_write() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
