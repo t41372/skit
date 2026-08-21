@@ -1424,7 +1424,7 @@ fn test_doctor_rebuild() {
 }
 
 #[test]
-fn test_doctor_reports_missing_reference() {
+fn rust_additive_doctor_cli_reports_missing_reference_without_failing() {
     let root = sandbox();
     let bin = install_uv(&root);
     let src = write_src(&root, "src.py", "print(1)\n");

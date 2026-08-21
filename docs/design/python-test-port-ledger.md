@@ -132,9 +132,29 @@ Interpreter Batch D closes the final nine launch/config rows:
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_store.py | 78 | crates/skit-store/tests/port_test_store.rs + owning language/application/UI/CLI targets | in progress · store owner 34 active · 12 inference + 1 executable-target contracts moved from placeholders to their owning crates (`85f84b7`, `41ee48b`/`0365003`) · Windows PATHEXT inference is one pure application policy over explicit host/file facts; CLI supplies real metadata/environment and its hosted TUI carries the same serialized fact · extension/shebang precedence and POSIX execute-bit reverse stay at their existing language/UI owners · a real Windows-host CLI run remains the native gate · forced `--exe` inference moved to CLI (`769089a`) · prompt `params` completes the six mutator freshness rows (`db7f7f5`) · S2 corrupt-index backup + A2 read-path self-heal translated (c04395c) · full port ongoing |
+| test_store.py | 78 | crates/skit-cli/tests/port_test_store_manifest.rs + owning store/language/application/runtime/CLI targets | implementation parity (73 executable REAL / 5 semantic or version closures) · the manifest proves 78 occurrences, 78 unique names, the exact oracle set, and the 73/5 split · Windows PATHEXT inference uses a pure application policy with real CLI metadata/environment composition (`0e4a698`/`8a15675`) · recursive size and v0.4 display thresholds run at the private CLI owners (`e326985`) · 15 public add contracts run through the real binary and FileStore (`cebb661`) · registry fallback, repair, corruption, and race owners remain canonical in skit-store, including the final repair-race batch (`fae2d20`) · real Windows-host CLI execution remains a CI gate |
 | test_store_fix.py | 38 | crates/skit-store/tests/port_test_store.rs | partial · repair/widening ports landed with A2 · remainder todo |
 | test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs + `fs_ops` owner | done (17) · both atomic writers share temp cleanup and Windows retry · S2/A2 gaps resolved (c04395c) · 15 deferred (crash-injection/Windows) |
+
+The five `test_store.py` closures retain their ignored bodies and exact oracle names:
+
+- `test_add_script_explicit_workdir_override`: the Python private helper fuses add orchestration
+  with persistence. The stronger owner is
+  `payload_policy::add_workdir_keeps_script_prompt_executable_and_command_lanes_distinct`.
+- `test_add_script_records_interpreter`: interpreter selection belongs to add orchestration, while
+  `test_cli_add_shell_script_records_interpreter` and
+  `mutations::create_is_atomic_mints_identity_and_preserves_payload_bytes` prove selection and
+  store round-trip separately.
+- `test_add_script_non_interpreted_kind_raises`: version 0.5 intentionally supports public
+  `--kind exe`; `test_cli_add_kind_exe` and
+  `forced_add_kinds_are_closed_without_closing_stored_entry_kinds` pin the typed lane policy.
+- `test_summaries_serve_from_the_index_without_parsing_metas`: version 0.4 trusts mtime alone.
+  Rust uses a stronger content-hashed proof;
+  `read::private_tests::a_verified_cache_hit_does_not_call_the_authoritative_reader` proves its
+  genuine fast path.
+- `test_widening_gives_up_on_a_row_it_would_reject_again`: Rust rejects invalid enum metadata and
+  isolates the entry. The two active widening/reference-repair owners prove convergence for valid
+  representable rows.
 
 ### Tier 3 — flows and runtime (`skit-runtime`, `skit-application`)
 

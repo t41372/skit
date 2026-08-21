@@ -406,6 +406,12 @@ discipline, and helper surfaces close the other audited root (`ab4d93a`..`5265ee
   `dc1bac7`/`b99f36a`; the final config, POSIX E2E, and Windows interpreter owners closed in
   `2791482`/`1285121`. No interpreter ABSENT/FAILING or cross-crate runtime stub remains. The typed
   resolver is platform-neutral and Linux-tested, but a real Windows-host run remains a CI gate.
+- **Store oracle ownership is complete.** `test_store.py` now accounts for all 78 exact names as
+  73 executable REAL owners and 5 retained semantic/version closures. The CLI manifest rejects a
+  duplicate occurrence, a missing name, a changed set, or an undocumented ignore. The final work
+  includes typed Windows PATHEXT inference (`0e4a698`/`8a15675`), private CLI size owners
+  (`e326985`), 15 real-binary/FileStore add owners (`cebb661`), and registry repair/race owners
+  through `fae2d20`. A real Windows-host CLI run remains the native gate.
 
 The ledger has the authoritative per-module adjudication log.
 
