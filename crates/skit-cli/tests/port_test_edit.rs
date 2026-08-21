@@ -558,9 +558,29 @@ fn syntax_error_resync_warns_and_writes_no_source_metadata_or_state() {
         "{}",
         combine(&output)
     );
-    assert_eq!(fs::read(payload).unwrap(), payload_before);
-    assert_eq!(fs::read(meta).unwrap(), meta_before);
+    assert_eq!(fs::read(&payload).unwrap(), payload_before);
+    assert_eq!(fs::read(&meta).unwrap(), meta_before);
     assert!(!sandbox.state.path().join("values/job.toml").exists());
+
+    let state = sandbox.state.path().join("values/job.toml");
+    fs::create_dir_all(state.parent().unwrap()).unwrap();
+    fs::write(&state, "[values]\nCITY = \"keep\"\n").unwrap();
+    let payload_before = fs::read(&payload).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+    let state_before = fs::read(&state).unwrap();
+    let output = sandbox
+        .command()
+        .args(["params", "job", "--secret", "GHOST"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("GHOST isn't a managed parameter; skipped.")
+    );
+    assert_eq!(fs::read(&payload).unwrap(), payload_before);
+    assert_eq!(fs::read(&meta).unwrap(), meta_before);
+    assert_eq!(fs::read(state).unwrap(), state_before);
 }
 
 #[test]
