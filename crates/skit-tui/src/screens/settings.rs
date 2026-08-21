@@ -37,10 +37,7 @@ use ratatui_widgets::{
 };
 use skit_form::field::{ChoiceOption, Field, FieldKind, FieldValue, ReadOnlyReason, TypedValue};
 use skit_i18n::{Locale, format_text, text};
-use skit_ui::{
-    PROMPT_CANDIDATES_KEY, SettingsAction, SettingsItem, SettingsNote, SettingsSectionId,
-    SettingsView,
-};
+use skit_ui::{SettingsAction, SettingsItem, SettingsNote, SettingsSectionId, SettingsView};
 use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
@@ -179,13 +176,14 @@ struct ControlDraw<'a> {
 
 /// Ephemeral terminal state for the settings screen.
 ///
-/// Only a text cursor lives here. Every other mark a control shows is read from the model again on
-/// each render, so nothing in this session can disagree with what a save would keep.
+/// Text and option cursors live here. Every selected mark a control shows is read from the model
+/// again on each render, so nothing in this session can disagree with what a save would keep.
 #[derive(Debug, Default)]
 pub struct SettingsScreenSession {
     signature: Option<Vec<(String, ControlShape)>>,
     inputs: BTreeMap<String, LineInput>,
     bodies: BTreeMap<String, Box<RichTextArea<'static>>>,
+    option_cursors: BTreeMap<String, usize>,
     scroll: ScrollableContentState,
     viewport: Rect,
     visible_height: usize,
@@ -232,6 +230,7 @@ impl SettingsScreenSession {
             self.signature = Some(signature);
             self.inputs.clear();
             self.bodies.clear();
+            self.option_cursors.clear();
             for field in fields(view) {
                 let value = field.value().as_text();
                 match shape(field) {
@@ -242,7 +241,14 @@ impl SettingsScreenSession {
                     ControlShape::Line { .. } => {
                         self.inputs.insert(field.key.clone(), LineInput::new(value));
                     }
-                    ControlShape::Toggle | ControlShape::Options { .. } | ControlShape::Static => {}
+                    ControlShape::Options { multiple: true, .. } => {
+                        self.option_cursors.insert(field.key.clone(), 0);
+                    }
+                    ControlShape::Toggle
+                    | ControlShape::Options {
+                        multiple: false, ..
+                    }
+                    | ControlShape::Static => {}
                 }
             }
             return;
@@ -373,8 +379,9 @@ impl SettingsScreenSession {
                 )
             }
             FieldKind::Boolean => nav(key),
-            FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
-                choice_key(field, options, key)
+            FieldKind::SingleChoice { options } => choice_key(field, options, key),
+            FieldKind::MultiChoice { options } => {
+                self.multiple_choice_key(focused, field, options, key)
             }
             FieldKind::ReadOnly => None,
             FieldKind::Text
@@ -382,6 +389,44 @@ impl SettingsScreenSession {
             | FieldKind::Number { .. }
             | FieldKind::Path { .. }
             | FieldKind::ArgumentList { .. } => self.edit_line(focused, key),
+        }
+    }
+
+    fn multiple_choice_key(
+        &mut self,
+        key: &str,
+        field: &Field,
+        options: &[ChoiceOption],
+        event: KeyEvent,
+    ) -> Option<SettingsScreenEvent> {
+        if options.is_empty() {
+            return None;
+        }
+        let cursor = self.option_cursors.entry(key.to_owned()).or_default();
+        match event.code {
+            KeyCode::Down | KeyCode::Right => {
+                *cursor = cursor
+                    .saturating_add(1)
+                    .min(options.len().saturating_sub(1));
+                Some(SettingsScreenEvent::Changed)
+            }
+            KeyCode::Up | KeyCode::Left => {
+                *cursor = cursor.saturating_sub(1);
+                Some(SettingsScreenEvent::Changed)
+            }
+            KeyCode::Home => {
+                *cursor = 0;
+                Some(SettingsScreenEvent::Changed)
+            }
+            KeyCode::End => {
+                *cursor = options.len().saturating_sub(1);
+                Some(SettingsScreenEvent::Changed)
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                let option = options.get(*cursor)?;
+                set_field(key, picked(field, &option.value))
+            }
+            _ => None,
         }
     }
 
@@ -423,6 +468,11 @@ impl SettingsScreenSession {
             }
             SettingsControlId::Option { field, value } => {
                 let owner = view.field(&field)?;
+                if let FieldKind::MultiChoice { options } = &owner.kind
+                    && let Some(position) = options.iter().position(|option| option.value == value)
+                {
+                    self.option_cursors.insert(field.clone(), position);
+                }
                 set_field(&field, picked(owner, &value))
             }
             SettingsControlId::NewRunner => {
@@ -559,7 +609,14 @@ impl SettingsScreenSession {
                 });
             }
             FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
-                render_options(frame, area, draw, options, hits);
+                render_options(
+                    frame,
+                    area,
+                    draw,
+                    options,
+                    self.option_cursors.get(&field.key).copied(),
+                    hits,
+                );
             }
             FieldKind::ReadOnly => render_read_only(frame, area, draw),
             FieldKind::Text
@@ -656,17 +713,15 @@ fn choice_key(
     if options.is_empty() {
         return None;
     }
-    let multiple = matches!(field.kind, FieldKind::MultiChoice { .. });
     let current = options
         .iter()
         .position(|option| is_selected(field, option))
         .unwrap_or_default();
     let next = match key.code {
-        // An open set has no single cursor to walk, so the arrows move the keyboard instead.
-        KeyCode::Down | KeyCode::Right if !multiple => current
+        KeyCode::Down | KeyCode::Right => current
             .saturating_add(1)
             .min(options.len().saturating_sub(1)),
-        KeyCode::Up | KeyCode::Left if !multiple => current.saturating_sub(1),
+        KeyCode::Up | KeyCode::Left => current.saturating_sub(1),
         KeyCode::Char(' ') | KeyCode::Enter => current,
         _ => return nav(key),
     };
@@ -851,6 +906,17 @@ fn layout_items(view: &SettingsView, locale: Locale, width: u16) -> Vec<Position
                     push(&mut items, &mut start, Item::Copy(shown), height);
                     continue;
                 }
+                SettingsItem::PromptCandidatePicker => {
+                    push(
+                        &mut items,
+                        &mut start,
+                        Item::ChoosePromptCandidates(
+                            text(locale, "Choose variables…").into_owned(),
+                        ),
+                        1,
+                    );
+                    continue;
+                }
                 SettingsItem::Field(field) => field.as_ref(),
             };
             if field.kind.editable() && !stops.contains(&field.key.as_str()) {
@@ -874,14 +940,6 @@ fn layout_items(view: &SettingsView, locale: Locale, width: u16) -> Vec<Position
                     &mut items,
                     &mut start,
                     Item::NewRunner(text(locale, "New agent…").into_owned()),
-                    1,
-                );
-            }
-            if field.key == PROMPT_CANDIDATES_KEY && view.prompt_picker_available() {
-                push(
-                    &mut items,
-                    &mut start,
-                    Item::ChoosePromptCandidates(text(locale, "Choose variables…").into_owned()),
                     1,
                 );
             }
@@ -957,6 +1015,7 @@ fn render_options(
     area: Rect,
     draw: &ControlDraw<'_>,
     options: &[ChoiceOption],
+    cursor: Option<usize>,
     hits: &mut Vec<SettingsHitRegion>,
 ) {
     let ControlDraw {
@@ -974,11 +1033,17 @@ fn render_options(
         );
         y = y.saturating_add(1);
     }
-    for option in options {
+    for (index, option) in options.iter().enumerate() {
         if y >= area.y.saturating_add(area.height) {
             break;
         }
         let selected = is_selected(field, option);
+        let highlighted = focused
+            && if multiple {
+                cursor == Some(index)
+            } else {
+                selected
+            };
         let glyph = match (multiple, selected) {
             (true, true) => "☑",
             (true, false) => "☐",
@@ -989,13 +1054,13 @@ fn render_options(
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    if focused && selected { "▶ " } else { "  " },
+                    if highlighted { "▶ " } else { "  " },
                     Style::default().fg(ACCENT),
                 ),
                 Span::styled(format!("{glyph} "), Style::default().fg(ACCENT)),
                 Span::styled(
                     option_text(locale, option),
-                    if focused && selected {
+                    if highlighted {
                         Style::default()
                             .fg(SELECT_FG)
                             .bg(SELECT_BG)
@@ -2381,7 +2446,18 @@ mod tests {
                 &multiple,
                 KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
             ),
-            Some(SettingsScreenEvent::Action(SettingsAction::FocusNext))
+            Some(SettingsScreenEvent::Changed)
+        );
+        assert_eq!(
+            session.handle_field_key(
+                "multiple",
+                &multiple,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField {
+                key: "multiple".to_owned(),
+                value: FieldValue::Explicit(TypedValue::Choices(vec!["two".to_owned()])),
+            }))
         );
         let with_hidden = Field::new(
             "detected",

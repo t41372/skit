@@ -138,6 +138,8 @@ pub enum SettingsItem {
     Note(SettingsNote),
     /// One control.
     Field(Box<Field>),
+    /// Open the full detected-placeholder picker beside the inline preview.
+    PromptCandidatePicker,
 }
 
 /// One rendered section: a heading and its interleaved text and controls.
@@ -160,7 +162,7 @@ impl SettingsSection {
     pub fn fields(&self) -> impl Iterator<Item = &Field> {
         self.items.iter().filter_map(|item| match item {
             SettingsItem::Field(field) => Some(field.as_ref()),
-            SettingsItem::Note(_) => None,
+            SettingsItem::Note(_) | SettingsItem::PromptCandidatePicker => None,
         })
     }
 
@@ -168,7 +170,7 @@ impl SettingsSection {
     pub fn fields_mut(&mut self) -> impl Iterator<Item = &mut Field> {
         self.items.iter_mut().filter_map(|item| match item {
             SettingsItem::Field(field) => Some(field.as_mut()),
-            SettingsItem::Note(_) => None,
+            SettingsItem::Note(_) | SettingsItem::PromptCandidatePicker => None,
         })
     }
 }
@@ -350,8 +352,6 @@ pub enum SettingsAction {
     Resync,
     /// Replace the settings-local detected-placeholder selection in body order.
     SetPromptCandidates(Vec<String>),
-    /// Ask the terminal adapter to open the full detected-placeholder picker.
-    OpenPromptCandidates,
     /// Save every axis, after validation.
     Save,
     /// Leave the screen, through the discard guard when anything moved.
@@ -789,7 +789,6 @@ impl SettingsView {
                 self.set_prompt_candidates(&selected);
                 SettingsEffect::None
             }
-            SettingsAction::OpenPromptCandidates => SettingsEffect::None,
             // Version 0.4 completes its validation pass before any write and returns having
             // written nothing on the first refusal (`src/skit/tui_settings.py:939-941`,
             // `:517-523`).
@@ -1226,24 +1225,31 @@ fn declared_items(inputs: &SettingsInputs, rows: Vec<ParameterRow>) -> Vec<Setti
         items.push(SettingsItem::note(
             "Off — the body travels to the agent exactly as written.",
         ));
-        if !inputs.candidates.is_empty() {
-            items.push(SettingsItem::field(Field::new(
-                PROMPT_CANDIDATES_KEY,
-                "Detected but not yet managed — tick to manage:",
-                FieldKind::MultiChoice {
-                    options: inputs
-                        .candidates
-                        .iter()
-                        .take(crate::PROMPT_LIST_PREVIEW_LIMIT)
-                        .map(ChoiceOption::plain)
-                        .collect(),
-                },
-                FieldOwner::Template,
-                FieldValue::Explicit(TypedValue::Choices(Vec::new())),
-            )));
-        }
     }
     items.extend(row_items(rows));
+    if inputs.kind == "prompt" && !inputs.candidates.is_empty() {
+        items.push(SettingsItem::field(Field::new(
+            PROMPT_CANDIDATES_KEY,
+            "Detected but not yet managed — tick to manage:",
+            FieldKind::MultiChoice {
+                options: inputs
+                    .candidates
+                    .iter()
+                    .take(crate::PROMPT_LIST_PREVIEW_LIMIT)
+                    .map(ChoiceOption::plain)
+                    .collect(),
+            },
+            FieldOwner::Template,
+            FieldValue::Explicit(TypedValue::Choices(Vec::new())),
+        )));
+        if inputs.candidates.len() > crate::PROMPT_LIST_PREVIEW_LIMIT {
+            items.push(SettingsItem::note_with(
+                "…and {} more",
+                (inputs.candidates.len() - crate::PROMPT_LIST_PREVIEW_LIMIT).to_string(),
+            ));
+            items.push(SettingsItem::PromptCandidatePicker);
+        }
+    }
     items.push(SettingsItem::field(
         Field::new(
             ADD_PARAMETER_KEY,
@@ -1966,7 +1972,7 @@ mod tests {
             .flat_map(|section| section.items.iter())
             .filter_map(|item| match item {
                 SettingsItem::Note(note) => Some(note.text.clone()),
-                SettingsItem::Field(_) => None,
+                SettingsItem::Field(_) | SettingsItem::PromptCandidatePicker => None,
             })
             .collect()
     }

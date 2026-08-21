@@ -279,6 +279,11 @@ fn map_key(key: KeyEvent, state: &LibraryState, geometry: &ViewGeometry) -> Opti
             .iter()
             .any(|binding| binding.key == chord.key && binding.modifiers == chord.modifiers)
     }) {
+        // The settings body owns this contextual chord beside its inline picker item. It has no
+        // reducer action because another frontend hosts the typed item with its own picker.
+        if spec.command == UiCommand::ChooseSettingsVariables {
+            return None;
+        }
         if matches!(
             (context, spec.command),
             (

@@ -39,7 +39,7 @@
 //!   Library edit -> offer-picker flow, and the pin-vs-last picker default. Compiling
 //!   `#[ignore]` stubs naming the owning tier.
 //! - Prompt Settings detected candidates are REAL: inline choices use the capped body-order
-//!   preview, while Ctrl+O and its footer mouse twin reuse `PromptCandidatePickerSession` over the
+//!   preview, while Ctrl+O and its inline mouse twin reuse `PromptCandidatePickerSession` over the
 //!   full list. The picker works on an isolated selection; Done changes only Settings-local dirty
 //!   state, and the outer Save carries `PROMPT_CANDIDATES_KEY` to the host.
 //! - DIVERGENCE (Library title — RESOLVED): the zh-CN/zh-TW Library title now localizes to the
@@ -64,7 +64,7 @@ use skit_domain::{
 };
 use skit_i18n::Locale;
 use skit_tui::{
-    ChoicePickerGeometry, ChoicePickerHit, EventHandling, HitTarget, PromptCandidatePickerEvent,
+    ChoicePickerGeometry, ChoicePickerHit, EventHandling, PromptCandidatePickerEvent,
     PromptCandidatePickerSession, TuiSession, ViewGeometry, render_localized,
     render_prompt_candidate_picker, render_with_session,
 };
@@ -74,8 +74,8 @@ use skit_ui::{
     LibrarySurface, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY, PROMPT_LIST_PREVIEW_LIMIT,
     RUNNER_KEY, ReviewDefaults, ReviewLane, ReviewState, RunFieldRole, RunFormView,
     RunnerEditorAction, RunnerEditorEffect, RunnerEditorError, RunnerEditorOwner, RunnerEditorView,
-    Screen, SettingsAction, SettingsEffect, SettingsInputs, SettingsSectionId, SettingsView,
-    SourceSnapshot, TypedValue, UiCommand,
+    Screen, SettingsAction, SettingsEffect, SettingsInputs, SettingsItem, SettingsSectionId,
+    SettingsView, SourceSnapshot, TypedValue, UiCommand,
 };
 
 // The seeded prompt-runner names the oracle's `config.load_prompt_runners()` returns, in
@@ -819,6 +819,71 @@ fn test_settings_tick_to_manage_a_detected_placeholder() {
 }
 
 #[test]
+fn settings_short_candidate_cursor_and_mouse_can_pick_a_non_first_name() {
+    let mut state = settings_state(prompt_settings_candidates(
+        &["b".to_owned(), "c".to_owned()],
+        true,
+    ));
+    state.update(Action::Settings(SettingsAction::Focus {
+        key: PROMPT_CANDIDATES_KEY.to_owned(),
+    }));
+    let mut session = TuiSession::default();
+    let geometry = draw_with_session(&mut session, &state, 100, 60).1;
+    assert_eq!(
+        session.handle_event(key(KeyCode::Down, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed,
+        "Down moves the option cursor instead of leaving the field"
+    );
+    let EventHandling::Action(action) = session.handle_event(text_key(' '), &state, &geometry)
+    else {
+        panic!("Space must tick the option under the terminal cursor");
+    };
+    state.update(action);
+    assert_eq!(
+        state
+            .settings_view()
+            .unwrap()
+            .field(PROMPT_CANDIDATES_KEY)
+            .unwrap()
+            .value(),
+        &FieldValue::Explicit(TypedValue::Choices(vec!["c".to_owned()]))
+    );
+
+    let mut mouse_state = settings_state(prompt_settings_candidates(
+        &["b".to_owned(), "c".to_owned()],
+        true,
+    ));
+    mouse_state.update(Action::Settings(SettingsAction::Focus {
+        key: PROMPT_CANDIDATES_KEY.to_owned(),
+    }));
+    let mut mouse_session = TuiSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 60)).unwrap();
+    let mut mouse_geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            mouse_geometry =
+                render_with_session(frame, &mouse_state, Locale::En, &mut mouse_session)
+        })
+        .unwrap();
+    let (column, row) = buffer_position(terminal.backend().buffer(), "☐ c");
+    let EventHandling::Action(action) =
+        mouse_session.handle_event(mouse(column, row), &mouse_state, &mouse_geometry)
+    else {
+        panic!("the non-first option must keep its mouse twin");
+    };
+    mouse_state.update(action);
+    assert_eq!(
+        mouse_state
+            .settings_view()
+            .unwrap()
+            .field(PROMPT_CANDIDATES_KEY)
+            .unwrap()
+            .value(),
+        &FieldValue::Explicit(TypedValue::Choices(vec!["c".to_owned()]))
+    );
+}
+
+#[test]
 fn test_settings_unticking_a_row_unmanages_it() {
     // Unticking a managed row's keep toggle drops it: managed a,b -> untick a -> params [b].
     // The save carries the keep=false decision the host applies.
@@ -976,9 +1041,47 @@ fn test_settings_candidate_checkboxes_are_flood_capped() {
     assert_eq!(options.len(), PROMPT_LIST_PREVIEW_LIMIT);
     assert_eq!(view.prompt_candidates(), names);
     assert!(view.prompt_picker_available());
-    let state = settings_state(prompt_settings_candidates(view.prompt_candidates(), true));
-    assert!(draw_localized(&state, 110, 40, Locale::ZhCn).contains("选 择 变 量"));
-    assert!(draw_localized(&state, 110, 40, Locale::ZhTw).contains("選 擇 變 數"));
+    let section = view
+        .sections
+        .iter()
+        .find(|section| section.id == SettingsSectionId::Parameters)
+        .unwrap();
+    let candidate = section
+        .items
+        .iter()
+        .position(
+            |item| matches!(item, SettingsItem::Field(field) if field.key == PROMPT_CANDIDATES_KEY),
+        )
+        .unwrap();
+    let managed = section
+        .items
+        .iter()
+        .rposition(|item| matches!(item, SettingsItem::Field(field) if field.key.starts_with("parameter:a:")))
+        .unwrap();
+    assert!(managed < candidate, "managed rows must precede candidates");
+    assert!(matches!(
+        &section.items[candidate + 1],
+        SettingsItem::Note(note)
+            if note.text == "…and {} more" && note.arguments == ["9"]
+    ));
+    assert_eq!(
+        section.items[candidate + 2],
+        SettingsItem::PromptCandidatePicker
+    );
+    assert!(matches!(
+        &section.items[candidate + 3],
+        SettingsItem::Field(field) if field.key == ADD_PARAMETER_KEY
+    ));
+    for (locale, expected) in [
+        (Locale::En, "…and 9 more"),
+        (Locale::ZhCn, "…以及另外 9 个"),
+        (Locale::ZhTw, "…以及另外 9 個"),
+    ] {
+        assert_eq!(
+            skit_i18n::format_text(locale, "…and {} more", &[&9]),
+            expected
+        );
+    }
 }
 
 #[test]
@@ -990,21 +1093,19 @@ fn test_settings_candidate_picker_reaches_a_hidden_name_and_waits_for_outer_save
     let hidden = names.last().unwrap().clone();
     let mut state = settings_state(prompt_settings_candidates(&names, true));
     let mut session = TuiSession::default();
-    let (screen, geometry) = draw_with_session(&mut session, &state, 110, 40);
-    assert!(screen.contains("Choose variables"));
-    let chip = geometry
-        .hits
-        .iter()
-        .find(|hit| hit.action == HitTarget::Command(UiCommand::ChooseSettingsVariables))
-        .expect("mouse twin is visible");
-    let point = (chip.rect.x, chip.rect.y);
+    let mut terminal = Terminal::new(TestBackend::new(110, 90)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| geometry = render_with_session(frame, &state, Locale::En, &mut session))
+        .unwrap();
+    let point = buffer_position(terminal.backend().buffer(), "Choose variables");
     for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
         assert_ne!(
             session.handle_event(mouse_with_kind(kind, point.0, point.1), &state, &geometry),
             EventHandling::Consumed
         );
         assert!(
-            !draw_with_session(&mut session, &state, 110, 40)
+            !draw_with_session(&mut session, &state, 110, 90)
                 .0
                 .contains("Choose prompt variables")
         );

@@ -414,14 +414,8 @@ impl TuiSession {
                     self.open_settings_prompt_picker(view);
                     EventHandling::Consumed
                 }
-                None => match map_event(event, state, geometry) {
-                    Some(Action::Settings(skit_ui::SettingsAction::OpenPromptCandidates)) => {
-                        self.open_settings_prompt_picker(view);
-                        EventHandling::Consumed
-                    }
-                    Some(action) => EventHandling::Action(action),
-                    None => EventHandling::Ignored,
-                },
+                None => map_event(event, state, geometry)
+                    .map_or(EventHandling::Ignored, EventHandling::Action),
             };
         }
         if let Screen::Preferences(view) = state.screen() {

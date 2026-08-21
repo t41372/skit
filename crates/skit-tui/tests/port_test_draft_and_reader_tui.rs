@@ -201,7 +201,7 @@ fn parameter_notes(view: &SettingsView) -> Vec<String> {
         .flat_map(|section| section.items.iter())
         .filter_map(|item| match item {
             SettingsItem::Note(note) => Some(note.text.clone()),
-            SettingsItem::Field(_) => None,
+            SettingsItem::Field(_) | SettingsItem::PromptCandidatePicker => None,
         })
         .collect()
 }
