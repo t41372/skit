@@ -10,10 +10,14 @@ use ratatui_crossterm::crossterm::event::{
 use skit_application::tokens::TokenContext;
 use skit_domain::parameters::{ParamDecl, ParameterType, ParameterValue};
 use skit_i18n::Locale;
-use skit_tui::{EventHandling, HitTarget, TuiSession, ViewGeometry, render_with_session};
+use skit_tui::{
+    EventHandling, FilePickerEvent, FilePickerHit, FilePickerSession, HitTarget, TuiSession,
+    ViewGeometry, render_file_picker, render_with_session,
+};
 use skit_ui::{
     Action, Effect, FormControl, FormField, FormPurpose, FormView, LibraryState, ModalState,
-    RunFormContext, RunFormView, RunPathContext, Screen, UiCommand,
+    PathOutputPolicy, PathPickerState, PathSelectionMode, PickerPurpose, RunFormContext,
+    RunFormView, RunPathContext, Screen, UiCommand,
 };
 
 const ACCENT: Color = Color::Rgb(0xD9, 0x77, 0x57);
@@ -1007,6 +1011,160 @@ fn run_file_picker_uses_the_shared_explorer_for_keyboard_mouse_and_missing_roots
         buffer_text(terminal.backend().buffer())
             .contains("The entry's working directory is missing — starting here instead.")
     );
+}
+
+#[test]
+fn every_visible_file_picker_footer_action_has_a_key_and_mouse_twin_at_every_size_tier() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("alpha.txt"), "alpha").unwrap();
+    let contract = PathPickerState::new(
+        PickerPurpose::Argument,
+        temp.path().to_path_buf(),
+        PathSelectionMode::FileOrDirectory,
+        PathOutputPolicy::RelativeTo(temp.path().to_path_buf()),
+        false,
+    );
+    let is_footer = |target: &FilePickerHit| {
+        matches!(
+            target,
+            FilePickerHit::Accept
+                | FilePickerHit::Cancel
+                | FilePickerHit::Up
+                | FilePickerHit::Hidden
+        )
+    };
+    let key_for = |target: &FilePickerHit| match target {
+        FilePickerHit::Accept => key(KeyCode::Enter, KeyModifiers::NONE),
+        FilePickerHit::Cancel => key(KeyCode::Esc, KeyModifiers::NONE),
+        FilePickerHit::Up => key(KeyCode::Backspace, KeyModifiers::NONE),
+        FilePickerHit::Hidden => key(KeyCode::Char('h'), KeyModifiers::CONTROL),
+        _ => panic!("non-footer file-picker target: {target:?}"),
+    };
+
+    let mut inventory_session = FilePickerSession::new(contract.clone());
+    let mut inventory_terminal = Terminal::new(TestBackend::new(200, 30)).unwrap();
+    let mut inventory_geometry = Default::default();
+    inventory_terminal
+        .draw(|frame| {
+            inventory_geometry =
+                render_file_picker(frame, frame.area(), &mut inventory_session, Locale::En);
+        })
+        .unwrap();
+    let expected = inventory_geometry
+        .hits
+        .iter()
+        .filter(|hit| is_footer(&hit.target))
+        .map(|hit| hit.target.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(expected.len(), 4, "the production footer inventory changed");
+
+    // These are the exact modal-body areas produced by 120x30, 46x12, and 24x6 terminals.
+    for (width, height) in [(120, 24), (46, 6), (24, 5)] {
+        let mut seen = Vec::new();
+        for page in 0..16 {
+            let mut page_session = FilePickerSession::new(contract.clone());
+            let mut page_terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut page_geometry = Default::default();
+            for step in 0..=page {
+                page_terminal
+                    .draw(|frame| {
+                        page_geometry =
+                            render_file_picker(frame, frame.area(), &mut page_session, Locale::En);
+                    })
+                    .unwrap();
+                if step < page {
+                    let footer = page_geometry
+                        .hits
+                        .iter()
+                        .find(|hit| is_footer(&hit.target))
+                        .expect("each footer page has a visible mouse target");
+                    assert_eq!(
+                        page_session.handle_event(
+                            mouse_with_kind(
+                                MouseEventKind::ScrollDown,
+                                footer.area.x,
+                                footer.area.y,
+                            ),
+                            &page_geometry,
+                        ),
+                        Some(FilePickerEvent::Changed)
+                    );
+                }
+            }
+
+            for hit in page_geometry
+                .hits
+                .iter()
+                .filter(|hit| is_footer(&hit.target))
+            {
+                if seen.contains(&hit.target) {
+                    continue;
+                }
+                seen.push(hit.target.clone());
+
+                let mut key_session = FilePickerSession::new(contract.clone());
+                let mut key_terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let mut key_geometry = Default::default();
+                key_terminal
+                    .draw(|frame| {
+                        key_geometry =
+                            render_file_picker(frame, frame.area(), &mut key_session, Locale::En);
+                    })
+                    .unwrap();
+                let key_result = key_session.handle_event(key_for(&hit.target), &key_geometry);
+
+                let mut mouse_session = FilePickerSession::new(contract.clone());
+                let mut mouse_terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let mut mouse_geometry = Default::default();
+                for step in 0..=page {
+                    mouse_terminal
+                        .draw(|frame| {
+                            mouse_geometry = render_file_picker(
+                                frame,
+                                frame.area(),
+                                &mut mouse_session,
+                                Locale::En,
+                            );
+                        })
+                        .unwrap();
+                    if step < page {
+                        let footer = mouse_geometry
+                            .hits
+                            .iter()
+                            .find(|candidate| is_footer(&candidate.target))
+                            .unwrap();
+                        let _ = mouse_session.handle_event(
+                            mouse_with_kind(
+                                MouseEventKind::ScrollDown,
+                                footer.area.x,
+                                footer.area.y,
+                            ),
+                            &mouse_geometry,
+                        );
+                    }
+                }
+                let mouse_hit = mouse_geometry
+                    .hits
+                    .iter()
+                    .find(|candidate| candidate.target == hit.target)
+                    .expect("the same typed target is visible on the same footer page");
+                let mouse_result = mouse_session
+                    .handle_event(mouse(mouse_hit.area.x, mouse_hit.area.y), &mouse_geometry);
+                assert_eq!(
+                    mouse_result, key_result,
+                    "file-picker {:?} key and mouse diverged at {width}x{height}",
+                    hit.target
+                );
+            }
+            if seen.len() == expected.len() {
+                break;
+            }
+        }
+        assert!(
+            seen.len() == expected.len() && expected.iter().all(|item| seen.contains(item)),
+            "file-picker footer dropped actions at {width}x{height}: expected={expected:?} seen={seen:?}"
+        );
+    }
 }
 
 #[test]

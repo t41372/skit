@@ -13,6 +13,7 @@ use ratatui_crossterm::crossterm::event::{
 };
 use ratatui_interact::components::{
     EntryType, FileEntry, FileExplorerState, ListPicker, ListPickerState, ListPickerStyle,
+    ScrollableContentState,
 };
 use ratatui_widgets::{
     block::Block,
@@ -24,7 +25,10 @@ use skit_ui::{ChoicePicker, PathPickerState, PathSelectionMode, PickerPurpose, P
 use tui_input::{Input as LineInput, InputRequest};
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, panel_block};
+use crate::{
+    footer::handle_footer_scroll,
+    theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, panel_block},
+};
 
 /// Mouse target in the complete prompt-variable picker.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -79,6 +83,9 @@ pub struct PromptCandidatePickerSession {
     query: LineInput,
     list: ListPickerState,
     visible_height: usize,
+    footer_scroll: ScrollableContentState,
+    footer_viewport: Rect,
+    footer_visible_height: usize,
 }
 
 impl PromptCandidatePickerSession {
@@ -91,6 +98,9 @@ impl PromptCandidatePickerSession {
             query: LineInput::default(),
             list: ListPickerState::new(total),
             visible_height: 1,
+            footer_scroll: ScrollableContentState::default(),
+            footer_viewport: Rect::default(),
+            footer_visible_height: 0,
         }
     }
 
@@ -118,6 +128,16 @@ impl PromptCandidatePickerSession {
                     self.query.handle(InputRequest::InsertChar(character));
                 }
                 self.sync_choice_filter();
+                Some(PromptCandidatePickerEvent::Changed)
+            }
+            Event::Mouse(mouse)
+                if handle_footer_scroll(
+                    &mut self.footer_scroll,
+                    &mouse,
+                    self.footer_viewport,
+                    self.footer_visible_height,
+                ) =>
+            {
                 Some(PromptCandidatePickerEvent::Changed)
             }
             Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
@@ -320,19 +340,6 @@ pub fn render_prompt_candidate_picker(
             rows,
         );
     }
-    let done = format!("[Ctrl+S] {}", text(locale, "Done"));
-    let cancel = format!("[Esc] {}", text(locale, "Cancel"));
-    frame.render_widget(
-        Paragraph::new(format!("{done}  {cancel}"))
-            .style(Style::default().add_modifier(Modifier::DIM)),
-        footer,
-    );
-    let done_width = u16::try_from(done.width())
-        .unwrap_or(u16::MAX)
-        .min(footer.width);
-    let cancel_width = u16::try_from(cancel.width())
-        .unwrap_or(u16::MAX)
-        .min(footer.width);
     let mut hits = vec![
         ChoicePickerHitRegion {
             area: search,
@@ -342,20 +349,8 @@ pub fn render_prompt_candidate_picker(
             area: all,
             target: ChoicePickerHit::SelectAll,
         },
-        ChoicePickerHitRegion {
-            area: Rect::new(footer.x, footer.y, done_width, 1),
-            target: ChoicePickerHit::Done,
-        },
-        ChoicePickerHitRegion {
-            area: Rect::new(
-                footer.right().saturating_sub(cancel_width),
-                footer.y,
-                cancel_width,
-                1,
-            ),
-            target: ChoicePickerHit::Cancel,
-        },
     ];
+    hits.extend(render_choice_footer(frame, footer, locale, session));
     for index in session.list.scroll as usize
         ..labels
             .len()
@@ -375,6 +370,40 @@ pub fn render_prompt_candidate_picker(
         });
     }
     ChoicePickerGeometry { search, rows, hits }
+}
+
+fn render_choice_footer(
+    frame: &mut Frame,
+    area: Rect,
+    locale: Locale,
+    session: &mut PromptCandidatePickerSession,
+) -> Vec<ChoicePickerHitRegion> {
+    let done = format!("[Ctrl+S] {}", text(locale, "Done"));
+    let cancel = format!("[Esc] {}", text(locale, "Cancel"));
+    let items = if done
+        .width()
+        .saturating_add(cancel.width())
+        .saturating_add(2)
+        > usize::from(area.width)
+    {
+        vec![
+            (cancel, ChoicePickerHit::Cancel),
+            (done, ChoicePickerHit::Done),
+        ]
+    } else {
+        vec![
+            (done, ChoicePickerHit::Done),
+            (cancel, ChoicePickerHit::Cancel),
+        ]
+    };
+    let (positioned, rows, content_width) =
+        scrollable_picker_footer(items, area, &mut session.footer_scroll);
+    session.footer_visible_height = usize::from(area.height);
+    session.footer_viewport = Rect::new(area.x, area.y, content_width, area.height);
+    render_picker_footer_items(frame, area, positioned, rows, &session.footer_scroll)
+        .into_iter()
+        .map(|(area, target)| ChoicePickerHitRegion { area, target })
+        .collect()
 }
 
 /// Mouse target returned by the filesystem renderer.
@@ -436,6 +465,9 @@ pub struct FilePickerSession {
     current_directory_focused: bool,
     visible_height: usize,
     io_error: Option<String>,
+    footer_scroll: ScrollableContentState,
+    footer_viewport: Rect,
+    footer_visible_height: usize,
 }
 
 impl FilePickerSession {
@@ -462,6 +494,9 @@ impl FilePickerSession {
             current_directory_focused,
             visible_height: 1,
             io_error,
+            footer_scroll: ScrollableContentState::default(),
+            footer_viewport: Rect::default(),
+            footer_visible_height: 0,
         }
     }
 
@@ -492,6 +527,16 @@ impl FilePickerSession {
     ) -> Option<FilePickerEvent> {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.handle_key(key),
+            Event::Mouse(mouse)
+                if handle_footer_scroll(
+                    &mut self.footer_scroll,
+                    &mouse,
+                    self.footer_viewport,
+                    self.footer_visible_height,
+                ) =>
+            {
+                Some(FilePickerEvent::Changed)
+            }
             Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
                 let target = geometry
                     .hits
@@ -628,7 +673,8 @@ impl FilePickerSession {
                 self.sync_filter();
                 Some(FilePickerEvent::Changed)
             }
-            FilePickerHit::Accept => self.accept_selection(),
+            FilePickerHit::Accept if self.contract.allow_multiple() => self.accept_selection(),
+            FilePickerHit::Accept => self.activate_current(),
             FilePickerHit::Cancel => Some(FilePickerEvent::Cancelled),
         }
     }
@@ -873,17 +919,26 @@ pub fn render_file_picker(
         )));
     }
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), rows);
-    hits.extend(render_file_footer(frame, footer, locale, compact));
+    hits.extend(render_file_footer(frame, footer, locale, session));
     FilePickerGeometry { search, rows, hits }
+}
+
+#[derive(Debug)]
+struct PositionedPickerFooterItem<T> {
+    label: String,
+    target: T,
+    row: usize,
+    x: u16,
+    width: u16,
 }
 
 fn render_file_footer(
     frame: &mut Frame,
     area: Rect,
     locale: Locale,
-    compact: bool,
+    session: &mut FilePickerSession,
 ) -> Vec<FilePickerHitRegion> {
-    let mut chips = vec![
+    let items = vec![
         (
             format!("[Enter] {}", text(locale, "Select")),
             FilePickerHit::Accept,
@@ -892,37 +947,112 @@ fn render_file_footer(
             format!("[Esc] {}", text(locale, "Cancel")),
             FilePickerHit::Cancel,
         ),
+        (
+            format!("[Backspace] {}", text(locale, "Back")),
+            FilePickerHit::Up,
+        ),
+        ("[Ctrl+H] .".to_owned(), FilePickerHit::Hidden),
     ];
-    if !compact {
-        chips.extend([
-            (
-                format!("[Backspace] {}", text(locale, "Back")),
-                FilePickerHit::Up,
-            ),
-            ("[Ctrl+H] .".to_owned(), FilePickerHit::Hidden),
-        ]);
+    let (positioned, rows, content_width) =
+        scrollable_picker_footer(items, area, &mut session.footer_scroll);
+    session.footer_visible_height = usize::from(area.height);
+    session.footer_viewport = Rect::new(area.x, area.y, content_width, area.height);
+    render_picker_footer_items(frame, area, positioned, rows, &session.footer_scroll)
+        .into_iter()
+        .map(|(area, target)| FilePickerHitRegion { area, target })
+        .collect()
+}
+
+fn scrollable_picker_footer<T>(
+    items: Vec<(String, T)>,
+    area: Rect,
+    scroll: &mut ScrollableContentState,
+) -> (Vec<PositionedPickerFooterItem<T>>, usize, u16) {
+    let (mut positioned, mut rows) = position_picker_footer_items(items, area.width);
+    let mut content_width = area.width;
+    if rows > usize::from(area.height) && area.width > 1 {
+        content_width = area.width.saturating_sub(1);
+        let items = positioned
+            .into_iter()
+            .map(|item| (item.label, item.target))
+            .collect();
+        (positioned, rows) = position_picker_footer_items(items, content_width);
     }
-    let mut x = 0_u16;
+    let visible_height = usize::from(area.height);
+    scroll.set_lines(vec![String::new(); rows]);
+    let maximum_offset = rows.saturating_sub(visible_height);
+    if scroll.scroll_offset() > maximum_offset {
+        scroll.set_scroll_offset(maximum_offset);
+    }
+    (positioned, rows, content_width)
+}
+
+fn render_picker_footer_items<T>(
+    frame: &mut Frame,
+    area: Rect,
+    positioned: Vec<PositionedPickerFooterItem<T>>,
+    rows: usize,
+    scroll: &ScrollableContentState,
+) -> Vec<(Rect, T)> {
+    let visible_height = usize::from(area.height);
+    let offset = scroll.scroll_offset();
+    let end = offset.saturating_add(visible_height);
     let mut hits = Vec::new();
-    for (label, target) in chips {
-        let width = u16::try_from(label.width().saturating_add(1))
-            .unwrap_or(u16::MAX)
-            .min(area.width.saturating_sub(x));
-        if width == 0 {
-            break;
-        }
-        let chip_area = Rect::new(area.x.saturating_add(x), area.y, width, 1);
+    for item in positioned
+        .into_iter()
+        .filter(|item| item.row >= offset && item.row < end)
+    {
+        let y = area
+            .y
+            .saturating_add(u16::try_from(item.row.saturating_sub(offset)).unwrap_or(u16::MAX));
+        let chip_area = Rect::new(area.x.saturating_add(item.x), y, item.width, 1);
         frame.render_widget(
-            Paragraph::new(label).style(Style::default().add_modifier(Modifier::DIM)),
+            Paragraph::new(item.label).style(Style::default().add_modifier(Modifier::DIM)),
             chip_area,
         );
-        hits.push(FilePickerHitRegion {
-            area: chip_area,
-            target,
-        });
-        x = x.saturating_add(width).saturating_add(1);
+        hits.push((chip_area, item.target));
+    }
+    if rows > visible_height {
+        let indicator = match (scroll.is_at_top(), scroll.is_at_bottom(visible_height)) {
+            (true, false) => "↓",
+            (false, true) => "↑",
+            (false, false) => "↕",
+            (true, true) => "",
+        };
+        frame.render_widget(
+            Paragraph::new(indicator).style(Style::default().add_modifier(Modifier::DIM)),
+            Rect::new(area.right().saturating_sub(1), area.y, 1, 1),
+        );
     }
     hits
+}
+
+fn position_picker_footer_items<T>(
+    items: Vec<(String, T)>,
+    width: u16,
+) -> (Vec<PositionedPickerFooterItem<T>>, usize) {
+    if items.is_empty() || width == 0 {
+        return (Vec::new(), 0);
+    }
+    let mut row = 0_usize;
+    let mut x = 0_u16;
+    let mut positioned = Vec::with_capacity(items.len());
+    for (label, target) in items {
+        let desired = u16::try_from(label.width()).unwrap_or(u16::MAX).min(width);
+        if x > 0 && x.saturating_add(desired) > width {
+            row = row.saturating_add(1);
+            x = 0;
+        }
+        positioned.push(PositionedPickerFooterItem {
+            label,
+            target,
+            row,
+            x,
+            width: desired.min(width.saturating_sub(x)),
+        });
+        x = x.saturating_add(desired).saturating_add(1);
+    }
+    (positioned, row.saturating_add(1))
 }
 
 fn visible_entries(explorer: &FileExplorerState) -> Vec<&FileEntry> {
@@ -1328,6 +1458,155 @@ mod tests {
     }
 
     #[test]
+    fn every_prompt_picker_footer_action_has_a_key_and_mouse_twin_at_every_size_tier() {
+        let picker = || {
+            ChoicePicker::new(
+                PickerMode::Multiple,
+                vec![PickerItem::new("name".to_owned(), "name")],
+                Vec::new(),
+            )
+        };
+        let is_footer = |target: &ChoicePickerHit| {
+            matches!(target, ChoicePickerHit::Done | ChoicePickerHit::Cancel)
+        };
+        let key_for = |target: &ChoicePickerHit| match target {
+            ChoicePickerHit::Done => control('s'),
+            ChoicePickerHit::Cancel => key(KeyCode::Esc),
+            _ => panic!("non-footer prompt-picker target: {target:?}"),
+        };
+
+        let mut inventory_session = PromptCandidatePickerSession::new(picker());
+        let mut inventory_terminal = Terminal::new(TestBackend::new(200, 30)).unwrap();
+        let mut inventory_geometry = ChoicePickerGeometry::default();
+        inventory_terminal
+            .draw(|frame| {
+                inventory_geometry = render_prompt_candidate_picker(
+                    frame,
+                    frame.area(),
+                    &mut inventory_session,
+                    Locale::En,
+                );
+            })
+            .unwrap();
+        let expected = inventory_geometry
+            .hits
+            .iter()
+            .filter(|hit| is_footer(&hit.target))
+            .map(|hit| hit.target.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(expected.len(), 2, "the production footer inventory changed");
+
+        for (width, height) in [(120, 30), (46, 12), (24, 6)] {
+            let mut seen = Vec::new();
+            for page in 0..8 {
+                let mut page_session = PromptCandidatePickerSession::new(picker());
+                let mut page_terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let mut page_geometry = ChoicePickerGeometry::default();
+                for step in 0..=page {
+                    page_terminal
+                        .draw(|frame| {
+                            page_geometry = render_prompt_candidate_picker(
+                                frame,
+                                frame.area(),
+                                &mut page_session,
+                                Locale::En,
+                            );
+                        })
+                        .unwrap();
+                    if step < page {
+                        let footer = page_geometry
+                            .hits
+                            .iter()
+                            .find(|hit| is_footer(&hit.target))
+                            .unwrap();
+                        assert_eq!(
+                            page_session.handle_event(
+                                mouse(footer.area, MouseEventKind::ScrollDown),
+                                &page_geometry,
+                            ),
+                            Some(PromptCandidatePickerEvent::Changed)
+                        );
+                    }
+                }
+                for hit in page_geometry
+                    .hits
+                    .iter()
+                    .filter(|hit| is_footer(&hit.target))
+                {
+                    if seen.contains(&hit.target) {
+                        continue;
+                    }
+                    seen.push(hit.target.clone());
+
+                    let mut key_session = PromptCandidatePickerSession::new(picker());
+                    let mut key_terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                    let mut key_geometry = ChoicePickerGeometry::default();
+                    key_terminal
+                        .draw(|frame| {
+                            key_geometry = render_prompt_candidate_picker(
+                                frame,
+                                frame.area(),
+                                &mut key_session,
+                                Locale::En,
+                            );
+                        })
+                        .unwrap();
+                    let key_result = key_session.handle_event(key_for(&hit.target), &key_geometry);
+
+                    let mut mouse_session = PromptCandidatePickerSession::new(picker());
+                    let mut mouse_terminal =
+                        Terminal::new(TestBackend::new(width, height)).unwrap();
+                    let mut mouse_geometry = ChoicePickerGeometry::default();
+                    for step in 0..=page {
+                        mouse_terminal
+                            .draw(|frame| {
+                                mouse_geometry = render_prompt_candidate_picker(
+                                    frame,
+                                    frame.area(),
+                                    &mut mouse_session,
+                                    Locale::En,
+                                );
+                            })
+                            .unwrap();
+                        if step < page {
+                            let footer = mouse_geometry
+                                .hits
+                                .iter()
+                                .find(|candidate| is_footer(&candidate.target))
+                                .unwrap();
+                            let _ = mouse_session.handle_event(
+                                mouse(footer.area, MouseEventKind::ScrollDown),
+                                &mouse_geometry,
+                            );
+                        }
+                    }
+                    let mouse_hit = mouse_geometry
+                        .hits
+                        .iter()
+                        .find(|candidate| candidate.target == hit.target)
+                        .unwrap();
+                    let mouse_result = mouse_session.handle_event(
+                        mouse(mouse_hit.area, MouseEventKind::Down(MouseButton::Left)),
+                        &mouse_geometry,
+                    );
+                    assert_eq!(
+                        mouse_result, key_result,
+                        "prompt-picker {:?} key and mouse diverged at {width}x{height}",
+                        hit.target
+                    );
+                }
+                if seen.len() == expected.len() {
+                    break;
+                }
+            }
+            assert!(
+                seen.len() == expected.len() && expected.iter().all(|item| seen.contains(item)),
+                "prompt-picker footer dropped actions at {width}x{height}: expected={expected:?} seen={seen:?}"
+            );
+        }
+    }
+
+    #[test]
     fn prompt_picker_routes_every_real_key_paste_mouse_and_empty_result() {
         let picker = ChoicePicker::new(
             PickerMode::Single,
@@ -1664,7 +1943,18 @@ mod tests {
             empty_file.handle_event(key(KeyCode::End), &default_geometry),
             Some(FilePickerEvent::Changed)
         );
-        assert_eq!(empty_file.handle_hit(FilePickerHit::Accept), None);
+        assert_eq!(
+            empty_file.handle_hit(FilePickerHit::Accept),
+            Some(FilePickerEvent::Changed),
+            "the visible Select chip follows Enter into the highlighted parent row"
+        );
+        empty_file = FilePickerSession::new(PathPickerState::new(
+            PickerPurpose::Source,
+            empty.path().to_path_buf(),
+            PathSelectionMode::File,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        ));
         assert_eq!(
             empty_file.handle_event(key(KeyCode::Char('z')), &default_geometry),
             Some(FilePickerEvent::Changed)

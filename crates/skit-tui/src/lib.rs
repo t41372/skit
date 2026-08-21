@@ -191,6 +191,18 @@ fn header_height(state: &LibraryState, terminal_height: u16) -> u16 {
     {
         return 0;
     }
+    if terminal_height <= 6
+        && matches!(
+            state.modal(),
+            Some(
+                ModalState::RunPresetName { .. }
+                    | ModalState::RunTokenMenu { .. }
+                    | ModalState::RunFilePicker { .. }
+            )
+        )
+    {
+        return 0;
+    }
     if state.modal().is_none()
         && matches!(
             state.screen(),

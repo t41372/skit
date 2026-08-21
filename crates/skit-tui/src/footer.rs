@@ -290,8 +290,13 @@ pub(crate) fn required_height(
         return 2.min(available);
     }
     let (_, rows) = chips(state, locale, inner_width);
-    let visible_rows = rows.min(row_budget(terminal_height, state.command_context()));
-    let border_rows = if available <= 2 { 0 } else { 2 };
+    let tiny = terminal_height <= 6;
+    let visible_rows = rows.min(if tiny {
+        1
+    } else {
+        row_budget(terminal_height, state.command_context())
+    });
+    let border_rows = if tiny || available <= 2 { 0 } else { 2 };
     let desired = u16::try_from(visible_rows)
         .unwrap_or(u16::MAX)
         .saturating_add(u16::from(has_note(state, inner_width)))

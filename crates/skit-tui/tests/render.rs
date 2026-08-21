@@ -26,8 +26,8 @@ use skit_tui::{
 };
 use skit_ui::{
     Action, FormField, FormPurpose, FormView, LibraryState, PreferencesAction, PreferencesView,
-    ReportItem, ReportView, RunFormContext, RunFormView, Screen, SettingsInputs, SettingsView,
-    UiBinding, UiCommand, UiKey, command_specs,
+    ReportItem, ReportView, RunFormContext, RunFormView, RunPathContext, Screen, SettingsInputs,
+    SettingsView, UiBinding, UiCommand, UiKey, command_specs,
 };
 
 fn state() -> LibraryState {
@@ -64,7 +64,7 @@ fn preferences_view() -> PreferencesView {
     }))
 }
 
-fn registry_states() -> Vec<LibraryState> {
+fn registry_states() -> Vec<(&'static str, LibraryState)> {
     let browse = state();
     let mut search = browse.clone();
     search.update(Action::BeginSearch);
@@ -95,7 +95,10 @@ fn registry_states() -> Vec<LibraryState> {
     )
     .with_context(RunFormContext {
         entry_kind: "command".into(),
-        path: None,
+        path: Some(RunPathContext {
+            workdir: std::env::current_dir().unwrap().display().to_string(),
+            invoke_cwd: std::env::current_dir().unwrap().display().to_string(),
+        }),
         tokens: TokenContext {
             cwd: "/invoke".into(),
             home: Some("/home/demo".into()),
@@ -110,6 +113,10 @@ fn registry_states() -> Vec<LibraryState> {
     preset_name.update(Action::OpenRunPresetSave);
     let mut token_menu = run.clone();
     token_menu.update(Action::OpenRunTokenMenuFor(0));
+    let mut environment_picker = token_menu.clone();
+    environment_picker.update(Action::OpenRunEnvironmentPicker(0));
+    let mut file_picker = token_menu.clone();
+    file_picker.update(Action::OpenRunFilePicker(0));
 
     let mut preferences = LibraryState::default();
     preferences.update(Action::Present(Screen::Preferences(Box::new(
@@ -163,19 +170,21 @@ fn registry_states() -> Vec<LibraryState> {
     help.update(Action::OpenHelp);
 
     vec![
-        browse,
-        search,
-        form,
-        run,
-        preset_name,
-        token_menu,
-        preferences,
-        script_settings,
-        prompt_settings,
-        report,
-        remove,
-        discard,
-        help,
+        ("library browse", browse),
+        ("library search", search),
+        ("generic form", form),
+        ("run form", run),
+        ("run preset name", preset_name),
+        ("run token menu", token_menu),
+        ("run environment picker", environment_picker),
+        ("run file picker", file_picker),
+        ("preferences", preferences),
+        ("script settings", script_settings),
+        ("prompt settings", prompt_settings),
+        ("report", report),
+        ("remove confirmation", remove),
+        ("discard confirmation", discard),
+        ("help", help),
     ]
 }
 
@@ -1207,14 +1216,17 @@ fn narrow_footer_scroll_reaches_all_actions_in_each_supported_locale() {
 
 #[test]
 fn every_advertised_registry_command_is_keyboard_and_mouse_reachable_at_every_size_tier() {
-    for view in registry_states() {
+    for (surface, view) in registry_states() {
         for (width, height) in [(120, 30), (46, 12), (24, 6)] {
             let context = view.command_context();
             let expected = command_specs(view.command_context())
                 .filter(|spec| spec.footer && view.command_enabled(spec.command))
                 .map(|spec| spec.command)
                 .collect::<Vec<_>>();
-            assert!(!expected.is_empty(), "{context:?} advertised no commands");
+            assert!(
+                !expected.is_empty(),
+                "{surface} ({context:?}) advertised no commands"
+            );
 
             for spec in command_specs(view.command_context())
                 .filter(|spec| spec.footer && view.command_enabled(spec.command))
@@ -1231,8 +1243,8 @@ fn every_advertised_registry_command_is_keyboard_and_mouse_reachable_at_every_si
                     session.handle_event(binding_event(spec.bindings[0]), &view, &geometry)
                 else {
                     panic!(
-                        "advertised key for {:?} did not produce a typed action at {width}x{height}",
-                        spec.command
+                        "advertised key for {surface} {:?} did not produce a typed action at {width}x{height}",
+                        spec.command,
                     );
                 };
                 let mut reduced = view.clone();
@@ -1268,7 +1280,7 @@ fn every_advertised_registry_command_is_keyboard_and_mouse_reachable_at_every_si
                                 ),
                                 EventHandling::Action(_)
                             ),
-                            "visible {context:?} {:?} chip did not produce a typed action at {width}x{height}",
+                            "visible {surface} ({context:?}) {:?} chip did not produce a typed action at {width}x{height}",
                             command,
                         );
                     }
@@ -1290,12 +1302,12 @@ fn every_advertised_registry_command_is_keyboard_and_mouse_reachable_at_every_si
                         &geometry,
                     ),
                     EventHandling::Consumed,
-                    "footer stopped before every command was reachable at {width}x{height}: {seen:?}"
+                    "{surface} footer stopped before every command was reachable at {width}x{height}: {seen:?}"
                 );
             }
             assert!(
                 seen.len() == expected.len() && expected.iter().all(|item| seen.contains(item)),
-                "not every {context:?} command became a real mouse target at {width}x{height}: expected={expected:?} seen={seen:?}"
+                "not every {surface} ({context:?}) command became a real mouse target at {width}x{height}: expected={expected:?} seen={seen:?}"
             );
         }
     }
