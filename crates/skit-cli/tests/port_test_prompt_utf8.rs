@@ -354,16 +354,44 @@ fn test_prompt_read_error_and_ambiguous_payload_leave_no_store_writes() {}
 
 #[test]
 fn test_prompt_copy_preserves_private_source_permissions() {
-    // A copy add must carry the source's 0o600 mode onto the stored body (POSIX permission bits).
+    // A prompt copy carries only ordinary permission bits. The v0.4 prompt lane reads one byte
+    // snapshot and explicitly masks its mode with 0o777 before it creates the stored body.
     let sandbox = Sandbox::new();
     let source = sandbox.write_file("private.prompt.md", b"Private {{topic}}\n");
-    fs::set_permissions(Path::new(&source), fs::Permissions::from_mode(0o600)).unwrap();
+    fs::set_permissions(Path::new(&source), fs::Permissions::from_mode(0o2600)).unwrap();
     sandbox.ok(&["add", &source, "-n", "priv", "--prompt", "--no-input"]);
 
     let stored = sandbox.body_path("priv");
     assert_eq!(
         fs::metadata(&stored).unwrap().permissions().mode() & 0o777,
         0o600
+    );
+    assert_eq!(fs::read(&stored).unwrap(), fs::read(&source).unwrap());
+}
+
+#[test]
+fn generic_script_copy_preserves_special_source_permission_bits() {
+    // The generic v0.4 script lane uses shutil.copy2. Unlike the prompt byte-snapshot lane above,
+    // it preserves the source's complete stat mode, including trusted set-group-ID and sticky bits.
+    let sandbox = Sandbox::new();
+    let source = sandbox.write_file("special.sh", b"#!/bin/sh\nprintf '%s\\n' ready\n");
+    fs::set_permissions(Path::new(&source), fs::Permissions::from_mode(0o3750)).unwrap();
+    assert_eq!(
+        fs::metadata(&source).unwrap().permissions().mode() & 0o7777,
+        0o3750
+    );
+
+    sandbox.ok(&["add", &source, "-n", "special", "--no-input"]);
+
+    let stored = sandbox.data.path().join("scripts/special/script.sh");
+    assert_eq!(
+        fs::metadata(&source).unwrap().permissions().mode() & 0o7777,
+        0o3750,
+        "adding the copy changed its original source mode"
+    );
+    assert_eq!(
+        fs::metadata(&stored).unwrap().permissions().mode() & 0o7777,
+        0o3750
     );
     assert_eq!(fs::read(&stored).unwrap(), fs::read(&source).unwrap());
 }

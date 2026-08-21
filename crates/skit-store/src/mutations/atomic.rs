@@ -122,7 +122,7 @@ fn apply_permissions(
     let mode = source
         .unix_mode
         .unwrap_or(if source.readonly { 0o400 } else { 0o600 });
-    file.set_permissions(Permissions::from_mode(mode & 0o777))
+    file.set_permissions(Permissions::from_mode(mode & 0o7777))
         .map_err(|error| io_error("chmod", path, error))
 }
 

@@ -3711,13 +3711,21 @@ fn add_with_config(
         metadata_requires_python.clear();
     }
     bytes = onboard_add_source(&kind_name, mode, &bytes, &name, no_input)?;
+    let payload_permissions = if kind_name == "prompt" {
+        SourcePermissions {
+            readonly: permissions.readonly,
+            unix_mode: permissions.unix_mode.map(|mode| mode & 0o777),
+        }
+    } else {
+        permissions
+    };
     let payload = if kind_name == "exe" && !source_is_regular {
         None
     } else {
         Some(EntryPayload {
             bytes,
             stored_name: Some(stored_name),
-            permissions,
+            permissions: payload_permissions,
         })
     };
     let mut settings = EntrySettings {
@@ -9568,7 +9576,7 @@ fn source_permissions(metadata: &Metadata) -> SourcePermissions {
 
     SourcePermissions {
         readonly: metadata.permissions().readonly(),
-        unix_mode: Some(metadata.permissions().mode() & 0o777),
+        unix_mode: Some(metadata.permissions().mode() & 0o7777),
     }
 }
 
