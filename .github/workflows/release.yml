@@ -67,9 +67,10 @@ jobs:
         shell: bash
         run: |
           wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          export UV_TOOL_BIN_DIR="$RUNNER_TEMP/skit-bin"
           uv tool install --force --from "$wheel" skit-cli
-          skit --version
-          skit --help >/dev/null
+          "$UV_TOOL_BIN_DIR/skit" --version
+          "$UV_TOOL_BIN_DIR/skit" --help >/dev/null
       - name: Upload the wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -112,9 +113,11 @@ jobs:
         shell: pwsh
         run: |
           $wheel = Get-ChildItem dist -Filter *.whl | Select-Object -First 1
+          $env:UV_TOOL_BIN_DIR = Join-Path $env:RUNNER_TEMP 'skit-bin'
           uv tool install --force --from $wheel.FullName skit-cli
-          skit --version
-          skit --help > $null
+          $skit = Join-Path $env:UV_TOOL_BIN_DIR 'skit.exe'
+          & $skit --version
+          & $skit --help > $null
       - name: Upload the wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -157,9 +160,10 @@ jobs:
         shell: bash
         run: |
           wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          export UV_TOOL_BIN_DIR="$RUNNER_TEMP/skit-bin"
           uv tool install --force --from "$wheel" skit-cli
-          skit --version
-          skit --help >/dev/null
+          "$UV_TOOL_BIN_DIR/skit" --version
+          "$UV_TOOL_BIN_DIR/skit" --help >/dev/null
       - name: Upload the wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

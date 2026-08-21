@@ -25,6 +25,8 @@ expect_text .github/workflows/release.yml "if: github.event_name == 'push' && st
 expect_text .github/workflows/release.yml 'name: Smoke-test the native Linux wheel'
 expect_text .github/workflows/release.yml 'name: Smoke-test the native Windows wheel'
 expect_text .github/workflows/release.yml 'name: Smoke-test the native macOS wheel'
+expect_text .github/workflows/release.yml 'export UV_TOOL_BIN_DIR="$RUNNER_TEMP/skit-bin"'
+expect_text .github/workflows/release.yml 'Join-Path $env:RUNNER_TEMP'
 expect_text .github/workflows/release.yml 'name: Verify the complete distribution set'
 expect_text .github/workflows/release.yml 'test "$wheel_count" -eq 8'
 expect_text .github/workflows/release.yml 'test "$sdist_count" -eq 1'
