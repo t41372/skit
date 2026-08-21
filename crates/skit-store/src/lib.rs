@@ -23,8 +23,9 @@ pub use config::{
 #[doc(hidden)]
 pub use fs_ops::replace_with_retry_impl;
 pub use mutations::{
-    FileAgentSkillStore, FileRunnerManagementStore, PreparedLaunch, RegistryRebuildProblem,
-    RegistryRebuildReport, RunnerManagementStoreError, RunnerRemovalCas, content_hash,
+    FileAgentSkillStore, FileRunnerManagementStore, PreparedExternalCopyEdit, PreparedLaunch,
+    RegistryRebuildProblem, RegistryRebuildReport, RunnerManagementStoreError, RunnerRemovalCas,
+    content_hash,
 };
 pub use path_completion::SystemDirectoryReader;
 pub use path_glob::FileGlobExpander;

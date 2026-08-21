@@ -1,5 +1,6 @@
 use std::{
     fmt::Debug,
+    io,
     path::{Path, PathBuf},
 };
 
@@ -68,30 +69,59 @@ pub struct UpdateEntry {
     pub expected_source_hash: String,
 }
 
-/// One identity-claimed copy source prepared for a user-paced external editor.
-#[derive(Clone, Debug)]
-pub struct ExternalCopyEdit {
-    entry: Entry,
-    path: PathBuf,
+/// Repository-owned claim for one copy source prepared for an external editor.
+pub trait ExternalCopyEdit: Debug {
+    /// Return the claimed entry incarnation.
+    fn entry(&self) -> &Entry;
+
+    /// Return the authoritative stored source path passed to the editor.
+    fn path(&self) -> &Path;
 }
 
-impl ExternalCopyEdit {
-    /// Build one adapter-owned edit claim.
+/// Locked source snapshot and metadata produced by finalizing one external edit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinalizedExternalCopyEdit {
+    entry: Entry,
+    bytes: Vec<u8>,
+}
+
+impl FinalizedExternalCopyEdit {
+    /// Build one adapter result from the same locked source read used for its hash.
     #[must_use]
-    pub const fn new(entry: Entry, path: PathBuf) -> Self {
-        Self { entry, path }
+    pub const fn new(entry: Entry, bytes: Vec<u8>) -> Self {
+        Self { entry, bytes }
     }
 
-    /// Return the claimed entry incarnation.
+    /// Return the finalized entry metadata.
     #[must_use]
     pub const fn entry(&self) -> &Entry {
         &self.entry
     }
 
-    /// Return the authoritative stored source path passed to the editor.
+    /// Return the exact bytes read while the finalize lock was held.
     #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.path
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Failure from finalizing an external edit.
+#[derive(Debug)]
+pub enum FinalizeExternalCopyEditError {
+    /// Identity, metadata, confinement, or projection failed.
+    Repository(RepositoryError),
+    /// The authoritative edited source could not be read while the lock was held.
+    Read {
+        /// Source path passed to the editor.
+        path: PathBuf,
+        /// Operating-system read failure.
+        source: io::Error,
+    },
+}
+
+impl From<RepositoryError> for FinalizeExternalCopyEditError {
+    fn from(error: RepositoryError) -> Self {
+        Self::Repository(error)
     }
 }
 
@@ -106,6 +136,9 @@ pub enum PreparedEntryUpdateError<E> {
 
 /// Identity-gated mutation port shared by CLI, Ratatui, and future GUI adapters.
 pub trait EntryMutationRepository: Debug {
+    /// Repository-owned external-edit claim type.
+    type ExternalEdit: ExternalCopyEdit;
+
     /// Create a new entry atomically.
     fn create(&self, request: CreateEntry) -> Result<Entry, RepositoryError>;
 
@@ -147,13 +180,13 @@ pub trait EntryMutationRepository: Debug {
     fn prepare_external_copy_edit(
         &self,
         entry: &Entry,
-    ) -> Result<ExternalCopyEdit, RepositoryError>;
+    ) -> Result<Self::ExternalEdit, RepositoryError>;
 
     /// Finalize bytes written in place by an external editor without replacing those bytes.
     fn finalize_external_copy_edit(
         &self,
-        edit: &ExternalCopyEdit,
-    ) -> Result<Entry, RepositoryError>;
+        edit: &Self::ExternalEdit,
+    ) -> Result<FinalizedExternalCopyEdit, FinalizeExternalCopyEditError>;
 }
 
 impl<R> LibraryService<R>
@@ -222,15 +255,15 @@ where
     pub fn prepare_external_copy_edit(
         &self,
         entry: &Entry,
-    ) -> Result<ExternalCopyEdit, RepositoryError> {
+    ) -> Result<R::ExternalEdit, RepositoryError> {
         self.repository.prepare_external_copy_edit(entry)
     }
 
     /// Finalize an in-place external edit through the identity-gated port.
     pub fn finalize_external_copy_edit(
         &self,
-        edit: &ExternalCopyEdit,
-    ) -> Result<Entry, RepositoryError> {
+        edit: &R::ExternalEdit,
+    ) -> Result<FinalizedExternalCopyEdit, FinalizeExternalCopyEditError> {
         self.repository.finalize_external_copy_edit(edit)
     }
 }

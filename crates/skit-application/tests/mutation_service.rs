@@ -2,8 +2,8 @@ use std::sync::Mutex;
 
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, ExternalCopyEdit,
-    LibraryScan, LibraryService, PreparedEntryUpdateError, RepositoryError, SourcePermissions,
-    UpdateEntry,
+    FinalizeExternalCopyEditError, FinalizedExternalCopyEdit, LibraryScan, LibraryService,
+    PreparedEntryUpdateError, RepositoryError, SourcePermissions, UpdateEntry,
 };
 use skit_domain::{
     Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode,
@@ -14,6 +14,22 @@ use skit_domain::{
 struct RecordingRepository {
     entry: Entry,
     calls: Mutex<Vec<String>>,
+}
+
+#[derive(Debug)]
+struct RecordedExternalEdit {
+    entry: Entry,
+    path: std::path::PathBuf,
+}
+
+impl ExternalCopyEdit for RecordedExternalEdit {
+    fn entry(&self) -> &Entry {
+        &self.entry
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
 }
 
 impl EntryRepository for RecordingRepository {
@@ -27,6 +43,8 @@ impl EntryRepository for RecordingRepository {
 }
 
 impl EntryMutationRepository for RecordingRepository {
+    type ExternalEdit = RecordedExternalEdit;
+
     fn create(&self, request: CreateEntry) -> Result<Entry, RepositoryError> {
         self.calls.lock().unwrap().push(format!(
             "create:{}:{}:{}",
@@ -113,26 +131,29 @@ impl EntryMutationRepository for RecordingRepository {
     fn prepare_external_copy_edit(
         &self,
         entry: &Entry,
-    ) -> Result<ExternalCopyEdit, RepositoryError> {
+    ) -> Result<Self::ExternalEdit, RepositoryError> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("prepare-external-edit:{}", entry.slug));
-        Ok(ExternalCopyEdit::new(
-            self.entry.clone(),
-            "/tmp/script.py".into(),
-        ))
+        Ok(RecordedExternalEdit {
+            entry: self.entry.clone(),
+            path: "/tmp/script.py".into(),
+        })
     }
 
     fn finalize_external_copy_edit(
         &self,
-        edit: &ExternalCopyEdit,
-    ) -> Result<Entry, RepositoryError> {
+        edit: &Self::ExternalEdit,
+    ) -> Result<FinalizedExternalCopyEdit, FinalizeExternalCopyEditError> {
         self.calls
             .lock()
             .unwrap()
             .push(format!("finalize-external-edit:{}", edit.entry().slug));
-        Ok(self.entry.clone())
+        Ok(FinalizedExternalCopyEdit::new(
+            self.entry.clone(),
+            b"edited externally".to_vec(),
+        ))
     }
 }
 
@@ -209,10 +230,9 @@ fn mutation_use_cases_delegate_every_value_to_the_port() {
     let external = service.prepare_external_copy_edit(&expected).unwrap();
     assert_eq!(external.entry(), &expected);
     assert_eq!(external.path(), std::path::Path::new("/tmp/script.py"));
-    assert_eq!(
-        service.finalize_external_copy_edit(&external).unwrap(),
-        expected
-    );
+    let finalized = service.finalize_external_copy_edit(&external).unwrap();
+    assert_eq!(finalized.entry(), &expected);
+    assert_eq!(finalized.bytes(), b"edited externally");
     assert_eq!(
         service.repository().calls.lock().unwrap().as_slice(),
         [

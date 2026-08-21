@@ -3099,6 +3099,11 @@ const CATALOG: &[Translation] = &[
         "外部編輯來源不在其項目目錄中",
     ),
     row!(
+        "external edit source is not the entry's stored payload",
+        "外部编辑源文件不是该条目的存储内容",
+        "外部編輯來源不是該項目的儲存內容",
+    ),
+    row!(
         "Reference-mode entries take no managed dependencies — they run from their own project. Add it as a copy, or drop --dep.",
         "reference 模式条目不受理依赖管理——它从自己的项目运行。以复制模式加入，或去掉 --dep。",
         "reference 模式條目不受理依賴管理——它從自己的專案執行。以複製模式加入，或拿掉 --dep。",

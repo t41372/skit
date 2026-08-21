@@ -24,8 +24,8 @@ pub use runner_management::{
     FileRunnerManagementStore, RunnerManagementStoreError, RunnerRemovalCas,
 };
 use skit_application::{
-    CreateEntry, EntryMutationRepository, EntryPayload, ExternalCopyEdit, RepositoryError,
-    UpdateEntry,
+    CreateEntry, EntryMutationRepository, EntryPayload, ExternalCopyEdit,
+    FinalizeExternalCopyEditError, FinalizedExternalCopyEdit, RepositoryError, UpdateEntry,
 };
 use skit_domain::{Entry, EntryId, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_i18n::{Localize as _, Message};
@@ -104,6 +104,23 @@ pub struct PreparedLaunch {
     _lease: FileLock,
 }
 
+/// One FileStore-owned claim for an in-place external copy edit.
+#[derive(Clone, Debug)]
+pub struct PreparedExternalCopyEdit {
+    entry: Entry,
+    path: PathBuf,
+}
+
+impl ExternalCopyEdit for PreparedExternalCopyEdit {
+    fn entry(&self) -> &Entry {
+        &self.entry
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 impl PreparedLaunch {
     /// Return the freshly claimed entry incarnation.
     #[must_use]
@@ -127,6 +144,8 @@ impl Drop for PreparedLaunch {
 }
 
 impl EntryMutationRepository for FileStore {
+    type ExternalEdit = PreparedExternalCopyEdit;
+
     fn create(&self, request: CreateEntry) -> Result<Entry, RepositoryError> {
         let _namespace = self.namespace_lock()?;
         let mut registry = Registry::load(self.data_dir())?;
@@ -334,7 +353,7 @@ impl EntryMutationRepository for FileStore {
     fn prepare_external_copy_edit(
         &self,
         entry: &Entry,
-    ) -> Result<ExternalCopyEdit, RepositoryError> {
+    ) -> Result<Self::ExternalEdit, RepositoryError> {
         let _entry = self.entry_lock(&entry.slug)?;
         let fresh = self.verify_claim_locked(entry)?;
         if fresh.meta.mode != StorageMode::Copy {
@@ -350,25 +369,26 @@ impl EntryMutationRepository for FileStore {
             let mut registry = Registry::load(self.data_dir())?;
             self.stamp_identity_locked(fresh, &mut registry)?
         };
-        Ok(ExternalCopyEdit::new(fresh, path))
+        Ok(PreparedExternalCopyEdit { entry: fresh, path })
     }
 
     fn finalize_external_copy_edit(
         &self,
-        edit: &ExternalCopyEdit,
-    ) -> Result<Entry, RepositoryError> {
+        edit: &Self::ExternalEdit,
+    ) -> Result<FinalizedExternalCopyEdit, FinalizeExternalCopyEditError> {
         let entry = edit.entry();
         let _entry = self.entry_lock(&entry.slug)?;
         let _namespace = self.namespace_lock()?;
         let mut registry = Registry::load(self.data_dir())?;
         let fresh = self.claim_for_mutation(entry, &mut registry)?;
         if fresh.meta != entry.meta {
-            return Err(stale(&entry.slug));
+            return Err(stale(&entry.slug).into());
         }
         if fresh.meta.mode != StorageMode::Copy {
             return Err(invalid(Message::new(
                 "reference entries are edited at their original path",
-            )));
+            ))
+            .into());
         }
 
         let target = edit.path();
@@ -377,19 +397,40 @@ impl EntryMutationRepository for FileStore {
         {
             return Err(invalid(Message::new(
                 "external edit source is outside its entry directory",
-            )));
+            ))
+            .into());
         }
-        let bytes = fs::read(target).map_err(|error| io_error("read", target, error))?;
+        let authoritative = match self.stored_path(&fresh) {
+            Ok(path) => path,
+            Err(RepositoryError::InvalidMutation { reason })
+                if reason.template() == "copy entry has no stored payload"
+                    && stored_filenames(fresh.meta.kind.as_str()).len() == 1 =>
+            {
+                self.entry_dir(&fresh.slug)
+                    .join(stored_filenames(fresh.meta.kind.as_str())[0])
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if target != authoritative {
+            return Err(invalid(Message::new(
+                "external edit source is not the entry's stored payload",
+            ))
+            .into());
+        }
+        let bytes = fs::read(target).map_err(|source| FinalizeExternalCopyEditError::Read {
+            path: target.to_owned(),
+            source,
+        })?;
         let next_hash = content_hash(&bytes);
         if next_hash == fresh.meta.source_hash {
-            return Ok(fresh);
+            return Ok(FinalizedExternalCopyEdit::new(fresh, bytes));
         }
 
         let before = fresh.clone();
         let mut after = fresh;
         after.meta.source_hash = next_hash;
         self.commit_meta_projection(&before, &after, &mut registry)?;
-        Ok(after)
+        Ok(FinalizedExternalCopyEdit::new(after, bytes))
     }
 }
 
@@ -1112,11 +1153,104 @@ fn rollback_error(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{Arc, Barrier},
+        thread,
+    };
+
     use skit_domain::EntryKind;
     use tempfile::TempDir;
     use time::{Date, Month};
 
     use super::*;
+
+    #[test]
+    fn external_finalize_rejects_a_different_existing_file_in_the_same_entry_directory() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "Exact external source".to_owned(),
+                kind: EntryKind::parse("python").unwrap(),
+                mode: StorageMode::Copy,
+                source: "/original.py".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: Some(EntryPayload {
+                    bytes: b"base".to_vec(),
+                    stored_name: Some("script.py".to_owned()),
+                    permissions: skit_application::SourcePermissions::default(),
+                }),
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let mut edit = store.prepare_external_copy_edit(&entry).unwrap();
+        let source = edit.path.clone();
+        let source_before = fs::read(&source).unwrap();
+        let meta = store.entry_dir(&entry.slug).join("meta.toml");
+        let meta_before = fs::read(&meta).unwrap();
+        edit.path.clone_from(&meta);
+
+        let error = store.finalize_external_copy_edit(&edit).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FinalizeExternalCopyEditError::Repository(RepositoryError::InvalidMutation { .. })
+        ));
+        assert_eq!(fs::read(source).unwrap(), source_before);
+        assert_eq!(fs::read(meta).unwrap(), meta_before);
+    }
+
+    #[test]
+    fn external_finalize_returns_the_locked_replacement_or_revert_bytes() {
+        for (name, final_bytes) in [
+            ("Locked replacement", b"replacement".as_slice()),
+            ("Locked revert", b"base".as_slice()),
+        ] {
+            let root = TempDir::new().unwrap();
+            let store = FileStore::new(root.path());
+            let entry = store
+                .create(CreateEntry {
+                    name: name.to_owned(),
+                    kind: EntryKind::parse("python").unwrap(),
+                    mode: StorageMode::Copy,
+                    source: "/original.py".to_owned(),
+                    workdir: "origin".to_owned(),
+                    description: String::new(),
+                    payload: Some(EntryPayload {
+                        bytes: b"base".to_vec(),
+                        stored_name: Some("script.py".to_owned()),
+                        permissions: skit_application::SourcePermissions::default(),
+                    }),
+                    settings: EntrySettings::default(),
+                })
+                .unwrap();
+            let edit = store.prepare_external_copy_edit(&entry).unwrap();
+            fs::write(edit.path(), b"first editor snapshot").unwrap();
+            let held = store.entry_lock(&entry.slug).unwrap();
+            let barrier = Arc::new(Barrier::new(2));
+            let worker_barrier = Arc::clone(&barrier);
+            let worker_store = store.clone();
+            let worker_edit = edit.clone();
+            let worker = thread::spawn(move || {
+                worker_barrier.wait();
+                worker_store.finalize_external_copy_edit(&worker_edit)
+            });
+            barrier.wait();
+
+            // The finalize read cannot pass the held entry lock until this replacement completes.
+            fs::write(edit.path(), final_bytes).unwrap();
+            drop(held);
+            let finalized = worker.join().unwrap().unwrap();
+
+            assert_eq!(finalized.bytes(), final_bytes);
+            assert_eq!(fs::read(edit.path()).unwrap(), final_bytes);
+            assert_eq!(
+                finalized.entry().meta.source_hash,
+                content_hash(final_bytes)
+            );
+        }
+    }
 
     #[test]
     fn rebuild_isolates_a_metadata_file_removed_after_its_authoritative_read() {

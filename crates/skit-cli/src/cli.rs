@@ -18,9 +18,9 @@ use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell,
 use dialoguer::{Confirm, Input, MultiSelect, Password};
 use skit_application::{
     AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope, AgentTarget, CreateEntry,
-    EntryPayload, ExitClass, LibraryScan, LibraryService, PreparedEntryUpdateError,
-    RepositoryError, RepositoryOperation, SourceIdentity, SourcePermissions, UpdateEntry,
-    add_workdir, detect_agent_targets,
+    EntryPayload, ExitClass, ExternalCopyEdit as _, FinalizeExternalCopyEditError, LibraryScan,
+    LibraryService, PreparedEntryUpdateError, RepositoryError, RepositoryOperation, SourceIdentity,
+    SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
     form_feedback::GlobCountPort,
     form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill, scrub_secrets},
     health::{
@@ -4345,20 +4345,19 @@ fn edit_with_config(
         ));
     }
     let edit = service.prepare_external_copy_edit(&held)?;
-    let held = edit.entry();
     let target = edit.path();
-    let original = fs::read(target).map_err(|error| source_error("read", target, error))?;
     launch_editor(&argv, target)?;
-    let edited = fs::read(target).map_err(|error| source_read_error(target, error))?;
-    if edited != original {
-        // The external editor already wrote the authoritative source. Finalize only its metadata;
-        // a failed finalization must never replace or roll back the user's bytes.
-        service.finalize_external_copy_edit(&edit)?;
-    }
+    // The finalize lock's read is the sole authoritative post-editor snapshot. Metadata hash,
+    // validation, and the success report must all use these same bytes.
+    let finalized = service
+        .finalize_external_copy_edit(&edit)
+        .map_err(finalize_external_edit_error)?;
+    let held = finalized.entry();
+    let edited = finalized.bytes();
     if held.meta.kind.as_str() == "prompt" {
-        validate_prompt_utf8(&edited, &target.display().to_string())?;
+        validate_prompt_utf8(edited, &target.display().to_string())?;
     }
-    report_saved_edit(held, Some(&edited));
+    report_saved_edit(held, Some(edited));
     Ok(())
 }
 
@@ -9890,6 +9889,13 @@ fn source_read_error(path: &Path, error: io::Error) -> CliError {
     CliError::SourceRead {
         path: path.display().to_string(),
         source: error,
+    }
+}
+
+fn finalize_external_edit_error(error: FinalizeExternalCopyEditError) -> CliError {
+    match error {
+        FinalizeExternalCopyEditError::Repository(error) => error.into(),
+        FinalizeExternalCopyEditError::Read { path, source } => source_read_error(&path, source),
     }
 }
 

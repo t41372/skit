@@ -11,7 +11,7 @@ use std::{
 use serde_json::json;
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, ExternalCopyEdit,
-    RepositoryError, SourcePermissions, UpdateEntry,
+    FinalizeExternalCopyEditError, RepositoryError, SourcePermissions, UpdateEntry,
 };
 use skit_domain::{
     EntryKind, EntrySettings, StorageMode,
@@ -504,12 +504,16 @@ fn external_copy_edit_finalize_hashes_the_editors_current_bytes_without_rewritin
 
     let finalized = store.finalize_external_copy_edit(&edit).unwrap();
 
-    assert_eq!(fs::read(&source).unwrap(), b"written by editor");
+    assert_eq!(finalized.bytes(), b"written by editor");
+    assert_eq!(fs::read(&source).unwrap(), finalized.bytes());
     assert_eq!(
-        finalized.meta.source_hash,
+        finalized.entry().meta.source_hash,
         content_hash(b"written by editor")
     );
-    assert_eq!(store.resolve("External").unwrap(), finalized);
+    assert_eq!(
+        store.resolve("External").unwrap(),
+        finalized.entry().clone()
+    );
 }
 
 #[test]
@@ -528,7 +532,10 @@ fn external_copy_edit_finalize_refuses_a_metadata_race_and_preserves_the_editors
 
     let error = store.finalize_external_copy_edit(&edit).unwrap_err();
 
-    assert!(matches!(error, RepositoryError::StaleEntry { .. }));
+    assert!(matches!(
+        error,
+        FinalizeExternalCopyEditError::Repository(RepositoryError::StaleEntry { .. })
+    ));
     assert_eq!(fs::read(&source).unwrap(), b"written by editor");
     assert_eq!(
         store.resolve("External Race").unwrap().meta.description,
@@ -594,7 +601,14 @@ fn concurrent_external_edit_finalizers_allow_one_metadata_cas_winner() {
     assert_eq!(
         results
             .iter()
-            .filter(|result| matches!(result, Err(RepositoryError::StaleEntry { .. })))
+            .filter(|result| {
+                matches!(
+                    result,
+                    Err(FinalizeExternalCopyEditError::Repository(
+                        RepositoryError::StaleEntry { .. }
+                    ))
+                )
+            })
             .count(),
         1
     );
@@ -621,36 +635,12 @@ fn external_copy_edit_finalize_reports_a_missing_payload_without_recreating_it()
 
     assert!(matches!(
         error,
-        RepositoryError::Io {
-            operation: "read",
-            ..
-        }
+        FinalizeExternalCopyEditError::Read { ref source, .. }
+            if source.kind() == std::io::ErrorKind::NotFound
     ));
     assert!(!source.exists());
     assert_eq!(
         fs::read(root.path().join("scripts/external-gone/meta.toml")).unwrap(),
-        metadata
-    );
-}
-
-#[test]
-fn external_copy_edit_finalize_refuses_a_forged_path_outside_the_claimed_entry() {
-    let root = TempDir::new().unwrap();
-    let store = FileStore::new(root.path());
-    let claimed = store
-        .claim_identity(&store.create(request("External Bound", b"base")).unwrap())
-        .unwrap();
-    let outside = root.path().join("outside.py");
-    fs::write(&outside, b"outside").unwrap();
-    let metadata = fs::read(root.path().join("scripts/external-bound/meta.toml")).unwrap();
-    let forged = ExternalCopyEdit::new(claimed, outside.clone());
-
-    let error = store.finalize_external_copy_edit(&forged).unwrap_err();
-
-    assert!(matches!(error, RepositoryError::InvalidMutation { .. }));
-    assert_eq!(fs::read(&outside).unwrap(), b"outside");
-    assert_eq!(
-        fs::read(root.path().join("scripts/external-bound/meta.toml")).unwrap(),
         metadata
     );
 }
