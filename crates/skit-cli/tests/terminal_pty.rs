@@ -68,6 +68,52 @@ fn write_command_entry(data: &Path, with_parameter: bool) {
     FileStore::new(data).rebuild_registry().unwrap();
 }
 
+fn write_plain_preset_entry(data: &Path) {
+    let mut plain = ParamDecl::new("PLAIN");
+    plain.prompt = "Plain value".to_owned();
+    plain.help = "Plain help row".to_owned();
+    plain.default = Some(ParameterValue::String("alpha".to_owned()));
+    plain.delivery = ParameterDelivery::Placeholder;
+    let mut enabled = ParamDecl::new("ENABLED");
+    enabled.parameter_type = ParameterType::Bool;
+    enabled.default = Some(ParameterValue::Bool(true));
+    enabled.delivery = ParameterDelivery::Placeholder;
+    let mut token = ParamDecl::new("TOKEN");
+    token.secret = true;
+    token.required = true;
+    token.env_source = "PRESET_TOKEN".to_owned();
+    token.delivery = ParameterDelivery::Placeholder;
+    let mut optional_secret = ParamDecl::new("OPTIONAL_SECRET");
+    optional_secret.secret = true;
+    optional_secret.delivery = ParameterDelivery::Placeholder;
+    let mut color = ParamDecl::new("COLOR");
+    color.parameter_type = ParameterType::Choice;
+    color.required = true;
+    color.choices = vec!["red".to_owned(), "blue".to_owned()];
+    color.delivery = ParameterDelivery::Placeholder;
+    let parameters = vec![plain, enabled, token, optional_secret, color];
+    FileStore::new(data)
+        .create(CreateEntry {
+            name: "Preset matrix".to_owned(),
+            kind: EntryKind::parse("command").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings {
+                template: "printf '%s' '{PLAIN} {ENABLED} {TOKEN} {OPTIONAL_SECRET} {COLOR}'"
+                    .to_owned(),
+                params: ["PLAIN", "ENABLED", "TOKEN", "OPTIONAL_SECRET", "COLOR"]
+                    .map(str::to_owned)
+                    .to_vec(),
+                parameters,
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+}
+
 fn write_secret_command_entry(data: &Path) {
     let directory = data.join("scripts/secret");
     fs::create_dir_all(&directory).unwrap();
@@ -295,6 +341,19 @@ struct LiveTui {
 
 impl LiveTui {
     fn spawn(data: &Path, state: &Path, config: &Path, home: &Path) -> Self {
+        let mut tui = Self::spawn_command(&["tui"], data, state, config, home, "en");
+        tui.answer_cursor_query_after(0);
+        tui
+    }
+
+    fn spawn_command(
+        args: &[&str],
+        data: &Path,
+        state: &Path,
+        config: &Path,
+        home: &Path,
+        locale: &str,
+    ) -> Self {
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 40,
@@ -304,11 +363,11 @@ impl LiveTui {
             })
             .unwrap();
         let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
-        command.arg("tui");
+        command.args(args);
         command.cwd(home);
         command.env("TERM", "xterm-256color");
         command.env("NO_COLOR", "1");
-        command.env("SKIT_LANG", "en");
+        command.env("SKIT_LANG", locale);
         command.env("SKIT_DATA_DIR", data);
         command.env("SKIT_STATE_DIR", state);
         command.env("SKIT_CONFIG_DIR", config);
@@ -333,14 +392,12 @@ impl LiveTui {
                 }
             }
         });
-        let mut tui = Self {
+        Self {
             child,
             writer,
             chunks,
             output: Vec::new(),
-        };
-        tui.answer_cursor_query_after(0);
-        tui
+        }
     }
 
     fn send(&mut self, bytes: &[u8]) {
@@ -1652,6 +1709,55 @@ fn terminal_run_form_can_submit_or_cancel_without_plain_input() {
         &[b"\x1b"],
     );
     assert_eq!(code, 130);
+}
+
+#[test]
+fn plain_preset_collection_saves_typed_nonsecrets_in_three_locales() {
+    for (locale, environment) in [
+        (
+            "en",
+            "Enter to read it from the environment variable PRESET_TOKEN.",
+        ),
+        ("zh-CN", "直接按 Enter 就从环境变量 PRESET_TOKEN 读取。"),
+        ("zh-TW", "直接按 Enter 就從環境變數 PRESET_TOKEN 讀取。"),
+    ] {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        let home = TempDir::new().unwrap();
+        write_plain_preset_entry(data.path());
+        let mut cli = LiveTui::spawn_command(
+            &["preset", "save", "preset-matrix", "night"],
+            data.path(),
+            state.path(),
+            config.path(),
+            home.path(),
+            locale,
+        );
+        cli.wait_for("Plain value");
+        cli.send(b"\r");
+        cli.wait_for("ENABLED");
+        cli.send(b"\r");
+        cli.wait_for("TOKEN");
+        cli.send(b"secret-value\r");
+        cli.wait_for("OPTIONAL_SECRET");
+        cli.send(b"\r");
+        cli.wait_for("COLOR (red/blue)");
+        let checkpoint = cli.checkpoint();
+        cli.send(b"\r");
+        let tail = cli.wait_for_exit_after(checkpoint);
+        let output = cli.visible_after(0);
+        assert!(output.contains("Plain help row"), "{output}");
+        assert!(output.contains(environment), "{output}");
+        assert!(output.contains("OPTIONAL_SECRET, TOKEN"), "{output}");
+        assert!(tail.contains("night"), "{tail}");
+        let saved = fs::read_to_string(state.path().join("values/preset-matrix.toml")).unwrap();
+        assert!(saved.contains("PLAIN = \"alpha\""), "{saved}");
+        assert!(saved.contains("ENABLED = \"true\""), "{saved}");
+        assert!(saved.contains("COLOR = \"red\""), "{saved}");
+        assert!(!saved.contains("secret-value"), "{saved}");
+        assert!(!saved.contains("TOKEN"), "{saved}");
+    }
 }
 
 #[test]
