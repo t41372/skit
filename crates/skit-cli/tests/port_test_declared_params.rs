@@ -59,11 +59,12 @@ use skit_application::{
     delivery::{PreparedValue, assemble},
 };
 use skit_domain::parameters::{
-    ParamDecl, ParameterDelivery, ParameterType, ParameterValue, declared_for_template,
-    declared_from_meta, synthesized_placeholder,
+    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    declared_for_template, declared_from_meta, synthesized_placeholder,
 };
 use skit_domain::{EntryKind, EntryMeta, EntrySettings, StorageMode};
 use skit_form::{FormPlan, FormSource, form_plan};
+use skit_language::write_managed_params;
 use skit_store::FileStore;
 use tempfile::TempDir;
 
@@ -1594,6 +1595,119 @@ fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
     let payload = stdout_json(&workspace.run(&["params", "lg", "--json"]));
     assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
     assert_eq!(payload["declared"][0]["name"], "password");
+}
+
+#[test]
+fn test_cli_python_human_params_falls_back_to_stored_schema_on_syntax_error() {
+    let workspace = lib();
+    let mut city = ParamDecl::new("CITY");
+    city.binding = ParameterBinding::Const;
+    city.delivery = ParameterDelivery::Inject;
+    city.default = Some(ParameterValue::String("stored".to_owned()));
+    let valid =
+        write_managed_params("python", "CITY = \"stored\"\nprint(CITY)\n", &[city]).unwrap();
+    let invalid = valid.replace("print(CITY)", "if (");
+    let source = workspace.write_script("broken.py", &invalid);
+    workspace
+        .cmd()
+        .arg("add")
+        .arg(&source)
+        .args(["--name", "broken", "--no-input"])
+        .assert()
+        .success();
+    let data_before = snapshot_tree(workspace.data.path());
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
+
+    for (locale, parameter, default) in [
+        ("en", "Parameter: CITY", "Current default: stored"),
+        ("zh-CN", "参数：CITY", "当前默认值：stored"),
+        ("zh-TW", "參數：CITY", "目前預設值：stored"),
+    ] {
+        let output = workspace
+            .cmd()
+            .env("SKIT_LANG", locale)
+            .args(["params", "broken"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{locale}: {}", combined(&output));
+        let human = combined(&output);
+        assert!(human.contains(parameter), "{locale}: {human}");
+        assert!(human.contains(default), "{locale}: {human}");
+    }
+
+    let payload = stdout_json(&workspace.run(&["params", "broken", "--json"]));
+    assert_eq!(payload["params"][0]["name"], "CITY");
+    assert_eq!(payload["params"][0]["kind"], "const");
+    assert_eq!(payload["params"][0]["default"], "stored");
+    assert_eq!(payload["parameters"], json!([]));
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
+}
+
+#[test]
+fn test_cli_powershell_reader_and_choice_rider_have_one_localized_read_view() {
+    let workspace = lib();
+    let source = workspace.write_script("reader.ps1", "param([string]$Name)\nWrite-Output $Name\n");
+    workspace
+        .cmd()
+        .arg("add")
+        .arg(&source)
+        .args(["--name", "reader", "--no-input"])
+        .assert()
+        .success();
+    let edit = workspace.run(&[
+        "params",
+        "reader",
+        "--add",
+        "MODE",
+        "--type",
+        "MODE=choice",
+        "--choices",
+        "MODE=red,blue",
+        "--optional",
+        "MODE",
+    ]);
+    assert!(edit.status.success(), "{}", combined(&edit));
+    let data_before = snapshot_tree(workspace.data.path());
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
+
+    for (locale, name_row, mode_row, choices) in [
+        (
+            "en",
+            "Parameter: Name",
+            "Parameter: MODE",
+            "Choices: red, blue",
+        ),
+        ("zh-CN", "参数：Name", "参数：MODE", "可选值：red, blue"),
+        ("zh-TW", "參數：Name", "參數：MODE", "可選值：red, blue"),
+    ] {
+        let output = workspace
+            .cmd()
+            .env("SKIT_LANG", locale)
+            .args(["params", "reader"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{locale}: {}", combined(&output));
+        let human = combined(&output);
+        assert!(human.contains(name_row), "{locale}: {human}");
+        assert!(human.contains(mode_row), "{locale}: {human}");
+        assert!(human.contains(choices), "{locale}: {human}");
+        assert!(!human.contains("--manage"), "{locale}: {human}");
+    }
+
+    let payload = stdout_json(&workspace.run(&["params", "reader", "--json"]));
+    let rows = payload["parameters"].as_array().unwrap();
+    assert!(rows.iter().any(|row| row["name"] == "Name"));
+    let mode = rows.iter().find(|row| row["name"] == "MODE").unwrap();
+    assert_eq!(mode["type"], "choice");
+    assert_eq!(mode["choices"], json!(["red", "blue"]));
+    assert_eq!(payload["unmanaged"], json!([]));
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 // ---- Delivery capability honesty ---------------------------------------------------------------
