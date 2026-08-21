@@ -270,6 +270,17 @@ fn run_runner_confirmation(
     before_answer: impl FnOnce(),
     answer: &[u8],
 ) -> (u32, String) {
+    run_runner_confirmation_in_locale(sandbox, args, "en", prompt_needle, before_answer, answer)
+}
+
+fn run_runner_confirmation_in_locale(
+    sandbox: &Sandbox,
+    args: &[&str],
+    locale: &str,
+    prompt_needle: &str,
+    before_answer: impl FnOnce(),
+    answer: &[u8],
+) -> (u32, String) {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 24,
@@ -285,7 +296,7 @@ fn run_runner_confirmation(
     command.env("SKIT_DATA_DIR", sandbox.data.path());
     command.env("SKIT_STATE_DIR", sandbox.state.path());
     command.env("SKIT_CONFIG_DIR", sandbox.config.path());
-    command.env("SKIT_LANG", "en");
+    command.env("SKIT_LANG", locale);
 
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
@@ -2553,6 +2564,51 @@ fn test_runner_remove_abort_keeps_the_runner() {
         *config_before_answer.lock().unwrap(),
         "negative confirmation changed the config"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_runner_remove_invalid_utf8_confirmation_propagates_io_without_writing() {
+    for (locale, prompt) in [
+        ("en", "Remove the agent \"amp\"? [y/N]:"),
+        ("zh-CN", "删除 Agent“amp”？[y/N]："),
+        ("zh-TW", "移除 Agent「amp」？[y/N]："),
+    ] {
+        let sandbox = Sandbox::new();
+        let data_before = Mutex::new(Vec::new());
+        let state_before = Mutex::new(Vec::new());
+        let config_before = Mutex::new(Vec::new());
+
+        let (code, output) = run_runner_confirmation_in_locale(
+            &sandbox,
+            &["runner", "remove", "amp"],
+            locale,
+            prompt,
+            || {
+                *data_before.lock().unwrap() = snapshot_tree(sandbox.data.path());
+                *state_before.lock().unwrap() = snapshot_tree(sandbox.state.path());
+                *config_before.lock().unwrap() = snapshot_tree(sandbox.config.path());
+            },
+            &[0xff, b'\n'],
+        );
+
+        assert_eq!(code, 125, "{locale}: {output}");
+        assert!(output.contains(prompt), "{locale}: {output}");
+        assert!(output.contains("UTF-8"), "{locale}: {output}");
+        assert!(sandbox.runner_exists("amp"), "{locale}: {output}");
+        assert_eq!(
+            snapshot_tree(sandbox.data.path()),
+            *data_before.lock().unwrap()
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            *state_before.lock().unwrap()
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            *config_before.lock().unwrap()
+        );
+    }
 }
 
 #[test]
