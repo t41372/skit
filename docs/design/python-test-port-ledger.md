@@ -261,25 +261,18 @@ prompt-separator escaping round-trip. The 2 `#[ignore]` probe the Python-private
 `pep723._structural_bracket_delta`; the Rust writer parses the block as TOML, so there is no public
 equivalent — the observable round-trip is covered by the passing tests.
 
-### test_pep723_split.py → port_test_pep723_split.rs (3 done · re-home + one flag)
+### test_pep723_split.py → port_test_pep723_split.rs (18 executable · 6 closures)
 
-24 ported / 3 passed / 21 `#[ignore]`. This module mostly does NOT belong to skit-language: its
-subject `pep723.split_requirements` (PEP 508 comma-splitting, 14 tests) maps to
-`skit_ui::add::split_pep508_requirements` (`pub(crate)` in skit-ui, `add.rs:1164`) — skit-language
-exposes only the single-item `validate_pep508_requirement`. The 3 mappable tests (TOML marker/backslash
-escaping round-trips via `write_uv_metadata`/`read_uv_metadata`) pass with no byte divergence. 4
-`#[ignore]` probe Python-private regex/helpers; the 14 split tests keep their frozen input/expected
-pairs for re-homing.
+All 24 names are accounted for. The 14 frozen `split_requirements` owners call the public shared
+`skit_language::split_pep508_requirements`; CLI, Add, and Settings use the same helper. Twelve inputs
+already matched. The trailing-comma and nested-bracket owners added a parser-first structural
+fallback without bypassing intake PEP 508 validation. Three TOML escaping owners remain active.
 
-Two follow-ups (tracked, not yet a gap fix):
-- **Re-home the 14 `split_requirements` tests to a skit-ui unit-test port** (Tier 5 — a skit-ui unit
-  test already exists at `add.rs:2385`). The behavior is implemented; only the test lives in the
-  wrong crate.
-- **Flag for the test_js_deps.py port:** no public skit-language function injects/reads a `//`-leader
-  `dependencies` block (the `//` path only carries a `[tool.skit]` params table via
-  `write_managed_params`, never a bare `dependencies` block). Confirm against the oracle whether
-  JS/TS supports an inline `// /// script\n dependencies = [...]` block; if it does and Rust cannot
-  round-trip it, that is a real JS PEP-723 gap.
+The `// /// script` owner is also executable. npm dependencies remain entry metadata in the Rust
+architecture, but an authored bare `dependencies = []` field is user data. A real JS managed-params
+add/remove round-trip preserves that field and restores the complete shebang source byte-for-byte.
+PR44's params-only substitute did not own this contract. The six remaining names are frozen
+Python-private regex/helper or stronger CLI/store closures; none is an ignored product gap.
 
 ### test_powershell.py → language/form/application ports (20 executable · 15 architecture-closed)
 
