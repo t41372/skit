@@ -168,13 +168,21 @@ fn writing_settings_preserves_unknown_extension_fields_and_legacy_omission_rules
         "a newly typed declaration uses the canonical shape, including type"
     );
 
+    let roundtrip = EntrySettings::from_meta(&meta);
+    assert_eq!(roundtrip.interpreter, "bash");
+    assert_eq!(roundtrip.needs, ["jq"]);
+    assert_eq!(roundtrip.params, ["count"]);
+    assert_eq!(roundtrip.parameters, settings.parameters);
+
     let mut cleared = EntrySettings::from_meta(&meta);
+    cleared.needs.clear();
     cleared.parameters.clear();
     cleared.write_to_meta(&mut meta);
     let after = EntrySettings::from_meta(&meta);
     assert!(after.parameters.is_empty());
     assert_eq!(after.params, ["count"]);
     assert_eq!(meta.extra["future"], json!({"keep": true}));
+    assert!(!meta.extra.contains_key("needs"));
     assert!(!meta.extra.contains_key("parameters"));
 }
 

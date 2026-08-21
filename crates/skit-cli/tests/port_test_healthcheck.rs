@@ -358,6 +358,8 @@ fn test_collect_reports_every_category_and_excludes_double_reports() {
         report["needs_missing"]["needs_sh"],
         Value::from(vec!["ffmpeg"])
     );
+    // Strong owner for test_missing_needs_returns_the_gap: this is the public report's typed
+    // name-to-missing-tools face, not the runtime's fail-fast single-tool launch error.
     // needs_entries carries the ENTRY object itself, not None (the keys of needs_missing).
     assert_eq!(key_set(&report["needs_missing"]), owned(&["needs_sh"]));
     // launch_blocked names the two truly-blocked entries with a real reason...
@@ -414,6 +416,8 @@ fn test_collect_clean_library_reports_nothing() {
 
     assert!(name_set(&report["missing"]).is_empty());
     assert!(name_set(&report["drift"]).is_empty());
+    // Strong owner for test_missing_needs_empty_when_all_present: the complete public report has
+    // one honest empty mapping when every declared program resolves.
     assert!(report["needs_missing"].as_object().unwrap().is_empty());
     assert!(report["launch_blocked"].as_object().unwrap().is_empty());
     assert!(report["runner_rows_invalid"].as_array().unwrap().is_empty());

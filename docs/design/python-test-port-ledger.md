@@ -57,7 +57,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_js_analyzer.py | 67 | crates/skit-language/tests/port_test_js_analyzer.rs | done (62) · tsx gap fixed · 5 ignored |
 | test_js_inject.py | 37 | crates/skit-language/tests/port_test_js_inject.rs + crates/skit-cli/tests/port_test_js_inject_cli.rs | in progress (18 executable / 19 deferred) · ascii-escape gap fixed · faithful TS-suffix, Unix-0600, and bad-value prelaunch owners imported `af90a10`; native Windows runtime verification pending |
 | test_js_deps.py | 143 | crates/skit-cli/tests/port_test_js_deps.rs + skit-runtime private transaction owners + crates/skit-store/tests/mutations.rs | implementation parity (91 executable / 49 classified cross-crate or private closures; 0 ABSENT/FAILING) · installer failures capture typed exit/stderr and keep rollback atomic `b1ad9ac`; six cleanup owners exercise real unlink/rmtree/symlink races, NotFound success, partial-delete quarantine, and self-heal `13c04fe`; cheap freshness/TUI preflight `ab4d93a`/`e276058`; every-launch one-hour strict sweep `e62e36e`/`df0c171`; captured diagnostics and install-only announcements `b6073df`/`536d1e4`; split, manifest, and installer helpers `647a31f`/`5265eeb` |
-| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs + crates/skit-language/tests/edge_contract.rs + real CLI/store owners | 37 executable / 37 pending rehome or classified · needs set/clear exact owners live at the real CLI receipt seam `744b3c4` · bun run + JS refusal fixed `19e5ab8` · 17 frozen shebang/infer owners rehomed to existing language seams `98efbb4`; unreadable path is one architecture closure · remaining 36 audit: 12 stronger-owner closures, 18 exact tests-only rehomes, 6 real gaps (add-kind validation 3, Windows Bash resolution 2, shell dependency refusal copy 1) |
+| test_interpreters.py | 74 | crates/skit-runtime/tests/port_test_interpreters.rs + crates/skit-language/tests/edge_contract.rs + real CLI/store owners | accounting: 37 executable/rehomed + 1 architecture closure + 7 Batch A stronger owners + 29 remaining audit = 74 · Batch A mapping is below · needs receipt owners `744b3c4` · bun run + JS refusal fixed `19e5ab8` · 17 frozen shebang/infer owners rehomed `98efbb4` · remaining 29: 6 stronger-owner closures, 17 exact tests-only rehomes, 6 real gaps (add-kind validation 3, Windows Bash resolution 2, shell dependency refusal copy 1) |
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
@@ -75,6 +75,22 @@ adjudicated · counts are Python `def test_` counts.
 | test_raw.py | 5 | crates/skit-cli/tests/port_test_raw.rs | done (5) · no gap |
 | test_rewrite.py | 2 | crates/skit-language/tests/port_test_rewrite.rs | done (2) · no gap |
 | test_argv_text.py | 1 | crates/skit-application/tests/port_test_argv_text.rs | done (1) · no gap |
+
+Interpreter Batch A replaces seven cross-layer runtime stubs with these stronger semantic owners:
+
+- `test_interpreter_launch_target_is_script_path` and `test_runner_target_is_script_path` →
+  `library_detail_repository::refresh_entries_keep_source_bytes_and_storage_states_adapter_owned`
+  asserts shell and JavaScript payload paths, exact source bytes, and present target projections.
+- `test_missing_needs_returns_the_gap` and `test_missing_needs_empty_when_all_present` →
+  `port_test_healthcheck::{test_collect_reports_every_category_and_excludes_double_reports,
+  test_collect_clean_library_reports_nothing}` assert both public `needs_missing` report faces.
+- `test_meta_round_trip_carries_interpreter_needs_parameters` and `test_meta_omits_empty_needs` →
+  `entry_settings::writing_settings_preserves_unknown_extension_fields_and_legacy_omission_rules`
+  asserts the typed round-trip and exact empty-key omission.
+- `test_update_needs_sets_and_clears` →
+  `mutations::update_settings_sets_then_clears_needs_without_losing_extensions_or_rewriting_reads`
+  drives the real store update twice and asserts set, clear, omission, extension retention, and pure
+  rereads.
 
 ### Tier 2 — stateful data boundaries (`skit-store`)
 

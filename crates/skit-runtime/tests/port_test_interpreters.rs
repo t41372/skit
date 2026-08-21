@@ -29,9 +29,9 @@
 //!   refusal names the `skit config js.runner` escape hatch (Rust drops it).
 //! - CROSS-CRATE (`#[ignore]` stub): behavior owned by another tier this integration test
 //!   cannot reach without a forbidden dependency edit — the path-reading shebang wrapper,
-//!   the launch `target()` projection, and TOML round-trip / store
-//!   mutations (`skit-store`), the `js.runner` / Windows `shell.bash_path` config
-//!   resolution and every `CliRunner` surface (`skit-cli-rs` / `skit-store`).
+//!   the `js.runner` / Windows `shell.bash_path` config resolution, and every `CliRunner`
+//!   surface (`skit-cli-rs` / `skit-store`). Store and Library projection stubs move to their
+//!   executable stronger owners, as recorded in the port ledger.
 //!   The pure shebang and kind-inference contracts run at their public `skit-language` seams.
 
 use std::{
@@ -307,12 +307,6 @@ fn test_interpreter_launch_describe_is_side_effect_free() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-store): the strategy `target()` projection (script path an entry \
-launches, used by `skit list` to mark a gone file) is `launch_target` in \
-the application Library surface and store snapshot adapter, not reachable from skit-runtime."]
-fn test_interpreter_launch_target_is_script_path() {}
-
-#[test]
 fn test_interpreter_launch_preflight_missing_interpreter() {
     // Preflight refuses when the interpreter cannot be resolved.
     let script = "/data/scripts/demo/script.sh";
@@ -533,11 +527,6 @@ fn test_runner_preflight_checks_script_and_runner() {
     assert_eq!(error.exit_code(), 126);
 }
 
-#[test]
-#[ignore = "CROSS-CRATE (skit-store): the runner `target()` projection is `launch_target` in \
-the application Library surface and store snapshot adapter, not reachable from skit-runtime."]
-fn test_runner_target_is_script_path() {}
-
 // ==========================================================================
 // shebang_program + infer_kind  (owned by skit-language)
 // ==========================================================================
@@ -610,41 +599,6 @@ fn test_run_entry_needs_raises_before_spawn() {
     assert!(matches!(&error, LaunchError::MissingNeed { name } if name == "ffmpeg"));
     assert!(error.to_string().contains("ffmpeg"));
 }
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `launcher.missing_needs` (the doctor/health report of \
-declared needs not on PATH) is the doctor sweep in crates/skit-cli/src/cli.rs (`needs_missing`); \
-skit-runtime turns the same gap into a launch refusal (`MissingNeed`), not a returned list."]
-fn test_missing_needs_returns_the_gap() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the empty-gap twin of missing_needs is the doctor sweep in \
-crates/skit-cli/src/cli.rs."]
-fn test_missing_needs_empty_when_all_present() {}
-
-// ==========================================================================
-// models — interpreter / needs / parameters round-trip  (owned by skit-store)
-// ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-store): the ScriptMeta `to_toml_dict`/`from_toml_dict` round-trip is \
-EntryMeta TOML (de)serialization in skit-store; skit-runtime holds the value type but not the TOML \
-adapter."]
-fn test_meta_round_trip_carries_interpreter_needs_parameters() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-store): \"omit empty needs from the serialized meta\" is a TOML \
-serialization contract owned by skit-store."]
-fn test_meta_omits_empty_needs() {}
-
-// ==========================================================================
-// store.update_needs  (owned by skit-store)
-// ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-store): `store.update_needs` (set/clear needs, empty clears to None) \
-is a store mutation adapter in skit-store."]
-fn test_update_needs_sets_and_clears() {}
 
 // ==========================================================================
 // CLI: add --kind  (owned by skit-cli-rs)

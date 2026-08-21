@@ -316,6 +316,70 @@ fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
 }
 
 #[test]
+fn update_settings_sets_then_clears_needs_without_losing_extensions_or_rewriting_reads() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let created = store.create(request("needs", b"print('ok')\n")).unwrap();
+    let meta_path = root.path().join("scripts/needs/meta.toml");
+    let mut document = fs::read_to_string(&meta_path).unwrap();
+    document.push_str("\n[future]\nkeep = true\n");
+    fs::write(&meta_path, document).unwrap();
+    let held = store.resolve(created.slug.as_str()).unwrap();
+    let bytes_before_update = fs::read(&meta_path).unwrap();
+    assert_eq!(held.meta.extra["future"], json!({"keep": true}));
+    assert_eq!(fs::read(&meta_path).unwrap(), bytes_before_update);
+
+    let mut settings = EntrySettings::from_meta(&held.meta);
+    settings.needs = vec!["jq".to_owned(), "ffmpeg".to_owned()];
+    let updated = store
+        .update_settings(&held, &settings, &held.meta.workdir)
+        .unwrap();
+    assert_eq!(
+        EntrySettings::from_meta(&updated.meta).needs,
+        settings.needs
+    );
+    assert_eq!(updated.meta.extra["future"], json!({"keep": true}));
+    let set_document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert_eq!(
+        set_document["needs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["jq", "ffmpeg"]
+    );
+    assert_eq!(set_document["future"]["keep"].as_bool(), Some(true));
+
+    let set_bytes = fs::read(&meta_path).unwrap();
+    let reread = store.resolve(created.slug.as_str()).unwrap();
+    assert_eq!(EntrySettings::from_meta(&reread.meta).needs, settings.needs);
+    assert_eq!(fs::read(&meta_path).unwrap(), set_bytes);
+
+    settings.needs.clear();
+    let cleared = store
+        .update_settings(&reread, &settings, &reread.meta.workdir)
+        .unwrap();
+    assert!(EntrySettings::from_meta(&cleared.meta).needs.is_empty());
+    assert_eq!(cleared.meta.extra["future"], json!({"keep": true}));
+    let cleared_document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!cleared_document.contains_key("needs"));
+    assert_eq!(cleared_document["future"]["keep"].as_bool(), Some(true));
+
+    let cleared_bytes = fs::read(&meta_path).unwrap();
+    let reread = store.resolve(created.slug.as_str()).unwrap();
+    assert!(EntrySettings::from_meta(&reread.meta).needs.is_empty());
+    assert_eq!(reread.meta.extra["future"], json!({"keep": true}));
+    assert_eq!(fs::read(&meta_path).unwrap(), cleared_bytes);
+}
+
+#[test]
 fn create_sweeps_files_and_directories_left_in_the_private_staging_root() {
     let root = TempDir::new().unwrap();
     let staging = root.path().join(".staging");

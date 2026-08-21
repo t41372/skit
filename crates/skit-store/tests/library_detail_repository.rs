@@ -46,6 +46,17 @@ fn refresh_entries_keep_source_bytes_and_storage_states_adapter_owned() {
 
     write_meta(
         &root,
+        "runner",
+        concat!(
+            "schema = 1\nname = \"Runner\"\nkind = \"js\"\nmode = \"copy\"\n",
+            "source = \"/missing/original.js\"\nworkdir = \"invoke\"\ndescription = \"\"\n",
+        ),
+    );
+    let runner_source = b"console.log('runner')\n";
+    fs::write(root.path().join("scripts/runner/script.js"), runner_source).unwrap();
+
+    write_meta(
+        &root,
         "missing",
         concat!(
             "schema = 1\nname = \"Missing\"\nkind = \"shell\"\nmode = \"reference\"\n",
@@ -76,7 +87,20 @@ fn refresh_entries_keep_source_bytes_and_storage_states_adapter_owned() {
     let copy = by_slug("copy");
     assert_eq!(copy.source.as_deref(), Some(source.as_slice()));
     assert_eq!(copy.target, LibraryTargetState::Present);
+    assert_eq!(
+        store.payload_path(&copy.entry).unwrap(),
+        root.path().join("scripts/copy/script.sh")
+    );
     assert!(!copy.original_source_exists);
+
+    let runner = by_slug("runner");
+    assert_eq!(runner.source.as_deref(), Some(runner_source.as_slice()));
+    assert_eq!(runner.target, LibraryTargetState::Present);
+    assert_eq!(
+        store.payload_path(&runner.entry).unwrap(),
+        root.path().join("scripts/runner/script.js")
+    );
+    assert!(!runner.original_source_exists);
 
     let missing = by_slug("missing");
     assert!(missing.source.is_none());
