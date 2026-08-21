@@ -52,9 +52,10 @@ use std::sync::Mutex;
 use tempfile::TempDir;
 
 use skit_application::{
-    CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions, payload_stored_name,
+    CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
+    form_state::FormStateRepository as _, payload_stored_name,
 };
-use skit_domain::{EntryKind, EntrySettings, StorageMode};
+use skit_domain::{EntryKind, EntrySettings, Slug, StorageMode};
 use skit_language::external_dependencies;
 use skit_runtime::{
     DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
@@ -66,7 +67,7 @@ use skit_runtime::{
     resolve_javascript_dependency_installer, split_javascript_requirement,
     split_javascript_requirements,
 };
-use skit_store::{FileConfigStore, FileStore};
+use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
 
 // ============================================================================
 // Self-contained fixtures (no shared helper is edited or imported).
@@ -2362,6 +2363,179 @@ fn test_install_announce_line_verbatim() {
         .unwrap();
     assert_eq!(second.status.code(), Some(0));
     assert!(second.stderr.is_empty(), "fresh launch must stay silent");
+}
+
+#[test]
+#[cfg(unix)]
+fn test_install_subprocess_contract_and_marker_dir_reuse() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(
+        source_dir.path(),
+        "subprocess-contract.js",
+        "console.log('script output must come only from node');\n",
+    );
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "chalk", "--no-input"])
+        .assert()
+        .success();
+
+    let mirror = "https://registry.example.test";
+    FileConfigStore::new(sandbox.config.path())
+        .set("mirror.npm", mirror)
+        .unwrap();
+
+    let entry_dir = sandbox.entry_dir("subprocess-contract");
+    let stored = entry_dir.join("script.js");
+    let metadata = entry_dir.join("meta.toml");
+    let registry = sandbox.data.path().join("registry.toml");
+    let source_before = fs::read(&source).unwrap();
+    let stored_before = fs::read(&stored).unwrap();
+    let metadata_before = fs::read(&metadata).unwrap();
+    let registry_before = fs::read(&registry).unwrap();
+    let config_before = fs::read(sandbox.config.path().join("config.toml")).unwrap();
+
+    let bin = TempDir::new().unwrap();
+    let receipt = bin.path().join("npm-receipt");
+    let node = bin.path().join("node");
+    fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+    let npm = bin.path().join("npm");
+    fs::write(
+        &npm,
+        format!(
+            concat!(
+                "#!/bin/sh\n",
+                "{{\n",
+                "  printf 'cwd=%s\\n' \"$PWD\"\n",
+                "  printf 'argc=%s\\n' \"$#\"\n",
+                "  for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\n",
+                "  printf 'registry=%s\\n' \"${{NPM_CONFIG_REGISTRY-unset}}\"\n",
+                "  printf 'lower-registry=%s\\n' \"${{npm_config_registry-unset}}\"\n",
+                "}} >> '{}'\n",
+                "printf '%s\\n' 'INSTALLER-STDOUT-MUST-BE-CAPTURED'\n",
+                "printf '%s\\n' 'INSTALLER-STDERR-MUST-BE-CAPTURED' >&2\n",
+                "/bin/mkdir -p node_modules/chalk\n",
+                "exit 0\n",
+            ),
+            receipt.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let run = || {
+        sandbox
+            .skit()
+            .env("PATH", bin.path())
+            .env_remove("NPM_CONFIG_REGISTRY")
+            .env_remove("npm_config_registry")
+            .args(["run", "subprocess-contract", "--no-input"])
+            .output()
+            .unwrap()
+    };
+
+    let first = run();
+    assert_eq!(first.status.code(), Some(0), "{}", combine(&first));
+    let first_stdout = String::from_utf8(first.stdout).unwrap();
+    let launch_prefix = format!("→ {} {}/.run-", node.display(), entry_dir.display());
+    assert!(first_stdout.starts_with(&launch_prefix), "{first_stdout}");
+    assert!(first_stdout.trim_end().ends_with(".js"), "{first_stdout}");
+    assert_eq!(first_stdout.lines().count(), 1, "{first_stdout}");
+    assert!(!first_stdout.contains("INSTALLER-STDOUT-MUST-BE-CAPTURED"));
+    assert!(!first_stdout.contains("INSTALLER-STDERR-MUST-BE-CAPTURED"));
+    assert_eq!(
+        String::from_utf8(first.stderr).unwrap(),
+        "Installing dependencies (npm)…\n",
+        "successful installer stderr must stay captured"
+    );
+    let expected_receipt = format!(
+        concat!(
+            "cwd={}\n",
+            "argc=4\n",
+            "arg=install\n",
+            "arg=--no-audit\n",
+            "arg=--no-fund\n",
+            "arg=--ignore-scripts\n",
+            "registry={}\n",
+            "lower-registry=unset\n",
+        ),
+        entry_dir.display(),
+        mirror,
+    );
+    assert_eq!(fs::read_to_string(&receipt).unwrap(), expected_receipt);
+
+    let marker = entry_dir.join("node_modules/.skit-deps-ok");
+    assert!(marker.is_file());
+    assert_eq!(fs::read_to_string(&marker).unwrap().len(), 64);
+    assert!(!entry_dir.join(".skit-deps").exists());
+    let mut entry_items = fs::read_dir(&entry_dir)
+        .unwrap()
+        .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    entry_items.sort();
+    assert_eq!(
+        entry_items,
+        ["meta.toml", "node_modules", "package.json", "script.js"]
+    );
+    let mut module_items = fs::read_dir(entry_dir.join("node_modules"))
+        .unwrap()
+        .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    module_items.sort();
+    assert_eq!(module_items, [".skit-deps-ok", "chalk"]);
+    assert_eq!(
+        fs::read_dir(entry_dir.join("node_modules/chalk"))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    let second = run();
+    assert_eq!(second.status.code(), Some(0), "{}", combine(&second));
+    let second_stdout = String::from_utf8(second.stdout).unwrap();
+    assert!(second_stdout.starts_with(&launch_prefix), "{second_stdout}");
+    assert!(second_stdout.trim_end().ends_with(".js"), "{second_stdout}");
+    assert_eq!(second_stdout.lines().count(), 1, "{second_stdout}");
+    assert!(!second_stdout.contains("INSTALLER-STDOUT-MUST-BE-CAPTURED"));
+    assert!(!second_stdout.contains("INSTALLER-STDERR-MUST-BE-CAPTURED"));
+    assert!(second.stderr.is_empty(), "fresh launch must stay silent");
+    assert_eq!(
+        fs::read_to_string(&receipt).unwrap(),
+        expected_receipt,
+        "a fresh launch ran the installer subprocess again"
+    );
+
+    assert_eq!(fs::read(&source).unwrap(), source_before);
+    assert_eq!(fs::read(stored).unwrap(), stored_before);
+    assert_eq!(fs::read(metadata).unwrap(), metadata_before);
+    assert_eq!(fs::read(registry).unwrap(), registry_before);
+    assert_eq!(
+        fs::read(sandbox.config.path().join("config.toml")).unwrap(),
+        config_before
+    );
+    let state = FileFormStateStore::new(sandbox.state.path())
+        .load(&Slug::parse("subprocess-contract").unwrap());
+    assert_eq!(state.values, BTreeMap::new());
+    assert_eq!(state.last_run.exit, Some(0));
+    assert!(
+        state
+            .last_run
+            .at
+            .as_deref()
+            .is_some_and(|at| !at.is_empty())
+    );
+    assert_eq!(state.last_run.values, Some(BTreeMap::new()));
+    let state_files = fs::read_dir(sandbox.state.path().join("values"))
+        .unwrap()
+        .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(state_files, ["subprocess-contract.toml"]);
 }
 
 #[test]

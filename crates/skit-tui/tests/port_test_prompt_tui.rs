@@ -70,12 +70,12 @@ use skit_tui::{
 };
 use skit_ui::{
     ADD_PARAMETER_KEY, Action, AddAction, AddWorkflowState, Effect, FieldKind, FieldValue,
-    INTERPOLATE_KEY, KnownEntryKind, LibraryEntryDetail, LibraryPromptRunner, LibraryState,
-    LibrarySurface, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY, PROMPT_LIST_PREVIEW_LIMIT,
-    RUNNER_KEY, ReviewDefaults, ReviewLane, ReviewState, RunFieldRole, RunFormView,
-    RunnerEditorAction, RunnerEditorEffect, RunnerEditorError, RunnerEditorOwner, RunnerEditorView,
-    Screen, SettingsAction, SettingsEffect, SettingsInputs, SettingsItem, SettingsSectionId,
-    SettingsView, SourceSnapshot, TypedValue, UiCommand,
+    HostRequest, INTERPOLATE_KEY, KnownEntryKind, LibraryEntryDetail, LibraryPromptRunner,
+    LibraryState, LibrarySurface, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY,
+    PROMPT_LIST_PREVIEW_LIMIT, RUNNER_KEY, ReviewDefaults, ReviewLane, ReviewState, RunFieldRole,
+    RunFormView, RunnerEditorAction, RunnerEditorEffect, RunnerEditorError, RunnerEditorOwner,
+    RunnerEditorView, Screen, SettingsAction, SettingsEffect, SettingsInputs, SettingsItem,
+    SettingsSectionId, SettingsView, SourceSnapshot, TypedValue, UiCommand,
 };
 
 // The seeded prompt-runner names the oracle's `config.load_prompt_runners()` returns, in
@@ -117,6 +117,12 @@ fn mouse_with_kind(kind: MouseEventKind, column: u16, row: u16) -> Event {
 
 fn rendered(buffer: &Buffer) -> String {
     buffer.content().iter().map(|cell| cell.symbol()).collect()
+}
+
+fn compact_cell_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
 }
 
 fn draw_session(
@@ -416,22 +422,45 @@ fn test_prompt_only_library_uses_entry_taxonomy_everywhere() {
 }
 
 #[test]
-fn test_prompt_only_chinese_library_stays_entry_neutral_zh_cn() {
-    // The Simplified-Chinese library title is the entry-neutral 工具库, never the
-    // script-specific 脚本库, even when it holds only prompts.
-    let state = library_state(vec![entry("p", "p", "prompt", "Review this")]);
-    let screen = draw_localized(&state, 110, 36, Locale::ZhCn);
-    assert!(screen.contains("工 具 库"));
-    assert!(!screen.contains("脚 本 库"));
-}
+fn test_prompt_only_chinese_library_stays_entry_neutral() {
+    for (locale, library, script_library, settings_label) in [
+        (Locale::ZhCn, "工具库", "脚本库", "说明（显示在工具库）"),
+        (Locale::ZhTw, "工具庫", "腳本庫", "說明（顯示在工具庫）"),
+    ] {
+        let mut library_state = library_state(vec![entry("p", "p", "prompt", "Review this")]);
+        let library_screen = compact_cell_text(&draw_localized(&library_state, 110, 36, locale));
+        assert!(
+            library_screen.contains(library),
+            "{locale:?}: {library_screen}"
+        );
+        assert!(
+            !library_screen.contains(script_library),
+            "{locale:?}: {library_screen}"
+        );
 
-#[test]
-fn test_prompt_only_chinese_library_stays_entry_neutral_zh_tw() {
-    // The Traditional-Chinese library title is the entry-neutral 工具庫, never 腳本庫.
-    let state = library_state(vec![entry("p", "p", "prompt", "Review this")]);
-    let screen = draw_localized(&state, 110, 36, Locale::ZhTw);
-    assert!(screen.contains("工 具 庫"));
-    assert!(!screen.contains("腳 本 庫"));
+        assert_eq!(
+            library_state.update(Action::OpenSettings),
+            Effect::Open {
+                request: HostRequest::Settings,
+                selector: Some("p".to_owned()),
+            },
+            "the selected prompt must route the visible Settings action through the reducer"
+        );
+
+        // The host supplies SettingsInputs after the reducer requests this screen. Present that
+        // typed host result through the real reducer and render the actual Settings screen. This
+        // does not pretend that constructing the typed input is a host end-to-end test.
+        let settings_state = settings_state(prompt_settings(Vec::new(), "", RUNNERS, true));
+        let settings_screen = compact_cell_text(&draw_localized(&settings_state, 120, 36, locale));
+        assert!(
+            settings_screen.contains(settings_label),
+            "{locale:?}: {settings_screen}"
+        );
+        assert!(
+            !settings_screen.contains(script_library),
+            "{locale:?}: {settings_screen}"
+        );
+    }
 }
 
 // ==========================================================================
