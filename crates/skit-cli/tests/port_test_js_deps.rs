@@ -754,10 +754,6 @@ fn test_preflight_without_deps_does_not_ask_for_an_installer() {
     assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
 }
 
-#[test]
-#[ignore = "ABSENT (library seam): every RunnerLaunch.build sweeps aged '.injected-*' leftovers (age-gated, keeping fresh ones); there is no sweep_stale_injected nor a build-time sweep on the Rust surface. MUST-FIX: port sweep_stale_injected + wire it into launch. Python ref deps.py:164-179, test_js_deps.py:469-484."]
-fn test_build_sweeps_aged_injected_leftovers_but_not_fresh_ones() {}
-
 // ============================================================================
 // write_injected adjacency (prefer_entry_dir) and the JS injector's use of it
 // ============================================================================
@@ -1962,10 +1958,6 @@ fn test_module_type_for_multi_dot_sources() {
 fn test_manifest_text_exact_layout() {}
 
 #[test]
-#[ignore = "ABSENT (library seam): sweep_stale_injected keeps a '.injected-*' file exactly AT the cutoff (strictly older-than). No public sweep_stale_injected exists. MUST-FIX: port sweep_stale_injected. Python ref deps.py:164-179, test_js_deps.py:1772-1783."]
-fn test_sweep_keeps_a_file_exactly_at_the_cutoff() {}
-
-#[test]
 fn test_ensure_installed_unknown_runner_falls_back_to_npm_argv() {
     let (root, dir) = entry_dir();
     let probe = FakeProbe { present: true };
@@ -2024,10 +2016,6 @@ fn test_module_type_for_a_bare_dotfile_name() {
         Some(JavaScriptModuleType::Module)
     );
 }
-
-#[test]
-#[ignore = "ABSENT (library seam): sweep_stale_injected survives one failed unlink and still sweeps the rest. No public sweep_stale_injected + no injectable unlink seam. MUST-FIX: port sweep_stale_injected. Python ref deps.py:164-179, test_js_deps.py:1822-1846."]
-fn test_sweep_survives_one_failed_unlink_and_still_sweeps_the_rest() {}
 
 #[test]
 #[ignore = "ABSENT (library seam): _failure_detail filters each noise marker so a real cause line still wins. No stderr channel on the Rust runner. MUST-FIX per above. Python ref deps.py:264-313, test_js_deps.py:1849-1863."]

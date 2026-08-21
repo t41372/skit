@@ -3,6 +3,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    time::{Duration, SystemTime},
 };
 
 use skit_runtime::{
@@ -10,7 +11,7 @@ use skit_runtime::{
     JavaScriptModuleType, ProgramProbe, SystemDependencyCommandRunner,
     clear_javascript_dependencies, ensure_javascript_dependencies,
     ensure_javascript_dependencies_for_module, ensure_javascript_dependencies_with_environment,
-    javascript_dependency_manifest, javascript_module_type,
+    javascript_dependency_manifest, javascript_module_type, sweep_stale_injected_sources,
 };
 use tempfile::TempDir;
 
@@ -35,6 +36,34 @@ impl ProgramProbe for Probe {
     fn is_executable(&self, _path: &Path) -> bool {
         true
     }
+}
+
+#[test]
+fn public_sweep_removes_only_injected_sources_older_than_one_hour() {
+    let root = TempDir::new().unwrap();
+    let stale = root.path().join(".injected-stale.js");
+    let fresh = root.path().join(".injected-fresh.js");
+    let unrelated = root.path().join("other.js");
+    for path in [&stale, &fresh, &unrelated] {
+        fs::write(path, b"value\n").unwrap();
+    }
+    let old = SystemTime::now()
+        .checked_sub(Duration::from_secs(2 * 60 * 60))
+        .unwrap();
+    for path in [&stale, &unrelated] {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
+    }
+
+    sweep_stale_injected_sources(root.path());
+
+    assert!(!stale.exists());
+    assert!(fresh.exists());
+    assert!(unrelated.exists());
 }
 
 #[derive(Debug, Default)]

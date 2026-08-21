@@ -1792,6 +1792,67 @@ mod transaction_tests {
     }
 
     #[test]
+    fn test_sweep_keeps_a_file_exactly_at_the_cutoff() {
+        let root = TempDir::new().unwrap();
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(2 * 60 * 60))
+            .unwrap();
+        let cutoff = now.checked_sub(STALE_INJECTED_AGE).unwrap();
+        let edge = root.path().join(".injected-edge.js");
+        fs::write(&edge, b"value\n").unwrap();
+        File::options()
+            .write(true)
+            .open(&edge)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(cutoff))
+            .unwrap();
+
+        sweep_stale_injected_at(root.path(), now);
+
+        assert!(edge.exists());
+    }
+
+    #[test]
+    fn test_sweep_survives_one_failed_unlink_and_still_sweeps_the_rest() {
+        let root = TempDir::new().unwrap();
+        let cutoff = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(60))
+            .unwrap();
+        for name in [".injected-a.js", ".injected-b.js"] {
+            let path = root.path().join(name);
+            fs::write(&path, b"value\n").unwrap();
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+                .unwrap();
+        }
+        let mut calls = 0;
+
+        sweep_stale_injected_before_with(root.path(), Some(cutoff), &mut |path| {
+            calls += 1;
+            if calls == 1 {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "held"))
+            } else {
+                fs::remove_file(path)
+            }
+        });
+
+        let survivors = fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .filter(|item| {
+                item.file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(".injected-"))
+            })
+            .count();
+        assert_eq!(calls, 2);
+        assert_eq!(survivors, 1);
+    }
+
+    #[test]
     fn injected_sweep_is_inert_before_the_cutoff_exists_and_when_the_directory_is_gone() {
         let missing = TempDir::new().unwrap().path().join("gone");
         sweep_stale_injected_before(&missing, None);

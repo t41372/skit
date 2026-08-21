@@ -1560,6 +1560,43 @@ mod tests {
     }
 
     #[test]
+    fn test_build_sweeps_aged_injected_leftovers_but_not_fresh_ones() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let directory = root.path().join("scripts/demo");
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("script.sh"), "printf ok\n").unwrap();
+        let aged = directory.join(".injected-dead.sh");
+        let fresh = directory.join(".injected-live.sh");
+        fs::write(&aged, "old secret").unwrap();
+        fs::write(&fresh, "live secret").unwrap();
+        let old = SystemTime::now()
+            .checked_sub(Duration::from_secs(2 * 60 * 60))
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&aged)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(old))
+            .unwrap();
+
+        assert!(
+            stage_injected_source(
+                &store,
+                &entry("shell", "bash"),
+                "printf ok\n",
+                &[],
+                &skit_application::delivery::Assembly::default(),
+            )
+            .unwrap()
+            .is_none()
+        );
+
+        assert!(!aged.exists());
+        assert!(fresh.exists());
+    }
+
+    #[test]
     fn source_and_runner_adapters_report_missing_invalid_and_supported_payloads() {
         let root = TempDir::new().unwrap();
         let store = FileStore::new(root.path());
