@@ -7827,6 +7827,51 @@ fn runner_host_updates_repairs_removes_and_refuses_stale_snapshots() {
 }
 
 #[test]
+fn runner_closed_store_outcomes_project_to_typed_actions_in_every_locale() {
+    let root = TempDir::new().unwrap();
+    let invalid = root.path().join("config-file");
+    fs::write(&invalid, b"keep").unwrap();
+    let config_error = || {
+        FileConfigStore::new(&invalid)
+            .set("editor", "nano")
+            .unwrap_err()
+    };
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        assert!(project_runner_save_result(Ok(true), RunnerSaveOwner::Manager, locale).is_none());
+        for result in [Ok(false), Err(config_error())] {
+            assert!(matches!(
+                project_runner_save_result(result, RunnerSaveOwner::Manager, locale),
+                Some(UiAction::Runners(RunnerManagerAction::MutationFailed(_)))
+            ));
+        }
+        for result in [
+            Ok(RunnerRemovalCas::RowsChanged),
+            Ok(RunnerRemovalCas::PinsChanged { actual: 2 }),
+            Err(RunnerManagementStoreError::Library(
+                RepositoryError::NotFound {
+                    query: "runner".to_owned(),
+                },
+            )),
+            Err(RunnerManagementStoreError::Config(config_error())),
+        ] {
+            assert!(matches!(
+                project_named_runner_removal(result, locale),
+                Some(UiAction::Runners(RunnerManagerAction::MutationFailed(_)))
+            ));
+        }
+        assert!(project_named_runner_removal(Ok(RunnerRemovalCas::Removed), locale).is_none());
+        assert!(project_raw_runner_removal(Ok(true), locale).is_none());
+        for result in [Ok(false), Err(config_error())] {
+            assert!(matches!(
+                project_raw_runner_removal(result, locale),
+                Some(UiAction::Runners(RunnerManagerAction::MutationFailed(_)))
+            ));
+        }
+    }
+    assert_eq!(fs::read(&invalid).unwrap(), b"keep");
+}
+
+#[test]
 fn settings_host_updates_prompt_javascript_reference_python_and_source_management_axes() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");

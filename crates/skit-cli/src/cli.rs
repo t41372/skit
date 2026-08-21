@@ -8390,14 +8390,11 @@ fn tui_runner_rows(
         .into_iter()
         .filter(|summary| summary.kind.as_str() == "prompt")
     {
-        let entry = match service.show(summary.slug.as_str()) {
-            Ok(entry) => entry,
-            Err(RepositoryError::NotFound { .. }) => continue,
-            Err(error) => return Err(error.into()),
-        };
-        let runner = EntrySettings::from_meta(&entry.meta).runner;
-        if !runner.is_empty() {
-            *pinned.entry(runner).or_default() += 1;
+        if let Ok(entry) = service.show(summary.slug.as_str()) {
+            let runner = EntrySettings::from_meta(&entry.meta).runner;
+            if !runner.is_empty() {
+                *pinned.entry(runner).or_default() += 1;
+            }
         }
     }
     let identities = rows
@@ -8484,24 +8481,8 @@ fn tui_save_runner(
             config.replace_runner_row_if_unchanged(runner, expected)
         }
     };
-    let saved = match result {
-        Ok(saved) => saved,
-        Err(error) => {
-            return Ok(tui_runner_save_failure(
-                owner,
-                error.message().localize(active_locale()),
-            ));
-        }
-    };
-    if !saved {
-        return Ok(tui_runner_save_failure(
-            owner,
-            text(
-                active_locale(),
-                "The runner row changed before it could be saved; inspect again.",
-            )
-            .into_owned(),
-        ));
+    if let Some(failure) = project_runner_save_result(result, owner.clone(), active_locale()) {
+        return Ok(failure);
     }
     let template = if updated {
         "Runner {} updated: {}"
@@ -8534,6 +8515,70 @@ fn tui_runner_save_failure(owner: RunnerSaveOwner, message: String) -> UiAction 
     }
 }
 
+fn project_runner_save_result(
+    result: Result<bool, ConfigError>,
+    owner: RunnerSaveOwner,
+    locale: Locale,
+) -> Option<UiAction> {
+    match result {
+        Ok(true) => None,
+        Ok(false) => Some(tui_runner_save_failure(
+            owner,
+            text(
+                locale,
+                "The runner row changed before it could be saved; inspect again.",
+            )
+            .into_owned(),
+        )),
+        Err(error) => Some(tui_runner_save_failure(
+            owner,
+            error.message().localize(locale),
+        )),
+    }
+}
+
+fn project_named_runner_removal(
+    result: Result<RunnerRemovalCas, RunnerManagementStoreError>,
+    locale: Locale,
+) -> Option<UiAction> {
+    let message = match result {
+        Ok(RunnerRemovalCas::Removed) => return None,
+        Ok(RunnerRemovalCas::RowsChanged) => text(
+            locale,
+            "The runner row changed before it could be removed; inspect again.",
+        )
+        .into_owned(),
+        Ok(RunnerRemovalCas::PinsChanged { .. }) => text(
+            locale,
+            "The prompt pins changed before the runner could be removed; inspect again.",
+        )
+        .into_owned(),
+        Err(RunnerManagementStoreError::Library(error)) => error.message().localize(locale),
+        Err(RunnerManagementStoreError::Config(error)) => error.message().localize(locale),
+    };
+    Some(UiAction::Runners(RunnerManagerAction::MutationFailed(
+        message,
+    )))
+}
+
+fn project_raw_runner_removal(
+    result: Result<bool, ConfigError>,
+    locale: Locale,
+) -> Option<UiAction> {
+    let message = match result {
+        Ok(true) => return None,
+        Ok(false) => text(
+            locale,
+            "The runner row changed before it could be removed; inspect again.",
+        )
+        .into_owned(),
+        Err(error) => error.message().localize(locale),
+    };
+    Some(UiAction::Runners(RunnerManagerAction::MutationFailed(
+        message,
+    )))
+}
+
 fn tui_remove_runner(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
@@ -8558,47 +8603,16 @@ fn tui_remove_runner(
             };
             let management =
                 FileRunnerManagementStore::new(service.repository().data_dir(), config_dir);
-            match management.remove_named_if_unchanged(
-                name,
-                &expected,
-                *expected_pinned_count,
-            ) {
-                Ok(RunnerRemovalCas::Removed) => {
-                    Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-                        rows: tui_runner_rows(service, config_dir)?,
-                        selected_name: None,
-                        message: format_text(active_locale(), "Runner {} removed.", &[name]),
-                    }))
-                }
-                Ok(RunnerRemovalCas::RowsChanged) => Ok(UiAction::Runners(
-                    RunnerManagerAction::MutationFailed(
-                        text(
-                            active_locale(),
-                            "The runner row changed before it could be removed; inspect again.",
-                        )
-                        .into_owned(),
-                    ),
-                )),
-                Ok(RunnerRemovalCas::PinsChanged { .. }) => Ok(UiAction::Runners(
-                    RunnerManagerAction::MutationFailed(
-                        text(
-                            active_locale(),
-                            "The prompt pins changed before the runner could be removed; inspect again.",
-                        )
-                        .into_owned(),
-                    ),
-                )),
-                Err(error) => Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
-                    match error {
-                        RunnerManagementStoreError::Library(error) => {
-                            error.message().localize(active_locale())
-                        }
-                        RunnerManagementStoreError::Config(error) => {
-                            error.message().localize(active_locale())
-                        }
-                    },
-                ))),
+            let result =
+                management.remove_named_if_unchanged(name, &expected, *expected_pinned_count);
+            if let Some(failure) = project_named_runner_removal(result, active_locale()) {
+                return Ok(failure);
             }
+            Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+                rows: tui_runner_rows(service, config_dir)?,
+                selected_name: None,
+                message: format_text(active_locale(), "Runner {} removed.", &[name]),
+            }))
         }
         RunnerRemoveRequest::RawRow { expected } => {
             let Some(row) = resolve_runner_row(&current, expected) else {
@@ -8626,23 +8640,17 @@ fn tui_remove_runner(
                     )
                 },
             );
-            match config.remove_runner_row_if_unchanged(row) {
-                Ok(true) => Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-                    rows: tui_runner_rows(service, config_dir)?,
-                    selected_name: None,
-                    message,
-                })),
-                Ok(false) => Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
-                    text(
-                        active_locale(),
-                        "The runner row changed before it could be removed; inspect again.",
-                    )
-                    .into_owned(),
-                ))),
-                Err(error) => Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
-                    error.message().localize(active_locale()),
-                ))),
-            }
+            let result = config.remove_runner_row_if_unchanged(row);
+            project_raw_runner_removal(result, active_locale()).map_or_else(
+                || {
+                    Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+                        rows: tui_runner_rows(service, config_dir)?,
+                        selected_name: None,
+                        message,
+                    }))
+                },
+                Ok,
+            )
         }
     }
 }
