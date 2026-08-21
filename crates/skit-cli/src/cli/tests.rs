@@ -3732,6 +3732,56 @@ fn typed_run_feedback_and_preset_effects_use_application_and_store_ports() {
             .presets["quick"],
         BTreeMap::from([("name".to_owned(), "Ada".to_owned())])
     );
+
+    let fieldless = add_command(&service, "Fieldless", "true");
+    let before = test_tree_snapshot(root.path());
+    let error = tui_effect(
+        &service,
+        &store,
+        &state_dir,
+        &config_dir,
+        UiEffect::SaveRunPreset {
+            selector: fieldless.slug.as_str().to_owned(),
+            name: "empty".to_owned(),
+            values: BTreeMap::new(),
+            secret_names: std::collections::BTreeSet::new(),
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(error, CliError::Usage(_)), "{error:?}");
+    assert_eq!(
+        error.message().localize(Locale::En),
+        "cannot save a preset because the entry has no form fields"
+    );
+    assert_eq!(test_tree_snapshot(root.path()), before);
+}
+
+#[test]
+fn tui_run_propagates_typed_preflight_errors_without_writing() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let entry = add_command(&service, "Required", "printf '%s' '{name}'");
+    let before = test_tree_snapshot(root.path());
+
+    let error = tui_submit_run(
+        &service,
+        &store,
+        &state_dir,
+        &config_dir,
+        entry.slug.as_str(),
+        &BTreeMap::new(),
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(error, CliError::Run(RunError::Inputs(_))),
+        "{error:?}"
+    );
+    assert_eq!(test_tree_snapshot(root.path()), before);
 }
 
 #[test]

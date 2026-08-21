@@ -1801,6 +1801,38 @@ fn plain_preset_collection_saves_typed_nonsecrets_in_three_locales() {
 }
 
 #[test]
+fn interactive_run_refuses_invalid_presets_before_form_or_storage_work() {
+    for (with_parameter, args, expected) in [
+        (
+            false,
+            vec!["run", "demo", "--save-preset", "empty", "--dry-run"],
+            "Demo has no form fields, so there's nothing to save.",
+        ),
+        (
+            true,
+            vec!["run", "demo", "--preset", "missing", "--dry-run"],
+            "preset \"missing\" does not exist",
+        ),
+    ] {
+        let data = TempDir::new().unwrap();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+        write_command_entry(data.path(), with_parameter);
+        let data_before = tree_snapshot(data.path());
+        let state_before = tree_snapshot(state.path());
+        let config_before = tree_snapshot(config.path());
+
+        let (code, output) = run_plain_in_pty(&args, data.path(), state.path(), config.path(), &[]);
+
+        assert_eq!(code, 2, "{output}");
+        assert!(output.contains(expected), "{output}");
+        assert_eq!(tree_snapshot(data.path()), data_before);
+        assert_eq!(tree_snapshot(state.path()), state_before);
+        assert_eq!(tree_snapshot(config.path()), config_before);
+    }
+}
+
+#[test]
 fn analyzer_preset_notices_use_real_sources_in_three_locales() {
     for (locale, default_notice, input_notice) in [
         (
