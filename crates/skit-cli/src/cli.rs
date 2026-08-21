@@ -4975,14 +4975,12 @@ fn params(
             let claimed = service.claim_identity(&held)?;
             held = service.commit_copy_edit(&claimed, source.as_bytes(), &held.meta.source_hash)?;
         }
-        let requested_secrets = managed
+        let has_valid_secret_transition = managed
             .iter()
-            .filter(|item| item.secret && args.secret.contains(&item.name))
-            .cloned()
-            .collect::<Vec<_>>();
-        if !requested_secrets.is_empty() {
+            .any(|item| item.secret && args.secret.contains(&item.name));
+        if has_valid_secret_transition {
             let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
-            let purged = state.purge_secrets(&held.slug, &requested_secrets)?;
+            let purged = state.purge_secrets(&held.slug, &declarations)?;
             report_purged_secrets(purged, args.json);
         }
     } else if changed {

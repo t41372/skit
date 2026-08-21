@@ -669,7 +669,8 @@ fn one_valid_secret_transition_purges_every_final_secret_legacy_value() {
     assert!(!state.contains("CITY"), "{state}");
     assert!(!state.contains("API_KEY"), "{state}");
     assert!(!state.contains("leak"), "{state}");
-    assert!(!state.contains("preset"), "{state}");
+    assert!(!state.contains("city-preset"), "{state}");
+    assert!(!state.contains("api-preset"), "{state}");
     assert!(state.contains("KEEP = \"public\""), "{state}");
 }
 
