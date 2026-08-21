@@ -996,14 +996,6 @@ fn test_split_guard_refuses_only_what_the_shell_would_actually_mangle() {
 }
 
 #[test]
-#[ignore = "UNMAPPED: `skit params <name>` prints the self-locating-const advice string (`--normalize NAME` … `on the stored copy`, the `NAME=\"${NAME:-value}\"` idiom) -> Tier 4 (skit-cli). uses_self_location + the injectable consts are the skit-language half."]
-fn test_params_warns_when_a_self_locating_script_has_injectable_consts() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params <name>` omits the `locates itself` advice when the script never self-locates -> Tier 4 (skit-cli)."]
-fn test_params_does_not_warn_when_the_script_never_self_locates() {}
-
-#[test]
 fn test_normalize_refuses_shell_metacharacters() {
     // `;` `|` `&` `(` `)` `<` `>` are inert in the single-quoted source (the analyzer offers the
     // const) but break tree-sitter inside "${NAME:-…}" — and because analyze() degrades the WHOLE

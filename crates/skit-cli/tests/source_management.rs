@@ -1,4 +1,7 @@
-use std::fs;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use predicates::str as predicate_str;
 use serde_json::Value;
@@ -42,6 +45,138 @@ impl Sandbox {
             .args(["add", original.to_str().unwrap(), "--name", name])
             .assert()
             .success();
+    }
+}
+
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort();
+    output
+}
+
+#[test]
+fn test_params_warns_when_a_self_locating_script_has_injectable_consts() {
+    let sandbox = Sandbox::new();
+    sandbox.add_copy(
+        "selfloc.sh",
+        "selfloc",
+        "#!/usr/bin/env bash\nHERE=$(dirname \"$0\")\nREGION=us-east-1\necho \"$HERE $REGION\"\n",
+    );
+
+    for (locale, expected) in [
+        (
+            "en",
+            "This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME=\"${NAME:-value}\" delivers the value through the environment with no copy at all — `skit params selfloc --normalize NAME` does the rewrite for you on the stored copy.",
+        ),
+        (
+            "zh-CN",
+            "这个脚本会读取自己的位置($0 / BASH_SOURCE)。注入常量时它会从临时副本运行,因此看到的是那个副本的路径。把常量改写成 NAME=\"${NAME:-value}\",值就会改由环境变量传递,完全不产生副本——`skit params selfloc --normalize NAME` 会在存储的副本上帮你完成改写。",
+        ),
+        (
+            "zh-TW",
+            "這個腳本會讀取自己的位置($0 / BASH_SOURCE)。注入常數時它會從臨時副本執行,因此看到的是那個副本的路徑。把常數改寫成 NAME=\"${NAME:-value}\",值就會改由環境變數傳遞,完全不產生副本——`skit params selfloc --normalize NAME` 會在儲存的副本上幫你完成改寫。",
+        ),
+    ] {
+        let before = (
+            snapshot_tree(sandbox.data.path()),
+            snapshot_tree(sandbox.state.path()),
+            snapshot_tree(sandbox.config.path()),
+        );
+        let output = sandbox
+            .command_in(locale)
+            .args(["params", "selfloc"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(
+            stdout.lines().filter(|line| *line == expected).count(),
+            1,
+            "{locale}:\n{stdout}"
+        );
+        assert_eq!(
+            (
+                snapshot_tree(sandbox.data.path()),
+                snapshot_tree(sandbox.state.path()),
+                snapshot_tree(sandbox.config.path()),
+            ),
+            before
+        );
+
+        let machine = sandbox
+            .command_in(locale)
+            .args(["params", "selfloc", "--json"])
+            .output()
+            .unwrap();
+        assert!(machine.status.success());
+        assert!(machine.stderr.is_empty());
+        let record: Value = serde_json::from_slice(&machine.stdout).unwrap();
+        assert_eq!(record["unmanaged"], serde_json::json!(["REGION"]));
+        let machine_text = String::from_utf8(machine.stdout).unwrap();
+        assert!(!machine_text.contains("locates itself"));
+        assert!(!machine_text.contains("--normalize NAME"));
+        assert_eq!(
+            (
+                snapshot_tree(sandbox.data.path()),
+                snapshot_tree(sandbox.state.path()),
+                snapshot_tree(sandbox.config.path()),
+            ),
+            before
+        );
+    }
+}
+
+#[test]
+fn test_params_does_not_warn_when_the_script_never_self_locates() {
+    let sandbox = Sandbox::new();
+    sandbox.add_copy(
+        "noloc.sh",
+        "noloc",
+        "#!/usr/bin/env bash\nREGION=us-east-1\necho \"$REGION\"\n",
+    );
+
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let before = (
+            snapshot_tree(sandbox.data.path()),
+            snapshot_tree(sandbox.state.path()),
+            snapshot_tree(sandbox.config.path()),
+        );
+        let output = sandbox
+            .command_in(locale)
+            .args(["params", "noloc"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(!stdout.contains("locates itself"), "{locale}:\n{stdout}");
+        assert!(!stdout.contains("读取自己的位置"), "{locale}:\n{stdout}");
+        assert!(!stdout.contains("讀取自己的位置"), "{locale}:\n{stdout}");
+        assert!(!stdout.contains("--normalize NAME"), "{locale}:\n{stdout}");
+        assert_eq!(
+            (
+                snapshot_tree(sandbox.data.path()),
+                snapshot_tree(sandbox.state.path()),
+                snapshot_tree(sandbox.config.path()),
+            ),
+            before
+        );
     }
 }
 
