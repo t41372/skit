@@ -2225,6 +2225,106 @@ fn parameter_json_and_parser_helpers_cover_every_public_spelling() {
 }
 
 #[test]
+fn params_host_updates_managed_secrets_and_skips_an_invalid_environment_source_without_writes() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path().join("data"));
+    let service = LibraryService::new(store.clone());
+    let mut managed = ParamDecl::new("NAME");
+    managed.binding = ParameterBinding::Const;
+    managed.delivery = ParameterDelivery::Inject;
+    managed.secret = true;
+    managed.env_source = "TOKEN".to_owned();
+    let source = write_managed_params("shell", "NAME=world\necho \"$NAME\"\n", &[managed]).unwrap();
+    let entry = service
+        .add(CreateEntry {
+            name: "Managed shell".to_owned(),
+            kind: EntryKind::parse("shell").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: source.into_bytes(),
+                stored_name: Some("script.sh".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                parameters: vec![ParamDecl::new("legacy")],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let stored = store.entry_dir_path(&entry.slug).join("script.sh");
+    let meta = store.entry_dir_path(&entry.slug).join("meta.toml");
+
+    let parse = |arguments: &[&str]| {
+        let cli = Cli::try_parse_from(arguments).unwrap();
+        let Some(Command::Params(arguments)) = cli.command else {
+            panic!("params must parse as the params command");
+        };
+        *arguments
+    };
+    params(
+        &service,
+        &store,
+        parse(&[
+            "skit",
+            "params",
+            entry.slug.as_str(),
+            "--prompt",
+            "NAME=Display name",
+            "--env-source",
+            "NAME= ALT_TOKEN ",
+            "--json",
+        ]),
+    )
+    .unwrap();
+    let declaration = &managed_params("shell", &fs::read_to_string(&stored).unwrap())[0];
+    assert_eq!(declaration.prompt, "Display name");
+    assert_eq!(declaration.env_source, "ALT_TOKEN");
+    assert!(declaration.secret);
+    assert_eq!(
+        EntrySettings::from_meta(&service.show(entry.slug.as_str()).unwrap().meta).parameters,
+        [ParamDecl::new("legacy")]
+    );
+
+    params(
+        &service,
+        &store,
+        parse(&[
+            "skit",
+            "params",
+            entry.slug.as_str(),
+            "--no-secret",
+            "NAME",
+            "--json",
+        ]),
+    )
+    .unwrap();
+    let declaration = &managed_params("shell", &fs::read_to_string(&stored).unwrap())[0];
+    assert!(!declaration.secret);
+    assert!(declaration.env_source.is_empty());
+
+    let source_before = fs::read(&stored).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+    params(
+        &service,
+        &store,
+        parse(&[
+            "skit",
+            "params",
+            entry.slug.as_str(),
+            "--env-source",
+            "NAME=SHOULD_NOT_APPLY",
+            "--json",
+        ]),
+    )
+    .unwrap();
+    assert_eq!(fs::read(&stored).unwrap(), source_before);
+    assert_eq!(fs::read(&meta).unwrap(), meta_before);
+}
+
+#[test]
 fn tui_scalar_helpers_reject_incomplete_and_incompatible_rows() {
     assert_eq!(
         tui_parameter_value(&ParameterValue::String("text".to_owned())),
