@@ -2723,6 +2723,9 @@ fn shared_health_inspector_reports_typed_entry_runner_and_rebuild_facts() {
         .unwrap();
 
     let inspector = CliHealthInspector::new(&service, &store, &config_dir);
+    let debug = format!("{inspector:?}");
+    assert!(debug.contains(data_dir.to_str().unwrap()));
+    assert!(debug.contains(config_dir.to_str().unwrap()));
     let snapshot = inspector.inspect().unwrap();
     assert_eq!(snapshot.entry_count, 2);
     assert!(!matches!(snapshot.uv, UvHealth::Missing));
@@ -2745,6 +2748,104 @@ fn shared_health_inspector_reports_typed_entry_runner_and_rebuild_facts() {
     let rebuilt = inspector.rebuild().unwrap();
     assert_eq!(rebuilt.outcome.entry_count, 2);
     assert_eq!(rebuilt.snapshot.entry_count, 2);
+
+    fs::write(
+        config_dir.join("config.toml"),
+        concat!(
+            "[mirror]\n",
+            "enabled = true\n",
+            "pypi = \"https://mirror.example/simple\"\n",
+            "[prompt]\n",
+            "runners_seeded = true\n",
+            "runners = []\n",
+        ),
+    )
+    .unwrap();
+    let config_on = fs::read(config_dir.join("config.toml")).unwrap();
+    let snapshot = inspector.inspect().unwrap();
+    let MirrorHealth::On { axes } = snapshot.mirror else {
+        panic!("enabled mirror must report On: {:?}", snapshot.mirror);
+    };
+    assert_eq!(
+        axes,
+        "pypi=https://mirror.example/simple · github=off · npm=off"
+    );
+    assert_eq!(fs::read(config_dir.join("config.toml")).unwrap(), config_on);
+
+    fs::write(
+        config_dir.join("config.toml"),
+        concat!(
+            "[mirror]\n",
+            "enabled = false\n",
+            "pypi = \"https://mirror.example/simple\"\n",
+            "[prompt]\n",
+            "runners_seeded = true\n",
+            "runners = []\n",
+        ),
+    )
+    .unwrap();
+    let config_paused = fs::read(config_dir.join("config.toml")).unwrap();
+    let snapshot = inspector.inspect().unwrap();
+    let MirrorHealth::Paused { axes } = snapshot.mirror else {
+        panic!(
+            "disabled configured mirror must report Paused: {:?}",
+            snapshot.mirror
+        );
+    };
+    assert_eq!(
+        axes,
+        "pypi=https://mirror.example/simple · github=off · npm=off"
+    );
+    assert_eq!(
+        fs::read(config_dir.join("config.toml")).unwrap(),
+        config_paused
+    );
+
+    let stale = add_command(&service, "Stale health row", "printf stale");
+    let registry_path = data_dir.join("registry.toml");
+    let registry_before = fs::read(&registry_path).unwrap();
+    fs::remove_file(
+        data_dir
+            .join("scripts")
+            .join(stale.slug.as_str())
+            .join("meta.toml"),
+    )
+    .unwrap();
+    let snapshot = inspector.inspect().unwrap();
+    assert!(
+        snapshot
+            .diagnostics
+            .iter()
+            .any(|line| line.contains(stale.slug.as_str()))
+    );
+    assert_eq!(fs::read(&registry_path).unwrap(), registry_before);
+
+    let preserved = service.show("Missing program").unwrap();
+    let preserved_meta = data_dir
+        .join("scripts")
+        .join(preserved.slug.as_str())
+        .join("meta.toml");
+    let preserved_bytes = fs::read(&preserved_meta).unwrap();
+    let state_dir = root.path().join("state");
+    let action = tui_effect(
+        &service,
+        &store,
+        &state_dir,
+        &config_dir,
+        UiEffect::HealthRebuild,
+    )
+    .unwrap();
+    assert!(matches!(
+        action,
+        UiAction::Health(HealthAction::Rebuilt { .. })
+    ));
+    assert_ne!(fs::read(&registry_path).unwrap(), registry_before);
+    assert_eq!(fs::read(&preserved_meta).unwrap(), preserved_bytes);
+    assert_eq!(
+        fs::read(config_dir.join("config.toml")).unwrap(),
+        config_paused
+    );
+    assert!(!state_dir.exists());
 }
 
 #[test]
@@ -3255,7 +3356,10 @@ fn tui_run_host_publishes_source_drift_degradation_and_runtime_path_context() {
 fn typed_preferences_effects_validate_atomically_and_install_only_after_selection() {
     let root = TempDir::new().unwrap();
     let config_dir = root.path().join("config");
-    let service = LibraryService::new(FileStore::new(root.path().join("data")));
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
     let config = FileConfigStore::new(&config_dir);
     config.set("editor", "vi").unwrap();
     let config_path = config_dir.join("config.toml");
@@ -3325,6 +3429,82 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
         fs::read(written).unwrap(),
         include_bytes!("../../../../skills/skit/SKILL.md")
     );
+
+    let config_before_noops = fs::read(&config_path).unwrap();
+    for effect in [
+        PreferencesEffect::None,
+        PreferencesEffect::Close,
+        PreferencesEffect::ConfirmDiscard,
+    ] {
+        assert_eq!(
+            tui_effect(
+                &service,
+                &store,
+                &state_dir,
+                &config_dir,
+                UiEffect::Preferences(effect),
+            )
+            .unwrap(),
+            UiAction::ClearStatus
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), config_before_noops);
+        assert!(!data_dir.exists());
+        assert!(!state_dir.exists());
+    }
+
+    assert!(matches!(
+        tui_effect(
+            &service,
+            &store,
+            &state_dir,
+            &config_dir,
+            UiEffect::Preferences(PreferencesEffect::ManageAgents),
+        )
+        .unwrap(),
+        UiAction::Present(Screen::Runners(_))
+    ));
+    assert!(
+        !FileConfigStore::new(&config_dir)
+            .runners()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!data_dir.exists());
+    assert!(!state_dir.exists());
+
+    let broken_config = root.path().join("config-is-a-file");
+    fs::write(&broken_config, b"keep config bytes").unwrap();
+    let failure = PreferencesChangeSet {
+        settings: BTreeMap::from([("editor".to_owned(), "nano".to_owned())]),
+    };
+    let action = tui_effect(
+        &service,
+        &store,
+        &state_dir,
+        &broken_config,
+        UiEffect::Preferences(PreferencesEffect::Save(failure)),
+    )
+    .unwrap();
+    assert!(matches!(action, UiAction::SetStatus(ref message) if message.starts_with("Error: ")));
+    assert_eq!(fs::read(&broken_config).unwrap(), b"keep config bytes");
+    assert!(!root.path().join("config-is-a-file.bak").exists());
+
+    let skill_parent = root.path().join("skill-parent-is-a-file");
+    fs::write(&skill_parent, b"keep skill parent").unwrap();
+    let skills_dir = skill_parent.join("skills");
+    let action = tui_effect(
+        &service,
+        &store,
+        &state_dir,
+        &config_dir,
+        UiEffect::Preferences(PreferencesEffect::InstallAgentSkill {
+            skills_dir: skills_dir.clone(),
+        }),
+    )
+    .unwrap();
+    assert!(matches!(action, UiAction::SetStatus(ref message) if message.starts_with("Error: ")));
+    assert_eq!(fs::read(&skill_parent).unwrap(), b"keep skill parent");
+    assert!(!skills_dir.exists());
 }
 
 #[test]

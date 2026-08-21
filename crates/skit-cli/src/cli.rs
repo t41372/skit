@@ -7117,12 +7117,9 @@ fn tui_effect(
             tui_save_runner(service, config_dir, request, owner)
         }
         UiEffect::RemoveRunner(request) => tui_remove_runner(service, config_dir, request),
-        UiEffect::RefreshPreferencesAfterRunners => {
-            let Screen::Preferences(preferences) = tui_preferences_screen(config_dir)? else {
-                unreachable!("the preferences builder always returns Preferences")
-            };
-            Ok(UiAction::RunnerManagerClosed { preferences })
-        }
+        UiEffect::RefreshPreferencesAfterRunners => Ok(UiAction::RunnerManagerClosed {
+            preferences: Box::new(tui_preferences_view(config_dir)?),
+        }),
         UiEffect::Add(effects) => tui_add_effect(service, store, state_dir, config_dir, effects),
         UiEffect::Edit { selector } => {
             edit_with_config(service, store, config_dir, &selector, true)?;
@@ -8108,6 +8105,12 @@ fn refreshed_draft(data_dir: &Path, path: &Path) -> Result<DraftSummary, CliErro
 }
 
 fn tui_preferences_screen(config_dir: &Path) -> Result<Screen, CliError> {
+    Ok(Screen::Preferences(Box::new(tui_preferences_view(
+        config_dir,
+    )?)))
+}
+
+fn tui_preferences_view(config_dir: &Path) -> Result<PreferencesView, CliError> {
     let config = FileConfigStore::new(config_dir);
     let settings = config.settings()?;
     let setting = |key: &str| settings.get(key).cloned().unwrap_or_default();
@@ -8152,9 +8155,9 @@ fn tui_preferences_screen(config_dir: &Path) -> Result<Screen, CliError> {
             npm: mirror.npm,
         },
     };
-    Ok(Screen::Preferences(Box::new(PreferencesView::new(
-        PreferencesDraft::from_snapshot(snapshot),
-    ))))
+    Ok(PreferencesView::new(PreferencesDraft::from_snapshot(
+        snapshot,
+    )))
 }
 
 fn tui_health_screen(
@@ -8200,10 +8203,8 @@ impl<'a> CliHealthInspector<'a> {
         let scan = self.service.list()?;
         let mut entries = Vec::with_capacity(scan.entries.len());
         for summary in &scan.entries {
-            match self.service.show(summary.slug.as_str()) {
-                Ok(entry) => entries.push(entry),
-                Err(RepositoryError::NotFound { .. }) => {}
-                Err(error) => return Err(error.into()),
+            if let Ok(entry) = self.service.show(summary.slug.as_str()) {
+                entries.push(entry);
             }
         }
         let probe = SystemProbe;
@@ -8343,13 +8344,13 @@ fn health_size_text(size: u64) -> String {
         return format!("{size} B");
     }
     let mut value = size as f64 / 1024.0;
-    for unit in ["KB", "MB", "GB"] {
-        if value < 1024.0 || unit == "GB" {
+    for unit in ["KB", "MB"] {
+        if value < 1024.0 {
             return format!("{value:.1} {unit}");
         }
         value /= 1024.0;
     }
-    unreachable!("the final size unit always returns")
+    format!("{value:.1} GB")
 }
 
 fn tui_runners_screen(
