@@ -237,7 +237,8 @@ pub fn javascript_dependency_manifest(dependencies: &[String]) -> Result<String,
     javascript_dependency_manifest_for_module(dependencies, None)
 }
 
-fn javascript_dependency_manifest_for_module(
+/// Build the deterministic private package.json with an explicit module type.
+pub fn javascript_dependency_manifest_for_module(
     dependencies: &[String],
     module_type: Option<JavaScriptModuleType>,
 ) -> Result<String, DependencyError> {
@@ -246,7 +247,7 @@ fn javascript_dependency_manifest_for_module(
         if dependency.trim().is_empty() {
             continue;
         }
-        let (name, version) = split_package_spec(dependency)?;
+        let (name, version) = split_javascript_requirement(dependency.trim());
         if let Some((_, old_version)) = rows.iter_mut().find(|(old_name, _)| old_name == &name) {
             *old_version = version;
         } else {
@@ -276,6 +277,35 @@ fn javascript_dependency_manifest_for_module(
     }
     output.push_str("  }\n}\n");
     Ok(output)
+}
+
+/// Split a comma-separated JavaScript package requirement list.
+#[must_use]
+pub fn split_javascript_requirements(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|requirement| !requirement.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Split one JavaScript package requirement into its package name and version range.
+#[must_use]
+pub fn split_javascript_requirement(requirement: &str) -> (String, String) {
+    let (name, version) =
+        requirement
+            .rfind('@')
+            .filter(|index| *index > 0)
+            .map_or((requirement, "*"), |index| {
+                let name = &requirement[..index];
+                if name.ends_with('/') {
+                    (requirement, "*")
+                } else {
+                    let version = &requirement[index + 1..];
+                    (name, if version.is_empty() { "*" } else { version })
+                }
+            });
+    (name.to_owned(), version.to_owned())
 }
 
 fn javascript_module_manifest(module_type: JavaScriptModuleType) -> String {
@@ -379,12 +409,7 @@ pub fn preflight_javascript_dependencies_for_module<P: ProgramProbe>(
     if fs::read(marker_path).ok().as_deref() == Some(state.stamp.as_bytes()) {
         return Ok(());
     }
-    probe
-        .find_program(state.installer)
-        .map(|_| ())
-        .ok_or_else(|| DependencyError::InstallerNotFound {
-            name: state.installer.to_owned(),
-        })
+    resolve_javascript_dependency_installer(runtime, probe).map(|_| ())
 }
 
 /// Make a private dependency tree and preserve an explicit source module type.
@@ -627,19 +652,27 @@ fn dependency_command<P: ProgramProbe>(
     environment: &BTreeMap<String, String>,
     probe: &P,
 ) -> Result<DependencyCommand, DependencyError> {
-    let (installer, args) = installer_for_runtime(runtime);
-    let program =
-        probe
-            .find_program(installer)
-            .ok_or_else(|| DependencyError::InstallerNotFound {
-                name: installer.to_owned(),
-            })?;
+    let (_, args) = installer_for_runtime(runtime);
+    let program = resolve_javascript_dependency_installer(runtime, probe)?;
     Ok(DependencyCommand {
         program,
         args: args.iter().map(|value| (*value).to_owned()).collect(),
         cwd: entry_dir.to_owned(),
         environment: environment.clone(),
     })
+}
+
+/// Resolve the package manager implied by a JavaScript runtime.
+pub fn resolve_javascript_dependency_installer<P: ProgramProbe>(
+    runtime: &str,
+    probe: &P,
+) -> Result<PathBuf, DependencyError> {
+    let (installer, _) = installer_for_runtime(runtime);
+    probe
+        .find_program(installer)
+        .ok_or_else(|| DependencyError::InstallerNotFound {
+            name: installer.to_owned(),
+        })
 }
 
 fn installer_for_runtime(runtime: &str) -> (&'static str, &'static [&'static str]) {
@@ -1291,24 +1324,6 @@ fn sync_directory(path: &Path) -> io::Result<()> {
 #[cfg(not(unix))]
 fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
-}
-
-fn split_package_spec(value: &str) -> Result<(String, String), DependencyError> {
-    let value = value.trim();
-    let (name, version) =
-        value
-            .rfind('@')
-            .filter(|index| *index > 0)
-            .map_or((value, "*"), |index| {
-                let name = &value[..index];
-                if name.ends_with('/') {
-                    (value, "*")
-                } else {
-                    let version = &value[index + 1..];
-                    (name, if version.is_empty() { "*" } else { version })
-                }
-            });
-    Ok((name.to_owned(), version.to_owned()))
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, DependencyError> {
