@@ -33,6 +33,7 @@ pub use screens::settings::{
     SettingsControlId, SettingsHitRegion, SettingsScreenEvent, SettingsScreenGeometry,
     SettingsScreenSession, render_settings,
 };
+use session::HeaderKind;
 pub use session::{EventHandling, TuiSession};
 pub use terminal::{TuiError, collect_form, collect_run_form, run, run_add_workflow};
 
@@ -104,8 +105,11 @@ pub fn render_with_session(
         header_height(state, frame.area().height),
     );
 
-    if areas.header.height > 0 {
-        session.render_header(frame, areas.header, state, locale);
+    let header = header_kind(state);
+    if areas.header.height > 0
+        && let Some(kind) = header
+    {
+        session.render_header(frame, areas.header, kind, locale);
     }
     let mut geometry = match state.modal() {
         Some(ModalState::Help) => session.render_help(frame, areas.body, locale),
@@ -138,6 +142,31 @@ pub fn render_with_session(
     session.register_geometry(&geometry);
     session.render_quit_toast(frame, locale);
     geometry
+}
+
+fn header_kind(state: &LibraryState) -> Option<HeaderKind<'_>> {
+    match state.modal() {
+        Some(ModalState::Help) => Some(HeaderKind::Help),
+        Some(ModalState::ConfirmRemove { .. }) => Some(HeaderKind::ConfirmRemove),
+        Some(ModalState::ConfirmDiscardChanges) => Some(HeaderKind::ConfirmDiscardChanges),
+        Some(ModalState::RunPresetName { .. }) => Some(HeaderKind::RunPresetName),
+        Some(ModalState::RunTokenMenu { .. }) => Some(HeaderKind::RunTokenMenu),
+        Some(ModalState::RunEnvironmentPicker { .. }) => Some(HeaderKind::RunEnvironmentPicker),
+        Some(ModalState::RunFilePicker { .. }) => Some(HeaderKind::RunFilePicker),
+        Some(ModalState::RunnerEditor { view, .. }) => Some(HeaderKind::RunnerEditor(view.mode())),
+        None => match state.screen() {
+            Screen::Library => Some(HeaderKind::Library {
+                query: state.query(),
+                search: state.input_mode() == InputMode::Search,
+            }),
+            Screen::Preferences(_) => Some(HeaderKind::Preferences),
+            Screen::Add(_) => Some(HeaderKind::Add),
+            Screen::Health(_) => Some(HeaderKind::Health),
+            Screen::Runners(_) => Some(HeaderKind::Runners),
+            Screen::Report(report) => Some(HeaderKind::Report(&report.title)),
+            Screen::Run(_) | Screen::Form(_) | Screen::Settings(_) => None,
+        },
+    }
 }
 
 /// Return the rows the shared header takes on one screen.

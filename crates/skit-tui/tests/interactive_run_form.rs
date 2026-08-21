@@ -108,6 +108,12 @@ fn text_run_form(value: &str) -> RunFormView {
     )
 }
 
+fn with_multiline_run_field(form: RunFormView, index: usize) -> RunFormView {
+    let mut value = serde_json::to_value(form).unwrap();
+    value["fields"][index]["control"]["text"]["multiline"] = true.into();
+    serde_json::from_value(value).unwrap()
+}
+
 fn buffer_text(buffer: &Buffer) -> String {
     buffer.content().iter().map(|cell| cell.symbol()).collect()
 }
@@ -171,6 +177,18 @@ fn row_containing(buffer: &Buffer, needle: &str) -> u16 {
                 .contains(needle)
         })
         .expect("expected rendered row")
+}
+
+fn buffer_position(buffer: &Buffer, needle: &str) -> (u16, u16) {
+    for row in 0..buffer.area.height {
+        let line = (0..buffer.area.width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect::<String>();
+        if let Some(column) = line.find(needle) {
+            return (u16::try_from(column).unwrap(), row);
+        }
+    }
+    panic!("expected rendered text: {needle}");
 }
 
 #[test]
@@ -1221,4 +1239,569 @@ fn the_run_footer_advertises_both_navigation_directions() {
         key(KeyCode::BackTab, KeyModifiers::SHIFT),
     );
     assert_eq!(focused(&state), Some(0));
+}
+
+#[test]
+fn central_session_run_control_event_matrix_keeps_widget_priority() {
+    let mut state = state_with_form(form());
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 72, 20);
+
+    for (code, modifiers, expected) in [
+        (KeyCode::Char('r'), KeyModifiers::CONTROL, Action::Submit),
+        (
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+            Action::OpenRunPresetSave,
+        ),
+        (
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL,
+            Action::OpenRunTokenMenu,
+        ),
+        (
+            KeyCode::Char('o'),
+            KeyModifiers::CONTROL,
+            Action::ResetFocusedRunField,
+        ),
+        (
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL,
+            Action::OpenRunRunnerEditor,
+        ),
+        (KeyCode::Esc, KeyModifiers::NONE, Action::Back),
+    ] {
+        assert_eq!(
+            session.handle_event(key(code, modifiers), &state, &geometry),
+            EventHandling::Action(expected)
+        );
+    }
+    let ctrl_c = key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(
+        session.handle_event(ctrl_c.clone(), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(ctrl_c, &state, &geometry),
+        EventHandling::Action(Action::Quit)
+    );
+    for code in [KeyCode::PageUp, KeyCode::PageDown] {
+        assert_eq!(
+            session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry),
+            EventHandling::Consumed
+        );
+    }
+
+    let field_index = |key: &str| {
+        state
+            .run_form()
+            .unwrap()
+            .fields()
+            .iter()
+            .position(|field| field.key == key)
+            .unwrap()
+    };
+    let name = field_index("value:name");
+    let enabled = field_index("value:enabled");
+    let format = field_index("value:format");
+    state.update(Action::FocusField(name));
+    for code in [KeyCode::Enter, KeyCode::Down, KeyCode::Up, KeyCode::Null] {
+        let _ = session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry);
+    }
+    let typed = session.handle_event(
+        key(KeyCode::Char('x'), KeyModifiers::NONE),
+        &state,
+        &geometry,
+    );
+    assert!(matches!(typed, EventHandling::Action(_)), "{typed:?}");
+    assert!(matches!(
+        session.handle_event(Event::Paste("paste".to_owned()), &state, &geometry),
+        EventHandling::Action(Action::SetFieldValue { field, .. }) if field == name
+    ));
+
+    state.update(Action::FocusField(enabled));
+    for code in [
+        KeyCode::Char(' '),
+        KeyCode::Enter,
+        KeyCode::Down,
+        KeyCode::Up,
+        KeyCode::Null,
+    ] {
+        let _ = session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry);
+    }
+    assert_eq!(
+        session.handle_event(Event::Paste("ignored".to_owned()), &state, &geometry),
+        EventHandling::Ignored
+    );
+
+    state.update(Action::FocusField(format));
+    for code in [
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Char(' '),
+        KeyCode::Enter,
+        KeyCode::Down,
+        KeyCode::Up,
+        KeyCode::Null,
+    ] {
+        let _ = session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry);
+    }
+    for event in [
+        mouse_with_kind(MouseEventKind::Moved, 0, 0),
+        mouse_with_kind(MouseEventKind::Up(MouseButton::Left), 0, 0),
+        Event::FocusGained,
+        Event::FocusLost,
+        Event::Resize(2, 2),
+        Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+            ratatui_crossterm::crossterm::event::KeyEventKind::Release,
+        )),
+    ] {
+        assert_eq!(
+            session.handle_event(event, &state, &geometry),
+            EventHandling::Ignored
+        );
+    }
+    let _ = session.handle_event(
+        mouse_with_kind(MouseEventKind::ScrollDown, geometry.rows.x, geometry.rows.y),
+        &state,
+        &geometry,
+    );
+    for hit in &geometry.hits {
+        let _ = session.handle_event(mouse(hit.rect.x, hit.rect.y), &state, &geometry);
+    }
+}
+
+#[test]
+fn central_session_picker_textarea_and_generic_form_matrix_uses_public_screens() {
+    let multiline = ParamDecl::new("lines");
+    let form = with_multiline_run_field(
+        RunFormView::from_declarations(
+            "matrix",
+            "Matrix",
+            &[multiline],
+            &BTreeMap::new(),
+            &["a", "b", "c", "d", "e"].map(str::to_owned),
+            "a",
+            &BTreeMap::new(),
+            "",
+        ),
+        1,
+    );
+    let mut state = state_with_form(form);
+    state.update(Action::FocusField(0));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 54, 16);
+    assert_eq!(
+        session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Ignored
+    );
+    assert_eq!(
+        session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed
+    );
+    for code in [
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Char(' '),
+    ] {
+        let _ = session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry);
+    }
+    let (_, open) = draw(&mut session, &state, 54, 16);
+    for hit in &open.hits {
+        let _ = session.handle_event(mouse(hit.rect.x, hit.rect.y), &state, &open);
+    }
+    state.update(Action::FocusField(0));
+    let (_, picker_geometry) = draw(&mut session, &state, 54, 16);
+    let _ = session.handle_event(
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        &state,
+        &picker_geometry,
+    );
+    assert_eq!(
+        session.handle_event(
+            key(KeyCode::Left, KeyModifiers::NONE),
+            &state,
+            &picker_geometry,
+        ),
+        EventHandling::Ignored
+    );
+    let (terminal, picker_geometry) = draw(&mut session, &state, 54, 16);
+    let picker_hit = picker_geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(0))
+        .unwrap();
+    assert_eq!(
+        session.handle_event(
+            mouse(picker_hit.rect.x, picker_hit.rect.y),
+            &state,
+            &picker_geometry,
+        ),
+        EventHandling::Consumed
+    );
+    assert!(buffer_text(terminal.backend().buffer()).contains('a'));
+    state.update(Action::FocusField(1));
+    let (_, textarea_geometry) = draw(&mut session, &state, 54, 16);
+    for code in [
+        KeyCode::Char('x'),
+        KeyCode::Enter,
+        KeyCode::Tab,
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::Left,
+        KeyCode::Right,
+        KeyCode::Home,
+        KeyCode::End,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::Backspace,
+        KeyCode::Delete,
+        KeyCode::Null,
+    ] {
+        let _ = session.handle_event(key(code, KeyModifiers::NONE), &state, &textarea_geometry);
+    }
+    for (code, modifiers) in [
+        (KeyCode::Char('z'), KeyModifiers::CONTROL),
+        (
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ),
+        (KeyCode::Char('y'), KeyModifiers::CONTROL),
+    ] {
+        let _ = session.handle_event(key(code, modifiers), &state, &textarea_geometry);
+    }
+    let pasted = session.handle_event(
+        Event::Paste("one\ntwo".to_owned()),
+        &state,
+        &textarea_geometry,
+    );
+    assert!(
+        matches!(
+            pasted,
+            EventHandling::Action(Action::SetFieldValue { field: 1, .. })
+        ),
+        "{pasted:?}"
+    );
+
+    let mut generic = LibraryState::default();
+    generic.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Generic".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: Some("demo".to_owned()),
+        fields: vec![
+            FormField::text("name", "Name", "value"),
+            FormField::multiline("body", "Body", "line"),
+        ],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    let (_, generic_geometry) = draw(&mut session, &generic, 50, 14);
+    for event in [
+        key(KeyCode::Char('s'), KeyModifiers::CONTROL),
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        key(KeyCode::Tab, KeyModifiers::NONE),
+        key(KeyCode::BackTab, KeyModifiers::SHIFT),
+        key(KeyCode::Enter, KeyModifiers::NONE),
+        key(KeyCode::Down, KeyModifiers::NONE),
+        key(KeyCode::Up, KeyModifiers::NONE),
+        key(KeyCode::PageDown, KeyModifiers::NONE),
+        key(KeyCode::Null, KeyModifiers::NONE),
+        Event::Paste("typed".to_owned()),
+        mouse_with_kind(MouseEventKind::Moved, 0, 0),
+        mouse_with_kind(MouseEventKind::Up(MouseButton::Left), 0, 0),
+        Event::FocusGained,
+        Event::Resize(1, 1),
+    ] {
+        let _ = session.handle_event(event, &generic, &generic_geometry);
+    }
+    for hit in &generic_geometry.hits {
+        let _ = session.handle_event(mouse(hit.rect.x, hit.rect.y), &generic, &generic_geometry);
+    }
+    generic.update(Action::FocusField(1));
+    let (_, generic_textarea_geometry) = draw(&mut session, &generic, 24, 8);
+    for (code, modifiers) in [
+        (KeyCode::Char('x'), KeyModifiers::NONE),
+        (KeyCode::Enter, KeyModifiers::NONE),
+        (KeyCode::Up, KeyModifiers::NONE),
+        (KeyCode::Down, KeyModifiers::NONE),
+        (KeyCode::Null, KeyModifiers::NONE),
+        (KeyCode::Char('z'), KeyModifiers::CONTROL),
+        (
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ),
+    ] {
+        let _ = session.handle_event(key(code, modifiers), &generic, &generic_textarea_geometry);
+    }
+    assert!(matches!(
+        session.handle_event(
+            Event::Paste("multi\nline".to_owned()),
+            &generic,
+            &generic_textarea_geometry,
+        ),
+        EventHandling::Action(Action::SetFieldValue { field: 1, .. })
+    ));
+    generic.update(Action::FocusField(0));
+    let (_, input_geometry) = draw(&mut session, &generic, 50, 14);
+    let input = session.handle_event(
+        key(KeyCode::Char('x'), KeyModifiers::NONE),
+        &generic,
+        &input_geometry,
+    );
+    if let EventHandling::Action(action) = input {
+        generic.update(action);
+    }
+    assert_eq!(
+        session.handle_event(
+            key(KeyCode::Left, KeyModifiers::NONE),
+            &generic,
+            &input_geometry,
+        ),
+        EventHandling::Consumed
+    );
+
+    let mut scrolling = LibraryState::default();
+    scrolling.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Scrolling".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: (0..8)
+            .map(|index| FormField::multiline(format!("f{index}"), "Body", "line"))
+            .collect(),
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    let (_, scrolling_geometry) = draw(&mut session, &scrolling, 30, 8);
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(
+                MouseEventKind::ScrollDown,
+                scrolling_geometry.rows.x,
+                scrolling_geometry.rows.y,
+            ),
+            &scrolling,
+            &scrolling_geometry,
+        ),
+        EventHandling::Consumed
+    );
+    scrolling.update(Action::FocusField(7));
+    let (_, _) = draw(&mut session, &scrolling, 30, 8);
+    scrolling.update(Action::FocusField(0));
+    let (_, _) = draw(&mut session, &scrolling, 30, 8);
+}
+
+#[test]
+fn central_session_serialized_run_contract_covers_notes_validation_and_tiny_layouts() {
+    let mut ratio = ParamDecl::new("ratio");
+    ratio.parameter_type = ParameterType::Float;
+    ratio.required = true;
+    ratio.degraded = true;
+    ratio.help = "A visible ratio help row".to_owned();
+    ratio.env_source = "RATIO".to_owned();
+
+    let mut choice = ParamDecl::new("choice");
+    choice.parameter_type = ParameterType::Choice;
+    choice.choices = ["first-long-label", "second-long-label", "third-long-label"]
+        .map(str::to_owned)
+        .to_vec();
+
+    let mut path = ParamDecl::new("path");
+    path.parameter_type = ParameterType::Path;
+    path.multiple = true;
+
+    let mut enabled = ParamDecl::new("enabled");
+    enabled.parameter_type = ParameterType::Bool;
+
+    let form = RunFormView::from_declarations(
+        "coverage",
+        "Coverage",
+        &[ratio, choice, path, enabled],
+        &BTreeMap::from([
+            ("ratio".to_owned(), "{env:MISSING}".to_owned()),
+            ("path".to_owned(), "*.missing".to_owned()),
+        ]),
+        &["runner".to_owned()],
+        "runner",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: None,
+            env: BTreeMap::new(),
+            today: "2026-08-20".to_owned(),
+            now: "12-00-00".to_owned(),
+        },
+    });
+    let mut value = serde_json::to_value(form).unwrap();
+    value["degraded_reason"] = "dynamic".into();
+    value["drift_lines"] = serde_json::json!(["stored source drift"]);
+    value["fields"][1]["validation_error"] = "invalid_type".into();
+    value["fields"][2]["validation_error"] = "invalid_choice".into();
+    value["fields"][3]["validation_error"] = "invalid_choice".into();
+    value["fields"][4]["validation_error"] = "invalid_type".into();
+    value["fields"][5]["validation_error"] = "required".into();
+    value["fields"][3]["feedback"] = serde_json::json!({
+        "expanded": "/work/example",
+        "token_error": {
+            "missing_environment": {
+                "name": "MISSING",
+                "token": "{env:MISSING}"
+            }
+        },
+        "glob_count": 0
+    });
+    let form: RunFormView = serde_json::from_value(value).unwrap();
+    let mut state = state_with_form(form);
+    let mut session = TuiSession::default();
+
+    let (terminal, geometry) = draw(&mut session, &state, 34, 80);
+    let rendered = buffer_text(terminal.backend().buffer());
+    for expected in [
+        "stored source drift",
+        "couldn't read",
+        "required",
+        "ratio help",
+        "matches no files",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected}: {rendered}"
+        );
+    }
+    let (radio_x, radio_y) = buffer_position(terminal.backend().buffer(), "first-long-label");
+    assert!(matches!(
+        session.handle_event(mouse(radio_x, radio_y), &state, &geometry),
+        EventHandling::Action(Action::SelectFieldOption { .. })
+    ));
+    assert_eq!(
+        session.handle_event(mouse(0, 0), &state, &geometry),
+        EventHandling::Ignored
+    );
+
+    let mut invalid_text = serde_json::to_value(state.run_form().unwrap()).unwrap();
+    invalid_text["fields"][3]["validation_error"] = "invalid_type".into();
+    let invalid_text: RunFormView = serde_json::from_value(invalid_text).unwrap();
+    let invalid_text = state_with_form(invalid_text);
+    let mut invalid_text_session = TuiSession::default();
+    let (terminal, _) = draw(&mut invalid_text_session, &invalid_text, 72, 80);
+    assert!(buffer_text(terminal.backend().buffer()).contains("needs text"));
+
+    let (_, _) = draw(&mut session, &state, 1, 5);
+    state.update(Action::FocusField(5));
+    let (_, _) = draw(&mut session, &state, 20, 5);
+    state.update(Action::FocusField(0));
+    let (_, _) = draw(&mut session, &state, 20, 5);
+    for _ in 0..4 {
+        let _ = session.handle_event(
+            key(KeyCode::PageDown, KeyModifiers::NONE),
+            &state,
+            &geometry,
+        );
+    }
+    let (_, _) = draw(&mut session, &state, 72, 100);
+
+    let mut subcommands = state.run_form().unwrap().clone();
+    subcommands.degraded_reason = Some("subcommands".to_owned());
+    let subcommands = state_with_form(subcommands);
+    let mut session = TuiSession::default();
+    let (terminal, _) = draw(&mut session, &subcommands, 72, 18);
+    assert!(buffer_text(terminal.backend().buffer()).contains("subcommands"));
+
+    let mut empty_choice = serde_json::to_value(state.run_form().unwrap()).unwrap();
+    empty_choice["fields"][2]["control"] = serde_json::json!({
+        "choice": {
+            "options": [],
+            "selected": "",
+            "presentation": "radio"
+        }
+    });
+    empty_choice["focused"] = 2.into();
+    let empty_choice: RunFormView = serde_json::from_value(empty_choice).unwrap();
+    let empty_choice = state_with_form(empty_choice);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &empty_choice, 72, 18);
+    assert_eq!(
+        session.handle_event(
+            key(KeyCode::Left, KeyModifiers::NONE),
+            &empty_choice,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+}
+
+#[test]
+fn central_session_modal_insertion_preserves_serialized_control_boundaries() {
+    let text = ParamDecl::new("text");
+    let mut toggle = ParamDecl::new("toggle");
+    toggle.parameter_type = ParameterType::Bool;
+    let form = with_multiline_run_field(
+        RunFormView::from_declarations(
+            "modal",
+            "Modal",
+            &[text, toggle],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        )
+        .with_context(RunFormContext {
+            entry_kind: "python".to_owned(),
+            path: None,
+            tokens: TokenContext {
+                cwd: "/invoke".to_owned(),
+                home: None,
+                env: BTreeMap::new(),
+                today: "2026-08-20".to_owned(),
+                now: "12-00-00".to_owned(),
+            },
+        }),
+        0,
+    );
+    let mut state = state_with_form(form);
+    state.update(Action::OpenRunTokenMenuFor(0));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 72, 20);
+    assert!(matches!(
+        session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Action(Action::SetRunFieldValueAndCloseModal { field: 0, .. })
+    ));
+
+    for field in [1_usize, 999] {
+        let mut value = serde_json::to_value(&state).unwrap();
+        value["modal"] = serde_json::json!({
+            "run_token_menu": {
+                "field": field,
+                "options": ["today"]
+            }
+        });
+        let malformed: LibraryState = serde_json::from_value(value).unwrap();
+        let (_, geometry) = draw(&mut session, &malformed, 72, 20);
+        assert_eq!(
+            session.handle_event(
+                key(KeyCode::Enter, KeyModifiers::NONE),
+                &malformed,
+                &geometry,
+            ),
+            EventHandling::Ignored
+        );
+    }
 }

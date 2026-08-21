@@ -6,7 +6,7 @@ use skit_i18n::Locale;
 use skit_tui::{EventHandling, TuiSession, ViewGeometry, render_with_session};
 use skit_ui::{
     Action, HealthAction, HealthIssue, HealthIssueKind, HealthSnapshot, HealthView, LibraryState,
-    MirrorHealth, ModalState, RunFormView, RunnerEditorAction, RunnerEditorOwner,
+    MirrorHealth, ModalState, RunFormView, RunnerEditorAction, RunnerEditorOwner, RunnerEditorView,
     RunnerManagerAction, RunnerManagerView, RunnerRow, RunnerRowIdentity, Screen, UvHealth,
 };
 use std::collections::BTreeMap;
@@ -115,6 +115,26 @@ fn health_screen_routes_every_advertised_keyboard_and_mouse_action() {
         session.handle_event(mouse(x, y), &state, &geometry),
         EventHandling::Action(Action::Health(HealthAction::Rebuild))
     );
+    assert_eq!(
+        session.handle_event(key(KeyCode::Null, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Ignored
+    );
+
+    let mut empty = health();
+    empty = HealthView::new(HealthSnapshot {
+        issues: Vec::new(),
+        ..empty.snapshot().clone()
+    });
+    state.update(Action::Present(Screen::Health(Box::new(empty))));
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        session.handle_event(
+            key(KeyCode::PageDown, KeyModifiers::NONE),
+            &state,
+            &geometry
+        ),
+        EventHandling::Consumed
+    );
 }
 
 #[test]
@@ -136,6 +156,20 @@ fn runner_manager_and_shared_modal_use_typed_mature_widget_sessions() {
         ),
         EventHandling::Action(Action::Runners(RunnerManagerAction::New))
     );
+    assert_eq!(
+        session.handle_event(key(KeyCode::Null, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Ignored
+    );
+    state.update(Action::Runners(RunnerManagerAction::New));
+    let (_, geometry) = draw(&mut session, &state);
+    state.update(Action::Runners(RunnerManagerAction::Editor(
+        RunnerEditorAction::SetName("x".to_owned()),
+    )));
+    assert_eq!(
+        session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed
+    );
+    state.update(Action::Runners(RunnerManagerAction::CancelEditor));
 
     let run = RunFormView::from_declarations(
         "prompt",
@@ -172,9 +206,27 @@ fn runner_manager_and_shared_modal_use_typed_mature_widget_sessions() {
             "界".to_owned(),
         )))
     );
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetName(
+        "界".to_owned(),
+    )));
+    assert_eq!(
+        session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(key(KeyCode::Null, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Ignored
+    );
     let (x, y) = cell_position(buffer, "Esc Cancel");
     assert_eq!(
         session.handle_event(mouse(x, y), &state, &geometry),
         EventHandling::Action(Action::RunnerEditor(RunnerEditorAction::Cancel))
     );
+
+    let mut serialized = serde_json::to_value(&state).unwrap();
+    serialized["modal"]["runner_editor"]["view"] =
+        serde_json::to_value(RunnerEditorView::edit(&runner("codex"))).unwrap();
+    let editing: LibraryState = serde_json::from_value(serialized).unwrap();
+    let (terminal, _) = draw(&mut session, &editing);
+    assert!(rendered_text(terminal.backend().buffer()).contains("Edit agent (runner)"));
 }

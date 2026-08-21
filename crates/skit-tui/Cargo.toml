@@ -24,7 +24,9 @@ skit-ui.workspace = true
 skit-domain.workspace = true
 
 [dev-dependencies]
+portable-pty.workspace = true
 skit-i18n.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

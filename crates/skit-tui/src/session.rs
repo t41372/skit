@@ -73,6 +73,24 @@ pub enum EventHandling {
     Ignored,
 }
 
+/// One header shape that can own visible rows in the terminal layout.
+pub(crate) enum HeaderKind<'a> {
+    Help,
+    ConfirmRemove,
+    ConfirmDiscardChanges,
+    RunPresetName,
+    RunTokenMenu,
+    RunEnvironmentPicker,
+    RunFilePicker,
+    RunnerEditor(skit_ui::RunnerEditorMode),
+    Library { query: &'a str, search: bool },
+    Preferences,
+    Add,
+    Health,
+    Runners,
+    Report(&'a str),
+}
+
 /// Stateful terminal widget session. This state is not serialized into `skit-ui`.
 #[derive(Debug, Default)]
 pub struct TuiSession {
@@ -126,7 +144,7 @@ enum SessionHit {
     Target(HitTarget),
     Checkbox(usize),
     Select(usize),
-    RadioOption { field: usize, option: usize },
+    RadioOption { field: usize, value: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,7 +233,8 @@ struct RunChip {
 #[derive(Debug, Default)]
 struct FormWidgetSession {
     signature: Option<Vec<FieldSignature>>,
-    controls: Vec<WidgetControl>,
+    controls: Vec<FormWidgetControl>,
+    clicks: ClickRegionRegistry<usize>,
     focus: FocusManager<usize>,
     scroll: ScrollableContentState,
     viewport: Rect,
@@ -223,6 +242,21 @@ struct FormWidgetSession {
     row_starts: Vec<usize>,
     row_heights: Vec<usize>,
     pending_ensure_focus: bool,
+}
+
+#[derive(Debug)]
+enum FormWidgetControl {
+    Input {
+        state: LineInput,
+        secret: bool,
+        focused: bool,
+    },
+    TextArea {
+        state: Box<RichTextArea<'static>>,
+        focused: bool,
+        undo_group: usize,
+        redo_group: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -386,9 +420,6 @@ impl TuiSession {
                 }
             };
         }
-        if let Some(modal) = state.modal() {
-            self.run_modal.sync(modal);
-        }
         if let Screen::Form(form) = state.screen() {
             self.form.sync(form);
             return match event {
@@ -466,13 +497,12 @@ impl TuiSession {
                 EventHandling::Consumed
             }
             Some(AddScreenEvent::OpenPromptCandidates) => {
-                let Some(picker) = view.review().map(skit_ui::ReviewState::prompt_picker) else {
-                    return EventHandling::Ignored;
-                };
-                self.add_overlay = Some(AddOverlay::Prompt {
-                    session: PromptCandidatePickerSession::new(picker),
-                    geometry: ChoicePickerGeometry::default(),
-                });
+                if let Some(picker) = view.review().map(skit_ui::ReviewState::prompt_picker) {
+                    self.add_overlay = Some(AddOverlay::Prompt {
+                        session: PromptCandidatePickerSession::new(picker),
+                        geometry: ChoicePickerGeometry::default(),
+                    });
+                }
                 EventHandling::Consumed
             }
             Some(AddScreenEvent::OpenRunnerEditor) => {
@@ -551,66 +581,57 @@ impl TuiSession {
         &mut self,
         frame: &mut Frame,
         area: Rect,
-        state: &LibraryState,
+        kind: HeaderKind<'_>,
         locale: Locale,
     ) {
-        let title = match state.modal() {
-            Some(ModalState::Help) => text(locale, "Help").into_owned(),
-            Some(ModalState::ConfirmRemove { .. }) => text(locale, "Confirm removal").into_owned(),
-            Some(ModalState::ConfirmDiscardChanges) => {
+        let library_browse = matches!(&kind, HeaderKind::Library { search: false, .. });
+        let title = match kind {
+            HeaderKind::Help => text(locale, "Help").into_owned(),
+            HeaderKind::ConfirmRemove => text(locale, "Confirm removal").into_owned(),
+            HeaderKind::ConfirmDiscardChanges => {
                 text(locale, "Discard unsaved changes?").into_owned()
             }
-            Some(ModalState::RunPresetName { .. }) => text(locale, "Save as preset").into_owned(),
-            Some(ModalState::RunTokenMenu { .. }) => {
-                text(locale, "Insert a run-time value").into_owned()
-            }
-            Some(ModalState::RunEnvironmentPicker { .. }) => {
-                text(locale, "Environment variable").into_owned()
-            }
-            Some(ModalState::RunFilePicker { .. }) => {
-                text(locale, "Insert a file or folder").into_owned()
-            }
-            Some(ModalState::RunnerEditor { view, .. }) => match view.mode() {
+            HeaderKind::RunPresetName => text(locale, "Save as preset").into_owned(),
+            HeaderKind::RunTokenMenu => text(locale, "Insert a run-time value").into_owned(),
+            HeaderKind::RunEnvironmentPicker => text(locale, "Environment variable").into_owned(),
+            HeaderKind::RunFilePicker => text(locale, "Insert a file or folder").into_owned(),
+            HeaderKind::RunnerEditor(mode) => match mode {
                 skit_ui::RunnerEditorMode::New => text(locale, "New agent (runner)").into_owned(),
                 skit_ui::RunnerEditorMode::Edit | skit_ui::RunnerEditorMode::Repair => {
                     text(locale, "Edit agent (runner)").into_owned()
                 }
             },
-            None => match state.screen() {
-                Screen::Library if state.input_mode() == InputMode::Search => {
-                    self.search.sync(state.query());
-                    let label = text(locale, "Search");
-                    if area.height < 3 {
-                        render_flat_search_input(frame, area, &self.search.input, &label);
-                    } else {
-                        render_line_input(frame, area, &self.search.input, false, true, &label);
-                    }
-                    self.clicks.register(area, SessionHit::SearchInput);
-                    return;
+            HeaderKind::Library {
+                query,
+                search: true,
+            } => {
+                self.search.sync(query);
+                let label = text(locale, "Search");
+                if area.height < 3 {
+                    render_flat_search_input(frame, area, &self.search.input, &label);
+                } else {
+                    render_line_input(frame, area, &self.search.input, false, true, &label);
                 }
-                Screen::Library => format!(
-                    "{}: {}",
-                    text(locale, "Library"),
-                    if state.query().is_empty() {
-                        text(locale, "all entries").into_owned()
-                    } else {
-                        state.query().to_owned()
-                    }
-                ),
-                Screen::Run(form) => format_text(locale, "Run {}", &[&form.name()]),
-                Screen::Preferences(_) => text(locale, "Preferences").into_owned(),
-                // Version 0.4 names the entry on this screen, because settings for the wrong
-                // entry look exactly like settings for the right one
-                // (`src/skit/tui_settings.py:869-871`).
-                Screen::Settings(view) => {
-                    format_text(locale, "Entry settings · {}", &[&view.title])
+                self.clicks.register(area, SessionHit::SearchInput);
+                return;
+            }
+            HeaderKind::Library {
+                query,
+                search: false,
+            } => format!(
+                "{}: {}",
+                text(locale, "Library"),
+                if query.is_empty() {
+                    text(locale, "all entries").into_owned()
+                } else {
+                    query.to_owned()
                 }
-                Screen::Add(_) => text(locale, "Add").into_owned(),
-                Screen::Health(_) => text(locale, "Health").into_owned(),
-                Screen::Runners(_) => text(locale, "Agents (prompt runners)").into_owned(),
-                Screen::Form(form) => crate::form_title(locale, form),
-                Screen::Report(report) => text(locale, &report.title).into_owned(),
-            },
+            ),
+            HeaderKind::Preferences => text(locale, "Preferences").into_owned(),
+            HeaderKind::Add => text(locale, "Add").into_owned(),
+            HeaderKind::Health => text(locale, "Health").into_owned(),
+            HeaderKind::Runners => text(locale, "Agents (prompt runners)").into_owned(),
+            HeaderKind::Report(title) => text(locale, title).into_owned(),
         };
         frame.render_widget(
             Paragraph::new(title).block(
@@ -621,7 +642,7 @@ impl TuiSession {
             ),
             area,
         );
-        if state.modal().is_none() && matches!(state.screen(), Screen::Library) {
+        if library_browse {
             self.clicks.register(area, SessionHit::SearchInput);
         }
     }
@@ -634,6 +655,7 @@ impl TuiSession {
         locale: Locale,
     ) -> ViewGeometry {
         self.form.sync(form);
+        self.form.clicks.clear();
         let block = panel_block(crate::form_title(locale, form), BOX_MAROON);
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -646,18 +668,16 @@ impl TuiSession {
             };
             let label = crate::field_label(locale, field);
             match &mut self.form.controls[index] {
-                WidgetControl::Input {
+                FormWidgetControl::Input {
                     state,
                     secret,
                     focused,
                 } => render_line_input(frame, row, state, *secret, *focused, &label),
-                WidgetControl::TextArea { state, focused, .. } => {
+                FormWidgetControl::TextArea { state, focused, .. } => {
                     render_textarea(frame, row, state, *focused, &label);
                 }
-                WidgetControl::Checkbox(_) | WidgetControl::Choice { .. } => {}
             }
-            self.clicks
-                .register(row, SessionHit::Target(HitTarget::FocusField(index)));
+            self.form.clicks.register(row, index);
             hits.push(HitRegion {
                 rect: row,
                 action: HitTarget::FocusField(index),
@@ -1017,33 +1037,29 @@ impl TuiSession {
             } => {
                 let mut x = area.x;
                 let mut y = area.y;
-                for (option, (option_label, button)) in
-                    options.iter().zip(buttons.iter()).enumerate()
-                {
-                    let width = u16::try_from(option_label.width().saturating_add(2))
-                        .unwrap_or(u16::MAX)
-                        .min(area.width.max(1));
-                    if x > area.x && x.saturating_add(width) > area.right() {
-                        x = area.x;
-                        y = y.saturating_add(1);
+                if area.width > 0 {
+                    for (option_label, button) in options.iter().zip(buttons.iter()) {
+                        let width = u16::try_from(option_label.width().saturating_add(2))
+                            .unwrap_or(u16::MAX)
+                            .min(area.width);
+                        if x > area.x && x.saturating_add(width) > area.right() {
+                            x = area.x;
+                            y = y.saturating_add(1);
+                        }
+                        let option_area = Rect::new(x, y, width, 1);
+                        let region = Button::new(option_label, button)
+                            .variant(ButtonVariant::Toggle)
+                            .style(radio_style())
+                            .render_stateful(option_area, frame.buffer_mut());
+                        self.clicks.register(
+                            region.area,
+                            SessionHit::RadioOption {
+                                field: index,
+                                value: option_label.clone(),
+                            },
+                        );
+                        x = x.saturating_add(width).saturating_add(1);
                     }
-                    let width = width.min(area.right().saturating_sub(x));
-                    if width == 0 {
-                        break;
-                    }
-                    let option_area = Rect::new(x, y, width, 1);
-                    let region = Button::new(option_label, button)
-                        .variant(ButtonVariant::Toggle)
-                        .style(radio_style())
-                        .render_stateful(option_area, frame.buffer_mut());
-                    self.clicks.register(
-                        region.area,
-                        SessionHit::RadioOption {
-                            field: index,
-                            option,
-                        },
-                    );
-                    x = x.saturating_add(width).saturating_add(1);
                 }
                 let field_area = area;
                 self.clicks
@@ -1066,21 +1082,20 @@ impl TuiSession {
     ) {
         for chip in chips {
             let width = chip.width.min(area.width.saturating_sub(chip.x));
-            if width == 0 {
-                continue;
+            if width > 0 {
+                let chip_area = Rect::new(area.x.saturating_add(chip.x), area.y, width, 1);
+                let state = ButtonState::enabled();
+                let region = Button::new(&chip.label, &state)
+                    .variant(ButtonVariant::SingleLine)
+                    .style(run_chip_style())
+                    .render_stateful(chip_area, frame.buffer_mut());
+                self.clicks
+                    .register(region.area, SessionHit::Target(chip.target));
+                hits.push(HitRegion {
+                    rect: region.area,
+                    action: chip.target,
+                });
             }
-            let chip_area = Rect::new(area.x.saturating_add(chip.x), area.y, width, 1);
-            let state = ButtonState::enabled();
-            let region = Button::new(&chip.label, &state)
-                .variant(ButtonVariant::SingleLine)
-                .style(run_chip_style())
-                .render_stateful(chip_area, frame.buffer_mut());
-            self.clicks
-                .register(region.area, SessionHit::Target(chip.target));
-            hits.push(HitRegion {
-                rect: region.area,
-                action: chip.target,
-            });
         }
     }
 
@@ -1113,9 +1128,6 @@ impl TuiSession {
             return handling;
         }
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                return EventHandling::Action(Action::Quit);
-            }
             (KeyCode::Char('r'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 return EventHandling::Action(Action::Submit);
             }
@@ -1390,23 +1402,22 @@ impl TuiSession {
             }
         }
 
-        let Some(hit) = self.clicks.handle_click(mouse.column, mouse.row).cloned() else {
-            let _ = geometry;
-            return EventHandling::Ignored;
-        };
-        match hit {
-            SessionHit::SearchInput => EventHandling::Action(Action::BeginSearch),
-            SessionHit::Target(HitTarget::Command(command)) => {
+        match self.clicks.handle_click(mouse.column, mouse.row).cloned() {
+            None | Some(SessionHit::SearchInput) => {
+                let _ = geometry;
+                EventHandling::Ignored
+            }
+            Some(SessionHit::Target(HitTarget::Command(command))) => {
                 EventHandling::Action(command_action(command, geometry))
             }
-            SessionHit::Target(HitTarget::RunFieldCommand { field, command }) => {
+            Some(SessionHit::Target(HitTarget::RunFieldCommand { field, command })) => {
                 EventHandling::Action(run_field_command_action(field, command))
             }
-            SessionHit::Target(HitTarget::FocusField(index)) => {
+            Some(SessionHit::Target(HitTarget::FocusField(index))) => {
                 EventHandling::Action(Action::FocusField(index))
             }
-            SessionHit::Checkbox(index) => EventHandling::Action(Action::ToggleField(index)),
-            SessionHit::Select(index) => {
+            Some(SessionHit::Checkbox(index)) => EventHandling::Action(Action::ToggleField(index)),
+            Some(SessionHit::Select(index)) => {
                 if let Some(WidgetControl::Choice { state, .. }) = self.run.controls.get_mut(index)
                 {
                     state.open();
@@ -1417,19 +1428,7 @@ impl TuiSession {
                     EventHandling::Action(Action::FocusField(index))
                 }
             }
-            SessionHit::RadioOption { field, option } => {
-                let value = self
-                    .run
-                    .controls
-                    .get(field)
-                    .and_then(|control| match control {
-                        WidgetControl::Choice { options, .. } => options.get(option),
-                        WidgetControl::Input { .. }
-                        | WidgetControl::TextArea { .. }
-                        | WidgetControl::Checkbox(_) => None,
-                    })
-                    .cloned()
-                    .unwrap_or_default();
+            Some(SessionHit::RadioOption { field, value }) => {
                 EventHandling::Action(Action::SelectFieldOption { field, value })
             }
         }
@@ -1438,9 +1437,6 @@ impl TuiSession {
     fn handle_form_key(&mut self, key: KeyEvent, form: &FormView) -> EventHandling {
         let focused = form.focused.min(self.form.controls.len().saturating_sub(1));
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                return EventHandling::Action(Action::Quit);
-            }
             (KeyCode::Char('s'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 return EventHandling::Action(Action::Submit);
             }
@@ -1451,7 +1447,7 @@ impl TuiSession {
         }
 
         match &mut self.form.controls[focused] {
-            WidgetControl::Input { state, .. } => {
+            FormWidgetControl::Input { state, .. } => {
                 let before = state.value().to_owned();
                 let response = state.handle_event(&Event::Key(key));
                 if response.is_none() {
@@ -1478,7 +1474,7 @@ impl TuiSession {
                     })
                 }
             }
-            WidgetControl::TextArea {
+            FormWidgetControl::TextArea {
                 state,
                 undo_group,
                 redo_group,
@@ -1499,14 +1495,13 @@ impl TuiSession {
                     })
                 }
             }
-            WidgetControl::Checkbox(_) | WidgetControl::Choice { .. } => EventHandling::Ignored,
         }
     }
 
     fn handle_form_paste(&mut self, value: &str, form: &FormView) -> EventHandling {
         let focused = form.focused.min(self.form.controls.len().saturating_sub(1));
         match &mut self.form.controls[focused] {
-            WidgetControl::Input { state, .. } => {
+            FormWidgetControl::Input { state, .. } => {
                 for character in value.chars() {
                     let _ = state.handle(InputRequest::InsertChar(character));
                 }
@@ -1515,7 +1510,7 @@ impl TuiSession {
                     value: state.value().to_owned(),
                 })
             }
-            WidgetControl::TextArea {
+            FormWidgetControl::TextArea {
                 state,
                 undo_group,
                 redo_group,
@@ -1530,7 +1525,6 @@ impl TuiSession {
                     value: textarea_text(state),
                 })
             }
-            WidgetControl::Checkbox(_) | WidgetControl::Choice { .. } => EventHandling::Ignored,
         }
     }
 
@@ -1551,25 +1545,16 @@ impl TuiSession {
         if !matches!(mouse.kind, MouseEventKind::Down(_)) {
             return EventHandling::Ignored;
         }
-        let Some(hit) = self.clicks.handle_click(mouse.column, mouse.row).cloned() else {
+        let Some(index) = self
+            .form
+            .clicks
+            .handle_click(mouse.column, mouse.row)
+            .copied()
+        else {
             let _ = geometry;
             return EventHandling::Ignored;
         };
-        match hit {
-            SessionHit::SearchInput => EventHandling::Action(Action::BeginSearch),
-            SessionHit::Target(HitTarget::Command(command)) => {
-                EventHandling::Action(command_action(command, geometry))
-            }
-            SessionHit::Target(HitTarget::RunFieldCommand { field, command }) => {
-                EventHandling::Action(run_field_command_action(field, command))
-            }
-            SessionHit::Target(HitTarget::FocusField(index)) => {
-                EventHandling::Action(Action::FocusField(index))
-            }
-            SessionHit::Checkbox(_) | SessionHit::Select(_) | SessionHit::RadioOption { .. } => {
-                EventHandling::Ignored
-            }
-        }
+        EventHandling::Action(Action::FocusField(index))
     }
 
     fn move_focus(&mut self, forward: bool) -> EventHandling {
@@ -1712,7 +1697,7 @@ impl FormWidgetSession {
             self.pending_ensure_focus = true;
         } else {
             for (control, field) in self.controls.iter_mut().zip(&form.fields) {
-                control.sync_form_value(field);
+                control.sync_value(field);
             }
         }
         if self.focus.current() != Some(&form.focused) {
@@ -1774,6 +1759,33 @@ impl FormWidgetSession {
             self.viewport.width,
             u16::try_from(clipped_end.saturating_sub(clipped_start)).unwrap_or(u16::MAX),
         ))
+    }
+}
+
+impl FormWidgetControl {
+    fn sync_value(&mut self, field: &FormField) {
+        match self {
+            Self::Input { state, .. } if state.value() != field.value => {
+                *state = LineInput::new(field.value.clone());
+            }
+            Self::TextArea { state, .. } if textarea_text(state) != field.value => {
+                **state = new_textarea(&field.value);
+            }
+            Self::Input { .. } | Self::TextArea { .. } => {}
+        }
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        match self {
+            Self::Input {
+                focused: is_focused,
+                ..
+            }
+            | Self::TextArea {
+                focused: is_focused,
+                ..
+            } => *is_focused = focused,
+        }
     }
 }
 
@@ -1841,21 +1853,6 @@ impl WidgetControl {
             }
         }
     }
-
-    fn sync_form_value(&mut self, field: &FormField) {
-        match self {
-            Self::Input { state, .. } if state.value() != field.value => {
-                *state = LineInput::new(field.value.clone());
-            }
-            Self::TextArea { state, .. } if textarea_text(state) != field.value => {
-                **state = new_textarea(&field.value);
-            }
-            Self::Input { .. }
-            | Self::TextArea { .. }
-            | Self::Checkbox(_)
-            | Self::Choice { .. } => {}
-        }
-    }
 }
 
 fn field_signature(field: &RunField) -> FieldSignature {
@@ -1886,16 +1883,16 @@ fn form_field_signature(field: &FormField) -> FieldSignature {
     }
 }
 
-fn form_widget_control(field: &FormField) -> WidgetControl {
+fn form_widget_control(field: &FormField) -> FormWidgetControl {
     if field.multiline && !field.secret {
-        WidgetControl::TextArea {
+        FormWidgetControl::TextArea {
             state: Box::new(new_textarea(&field.value)),
             focused: false,
             undo_group: 0,
             redo_group: 0,
         }
     } else {
-        WidgetControl::Input {
+        FormWidgetControl::Input {
             state: LineInput::new(field.value.clone()),
             secret: field.secret,
             focused: false,

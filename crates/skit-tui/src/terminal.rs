@@ -20,6 +20,18 @@ use thiserror::Error;
 
 use crate::{EventHandling, TuiSession, ViewGeometry, render_with_session};
 
+fn dispatch_event(
+    session: &mut TuiSession,
+    event: event::Event,
+    state: &LibraryState,
+    geometry: &ViewGeometry,
+) -> Option<Action> {
+    match session.handle_event(event, state, geometry) {
+        EventHandling::Action(action) => Some(action),
+        EventHandling::Consumed | EventHandling::Ignored => None,
+    }
+}
+
 /// A terminal lifecycle or input failure.
 #[derive(Debug, Error)]
 pub enum TuiError {
@@ -119,48 +131,42 @@ where
     terminal.clear()?;
     let mut session = TuiSession::default();
 
-    loop {
+    let outcome = loop {
         let mut geometry = ViewGeometry::default();
         terminal.draw(|frame| {
             geometry = render_with_session(frame, &state, locale, &mut session);
         })?;
-        let EventHandling::Action(action) = session.handle_event(event::read()?, &state, &geometry)
-        else {
-            continue;
-        };
-        let mut outcome = observe(&action);
-        let effect = state.update(action);
-        match effect {
-            Effect::None if outcome.is_some() => {
-                terminal.show_cursor()?;
-                return Ok(outcome);
-            }
-            Effect::None => {}
-            Effect::Quit => {
-                terminal.show_cursor()?;
-                return Ok(outcome);
-            }
-            effect => {
-                terminal.show_cursor()?;
-                suspend_terminal()?;
-                let (quit, host_outcome) = drain_host_effects_observed(
-                    &mut state,
-                    &mut host,
-                    effect,
-                    &mut locale,
-                    &mut observe,
-                )?;
-                if outcome.is_none() {
-                    outcome = host_outcome;
+        if let Some(action) = dispatch_event(&mut session, event::read()?, &state, &geometry) {
+            let mut outcome = observe(&action);
+            let effect = state.update(action);
+            match effect {
+                Effect::None if outcome.is_some() => break outcome,
+                Effect::None => {}
+                Effect::Quit => break outcome,
+                effect => {
+                    terminal.show_cursor()?;
+                    suspend_terminal()?;
+                    let (quit, host_outcome) = drain_host_effects_observed(
+                        &mut state,
+                        &mut host,
+                        effect,
+                        &mut locale,
+                        &mut observe,
+                    )?;
+                    if outcome.is_none() {
+                        outcome = host_outcome;
+                    }
+                    if quit || outcome.is_some() {
+                        break outcome;
+                    }
+                    resume_terminal()?;
+                    terminal.clear()?;
                 }
-                if quit || outcome.is_some() {
-                    return Ok(outcome);
-                }
-                resume_terminal()?;
-                terminal.clear()?;
             }
         }
-    }
+    };
+    terminal.show_cursor()?;
+    Ok(outcome)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -291,29 +297,30 @@ where
     terminal.clear()?;
     let mut session = TuiSession::default();
 
-    loop {
+    let values = loop {
         let mut geometry = ViewGeometry::default();
         terminal.draw(|frame| {
             geometry = render_with_session(frame, &state, locale, &mut session);
         })?;
-        let EventHandling::Action(action) = session.handle_event(event::read()?, &state, &geometry)
-        else {
-            continue;
-        };
-        if action == Action::Quit {
-            return Ok(None);
+        if let Some(action) = dispatch_event(&mut session, event::read()?, &state, &geometry) {
+            if action == Action::Quit {
+                break None;
+            }
+            // Escape inside a modal closes only that modal and keeps the form
+            // (`src/skit/tui_form.py:376-377` `action_cancel` dismisses the preset modal). The form
+            // itself is the last screen here, so Escape outside a modal cancels the collection.
+            if action == Action::Back && state.modal().is_none() {
+                break None;
+            }
+            let effect = state.update(action);
+            if let Some(values) = drain_collect_effects(&mut state, &mut host, effect, &mut locale)?
+            {
+                break values;
+            }
         }
-        // Escape inside a modal closes only that modal and keeps the form
-        // (`src/skit/tui_form.py:376-377` `action_cancel` dismisses the preset modal). The form
-        // itself is the last screen here, so Escape outside a modal cancels the collection.
-        if action == Action::Back && state.modal().is_none() {
-            return Ok(None);
-        }
-        let effect = state.update(action);
-        if let Some(values) = drain_collect_effects(&mut state, &mut host, effect, &mut locale)? {
-            return Ok(values);
-        }
-    }
+    };
+    terminal.show_cursor()?;
+    Ok(values)
 }
 
 /// Serve one effect chain for a collected form.
@@ -378,12 +385,17 @@ impl Drop for RestoreTerminal {
 mod tests {
     use super::*;
 
+    #[derive(Debug)]
     struct HostError;
 
     impl Localize for HostError {
         fn message(&self) -> Message {
             Message::new("entry not found: {}").with("demo")
         }
+    }
+
+    fn harmless_host(_effect: Effect) -> Result<Action, HostError> {
+        Ok(Action::ClearStatus)
     }
 
     #[test]
@@ -502,5 +514,151 @@ mod tests {
             Some(AddWorkflowOutcome::Cancelled)
         );
         assert_eq!(add_workflow_outcome(&Action::ClearStatus), None);
+    }
+
+    #[test]
+    fn public_add_opening_actions_finish_before_terminal_setup() {
+        assert_eq!(harmless_host(Effect::Quit).unwrap(), Action::ClearStatus);
+        let cancelled = run_add_workflow(
+            AddWorkflowState::new(Vec::new()),
+            vec![Action::AddCancelled],
+            harmless_host,
+            Locale::En,
+        )
+        .unwrap();
+        assert_eq!(cancelled, None);
+
+        let slug = Slug::parse("opened").unwrap();
+        let completed = run_add_workflow(
+            AddWorkflowState::new(Vec::new()),
+            vec![Action::AddCompleted {
+                surface: skit_application::library_detail::LibrarySurface::default(),
+                rerunnable: Vec::new(),
+                slug: slug.clone(),
+                message: "Added".to_owned(),
+            }],
+            harmless_host,
+            Locale::En,
+        )
+        .unwrap();
+        assert_eq!(completed, Some(slug));
+
+        let slug = Slug::parse("hosted").unwrap();
+        let hosted = run_add_workflow(
+            AddWorkflowState::new(Vec::new()),
+            vec![Action::Reload],
+            |effect| -> Result<Action, HostError> {
+                assert_eq!(effect, Effect::Reload);
+                Ok(Action::AddCompleted {
+                    surface: skit_application::library_detail::LibrarySurface::default(),
+                    rerunnable: Vec::new(),
+                    slug: slug.clone(),
+                    message: "Added".to_owned(),
+                })
+            },
+            Locale::En,
+        )
+        .unwrap();
+        assert_eq!(hosted, Some(slug));
+    }
+
+    #[test]
+    fn host_and_collection_drains_cover_quit_submit_locale_error_and_cycles() {
+        use std::collections::BTreeMap;
+
+        assert_eq!(
+            TuiError::EffectCycle.message().localize(Locale::En),
+            "terminal host effects did not settle"
+        );
+        let mut state = LibraryState::default();
+        let mut locale = Locale::En;
+        let mut host = |_effect| -> Result<Action, HostError> { Ok(Action::ClearStatus) };
+        assert!(drain_host_effects(&mut state, &mut host, Effect::Quit, &mut locale).unwrap());
+        let mut locale_host = |_effect| -> Result<Action, HostError> {
+            Ok(Action::PreferencesSaved {
+                locale: "zh-CN".to_owned(),
+                message: "saved".to_owned(),
+            })
+        };
+        assert!(
+            !drain_host_effects(&mut state, &mut locale_host, Effect::Reload, &mut locale,)
+                .unwrap()
+        );
+        assert_eq!(locale, Locale::ZhCn);
+
+        let values = BTreeMap::new();
+        let mut unused = harmless_host;
+        assert_eq!(
+            drain_collect_effects(&mut state, &mut unused, Effect::None, &mut locale).unwrap(),
+            None
+        );
+        assert_eq!(
+            drain_collect_effects(&mut state, &mut unused, Effect::Quit, &mut locale).unwrap(),
+            Some(None)
+        );
+        assert_eq!(
+            drain_collect_effects(
+                &mut state,
+                &mut unused,
+                Effect::Submit {
+                    purpose: skit_ui::FormPurpose::Add,
+                    selector: None,
+                    values: values.clone(),
+                },
+                &mut locale,
+            )
+            .unwrap(),
+            Some(Some(values))
+        );
+
+        let mut locale_host = |_effect| -> Result<Action, HostError> {
+            Ok(Action::PreferencesSaved {
+                locale: "zh-TW".to_owned(),
+                message: "saved".to_owned(),
+            })
+        };
+        let _ = drain_collect_effects(&mut state, &mut locale_host, Effect::Reload, &mut locale);
+        assert_eq!(locale, Locale::ZhTw);
+
+        let mut failed = |_effect| -> Result<Action, HostError> { Err(HostError) };
+        assert_eq!(
+            drain_collect_effects(&mut state, &mut failed, Effect::Reload, &mut locale).unwrap(),
+            None
+        );
+
+        let mut cycling = |_effect| -> Result<Action, HostError> { Ok(Action::Reload) };
+        assert!(matches!(
+            drain_collect_effects(&mut state, &mut cycling, Effect::Reload, &mut locale),
+            Err(TuiError::EffectCycle)
+        ));
+    }
+
+    #[test]
+    fn deterministic_dispatch_uses_a_real_rendered_session_without_terminal_lifecycle() {
+        use ratatui_core::{backend::TestBackend, terminal::Terminal};
+        use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let state = LibraryState::default();
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = render_with_session(frame, &state, Locale::En, &mut session);
+            })
+            .unwrap();
+        assert_eq!(
+            dispatch_event(&mut session, Event::FocusGained, &state, &geometry),
+            None
+        );
+        let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(
+            dispatch_event(&mut session, ctrl_c.clone(), &state, &geometry),
+            None
+        );
+        assert_eq!(
+            dispatch_event(&mut session, ctrl_c, &state, &geometry),
+            Some(Action::Quit)
+        );
     }
 }

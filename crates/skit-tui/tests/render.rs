@@ -50,6 +50,18 @@ fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
     })
 }
 
+fn buffer_position(buffer: &ratatui_core::buffer::Buffer, needle: &str) -> (u16, u16) {
+    for row in 0..buffer.area.height {
+        let line = (0..buffer.area.width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect::<String>();
+        if let Some(column) = line.find(needle) {
+            return (u16::try_from(column).unwrap(), row);
+        }
+    }
+    panic!("expected rendered text: {needle}");
+}
+
 fn scroll_footer_commands(
     view: &LibraryState,
     locale: Locale,
@@ -1248,4 +1260,103 @@ fn a_short_footer_area_stops_before_it_overflows_its_rows() {
         narrow.hits.len() < wide.hits.len(),
         "a short footer must drop chips it cannot draw"
     );
+}
+
+#[test]
+fn central_session_ctrl_c_search_help_and_confirmation_priority_use_real_events() {
+    let mut session = TuiSession::default();
+    let mut base = state();
+    base.update(Action::BeginSearch);
+    base.update(Action::SetSearchQuery("needle".to_owned()));
+    base.update(Action::FinishSearch);
+    let mut terminal = Terminal::new(TestBackend::new(70, 16)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| geometry = render_with_session(frame, &base, Locale::En, &mut session))
+        .unwrap();
+    let ctrl_c = key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(
+        session.handle_event(ctrl_c.clone(), &base, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(ctrl_c, &base, &geometry),
+        EventHandling::Action(Action::Quit)
+    );
+
+    let mut searching = state();
+    searching.update(Action::BeginSearch);
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &searching, Locale::En, &mut session);
+        })
+        .unwrap();
+    for event in [
+        key(KeyCode::Char('x'), KeyModifiers::NONE),
+        key(KeyCode::Left, KeyModifiers::NONE),
+        Event::Paste("paste".to_owned()),
+        mouse(MouseEventKind::Moved, 0, 0),
+        Event::FocusGained,
+        Event::Resize(2, 2),
+        Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        )),
+        key(KeyCode::Esc, KeyModifiers::NONE),
+    ] {
+        let _ = session.handle_event(event, &searching, &geometry);
+    }
+    for hit in &geometry.hits {
+        let _ = session.handle_event(
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                hit.rect.x,
+                hit.rect.y,
+            ),
+            &searching,
+            &geometry,
+        );
+    }
+
+    let mut help = state();
+    help.update(Action::OpenHelp);
+    terminal
+        .draw(|frame| geometry = render_with_session(frame, &help, Locale::ZhTw, &mut session))
+        .unwrap();
+    for event in [
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        key(KeyCode::Down, KeyModifiers::NONE),
+        mouse(MouseEventKind::Moved, 0, 0),
+    ] {
+        let _ = session.handle_event(event, &help, &geometry);
+    }
+
+    let mut confirm = state();
+    confirm.update(Action::AskRemove);
+    terminal
+        .draw(|frame| geometry = render_with_session(frame, &confirm, Locale::En, &mut session))
+        .unwrap();
+    assert_eq!(
+        session.handle_event(key(KeyCode::Tab, KeyModifiers::NONE), &confirm, &geometry),
+        EventHandling::Consumed
+    );
+    let (keep_x, keep_y) = buffer_position(terminal.backend().buffer(), "Keep");
+    assert_eq!(
+        session.handle_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), keep_x, keep_y),
+            &confirm,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Back)
+    );
+    for event in [
+        key(KeyCode::Char('y'), KeyModifiers::NONE),
+        key(KeyCode::Char('n'), KeyModifiers::NONE),
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        key(KeyCode::Null, KeyModifiers::NONE),
+        mouse(MouseEventKind::Moved, 0, 0),
+    ] {
+        let _ = session.handle_event(event, &confirm, &geometry);
+    }
 }

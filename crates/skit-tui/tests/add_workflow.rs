@@ -93,6 +93,15 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
         state.update(action);
     }
 
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+
     let (terminal, geometry) = draw(&mut session, &state);
     assert!(
         text(terminal.backend().buffer()).contains("[Ctrl+O] Select"),
@@ -173,6 +182,46 @@ fn typed_add_screen_uses_mature_input_and_mouse_opened_file_explorer() {
     );
     let (terminal, _) = draw(&mut session, &state);
     assert!(text(terminal.backend().buffer()).contains("Add an entry"));
+}
+
+#[test]
+fn add_file_overlay_accepts_a_real_path_and_ignores_non_widget_events() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Add(Box::new(
+        AddWorkflowState::new(Vec::new()),
+    ))));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL,)),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        session.handle_event(Event::FocusGained, &state, &geometry),
+        EventHandling::Ignored
+    );
+    for character in "Cargo.toml".chars() {
+        let _ = session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+            &state,
+            &geometry,
+        );
+    }
+    let (_, geometry) = draw(&mut session, &state);
+    assert!(matches!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Add(AddAction::SetSourcePath(path)))
+            if path.ends_with("Cargo.toml")
+    ));
 }
 
 #[test]
