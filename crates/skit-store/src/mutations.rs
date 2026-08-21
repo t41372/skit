@@ -12,10 +12,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::fs_ops::sync_directory;
 pub use agent_skill::FileAgentSkillStore;
 use atomic::{
     FileLock, StagedDirectory, acquire_lock, acquire_shared_lock, atomic_write_bytes,
-    create_dir_all, invalid, io_error, sync_directory, write_new_file, write_new_metadata,
+    create_dir_all, invalid, io_error, write_new_file, write_new_metadata,
 };
 pub use hash::content_hash;
 use registry::Registry;

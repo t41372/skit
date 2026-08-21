@@ -82,7 +82,7 @@ adjudicated · counts are Python `def test_` counts.
 | --- | --- | --- | --- |
 | test_store.py | 78 | crates/skit-store/tests/port_test_store.rs + owning language/runtime/CLI targets | in progress · store owner 34 active · 9 inference + 1 executable-target contracts moved from placeholders to their owning crates (`85f84b7`) · forced `--exe` inference moved to CLI (`769089a`) · prompt `params` completes the six mutator freshness rows (`db7f7f5`) · S2 corrupt-index backup + A2 read-path self-heal translated (c04395c) · full port ongoing |
 | test_store_fix.py | 38 | crates/skit-store/tests/port_test_store.rs | partial · repair/widening ports landed with A2 · remainder todo |
-| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs | done (16) · temp-leak fixed · A1 retry seam + tests landed · S2/A2 gaps resolved (c04395c) · 16 deferred (crash-injection/Windows) |
+| test_atomic.py | 32 | crates/skit-store/tests/port_test_atomic.rs + `fs_ops` owner | done (17) · both atomic writers share temp cleanup and Windows retry · S2/A2 gaps resolved (c04395c) · 15 deferred (crash-injection/Windows) |
 
 ### Tier 3 — flows and runtime (`skit-runtime`, `skit-application`)
 
@@ -222,19 +222,17 @@ gaps, all now resolved or recorded:
   `docs/behavior-changes.md`; `test_bool_default_is_carried` asserts the kept behavior with a
   BEHAVIOR-CHANGE note. Reversible on request.
 
-### test_atomic.py → port_test_atomic.rs (13 done · 1 fix · 2 gaps flagged · 19 deferred) — Tier 2
+### test_atomic.py → port_test_atomic.rs + fs_ops owner (17 done · 15 deferred) — Tier 2
 
 32 ported / 13 passed / 19 `#[ignore]`. The Rust atomic mechanism is `pub(crate)`, so the port drives
 it through the public `FileConfigStore`/`FileStore` seams. This is the data-safety tier; the port
 surfaced three real concerns:
 
-- **FIXED — `.tmp` leak on an fsync failure.** `atomic_write_bytes` removed the temp only on a rename
-  failure; a `write_all` or `sync_all` (fsync) error returned early via `?` and leaked the `.tmp`
-  beside the target (the target itself always stays intact — only the rename touches it). The oracle
-  cleans the temp on every failure path. Wrapped the write→fsync→rename in a closure and remove the
-  temp on any error. Workspace green (130 test binaries), clippy + fmt clean. The
-  `..._temp_fsync_failure_still_cleans_up_tmp_file` test stays `#[ignore]` (no public fsync-injection
-  seam to force the failure), but the contract now holds.
+- **FIXED — `.tmp` leak on an fsync failure.** The state/config writer already removed its temp on
+  every write, sync, and replace error, but the entry/registry/Agent writer returned early on write
+  or sync failure. Both adapters now use one atomic writer and the same Windows replace retry. The
+  frozen fsync-failure owner moved to that shared primitive and injects a real sync error after the
+  temp write. It proves the destination stays byte-exact and no temp remains.
 - **RESOLVED (c04395c) — Windows `os.replace` sharing-violation retry.** `_replace_with_retry` is
   translated (`fs_ops.rs` `replace_with_retry` + injectable `replace_with_retry_impl`). A Linux test
   seam drives the retry-count and backoff-sequence contracts, so `replace_retries_*` /

@@ -13,10 +13,8 @@
 //! existing skit-store test harness (`tests/mutations.rs`, `tests/config_store.rs`).
 //!
 //! FINDINGS the supervisor must read (see the flagged tests below):
-//!   * DATA-SAFETY: `atomic_write_bytes` removes the temp file only when the rename fails, NOT when
-//!     `sync_all()` fails — a temp-fsync failure leaks a `.tmp` residue, diverging from the Python
-//!     contract (`test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file`). No public
-//!     fsync-injection seam exists to reproduce it, so it is `#[ignore]`d and flagged.
+//!   * DATA-SAFETY: the temp-fsync cleanup owner moved to the shared atomic primitive's unit tests,
+//!     where a deterministic sync failure exercises the real cleanup path for every store adapter.
 //!   * FEATURE PARITY: RESOLVED. The Windows sharing-violation rename retry (Python's
 //!     `_replace_with_retry`, issue #4, A1) and the non-blocking `try_advisory_file_lock` (A2) now
 //!     both exist -- `fs_ops::{replace_with_retry, try_acquire_lock}`. The retry rides on Linux
@@ -354,15 +352,6 @@ fn test_atomic_write_bytes_dir_fsync_failure_is_swallowed() {
             has no runtime seam to observe."]
 #[test]
 fn test_atomic_write_bytes_skips_dir_fsync_on_windows() {}
-
-#[ignore = "UNMAPPED + MUST-VERIFY DATA-SAFETY FINDING: Python asserts a temp-file fsync failure \
-            propagates AND leaves NO temp residue (destination as if the write never started). The \
-            Rust atomic_write_bytes removes the temp ONLY on rename failure (mutations/atomic.rs \
-            168-169, fs_ops.rs 54-56); on `sync_all()` failure the `?` returns early and the \
-            `.tmp` file LEAKS. No public fsync-injection seam exists to reproduce it. Candidate \
-            temp-residue / partial-commit gap — supervisor MUST review."]
-#[test]
-fn test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file() {}
 
 // ===========================================================================
 // atomic_write_text_keep_mode — preserve an existing file's permission bits across the replace.

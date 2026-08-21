@@ -113,10 +113,23 @@ pub(crate) fn try_acquire_lock(path: &Path) -> Option<FileLock> {
 }
 
 pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "write path has no parent"))?;
-    fs::create_dir_all(parent)?;
+    atomic_write_bytes_with(path, bytes, |_, _, error| error, File::sync_all)
+}
+
+pub(crate) fn atomic_write_bytes_with<E>(
+    path: &Path,
+    bytes: &[u8],
+    map_error: impl Fn(&'static str, &Path, io::Error) -> E,
+    sync_file: impl FnOnce(&File) -> io::Result<()>,
+) -> Result<(), E> {
+    let parent = path.parent().ok_or_else(|| {
+        map_error(
+            "write",
+            path,
+            io::Error::new(io::ErrorKind::InvalidInput, "write path has no parent"),
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|error| map_error("create", parent, error))?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -126,19 +139,21 @@ pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // write_all or sync_all (fsync) error otherwise leaks a `.tmp` beside the target. The target
     // itself always stays intact -- the rename is the only step that touches it -- so this is a
     // temp-cleanup contract, matching the oracle's atomic writer.
-    let outcome = (|| -> io::Result<()> {
+    let outcome = (|| -> Result<(), E> {
         let mut file = OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(&temp)?;
-        file.write_all(bytes)?;
+            .open(&temp)
+            .map_err(|error| map_error("create", &temp, error))?;
+        file.write_all(bytes)
+            .map_err(|error| map_error("write", &temp, error))?;
         preserve_permissions_best_effort(
             fs::metadata(path).map(|metadata| metadata.permissions()),
             |permissions| file.set_permissions(permissions),
         );
-        file.sync_all()?;
+        sync_file(&file).map_err(|error| map_error("sync", &temp, error))?;
         drop(file);
-        replace_with_retry(&temp, path)
+        replace_with_retry(&temp, path).map_err(|error| map_error("replace", path, error))
     })();
     if outcome.is_err() {
         let _ = fs::remove_file(&temp);
@@ -160,20 +175,20 @@ pub(crate) fn preserve_permissions_best_effort<F>(
 }
 
 #[cfg(unix)]
-fn sync_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory(path: &Path) -> io::Result<()> {
     File::open(path)?.sync_all()
 }
 
 #[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> io::Result<()> {
+pub(crate) fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_lock, atomic_write_bytes, preserve_permissions_best_effort, sync_directory,
-        try_acquire_lock,
+        acquire_lock, atomic_write_bytes, atomic_write_bytes_with,
+        preserve_permissions_best_effort, sync_directory, try_acquire_lock,
     };
     use std::{cell::Cell, io};
     use tempfile::TempDir;
@@ -237,6 +252,33 @@ mod tests {
         std::fs::create_dir(&target).unwrap();
         assert!(atomic_write_bytes(&target, b"value").is_err());
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"before").unwrap();
+
+        let result = atomic_write_bytes_with(
+            &target,
+            b"after",
+            |_, _, error| error,
+            |_| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "simulated temp fsync failure",
+                ))
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"before");
+        let names = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["target"]);
     }
 
     #[test]

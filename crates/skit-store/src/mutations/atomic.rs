@@ -8,10 +8,8 @@ use std::{
 use std::fs::Permissions;
 
 use skit_application::{EntryPayload, RepositoryError, SourcePermissions};
-use skit_domain::{EntryId, EntryMeta};
+use skit_domain::EntryMeta;
 use skit_i18n::Message;
-
-use crate::fs_ops::preserve_permissions_best_effort;
 
 #[derive(Debug)]
 pub(super) struct FileLock {
@@ -144,58 +142,7 @@ fn apply_permissions(
 }
 
 pub(super) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), RepositoryError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid(Message::new("write path has no parent directory")))?;
-    create_dir_all(parent, "create")?;
-    let temp = unique_sibling(path, "tmp")?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|error| io_error("create", &temp, error))?;
-    file.write_all(bytes)
-        .map_err(|error| io_error("write", &temp, error))?;
-    preserve_permissions_best_effort(
-        fs::metadata(path).map(|metadata| metadata.permissions()),
-        |permissions| file.set_permissions(permissions),
-    );
-    file.sync_all()
-        .map_err(|error| io_error("sync", &temp, error))?;
-    drop(file);
-
-    let result = fs::rename(&temp, path).map_err(|error| io_error("replace", path, error));
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    } else {
-        let _ = sync_directory(parent);
-    }
-    result
-}
-
-#[cfg(unix)]
-pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
-}
-
-#[cfg(not(unix))]
-pub(super) fn sync_directory(_path: &Path) -> io::Result<()> {
-    Ok(())
-}
-
-fn unique_sibling(path: &Path, suffix: &str) -> Result<PathBuf, RepositoryError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid(Message::new("temporary path has no parent directory")))?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("entry");
-    Ok(parent.join(format!(
-        ".{name}.{}.{}",
-        EntryId::generate().as_str(),
-        suffix
-    )))
+    crate::fs_ops::atomic_write_bytes_with(path, bytes, io_error, File::sync_all)
 }
 
 pub(super) fn create_dir_all(path: &Path, operation: &'static str) -> Result<(), RepositoryError> {
@@ -231,11 +178,5 @@ mod tests {
             .map(|item| item.unwrap().file_name())
             .collect::<Vec<_>>();
         assert_eq!(names, ["target"]);
-    }
-
-    #[test]
-    fn a_real_directory_can_be_synchronized_after_a_rename() {
-        let root = TempDir::new().unwrap();
-        sync_directory(root.path()).unwrap();
     }
 }
