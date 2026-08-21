@@ -77,15 +77,26 @@ pub(crate) fn acquire_lock(path: &Path) -> io::Result<FileLock> {
 /// Acquire a persistent lock file only when a writer has already created it.
 ///
 /// Read paths use this form so observing an entry does not create skit data. `None` means that no
-/// skit writer has used this lock path yet.
+/// skit writer has used this lock path yet or permissions prevent both this reader and a writer
+/// from opening or locking it.
 pub(crate) fn acquire_existing_lock(path: &Path) -> io::Result<Option<FileLock>> {
     let file = match OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            return Ok(None);
+        }
         Err(error) => return Err(error),
     };
-    file.lock()?;
-    Ok(Some(FileLock { _file: file }))
+    match file.lock() {
+        Ok(()) => Ok(Some(FileLock { _file: file })),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// `acquire_lock` that never waits: `Some(FileLock)` holding the lock, or `None` holding nothing.

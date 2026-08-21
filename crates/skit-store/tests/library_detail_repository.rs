@@ -279,3 +279,87 @@ fn a_fresh_refresh_preserves_metadata_payload_and_registry_bytes() {
     }
     assert!(!entry_lock.exists(), "a read must not create an entry lock");
 }
+
+#[test]
+#[cfg(unix)]
+fn a_read_only_persistent_entry_lock_never_hides_a_valid_library_row() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let source = b"printf readonly\n";
+    let entry = store
+        .create(CreateEntry {
+            name: "Read only".to_owned(),
+            kind: EntryKind::parse("shell").unwrap(),
+            mode: StorageMode::Copy,
+            source: "/original/read-only.sh".to_owned(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: source.to_vec(),
+                stored_name: Some("script.sh".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let entry_dir = root.path().join("scripts").join(entry.slug.as_str());
+    let lock_dir = root.path().join(".locks");
+    fs::create_dir_all(&lock_dir).unwrap();
+    let entry_lock = lock_dir.join(format!("{}.meta.lock", entry.slug.as_str()));
+    fs::write(&entry_lock, [0]).unwrap();
+    let files = [
+        entry_dir.join("meta.toml"),
+        entry_dir.join("script.sh"),
+        root.path().join("registry.toml"),
+        entry_lock.clone(),
+    ];
+    let before = files
+        .iter()
+        .map(|path| fs::read(path).unwrap())
+        .collect::<Vec<_>>();
+    for path in &files {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o444)).unwrap();
+    }
+    let directories = [
+        entry_dir,
+        root.path().join("scripts"),
+        lock_dir,
+        root.path().to_path_buf(),
+    ];
+    for path in &directories {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    let refresh = store.library_refresh().unwrap();
+
+    assert_eq!(refresh.scan.entries.len(), 1);
+    assert_eq!(refresh.entries.len(), 1);
+    assert_eq!(refresh.entries[0].entry.slug, entry.slug);
+    assert_eq!(
+        refresh.entries[0].source.as_deref(),
+        Some(source.as_slice())
+    );
+    for (path, before) in files.iter().zip(before) {
+        assert_eq!(
+            fs::read(path).unwrap(),
+            before,
+            "{} changed",
+            path.display()
+        );
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o444,
+            "{} mode changed",
+            path.display()
+        );
+    }
+
+    for path in directories.iter().rev() {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    for path in files {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+}
