@@ -385,12 +385,16 @@ struct RawMeta {
     workdir: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    dependencies: Option<Vec<String>>,
+    #[serde(default)]
+    params: Option<Vec<String>>,
     #[serde(flatten)]
     extra: BTreeMap<String, toml::Value>,
 }
 
 impl RawMeta {
-    fn into_domain(self) -> Result<EntryMeta, String> {
+    fn into_domain(mut self) -> Result<EntryMeta, String> {
         let kind = EntryKind::parse(self.kind).map_err(|error| error.to_string())?;
         let id = self
             .id
@@ -398,6 +402,10 @@ impl RawMeta {
             .map(EntryId::parse)
             .transpose()
             .map_err(|error| error.to_string())?;
+        let dependencies = self.dependencies.take();
+        let params = self.params.take();
+        restore_string_list(&mut self.extra, "dependencies", dependencies);
+        restore_string_list(&mut self.extra, "params", params);
         let extra = self
             .extra
             .into_iter()
@@ -420,6 +428,19 @@ impl RawMeta {
             description: self.description,
             extra,
         })
+    }
+}
+
+fn restore_string_list(
+    extra: &mut BTreeMap<String, toml::Value>,
+    key: &str,
+    values: Option<Vec<String>>,
+) {
+    if let Some(values) = values {
+        extra.insert(
+            key.to_owned(),
+            toml::Value::Array(values.into_iter().map(toml::Value::String).collect()),
+        );
     }
 }
 
