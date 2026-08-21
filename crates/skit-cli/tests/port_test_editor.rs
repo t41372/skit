@@ -889,6 +889,45 @@ fn test_edit_opens_copy_source() {
 }
 
 #[test]
+fn test_edit_repository_error_precedes_editor_resolution_without_a_write() {
+    let sandbox = Sandbox::new();
+    sandbox.add_python("Faulted Entry", "print('keep')\n");
+    let sentinel = sandbox.scratch.path().join("repository-error.launched");
+    let editor = touch_only_editor(sandbox.scratch.path(), "repository-error", &sentinel);
+    let meta = sandbox.data.path().join("scripts/faulted-entry/meta.toml");
+    fs::remove_file(&meta).unwrap();
+    fs::create_dir(&meta).unwrap();
+    let data_before = snapshot_tree(sandbox.data.path());
+    let registry_before = fs::read(sandbox.data.path().join("registry.toml")).unwrap();
+    let config_before = snapshot_tree(sandbox.config.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let scratch_before = snapshot_tree(sandbox.scratch.path());
+
+    let output = sandbox
+        .command()
+        .env("EDITOR", &editor)
+        .args(["edit", "Faulted Entry"])
+        .output()
+        .unwrap();
+
+    let text = combined(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("could not read"), "{text}");
+    assert!(text.contains("scripts/faulted-entry/meta.toml"), "{text}");
+    assert!(!text.contains("no editable entry is named"), "{text}");
+    assert!(!sentinel.exists(), "repository lookup precedes the editor");
+    assert!(meta.is_dir());
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(
+        fs::read(sandbox.data.path().join("registry.toml")).unwrap(),
+        registry_before
+    );
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.scratch.path()), scratch_before);
+}
+
+#[test]
 fn test_edit_opens_reference_original() {
     // A reference entry edits its original file in place (the oracle: opened path == src.resolve()).
     let sandbox = Sandbox::new();
