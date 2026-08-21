@@ -11,6 +11,16 @@ use skit_application::{EntryPayload, RepositoryError, SourcePermissions};
 use skit_domain::EntryMeta;
 use skit_i18n::Message;
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_NEW_FILE_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_next_new_file_write() {
+    FAIL_NEXT_NEW_FILE_WRITE.set(true);
+}
+
 #[derive(Debug)]
 pub(super) struct FileLock {
     _file: File,

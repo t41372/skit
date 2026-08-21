@@ -1183,6 +1183,69 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_add_python_injected_write_failure_rolls_back_entire_entry() {
+        let data = TempDir::new().unwrap();
+        let origin = TempDir::new().unwrap();
+        let original = origin.path().join("boom.py");
+        let original_bytes = b"print('original')\n";
+        fs::write(&original, original_bytes).unwrap();
+        let request = || CreateEntry {
+            name: "boom".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: original.display().to_string(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: original_bytes.to_vec(),
+                stored_name: Some("script.py".to_owned()),
+                permissions: skit_application::SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        };
+        let store = FileStore::new(data.path());
+        atomic::fail_next_new_file_write();
+
+        let error = store.create(request()).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RepositoryError::Io {
+                operation: "write",
+                ref path,
+                ref reason,
+            } if path.ends_with("script.py") && reason.contains("injected payload write failure")
+        ));
+        assert_eq!(fs::read(&original).unwrap(), original_bytes);
+        assert!(!data.path().join("registry.toml").exists());
+        assert!(!data.path().join("scripts").exists());
+        let staging = data.path().join(".staging");
+        assert!(staging.is_dir());
+        assert!(fs::read_dir(&staging).unwrap().next().is_none());
+        let private_names = fs::read_dir(data.path())
+            .unwrap()
+            .map(|item| item.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            private_names,
+            [".staging", "registry.native.lock"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect()
+        );
+
+        let retried = store.create(request()).unwrap();
+        assert_eq!(retried.slug.as_str(), "boom");
+        assert_eq!(
+            fs::read(data.path().join("scripts/boom/script.py")).unwrap(),
+            original_bytes
+        );
+        assert!(data.path().join("registry.toml").is_file());
+        assert!(fs::read_dir(staging).unwrap().next().is_none());
+        assert_eq!(fs::read(original).unwrap(), original_bytes);
+    }
+
+    #[test]
     fn remove_attempts_the_dependency_lock_before_the_entry_lock() {
         let root = TempDir::new().unwrap();
         let store = FileStore::new(root.path());
