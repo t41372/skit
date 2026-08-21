@@ -498,6 +498,24 @@ mod tests {
     }
 
     #[test]
+    fn rejected_preflight_becomes_status_before_the_terminal_can_suspend() {
+        let mut state = LibraryState::default();
+        let effect = Effect::Open {
+            request: skit_ui::HostRequest::Run,
+            selector: Some("demo".to_owned()),
+        };
+        let mut preflight = |_effect: &Effect| Err(HostError);
+
+        assert!(!accept_host_effect(
+            &mut state,
+            &effect,
+            &mut preflight,
+            Locale::ZhCn,
+        ));
+        assert_eq!(state.status(), Some("错误：找不到条目：demo"));
+    }
+
+    #[test]
     fn a_saved_language_changes_the_running_terminal_locale() {
         assert_eq!(
             action_locale(&Action::PreferencesSaved {

@@ -4125,6 +4125,129 @@ fn tui_run_propagates_typed_preflight_errors_without_writing() {
 }
 
 #[test]
+fn javascript_tui_preflight_is_typed_localized_read_only_and_exit_126() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let entry = service
+        .add(CreateEntry {
+            name: "JavaScript preflight".to_owned(),
+            kind: EntryKind::parse("js").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "store".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"console.log('ok');\n".to_vec(),
+                stored_name: Some("script.js".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                dependencies: vec!["chalk".to_owned()],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let before = test_tree_snapshot(root.path());
+    let probe = HealthProbe {
+        programs: BTreeMap::from([("node".to_owned(), PathBuf::from("/bin/node"))]),
+        ..HealthProbe::default()
+    };
+
+    let error = tui_preflight_effect_with_probe(
+        &service,
+        &store,
+        &UiEffect::Open {
+            request: HostRequest::Run,
+            selector: Some(entry.slug.as_str().to_owned()),
+        },
+        &probe,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            CliError::Run(RunError::Dependencies(
+                skit_runtime::DependencyError::InstallerNotFound { ref name }
+            )) if name == "npm"
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.exit_code(), 126);
+    for (locale, expected) in [
+        (
+            Locale::En,
+            "npm is needed to install this script's dependencies, but it isn't on your PATH.",
+        ),
+        (
+            Locale::ZhCn,
+            "安装这个脚本的依赖需要 npm，但它不在你的 PATH 上。",
+        ),
+        (
+            Locale::ZhTw,
+            "安裝這支腳本的依賴需要 npm，但它不在你的 PATH 上。",
+        ),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
+    }
+    assert_eq!(test_tree_snapshot(root.path()), before);
+    assert!(!data_dir.join(".locks").exists());
+}
+
+#[test]
+fn javascript_tui_preflight_skips_dependency_checks_outside_owned_dependency_copies() {
+    for (mode, dependencies) in [
+        (StorageMode::Copy, Vec::new()),
+        (StorageMode::Reference, vec!["chalk".to_owned()]),
+    ] {
+        let root = TempDir::new().unwrap();
+        let data_dir = root.path().join("data");
+        let store = FileStore::new(&data_dir);
+        let service = LibraryService::new(store.clone());
+        let source = root.path().join("source.js");
+        fs::write(&source, "console.log('ok');\n").unwrap();
+        let entry = service
+            .add(CreateEntry {
+                name: "JavaScript no dependency preflight".to_owned(),
+                kind: EntryKind::parse("js").unwrap(),
+                mode,
+                source: (mode == StorageMode::Reference)
+                    .then(|| source.display().to_string())
+                    .unwrap_or_default(),
+                workdir: "store".to_owned(),
+                description: String::new(),
+                payload: (mode == StorageMode::Copy).then_some(EntryPayload {
+                    bytes: b"console.log('ok');\n".to_vec(),
+                    stored_name: Some("script.js".to_owned()),
+                    permissions: SourcePermissions::default(),
+                }),
+                settings: EntrySettings {
+                    dependencies,
+                    ..EntrySettings::default()
+                },
+            })
+            .unwrap();
+        let before = test_tree_snapshot(root.path());
+
+        tui_preflight_effect_with_probe(
+            &service,
+            &store,
+            &UiEffect::Open {
+                request: HostRequest::Run,
+                selector: Some(entry.slug.as_str().to_owned()),
+            },
+            &HealthProbe::default(),
+        )
+        .unwrap();
+
+        assert_eq!(test_tree_snapshot(root.path()), before, "mode={mode:?}");
+        assert!(!data_dir.join(".locks").exists(), "mode={mode:?}");
+    }
+}
+
+#[test]
 fn tui_rerun_replays_only_honest_valid_state_and_falls_back_to_the_form() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");

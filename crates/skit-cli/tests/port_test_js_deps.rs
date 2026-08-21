@@ -61,7 +61,8 @@ use skit_runtime::{
     DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, JavaScriptModuleType,
     ProgramProbe, clear_javascript_dependencies, ensure_javascript_dependencies_for_module,
     ensure_javascript_dependencies_with_environment, javascript_dependency_manifest,
-    javascript_module_type,
+    javascript_dependencies_need_install, javascript_module_type,
+    preflight_javascript_dependencies,
 };
 use skit_store::{FileConfigStore, FileStore};
 
@@ -719,12 +720,40 @@ fn test_build_installs_declared_deps_with_the_resolved_runner() {}
 fn test_build_skips_the_engine_without_copy_mode_deps() {}
 
 #[test]
-#[ignore = "ABSENT (library seam): RunnerLaunch.preflight calls require_installer when deps are declared and raises NotExecutableError when npm is missing; the Rust rewrite exposes no preflight/installer-precheck surface. MUST-FIX: port preflight. Python ref langs/launch.py RunnerLaunch.preflight, deps.py:221-234."]
-fn test_preflight_requires_the_installer_when_deps_are_declared() {}
+fn test_preflight_requires_the_installer_when_deps_are_declared() {
+    let (root, dir) = entry_dir();
+    std::fs::create_dir(dir.join(".skit-deps.backup")).unwrap();
+    std::fs::write(dir.join(".skit-deps.backup/sentinel"), b"old").unwrap();
+    std::fs::create_dir(dir.join(".skit-deps.tmp-interrupted")).unwrap();
+    let error = preflight_javascript_dependencies(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &FakeProbe { present: false },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(error, skit_runtime::DependencyError::InstallerNotFound { ref name } if name == "npm"),
+        "{error:?}"
+    );
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(
+        std::fs::read(dir.join(".skit-deps.backup/sentinel")).unwrap(),
+        b"old"
+    );
+    assert!(dir.join(".skit-deps.tmp-interrupted").is_dir());
+    assert!(!dir.join("package.json").exists());
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): preflight must NOT ask for an installer when no deps are declared; no Rust preflight surface exists. MUST-FIX per above. Python ref test_js_deps.py:459-466."]
-fn test_preflight_without_deps_does_not_ask_for_an_installer() {}
+fn test_preflight_without_deps_does_not_ask_for_an_installer() {
+    let (root, dir) = entry_dir();
+    preflight_javascript_dependencies(&dir, "node", &[], &FakeProbe { present: false })
+        .expect("no dependencies must not require npm");
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
 
 #[test]
 #[ignore = "ABSENT (library seam): every RunnerLaunch.build sweeps aged '.injected-*' leftovers (age-gated, keeping fresh ones); there is no sweep_stale_injected nor a build-time sweep on the Rust surface. MUST-FIX: port sweep_stale_injected + wire it into launch. Python ref deps.py:164-179, test_js_deps.py:469-484."]
@@ -1569,20 +1598,87 @@ fn test_corrupted_marker_triggers_reinstall_not_a_persistent_crash() {
 fn test_install_lock_reuses_the_same_persistent_inode() {}
 
 #[test]
-#[ignore = "ABSENT (library seam): needs_install(dir, deps, runner) is a cheap, offline, lock-free staleness probe reusing ensure_installed's stamp. No public Rust needs_install exists. MUST-FIX: expose a staleness probe. Python ref deps.py:337-350, test_js_deps.py:1997-1998."]
-fn test_needs_install_true_without_a_marker() {}
+fn test_needs_install_true_without_a_marker() {
+    let (root, dir) = entry_dir();
+    assert!(javascript_dependencies_need_install(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+    )
+    .unwrap());
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): needs_install is False when the marker matches the current (deps, installer). No public Rust needs_install. MUST-FIX per above. Python ref test_js_deps.py:2001-2007."]
-fn test_needs_install_false_when_the_marker_matches() {}
+fn test_needs_install_false_when_the_marker_matches() {
+    let (root, dir) = entry_dir();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &FakeProbe { present: true },
+        &RecordingRunner::success(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
+
+    assert!(!javascript_dependencies_need_install(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+    )
+    .unwrap());
+    assert!(!root.path().join(".locks").exists());
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): needs_install is True when the declared deps change. No public Rust needs_install. MUST-FIX per above. Python ref test_js_deps.py:2010-2016."]
-fn test_needs_install_true_when_the_declared_deps_changed() {}
+fn test_needs_install_true_when_the_declared_deps_changed() {
+    let (root, dir) = entry_dir();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &FakeProbe { present: true },
+        &RecordingRunner::success(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
+
+    assert!(javascript_dependencies_need_install(
+        &dir,
+        "node",
+        &deps(&["chalk", "zod"]),
+    )
+    .unwrap());
+    assert!(!root.path().join(".locks").exists());
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): a fresh marker lets preflight skip the installer check so the TUI never blocks a run the CLI completes. Needs both needs_install and preflight, neither on the Rust surface. MUST-FIX per above. Python ref deps.py:325-350, test_js_deps.py:2019-2034."]
-fn test_preflight_skips_the_installer_when_the_marker_is_already_fresh() {}
+fn test_preflight_skips_the_installer_when_the_marker_is_already_fresh() {
+    let (root, dir) = entry_dir();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &FakeProbe { present: true },
+        &RecordingRunner::success(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
+
+    preflight_javascript_dependencies(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &FakeProbe { present: false },
+    )
+    .expect("a fresh marker must not require npm");
+    assert!(!root.path().join(".locks").exists());
+}
 
 #[test]
 fn test_clean_unlinks_a_symlinked_node_modules_but_keeps_the_target() {
