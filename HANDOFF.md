@@ -421,6 +421,14 @@ discipline, and helper surfaces close the other audited root (`ab4d93a`..`5265ee
   includes typed Windows PATHEXT inference (`0e4a698`/`8a15675`), private CLI size owners
   (`e326985`), 15 real-binary/FileStore add owners (`cebb661`), and registry repair/race owners
   through `fae2d20`. A real Windows-host CLI run remains the native gate.
+- **`test_store_fix.py` ownership is complete.** Its 38 frozen names have 32 unique executable
+  owners and 6 structured stronger-owner or architecture closures. Metadata Batch 1 owns 12 rows;
+  filesystem/recovery Batch 2 owns four; add/deps Batch 3 owns 13; lock/concurrency Batch 4 owns
+  three. Batch 3 covers workdir defaults, non-UTF-8 byte fidelity with metadata fallback, UTF-8
+  PEP 723 edits, authoritative-block refusals, untouched axes, and CRLF/LF preservation. Its one
+  fault-only owner injects OSError at the private resolved-copy read inside the complete deps
+  handler. No public test API or permission trick was added. The final manifest rejects duplicate,
+  missing, extra, overlapping, or unstructured accounting. No rows remain.
 
 The ledger has the authoritative per-module adjudication log.
 
