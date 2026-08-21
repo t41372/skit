@@ -61,7 +61,10 @@ use skit_runtime::{
     JavaScriptModuleType, ProgramProbe, clear_javascript_dependencies,
     ensure_javascript_dependencies_for_module, ensure_javascript_dependencies_with_environment,
     javascript_dependencies_need_install, javascript_dependency_failure_detail,
-    javascript_dependency_manifest, javascript_module_type, preflight_javascript_dependencies,
+    javascript_dependency_manifest, javascript_dependency_manifest_for_module,
+    javascript_module_type, preflight_javascript_dependencies,
+    resolve_javascript_dependency_installer, split_javascript_requirement,
+    split_javascript_requirements,
 };
 use skit_store::{FileConfigStore, FileStore};
 
@@ -247,8 +250,23 @@ fn write_source(dir: &Path, name: &str, body: &str) -> PathBuf {
 // ============================================================================
 
 #[test]
-#[ignore = "ABSENT (library seam): the oracle's public js_deps.split_requirement(req) -> (name, range) has no public Rust equivalent. skit-runtime now uses the same split rules inside its private manifest builder, but does not expose the tuple surface. MUST-FIX: expose a split_requirement surface. Python ref src/skit/langs/javascript/deps.py:97-105 (cases chalk, chalk@^5, chalk@5.6.2, chalk@, @scope/pkg, @scope/pkg@>=1,<2, @scope)."]
-fn test_split_requirement() {}
+fn test_split_requirement() {
+    for (requirement, expected) in [
+        ("chalk", ("chalk", "*")),
+        ("chalk@^5", ("chalk", "^5")),
+        ("chalk@5.6.2", ("chalk", "5.6.2")),
+        ("chalk@", ("chalk", "*")),
+        ("@scope/pkg", ("@scope/pkg", "*")),
+        ("@scope/pkg@>=1,<2", ("@scope/pkg", ">=1,<2")),
+        ("@scope", ("@scope", "*")),
+    ] {
+        assert_eq!(
+            split_javascript_requirement(requirement),
+            (expected.0.to_owned(), expected.1.to_owned()),
+            "{requirement}"
+        );
+    }
+}
 
 #[test]
 fn test_manifest_text_is_deterministic_and_private() {
@@ -313,12 +331,35 @@ fn test_clean_on_an_already_clean_dir_is_a_no_op() {
 // ============================================================================
 
 #[test]
-#[ignore = "ABSENT (library seam): the oracle's public js_deps.require_installer(runner) -> path (node->npm, bun->bun, deno->deno, unknown->npm) has no public Rust equivalent; installer resolution lives in the private dependency_command. MUST-FIX: expose an installer-resolution surface. Python ref deps.py:221-234, 76-77."]
-fn test_require_installer_maps_runner_to_its_own_installer() {}
+fn test_require_installer_maps_runner_to_its_own_installer() {
+    let probe = FakeProbe { present: true };
+    for (runner, installer) in [
+        ("node", "npm"),
+        ("bun", "bun"),
+        ("deno", "deno"),
+        ("weird", "npm"),
+    ] {
+        assert_eq!(
+            resolve_javascript_dependency_installer(runner, &probe).unwrap(),
+            PathBuf::from(format!("/bin/{installer}")),
+            "{runner}"
+        );
+    }
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): js_deps.require_installer raises NotExecutableError naming the missing installer ('npm'); no public Rust require_installer exists. MUST-FIX per above. Python ref deps.py:221-234."]
-fn test_require_installer_missing_raises_126_family() {}
+fn test_require_installer_missing_raises_126_family() {
+    let error =
+        resolve_javascript_dependency_installer("node", &FakeProbe { present: false }).unwrap_err();
+    assert!(matches!(
+        error,
+        DependencyError::InstallerNotFound { ref name } if name == "npm"
+    ));
+    assert_eq!(
+        error.to_string(),
+        "npm is needed to install this script's dependencies, but it isn't on your PATH."
+    );
+}
 
 // ============================================================================
 // ensure_installed
@@ -1193,8 +1234,17 @@ fn test_load_mirror_type_hardens_a_hand_edited_npm_value() {
 // ============================================================================
 
 #[test]
-#[ignore = "ABSENT (library seam): js_deps.split_requirements(text) plain-comma-splits an npm requirement list, keeping ', @scope/pkg' apart. No public Rust equivalent (the comma split lives inside the CLI's flag parsing). MUST-FIX: expose a split_requirements surface. Python ref deps.py:87-94, test_js_deps.py:967-979."]
-fn test_split_requirements_keeps_scoped_packages_apart() {}
+fn test_split_requirements_keeps_scoped_packages_apart() {
+    assert_eq!(
+        split_javascript_requirements("chalk, @aws-sdk/client-s3"),
+        ["chalk", "@aws-sdk/client-s3"]
+    );
+    assert_eq!(
+        split_javascript_requirements(" zod@^3 ,, @trpc/server@10 , "),
+        ["zod@^3", "@trpc/server@10"]
+    );
+    assert!(split_javascript_requirements("").is_empty());
+}
 
 #[test]
 fn test_interactive_accept_of_a_scoped_suggestion_round_trips() {
@@ -1240,8 +1290,20 @@ fn test_module_type_for() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): manifest_text(deps, module_type='module') embeds a '\"type\": \"module\"' key and omits it otherwise. The public javascript_dependency_manifest takes NO module-type argument (the _for_module builder is private), so a manifest-with-type has no public entry point. MUST-FIX: expose a module-typed manifest. Python ref deps.py:117-131, test_js_deps.py:1038-1041."]
-fn test_manifest_text_carries_the_module_type() {}
+fn test_manifest_text_carries_the_module_type() {
+    let dependencies = deps(&["chalk"]);
+    let typed = javascript_dependency_manifest_for_module(
+        &dependencies,
+        Some(JavaScriptModuleType::Module),
+    )
+    .unwrap();
+    assert!(typed.contains("\"type\": \"module\""));
+    assert!(
+        !javascript_dependency_manifest(&dependencies)
+            .unwrap()
+            .contains("\"type\"")
+    );
+}
 
 #[test]
 #[ignore = "CROSS-CRATE (launch + run composition): RunnerLaunch.build passes the original extension's module type into ensure_installed, so a .mjs source stored as script.js keeps '\"type\": \"module\"'. No injectable ensure seam is observable from build. Owner: skit-runtime launch. Python ref test_js_deps.py:1044-1060."]
@@ -2059,8 +2121,16 @@ fn test_po_syntax_allows_a_valid_msgctxt_line() {}
 // ============================================================================
 
 #[test]
-#[ignore = "ABSENT (library seam): split_requirement boundary shapes ('a@5'->('a','5'), 'foo/@2'->('foo/@2','*')). No public Rust split_requirement (see the earlier split_requirement stub). Python ref deps.py:97-105, test_js_deps.py:1740-1748."]
-fn test_split_requirement_boundary_shapes() {}
+fn test_split_requirement_boundary_shapes() {
+    assert_eq!(
+        split_javascript_requirement("a@5"),
+        ("a".to_owned(), "5".to_owned())
+    );
+    assert_eq!(
+        split_javascript_requirement("foo/@2"),
+        ("foo/@2".to_owned(), "*".to_owned())
+    );
+}
 
 #[test]
 fn test_module_type_for_multi_dot_sources() {
@@ -2077,8 +2147,16 @@ fn test_module_type_for_multi_dot_sources() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): the exact staleness-hash layout manifest_text(['chalk@^5'], module_type='module') requires a module-typed manifest. The private Rust builder now produces the oracle bytes, but public javascript_dependency_manifest cannot take a module type. MUST-FIX: expose a module-typed manifest. Python ref deps.py:117-131, test_js_deps.py:1762-1769."]
-fn test_manifest_text_exact_layout() {}
+fn test_manifest_text_exact_layout() {
+    assert_eq!(
+        javascript_dependency_manifest_for_module(
+            &deps(&["chalk@^5"]),
+            Some(JavaScriptModuleType::Module),
+        )
+        .unwrap(),
+        "{\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"chalk\": \"^5\"\n  }\n}\n"
+    );
+}
 
 #[test]
 fn test_ensure_installed_unknown_runner_falls_back_to_npm_argv() {
