@@ -7255,6 +7255,51 @@ fn owned_draft_preconditions_and_quarantine_move_failures_preserve_every_source(
     assert_eq!(fs::read(&snapshot.path).unwrap(), b"print('identity')\n");
     assert!(owned_draft_quarantines(missing_identity.path()).is_empty());
 
+    let lexical_parent = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(
+        &lexical_parent,
+        "skit-new-lexical-parent.py",
+        b"print('parent')\n",
+    );
+    let mut forged_parent = snapshot.clone();
+    forged_parent.path = lexical_parent
+        .path()
+        .join("drafts/../drafts/skit-new-lexical-parent.py");
+    forged_parent.source_record = forged_parent.path.display().to_string();
+    let error = consume_owned_draft(lexical_parent.path(), &forged_parent).unwrap_err();
+    for (locale, expected) in [
+        (
+            Locale::En,
+            "refusing to remove a file outside skit's drafts directory",
+        ),
+        (Locale::ZhCn, "拒绝删除 skit 草稿目录以外的文件"),
+        (Locale::ZhTw, "拒絕移除 skit 草稿目錄以外的檔案"),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
+    }
+    assert_eq!(fs::read(&snapshot.path).unwrap(), b"print('parent')\n");
+    assert!(owned_draft_quarantines(lexical_parent.path()).is_empty());
+
+    let permission_claim = TempDir::new().unwrap();
+    let snapshot = owned_draft_snapshot(
+        &permission_claim,
+        "skit-new-permission-claim.py",
+        b"print('permissions')\n",
+    );
+    let actual_permissions = snapshot.permissions;
+    let mut forged_permissions = snapshot.clone();
+    forged_permissions.permissions.readonly = !forged_permissions.permissions.readonly;
+    assert_eq!(
+        consume_owned_draft(permission_claim.path(), &forged_permissions).unwrap(),
+        DraftConsumeOutcome::Changed
+    );
+    assert_eq!(fs::read(&snapshot.path).unwrap(), b"print('permissions')\n");
+    assert_eq!(
+        source_permissions(&fs::metadata(&snapshot.path).unwrap()),
+        actual_permissions
+    );
+    assert!(owned_draft_quarantines(permission_claim.path()).is_empty());
+
     let invalid_path = TempDir::new().unwrap();
     let valid = owned_draft_snapshot(&invalid_path, "skit-new-valid.py", b"print('valid')\n");
     let mut invalid = valid.clone();

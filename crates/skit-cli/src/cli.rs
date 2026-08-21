@@ -7544,11 +7544,6 @@ fn consume_owned_draft_claim(
                 .with(data_dir.join("drafts").display()),
         )
     })?;
-    if path.parent() != Some(drafts_dir.as_path()) {
-        return Err(CliError::Failure(Message::new(
-            "refusing to remove a file outside skit's drafts directory",
-        )));
-    }
     let path_metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
