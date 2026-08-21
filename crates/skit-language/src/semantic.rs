@@ -592,11 +592,8 @@ pub fn edit_source_declarations(
             warnings.push(SourceEditWarning::NotManaged { name: name.clone() });
         }
     }
-    for name in &request.secret {
-        if let Some(row) = declarations
-            .iter_mut()
-            .find(|row| row.name == *name && row.secret)
-        {
+    for row in &mut declarations {
+        if row.secret {
             row.default = None;
         }
     }
