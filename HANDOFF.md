@@ -1,4 +1,4 @@
-# skit Rust rewrite — session handoff (2026-08-20)
+# skit Rust rewrite — session handoff (2026-08-21)
 
 **Read this first, then `docs/design/python-test-port-ledger.md` (the authoritative per-module
 record + fix-list).** This file is SELF-CONTAINED: it does not depend on any `.claude` memory (that
@@ -24,14 +24,13 @@ PR/main/Python body comparison; the raw split files and manifests were rejected.
 editor, JS deps, run-set, prompt-kind,
 prompt UTF-8,
 entrypoint, and responsive
-implementation divergences are closed. Phase 3 is in progress: the first workspace coverage run
-found 2,514 executable-source gaps without relaxing the checker. The merged fresh report at
-`fede179` had 95 gaps. Subsequent disjoint fresh runs closed the 7 `skit-i18n` gaps, the 1
-`skit-ui` gap, and 24 more `skit-cli/src/cli.rs` gaps. Current evidence therefore leaves 63 CLI
-lines; every other executable source is at 0. Run another merged report before treating 63 as the
-final gate result. Supply-chain, docs, wheel
-smoke, and benchmark gates are green. The merged workspace coverage gate is still red, and
-mutation remains blocked on user approval.** The user
+implementation divergences are closed. The Phase 3 executable-source coverage gate is COMPLETE at
+`4b1d003`: a fresh committed-state workspace LCOV run executed every target and feature, and
+`scripts/check_coverage.sh` returned `complete executable-source line coverage`. No checker rule or
+exclusion changed. Final CLI full, fmt, workspace Clippy with warnings as errors, and workspace
+Rustdoc with warnings as errors are green. Supply-chain, docs, wheel smoke, and benchmark gates were
+green at the preceding checkpoint and must be rerun once on the final release candidate. Mutation
+remains blocked on user approval.** The user
 chose plan **A**:
 finish the whole port FIRST (done), THEN one comprehensive impl-fix pass (done).
 
@@ -387,7 +386,7 @@ The ledger has the authoritative per-module adjudication log.
 - Phase 3 gates: 100% executable-source line coverage (`cargo llvm-cov` + `scripts/check_coverage.sh`
   — do NOT relax it), i18n completeness (3 locales), ASD-STE100 English, cargo deny/audit, zizmor,
   docs build, benchmark budget, Maturin wheel + `uv tool install` smoke.
-- **Phase 3 checkpoint (2026-08-20):** the first full LCOV run executed the workspace tests but the
+- **Phase 3 coverage COMPLETE (2026-08-21):** the first full LCOV run executed the workspace tests but the
   checker correctly failed on 2,514 uncovered executable lines. Do not add exclusions or weaken
   `scripts/check_coverage.sh`. Fresh crate reports now show `skit-domain`, `skit-application`,
   `skit-form`, `skit-runtime`, `skit-language`, `skit-store`, `skit-ui`, and `skit-benchmarks` at
@@ -396,15 +395,15 @@ The ledger has the authoritative per-module adjudication log.
   terminal closed 344 lines in `559ee2c`. Benchmark coverage moved from 210 to 0; the final sequence
   covers real front doors, typed filesystem failures and races, Hyperfine/merge invariants,
   deterministic Rust tool discovery, suite adapters, footprint retries, and a real single-suite
-  execute/publication path. The remaining large root is `skit-cli`: its fresh gap count moved from
-  542 to 87 in the merged `fede179` report, and `run/command.rs` is now 0. Six subsequent disjoint
-  batches closed the final 8 non-CLI lines and 24 CLI lines with fresh scoped evidence, so the
-  current remaining set is 63 CLI lines. This count is not a substitute for the next merged LCOV
-  run. Finish those lines, then run the merged hard gate again.
+  execute/publication path. `skit-cli` moved from 542 gaps to 0 through public CLI, real PTY,
+  composition-root, and typed structural owners. The final committed-state workspace
+  `cargo llvm-cov` command used `--all-targets --all-features` and wrote
+  `lcov-phase3-final-green.info`. The checker read that file. All workspace tests passed, and the
+  checker returned `complete executable-source line coverage`. No executable-source gap remains.
   `cargo deny`, `cargo audit --deny warnings`, and
   zizmor are green. The docs type-check/build, release wheel build plus isolated
   `uv tool install` smoke, 112 benchmark metrics, all 8 enforced benchmark budgets, and
-  `cargo bench` are green. Finish the remaining coverage, then run one fresh merged LCOV gate.
+  `cargo bench` were green at the preceding checkpoint. Rerun these on the final release candidate.
 - **User's hands-on test** fits AFTER the fix pass restores behavior, BEFORE mutation.
 - Mutation (`cargo mutants`) is **BLOCKED on explicit user approval** — it invalidates on any
   change, so it runs only after behavior is frozen; ~4.5h local, likely on another box/modal.com.
