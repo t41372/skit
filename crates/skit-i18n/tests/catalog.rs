@@ -59,6 +59,10 @@ fn pseudo_locale_stretches_source_text_without_touching_inserted_values() {
         "⟦%(file)s îs àvàîlàblé~~⟧"
     );
     assert_eq!(
+        text(Locale::Pseudo, "%s has %d item(s) at 100%%"),
+        "⟦%s hàs %d îtém(s) àt 100%%~~⟧"
+    );
+    assert_eq!(
         render(Locale::Pseudo, "Usage: skit --help"),
         "⟦Ûsàgé: skît --hélp~~⟧"
     );

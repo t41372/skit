@@ -128,6 +128,7 @@ fn command_mapping_and_screen_accessors_cover_every_typed_surface() {
     })));
     let before = serde_json::to_value(&state).unwrap();
     for action in [
+        Action::Paste("ignored".to_owned()),
         Action::FocusField(0),
         Action::SetFieldValue {
             field: 0,
