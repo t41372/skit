@@ -272,6 +272,19 @@ PR #44 is complete upstream at fixed head `005bc9b7365fca1cfa7173acb61a2e8629f03
 Review only the diff from the previous pin `38260ff881420fbd06f95b5b9243e0caa610e370`;
 do not replay its 500+ commits or merge its 198 split test/support paths. The previous ancestry
 snapshot remains on `integration/pr44-20260812` at `a6e0513`, but it is not the final PR head.
+
+Remote PR status was checked read-only on 2026-08-21. PR #44 remains an open draft at the fixed
+head above, with its CodeRabbit status green. PR #45 remains an open draft, but its remote head is
+the older `865e568cc70d15824880b0dc876c6060dc1cdce8`. Do not treat that head's red checks as evidence
+about the current local branch. The remote docs, CodeQL, dependency/workflow audit, and wheel plus
+`uv tool` jobs passed. Its Linux coverage and three-platform test failures came from fixtures or
+platform code that later local commits changed. Two independent release-workflow failures still
+need a fresh fix and proof: CodSpeed ran plain `cargo bench` and failed because the instrumented
+workspace variable was absent, and the mutation baseline ran benchmark tests in a copied tree
+without `.git`, which made five baseline tests fail before mutation scoring. Do not push merely to
+refresh these checks while the fix pass is still changing. A push starts the mutation workflow and
+invalidates its result on the next source change.
+
 The final increment has 1,110 unique `test_*` names: 969 already exist on this branch, 471 of those
 are ignored/ledger owners, and six names are duplicated inside the PR increment itself. The raw
 fixed tree fails `cargo fmt --all --check` and fails workspace `--no-run` at multiple independent
