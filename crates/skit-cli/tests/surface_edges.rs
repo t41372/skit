@@ -587,6 +587,34 @@ fn a_pi_prompt_that_starts_with_a_flag_reports_the_added_newline() {
         ));
 }
 
+#[test]
+fn an_amp_prompt_reports_that_the_builtin_runner_is_one_shot() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .args(["add", "--prompt", "--name", "Review", "--no-input"])
+        .write_stdin("Review this change.\n")
+        .assert()
+        .success();
+
+    sandbox
+        .command()
+        .args([
+            "run",
+            "review",
+            "--no-input",
+            "--runner",
+            "amp",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("amp -x"))
+        .stderr(predicate::str::contains(
+            "The built-in amp runner is one-shot: amp -x runs this prompt once and does not open an interactive session.",
+        ));
+}
+
 #[cfg(unix)]
 #[test]
 fn a_python_run_reuses_a_private_uv_that_is_already_installed() {

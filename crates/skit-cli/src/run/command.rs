@@ -741,18 +741,7 @@ fn source_snapshot(
         "exe" => Ok((String::new(), None)),
         "prompt" => {
             let path = launch_payload_path(store, entry)?;
-            let bytes = fs::read(&path).map_err(|source| {
-                if source.kind() == io::ErrorKind::NotFound {
-                    RunError::PromptBodyMissing {
-                        path: path.display().to_string(),
-                    }
-                } else {
-                    RunError::Read {
-                        path: path.display().to_string(),
-                        source,
-                    }
-                }
-            })?;
+            let bytes = read_prompt_bytes(&path, fs::read(&path))?;
             let hash = content_hash(&bytes);
             let text = decode_prompt(&bytes, path.display().to_string())?.to_owned();
             Ok((text, Some(hash)))
@@ -764,6 +753,21 @@ fn source_snapshot(
             Ok((String::from_utf8(bytes).unwrap_or_default(), Some(hash)))
         }
     }
+}
+
+fn read_prompt_bytes(path: &Path, bytes: io::Result<Vec<u8>>) -> Result<Vec<u8>, RunError> {
+    bytes.map_err(|source| {
+        if source.kind() == io::ErrorKind::NotFound {
+            RunError::PromptBodyMissing {
+                path: path.display().to_string(),
+            }
+        } else {
+            RunError::Read {
+                path: path.display().to_string(),
+                source,
+            }
+        }
+    })
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>, RunError> {
@@ -1289,10 +1293,10 @@ mod tests {
             &mut values,
         )
         .unwrap_err();
-        let RunError::InvalidSet { items: malformed } = malformed else {
-            panic!("expected malformed --set values");
-        };
-        assert_eq!(malformed, "broken");
+        assert!(matches!(
+            malformed,
+            RunError::InvalidSet { items } if items == "broken"
+        ));
         assert_eq!(values, unchanged);
 
         let unknown = apply_sets(
@@ -1301,11 +1305,10 @@ mod tests {
             &mut values,
         )
         .unwrap_err();
-        let RunError::UnknownSet { names, valid } = unknown else {
-            panic!("expected unknown --set names");
-        };
-        assert_eq!(names, "a, z");
-        assert_eq!(valid, "name");
+        assert!(matches!(
+            unknown,
+            RunError::UnknownSet { names, valid } if names == "a, z" && valid == "name"
+        ));
         assert_eq!(values, unchanged);
     }
 
@@ -1453,11 +1456,34 @@ mod tests {
 
         let prompt = entry("prompt", "");
         let prompt_dir = store.entry_dir_path(&prompt.slug);
+        assert!(matches!(
+            launch_payload_path(&store, &prompt).unwrap_err(),
+            RunError::Repository(_)
+        ));
         fs::create_dir_all(&prompt_dir).unwrap();
         fs::write(prompt_dir.join("prompt.md"), [0xff]).unwrap();
         assert!(matches!(
             source_text(&store, &prompt, &EntrySettings::default()).unwrap_err(),
             RunError::Encoding(_)
+        ));
+        let missing_prompt = prompt_dir.join("missing.md");
+        assert!(matches!(
+            read_prompt_bytes(
+                &missing_prompt,
+                Err(io::Error::new(io::ErrorKind::NotFound, "test missing"))
+            ),
+            Err(RunError::PromptBodyMissing { path })
+                if path == missing_prompt.display().to_string()
+        ));
+        assert!(matches!(
+            read_prompt_bytes(
+                &missing_prompt,
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "test permission failure"
+                ))
+            ),
+            Err(RunError::Read { path, .. }) if path == missing_prompt.display().to_string()
         ));
 
         let generic = entry("shell", "bash");
@@ -1589,6 +1615,13 @@ mod bootstrap_tests {
         }
     }
 
+    fn successful_test_uv_install(
+        _data_dir: &Path,
+        _mirror_base: Option<&str>,
+    ) -> Result<PathBuf, UvBootstrapError> {
+        Ok(PathBuf::from("/data/bin/uv"))
+    }
+
     #[test]
     fn a_completed_bootstrap_pins_the_installed_uv_in_settings_and_metadata() {
         let mut entry = python_entry();
@@ -1630,7 +1663,7 @@ mod bootstrap_tests {
             Path::new("/data"),
             None,
             &consent,
-            |_, _| Ok(PathBuf::from("/data/bin/uv")),
+            successful_test_uv_install,
         )
         .unwrap();
 
@@ -1673,7 +1706,7 @@ mod bootstrap_tests {
             Path::new("/data"),
             None,
             &consent,
-            |_, _| panic!("a refused download must not reach the installer"),
+            successful_test_uv_install,
         )
         .expect_err("a refusal must fail the run");
 
