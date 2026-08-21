@@ -638,10 +638,9 @@ fn python_literal(document: &ParsedDocument, node: tree_sitter::Node<'_>) -> Opt
         "concatenated_string" => {
             let mut joined = String::new();
             for child in named_children(node) {
-                let PythonLiteral::Value(ParameterValue::String(value)) =
-                    python_literal(document, child)?
-                else {
-                    return None;
+                let value = match python_literal(document, child) {
+                    Some(PythonLiteral::Value(ParameterValue::String(value))) => value,
+                    _ => return None,
                 };
                 joined.push_str(&value);
             }
@@ -714,10 +713,9 @@ fn decode_python_string(source: &str) -> Option<String> {
         "\"\"\""
     } else if rest.starts_with('\'') {
         "'"
-    } else if rest.starts_with('"') {
-        "\""
     } else {
-        return None;
+        // `quote_index` points at either a single or double quote.
+        "\""
     };
     let body = rest.strip_prefix(quote)?.strip_suffix(quote)?;
     if prefix_lower.contains('r') {
@@ -2798,6 +2796,138 @@ fn newline_style(source: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn python_literal_for(expression: &str) -> Option<PythonLiteral> {
+        let source = format!("value = {expression}\n");
+        let ParseOutcome::Parsed(document) = parse_document("python", &source) else {
+            panic!("the literal fixture must parse");
+        };
+        let statement = named_children(document.syntax_tree().root_node())
+            .into_iter()
+            .next()?;
+        let assignment = assignment_node(statement)?;
+        let value = assignment.child_by_field_name("right")?;
+        python_literal(&document, value)
+    }
+
+    fn python_literal_value_for(expression: &str) -> Option<ParameterValue> {
+        let source = format!("value = {expression}\n");
+        let ParseOutcome::Parsed(document) = parse_document("python", &source) else {
+            panic!("the literal fixture must parse");
+        };
+        let statement = named_children(document.syntax_tree().root_node())
+            .into_iter()
+            .next()?;
+        let assignment = assignment_node(statement)?;
+        literal_value(&document, assignment.child_by_field_name("right")?)
+    }
+
+    #[test]
+    fn python_integer_literals_cover_every_supported_radix_and_sign() {
+        for (source, expected) in [
+            ("0", 0),
+            ("1_000", 1_000),
+            ("0xff", 255),
+            ("0X_FF", 255),
+            ("0o17", 15),
+            ("0O_17", 15),
+            ("0b101", 5),
+            ("0B_101", 5),
+        ] {
+            assert_eq!(parse_python_integer(source), Some(expected));
+        }
+        assert_eq!(parse_python_integer("not-a-number"), None);
+        assert_eq!(parse_python_integer("999999999999999999999999"), None);
+
+        assert_eq!(
+            python_literal_for("+7"),
+            Some(PythonLiteral::Value(ParameterValue::Integer(7)))
+        );
+        assert_eq!(
+            python_literal_for("-7"),
+            Some(PythonLiteral::Value(ParameterValue::Integer(-7)))
+        );
+        assert_eq!(
+            python_literal_for("+1.5"),
+            Some(PythonLiteral::Value(ParameterValue::Float(1.5)))
+        );
+        assert_eq!(
+            python_literal_for("-1.5"),
+            Some(PythonLiteral::Value(ParameterValue::Float(-1.5)))
+        );
+        assert_eq!(python_literal_for("~1"), None);
+        assert_eq!(python_literal_for("~1.5"), None);
+        assert_eq!(python_literal_for("-True"), None);
+        assert_eq!(python_literal_for("1e999"), None);
+    }
+
+    #[test]
+    fn python_string_literals_decode_prefixes_quotes_and_concatenation() {
+        for (source, expected) in [
+            ("'plain'", "plain"),
+            ("\"double\"", "double"),
+            ("'''triple'''", "triple"),
+            ("\"\"\"triple double\"\"\"", "triple double"),
+            ("u'Unicode'", "Unicode"),
+            ("R'raw\\n'", "raw\\n"),
+        ] {
+            assert_eq!(decode_python_string(source).as_deref(), Some(expected));
+        }
+        assert_eq!(decode_python_string("no quotes"), None);
+        assert_eq!(decode_python_string("b'bytes'"), None);
+        assert_eq!(decode_python_string("f'{value}'"), None);
+        assert_eq!(decode_python_string("q'unknown prefix'"), None);
+        assert_eq!(decode_python_string("'unterminated"), None);
+
+        assert_eq!(
+            python_literal_for("('left' 'right')"),
+            Some(PythonLiteral::Value(ParameterValue::String(
+                "leftright".to_owned()
+            )))
+        );
+        assert_eq!(python_literal_for("('left' f'{value}')"), None);
+        assert_eq!(python_literal_for("None"), Some(PythonLiteral::None));
+        assert_eq!(python_literal_for("..."), Some(PythonLiteral::Ellipsis));
+        assert_eq!(python_literal_value_for("None"), None);
+        assert_eq!(python_literal_value_for("..."), None);
+        assert_eq!(python_literal_for("[1]"), None);
+    }
+
+    #[test]
+    fn python_escape_decoding_covers_named_numeric_continuation_and_unknown_forms() {
+        let source = concat!(
+            "\\\\",
+            "\\'",
+            "\\\"",
+            "\\a",
+            "\\b",
+            "\\f",
+            "\\n",
+            "\\r",
+            "\\t",
+            "\\v",
+            "\\\n",
+            "\\\r\n",
+            "\\x41",
+            "\\u4e2d",
+            "\\U0001F680",
+            "\\101",
+            "\\q",
+        );
+        assert_eq!(
+            decode_python_escapes(source).as_deref(),
+            Some("\\'\"\u{7}\u{8}\u{c}\n\r\t\u{b}A中🚀A\\q")
+        );
+        assert_eq!(decode_python_escapes("trailing\\"), None);
+        assert_eq!(decode_python_escapes("\\xG0"), None);
+        assert_eq!(decode_python_escapes("\\u123"), None);
+        assert_eq!(decode_python_escapes("\\U00110000"), None);
+
+        let mut short = "a".chars().peekable();
+        assert_eq!(read_radix(&mut short, 2, 16), None);
+        let mut invalid = "gg".chars().peekable();
+        assert_eq!(read_radix(&mut invalid, 2, 16), None);
+    }
 
     #[test]
     fn test_const_default_that_no_longer_fits_the_declared_type_is_not_published() {
