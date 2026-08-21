@@ -381,9 +381,12 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
 - **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 
-Apart from the PathSuggester group above, there is no known per-file implementation backlog. The
-other remaining ignored rows are frozen-name records with explicit non-divergence classifications;
-do not turn them into fake REAL owners merely to reduce the ignored count.
+The PathSuggester group is the largest confirmed per-file backlog. A static Phase 4 marker audit
+also found 35 JS-dependency, 7 source-edit, 5 editor, 2 source-default, and 1 language ignored rows
+whose reasons still say ABSENT. Several JS reasons are demonstrably stale after later production
+fixes (captured installer stderr and stale injected-file cleanup), but the rows must be re-audited
+and moved to their real owners or implemented before the ledger can call them closures. Do not turn
+them into fake REAL owners merely to reduce the ignored count.
 - **OWED (not divergences): the interpreters DETECTION half** — port the oracle's
   shebang_program/infer_kind test module against `skit-language` (58 cross-crate stubs in
   port_test_interpreters.rs point there; tests-only coverage work, could be a fan-out subagent job
@@ -428,7 +431,8 @@ The ledger has the authoritative per-module adjudication log.
   found that its two repository reads must become one coherent refresh before approval. The Prompt
   Settings placeholder picker activated its eight owners (`c4b8659`), but its short-list keyboard
   navigation, row order/overflow hint, and duplicate/dead chooser route are under follow-up review.
-  A further audit reopened the 25-owner PathSuggester group described above. The final coverage,
+  A further audit reopened the 25-owner PathSuggester group described above, and a static follow-up
+  reopened the remaining ABSENT-marker groups for three-way adjudication. The final coverage,
   supply-chain, docs, package, benchmark, and hands-on gates are not valid until these changes stop.
   A review also questioned `FileStore::scan()` repairing stale registry rows. This is not a new
   blocker: `registry.toml` is a derived index, not authoritative user data, and v0.4 explicitly
