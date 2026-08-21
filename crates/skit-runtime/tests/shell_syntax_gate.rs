@@ -64,9 +64,11 @@ fn test_interpreter_gate_refuses_what_the_offline_gate_missed() {
     let staged = NamedTempFile::new().unwrap();
     let path = staged.path().to_path_buf();
     let runner = Runner::output(false, b"bash: staged source rejected\nsecond line\n");
+    let interpreter = interpreter();
+    assert_eq!(interpreter.program(), Path::new("/resolved/bin/bash"));
 
     let error =
-        retain_shell_source_if_valid(staged, Some(&interpreter()), &path, &runner).unwrap_err();
+        retain_shell_source_if_valid(staged, Some(&interpreter), &path, &runner).unwrap_err();
 
     assert!(!path.exists(), "a rejected private source must be removed");
     assert_eq!(error.shell(), "bash");

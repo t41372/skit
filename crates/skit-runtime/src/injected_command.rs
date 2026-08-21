@@ -152,6 +152,8 @@ fn finish_injected_command_with<C, R, H>(
 mod private_tests {
     use std::{cell::Cell, io};
 
+    use tempfile::TempDir;
+
     use super::*;
 
     #[derive(Debug, Default)]
@@ -168,6 +170,8 @@ mod private_tests {
     fn join_reader(_: ()) -> std::thread::Result<io::Result<Vec<u8>>> {
         Ok(Ok(Vec::new()))
     }
+
+    fn no_op_stop(_: &mut FakeChild) {}
 
     #[test]
     fn timeout_and_capture_setup_failures_always_stop_the_child() {
@@ -210,17 +214,136 @@ mod private_tests {
             assert_eq!(stops.get(), 1);
         }
 
+        let no_op_stop_result = finish_injected_command_with(
+            FakeChild,
+            Duration::ZERO,
+            take_stderr,
+            spawn_reader,
+            |_, _| Ok(None),
+            no_op_stop,
+            join_reader,
+        );
+        assert_eq!(
+            no_op_stop_result.unwrap_err(),
+            InjectedCommandUnavailable::Timeout
+        );
+
         let output = finish_injected_command_with(
             FakeChild,
             Duration::ZERO,
             take_stderr,
             spawn_reader,
             |_, _| Ok(Some(true)),
-            |_| {},
-            join_reader,
+            no_op_stop,
+            |_| Ok(Ok(b"captured stderr".to_vec())),
         )
         .unwrap();
         assert!(output.success);
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stderr, b"captured stderr");
+    }
+
+    #[test]
+    fn wait_and_reader_failures_use_the_shared_cleanup_and_typed_error_path() {
+        let stops = Cell::new(0);
+        let joins = Cell::new(0);
+        let wait_error = finish_injected_command_with(
+            FakeChild,
+            Duration::ZERO,
+            take_stderr,
+            spawn_reader,
+            |_, _| Err(io::Error::other("wait unavailable")),
+            |_| stops.set(stops.get() + 1),
+            |_| {
+                joins.set(joins.get() + 1);
+                Ok(Ok(Vec::new()))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            wait_error,
+            InjectedCommandUnavailable::Spawn {
+                reason: "wait unavailable".to_owned(),
+            }
+        );
+        assert_eq!(stops.get(), 1);
+        assert_eq!(
+            joins.get(),
+            1,
+            "the stderr reader must be drained after stop"
+        );
+
+        let reader_panic = finish_injected_command_with(
+            FakeChild,
+            Duration::ZERO,
+            take_stderr,
+            spawn_reader,
+            |_, _| Ok(Some(false)),
+            no_op_stop,
+            |_| -> std::thread::Result<io::Result<Vec<u8>>> {
+                Err(Box::new("synthetic reader panic"))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            reader_panic,
+            InjectedCommandUnavailable::Spawn {
+                reason: "the injected-source stderr reader panicked".to_owned(),
+            }
+        );
+
+        let read_error = finish_injected_command_with(
+            FakeChild,
+            Duration::ZERO,
+            take_stderr,
+            spawn_reader,
+            |_, _| Ok(Some(true)),
+            no_op_stop,
+            |_| Ok(Err(io::Error::other("stderr unavailable"))),
+        )
+        .unwrap_err();
+        assert_eq!(
+            read_error,
+            InjectedCommandUnavailable::Spawn {
+                reason: "stderr unavailable".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn system_runner_maps_spawn_errors_and_reaps_a_timed_out_child() {
+        let missing_root = TempDir::new().unwrap();
+        let missing = InjectedCommand {
+            program: missing_root.path().join("missing-injected-check"),
+            args: Vec::new(),
+            timeout: Duration::from_secs(1),
+        };
+        let error = SystemInjectedCommandRunner.run(&missing).unwrap_err();
+        assert!(matches!(
+            error,
+            InjectedCommandUnavailable::Spawn { ref reason } if !reason.is_empty()
+        ));
+
+        #[cfg(unix)]
+        let child = InjectedCommand {
+            program: PathBuf::from("/bin/sh"),
+            args: ["-c", "while :; do :; done"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+            timeout: Duration::from_millis(100),
+        };
+        #[cfg(windows)]
+        let child = InjectedCommand {
+            program: PathBuf::from("cmd.exe"),
+            args: ["/C", "for /L %i in (1,1,2147483647) do @rem"]
+                .into_iter()
+                .map(OsString::from)
+                .collect(),
+            timeout: Duration::from_millis(100),
+        };
+        assert_eq!(
+            SystemInjectedCommandRunner.run(&child).unwrap_err(),
+            InjectedCommandUnavailable::Timeout
+        );
     }
 }
