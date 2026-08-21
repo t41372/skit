@@ -38,7 +38,10 @@ use pep508_rs::{Requirement, VerbatimUrl};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use skit_domain::parameters::{ParamDecl, ParameterType, ParameterValue, synthesized_placeholder};
+use skit_domain::{
+    Entry, EntrySettings, StorageMode,
+    parameters::{ParamDecl, ParameterType, ParameterValue, synthesized_placeholder},
+};
 use skit_i18n::{Localize, Message};
 use thiserror::Error;
 use toml::Value as TomlValue;
@@ -207,6 +210,27 @@ pub struct UvMetadata {
     pub dependencies: Vec<String>,
     /// Python version constraint.
     pub requires_python: String,
+}
+
+/// Read the effective settings that one launch would use for an entry snapshot.
+///
+/// A Python copy can keep either UV axis in its stored PEP 723 block. Other entry kinds and
+/// reference-mode Python entries use metadata only.
+#[must_use]
+pub fn effective_entry_settings(entry: &Entry, source: Option<&[u8]>) -> EntrySettings {
+    let mut settings = EntrySettings::from_meta(&entry.meta);
+    if entry.meta.kind.as_str() == "python" && entry.meta.mode == StorageMode::Copy {
+        let effective = effective_uv_metadata_bytes(
+            source,
+            &UvMetadata {
+                dependencies: settings.dependencies.clone(),
+                requires_python: settings.requires_python.clone(),
+            },
+        );
+        settings.dependencies = effective.dependencies;
+        settings.requires_python = effective.requires_python;
+    }
+    settings
 }
 
 /// Infer a known kind from a path, optional shebang, and executable status.

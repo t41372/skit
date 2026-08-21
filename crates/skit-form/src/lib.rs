@@ -8,17 +8,42 @@ pub mod parameter_section;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use skit_application::library_detail::{LibraryFormFacts, LibraryFormProjector};
 use skit_domain::{
-    EntrySettings,
+    Entry, EntrySettings,
     parameters::{
         ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
         synthesized_placeholder,
     },
 };
 use skit_language::{
-    BindingIdentity, CliSurface, DegradationReason, ParseOutcome, ReconcileReport, SourceSpan,
-    managed_params, parse_document, placeholder_params,
+    BindingIdentity, CliSurface, DegradationReason, LosslessSource, ParseOutcome, ReconcileReport,
+    SourceSpan, managed_params, parse_document, placeholder_params,
 };
+
+/// Parser-backed form adapter for one Library entry snapshot.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FormLibraryProjector;
+
+impl LibraryFormProjector for FormLibraryProjector {
+    fn project(&self, entry: &Entry, source: Option<&[u8]>) -> LibraryFormFacts {
+        let kind = entry.meta.kind.as_str();
+        let source = match source {
+            Some(bytes) if kind == "prompt" => {
+                String::from_utf8(bytes.to_vec()).unwrap_or_default()
+            }
+            Some(bytes) => LosslessSource::from_bytes(bytes)
+                .normalized_text()
+                .to_owned(),
+            None => String::new(),
+        };
+        let plan = form_plan(kind, &source, &EntrySettings::from_meta(&entry.meta));
+        LibraryFormFacts {
+            declarations: plan.declarations(),
+            drifted: !plan.drift.is_empty(),
+        }
+    }
+}
 
 /// The source that owns a prepared form.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
