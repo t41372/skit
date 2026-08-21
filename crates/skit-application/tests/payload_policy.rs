@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use skit_application::{ForcedAddKind, add_workdir, payload_stored_name, supports_storage_modes};
+use skit_application::{
+    ExecutableDialect, ExecutableSourceFacts, ForcedAddKind, add_workdir, payload_stored_name,
+    source_is_executable, supports_storage_modes,
+};
 use skit_domain::{EntryKind, StorageMode};
 
 fn kind(value: &str) -> EntryKind {
@@ -102,5 +105,87 @@ fn storage_mode_capability_matches_the_latest_main_language_registry() {
     }
     for entry_kind in ["exe", "command", "future-kind"] {
         assert!(!supports_storage_modes(&kind(entry_kind)), "{entry_kind}");
+    }
+}
+
+#[test]
+fn test_infer_kind_windows_uses_pathext_not_execute_bit() {
+    let windows = ExecutableDialect::Windows {
+        pathext: Some(".COM;.EXE;.BAT;.CMD"),
+    };
+    assert!(source_is_executable(ExecutableSourceFacts {
+        path: Path::new("tool.exe"),
+        is_file: true,
+        unix_mode: None,
+        dialect: windows,
+    }));
+    assert!(!source_is_executable(ExecutableSourceFacts {
+        path: Path::new("run.BAT"),
+        is_file: false,
+        unix_mode: None,
+        dialect: windows,
+    }));
+    assert!(source_is_executable(ExecutableSourceFacts {
+        path: Path::new("run.BAT"),
+        is_file: true,
+        unix_mode: None,
+        dialect: windows,
+    }));
+    assert!(!source_is_executable(ExecutableSourceFacts {
+        path: Path::new("notes.txt"),
+        is_file: true,
+        unix_mode: Some(0o777),
+        dialect: windows,
+    }));
+}
+
+#[test]
+fn test_infer_kind_windows_reads_pathext_env() {
+    let windows = ExecutableDialect::Windows {
+        pathext: Some(".PY1;.fOo"),
+    };
+    assert!(source_is_executable(ExecutableSourceFacts {
+        path: Path::new("thing.FOO"),
+        is_file: true,
+        unix_mode: None,
+        dialect: windows,
+    }));
+    assert!(!source_is_executable(ExecutableSourceFacts {
+        path: Path::new("thing.exe"),
+        is_file: true,
+        unix_mode: None,
+        dialect: windows,
+    }));
+}
+
+#[test]
+fn test_infer_kind_windows_falls_back_to_default_pathext() {
+    for pathext in [None, Some("")] {
+        assert!(source_is_executable(ExecutableSourceFacts {
+            path: Path::new("go.bat"),
+            is_file: true,
+            unix_mode: None,
+            dialect: ExecutableDialect::Windows { pathext },
+        }));
+    }
+}
+
+#[test]
+fn posix_executable_inference_uses_only_a_real_files_execute_bits() {
+    for (is_file, unix_mode, expected) in [
+        (true, Some(0o755), true),
+        (true, Some(0o644), false),
+        (false, Some(0o755), false),
+        (true, None, false),
+    ] {
+        assert_eq!(
+            source_is_executable(ExecutableSourceFacts {
+                path: Path::new("extensionless"),
+                is_file,
+                unix_mode,
+                dialect: ExecutableDialect::Posix,
+            }),
+            expected
+        );
     }
 }

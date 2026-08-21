@@ -88,6 +88,25 @@ impl Sandbox {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_cli_infers_a_real_pathext_source_as_an_executable() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.scratch.path().join("run.BAT");
+    fs::write(&source, "@echo off\r\n").unwrap();
+
+    sandbox
+        .command_in("en")
+        .env("PATHEXT", ".FOO;.BAT")
+        .args(["add"])
+        .arg(&source)
+        .args(["--name", "run", "--no-input"])
+        .assert()
+        .success();
+
+    assert_eq!(sandbox.show_json("run")["kind"], "exe");
+}
+
 #[cfg(unix)]
 fn configure_plain(sandbox: &Sandbox) {
     fs::write(
