@@ -486,7 +486,7 @@ where
     F: FnMut(&Path) -> io::Result<()>,
     D: FnMut(&Path) -> io::Result<()>,
 {
-    sweep_stale_injected_at(entry_dir, SystemTime::now());
+    sweep_stale_injected_sources(entry_dir);
     validate_dependency_item_shapes(entry_dir)?;
     if dependency_items().any(|name| path_exists(&entry_dir.join(name))) {
         let staged = TemporaryDependencyDirectory::new(entry_dir)?;
@@ -501,11 +501,28 @@ where
     Ok(())
 }
 
+/// Remove secret-bearing injected source copies that are too old to belong to a live launch.
+///
+/// This hygiene operation is best-effort. It never blocks a launch or dependency cleanup.
+pub fn sweep_stale_injected_sources(entry_dir: &Path) {
+    sweep_stale_injected_at(entry_dir, SystemTime::now());
+}
+
 fn sweep_stale_injected_at(entry_dir: &Path, now: SystemTime) {
     sweep_stale_injected_before(entry_dir, now.checked_sub(STALE_INJECTED_AGE));
 }
 
 fn sweep_stale_injected_before(entry_dir: &Path, cutoff: Option<SystemTime>) {
+    sweep_stale_injected_before_with(entry_dir, cutoff, &mut |path| fs::remove_file(path));
+}
+
+fn sweep_stale_injected_before_with<F>(
+    entry_dir: &Path,
+    cutoff: Option<SystemTime>,
+    remove_file: &mut F,
+) where
+    F: FnMut(&Path) -> io::Result<()>,
+{
     let Some(cutoff) = cutoff else {
         return;
     };
@@ -522,7 +539,7 @@ fn sweep_stale_injected_before(entry_dir: &Path, cutoff: Option<SystemTime>) {
             .and_then(|metadata| metadata.modified())
             .is_ok_and(|modified| modified < cutoff);
         if is_injected && is_stale {
-            let _ = fs::remove_file(path);
+            let _ = remove_file(&path);
         }
     }
 }

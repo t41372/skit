@@ -37,7 +37,7 @@
 //! - ABSENT (compiling `#[ignore]` stub, MUST-FIX + Python ref): library seams the Rust
 //!   surface never exposes — `split_requirement(s)`, `require_installer`, `needs_install`,
 //!   `_failure_detail` helper-only edge shapes (the real-binary stderr owner is active below),
-//!   `sweep_stale_injected`, a manifest-with-module-type, and the install-announce line.
+//!   a manifest-with-module-type, and the install-announce line.
 //! - CROSS-CRATE / TOOLING (compiling `#[ignore]` stub naming the owning tier): the TUI
 //!   screens (`skit-tui`/`skit-ui`), the injection temp-file placement (`rewrite`), the
 //!   `RunnerLaunch.build`/`preflight` install wiring (`skit-runtime` launch + `skit-cli`

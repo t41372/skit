@@ -31,7 +31,7 @@ use skit_runtime::{
     SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, UvDownloadConsent,
     build_launch_plan, build_launch_preview, ensure_javascript_dependencies_for_module,
     ensure_managed_uv, execute_launch, javascript_module_type, managed_uv_path,
-    resolve_javascript_runtime,
+    resolve_javascript_runtime, sweep_stale_injected_sources,
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
@@ -499,6 +499,10 @@ pub(crate) fn run_with_roots(
         )?;
     }
 
+    if !args.dry_run {
+        sweep_injected_launch_sources(data_store, &entry);
+    }
+
     if !args.dry_run
         && matches!(entry.meta.kind.as_str(), "js" | "ts")
         && entry.meta.mode == skit_domain::StorageMode::Copy
@@ -802,10 +806,7 @@ fn stage_injected_source(
     assembly: &skit_application::delivery::Assembly,
 ) -> Result<Option<StagedSource>, RunError> {
     let entry_dir = store.entry_dir_path(&entry.slug);
-    // This call runs for every non-dry launch. Recover only aged injected copies, so a crashed
-    // process cannot leave values in the persistent entry directory forever and a concurrent run's
-    // live copy stays intact.
-    sweep_staged_sources(&entry_dir, !assembly.inject_values.is_empty());
+    sweep_stale_launch_snapshots(&entry_dir, !assembly.inject_values.is_empty());
     if assembly.inject_values.is_empty() {
         return Ok(None);
     }
@@ -832,6 +833,10 @@ fn stage_injected_source(
         file.write_all(bytes).and_then(|()| file.sync_all())
     })
     .map(Some)
+}
+
+fn sweep_injected_launch_sources(store: &FileStore, entry: &Entry) {
+    sweep_stale_injected_sources(&store.entry_dir_path(&entry.slug));
 }
 
 fn new_injected_file(
@@ -955,7 +960,10 @@ fn pin_interpreter(settings: &mut EntrySettings, entry: &mut Entry, path: &Path)
     settings.write_to_meta(&mut entry.meta);
 }
 
-fn sweep_staged_sources(entry_dir: &Path, include_launch_snapshots: bool) {
+fn sweep_stale_launch_snapshots(entry_dir: &Path, include_launch_snapshots: bool) {
+    if !include_launch_snapshots {
+        return;
+    }
     // A directory skit cannot list holds nothing skit owns.
     let items = fs::read_dir(entry_dir).into_iter().flatten();
     let cutoff = SystemTime::now()
@@ -963,10 +971,10 @@ fn sweep_staged_sources(entry_dir: &Path, include_launch_snapshots: bool) {
         .unwrap_or(SystemTime::UNIX_EPOCH);
     for item in items.flatten() {
         let path = item.path();
-        let is_staged = item.file_name().to_str().is_some_and(|name| {
-            name.starts_with(".injected-")
-                || (include_launch_snapshots && name.starts_with(".run-"))
-        });
+        let is_staged = item
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(".run-"));
         let is_stale_file = item
             .metadata()
             .ok()
@@ -1396,6 +1404,7 @@ mod tests {
         let mut declaration = ParamDecl::new("NAME");
         declaration.binding = ParameterBinding::Const;
         declaration.delivery = ParameterDelivery::Inject;
+        sweep_injected_launch_sources(&store, &shell);
         let staged = stage_injected_source(
             &store,
             &shell,
@@ -1448,6 +1457,7 @@ mod tests {
                     .set_accessed(SystemTime::UNIX_EPOCH),
             )
             .unwrap();
+        sweep_injected_launch_sources(&store, &shell);
         assert!(
             stage_injected_source(
                 &store,
@@ -1565,9 +1575,9 @@ mod tests {
         let store = FileStore::new(root.path());
         let directory = root.path().join("scripts/demo");
         fs::create_dir_all(&directory).unwrap();
-        fs::write(directory.join("script.sh"), "printf ok\n").unwrap();
-        let aged = directory.join(".injected-dead.sh");
-        let fresh = directory.join(".injected-live.sh");
+        fs::write(directory.join("script.js"), "console.log('ok');\n").unwrap();
+        let aged = directory.join(".injected-dead.js");
+        let fresh = directory.join(".injected-live.js");
         fs::write(&aged, "old secret").unwrap();
         fs::write(&fresh, "live secret").unwrap();
         let old = SystemTime::now()
@@ -1580,17 +1590,7 @@ mod tests {
             .set_times(fs::FileTimes::new().set_modified(old))
             .unwrap();
 
-        assert!(
-            stage_injected_source(
-                &store,
-                &entry("shell", "bash"),
-                "printf ok\n",
-                &[],
-                &skit_application::delivery::Assembly::default(),
-            )
-            .unwrap()
-            .is_none()
-        );
+        sweep_injected_launch_sources(&store, &entry("js", "node"));
 
         assert!(!aged.exists());
         assert!(fresh.exists());
