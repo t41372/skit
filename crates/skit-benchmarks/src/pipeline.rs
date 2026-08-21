@@ -134,6 +134,14 @@ pub struct ExecutionRequest<'a> {
 
 /// Execute one complete profile and publish its result artifacts.
 pub fn execute(request: ExecutionRequest<'_>) -> Result<Results, ExecutionError> {
+    let plan = build_plan(request.profile);
+    execute_plan(request, &plan)
+}
+
+fn execute_plan(
+    request: ExecutionRequest<'_>,
+    plan: &[SuitePlan],
+) -> Result<Results, ExecutionError> {
     let started = Instant::now();
     let bench_dir = absolute(request.bench_dir)?;
     let repo_root = absolute(request.repo_root)?;
@@ -143,8 +151,7 @@ pub fn execute(request: ExecutionRequest<'_>) -> Result<Results, ExecutionError>
     ensure_normal_directory(&bench_dir)?;
     clear_stale_outputs(&bench_dir)?;
 
-    let plan = build_plan(request.profile);
-    let datasets = prepare_datasets(&bench_dir, &dataset_sizes(&plan))?;
+    let datasets = prepare_datasets(&bench_dir, &dataset_sizes(plan))?;
     let work = tempfile::Builder::new()
         .prefix("skit-bench-")
         .tempdir()
@@ -168,7 +175,7 @@ pub fn execute(request: ExecutionRequest<'_>) -> Result<Results, ExecutionError>
         started,
         &bench_dir,
         &context,
-        &plan,
+        plan,
         meta,
         request.budgets,
         suites::run,
@@ -246,23 +253,33 @@ fn remove_generated_directory(path: &Path) -> Result<(), ExecutionError> {
 }
 
 fn ensure_normal_directory(path: &Path) -> Result<(), ExecutionError> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(()),
-        Ok(_) => Err(ExecutionError::UnsafeCleanup(path.to_path_buf())),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir_all(path).map_err(|source| io("create", path, source))?;
-            if normal_directory_exists(path)? {
-                Ok(())
-            } else {
-                Err(ExecutionError::UnsafeCleanup(path.to_path_buf()))
-            }
-        }
-        Err(source) => Err(io("inspect", path, source)),
+    if normal_directory_exists(path)? {
+        return Ok(());
+    }
+    fs::create_dir_all(path).map_err(|source| io("create", path, source))?;
+    ensure_created_directory(path, normal_directory_exists(path))
+}
+
+fn ensure_created_directory(
+    path: &Path,
+    exists: Result<bool, ExecutionError>,
+) -> Result<(), ExecutionError> {
+    if exists? {
+        Ok(())
+    } else {
+        Err(ExecutionError::UnsafeCleanup(path.to_path_buf()))
     }
 }
 
 fn normal_directory_exists(path: &Path) -> Result<bool, ExecutionError> {
-    match fs::symlink_metadata(path) {
+    normal_directory_exists_from(path, fs::symlink_metadata(path))
+}
+
+fn normal_directory_exists_from(
+    path: &Path,
+    metadata: std::io::Result<fs::Metadata>,
+) -> Result<bool, ExecutionError> {
+    match metadata {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(true),
         Ok(_) => Err(ExecutionError::UnsafeCleanup(path.to_path_buf())),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -271,7 +288,14 @@ fn normal_directory_exists(path: &Path) -> Result<bool, ExecutionError> {
 }
 
 fn normal_file_exists(path: &Path) -> Result<bool, ExecutionError> {
-    match fs::symlink_metadata(path) {
+    normal_file_exists_from(path, fs::symlink_metadata(path))
+}
+
+fn normal_file_exists_from(
+    path: &Path,
+    metadata: std::io::Result<fs::Metadata>,
+) -> Result<bool, ExecutionError> {
+    match metadata {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(true),
         Ok(metadata) if metadata.file_type().is_symlink() => {
             Err(ExecutionError::UnsafeCleanup(path.to_path_buf()))
@@ -301,7 +325,14 @@ fn absolute(path: &Path) -> Result<PathBuf, ExecutionError> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
-    std::env::current_dir()
+    absolute_from(path, std::env::current_dir())
+}
+
+fn absolute_from(
+    path: &Path,
+    current_dir: std::io::Result<PathBuf>,
+) -> Result<PathBuf, ExecutionError> {
+    current_dir
         .map(|cwd| cwd.join(path))
         .map_err(|source| io("resolve", path, source))
 }
@@ -316,13 +347,13 @@ fn io(operation: &'static str, path: &Path, source: std::io::Error) -> Execution
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{fs, os::unix::fs::symlink, path::Path, time::Instant};
+    use std::{fs, io, os::unix::fs::symlink, path::Path, time::Instant};
 
     use tempfile::TempDir;
 
     use crate::{
         BenchmarkProfile, GitInfo, HostInfo, Meta, SuiteKind, SuiteOutput,
-        suites::tests::{Fixture, plan},
+        suites::tests::{Fixture, executable, plan},
     };
 
     fn meta() -> Meta {
@@ -480,6 +511,77 @@ mod tests {
     }
 
     #[test]
+    fn execute_plan_discovers_real_tools_runs_a_strict_subject_and_publishes() {
+        let root = TempDir::new().unwrap();
+        let bench = root.path().join("bench");
+        let log = root.path().join("skit-invocations");
+        let skit = executable(
+            &root.path().join("skit"),
+            &format!(
+                r#"#!/bin/sh
+printf '%s|%s|%s\n' "$PWD" "$*" "${{SKIT_DATA_DIR-}}" >> '{}'
+case "$*" in
+  --version) printf 'skit 0.5.0\n' ;;
+  'list --json') printf '[]\n' ;;
+  *) printf 'unexpected skit argv: %s\n' "$*" >&2; exit 64 ;;
+esac
+"#,
+                log.display()
+            ),
+        );
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let suite_plan = [plan(SuiteKind::Imports, &[0])];
+        let results = super::execute_plan(
+            super::ExecutionRequest {
+                profile: BenchmarkProfile::Compare,
+                bench_dir: &bench,
+                repo_root: &repo,
+                measured_repo: Some(&repo),
+                skit: &skit,
+                harness: &skit,
+                budgets: None,
+            },
+            &suite_plan,
+        )
+        .unwrap();
+
+        assert_eq!(results.meta.profile, BenchmarkProfile::Compare);
+        assert!(results.metrics.contains_key("imports.version.modules"));
+        assert!(bench.join("datasets/n0/manifest.json").is_file());
+        assert!(bench.join("suites/imports.json").is_file());
+        assert!(bench.join("run.json").is_file());
+        assert!(bench.join("results.json").is_file());
+        assert!(bench.join("results.md").is_file());
+        let lines = fs::read_to_string(&log).unwrap();
+        let lines = lines.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], format!("{}|--version|", repo.display()));
+        assert!(lines[1].contains("|--version|"));
+        assert!(lines[1].ends_with("/datasets/n0/data"));
+        assert!(lines[2].contains("|list --json|"));
+        assert!(lines[2].ends_with("/datasets/n0/data"));
+
+        let blocked = root.path().join("blocked-bench");
+        fs::write(&blocked, "unchanged").unwrap();
+        assert!(matches!(
+            super::execute(super::ExecutionRequest {
+                profile: BenchmarkProfile::Compare,
+                bench_dir: &blocked,
+                repo_root: &repo,
+                measured_repo: Some(&repo),
+                skit: &skit,
+                harness: &skit,
+                budgets: None,
+            }),
+            Err(super::ExecutionError::UnsafeCleanup(path)) if path == blocked
+        ));
+        assert_eq!(fs::read_to_string(blocked).unwrap(), "unchanged");
+    }
+
+    #[test]
     fn filesystem_helpers_keep_cleanup_scoped_to_normal_directories() {
         let root = TempDir::new().unwrap();
         let created = root.path().join("created");
@@ -491,10 +593,54 @@ mod tests {
         let ordinary_file = root.path().join("ordinary");
         fs::write(&ordinary_file, "keep").unwrap();
         assert!(super::ensure_normal_directory(&ordinary_file).is_err());
+        assert!(super::normal_directory_exists(&ordinary_file).is_err());
         assert!(!super::normal_file_exists(&created).unwrap());
         assert!(super::normal_file_exists(&ordinary_file).unwrap());
         assert!(!super::normal_file_exists(&root.path().join("missing-file")).unwrap());
         assert!(super::remove_generated_directory(&ordinary_file).is_err());
+
+        let linked_file = root.path().join("linked-file");
+        symlink(&ordinary_file, &linked_file).unwrap();
+        assert!(super::normal_file_exists(&linked_file).is_err());
+
+        assert!(matches!(
+            super::ensure_created_directory(&created, Ok(false)),
+            Err(super::ExecutionError::UnsafeCleanup(path)) if path == created
+        ));
+        let inspect_error = io::Error::new(io::ErrorKind::PermissionDenied, "test inspect failure");
+        assert!(matches!(
+            super::normal_directory_exists_from(&created, Err(inspect_error)),
+            Err(super::ExecutionError::Io {
+                operation: "inspect",
+                path,
+                ..
+            }) if path == created
+        ));
+        let inspect_error = io::Error::new(io::ErrorKind::PermissionDenied, "test inspect failure");
+        assert!(matches!(
+            super::normal_file_exists_from(&ordinary_file, Err(inspect_error)),
+            Err(super::ExecutionError::Io {
+                operation: "inspect",
+                path,
+                ..
+            }) if path == ordinary_file
+        ));
+
+        let relative = Path::new("relative-benchmark-output");
+        assert!(super::absolute(relative).unwrap().is_absolute());
+        let resolve_error = super::absolute_from(
+            relative,
+            Err(io::Error::other("test current-directory failure")),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            resolve_error,
+            super::ExecutionError::Io {
+                operation: "resolve",
+                path,
+                ..
+            } if path == relative
+        ));
 
         let generated = root.path().join("generated");
         fs::create_dir(&generated).unwrap();
