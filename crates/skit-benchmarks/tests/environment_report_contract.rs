@@ -84,6 +84,15 @@ fn constructed_environment_is_dataset_scoped_absolute_and_not_ambient() {
         "/opt/skit/bin:/opt/node/bin:/usr/bin:/bin"
     );
     assert!(build_environment("skit", None, None, &work, &root.path().join("missing")).is_err());
+
+    let blocked_work = root.path().join("blocked-work");
+    fs::write(&blocked_work, "not a directory").unwrap();
+    let error = build_environment("skit", None, None, &blocked_work, &dataset).unwrap_err();
+    assert!(error.to_string().contains("blocked-work/home"));
+    assert_eq!(
+        fs::read_to_string(&blocked_work).unwrap(),
+        "not a directory"
+    );
 }
 
 #[test]

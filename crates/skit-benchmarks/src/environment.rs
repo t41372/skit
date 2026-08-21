@@ -302,7 +302,14 @@ fn absolute(path: &Path) -> Result<PathBuf, EnvironmentError> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
-    std::env::current_dir()
+    absolute_from(path, std::env::current_dir())
+}
+
+fn absolute_from(
+    path: &Path,
+    current_dir: std::io::Result<PathBuf>,
+) -> Result<PathBuf, EnvironmentError> {
+    current_dir
         .map(|cwd| cwd.join(path))
         .map_err(|source| EnvironmentError::Resolve {
             path: path.to_path_buf(),
@@ -312,7 +319,7 @@ fn absolute(path: &Path) -> Result<PathBuf, EnvironmentError> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt as _, path::Path};
+    use std::{fs, io, os::unix::fs::PermissionsExt as _, path::Path};
 
     use tempfile::TempDir;
 
@@ -360,6 +367,21 @@ mod tests {
             super::collect_meta(BenchmarkProfile::Pr, &repo, &skit, None, None).unwrap();
         assert_eq!(without_optional.python, "unknown");
         assert_eq!(without_optional.uv, "unknown");
+    }
+
+    #[test]
+    fn relative_path_resolution_preserves_the_failed_target() {
+        let target = Path::new("relative-work");
+        let error = super::absolute_from(
+            target,
+            Err(io::Error::other("test current-directory failure")),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            super::EnvironmentError::Resolve { path, .. } if path == target
+        ));
     }
 
     #[test]

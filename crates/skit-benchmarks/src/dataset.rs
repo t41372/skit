@@ -646,7 +646,14 @@ fn absolute(path: &Path) -> Result<PathBuf, DatasetError> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
-    std::env::current_dir()
+    absolute_from(path, std::env::current_dir())
+}
+
+fn absolute_from(
+    path: &Path,
+    current_dir: std::io::Result<PathBuf>,
+) -> Result<PathBuf, DatasetError> {
+    current_dir
         .map(|cwd| cwd.join(path))
         .map_err(|source| DatasetError::Io {
             operation: "resolve",
@@ -739,17 +746,8 @@ mod tests {
         assert!(super::validate_generated_count(1, 2).is_err());
         assert!(super::create_staged_manifest(&ordinary).is_err());
 
-        struct FailedWriter;
-        impl io::Write for FailedWriter {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                Err(io::Error::other("test write failure"))
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        assert!(super::write_manifest(&mut FailedWriter, &missing, "manifest").is_err());
+        let mut read_only = fs::File::open(&ordinary).unwrap();
+        assert!(super::write_manifest(&mut read_only, &missing, "manifest").is_err());
 
         let staged = super::create_staged_manifest(root.path()).unwrap();
         let target = root.path().join("manifest.json");
@@ -758,5 +756,24 @@ mod tests {
 
         #[cfg(unix)]
         assert!(super::make_executable(&missing).is_err());
+    }
+
+    #[test]
+    fn relative_path_resolution_preserves_the_failed_target() {
+        let target = Path::new("relative-dataset");
+        let error = super::absolute_from(
+            target,
+            Err(io::Error::other("test current-directory failure")),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            super::DatasetError::Io {
+                operation: "resolve",
+                path,
+                ..
+            } if path == target
+        ));
     }
 }
