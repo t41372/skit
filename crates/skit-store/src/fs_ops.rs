@@ -210,12 +210,15 @@ pub(crate) fn sync_directory(_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_lock, atomic_write_bytes, atomic_write_bytes_with, existing_lock_is_unavailable,
-        preserve_permissions_best_effort, sync_directory, try_acquire_lock,
+        acquire_lock, atomic_write_bytes, atomic_write_bytes_with_ops,
+        existing_lock_is_unavailable, preserve_permissions_best_effort, sync_directory,
+        try_acquire_lock,
     };
     use std::{
-        cell::Cell,
+        cell::{Cell, RefCell},
+        fs::File,
         io,
+        path::Path,
         sync::{Arc, Barrier, mpsc},
         thread,
         time::Duration,
@@ -359,31 +362,293 @@ mod tests {
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
     }
 
+    fn atomic_with_ops(
+        path: &Path,
+        bytes: &[u8],
+        sync_file: impl FnOnce(&File) -> io::Result<()>,
+        rename: impl FnMut(&Path, &Path) -> io::Result<()>,
+        sleep: impl FnMut(Duration),
+        sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+    ) -> io::Result<()> {
+        atomic_write_bytes_with_ops(
+            path,
+            bytes,
+            |_, _, error| error,
+            sync_file,
+            rename,
+            sleep,
+            sync_parent,
+        )
+    }
+
+    fn names(root: &TempDir) -> Vec<String> {
+        let mut names = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    fn assert_sync_precedes_replace(bytes: &[u8]) {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"before").unwrap();
+        let events = RefCell::new(Vec::new());
+
+        atomic_with_ops(
+            &target,
+            bytes,
+            |file| {
+                events.borrow_mut().push("sync-file");
+                assert_eq!(std::fs::read(&target).unwrap(), b"before");
+                file.sync_all()
+            },
+            |source, destination| {
+                events.borrow_mut().push("replace");
+                assert_eq!(std::fs::read(&target).unwrap(), b"before");
+                atomicwrites::replace_atomic(source, destination)
+            },
+            |_| unreachable!("a real successful replace does not retry"),
+            |parent| {
+                events.borrow_mut().push("sync-parent");
+                assert_eq!(parent, root.path());
+                assert_eq!(std::fs::read(&target).unwrap(), bytes);
+                sync_directory(parent)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(*events.borrow(), ["sync-file", "replace", "sync-parent"]);
+        assert_eq!(std::fs::read(&target).unwrap(), bytes);
+        assert_eq!(names(&root), ["target"]);
+    }
+
+    #[test]
+    fn test_atomic_write_bytes_fsyncs_before_replace() {
+        assert_sync_precedes_replace(b"payload");
+    }
+
+    #[test]
+    fn test_atomic_write_text_fsyncs_before_replace() {
+        let text = "hello\n";
+        assert_sync_precedes_replace(text.as_bytes());
+    }
+
+    #[test]
+    fn test_atomic_write_toml_fsyncs_before_replace() {
+        let document = toml::Table::from_iter([
+            ("language".to_owned(), toml::Value::String("en".to_owned())),
+            (
+                "future".to_owned(),
+                toml::Value::Table(toml::Table::from_iter([(
+                    "enabled".to_owned(),
+                    toml::Value::Boolean(true),
+                )])),
+            ),
+        ]);
+        let encoded = toml::to_string_pretty(&document).unwrap();
+        assert_sync_precedes_replace(encoded.as_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_write_bytes_fsyncs_parent_dir_after_replace() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"before").unwrap();
+        let parent_calls = Cell::new(0_u32);
+
+        atomic_with_ops(
+            &target,
+            b"after",
+            File::sync_all,
+            atomicwrites::replace_atomic,
+            |_| unreachable!("a real successful replace does not retry"),
+            |parent| {
+                parent_calls.set(parent_calls.get() + 1);
+                assert_eq!(parent, root.path());
+                assert_eq!(std::fs::read(&target).unwrap(), b"after");
+                sync_directory(parent)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(parent_calls.get(), 1);
+        assert_eq!(names(&root), ["target"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_atomic_write_bytes_dir_fsync_failure_is_swallowed() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"before").unwrap();
+        let parent_called = Cell::new(false);
+
+        atomic_with_ops(
+            &target,
+            b"after",
+            File::sync_all,
+            atomicwrites::replace_atomic,
+            |_| unreachable!("a real successful replace does not retry"),
+            |_| {
+                parent_called.set(true);
+                Err(io::Error::other("injected directory sync failure"))
+            },
+        )
+        .unwrap();
+
+        assert!(parent_called.get());
+        assert_eq!(std::fs::read(&target).unwrap(), b"after");
+        assert_eq!(names(&root), ["target"]);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn test_atomic_write_bytes_skips_dir_fsync_on_windows() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        let parent_called = Cell::new(false);
+
+        atomic_with_ops(
+            &target,
+            b"after",
+            File::sync_all,
+            atomicwrites::replace_atomic,
+            |_| unreachable!("a real successful replace does not retry"),
+            |_| {
+                parent_called.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(!parent_called.get());
+        assert_eq!(std::fs::read(&target).unwrap(), b"after");
+        assert_eq!(names(&root), ["target"]);
+    }
+
     #[test]
     fn test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file() {
         let root = TempDir::new().unwrap();
         let target = root.path().join("target");
         std::fs::write(&target, b"before").unwrap();
 
-        let result = atomic_write_bytes_with(
+        let result = atomic_with_ops(
             &target,
             b"after",
-            |_, _, error| error,
             |_| {
                 Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
                     "simulated temp fsync failure",
                 ))
             },
+            |_, _| unreachable!("replace must not run after temp sync failure"),
+            |_| unreachable!("replace retry must not run after temp sync failure"),
+            |_| unreachable!("parent sync must not run before replace"),
         );
 
         assert!(result.is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"before");
-        let names = std::fs::read_dir(root.path())
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect::<Vec<_>>();
-        assert_eq!(names, ["target"]);
+        assert_eq!(names(&root), ["target"]);
+    }
+
+    #[test]
+    fn test_replace_retries_through_transient_permission_error() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("registry.toml");
+        std::fs::write(&target, b"old = true\n").unwrap();
+        let attempts = Cell::new(0_u32);
+        let sleeps = RefCell::new(Vec::new());
+
+        atomic_with_ops(
+            &target,
+            b"new = true\n",
+            File::sync_all,
+            |source, destination| {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() <= 2 {
+                    Err(io::Error::from(io::ErrorKind::PermissionDenied))
+                } else {
+                    atomicwrites::replace_atomic(source, destination)
+                }
+            },
+            |delay| sleeps.borrow_mut().push(delay),
+            sync_directory,
+        )
+        .unwrap();
+
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(
+            *sleeps.borrow(),
+            [10, 20].map(Duration::from_millis).to_vec()
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"new = true\n");
+        assert_eq!(names(&root), ["registry.toml"]);
+    }
+
+    #[test]
+    fn test_replace_gives_up_loudly_after_bounded_attempts() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("registry.toml");
+        let original = b"# keep\nfuture = { enabled = true }\n";
+        std::fs::write(&target, original).unwrap();
+        let attempts = Cell::new(0_u32);
+        let sleeps = RefCell::new(Vec::new());
+
+        let error = atomic_with_ops(
+            &target,
+            b"language = \"en\"\n",
+            File::sync_all,
+            |_, _| {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            },
+            |delay| sleeps.borrow_mut().push(delay),
+            |_| unreachable!("parent sync must not run after replace failure"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(attempts.get(), 8);
+        assert_eq!(
+            *sleeps.borrow(),
+            [10, 20, 40, 80, 160, 320, 640]
+                .map(Duration::from_millis)
+                .to_vec()
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+        assert_eq!(names(&root), ["registry.toml"]);
+    }
+
+    #[test]
+    fn test_replace_other_oserrors_are_not_retried() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("registry.toml");
+        let original = b"future = 7\n";
+        std::fs::write(&target, original).unwrap();
+        let attempts = Cell::new(0_u32);
+        let sleeps = Cell::new(0_u32);
+
+        let error = atomic_with_ops(
+            &target,
+            b"language = \"en\"\n",
+            File::sync_all,
+            |_, _| {
+                attempts.set(attempts.get() + 1);
+                Err(io::Error::other("is a directory"))
+            },
+            |_| sleeps.set(sleeps.get() + 1),
+            |_| unreachable!("parent sync must not run after replace failure"),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(attempts.get(), 1);
+        assert_eq!(sleeps.get(), 0);
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+        assert_eq!(names(&root), ["registry.toml"]);
     }
 
     #[test]
