@@ -209,7 +209,7 @@ The five `test_store.py` closures retain their ignored bodies and exact oracle n
 | test_add_feedback_contracts.py | 16 | crates/skit-cli/tests/port_test_add_feedback_contracts.rs | implementation parity (12 REAL / 2 owned-draft semantic duplicates / 2 cross-crate closures) · Python dependency/version default, clear, and pin-aware prompts `cf33d82` · prompt single/compound post-commit consume and exact stored bytes `7aab925` · Python pin `affa5b2` · unknown/generic recovery `c134c80`/`7c4cb53` |
 | test_edit.py | 14 | crates/skit-cli/tests/port_test_edit.rs + skit-language source editor + skit-domain declarations | implementation parity (14 frozen owners active + 4 Rust transaction/reverse owners; target 18/0) · one typed parser-backed operation owns resync→remove→add→tweak order, syntax no-wipe, dropped/skipped/rebound warnings, partial success, duplicate rows, final-secret literal scrub, complete legacy-state purge, JSON stderr purity, TUI receipts, and source CAS `95c8465`..`4c1689a` · malformed prompt `ccec2c6`; command-source editor `5d0d888`; reference refusal `4746c36` |
 | test_presets.py | 12 | crates/skit-store/tests/port_test_presets.rs | done (12) · no gap |
-| test_add_review_contracts.py | 12 | crates/skit-tui/tests/port_test_add_review_contracts.rs | in fix (12/0) · async Textual add-review (skit-tui reducer) · 2 weakenings being fixed (wrap-display proxy, scroll containment) |
+| test_add_review_contracts.py | 12 | crates/skit-tui/tests/port_test_add_review_contracts.rs | implementation parity (12/0) · async Textual add-review at the skit-tui reducer/render boundary · wrap display and scroll containment use active exact owners |
 | test_rename.py | 10 | crates/skit-cli/tests/port_test_rename.rs | done (6) · 4 cross-crate |
 | test_add_review_validation.py | 10 | crates/skit-ui/tests/port_test_add_review_validation.rs | done (10) · async Textual add-review-validation (skit-ui reducer) · no gap |
 | test_agent_skill.py | 8 | crates/skit-cli/tests/port_test_agent_skill.rs | done (6) · 2 deferred |
@@ -219,7 +219,7 @@ The five `test_store.py` closures retain their ignored bodies and exact oracle n
 
 | Python module | # | Rust target | Status |
 | --- | --- | --- | --- |
-| test_prompt_tui.py | 83 | crates/skit-tui/tests/port_test_prompt_tui.rs + crates/skit-cli/tests/terminal_pty.rs | in fix · selected-runner ProgramNotFound now returns to Library without child/state writes `0f76635`; zero-runner prompts open the shared runner editor and cancel/save/failure paths match the oracle `949a51a` · real MouseDown runner selection strengthened and pinned/unpinned rerun moved to the live TUI host `f8091da` with child markers and last-value replay · eight Settings candidate owners activated in `c4b8659`, with short-list keyboard navigation, v0.4 row order/overflow, and the duplicate chooser route still under review |
+| test_prompt_tui.py | 83 | crates/skit-tui/tests/port_test_prompt_tui.rs + crates/skit-cli/tests/terminal_pty.rs | implementation parity · selected-runner ProgramNotFound returns to Library without child/state writes `0f76635`; zero-runner prompts open the shared runner editor and cancel/save/failure paths match the oracle `949a51a` · real MouseDown runner selection and pinned/unpinned rerun run at the live TUI host `f8091da` · eight Settings candidate owners are active; option-level keyboard navigation, v0.4 row order/overflow, and the single inline chooser route are complete `c4b8659`/`6b29372` · final localized prompt receipts are owned by `210a73a` |
 | test_path_tui.py | 61 | crates/skit-tui/tests/port_test_path_tui.rs + application/store completion ports + CLI PTY | implementation parity (57 REAL / 4 cross-crate closures; target 62 pass / 4 ignored with 5 Rust race/reverse owners) · typed bounded scanner, async latest-wins ghost, activation/token/shlex/brace/hidden/error/no-cache behavior, secret exclusion, Right acceptance, vanished-origin form projection, and real PTY launch are complete `ef76e01`..`0f7703a` · current-directory picker, paging, and picked-path escaping remain covered (`9718a1a`, `98b6bc8`, `0fd6d85`) |
 | test_phase1.py | 27 | crates/skit-cli/tests/port_test_phase1.rs | done (27) · no gap |
 | test_tui_responsive.py | 19 | crates/skit-tui/tests/port_test_tui_responsive.rs + manifest | done (17 executable) · full replacement `459765a` · detail pin `462aa9e` · compact modal controls `ef7c1ef` · short Search `061d29c` · narrow Preferences `9238165` · 2 Textual-only architecture-closed |
@@ -402,8 +402,8 @@ The six langs `#[ignore]` stubs are legitimate Python-runtime mechanisms with no
 grammar import via `sys.modules`, `LazyCapabilities`, `LangSpec.without()`, dataclass `compare=False`,
 module-namespace monkeypatch, the `without("cli_reader")` injection seam), and the one tokens ignore
 is a cross-crate (the env/now process-global fallback lives in the skit-cli composition root, covered
-there). MUST-VERIFY later: is there a real Rust kind with an analyzer but no cli_reader that exercises
-the plan-fall-through-to-none path (langs #21), when porting flows/plan_for_entry?
+there). The former analyzer-without-reader MUST-VERIFY item is closed as a framework-injection
+contract: Rust has no public kind with that impossible capability combination.
 
 ### Wave 2 — subagent fan-out (2026-08-10): 8 modules
 
@@ -414,8 +414,9 @@ assertion** in declared_params (`test_meta_parameters_roundtrip_and_non_dict_row
 exact-equality softened to a subset check to hide a divergence), fixed by the supervisor in `1586f56`
 and confirmed failing under `--ignored`.
 
-Open divergence findings (FAILING CONTRACT `#[ignore]`s, full bodies, for the consolidated impl-fix
-pass):
+Historical divergence findings from this wave follow. The declared edit engine, raw-row extension
+preservation, default withholding, and resync rebind were all closed by the later implementation-fix
+pass; this list is retained only as the discovery record:
 - **declared_params — params batch fault tolerance** (pending tasks #15/#16): a bad `--type
   w=integer` or a malformed `--type NOEQUALS` must WARN and exit 0 leaving the type unchanged (oracle
   cli.py batch tolerance); Rust hard-errors exit 2 and applies nothing. Plus secret/env-rider and
@@ -444,7 +445,7 @@ clean, with a careful one-way-superset note. No hidden mismatches. Two agents st
 - **interpreters DETECTION half → skit-language (CLOSED).** The shebang_program / infer_kind /
   shebang→kind contracts now run at the public language seams. Config, store, and CLI rows moved to
   their consolidated owners; the one unreadable-path split remains an explicit architecture closure.
-- **uvman "no orphan checksum pin" → skit-runtime UNIT test.** The oracle's three-way
+- **uvman "no orphan checksum pin" → skit-runtime UNIT test (CLOSED in `76aaab1`).** The oracle's three-way
   set(TRIPLES)==set(_UV_SHA256)==produced can't assert the "_UV_SHA256 has no stale pin" direction
   from an integration test (private CHECKSUMS). Re-home that one direction to a white-box unit test.
 
@@ -459,20 +460,21 @@ invocation (running skit unsandboxed dropped .locks/values into the cwd).
 
 ### Wave 4 — subagent fan-out (2026-08-10): shim, entrypoint, flows, js_deps
 
-shim (33/5), entrypoint (9/2), flows (58/44) verified faithful and committed (127fef7). js_deps
+shim (33/5), entrypoint (9/2), flows (58/44) verified faithful and committed (127fef7). Historically, js_deps
 (36/115) came back faithful:FALSE -- the adversarial verifier ran binary probes + stripped-#[ignore]
 experiments and caught 4 weakened assertions (checking `deps --json` instead of the oracle's stored
 PEP-723 block / byte-equality / exact-ordered-list contracts), 1 FALSE divergence (a test #[ignore]'d
 as failing that actually passes -- Rust does wipe a stray node_modules), and 1 HIDDEN divergence (a
-passing test that dropped the oracle's node_modules sweep assertion, which really fails). A 6-fix
-correction pass is running; js_deps is held uncommitted until it is clean.
+passing test that dropped the oracle's node_modules sweep assertion, which really fails). The later
+JS dependency batches corrected these issues and finalized the 91/49 owner accounting.
 
-Notable new divergence (FAILING CONTRACT, from shim) -- **secret crash-safety**: the oracle writes
+Historical divergence (now fixed, from shim) -- **secret crash-safety**: the oracle writes
 the injected copy (which carries PLAINTEXT SECRET values) to the OS temp dir first, entry_dir only as
 fallback (rewrite.py:176-180), so a crash before cleanup never leaves a secret file in the persistent
 store. Rust's stage_injected_source (skit-cli command.rs:686-693) writes into entry_dir
-unconditionally, mitigated only by a next-run sweep -- a dropped v0.4 crash-safety invariant. Route to
-the impl-fix pass.
+unconditionally, mitigated only by a next-run sweep -- a dropped v0.4 crash-safety invariant. The
+final staging implementation and shim manifest now own OS-temp staging, fallback, cleanup, and the
+full-handler write-failure path.
 
 flows records the whole plan/assemble/execute pipeline: 43 cross-crate deferrals to skit-cli
 (plan_for_entry/execute/transparency_lines) and skit-tui (exact user messages), which retire many of
@@ -513,7 +515,7 @@ scenario; flagged inline.
 `demotion: Option<DegradationReason>` (a candidate field, not on `.declaration`);
 `uses_argv`/`filename_literals` → the same-named `SemanticAnalysis` fields.
 
-### test_reconcile.py → port_test_reconcile.rs (14 done · 13 deferred)
+### test_reconcile.py → port_test_reconcile.rs (historical 14/13 split; higher layer now closed)
 
 27 ported / 14 passed / 0 failed / 13 `#[ignore]`-UNMAPPED. The 14 that exercise the reconcile
 report all pass: the Rust `ReconcileReport` is fully as rich as the Python one
@@ -522,21 +524,21 @@ report all pass: the Rust `ReconcileReport` is fully as rich as the Python one
 `ParsedDocument::reconcile`, falling back to `ReconcileReport::from_syntax_error` when the source
 does not parse.
 
-The 13 deferred tests are NOT a behavior mismatch and NOT a wholesale feature loss: `reconcile`'s
+The 13 originally deferred tests were not a behavior mismatch or a wholesale feature loss: `reconcile`'s
 higher layer — `edit_specs` (`--resync`/`--remove`/`--secret`/`--no-secret`/`--prompt`),
 `drift_lines`, `render_warning` — is a use case that in the Rust architecture lives above
 `skit-language` (the resync capability is confirmed present in `skit-ui` settings: `SettingsAction::
 Resync`, `resync_available`, `RESYNC_KEY`, with the same "advertise the chord only where it does
-something" guard). A `skit-language` integration test cannot reach it without a forbidden dependency
-edit, so those tests carry a compiling `#[ignore]` stub with their WHY comment and move to the tier
-that owns the code:
+something" guard). The later parser-backed CLI/TUI source-edit transaction owns these behaviors at
+the correct layer. A `skit-language` integration test cannot reach it without a forbidden dependency
+edit, so the historical stubs document why their executable owners moved to the owning tier:
 
-- **must-verify when porting test_params_edit.py (Tier 4, skit-cli) and the settings/reset UI
-  modules (Tier 5):** resync re-anchors a rebound input's order+prompt; **resync must NOT wipe
+- **Verified in the source-edit transaction:** resync re-anchors a rebound input's order+prompt;
+  **resync must NOT wipe
   managed params on a transient syntax error (`resync-skipped`) — a data-safety invariant**;
   duplicate-named specs dedup without crashing; `--no-secret` clears `env_source`; `not-managed`
   warnings for secret/no_secret/prompts targets; `drift_lines`/`render_warning` localized output.
-  These behaviors must be shown to survive at their new layer or the gap is real.
+  These behaviors now run at their CLI/TUI owners with source CAS, rollback, and localized receipts.
 
 ### test_shell_analyzer.py → port_test_shell_analyzer.rs (85 done · 7 deferred) — FIRST REAL GAP
 

@@ -34,8 +34,9 @@ exclusion changed. Production has changed since that proof, so coverage and ever
 run again on the final candidate. Phase 4 has already fixed shared atomic-temp cleanup (`619e55d`),
 injected-source secret staging (`42f5f6d`), copy-mode Unix permission bits (`72646e2`), JavaScript
 dependency cleanup before Settings save (`fd50836`), and Windows editor command parsing
-  (`cf8ebba`), and actionable JavaScript installer stderr (`b1ad9ac`). More review findings remain
-  in §6. Mutation remains blocked on user approval.** The user
+  (`cf8ebba`), and actionable JavaScript installer stderr (`b1ad9ac`). The current ledger has no
+  confirmed unfixed product defect. Remaining work is parity-owner verification plus the final
+  release and platform evidence in §6. Mutation remains blocked on user approval.** The user
 chose plan **A**:
 finish the broad port first, then keep the implementation-fix and review passes open until the
 release evidence is final.
@@ -321,7 +322,9 @@ flag in the injected command (`cdf89ac`). The i18n replacement is green after pr
 (`f1dc3c7`..`5d3c303`).
 
 Two policy items keep their oracle-matching defaults (user did not object): the store self-heal
-reversal (`c04395c`) and shim secret crash-safety (§5 data-safety, still to implement). Reversible.
+reversal (`c04395c`) and shim secret crash-safety. The latter is complete: ordinary injected Python
+copies use the OS temporary directory, entry-directory staging is only the fallback or an explicit
+runtime-adjacency requirement, and the final shim manifest owns both paths plus cleanup. Reversible.
 
 ## 4. Verified baseline (re-verify on arrival)
 
@@ -420,11 +423,12 @@ typed identity, classifier, boundary, CLI/TUI host, quarantine, race, and cleanu
 - **Small:** no implementation divergences. The frozen 21-key show JSON contract is now a version-contract closure; the
   active v0.5 owner pins the exact 25-key strict superset (`8253219`).
 
-The explicit JS-dependency and editor ABSENT-marker backlogs are now closed. The two
+The explicit JS-dependency and editor ABSENT-marker backlogs are now closed. The following JS
+classification is the historical audit input, not current unfinished work. The two
 source-default guards were rehomed to real
 `skit-language` semantic units, and the language capability-stripping monkeypatch was classified as
 a framework-injection closure (`694a717`). The JS three-way audit classified its 35 rows as 5 with
-stronger owners, 13 stale owners that need executable rehomes, and 17 real gaps across cleanup,
+stronger owners, 13 stale owners, and 17 product gaps found at that time across cleanup,
 freshness/preflight, launch sweep, diagnostics, and announce behavior. The source-edit audit found
 a parser-backed resync data-loss risk on syntax errors in addition to the seven stale stubs; the
 shared typed editor now closes that whole root, including partial warnings, rebind, operation order,
@@ -507,7 +511,7 @@ The ledger has the authoritative per-module adjudication log.
   The reopened 25-owner PathSuggester group is now complete (`ef76e01`..`0f7703a`). The first JS
   follow-up made six real cleanup-failure/race owners executable and stopped swallowing cleanup
   removal failures (`13c04fe`); freshness/preflight is complete (`ab4d93a` / `e276058`). The
-  remaining follow-up closes launch sweeping, captured diagnostics, announcements, and the
+  later follow-ups closed launch sweeping, captured diagnostics, announcements, and the
   split/manifest/installer helper owners (`e62e36e`..`5265eeb`). Source resync is now one
   parser-backed CLI/TUI operation with all 14 frozen edit owners active (`95c8465`..`4c1689a`).
   Source secrecy commits and state purge now share one transaction with rollback, and completed
@@ -519,6 +523,11 @@ The ledger has the authoritative per-module adjudication log.
   `CROSS-CRATE` rows are now closed (`dc1bac7`..`1285121`). The local Windows MSVC cross-check
   reached `ring` but could not continue because this devbox has no `lib.exe`; Windows compilation
   and real-host execution therefore remain CI gates.
+  The benchmark-tooling audit is also complete: 17 frozen exact owners are active, CPython 3.13 is
+  one explicit three-platform host-tool gate, 113 rows have stronger consolidated owners, 22 are
+  structured architecture closures, and three PR fixtures were rejected as invalid. The final
+  denominator is 156 with no stale owner or known product gap. The Rust benchmark crate now has 128
+  test bodies, and its integrated all-target/all-feature suite is green.
   A review also questioned `FileStore::scan()` repairing stale registry rows. This is not a new
   blocker: `registry.toml` is a derived index, not authoritative user data, and v0.4 explicitly
   runs `_repair_rows` under a non-blocking lock. `rust-contract-matrix.md` records this narrow
