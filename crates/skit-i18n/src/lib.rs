@@ -2475,6 +2475,12 @@ const CATALOG: &[Translation] = &[
         "JavaScript 软件包安装失败，使用的是 {}：{}",
         "JavaScript 套件安裝失敗，使用的是 {}：{}",
     ),
+    // Version 0.4 ships this exact cleanup refusal and punctuation.
+    row!(
+        "Couldn't clear the old dependency environment: {}",
+        "无法清除旧的依赖环境:{}",
+        "無法清除舊的依賴環境:{}",
+    ),
     row!(
         "The environment variable {} isn't set (needed by {}).",
         "环境变量 {} 未设置（{} 需要它）。",

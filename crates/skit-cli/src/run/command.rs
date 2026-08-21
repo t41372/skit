@@ -244,6 +244,7 @@ impl RunError {
             Self::PromptBodyMissing { .. } => 127,
             Self::Dependencies(DependencyError::InstallerNotFound { .. })
             | Self::Dependencies(DependencyError::InstallFailed { .. })
+            | Self::Dependencies(DependencyError::ClearFailed { .. })
             | Self::Dependencies(DependencyError::Io { .. })
             | Self::Dependencies(DependencyError::Rollback { .. }) => 126,
             // Version 0.4 wraps every uv bootstrap failure, refusal included, into a launch error
@@ -1276,6 +1277,13 @@ mod tests {
                 126,
             ),
             (
+                RunError::Dependencies(DependencyError::ClearFailed {
+                    item: "node_modules".to_owned(),
+                    reason: "locked".to_owned(),
+                }),
+                126,
+            ),
+            (
                 RunError::Dependencies(DependencyError::CopyStorageRequired),
                 125,
             ),
@@ -1933,6 +1941,13 @@ mod localization_tests {
                 detail: "package missing".to_owned(),
             }),
             &["npm", "package missing"],
+        );
+        assert_localized(
+            &RunError::Dependencies(DependencyError::ClearFailed {
+                item: "node_modules".to_owned(),
+                reason: "locked".to_owned(),
+            }),
+            &["node_modules", "locked"],
         );
         assert_localized(
             &RunError::Uv(UvBootstrapError::Checksum {

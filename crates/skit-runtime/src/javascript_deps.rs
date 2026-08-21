@@ -137,6 +137,14 @@ pub enum DependencyError {
         /// Operating-system detail.
         reason: String,
     },
+    /// An old dependency artifact could not be removed.
+    #[error("Couldn't clear the old dependency environment: {item}: {reason}")]
+    ClearFailed {
+        /// Entry-relative artifact name.
+        item: String,
+        /// Operating-system detail.
+        reason: String,
+    },
     /// A dependency update and its recovery both failed.
     #[error("rollback at {path} failed after {primary}: {rollback}")]
     Rollback {
@@ -182,6 +190,10 @@ impl Localize for DependencyError {
                 .nested(Message::term(operation))
                 .with(path)
                 .with(reason),
+            Self::ClearFailed { item, reason } => {
+                Message::new("Couldn't clear the old dependency environment: {}")
+                    .with(format!("{item}: {reason}"))
+            }
             Self::Rollback {
                 path,
                 primary,
@@ -382,11 +394,33 @@ pub fn clear_javascript_dependencies(entry_dir: &Path) -> Result<(), DependencyE
 }
 
 fn clear_javascript_dependencies_unlocked(entry_dir: &Path) -> Result<(), DependencyError> {
+    clear_javascript_dependencies_unlocked_with(
+        entry_dir,
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
+}
+
+fn clear_javascript_dependencies_unlocked_with<F, D>(
+    entry_dir: &Path,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> Result<(), DependencyError>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
     sweep_stale_injected_at(entry_dir, SystemTime::now());
     validate_dependency_item_shapes(entry_dir)?;
     if dependency_items().any(|name| path_exists(&entry_dir.join(name))) {
         let staged = TemporaryDependencyDirectory::new(entry_dir)?;
-        commit_dependency_stage(entry_dir, &staged.path)?;
+        commit_dependency_stage_with_remover(
+            entry_dir,
+            &staged.path,
+            |entry_dir| Ok(unused_temporary_path(entry_dir)),
+            remove_file,
+            remove_dir_all,
+        )?;
     }
     Ok(())
 }
@@ -671,8 +705,12 @@ where
         return Err(combine_rollback_error(primary, rollback, entry_dir));
     }
     let _ = sync_directory(entry_dir);
-    let _ = remove_path(&cleanup);
-    Ok(())
+    finish_dependency_cleanup(
+        entry_dir,
+        &cleanup,
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
 }
 
 fn ensure_real_node_modules(entry_dir: &Path) -> Result<(), DependencyError> {
@@ -691,11 +729,16 @@ fn ensure_real_node_modules(entry_dir: &Path) -> Result<(), DependencyError> {
 }
 
 fn commit_dependency_stage(entry_dir: &Path, stage: &Path) -> Result<(), DependencyError> {
-    commit_dependency_stage_with(entry_dir, stage, |entry_dir| {
-        Ok(unused_temporary_path(entry_dir))
-    })
+    commit_dependency_stage_with_remover(
+        entry_dir,
+        stage,
+        |entry_dir| Ok(unused_temporary_path(entry_dir)),
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
 }
 
+#[cfg(test)]
 fn commit_dependency_stage_with<F>(
     entry_dir: &Path,
     stage: &Path,
@@ -703,6 +746,27 @@ fn commit_dependency_stage_with<F>(
 ) -> Result<(), DependencyError>
 where
     F: FnOnce(&Path) -> Result<PathBuf, DependencyError>,
+{
+    commit_dependency_stage_with_remover(
+        entry_dir,
+        stage,
+        cleanup_path,
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
+}
+
+fn commit_dependency_stage_with_remover<F, R, D>(
+    entry_dir: &Path,
+    stage: &Path,
+    cleanup_path: F,
+    remove_file: &mut R,
+    remove_dir_all: &mut D,
+) -> Result<(), DependencyError>
+where
+    F: FnOnce(&Path) -> Result<PathBuf, DependencyError>,
+    R: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
 {
     let backup = entry_dir.join(BACKUP_NAME);
     fs::create_dir(&backup).map_err(|error| io_error("create backup", &backup, error))?;
@@ -754,8 +818,108 @@ where
         return Err(combine_rollback_error(primary, rollback, entry_dir));
     }
     let _ = sync_directory(entry_dir);
-    let _ = remove_path(&cleanup);
-    Ok(())
+    finish_dependency_cleanup(entry_dir, &cleanup, remove_file, remove_dir_all)
+}
+
+fn finish_dependency_cleanup<F, D>(
+    entry_dir: &Path,
+    cleanup: &Path,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> Result<(), DependencyError>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    let removal = remove_dependency_cleanup(cleanup, remove_file, remove_dir_all);
+    match removal {
+        Ok(()) => {
+            let _ = sync_directory(entry_dir);
+            Ok(())
+        }
+        Err(failure) if !failure.removed_any => {
+            let rollback = recover_dependency_cleanup(entry_dir, cleanup);
+            Err(combine_rollback_error(failure.error, rollback, entry_dir))
+        }
+        Err(failure) => {
+            // A deletion cannot be rolled back after an earlier artifact is gone. Keep the
+            // remaining backup quarantined. The next dependency operation removes that staging
+            // directory before it trusts a freshness marker or changes metadata.
+            let _ = sync_directory(entry_dir);
+            Err(failure.error)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DependencyCleanupFailure {
+    error: DependencyError,
+    removed_any: bool,
+}
+
+fn remove_dependency_cleanup<F, D>(
+    cleanup: &Path,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> Result<(), DependencyCleanupFailure>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    let mut removed_any = false;
+    for name in dependency_items() {
+        match remove_cleanup_item(&cleanup.join(name), name, remove_file, remove_dir_all) {
+            Ok(removed) => removed_any |= removed,
+            Err(error) => return Err(DependencyCleanupFailure { error, removed_any }),
+        }
+    }
+    match remove_cleanup_item(
+        &cleanup.join(BACKUP_INDEX),
+        BACKUP_INDEX,
+        remove_file,
+        remove_dir_all,
+    ) {
+        Ok(removed) => removed_any |= removed,
+        Err(error) => return Err(DependencyCleanupFailure { error, removed_any }),
+    }
+    match fs::remove_dir(cleanup) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(DependencyCleanupFailure {
+            error: clear_error(BACKUP_NAME, error),
+            removed_any,
+        }),
+    }
+}
+
+fn remove_cleanup_item<F, D>(
+    path: &Path,
+    name: &str,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> Result<bool, DependencyError>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    let existed = fs::symlink_metadata(path).is_ok();
+    remove_path_with(path, remove_file, remove_dir_all)
+        .map(|()| existed)
+        .map_err(|error| clear_error(name, error))
+}
+
+fn clear_error(item: &str, error: io::Error) -> DependencyError {
+    DependencyError::ClearFailed {
+        item: item.to_owned(),
+        reason: error.to_string(),
+    }
+}
+
+fn recover_dependency_cleanup(entry_dir: &Path, cleanup: &Path) -> Result<(), DependencyError> {
+    let backup = entry_dir.join(BACKUP_NAME);
+    fs::rename(cleanup, &backup)
+        .map_err(|error| io_error("restore dependency backup", &backup, error))?;
+    recover_dependency_backup(entry_dir)
 }
 
 fn dependency_items() -> impl Iterator<Item = &'static str> {
@@ -893,10 +1057,49 @@ fn remove_path(path: &Path) -> Result<(), DependencyError> {
     let Some(metadata) = optional_symlink_metadata(path)? else {
         return Ok(());
     };
-    if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        fs::remove_dir_all(path).map_err(|error| io_error("remove", path, error))
+    let removal = if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        system_remove_dir_all(path)
     } else {
-        fs::remove_file(path).map_err(|error| io_error("remove", path, error))
+        system_remove_file(path)
+    };
+    match removal {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error("remove", path, error)),
+    }
+}
+
+fn system_remove_file(path: &Path) -> io::Result<()> {
+    fs::remove_file(path)
+}
+
+fn system_remove_dir_all(path: &Path) -> io::Result<()> {
+    fs::remove_dir_all(path)
+}
+
+fn remove_path_with<F, D>(
+    path: &Path,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> io::Result<()>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let removal = if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        remove_dir_all(path)
+    } else {
+        remove_file(path)
+    };
+    match removal {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -1050,6 +1253,372 @@ mod transaction_tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    fn dependency_temporary_paths(entry_dir: &Path) -> Vec<PathBuf> {
+        fs::read_dir(entry_dir)
+            .unwrap()
+            .map(|item| item.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(STAGE_PREFIX))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_clean_failure_is_loud_not_silent() {
+        let root = TempDir::new().unwrap();
+        let package = root.path().join("package.json");
+        fs::write(&package, b"authoritative manifest\n").unwrap();
+        fs::write(root.path().join("meta.toml"), b"name = \"Demo\"\n").unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut |path| {
+                if path.file_name().is_some_and(|name| name == "package.json") {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "held by another process",
+                    ))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("package.json"), "{error}");
+        assert_eq!(fs::read(package).unwrap(), b"authoritative manifest\n");
+        assert_eq!(
+            fs::read(root.path().join("meta.toml")).unwrap(),
+            b"name = \"Demo\"\n"
+        );
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn test_clean_rmtree_failure_is_loud() {
+        let root = TempDir::new().unwrap();
+        let module = root.path().join("node_modules/chalk/index.js");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, b"module.exports = 1;\n").unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut system_remove_file,
+            &mut |path| {
+                if path.file_name().is_some_and(|name| name == "node_modules") {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "tree is locked",
+                    ))
+                } else {
+                    fs::remove_dir_all(path)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("node_modules"), "{error}");
+        assert_eq!(fs::read(module).unwrap(), b"module.exports = 1;\n");
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_clean_tolerates_a_node_modules_symlink_vanishing() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("shared/chalk");
+        fs::create_dir_all(&target).unwrap();
+        let link = root.path().join("node_modules");
+        symlink(target.parent().unwrap(), &link).unwrap();
+
+        clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut |path| {
+                if path.file_name().is_some_and(|name| name == "node_modules") {
+                    fs::remove_file(path).unwrap();
+                    Err(io::Error::new(io::ErrorKind::NotFound, "the link vanished"))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
+
+        assert!(!link.exists());
+        assert!(target.is_dir());
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_clean_records_a_stuck_symlinked_node_modules() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("shared/chalk");
+        fs::create_dir_all(&target).unwrap();
+        let link = root.path().join("node_modules");
+        symlink(target.parent().unwrap(), &link).unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut |path| {
+                if path.file_name().is_some_and(|name| name == "node_modules") {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "held by another process",
+                    ))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("node_modules"), "{error}");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(target.is_dir());
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn test_clean_onexc_treats_an_already_gone_tree_as_success() {
+        let root = TempDir::new().unwrap();
+        let module = root.path().join("node_modules/chalk/index.js");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, b"module.exports = 1;\n").unwrap();
+
+        clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut system_remove_file,
+            &mut |path| {
+                if path.file_name().is_some_and(|name| name == "node_modules") {
+                    fs::remove_dir_all(path).unwrap();
+                    Err(io::Error::new(io::ErrorKind::NotFound, "the tree vanished"))
+                } else {
+                    fs::remove_dir_all(path)
+                }
+            },
+        )
+        .unwrap();
+
+        assert!(!root.path().join("node_modules").exists());
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn test_clean_failure_message_verbatim() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("package.json"), b"{}\n").unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut |path| {
+                if path.file_name().is_some_and(|name| name == "package.json") {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "held by another process",
+                    ))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Couldn't clear the old dependency environment: package.json: held by another process"
+        );
+    }
+
+    #[test]
+    fn a_partial_cleanup_failure_stays_quarantined_and_the_next_retry_repairs_it() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("package.json"), b"generated manifest\n").unwrap();
+        fs::create_dir_all(root.path().join("node_modules/chalk")).unwrap();
+        fs::write(
+            root.path().join("node_modules/chalk/index.js"),
+            b"module.exports = 1;\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("meta.toml"), b"name = \"Demo\"\n").unwrap();
+        fs::write(root.path().join("script.js"), b"console.log(1);\n").unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut system_remove_file,
+            &mut |path| {
+                if path.file_name().is_some_and(|name| name == "node_modules") {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "tree is locked",
+                    ))
+                } else {
+                    fs::remove_dir_all(path)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, DependencyError::ClearFailed { .. }));
+        assert!(!root.path().join("package.json").exists());
+        assert!(!root.path().join("node_modules").exists());
+        assert_eq!(dependency_temporary_paths(root.path()).len(), 1);
+        assert_eq!(
+            fs::read(root.path().join("meta.toml")).unwrap(),
+            b"name = \"Demo\"\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join("script.js")).unwrap(),
+            b"console.log(1);\n"
+        );
+
+        clear_javascript_dependencies(root.path()).unwrap();
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn a_partial_old_environment_cleanup_keeps_the_committed_new_environment() {
+        let root = TempDir::new().unwrap();
+        entry_with_previous_environment(root.path());
+        let stage = staged_replacement(root.path());
+        fs::create_dir(stage.join("node_modules")).unwrap();
+        fs::write(stage.join("node_modules/new"), b"new module\n").unwrap();
+
+        let error = commit_dependency_stage_with_remover(
+            root.path(),
+            &stage,
+            |entry_dir| Ok(unused_temporary_path(entry_dir)),
+            &mut system_remove_file,
+            &mut |path| {
+                if path.file_name().is_some_and(|name| name == "node_modules") {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "old tree is locked",
+                    ))
+                } else {
+                    fs::remove_dir_all(path)
+                }
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, DependencyError::ClearFailed { .. }));
+        assert_eq!(
+            fs::read(root.path().join("package.json")).unwrap(),
+            b"new manifest\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join(STAMP_NAME)).unwrap(),
+            b"new stamp\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join("node_modules/new")).unwrap(),
+            b"new module\n"
+        );
+        assert!(!root.path().join("node_modules/old").exists());
+        assert!(!root.path().join(BACKUP_NAME).exists());
+        let quarantines = dependency_temporary_paths(root.path());
+        assert_eq!(quarantines.len(), 1);
+        assert_eq!(
+            fs::read(quarantines[0].join("node_modules/old")).unwrap(),
+            b"old module\n"
+        );
+
+        remove_staging_leftovers(root.path()).unwrap();
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+        assert_eq!(
+            fs::read(root.path().join("package.json")).unwrap(),
+            b"new manifest\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join("node_modules/new")).unwrap(),
+            b"new module\n"
+        );
+    }
+
+    #[test]
+    fn a_cleanup_root_that_vanishes_after_its_index_is_already_clean() {
+        let root = TempDir::new().unwrap();
+        let cleanup = root.path().join("cleanup");
+        fs::create_dir(&cleanup).unwrap();
+        fs::write(cleanup.join(BACKUP_INDEX), b"").unwrap();
+
+        remove_dependency_cleanup(
+            &cleanup,
+            &mut |path| {
+                fs::remove_file(path)?;
+                fs::remove_dir(path.parent().unwrap())
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
+        assert!(!cleanup.exists());
+    }
+
+    #[test]
+    fn a_nonempty_cleanup_root_is_a_typed_failure() {
+        let root = TempDir::new().unwrap();
+        let cleanup = root.path().join("cleanup");
+        fs::create_dir(&cleanup).unwrap();
+        fs::write(cleanup.join(BACKUP_INDEX), b"").unwrap();
+
+        let failure =
+            remove_dependency_cleanup(&cleanup, &mut |_| Ok(()), &mut system_remove_dir_all)
+                .unwrap_err();
+        assert!(failure.removed_any);
+        assert!(matches!(
+            failure.error,
+            DependencyError::ClearFailed { ref item, .. } if item == BACKUP_NAME
+        ));
+    }
+
+    #[test]
+    fn a_missing_cleanup_backup_cannot_claim_that_rollback_succeeded() {
+        let root = TempDir::new().unwrap();
+        let error =
+            recover_dependency_cleanup(root.path(), &root.path().join("missing")).unwrap_err();
+        assert!(matches!(
+            error,
+            DependencyError::Io {
+                operation: "restore dependency backup",
+                ..
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_uninspectable_cleanup_item_is_an_io_refusal() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = TempDir::new().unwrap();
+        let blocked = root.path().join("blocked");
+        fs::create_dir(&blocked).unwrap();
+        let item = blocked.join("item");
+        fs::write(&item, b"value\n").unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+        let error = remove_path_with(&item, &mut system_remove_file, &mut system_remove_dir_all)
+            .unwrap_err();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
 
     #[test]
     fn installer_failure_detail_keeps_the_last_cause_and_drops_noise() {

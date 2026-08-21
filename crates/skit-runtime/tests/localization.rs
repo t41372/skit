@@ -54,6 +54,13 @@ fn every_dependency_error_localizes_and_keeps_its_values() {
         &["/entries/demo", "permission denied"],
     );
     assert_localized(
+        &DependencyError::ClearFailed {
+            item: "package.json".to_owned(),
+            reason: "permission denied".to_owned(),
+        },
+        &["package.json", "permission denied"],
+    );
+    assert_localized(
         &DependencyError::InstallFailed {
             program: "npm".to_owned(),
             exit_code: Some(23),
@@ -76,6 +83,27 @@ fn every_dependency_error_localizes_and_keeps_its_values() {
             }),
         },
         &["/entries/demo", "device is busy", "permission denied"],
+    );
+}
+
+#[test]
+fn dependency_cleanup_refusal_matches_v040_in_every_locale() {
+    let error = DependencyError::ClearFailed {
+        item: "package.json".to_owned(),
+        reason: "held by another process".to_owned(),
+    };
+    let message = error.message();
+    assert_eq!(
+        message.localize(Locale::En),
+        "Couldn't clear the old dependency environment: package.json: held by another process"
+    );
+    assert_eq!(
+        message.localize(Locale::ZhCn),
+        "无法清除旧的依赖环境:package.json: held by another process"
+    );
+    assert_eq!(
+        message.localize(Locale::ZhTw),
+        "無法清除舊的依賴環境:package.json: held by another process"
     );
 }
 

@@ -1211,16 +1211,73 @@ fn test_install_lock_waits_for_a_live_holder() {}
 fn test_ensure_installed_serializes_under_the_entry_lock() {}
 
 #[test]
-#[ignore = "ABSENT (failure-injection seam): clean() fails LOUDLY, raising NotExecutableError naming the first path that would not go. The oracle monkeypatches Path.unlink to raise; the Rust clear has no injectable filesystem seam to force a loud failure. MUST-FIX only if a loud-failure contract is desired for clear. Python ref deps.py:189-218, test_js_deps.py:1164-1173."]
-fn test_clean_failure_is_loud_not_silent() {}
+#[cfg(unix)]
+fn test_update_dependencies_surfaces_clean_failure_as_store_error() {
+    use std::os::unix::fs::PermissionsExt as _;
 
-#[test]
-#[ignore = "ABSENT (failure-injection seam): a half-deleted node_modules must fail loudly (the Windows read-only rmtree case). The oracle monkeypatches shutil.rmtree; the Rust clear has no injectable rmtree seam. Python ref deps.py:196-213, test_js_deps.py:1176-1188."]
-fn test_clean_rmtree_failure_is_loud() {}
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.js", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "chalk", "--no-input"])
+        .assert()
+        .success();
+    let entry_dir = sandbox.entry_dir("t");
+    let stored = entry_dir.join("script.js");
+    let meta = entry_dir.join("meta.toml");
+    let registry = sandbox.data.path().join("registry.toml");
+    let stored_before = std::fs::read(&stored).unwrap();
+    let meta_before = std::fs::read(&meta).unwrap();
+    let registry_before = std::fs::read(&registry).unwrap();
+    std::fs::write(entry_dir.join("package.json"), "{\"private\":true}\n").unwrap();
+    let modules = entry_dir.join("node_modules");
+    std::fs::create_dir_all(modules.join("chalk")).unwrap();
+    std::fs::write(modules.join("chalk/index.js"), "module.exports = 1;\n").unwrap();
+    std::fs::set_permissions(
+        modules.join("chalk"),
+        std::fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
 
-#[test]
-#[ignore = "CROSS-CRATE (store clearing wiring): store.update_dependencies surfaces a clean() failure as a store error and leaves the record untouched (the sweep runs before the meta write). Needs the store's clear-then-write ordering plus a failure-injection seam. Owner: skit-store update. Python ref test_js_deps.py:1191-1206."]
-fn test_update_dependencies_surfaces_clean_failure_as_store_error() {}
+    let output = sandbox
+        .skit()
+        .args(["deps", "t", "--clear"])
+        .output()
+        .unwrap();
+
+    // Restore permissions wherever the failed transaction kept the authoritative tree.
+    for item in std::fs::read_dir(&entry_dir).unwrap().flatten() {
+        let candidate = if item.file_name() == "node_modules" {
+            item.path()
+        } else {
+            item.path().join("node_modules")
+        };
+        let blocked = candidate.join("chalk");
+        if blocked.exists() {
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    let rendered = combine(&output);
+    assert_ne!(output.status.code(), Some(0), "{rendered}");
+    assert!(rendered.contains("node_modules"), "{rendered}");
+    assert_eq!(std::fs::read(stored).unwrap(), stored_before);
+    assert_eq!(std::fs::read(meta).unwrap(), meta_before);
+    assert_eq!(std::fs::read(registry).unwrap(), registry_before);
+    let remaining = std::fs::read_dir(&entry_dir)
+        .unwrap()
+        .flatten()
+        .map(|item| item.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        remaining
+            .iter()
+            .any(|name| name.starts_with(".skit-deps.tmp-")),
+        "the remaining old tree must stay quarantined for a later retry: {remaining:?}; {rendered}"
+    );
+}
 
 #[test]
 fn test_clean_sweeps_aged_injected_leftovers() {
@@ -1539,18 +1596,6 @@ fn test_clean_unlinks_a_symlinked_node_modules_but_keeps_the_target() {
     assert!(target.join("chalk").exists());
     drop(root);
 }
-
-#[test]
-#[ignore = "ABSENT (failure-injection seam): clean() tolerates a node_modules symlink vanishing mid-run (FileNotFoundError is success). The oracle monkeypatches Path.unlink; the Rust clear has no injectable seam. Python ref deps.py:203-211, test_js_deps.py:2046-2059."]
-fn test_clean_tolerates_a_node_modules_symlink_vanishing() {}
-
-#[test]
-#[ignore = "ABSENT (failure-injection seam): clean() records a stuck symlinked node_modules loudly (PermissionError). The oracle monkeypatches Path.unlink; the Rust clear has no injectable seam. Python ref deps.py:203-213, test_js_deps.py:2062-2077."]
-fn test_clean_records_a_stuck_symlinked_node_modules() {}
-
-#[test]
-#[ignore = "ABSENT (failure-injection seam): clean()'s rmtree onexc treats an already-gone tree as success. The oracle monkeypatches shutil.rmtree; the Rust clear has no injectable rmtree seam. Python ref deps.py:196-211, test_js_deps.py:2080-2092."]
-fn test_clean_onexc_treats_an_already_gone_tree_as_success() {}
 
 #[test]
 fn test_add_js_empty_dep_records_nothing() {
@@ -1931,10 +1976,6 @@ fn test_dependency_failure_messages_verbatim() {}
 #[test]
 #[ignore = "ABSENT (library seam): the install-announce line is exactly 'Installing dependencies (npm)…\\n' on stderr. The Rust materializer prints no announce line. MUST-FIX: port the announce discipline. Python ref deps.py:389-394, test_js_deps.py:1951-1957."]
 fn test_install_announce_line_verbatim() {}
-
-#[test]
-#[ignore = "ABSENT (failure-injection seam + verbatim message): clean()'s failure message is exactly \"Couldn't clear the old dependency environment: package.json: …\". The oracle monkeypatches Path.unlink; the Rust clear has no injectable seam and worded its Io error differently. Python ref deps.py:214-218, test_js_deps.py:1960-1971."]
-fn test_clean_failure_message_verbatim() {}
 
 #[test]
 #[ignore = "ABSENT (library seam): _failure_detail survives invalid UTF-8 bytes (replacement char, never a raise). No stderr channel on the Rust runner. MUST-FIX: port _failure_detail. Python ref deps.py:300, test_js_deps.py:1974-1979."]
