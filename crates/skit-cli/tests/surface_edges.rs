@@ -9,12 +9,17 @@ use tempfile::TempDir;
 use std::{
     os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
+    process::{Command, Stdio},
+    thread,
+    time::Duration,
 };
 
 #[cfg(unix)]
 use skit_application::form_state::FormStateRepository as _;
 #[cfg(unix)]
 use skit_domain::Slug;
+#[cfg(unix)]
+use skit_runtime::{ProgramProbe as _, SystemProbe};
 #[cfg(unix)]
 use skit_store::FileFormStateStore;
 
@@ -80,6 +85,58 @@ fn shell_fixture(sandbox: &Sandbox, name: &str, body: &str) -> (PathBuf, PathBuf
         .assert()
         .success();
     (source, bin)
+}
+
+#[cfg(unix)]
+fn add_real_shell(sandbox: &Sandbox, name: &str, body: &str) -> PathBuf {
+    let source = sandbox.data.path().join(format!("{name}.sh"));
+    fs::write(&source, body).unwrap();
+    sandbox
+        .command()
+        .args(["add"])
+        .arg(&source)
+        .args(["--kind", "shell", "--name", name, "--no-input"])
+        .assert()
+        .success();
+    source
+}
+
+#[cfg(unix)]
+fn manage_shell_params(sandbox: &Sandbox, name: &str, params: &[&str]) {
+    let mut command = sandbox.command();
+    command.args(["params", name]);
+    for param in params {
+        command.args(["--manage", param]);
+    }
+    command.assert().success();
+}
+
+#[cfg(unix)]
+fn find_program(name: &str) -> PathBuf {
+    SystemProbe
+        .find_program(name)
+        .unwrap_or_else(|| panic!("the shell runtime parity owner requires {name} on PATH"))
+}
+
+#[cfg(unix)]
+fn output_text(output: &std::process::Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[cfg(unix)]
+fn wait_for_file(path: &Path) -> bool {
+    (0..500).any(|_| {
+        if path.is_file() {
+            true
+        } else {
+            thread::sleep(Duration::from_millis(10));
+            false
+        }
+    })
 }
 
 #[cfg(unix)]
@@ -632,6 +689,274 @@ fn a_run_with_injected_values_uses_a_private_staged_source() {
         .filter(|item| item.file_name().to_string_lossy().starts_with(".run-"))
         .count();
     assert_eq!(leftovers, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_secret_read_masks_the_echo_but_delivers_the_value() {
+    let sandbox = Sandbox::new();
+    add_real_shell(
+        &sandbox,
+        "secret-read",
+        "#!/usr/bin/env bash\nread -s -p \"Password: \" PW\necho \"len=${#PW}\"\n",
+    );
+    manage_shell_params(&sandbox, "secret-read", &["input-1"]);
+    sandbox.ok(&["params", "secret-read", "--secret", "input-1"]);
+
+    let output = sandbox
+        .command()
+        .args([
+            "run",
+            "secret-read",
+            "--no-input",
+            "--set",
+            "input-1=hunter2",
+        ])
+        .output()
+        .unwrap();
+    let text = output_text(&output);
+
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("Password: ***\nlen=7\n"), "{text}");
+    assert!(
+        !text.contains("hunter2"),
+        "secret leaked to visible output:\n{text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_read_in_a_loop_takes_the_value_once_then_reads_real_stdin() {
+    let sandbox = Sandbox::new();
+    add_real_shell(
+        &sandbox,
+        "loop-read",
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "for i in 1 2 3; do\n",
+            "  read -p \"Item: \" it\n",
+            "  echo \"item=$it\"\n",
+            "done\n",
+        ),
+    );
+    manage_shell_params(&sandbox, "loop-read", &["input-1"]);
+
+    sandbox
+        .command()
+        .args(["run", "loop-read", "--no-input", "--set", "input-1=first"])
+        .write_stdin("second\nthird\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Item: first\nitem=first\nitem=second\nitem=third\n",
+        ));
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "host-tool gate: requires bash, sh, zsh, and dash on PATH; run with cargo test -p skit-cli-rs --test surface_edges test_the_preamble_runs_on_every_supported_dialect -- --ignored --exact"]
+fn test_the_preamble_runs_on_every_supported_dialect() {
+    for shell in ["bash", "sh", "zsh", "dash"] {
+        let sandbox = Sandbox::new();
+        let name = format!("dialect-{shell}");
+        let interpreter = find_program(shell);
+        add_real_shell(
+            &sandbox,
+            &name,
+            concat!(
+                "#!/bin/sh\n",
+                "NAME=x\n",
+                "read who\n",
+                "echo \"hi $who / $NAME\"\n",
+                "read it\n",
+                "echo \"it=$it\"\n",
+            ),
+        );
+        manage_shell_params(&sandbox, &name, &["NAME", "input-1"]);
+        sandbox.ok(&[
+            "params",
+            &name,
+            "--interpreter",
+            interpreter.to_str().unwrap(),
+        ]);
+
+        sandbox
+            .command()
+            .args([
+                "run",
+                &name,
+                "--no-input",
+                "--set",
+                "NAME=y",
+                "--set",
+                "input-1=Ada",
+            ])
+            .write_stdin("typed\n")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Ada\nhi Ada / y\nit=typed\n"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_set_u_and_set_e_survive_the_preamble() {
+    let sandbox = Sandbox::new();
+    add_real_shell(
+        &sandbox,
+        "strict-shell",
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "set -euo pipefail\n",
+            "OUT=/tmp/out\n",
+            "read -p \"Deploy? \" confirm\n",
+            "echo \"$OUT $confirm\"\n",
+        ),
+    );
+    manage_shell_params(&sandbox, "strict-shell", &["OUT", "input-1"]);
+
+    sandbox
+        .command()
+        .args([
+            "run",
+            "strict-shell",
+            "--no-input",
+            "--set",
+            "OUT=/tmp/x",
+            "--set",
+            "input-1=yes",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/tmp/x yes\n"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_secret_value_never_reaches_stdout() {
+    let sandbox = Sandbox::new();
+    let report = sandbox.state.path().join("staged-path");
+    let release = sandbox.state.path().join("release");
+    let source = add_real_shell(
+        &sandbox,
+        "secret-file",
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "API_KEY=changeme\n",
+            "printf '%s\\n' \"$0\" > \"$SKIT_STAGE_REPORT\"\n",
+            "while [ ! -f \"$SKIT_STAGE_RELEASE\" ]; do sleep 0.01; done\n",
+            "printf 'done\\n'\n",
+        ),
+    );
+    manage_shell_params(&sandbox, "secret-file", &["API_KEY"]);
+    sandbox.ok(&["params", "secret-file", "--secret", "API_KEY"]);
+    let source_before = fs::read(&source).unwrap();
+    let data_before = snapshot_user_data(sandbox.data.path());
+
+    let child = Command::new(env!("CARGO_BIN_EXE_skit"))
+        .env("SKIT_DATA_DIR", sandbox.data.path())
+        .env("SKIT_STATE_DIR", sandbox.state.path())
+        .env("SKIT_CONFIG_DIR", sandbox.config.path())
+        .env("SKIT_LANG", "en")
+        .env("SKIT_STAGE_REPORT", &report)
+        .env("SKIT_STAGE_RELEASE", &release)
+        .args([
+            "run",
+            "secret-file",
+            "--no-input",
+            "--set",
+            "API_KEY=s3cr3t",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    if !wait_for_file(&report) {
+        fs::write(&release, []).unwrap();
+        let output = child.wait_with_output().unwrap();
+        panic!(
+            "shell child did not report its staged path: {}",
+            output_text(&output)
+        );
+    }
+    let staged = PathBuf::from(fs::read_to_string(&report).unwrap().trim());
+    assert!(
+        staged.is_file(),
+        "staged source vanished before the child completed"
+    );
+    assert_eq!(
+        fs::metadata(&staged).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(
+        fs::read_to_string(&staged).unwrap().contains("s3cr3t"),
+        "the real secret must reach the private staged source"
+    );
+
+    fs::write(&release, []).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let text = output_text(&output);
+    assert!(output.status.success(), "{text}");
+    assert!(text.lines().any(|line| line == "done"), "{text}");
+    assert!(
+        !text.contains("s3cr3t"),
+        "secret leaked to visible output:\n{text}"
+    );
+    assert!(
+        !staged.exists(),
+        "secret-bearing staged source survived the run"
+    );
+    assert_eq!(fs::read(&source).unwrap(), source_before);
+    assert_eq!(snapshot_user_data(sandbox.data.path()), data_before);
+    let state_bytes = snapshot_tree(sandbox.state.path())
+        .into_iter()
+        .flat_map(|(_, bytes)| bytes)
+        .collect::<Vec<_>>();
+    assert!(
+        !String::from_utf8_lossy(&state_bytes).contains("s3cr3t"),
+        "secret leaked into state"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_execute_runs_a_managed_read_with_the_block_in_place() {
+    let sandbox = Sandbox::new();
+    add_real_shell(
+        &sandbox,
+        "managed-read",
+        "#!/usr/bin/env bash\nread -s -p \"Password: \" PW\necho \"len=${#PW}\"\n",
+    );
+    manage_shell_params(&sandbox, "managed-read", &["input-1"]);
+    sandbox.ok(&["params", "managed-read", "--secret", "input-1"]);
+    let stored = sandbox.data.path().join("scripts/managed-read/script.sh");
+    let stored_before = fs::read(&stored).unwrap();
+    assert!(
+        String::from_utf8_lossy(&stored_before).contains("# /// script"),
+        "the managed block must be physically present"
+    );
+
+    let output = sandbox
+        .command()
+        .args([
+            "run",
+            "managed-read",
+            "--no-input",
+            "--set",
+            "input-1=hunter2",
+        ])
+        .output()
+        .unwrap();
+    let text = output_text(&output);
+
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("Password: ***\nlen=7\n"), "{text}");
+    assert!(
+        !text.contains("hunter2"),
+        "secret leaked to visible output:\n{text}"
+    );
+    assert_eq!(fs::read(&stored).unwrap(), stored_before);
 }
 
 #[test]

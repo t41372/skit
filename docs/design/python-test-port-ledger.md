@@ -50,7 +50,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_callmatch.py | 9 | crates/skit-language/tests/port_test_callmatch.rs | done |
 | test_reconcile.py | 27 | crates/skit-language/tests/port_test_reconcile.rs | implementation parity (26 executable / 3 frontend-rendering closures, including Rust support owners) · source editor activates rebind, unknown-tweak, syntax, duplicate, and no-secret/env contracts `95c8465`..`4c1689a` |
 | test_shell_analyzer.py | 92 | crates/skit-language/tests/port_test_shell_analyzer.rs | done (85) · read enumeration and attached-value flags promoted `952394e` · 1 white-box, 6 → Tier 4 |
-| test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs | done (53) · 34 → Tier 3/4 |
+| test_shell_inject.py | 87 | crates/skit-language/tests/port_test_shell_inject.rs + crates/skit-cli/tests/surface_edges.rs | done (58) · 1 host-tool gate · 28 → Tier 3/4 |
 | test_shell_getopts.py | 11 | crates/skit-language/tests/port_test_shell_getopts.rs | done (9) · 2 cross-crate (plan/assemble) · no gap |
 | test_fish.py | 64 | crates/skit-language/tests/port_test_fish.rs + crates/skit-cli/tests/port_test_fish_manage.rs | implementation parity complete (46 executable / 18 architecture closures) · managed env delivery executable `c592560` · the exact runtime owner resolves Fish with production `SystemProbe` and runs the real CLI; pinned CI setup makes Linux/macOS execution mandatory while Windows keeps the oracle's honest availability condition |
 | test_powershell.py | 35 | language + form + application ports + CLI manifest | done (20 executable / 15 architecture-closed) · global exact-name uniqueness enforced `51494e0` · A+B+runtime-scalar defaults fixed · C `[bool]` native checkbox kept |
@@ -61,7 +61,7 @@ adjudicated · counts are Python `def test_` counts.
 | test_langs.py | 21 | crates/skit-cli/tests/port_test_langs.rs | done (15) · **describe-total FIXED 8af2d92** · **doctor-uv ×2 FIXED a8e2480** · **params-msg FIXED 8633128** · 6 unmappable |
 | test_kindnames.py | 5 | crates/skit-tui/tests/port_test_kindnames.rs | done (5) · **exe/prompt picker labels FIXED dc58131** |
 | test_tokens.py | 21 | crates/skit-application/tests/port_test_tokens.rs | done (20) · 1 cross-crate (env/now default in cli root) |
-| test_pep723_split.py | 24 | crates/skit-language/tests/port_test_pep723_split.rs (+ skit-ui re-home) | done (3) · 14 → skit-ui · 7 white-box/CLI |
+| test_pep723_split.py | 24 | crates/skit-language/tests/port_test_pep723_split.rs + shared language/CLI/store owners | implementation parity complete (18 executable / 6 structured stronger-owner or architecture closures) · all 24 names accounted; parser-first trailing-comma and nested-bracket fallback is shared by CLI, Add, and Settings |
 | test_metawriter.py | 24 | crates/skit-language/tests/port_test_metawriter.rs | done (29) · float-order gap fixed · 2 white-box |
 | test_template_context_quoting.py | 44 | crates/skit-runtime/tests/port_test_template_context_quoting.rs | done (28) · 16 white-box _posix_quote_state / cross-crate |
 | test_declared_params.py | 52 | crates/skit-cli/tests/port_test_declared_params.rs + skit-form/store owners | implementation parity (51 REAL / 1 split-seam closure) · complete declared-edit domain/CLI/metadata engine `7ce033e`..`aad6f42` · implicit vs explicit placeholder layering `7510454` · PowerShell riders `0c847ea` · store roundtrip `ae955c3`; raw/typed row split `8f0c038` · env delivery `6f193e6`; receipts `878826b`; masking `669abd1`; env-source order `3d9c8ba` |
@@ -553,9 +553,9 @@ including exact read enumeration and attached-value flag semantics (`952394e`); 
 linked. Bucket 3 (CLI integration, 6): `params manage`/`params show`/`params resync`,
 `flows.plan_for_entry` degradation, and `drift_lines` rendering — deferred to Tier 4 (skit-cli).
 
-### test_shell_inject.py → port_test_shell_inject.rs (53 done · 34 deferred)
+### test_shell_inject.py → port_test_shell_inject.rs + surface_edges.rs (58 done · 1 gate · 28 deferred)
 
-87 ported / 53 passed / 0 failed / 34 `#[ignore]`. No injector gap: the Rust injector matches the
+87 ported / 58 passed / 0 failed / 29 `#[ignore]` (1 host-tool gate + 28 deferred). No injector gap: the Rust injector matches the
 oracle on every byte-establishable claim. Bucket 1 (39, pure byte-logic + typed refusal): const
 single-quoted vs int/float bare, rewrites every occurrence, quoting normalized, bad int/float →
 `InvalidValue`, readonly/missing/vanished/double-binding → `BindingNotFound`, array/valueless/env
@@ -566,12 +566,16 @@ identity binds the value (risk #2), and — verified genuine, not tautological �
 (risk #3): each payload emitted as an all-single-quoted literal and the whole copy re-parses via
 `source_is_valid` (the `bash -n` analog).
 
-Bucket 3 (34 deferred to Tier 3/4 — `skit run --set`, skit-runtime/flows). **MUST-VERIFY at the
-runtime tier:** `test_const_payload_is_inert`/`test_read_payload_is_inert` (risk #3 — confirm no
-`pwned` file executes), `test_secret_read_masks_the_echo...`/`test_secret_value_never_reaches_stdout`
-(secret masking + 0600 temp-copy lifecycle is runtime/store), `test_read_in_a_loop_takes_the_value_
-once_then_reads_real_stdin` (risk #2 once-then-stdin). The single-name `normalize_shell_default`
-collapses the oracle's refusal codes to Ok/Err; the code rendering and batch aggregation are Tier 4.
+Bucket 3 now has 28 deferred to Tier 3/4 (`skit run --set`, skit-runtime/flows). Five exact owners
+moved to the active real CLI/child composition target: secret reads mask the echo but deliver the value,
+loop reads consume the injected value once and return to stdin, secret-bearing staged sources are
+0600 and disappear after the child exits, the managed block composes with runtime injection, the
+strict `set -euo pipefail` path stays live. The sixth exact owner is an honest host-tool gate that
+runs bash/sh/zsh/dash with pinned paths from the production `SystemProbe`; it was executed on the
+current Linux host, but normal CI does not promise all four runtimes. **Still MUST-VERIFY at the runtime tier:**
+`test_const_payload_is_inert`/`test_read_payload_is_inert` (risk #3 — confirm no `pwned` file
+executes). The single-name `normalize_shell_default` collapses the oracle's refusal codes to Ok/Err;
+the code rendering and batch aggregation are Tier 4.
 
 ### test_argspec.py + test_argspec_click_typer.py → port_test_argspec*.rs (100 done · 1 white-box)
 

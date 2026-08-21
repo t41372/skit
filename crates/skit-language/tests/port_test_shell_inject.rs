@@ -327,18 +327,6 @@ fn test_read_rewrite_keeps_every_flag_and_varname() {
 }
 
 #[test]
-#[ignore = "MUST-VERIFY (secret masking): runtime masked echo `Password: ***` + real `len=7`, delivered by the shim's `_ss=1` branch and heredoc -> Tier 3/4 (skit run --set). Byte-observable half: the third _skit_read arg (secret flag) is `1`; the MASKING itself is runtime shim behavior."]
-fn test_secret_read_masks_the_echo_but_delivers_the_value() {
-    // Python runs the copy: masked echo, real length, "hunter2" never in stdout.
-}
-
-#[test]
-#[ignore = "MUST-VERIFY (risk #2 runtime): second loop iteration reads REAL stdin. The shim's per-site `_skit_used_$_sk` flag gates value-once-then-passthrough at RUNTIME -> Tier 3/4 (skit run --set)."]
-fn test_read_in_a_loop_takes_the_value_once_then_reads_real_stdin() {
-    // Python feeds stdin "second\nthird\n" and asserts the loop takes `first` once, then real stdin.
-}
-
-#[test]
 fn test_function_read_defined_above_invoked_after_keeps_its_value() {
     // Risk #2, the one that makes call-site binding non-negotiable: the function's read is FIRST in
     // source order but runs LAST. A runtime counter would swap the two values (and hand the secret
@@ -589,18 +577,6 @@ fn test_unmanaged_read_still_reads_real_stdin() {
     assert!(out.contains("read -p \"Two: \" b")); // second read left untouched
 }
 
-#[test]
-#[ignore = "UNMAPPED: runs the wrapper under bash/sh/zsh/dash and asserts child stdout -> Tier 3/4 (skit run). The dialect-selected fall-through keyword IS byte-covered by test_fallthrough_keyword_is_dialect_selected."]
-fn test_the_preamble_runs_on_every_supported_dialect() {
-    // Python spawns each installed shell on the injected copy and asserts stdout is identical.
-}
-
-#[test]
-#[ignore = "UNMAPPED: runs the injected copy under `set -euo pipefail` and asserts exit 0 + stdout -> Tier 3/4 (skit run)."]
-fn test_set_u_and_set_e_survive_the_preamble() {
-    // Python runs the copy and asserts the preamble does not trip nounset/errexit.
-}
-
 // ---------------------------------------------------------------- risk #3: quoting injection
 
 #[test]
@@ -663,13 +639,6 @@ fn test_quote_in_a_read_prompt_survives() {
     );
     assert!(out.contains(&call), "expected {call:?} in\n{out}");
     assert!(source_is_valid("shell", &out));
-}
-
-#[test]
-#[ignore = "MUST-VERIFY (secret handling): the injected copy's 0600 mode + short-lived-ness are store/runtime properties (the temp copy is written by the CLI tier). skit-language only produces the bytes -> Tier 3/4. The const single-quoting is covered by test_const_str_is_single_quoted_and_int_is_bare."]
-fn test_secret_value_never_reaches_stdout() {
-    // Python asserts the copy is 0600 and running it prints only `done` (the script never echoes
-    // the key). Both are file-permission / runtime facts, not injector bytes.
 }
 
 // ---------------------------------------------------------------- risk #4: multibyte / CRLF
@@ -985,10 +954,6 @@ fn test_normalize_mixed_batch_reports_each_name() {
 #[test]
 #[ignore = "UNMAPPED: `skit params --manage` + `skit run --set` end to end (CliRunner + store.add_script), asserts the script's own stdout on the real fd -> Tier 4 (skit-cli). Byte injection covered by test_const_injection_runs_with_the_new_value."]
 fn test_execute_runs_a_shell_entry_with_injected_values() {}
-
-#[test]
-#[ignore = "MUST-VERIFY (secret masking) + UNMAPPED: proves the [tool.skit] block writer and the read preamble COMPOSE (both land between shebang and code) and the secret read still masks at runtime -> Tier 4 (skit-cli params + run). The two writers live above skit-language."]
-fn test_execute_runs_a_managed_read_with_the_block_in_place() {}
 
 #[test]
 #[ignore = "UNMAPPED: flows.execute + launcher spy proving env delivery passes no script_override (no injected copy) -> Tier 4 (skit-cli/flows). The no-rewrite fact is covered by test_env_delivery_writes_no_temp_file."]
