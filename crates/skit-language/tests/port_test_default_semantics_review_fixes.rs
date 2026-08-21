@@ -35,7 +35,7 @@
 use std::collections::BTreeMap;
 
 use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    NamedEdit, ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
     SourceEditRequest,
 };
 use skit_language::{
@@ -434,7 +434,59 @@ fn test_final_no_secret_in_same_edit_keeps_the_public_default() {
 }
 
 #[test]
-fn adding_a_detected_secret_candidate_never_serializes_its_source_literal() {
+fn unrelated_source_tweaks_keep_an_existing_secret_fallback_exact() {
+    let mut token = const_decl("API_KEY", ParameterType::Str);
+    token.secret = true;
+    token.default = Some(ParameterValue::String("stored-fallback".to_owned()));
+    token.env_source = "API_KEY_ENV".to_owned();
+
+    let result = edit_source_declarations(
+        "python",
+        "API_KEY = \"live-source\"\nprint(API_KEY)\n",
+        &[token],
+        &SourceEditRequest {
+            prompts: vec![NamedEdit::new("API_KEY", "Token: ")],
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+
+    let edited = &result.declarations[0];
+    assert!(edited.secret);
+    assert_eq!(edited.prompt, "Token: ");
+    assert_eq!(edited.env_source, "API_KEY_ENV");
+    assert_eq!(
+        edited.default,
+        Some(ParameterValue::String("stored-fallback".to_owned())),
+        "v0.4 clears a cached fallback only for an explicit final transition to secret"
+    );
+}
+
+#[test]
+fn resync_keeps_an_unchanged_existing_secret_fallback() {
+    let mut token = const_decl("API_KEY", ParameterType::Str);
+    token.secret = true;
+    token.default = Some(ParameterValue::String("stored-fallback".to_owned()));
+
+    let result = edit_source_declarations(
+        "python",
+        "API_KEY = \"live-source\"\nprint(API_KEY)\n",
+        &[token],
+        &SourceEditRequest {
+            resync: true,
+            ..SourceEditRequest::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        result.declarations[0].default,
+        Some(ParameterValue::String("stored-fallback".to_owned()))
+    );
+}
+
+#[test]
+fn adding_a_detected_secret_candidate_keeps_the_v04_candidate_default() {
     let result = edit_source_declarations(
         "python",
         "API_KEY = \"sk-live-candidate\"\nprint(API_KEY)\n",
@@ -447,8 +499,10 @@ fn adding_a_detected_secret_candidate_never_serializes_its_source_literal() {
     .unwrap();
     let declaration = &result.declarations[0];
     assert!(declaration.secret);
-    assert!(declaration.default.is_none());
-    assert!(!declaration.to_block_map().contains_key("default"));
+    assert_eq!(
+        declaration.default,
+        Some(ParameterValue::String("sk-live-candidate".to_owned()))
+    );
 
     let written = write_managed_params(
         "python",
@@ -458,8 +512,7 @@ fn adding_a_detected_secret_candidate_never_serializes_its_source_literal() {
     .unwrap();
     let close = written.rfind("# ///").unwrap();
     let block = &written[..close];
-    assert!(!block.contains("default ="), "{block}");
-    assert!(!block.contains("sk-live-candidate"), "{block}");
+    assert!(block.contains("default = \"sk-live-candidate\""), "{block}");
 }
 
 // --------------------------------------------------------------------------
