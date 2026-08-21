@@ -1791,6 +1791,62 @@ fn test_params_read_view_shows_unmanaged_and_gone() {
 }
 
 #[test]
+fn prompt_human_params_empty_and_secret_fallback_are_localized_and_read_only() {
+    let sandbox = Sandbox::new();
+    sandbox.added("Review this.\n", "empty");
+    sandbox.added("Keep {{token}} private.\n", "secret");
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+
+    for (locale, empty_line, secret_label) in [
+        (
+            "en",
+            "empty has no managed parameters.",
+            "  token = —  str · secret",
+        ),
+        ("zh-CN", "empty 没有管理的参数。", "  token = —  str · 机密"),
+        ("zh-TW", "empty 沒有管理的參數。", "  token = —  str · 機密"),
+    ] {
+        let empty = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .args(["params", "empty"])
+            .output()
+            .unwrap();
+        assert!(empty.status.success(), "{locale}");
+        assert_eq!(String::from_utf8_lossy(&empty.stdout).trim(), empty_line);
+        assert!(empty.stderr.is_empty(), "{locale}");
+
+        let secret = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .args(["params", "secret"])
+            .output()
+            .unwrap();
+        assert!(secret.status.success(), "{locale}");
+        let shown = String::from_utf8_lossy(&secret.stdout);
+        assert!(shown.contains(secret_label), "{locale}: {shown}");
+        assert!(!shown.contains("•••"), "{locale}: {shown}");
+        assert!(secret.stderr.is_empty(), "{locale}");
+    }
+
+    let empty_json = sandbox.json(&["params", "empty", "--json"]);
+    assert_eq!(empty_json["placeholders"], serde_json::json!([]));
+    assert_eq!(empty_json["parameters"], serde_json::json!([]));
+    assert_eq!(empty_json["last_values"], serde_json::json!({}));
+    let secret_json = sandbox.json(&["params", "secret", "--json"]);
+    assert_eq!(secret_json["placeholders"], serde_json::json!(["token"]));
+    assert_eq!(secret_json["parameters"][0]["name"], "token");
+    assert_eq!(secret_json["parameters"][0]["type"], "str");
+    assert_eq!(secret_json["parameters"][0]["secret"], true);
+    assert_eq!(secret_json["last_values"], serde_json::json!({}));
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+}
+
+#[test]
 fn prompt_declared_edit_removes_a_gone_slot_without_a_stale_tweak_warning() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}} {{b}}\n", "p");

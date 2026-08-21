@@ -5327,10 +5327,7 @@ fn human_parameter_declarations(
     stored
 }
 
-fn prompt_schema_suffix(declaration: Option<&ParamDecl>) -> String {
-    let Some(declaration) = declaration else {
-        return String::new();
-    };
+fn prompt_schema_suffix(declaration: &ParamDecl) -> String {
     let mut parts = vec![declaration.parameter_type.as_str().to_owned()];
     if let Some(default) = &declaration.default {
         let shown = if declaration.secret {
@@ -5351,10 +5348,10 @@ fn prompt_schema_suffix(declaration: Option<&ParamDecl>) -> String {
 
 fn write_prompt_parameter(
     name: &str,
-    declaration: Option<&ParamDecl>,
+    declaration: &ParamDecl,
     last_values: &BTreeMap<String, String>,
 ) {
-    let shown = if declaration.is_some_and(|item| item.secret) {
+    let shown = if declaration.secret {
         if last_values.contains_key(name) {
             text(active_locale(), "•••").into_owned()
         } else {
@@ -5388,15 +5385,15 @@ fn write_human_command_params(
     }
     if !settings.params.is_empty() {
         humanln!("Command template placeholders (the run form asks for them):");
-        for name in &settings.params {
-            let declaration = declarations.iter().find(|item| item.name == *name);
+        // form_params puts each managed placeholder first, in settings order.
+        for (name, declaration) in settings.params.iter().zip(declarations) {
             write_prompt_parameter(name, declaration, &state.values);
         }
     }
     if !env_riders.is_empty() {
         humanln!("Declared environment variables (set on the run):");
         for declaration in env_riders {
-            write_prompt_parameter(&declaration.name, Some(declaration), &state.values);
+            write_prompt_parameter(&declaration.name, declaration, &state.values);
         }
     }
     Ok(())
@@ -5437,15 +5434,15 @@ fn write_human_prompt_params(
     }
     if !settings.params.is_empty() {
         humanln!("Prompt placeholders (the run form asks for them):");
-        for name in &settings.params {
-            let declaration = declarations.iter().find(|item| item.name == *name);
+        // form_params puts each managed placeholder first, in settings order.
+        for (name, declaration) in settings.params.iter().zip(declarations) {
             write_prompt_parameter(name, declaration, &state.values);
         }
     }
     if !env_riders.is_empty() {
         humanln!("Declared environment variables (set on the run):");
         for declaration in env_riders {
-            write_prompt_parameter(&declaration.name, Some(declaration), &state.values);
+            write_prompt_parameter(&declaration.name, declaration, &state.values);
         }
     }
     report_unmanaged_prompt_candidates(&unmanaged);
