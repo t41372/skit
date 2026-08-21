@@ -3825,6 +3825,27 @@ fn tui_run_host_publishes_source_drift_degradation_and_runtime_path_context() {
 }
 
 #[test]
+fn tui_path_context_keeps_a_vanished_reference_origin_until_launch_validation() {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("project/deep");
+    fs::create_dir_all(&origin).unwrap();
+    let source = origin.join("job.py");
+    fs::write(&source, "print('hi')\n").unwrap();
+    let mut entry = Entry {
+        slug: Slug::parse("job").unwrap(),
+        meta: EntryMeta::minimal("Job", EntryKind::parse("python").unwrap()),
+    };
+    entry.meta.mode = StorageMode::Reference;
+    entry.meta.source = source.display().to_string();
+    entry.meta.workdir = "origin".to_owned();
+    fs::remove_file(source).unwrap();
+    fs::remove_dir(&origin).unwrap();
+
+    let context = tui_run_context(&FileStore::new(root.path().join("data")), &entry).unwrap();
+    assert_eq!(context.path.unwrap().workdir, origin.display().to_string());
+}
+
+#[test]
 fn typed_preferences_effects_validate_atomically_and_install_only_after_selection() {
     let root = TempDir::new().unwrap();
     let config_dir = root.path().join("config");

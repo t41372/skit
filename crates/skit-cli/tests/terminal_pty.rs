@@ -68,6 +68,32 @@ fn write_command_entry(data: &Path, with_parameter: bool) {
     FileStore::new(data).rebuild_registry().unwrap();
 }
 
+#[cfg(not(windows))]
+fn write_path_completion_entry(data: &Path, marker: &Path) {
+    let mut source = ParamDecl::new("source");
+    source.prompt = "Source path".to_owned();
+    source.parameter_type = ParameterType::Path;
+    source.delivery = ParameterDelivery::Placeholder;
+    source.required = true;
+    FileStore::new(data)
+        .create(CreateEntry {
+            name: "Path completion".to_owned(),
+            kind: EntryKind::parse("command").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings {
+                template: format!("printf '%s' {{source}} > {}", marker.display()),
+                params: vec!["source".to_owned()],
+                parameters: vec![source],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+}
+
 fn write_plain_preset_entry(data: &Path) {
     let mut plain = ParamDecl::new("PLAIN");
     plain.prompt = "Plain value".to_owned();
@@ -1789,6 +1815,46 @@ fn terminal_run_form_can_submit_or_cancel_without_plain_input() {
         &[b"\x1b"],
     );
     assert_eq!(code, 130);
+}
+
+#[cfg(not(windows))]
+#[test]
+fn inline_run_accepts_a_real_path_ghost_with_right_before_launch() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let marker = home.path().join("path-value.txt");
+    fs::write(home.path().join("data.csv"), "input").unwrap();
+    write_path_completion_entry(data.path(), &marker);
+    let data_before = tree_snapshot(data.path());
+    let state_before = tree_snapshot(state.path());
+    let config_before = tree_snapshot(config.path());
+
+    let mut tui = LiveTui::spawn_command(
+        &["run", "path-completion"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+    );
+    tui.answer_cursor_query_after(0);
+    tui.wait_for("Run Path completion");
+    let typed = tui.checkpoint();
+    tui.send(b"da");
+    let _ = tui.wait_for_after(typed, "ta.csv");
+    assert_eq!(tree_snapshot(data.path()), data_before);
+    assert_eq!(tree_snapshot(state.path()), state_before);
+    assert_eq!(tree_snapshot(config.path()), config_before);
+
+    tui.send(b"\x1b[C");
+    thread::sleep(Duration::from_millis(50));
+    let launch = tui.checkpoint();
+    tui.send(&[0x12]);
+    let (code, output) = tui.wait_for_exit_status_after(launch);
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(fs::read_to_string(marker).unwrap(), "data.csv");
 }
 
 #[test]

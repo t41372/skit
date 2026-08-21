@@ -6,6 +6,7 @@ use std::{
     io::{self, IsTerminal as _, Read as _, Seek as _, Write as _},
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
+    sync::Arc,
     time::UNIX_EPOCH,
 };
 
@@ -26,6 +27,7 @@ use skit_application::{
         HealthInspection, HealthIssue, HealthIssueKind, HealthRebuild, HealthRebuildOutcome,
         HealthService, HealthSnapshot, MirrorHealth, UvHealth,
     },
+    path_completion::{PathCompletionProvider, PathCompletionService},
     payload_stored_name, plan_agent_install,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
@@ -68,12 +70,12 @@ use skit_language::{
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe,
     SystemProbe, clear_javascript_dependencies, managed_uv_path, network_looks_blocked,
-    resolve_javascript_runtime, resolve_launch_workdir,
+    project_launch_workdir, resolve_javascript_runtime,
 };
 use skit_store::{
     CONFIG_KEYS, ConfigError, FileAgentSkillStore, FileConfigStore, FileFormStateStore,
     FileGlobExpander, FilePromptSelectionStore, FileRunnerManagementStore, PromptRunner,
-    RunnerManagementStoreError, RunnerRemovalCas, expand_user_path,
+    RunnerManagementStoreError, RunnerRemovalCas, SystemDirectoryReader, expand_user_path,
 };
 use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
@@ -2149,10 +2151,11 @@ fn run_entry(
         // advertised chips (Ctrl+S saves a preset) work there too.
         let state_dir = resolve_state_dir()?;
         let config_dir = resolve_config_dir()?;
-        skit_tui::collect_run_form(
+        skit_tui::collect_run_form_with_path_completion(
             forms.enhanced,
             |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
             active_locale(),
+            path_completion_provider(),
         )?
         .ok_or(CliError::Aborted)?
     };
@@ -2206,6 +2209,7 @@ fn interactive_run_form(
     let baseline = prefill(&declarations, &saved.values, preset);
     let fixed_values = run_fixed_values(&declarations, &args.values)?;
     let settings = EntrySettings::from_meta(&entry.meta);
+    let context = tui_run_context(store, &entry)?;
     let configured_runners = FileConfigStore::new(resolve_config_dir()?)
         .runners()?
         .into_iter()
@@ -2253,7 +2257,8 @@ fn interactive_run_form(
         dry_run: args.dry_run,
         include_extra: false,
         fixed_values,
-    });
+    })
+    .with_context(context);
     Ok(InteractiveRunForms {
         plain,
         enhanced,
@@ -7255,12 +7260,17 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
     let rerunnable = tui_rerunnable(&surface.scan, &state_dir);
     let mut state = LibraryState::from_library_surface(surface);
     let _ = state.update(UiAction::ReplaceRerunnable(rerunnable));
-    skit_tui::run(
+    skit_tui::run_with_path_completion(
         state,
         |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
         active_locale(),
+        path_completion_provider(),
     )
     .map_err(CliError::from)
+}
+
+fn path_completion_provider() -> Arc<dyn PathCompletionProvider> {
+    Arc::new(PathCompletionService::new(SystemDirectoryReader))
 }
 
 fn tui_effect(
@@ -8194,7 +8204,7 @@ fn tui_run_context(store: &FileStore, entry: &Entry) -> Result<RunFormContext, C
         entry_dir: store.entry_dir_path(&entry.slug),
         invoke_cwd: invoke_cwd.clone(),
     };
-    let workdir = resolve_launch_workdir(entry, &paths, &SystemProbe)
+    let workdir = project_launch_workdir(entry, &paths, &SystemProbe)
         .map_err(RunError::from)?
         .display()
         .to_string();

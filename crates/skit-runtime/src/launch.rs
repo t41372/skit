@@ -1018,6 +1018,23 @@ pub fn resolve_launch_workdir<P: ProgramProbe>(
     paths: &LaunchPaths,
     probe: &P,
 ) -> Result<PathBuf, LaunchError> {
+    let cwd = project_launch_workdir(entry, paths, probe)?;
+    if probe.is_dir(&cwd) {
+        Ok(cwd)
+    } else {
+        Err(LaunchError::WorkdirMissing { path: cwd })
+    }
+}
+
+/// Project the semantic child working directory without requiring it to exist yet.
+///
+/// Run forms use this path to silence completion and offer an ancestor picker when a directory
+/// vanishes. Launch planning applies the existence check through [`resolve_launch_workdir`].
+pub fn project_launch_workdir<P: ProgramProbe>(
+    entry: &Entry,
+    paths: &LaunchPaths,
+    probe: &P,
+) -> Result<PathBuf, LaunchError> {
     let cwd = match entry.meta.workdir.as_str() {
         "invoke" => paths.invoke_cwd.clone(),
         "store" => paths.entry_dir.clone(),
@@ -1045,11 +1062,7 @@ pub fn resolve_launch_workdir<P: ProgramProbe>(
             path
         }
     };
-    if probe.is_dir(&cwd) {
-        Ok(cwd)
-    } else {
-        Err(LaunchError::WorkdirMissing { path: cwd })
-    }
+    Ok(cwd)
 }
 
 /// Start a child and wait for its process status.

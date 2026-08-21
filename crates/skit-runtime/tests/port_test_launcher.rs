@@ -58,7 +58,7 @@ use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_runtime::{
     LaunchError, LaunchPaths, ProgramProbe, SystemProbe, build_launch_plan, build_launch_preview,
-    execute_launch, resolve_launch_workdir,
+    execute_launch, project_launch_workdir, resolve_launch_workdir,
 };
 use tempfile::TempDir;
 
@@ -521,6 +521,12 @@ fn test_resolve_workdir_reference_mode_not_masked_when_origin_gone() {
         ..FakeProbe::default()
     };
     let paths = paths("/data/scripts/demo/script.py");
+
+    assert_eq!(
+        project_launch_workdir(&reference, &paths, &probe).unwrap(),
+        PathBuf::from("/refdir"),
+        "a form keeps the semantic origin so completion can go silent and its picker can degrade"
+    );
 
     let error = resolve_launch_workdir(&reference, &paths, &probe).unwrap_err();
     assert!(
