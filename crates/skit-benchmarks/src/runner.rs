@@ -342,17 +342,13 @@ pub fn path_arg(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::Path};
+    use std::{collections::BTreeMap, fs};
 
     #[cfg(unix)]
-    use std::{fs, os::unix::fs::PermissionsExt as _};
+    use std::{os::unix::fs::PermissionsExt as _, path::Path};
 
-    use crate::hyperfine::Case;
     #[cfg(unix)]
-    use crate::{
-        SuiteKind,
-        suites::tests::{Fixture, plan},
-    };
+    use crate::{SuiteKind, hyperfine::Case, suites::tests::plan};
     use tempfile::TempDir;
 
     #[cfg(unix)]
@@ -397,10 +393,13 @@ mod tests {
         ));
         assert!(context.environment_for(root.path()).is_err());
 
-        let mut fixture = Fixture::new();
-        fixture.context.cargo = Some(root.path().join("cargo"));
-        fixture.context.rustc = Some(root.path().join("rustc"));
-        let environment = fixture.context.environment(0).unwrap();
+        let dataset = root.path().join("dataset");
+        fs::create_dir(&dataset).unwrap();
+        fs::write(dataset.join("manifest.json"), "{}").unwrap();
+        let mut context = context;
+        context.cargo = Some(root.path().join("cargo"));
+        context.rustc = Some(root.path().join("rustc"));
+        let environment = context.environment_for(&dataset).unwrap();
         assert_eq!(
             environment["CARGO"],
             root.path().join("cargo").display().to_string()

@@ -18,7 +18,12 @@ expect_text .github/workflows/codspeed.yml 'CodSpeedHQ/action@4296e51e7041e24dad
 expect_text .github/workflows/codspeed.yml 'taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10'
 expect_text .github/workflows/codspeed.yml 'tool: cargo-codspeed@5.0.1'
 expect_text .github/workflows/codspeed.yml 'cargo codspeed build -m simulation --locked --workspace --all-features'
-expect_text .github/workflows/codspeed.yml 'run: cargo codspeed run'
+expect_text .github/workflows/codspeed.yml 'run: cargo codspeed run --workspace'
+if grep -Eq '^[[:space:]]*run:[[:space:]]*cargo codspeed run[[:space:]]*$' \
+  .github/workflows/codspeed.yml; then
+  echo 'CodSpeed build and run must select the same workspace packages' >&2
+  exit 1
+fi
 expect_text .github/workflows/benchmark-compare.yml 'enable-cache: false'
 expect_text .github/workflows/benchmark-compare.yml 'ref: ${{ github.event.pull_request.base.sha }}'
 expect_text .github/workflows/benchmark-compare.yml 'ref: ${{ github.event.pull_request.head.sha }}'
@@ -160,7 +165,22 @@ sed -n "${shell_gate_step_line},${shell_gate_line}p" .github/workflows/ci.yml |
   grep -Fq "if: runner.os == 'Linux'" || {
     echo 'the complete POSIX shell gate must run on Linux' >&2
     exit 1
-  }
+}
+
+test "$(rg -l 'activate-environment: true' \
+  .github/workflows/benchmark.yml \
+  .github/workflows/benchmark-nightly.yml \
+  .github/workflows/benchmark-compare.yml | wc -l)" -eq 3 || {
+  echo 'every benchmark workflow must activate its pinned Python environment' >&2
+  exit 1
+}
+test "$(rg -l "sys.version_info\[:2\] == \(3, 13\)" \
+  .github/workflows/benchmark.yml \
+  .github/workflows/benchmark-nightly.yml \
+  .github/workflows/benchmark-compare.yml | wc -l)" -eq 3 || {
+  echo 'every benchmark workflow must verify Python 3.13 before measurement' >&2
+  exit 1
+}
 expect_text CONTRIBUTING.md 'Node.js 26.7.0 and npm 12.0.2 or later'
 expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
 expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'

@@ -924,13 +924,14 @@ esac
 
         let invocations = fs::read_to_string(&log).unwrap();
         let lines = invocations.lines().collect::<Vec<_>>();
+        let physical_repo_root = fixture.context.repo_root.canonicalize().unwrap();
         let physical_workdir = fixture.context.workdir.canonicalize().unwrap();
         assert_eq!(lines.len(), 5);
         assert_eq!(
             lines[0],
             format!(
                 "{}|build --out-dir {}",
-                fixture.context.repo_root.display(),
+                physical_repo_root.display(),
                 fixture.context.workdir.join("dist").display()
             )
         );

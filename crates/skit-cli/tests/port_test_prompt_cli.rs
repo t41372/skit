@@ -135,6 +135,12 @@ impl Sandbox {
         fs::write(self.config_path(), toml).unwrap();
     }
 
+    fn install_private_uv_probe(&self) {
+        let bin = self.data.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::copy(env!("CARGO_BIN_EXE_skit"), bin.join("uv")).unwrap();
+    }
+
     fn read_config(&self) -> String {
         fs::read_to_string(self.config_path()).unwrap_or_default()
     }
@@ -2852,7 +2858,19 @@ fn test_doctor_reports_prompt_drift_and_bad_runner_rows() {
 fn test_doctor_healthy_prompt_reports_no_drift() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}}\n", "p");
-    let payload = sandbox.json(&["doctor", "--json"]);
+    let json_output = sandbox
+        .command()
+        .env("PATH", "")
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        json_output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&json_output.stdout),
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&json_output.stdout).unwrap();
     assert_eq!(payload["drift"], serde_json::json!([]));
     assert_eq!(payload["runner_rows_invalid"], serde_json::json!([]));
     let human = sandbox.ok(&["doctor"]);
@@ -2863,6 +2881,7 @@ fn test_doctor_healthy_prompt_reports_no_drift() {
 #[test]
 fn test_doctor_malformed_runner_recovery_localizes_and_preserves_row_order() {
     let sandbox = Sandbox::new();
+    sandbox.install_private_uv_probe();
     sandbox.set_config(
         "[prompt]\nrunners_seeded = true\n[[prompt.runners]]\nname = \"zebra\"\nargv = [\"x\"]\n[[prompt.runners]]\nname = \"alpha\"\nargv = [\"y\"]\n",
     );
@@ -2871,6 +2890,7 @@ fn test_doctor_malformed_runner_recovery_localizes_and_preserves_row_order() {
         payload["runner_rows_invalid"],
         serde_json::json!(["zebra", "alpha"])
     );
+    assert!(payload["uv"].is_string());
 
     for (locale, expected) in [
         (
@@ -2889,6 +2909,7 @@ fn test_doctor_malformed_runner_recovery_localizes_and_preserves_row_order() {
         let output = sandbox
             .command()
             .env("SKIT_LANG", locale)
+            .env("PATH", "")
             .arg("doctor")
             .output()
             .unwrap();

@@ -8028,12 +8028,30 @@ impl MirrorPromptPty {
                 ) => {}
             }
         };
+        let output_deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        loop {
+            let remaining = output_deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| {
+                    panic!(
+                        "timed out draining mirror PTY output: {}",
+                        self.visible_after(0)
+                    )
+                });
+            match self
+                .chunks
+                .recv_timeout(remaining.min(std::time::Duration::from_millis(100)))
+            {
+                Ok(chunk) => self.output.extend_from_slice(&chunk),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
         assert!(
             status.success(),
             "mirror PTY child failed: {status:?}: {}",
             self.visible_after(0)
         );
-        self.drain();
         let output = self.visible_after(0);
         let result = fs::read_to_string(&self.result_path).unwrap();
         (output, result)

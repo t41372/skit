@@ -42,9 +42,12 @@ jobs:
         with:
           version: "0.12.3"
           python-version: "3.13"
+          activate-environment: true
           # Either selected ref can execute arbitrary benchmark code. Do not let it write a cache
           # that a later trusted run can restore.
           enable-cache: false
+      - name: Verify benchmark Python 3.13
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version'
       - name: Install hyperfine
         uses: ./.github/actions/install-hyperfine
       - name: Validate comparison sides
