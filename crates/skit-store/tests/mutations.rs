@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
     sync::mpsc,
@@ -680,6 +680,81 @@ fn concurrent_external_edit_finalizers_allow_one_metadata_cas_winner() {
     assert_eq!(
         store.resolve("External CAS").unwrap().meta.source_hash,
         content_hash(b"written by editor")
+    );
+}
+
+#[test]
+fn test_concurrent_add_python_both_succeed_with_distinct_slugs() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let barrier = Arc::new(Barrier::new(8));
+    let cases = [
+        "Concurrent Add",
+        "Concurrent-Add",
+        "Concurrent_Add",
+        "Concurrent.Add",
+        "Concurrent/Add",
+        "Concurrent:Add",
+        "Concurrent+Add",
+        "Concurrent=Add",
+    ];
+    let workers: Vec<_> = cases
+        .into_iter()
+        .map(|name| {
+            let store = store.clone();
+            let barrier = Arc::clone(&barrier);
+            let name = name.to_owned();
+            thread::spawn(move || {
+                let bytes = format!("payload for {name}\n").into_bytes();
+                barrier.wait();
+                let entry = store.create(request(&name, &bytes)).unwrap();
+                (entry, bytes)
+            })
+        })
+        .collect();
+
+    let created: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    let slugs: BTreeSet<_> = created
+        .iter()
+        .map(|(entry, _)| entry.slug.as_str())
+        .collect();
+    assert_eq!(created.len(), 8);
+    assert_eq!(slugs.len(), 8);
+
+    let registry: toml::Table =
+        toml::from_str(&fs::read_to_string(root.path().join("registry.toml")).unwrap()).unwrap();
+    let rows = registry
+        .get("entries")
+        .and_then(toml::Value::as_table)
+        .unwrap();
+    assert_eq!(rows.len(), 8);
+    for (entry, bytes) in &created {
+        let row = rows
+            .get(entry.slug.as_str())
+            .and_then(toml::Value::as_table)
+            .unwrap();
+        assert_eq!(
+            row.get("name").and_then(toml::Value::as_str),
+            Some(entry.meta.name.as_str())
+        );
+        assert_eq!(
+            fs::read(
+                root.path()
+                    .join("scripts")
+                    .join(entry.slug.as_str())
+                    .join("script.py")
+            )
+            .unwrap(),
+            *bytes
+        );
+    }
+    let staging = root.path().join(".staging");
+    assert!(
+        !staging.exists() || fs::read_dir(staging).unwrap().next().is_none(),
+        "concurrent creates must not leave staging residue"
     );
 }
 

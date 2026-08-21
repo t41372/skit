@@ -213,7 +213,13 @@ mod tests {
         acquire_lock, atomic_write_bytes, atomic_write_bytes_with, existing_lock_is_unavailable,
         preserve_permissions_best_effort, sync_directory, try_acquire_lock,
     };
-    use std::{cell::Cell, io};
+    use std::{
+        cell::Cell,
+        io,
+        sync::{Arc, Barrier, mpsc},
+        thread,
+        time::Duration,
+    };
     use tempfile::TempDir;
 
     // Port of skit.atomic try_advisory_file_lock tests (test_atomic.py ~653-702), driven at the
@@ -270,6 +276,63 @@ mod tests {
         assert!(try_acquire_lock(&lock).is_none());
         drop(blocking);
         assert!(try_acquire_lock(&lock).is_some());
+    }
+
+    #[test]
+    fn test_registry_lock_serializes_concurrent_holders() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("registry.native.lock");
+        let first = acquire_lock(&path).unwrap();
+        let checkpoint = Arc::new(Barrier::new(2));
+        let worker_checkpoint = Arc::clone(&checkpoint);
+        let (attempting_tx, attempting_rx) = mpsc::sync_channel(1);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            worker_checkpoint.wait();
+            attempting_tx.send(()).unwrap();
+            let second = acquire_lock(&path).unwrap();
+            entered_tx.send(()).unwrap();
+            drop(second);
+        });
+
+        checkpoint.wait();
+        attempting_rx.recv().unwrap();
+        assert!(
+            entered_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "the second holder must not enter its critical section"
+        );
+        drop(first);
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn test_registry_lock_uses_a_versioned_persistent_native_inode() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("registry.native.lock");
+
+        let first = acquire_lock(&path).unwrap();
+        let first_metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(first_metadata.len(), 1);
+        drop(first);
+
+        let second = acquire_lock(&path).unwrap();
+        let second_metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(second_metadata.len(), 1);
+        drop(second);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            assert_eq!(first_metadata.ino(), second_metadata.ino());
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(std::fs::read(&path).unwrap(), [0]);
+        }
+
+        assert!(path.is_file());
+        assert!(!root.path().join("registry.lock").exists());
     }
 
     #[test]
