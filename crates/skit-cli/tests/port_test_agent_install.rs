@@ -441,6 +441,16 @@ fn test_cli_bare_non_interactive_refuses() {
     assert_eq!(sandbox_snapshot(&sandbox), before);
 }
 
+// This is the only test here that gives the harness no answers, so the child refuses and exits at
+// once. A Windows pseudo-console does not reliably report the end of output for a child that exits
+// without interacting, and neither answering in that host's Enter spelling (8016c43) nor releasing
+// the terminal before the wait (330ff09) changed that. The refusal it checks needs a terminal to
+// reach at all, because a run that is not interactive stops earlier with a different error
+// (`agent_skill.rs:156-157`), so no plain command can stand in for it here. What the refusal
+// promises is held on every host by `skit-application`'s own owner instead:
+// `bare_interactive_install_reports_no_existing_targets` proves the typed refusal, its failing exit
+// class, and the sentence that names `--to`. Windows interactivity falls to the hands-on gate.
+#[cfg(unix)]
 #[test]
 fn test_cli_bare_interactive_no_candidates_exits_1() {
     // Interactive (pty) but no marker directories exist: exit 1, and the message steers to --to.
@@ -678,15 +688,16 @@ fn run_agent_install_pty(
             writer.flush().unwrap();
         }
     }
-    let status = child.wait().unwrap();
+    // End on the child, not on the terminal saying its output is over. A Windows pseudo-console
+    // does not reliably say that for a child that exits without interacting, so a wait keyed on it
+    // can never return. Waiting for the child under a deadline, then reading what is still
+    // buffered for a bounded moment, always returns. Releasing the terminal first helps where it
+    // does work.
+    let status = wait_for_exit(&mut child);
     drop(writer);
-    // Release the terminal itself before waiting for the reader. A Unix terminal reports the end of
-    // its output once the child is gone, so the reader stops on its own. A Windows pseudo-console
-    // keeps the stream open while any handle to it is held, and this harness holds one, so the
-    // reader waits for an end that never arrives. Every other terminal harness here already drops
-    // it at this point; this one did not.
     drop(pair.master);
-    drain.join().unwrap();
+    drop(drain);
+    settle(&output);
     let output = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
     (status.exit_code(), output)
 }
@@ -704,4 +715,41 @@ fn keystrokes(answer: &[u8]) -> Vec<u8> {
         .iter()
         .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
         .collect()
+}
+
+/// Wait for the terminal child to exit, under a deadline.
+///
+/// The end of a run is the child ending, not the terminal saying its output is over.
+fn wait_for_exit(
+    child: &mut Box<dyn portable_pty::Child + Send + Sync>,
+) -> portable_pty::ExitStatus {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "the terminal child never exited");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Read whatever the child left behind, for a bounded moment.
+fn settle(captured: &Arc<Mutex<Vec<u8>>>) {
+    const QUIET: Duration = Duration::from_millis(60);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = captured.lock().unwrap().len();
+    let mut quiet_since = Instant::now();
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+        let now = captured.lock().unwrap().len();
+        if now == seen {
+            if quiet_since.elapsed() >= QUIET {
+                return;
+            }
+        } else {
+            seen = now;
+            quiet_since = Instant::now();
+        }
+    }
 }

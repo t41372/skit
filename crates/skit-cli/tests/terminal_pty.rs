@@ -432,13 +432,15 @@ fn run_pty_configured(
         }
         let _ = writer.flush();
     }
-    let status = child.wait().unwrap();
+    // End on the child, not on the terminal saying its output is over. A Windows pseudo-console
+    // does not reliably say that for a child that exits without interacting, so a wait for it can
+    // never return. Waiting for the child under a deadline, then reading what is still buffered for
+    // a bounded moment, always returns. Releasing the terminal first helps where it does work.
+    let status = wait_for_exit(&mut child);
     drop(writer);
-    // Release the terminal before waiting for the reader: a Windows pseudo-console keeps the
-    // stream open while any handle to it is held, so the reader would wait for an end that
-    // never arrives.
     drop(pair.master);
-    drain.join().unwrap();
+    drop(drain);
+    settle(&captured);
     let raw = captured.lock().unwrap().clone();
     let output = String::from_utf8_lossy(&raw).into_owned();
     (status.exit_code(), output)
@@ -1442,20 +1444,33 @@ fn run_with_null_stdin_in_pty(
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
 
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let reader_capture = Arc::clone(&captured);
     let mut reader = pair.master.try_clone_reader().unwrap();
     let drain = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).unwrap();
-        bytes
+        let mut chunk = [0_u8; 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => reader_capture
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&chunk[..read]),
+            }
+        }
     });
     let writer = pair.master.take_writer().unwrap();
-    let status = child.wait().unwrap();
+    // End on the child, not on the terminal saying its output is over. A Windows pseudo-console
+    // does not reliably say that for a child that exits without interacting, so a wait for it can
+    // never return. Waiting for the child under a deadline, then reading what is still buffered for
+    // a bounded moment, always returns. Releasing the terminal first helps where it does work.
+    let status = wait_for_exit(&mut child);
     drop(writer);
-    // Release the terminal before waiting for the reader: a Windows pseudo-console keeps the
-    // stream open while any handle to it is held, so the reader would wait for an end that
-    // never arrives.
     drop(pair.master);
-    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    drop(drain);
+    settle(&captured);
+    let raw = captured.lock().unwrap().clone();
+    let output = String::from_utf8_lossy(&raw).into_owned();
     (status.exit_code(), output)
 }
 
@@ -1591,17 +1606,23 @@ fn read_pty_screen(args: &[&str], data: &Path, state: &Path, config: &Path) -> S
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
 
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let reader_capture = Arc::clone(&captured);
     let mut reader = pair.master.try_clone_reader().unwrap();
     let drain = thread::spawn(move || {
         let mut buffer = vec![0_u8; 65_536];
-        let mut total = Vec::new();
-        while total.len() < 400_000 {
+        loop {
             match reader.read(&mut buffer) {
                 Ok(0) | Err(_) => break,
-                Ok(read) => total.extend_from_slice(&buffer[..read]),
+                Ok(read) => {
+                    let mut held = reader_capture.lock().unwrap();
+                    held.extend_from_slice(&buffer[..read]);
+                    if held.len() >= 400_000 {
+                        break;
+                    }
+                }
             }
         }
-        total
     });
     let mut writer = pair.master.take_writer().unwrap();
     thread::sleep(Duration::from_millis(60));
@@ -1611,11 +1632,10 @@ fn read_pty_screen(args: &[&str], data: &Path, state: &Path, config: &Path) -> S
     let _ = child.kill();
     let _ = child.wait();
     drop(writer);
-    // Release the terminal before waiting for the reader: a Windows pseudo-console keeps the
-    // stream open while any handle to it is held, so the reader would wait for an end that
-    // never arrives.
     drop(pair.master);
-    let raw = drain.join().unwrap();
+    drop(drain);
+    settle(&captured);
+    let raw = captured.lock().unwrap().clone();
     String::from_utf8_lossy(&raw)
         .chars()
         .filter(|character| !character.is_control() || *character == '\n')
@@ -2987,5 +3007,23 @@ fn settle(captured: &Arc<Mutex<Vec<u8>>>) {
             seen = now;
             quiet_since = Instant::now();
         }
+    }
+}
+
+/// Wait for the terminal child to exit, under a deadline.
+///
+/// The end of a run is the child ending, not the terminal saying its output is over. A Windows
+/// pseudo-console does not reliably say that for a child that exits without interacting, so a wait
+/// keyed on it can never return.
+fn wait_for_exit(
+    child: &mut Box<dyn portable_pty::Child + Send + Sync>,
+) -> portable_pty::ExitStatus {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "the terminal child never exited");
+        thread::sleep(Duration::from_millis(10));
     }
 }

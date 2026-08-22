@@ -1,7 +1,7 @@
 use std::{collections::BTreeSet, path::PathBuf};
 
 use skit_application::{
-    AgentInstallError, AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope,
+    AgentInstallError, AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope, ExitClass,
     detect_agent_targets, plan_agent_install,
 };
 use skit_i18n::{Locale, Localize as _};
@@ -186,6 +186,21 @@ fn bare_interactive_install_reports_no_existing_targets() {
     )
     .unwrap_err();
     assert_eq!(error, AgentInstallError::NoTargetsDetected);
+    // The terminal spelling of this refusal cannot run on every host, so its outcome is held here:
+    // the failing exit class the command reports, and the sentence that names the way out.
+    assert_eq!(error.exit_class(), ExitClass::Failure);
+    assert_eq!(
+        error.message().localize(Locale::En),
+        "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Pass --to DIR to choose one yourself."
+    );
+    assert!(
+        error.message().localize(Locale::ZhCn).contains("--to DIR"),
+        "the Chinese voice keeps the flag that names the way out"
+    );
+    assert!(
+        error.message().localize(Locale::ZhTw).contains("--to DIR"),
+        "the Chinese voice keeps the flag that names the way out"
+    );
 }
 
 #[test]
