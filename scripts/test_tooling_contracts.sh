@@ -204,6 +204,27 @@ expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--lo
 expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
 expect_text .github/workflows/ci.yml 'zizmor .github/workflows .github/actions/install-hyperfine/action.yml'
 
+# Testing every mutant is opt-in on a pull request, so a branch under active work does not queue a
+# whole shard set on every push and starve the other workflows. Both jobs carry the gate: the matrix
+# that does the work, and the tally that reads its records.
+mutation_gate="github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested')"
+test "$(grep -cF "$mutation_gate" .github/workflows/mutation.yml)" -eq 2 || {
+  echo 'both mutation jobs must carry the opt-in label gate' >&2
+  exit 1
+}
+expect_text .github/workflows/mutation.yml 'types: [opened, synchronize, reopened, labeled]'
+expect_text .github/workflows/mutation.yml '!cancelled() &&'
+
+# A zero-survivor gate means something only while the exclusion list stays honest. Exactly one
+# mutant is excluded, and only because this host compiles that half of the function out. An
+# exclusion added quietly is how such a gate rots.
+expect_text .cargo/mutants.toml 'exclude_re = ["replace current_argument_dialect"]'
+mutation_exclusions="$(grep -c '^[[:space:]]*exclude' .cargo/mutants.toml)"
+test "$mutation_exclusions" -eq 1 || {
+  echo "the mutation configuration must exclude exactly one mutant, found $mutation_exclusions" >&2
+  exit 1
+}
+
 # Mutation testing runs as shards, because one job cannot finish every mutant inside the platform
 # ceiling. The three places that name the shard count must agree, or some shard silently never runs
 # and the gate passes on a partial result.

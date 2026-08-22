@@ -2,6 +2,7 @@ name: mutation
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches:
       - main
@@ -18,6 +19,11 @@ concurrency:
 jobs:
   mutation:
     name: cargo-mutants shard ${{ matrix.shard }}/48
+    # Testing every mutant is opt-in on a pull request. Forty-eight shards would crowd out
+    # every other workflow, and the next push would void the answer anyway. Attach the
+    # `mutation-requested` label once the branch is settled. A push to main, the nightly
+    # run, and a manual run always test.
+    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested') }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     permissions:
@@ -49,7 +55,7 @@ jobs:
   aggregate:
     name: cargo-mutants (zero survivors)
     needs: mutation
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
