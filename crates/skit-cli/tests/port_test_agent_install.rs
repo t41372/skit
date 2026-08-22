@@ -521,6 +521,22 @@ fn test_cli_bare_interactive_backing_out_writes_nothing() {
     assert_eq!(sandbox_snapshot(&sandbox), before);
 }
 
+// Windows gate: the end-of-input half of this test cannot happen on a Windows pseudo-console.
+// The phase sends the VEOF byte (0x04). A unix terminal runs a line discipline, which turns that
+// byte into the end of the input at the child's read, so the prompt stops and the command aborts
+// with 130. A pseudo-console runs no line discipline: the same byte arrives as an ordinary Ctrl-D
+// key through the console API, the prompt keeps it as a character and keeps waiting, and the child
+// never exits. Windows spells the end of console input as Ctrl-Z and Enter, which is a convention
+// of the real console host, so a pseudo-console cannot deliver that either. The abort itself stays
+// owned by the unix run of this test. Its sentence stays owned on every host by the catalog row
+// for `operation cancelled` (`skit-i18n/src/lib.rs:3076`).
+//
+// Gating the whole test also takes the other two halves off Windows, and the two siblings that now
+// pass there do not stand in for them: `test_cli_bare_interactive_picks_and_confirms` and
+// `test_cli_bare_interactive_backing_out_writes_nothing` both send a numbered choice in English
+// only. The bare-Enter default with its `[1-1]` hint, the invalid choice and its reprompt, and both
+// Chinese locales are unique to this test, so on Windows they fall to the hands-on gate.
+#[cfg(unix)]
 #[test]
 fn test_cli_bare_interactive_default_reprompt_and_eof_are_localized() {
     for (locale, install_prompt, invalid, confirm, cancelled, aborted) in [
