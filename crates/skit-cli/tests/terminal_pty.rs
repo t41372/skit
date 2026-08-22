@@ -2435,6 +2435,11 @@ fn runner_human_selection_reports_container_unknown_and_pinned_names() {
     assert!(output.contains("container"), "{output}");
 }
 
+// The authoring steps here run through an editor written as a shell script, which this test pins
+// in the configuration and then relies on to write a file. Windows starts no such program, so the
+// three steps that expect the editor to succeed cannot hold there. The inner permission block below
+// only skips the execute bit, which is not enough on its own.
+#[cfg(unix)]
 #[test]
 fn terminal_authoring_and_confirmation_paths_need_no_hidden_cli_knowledge() {
     let data = TempDir::new().unwrap();
