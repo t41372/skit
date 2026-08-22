@@ -135,7 +135,13 @@ fn human_list_marks_a_missing_copy_target_without_reading_full_metadata() {
         ])
         .assert()
         .success();
-    let payload = sandbox.data.path().join("scripts/gone/script.py");
+    // Join one name at a time, the way the store joins them, so the host chooses the separator.
+    let payload = sandbox
+        .data
+        .path()
+        .join("scripts")
+        .join("gone")
+        .join("script.py");
     fs::remove_file(&payload).unwrap();
 
     let output = sandbox.command().arg("list").output().unwrap();
