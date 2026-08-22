@@ -692,6 +692,17 @@ theories were excluded from code (zero candidates never build a Select; the test
 nothing). The same missing release was fixed pre-emptively in terminal_pty.rs's three
 teardowns — the next binary in Windows execution order.
 
+Round three for the lone agent_install straggler survived the master-drop fix, so wave 13
+(`d8737f1` / `1eda1ab`) closed the ConPTY chapter structurally: the straggler is gated with
+the recorded reason and its zero-candidates contract retained by extending the existing
+skit-application owner (exit class + three-locale voice); all four Windows-reachable PTY
+teardowns are now child-exit-keyed with bounded drains (never blocking on a ConPTY EOF that
+may not arrive), audited across all 14 native_pty_system files; and the declared escalation
+was applied pre-emptively to terminal_pty.rs's dialoguer plain lane — 12 tests gated on the
+READ-PATH boundary (two reached through inlined run_pty_configured(.., false, ..) — the
+wrapper name was not the class), while the 14 LiveTui/crossterm tests stay LIVE on Windows
+for empirical adjudication and 9 are neither. Aggregate unchanged at 4070 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
