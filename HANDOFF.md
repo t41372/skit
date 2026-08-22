@@ -573,6 +573,41 @@ carries DELIBERATE Windows runner support (`.cmd` + `cmd.exe /C`), so blind-gati
 real-PTY targets would discard real work; the oracle itself has no real-PTY tests (Textual
 in-process pilot only). Both proceed once the bounded run names actual failures.
 
+Stage 2 was pushed as head `36c3fb6`. Its bounded run: macOS GREEN (the settle mechanism
+confirmed on the real host), the four converted .cmd shims and the tilde fix validated on
+Windows, and the Windows hang finally NAMED by the flushed log: `edge_workflows` passed 12
+of 14 tests and hung on its two EDITOR tests. The seventh wave (2026-08-22,
+`b01cabd`..`62eb418`) closed the editor-hang class and the one coverage line:
+
+- The mechanism is the vi-hang trap, Windows edition: the v0.4 editor fallback is `notepad`,
+  and CreateProcess resolves bare `notepad` from System32 REGARDLESS of PATH, so the unix
+  protections (pin EDITOR, empty the PATH) are void there — the real GUI editor launches and
+  never exits. `8f7847a` gates the two edge_workflows fallback tests; the exhaustive sweep
+  (reachability-mapped: `skit edit` has no TTY gate and is the dangerous door; `add --edit`
+  and the plain menu cannot reach a launch from a non-PTY test) found exactly one more
+  ungated hang risk (`surface_edges.rs:507`, gated) and one launching-but-passing lib test
+  left alone because two real Windows runs already falsified the hang prediction. `d28737c`
+  gates the terminal_pty shell-editor authoring test whose inner `#[cfg(unix)]` guarded only
+  a permissions block, not the test.
+- `b01cabd`/`62eb418` — the blocking-read arm of the skit-tui terminal loop is owned
+  deterministically: the poll/read calls arrive as parameters, and shared counting stubs
+  prove non-invocation by a counter standing still (never-called panic closures were
+  themselves uncovered lines; the LCOV gate caught that first draft).
+
+After the seventh wave: full workspace 4066 / 0 / 525 (one new gate-compiled owner), fresh
+workspace LCOV `complete executable-source line coverage`, fmt/Clippy/tooling green.
+
+MUTATION STRUCTURAL FINDING: the first surviving-baseline mutation run (at `e329419`) found
+9,667 mutants and was cancelled by its own 360-minute bound — the GitHub hosted-runner 6-hour
+ceiling cannot fit a single-job run, so the workflow must shard (cargo-mutants `--shard k/n`
+matrix with zero-missed aggregation). Its partial log already names EIGHT survivors, all in
+skit-application: library_detail.rs:152 (`&&`->`||` in entry_detail), :223 and :227
+(`<`->`<=` in LibraryRunAge::from_elapsed), path_completion.rs:221 (`&&`->`||` in
+trailing_piece), path_insertion.rs:95 (current_argument_dialect -> Default), 
+payload_policy.rs:190 (delete match arm "exe" in add_workdir), preferences.rs:28 and :29
+(`||`->`&&` in MirrorConfiguration::has_urls). Each needs a killing owner; expect more
+survivors from the unscored remainder — plan a full local mutants run once the tree freezes.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
