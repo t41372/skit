@@ -786,6 +786,11 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     );
 }
 
+// The editor contract here is POSIX. It configures `true`, `false`, and `sh -c ...` as editors, and
+// it makes a launch fail by emptying PATH. None of that carries to Windows: those programs are not
+// there, and the platform default `notepad` is found outside PATH, so an empty PATH cannot make the
+// launch fail. It opens the real editor instead, which waits for a person and never returns.
+#[cfg(unix)]
 #[test]
 fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
     let sandbox = Sandbox::new();
@@ -894,6 +899,11 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
     sandbox.code(&["deps", "js-reference", "--python", ">=3.13"], 2);
 }
 
+// The editor contract here is POSIX. It configures `true`, `false`, and `sh -c ...` as editors, and
+// it makes a launch fail by emptying PATH. None of that carries to Windows: those programs are not
+// there, and the platform default `notepad` is found outside PATH, so an empty PATH cannot make the
+// launch fail. It opens the real editor instead, which waits for a person and never returns.
+#[cfg(unix)]
 #[test]
 fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     let sandbox = Sandbox::new();

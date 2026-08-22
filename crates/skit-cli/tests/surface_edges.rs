@@ -503,6 +503,11 @@ fn an_explicit_none_constraint_clears_an_inherited_python_pin() {
     assert!(report.contains("\"requires_python\":\"\""), "{report}");
 }
 
+// The whole contract is the POSIX fallback: with nothing configured the default is `vi`, and an
+// empty PATH makes launching it fail. Windows defaults to `notepad`, which the host finds outside
+// PATH, so an empty PATH cannot make the launch fail. It opens the real editor, which waits for a
+// person and never returns. The assertion names `vi` for the same reason.
+#[cfg(unix)]
 #[test]
 fn editing_without_a_configured_editor_falls_back_to_vi_and_reports_a_launch_failure() {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
