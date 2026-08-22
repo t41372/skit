@@ -3,7 +3,10 @@ use std::{
     fs,
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, Receiver},
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -401,20 +404,29 @@ fn run_pty_configured(
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
 
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let reader_capture = Arc::clone(&captured);
     let mut reader = pair.master.try_clone_reader().unwrap();
     let drain = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).unwrap();
-        bytes
+        let mut chunk = [0_u8; 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => reader_capture
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&chunk[..read]),
+            }
+        }
     });
     let mut writer = pair.master.take_writer().unwrap();
-    thread::sleep(Duration::from_millis(40));
+    settle(&captured);
     if answer_cursor_query {
         let _ = writer.write_all(b"\x1b[1;1R");
         let _ = writer.flush();
     }
     for bytes in input {
-        thread::sleep(Duration::from_millis(120));
+        settle(&captured);
         if writer.write_all(&keystrokes(bytes)).is_err() {
             break;
         }
@@ -422,7 +434,9 @@ fn run_pty_configured(
     }
     let status = child.wait().unwrap();
     drop(writer);
-    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    drain.join().unwrap();
+    let raw = captured.lock().unwrap().clone();
+    let output = String::from_utf8_lossy(&raw).into_owned();
     (status.exit_code(), output)
 }
 
@@ -2936,4 +2950,30 @@ fn keystrokes(answer: &[u8]) -> Vec<u8> {
         .iter()
         .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
         .collect()
+}
+
+/// Wait until the child has written nothing for a short while, so an answer lands on a prompt that
+/// is already reading.
+///
+/// See the note on the same helper in `port_test_add_no_source.rs`: a fixed pause is enough where
+/// the terminal holds an early answer, and is not enough where the answer becomes console records
+/// the prompt reads one at a time (`console/src/windows_term/mod.rs:531-560`).
+fn settle(captured: &Arc<Mutex<Vec<u8>>>) {
+    const QUIET: Duration = Duration::from_millis(60);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = captured.lock().unwrap().len();
+    let mut quiet_since = Instant::now();
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+        let now = captured.lock().unwrap().len();
+        if now == seen {
+            if quiet_since.elapsed() >= QUIET {
+                return;
+            }
+        } else {
+            seen = now;
+            quiet_since = Instant::now();
+        }
+    }
 }

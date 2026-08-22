@@ -359,16 +359,24 @@ fn run_pty(
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
 
+    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reader_capture = std::sync::Arc::clone(&captured);
     let mut reader = pair.master.try_clone_reader().unwrap();
     let drain = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = reader.read_to_end(&mut bytes);
-        bytes
+        let mut chunk = [0_u8; 1024];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => reader_capture
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&chunk[..read]),
+            }
+        }
     });
     let mut writer = pair.master.take_writer().unwrap();
-    std::thread::sleep(Duration::from_millis(100));
     for bytes in input {
-        std::thread::sleep(Duration::from_millis(150));
+        settle(&captured);
         if writer.write_all(&keystrokes(bytes)).is_err() {
             break;
         }
@@ -376,7 +384,9 @@ fn run_pty(
     }
     let status = child.wait().unwrap();
     drop(writer);
-    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    drain.join().unwrap();
+    let raw = captured.lock().unwrap().clone();
+    let output = String::from_utf8_lossy(&raw).into_owned();
     (status.exit_code(), output)
 }
 
@@ -1954,4 +1964,29 @@ fn keystrokes(answer: &[u8]) -> Vec<u8> {
         .iter()
         .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
         .collect()
+}
+
+/// Wait until the child has written nothing for a short while, so an answer lands on a prompt that
+/// is already reading.
+///
+/// See the note on the same helper in `port_test_add_no_source.rs`. This file runs only on Unix
+/// today, and keeps the convention so that a later change of that gate cannot bring the fault back.
+fn settle(captured: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    const QUIET: Duration = Duration::from_millis(60);
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut seen = captured.lock().unwrap().len();
+    let mut quiet_since = std::time::Instant::now();
+    while std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+        let now = captured.lock().unwrap().len();
+        if now == seen {
+            if quiet_since.elapsed() >= QUIET {
+                return;
+            }
+        } else {
+            seen = now;
+            quiet_since = std::time::Instant::now();
+        }
+    }
 }

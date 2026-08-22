@@ -129,20 +129,29 @@ impl Sandbox {
         let mut child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
 
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let reader_capture = Arc::clone(&captured);
         let mut reader = pair.master.try_clone_reader().unwrap();
         let drain = thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = reader.read_to_end(&mut bytes);
-            bytes
+            let mut chunk = [0_u8; 1024];
+            loop {
+                match reader.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => reader_capture
+                        .lock()
+                        .unwrap()
+                        .extend_from_slice(&chunk[..read]),
+                }
+            }
         });
         let mut writer = pair.master.take_writer().unwrap();
-        thread::sleep(Duration::from_millis(60));
+        settle(&captured);
         if answer_cursor {
             let _ = writer.write_all(b"\x1b[1;1R");
             let _ = writer.flush();
         }
         for bytes in inputs {
-            thread::sleep(Duration::from_millis(140));
+            settle(&captured);
             if writer.write_all(&keystrokes(bytes)).is_err() {
                 break;
             }
@@ -150,7 +159,8 @@ impl Sandbox {
         }
         let status = child.wait().unwrap();
         drop(writer);
-        let raw = drain.join().unwrap();
+        drain.join().unwrap();
+        let raw = captured.lock().unwrap().clone();
         // Python `capsys`/`result.output`: keep newlines, drop ESC/`\r` and other control bytes so
         // SGR/cursor residue cannot masquerade as text. `contains` on full phrases is unaffected.
         (status.exit_code(), terminal_text(&raw))
@@ -232,9 +242,9 @@ impl Sandbox {
         if early_status.is_none() {
             before_input();
             for input in inputs {
+                settle(&captured);
                 writer.write_all(&keystrokes(input)).unwrap();
                 writer.flush().unwrap();
-                thread::sleep(Duration::from_millis(80));
             }
         }
         let mut timed_out = false;
@@ -1521,4 +1531,34 @@ fn keystrokes(answer: &[u8]) -> Vec<u8> {
         .iter()
         .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
         .collect()
+}
+
+/// Wait until the child has written nothing for a short while, so an answer lands on a prompt that
+/// is already reading.
+///
+/// A fixed pause was enough on Unix, where the terminal holds an early answer until the prompt asks
+/// for it. Windows does not hold it the same way: what a terminal delivers becomes console records
+/// that a prompt reads one at a time, keeping only key presses and dropping everything else
+/// (`console/src/windows_term/mod.rs:531-560`). An answer typed before the prompt reads is simply
+/// not there when it looks, and both sides then wait. Silence is the only sign this harness has
+/// that the child stopped drawing and started reading. The wait is bounded, so a child that keeps
+/// writing cannot hold the test.
+fn settle(captured: &Arc<Mutex<Vec<u8>>>) {
+    const QUIET: Duration = Duration::from_millis(60);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = captured.lock().unwrap().len();
+    let mut quiet_since = Instant::now();
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+        let now = captured.lock().unwrap().len();
+        if now == seen {
+            if quiet_since.elapsed() >= QUIET {
+                return;
+            }
+        } else {
+            seen = now;
+            quiet_since = Instant::now();
+        }
+    }
 }
