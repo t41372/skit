@@ -683,6 +683,15 @@ port_test_agent_install waits for prompt text and may survive; editor/prompt_cli
 already file-gated. Windows has still never executed anything after port_test_add_no_source
 alphabetically.
 
+The gate round (head `b77cb57`) advanced Windows to 612 passing tests and ONE hang in
+port_test_agent_install: `test_cli_bare_interactive_no_candidates_exits_1`. Wave 12
+(`330ff09`) fixed rather than gated it: the harness held `pair.master` alive for the whole
+call, and ConPTY never delivers the reader's EOF while the pseudo-console is open — the six
+harnesses that pass on Windows all drop the master before joining their drain. Both earlier
+theories were excluded from code (zero candidates never build a Select; the test types
+nothing). The same missing release was fixed pre-emptively in terminal_pty.rs's three
+teardowns — the next binary in Windows execution order.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
