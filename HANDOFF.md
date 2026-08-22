@@ -516,6 +516,36 @@ and that one was a REAL Windows data-loss defect, fixed in the fifth wave:
   identity carries the change time, so behavior and work are byte-identical. The snapshot
   lane already compares exact bytes. Three mutant probes go RED against the plain suite.
 
+The fifth wave was pushed as head `22471d667b05bf9f5d0ad3723ece7544843a242a`. Windows lib
+tests PASSED (the content-witness fix is validated on real Windows); Windows advanced into
+the integration targets and fell at the `~` home-expansion test in `add_lanes.rs`. The sixth
+wave, stage 1 (2026-08-22, `fbaac32`..`50c4645`):
+
+- `d725b05` -- shared shim infrastructure: `tests/support/shim.rs` names shim BEHAVIORS
+  (Exit / MakeDirectory / TouchFromEnvironment) and emits `#!/bin/sh` on unix and `.cmd` on
+  Windows, returning the written path so no caller re-spells the name. Verified mechanics:
+  `program_names` (launch.rs:1364) appends PATHEXT entries to bare names, so `foo.cmd` is
+  found for bare `foo`; std::process delegates `.cmd` to cmd.exe with strict escaping and
+  none of the converted shims carries a character it refuses. The real conversion surface
+  was 4 shims (healthcheck fake uv; edge_workflows node/npm/custom-js) -- the wave-5
+  file-level forecast overcounted: surface_edges and v040_run_parity were already
+  per-helper unix-gated, and the edge_workflows editor shim's content is never executed.
+  One shim cannot be `.cmd`: the surface_edges private-uv stub pinned to the hardcoded
+  `bin/uv.exe` path (stage-2 item: a real argv-echoing exe, or it stays unix-gated).
+- `50c4645` -- product fix, found by overturning the supervisor's own premise: the fixture
+  already seeded USERPROFILE and Windows still failed, because `dirs::home_dir()` reads NO
+  environment variable on Windows (SHGetKnownFolderPath), while v0.4's `ntpath.expanduser`
+  reads USERPROFILE then HOMEDRIVE+HOMEPATH. `expand_leading_tilde` now reads what v0.4
+  reads on Windows, keeping the shell answer only as the last resort (a strict-superset
+  corner: v0.4 leaves the path literal there). Unix is byte-identical. A class sweep found
+  every other seeded-home fixture already correct.
+- `fbaac32` -- the temp_root doc comment no longer claims equal spellings on every platform.
+
+Receipts: unix byte-identical (stage-1 files plus add_lanes, agent_install, skit-store green
+under plain and symlinked TMPDIR); cfg-swap `cargo check` for both cfg(windows) bodies; full
+workspace 4065 / 0 / 525; fresh workspace LCOV `complete executable-source line coverage`.
+Windows runtime proof is the next CI run.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
