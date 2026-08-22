@@ -3494,8 +3494,10 @@ fn shared_health_inspector_reports_typed_entry_runner_and_rebuild_facts() {
 
     let inspector = CliHealthInspector::new(&service, &store, &config_dir);
     let debug = format!("{inspector:?}");
-    assert!(debug.contains(data_dir.to_str().unwrap()));
-    assert!(debug.contains(config_dir.to_str().unwrap()));
+    // Ask for the paths the way the debug text spells them. A host that separates names with a
+    // backslash writes each one twice in debug text, so a raw path never matches.
+    assert!(debug.contains(&format!("{data_dir:?}")), "{debug}");
+    assert!(debug.contains(&format!("{config_dir:?}")), "{debug}");
     let snapshot = inspector.inspect().unwrap();
     assert_eq!(snapshot.entry_count, 2);
     assert!(!matches!(snapshot.uv, UvHealth::Missing));
@@ -4267,8 +4269,12 @@ fn typed_preferences_effects_validate_atomically_and_install_only_after_selectio
     let UiAction::Preferences(PreferencesAction::AgentSkillInstalled { message }) = action else {
         panic!("successful install must stay in typed Preferences");
     };
-    let written = skills_dir.join("skit/SKILL.md");
-    assert!(message.contains(&written.display().to_string()));
+    // Join one name at a time, the way the store joins them, so the host chooses the separator.
+    let written = skills_dir.join("skit").join("SKILL.md");
+    assert!(
+        message.contains(&written.display().to_string()),
+        "{message}"
+    );
     assert_eq!(
         fs::read(written).unwrap(),
         include_bytes!("../../../../skills/skit/SKILL.md")
@@ -5208,7 +5214,9 @@ fn tui_host_submits_every_form_without_global_process_state() {
             .contains_key("from-tui")
     );
 
-    let invalid_args = BTreeMap::from([("_skit_args".to_owned(), FieldValue::text("'bad"))]);
+    // An unpaired double quote is invalid on every host. An unpaired single quote is not: Windows
+    // argument rules read it as an ordinary character, so only POSIX quoting would refuse it.
+    let invalid_args = BTreeMap::from([("_skit_args".to_owned(), FieldValue::text("\"bad"))]);
     assert!(
         tui_submit_run(
             &service,
