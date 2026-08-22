@@ -835,7 +835,13 @@ fn test_open_in_editor_launch_failure_message_exact() {
         text.contains(&expected),
         "expected {expected:?} in {text:?}"
     );
-    assert!(!text.contains("XX"), "{text}");
+    // The oracle guards the message against an "XXXX" sentinel from a mutated return
+    // (tests/test_editor.py:218). Its command is the literal `code --wait`, so the guarded
+    // message holds no random text. Here the command names a file below a temporary directory
+    // whose random name can hold "XX" by chance. Replace that one random part, so the guard
+    // reads exactly the message the oracle guards.
+    let stable = text.replace(&sandbox.scratch.path().display().to_string(), "<scratch>");
+    assert!(!stable.contains("XX"), "{text}");
 }
 
 // ==========================================================================
