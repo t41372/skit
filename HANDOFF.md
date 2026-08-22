@@ -425,6 +425,50 @@ A fresh committed-state workspace `cargo llvm-cov --locked --workspace --all-tar
 `scripts/check_coverage.sh` returned `complete executable-source line coverage`; no checker
 rule or exclusion changed.
 
+The second wave was pushed as PR #45 head `43c187568f33341d65d93512ef476efe2dbaa266` (runs:
+CI 32563580462, benchmark 32563580469, compare 32563580485, CodSpeed 32563580457, Docs
+32563580456, CodeQL 32563578519, mutation 32563580465). Benchmark, compare, CodSpeed, Docs,
+and CodeQL stayed green, and the ubuntu test job went green for the first time on this
+branch. The residual reds decomposed into six small clusters, all fixed in the third wave
+(2026-08-22, `0f50deb`..`994387f`):
+
+- `0f50deb` — the lint job died on `rg: command not found`: `test_tooling_contracts.sh` used
+  ripgrep four times and GHA runners do not ship it (latent since `9114203`). All four are now
+  portable grep; two counts tightened to `-F` literals. Green with and without rg on PATH.
+- `d81fa45` — the macOS `test_deps_need_replaces_whole_list` failure was NOT a product bug:
+  the raw meta held the correct replaced list, and the bare `contains("old")` guard matched
+  the recorded source path — macOS `$TMPDIR` sits under `/var/folders`, and "folders" holds
+  the letters of "old". Reproduced on Linux with a `/tmp/var/folders/zz/T`-shaped TMPDIR. The
+  needle is now the TOML string `"old"`. A class sweep over short negative `contains` needles
+  against the deterministic macOS path words (var/folders/T/private) found one member.
+- `351dad5` — the coverage job flagged the unix HOME-fallback config lines: they were covered
+  only when the ambient host env cooperated. The join now lives in a pure
+  `unix_config_dir(xdg, home)` with a hermetic three-branch owner (XDG, HOME fallback, None);
+  no test mutates process env. Same-fragility siblings flagged for later: the cli.rs twin at
+  `:10626` and both `platform_state_dir` shapes (one ambient hit today).
+- `ad289e2` — `javascript_gate.rs` `name()`'s Deno arm was covered only on hosts with deno
+  installed; the runtime-name unit now asserts all four arms hermetically.
+- `7b18108` / `994387f` — the two Windows `environment_report_contract` fixtures hardcoded
+  `/usr/bin/env` and a POSIX path fragment. Both are platform-aware now; the Windows slow
+  command names `%SystemRoot%\System32\PING.EXE` directly (no PATH lookup, no shell), unix
+  keeps exact-equality assertions. Cross-checked by a temporary cfg-swap
+  `cargo check -p skit-benchmarks --tests` (restored byte-exact); Windows runtime proof is
+  the next CI run.
+- `aa1da10` — the mutation baseline at `43c1875` died on an ETXTBSY fork-window race: a gate
+  fixture writes its fake runner and the product execs it while a sibling test's
+  fork-to-exec window still holds the write fd. The two identically shaped gate tests now
+  retry only `Spawn` results containing "Text file busy" (9 tries, 20 ms) with the `Timeout`
+  assertion unchanged. A suite-wide survey of ~32 write-then-exec fixtures retro-fitted none:
+  everywhere else the exec sits inside a stateful CLI invocation where a retry would rerun a
+  partial commit. Watch-flags: the multi-megabyte `fs::copy` uv probes (probe-only, never
+  exec'd) and `run_identity_races.rs:35` (deliberately blocks mid-run).
+
+After the third wave the full workspace suite is 4063 / 0 / 525 (one new test name, the
+`unix_config_dir` owner). fmt, workspace Clippy `-D warnings`, tooling contracts (with and
+without rg), Actionlint, Zizmor, and the English gate pass. A fresh committed-state workspace
+LCOV run at the third-wave tree passed 4063 / 0 / 525 and `scripts/check_coverage.sh`
+returned `complete executable-source line coverage`.
+
 Receipts at `f274fea`: `cargo fmt --all --check`, workspace Clippy `-D warnings`, Rustdoc
 `-D warnings`, English gate, tooling contracts, Actionlint, and Zizmor pass. The full workspace
 suite is **4062 passed / 0 failed / 525 ignored**, identical in three configurations: plain;
