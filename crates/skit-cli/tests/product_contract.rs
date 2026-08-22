@@ -483,7 +483,7 @@ fn doctor_rebuild_keeps_the_uv_exit_rule_over_a_clean_report() {
         .code(1)
         .stdout(
             predicate::str::contains("ERROR uv: not found")
-                .and(predicate::str::contains("Registry rebuilt: 1")),
+                .and(predicate::str::contains("Index rebuilt: 1 entry")),
         );
 }
 

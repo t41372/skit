@@ -439,13 +439,13 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "Index rebuilt: {} entry",
-        "索引已重建：{} 个条目",
-        "索引已重建：{} 個項目"
+        "索引已重建:{} 条",
+        "索引已重建:{} 筆"
     ),
     row!(
         "Index rebuilt: {} entries",
-        "索引已重建：{} 个条目",
-        "索引已重建：{} 個項目",
+        "索引已重建:{} 条",
+        "索引已重建:{} 筆",
     ),
     row!("Jump to entry", "跳转到条目", "跳至項目"),
     row!("Rebuild index", "重建索引", "重建索引"),
@@ -1248,7 +1248,6 @@ const CATALOG: &[Translation] = &[
     ),
     row!("State: {}", "状态数据：{}", "狀態資料：{}"),
     row!("Config: {}", "配置：{}", "組態：{}"),
-    row!("Registry rebuilt: {}", "索引已重建：{}", "索引已重建：{}"),
     row!(
         "WARN {}: the launch target is gone from disk",
         "警告 {}：启动目标已不在磁盘上",

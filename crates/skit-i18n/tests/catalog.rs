@@ -217,6 +217,33 @@ fn owned_draft_cleanup_warning_is_complete_in_every_locale() {
 }
 
 #[test]
+fn index_rebuild_receipt_matches_the_oracle_in_every_locale() {
+    // The oracle carries one ngettext pair (cli.py:5164-5169) and one Chinese plural form, so both
+    // English keys share the Chinese row. The colon is half-width in the shipped .po rows.
+    for (source, count) in [
+        ("Index rebuilt: {} entry", 1),
+        ("Index rebuilt: {} entries", 4),
+    ] {
+        assert_eq!(
+            format_text(Locale::ZhCn, source, &[&count]),
+            format!("索引已重建:{count} 条")
+        );
+        assert_eq!(
+            format_text(Locale::ZhTw, source, &[&count]),
+            format!("索引已重建:{count} 筆")
+        );
+    }
+    assert_eq!(
+        format_text(Locale::En, "Index rebuilt: {} entry", &[&1]),
+        "Index rebuilt: 1 entry"
+    );
+    assert_eq!(
+        format_text(Locale::En, "Index rebuilt: {} entries", &[&4]),
+        "Index rebuilt: 4 entries"
+    );
+}
+
+#[test]
 fn owned_draft_quarantine_restore_error_is_complete_in_every_locale() {
     let source = "could not restore quarantined draft {} to {}: {}";
     let quarantine = "/data/drafts/.skit-quarantine-1";

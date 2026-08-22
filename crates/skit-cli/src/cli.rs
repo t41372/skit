@@ -7115,7 +7115,11 @@ fn doctor(
         humanln!("State: {}", state_location.display());
         humanln!("Config: {}", config_location.display());
         if let Some(count) = rebuilt_entries {
-            humanln!("Registry rebuilt: {}", count);
+            if count == 1 {
+                humanln!("Index rebuilt: {} entry", count);
+            } else {
+                humanln!("Index rebuilt: {} entries", count);
+            }
         }
         for name in missing {
             humanln!("WARN {}: the launch target is gone from disk", name);

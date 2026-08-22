@@ -417,7 +417,7 @@ fn doctor_human_report_exposes_each_repair_axis() {
     let output = sandbox.ok(&["doctor", "--rebuild"]);
     let output = String::from_utf8(output).unwrap();
     for text in [
-        "Registry rebuilt",
+        "Index rebuilt: 5 entries",
         "launch target is gone",
         "form definitions are out of sync",
         "missing external commands",
