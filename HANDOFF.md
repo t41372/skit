@@ -666,6 +666,23 @@ clean. Also: stale queued single-job mutation runs at old heads were cancelled; 
 concurrency keeps only the newest pending run, and the label-gated workflow skips instantly
 on unlabeled pushes.
 
+Round 2 (head `4c2609c`) hung the SAME four tests with the settle conversion present, so
+both mechanism theories are host-refuted and the agreed fallback executed (`fa8464b`): all
+30 live PTY-driven tests in port_test_add_no_source are `#[cfg(unix)]` (33 with the three
+already gated; 32 ignored untouched), the three no-input/plain lanes stay live as the
+file's Windows coverage, a scoped `cfg_attr(not(unix), allow(dead_code))` keeps the
+Windows compile warning-free, and the commit message declares the escalation rule: the next
+file whose terminal choreography hangs gets the class gated suite-wide in one sweep. A
+NEW observation for any future cure attempt: every harness that PASSES dialoguer prompts on
+Windows waits for the PROMPT TEXT before typing (plain_add_pty, agent_install), while both
+failed cures waited on a clock or on SILENCE — silence can arrive before the prompt is
+drawn, so the key still lands in the pre-prompt gap. Escalation candidates mapped:
+terminal_pty.rs carries 27 ungated PTY tests whose 30 run_plain_in_pty sites drive the same
+dialoguer prompts (highest risk; its LiveTui/crossterm half is a different read path);
+port_test_agent_install waits for prompt text and may survive; editor/prompt_cli files are
+already file-gated. Windows has still never executed anything after port_test_add_no_source
+alphabetically.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
