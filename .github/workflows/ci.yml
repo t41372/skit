@@ -20,6 +20,7 @@ jobs:
   quality:
     name: format, lint, and documentation
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -61,6 +62,7 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
@@ -135,6 +137,7 @@ jobs:
   coverage:
     name: coverage (100% executable-source line gate)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -164,6 +167,7 @@ jobs:
   supply-chain:
     name: dependency and workflow audit
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -187,6 +191,7 @@ jobs:
   wheel-smoke:
     name: PyPI and uv tool compatibility
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:

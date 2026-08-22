@@ -204,6 +204,28 @@ expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--lo
 expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
 expect_text .github/workflows/ci.yml 'zizmor .github/workflows .github/actions/install-hyperfine/action.yml'
 
+# Every workflow job needs a time bound. Without one a stuck job runs to the six-hour default, and
+# the run is cancelled before the log flushes, so the failure teaches nothing about where it stuck.
+while IFS= read -r unbounded; do
+  echo "workflow job has no timeout-minutes: $unbounded" >&2
+  exit 1
+done < <(
+  for workflow in .github/workflows/*.yml; do
+    awk -v file="$workflow" '
+      /^jobs:[[:space:]]*$/ { in_jobs = 1; next }
+      /^[^[:space:]#]/ { if (in_jobs && job != "" && !bounded) print file ":" job; in_jobs = 0 }
+      in_jobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+        if (job != "" && !bounded) print file ":" job
+        job = $1
+        sub(/:$/, "", job)
+        bounded = 0
+      }
+      in_jobs && /^    timeout-minutes:/ { bounded = 1 }
+      END { if (in_jobs && job != "" && !bounded) print file ":" job }
+    ' "$workflow"
+  done
+)
+
 # Windows runners check out with autocrlf=true, which rewrites line endings. Every byte-exact
 # contract — tests/corpus, the four CRLF fixtures in it, and the rendered budgets file — needs the
 # committed bytes to survive the checkout, so the repository must turn that rewrite off.
