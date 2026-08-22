@@ -290,33 +290,52 @@ Review only the diff from the previous pin `38260ff881420fbd06f95b5b9243e0caa610
 do not replay its 500+ commits or merge its 198 split test/support paths. The previous ancestry
 snapshot remains on `integration/pr44-20260812` at `a6e0513`, but it is not the final PR head.
 
-Remote PR status was checked read-only on 2026-08-21. PR #44 remains an open draft at the fixed
-head above, with its CodeRabbit status green and its merge state conflicting. PR #45 remains an
-open draft, but its remote head is the older
-`865e568cc70d15824880b0dc876c6060dc1cdce8`, far behind the current branch. GitHub has
-no object or checks for the current local candidate. GitHub currently reports that stale head as
-mergeable, but that says nothing about the unpushed candidate. Its rollup remains 9 failures, 7
-successes, and 1 skipped job; do not treat it as evidence about the current local branch. The remote
-docs, three CodeQL language analyses, dependency/workflow audit, and wheel plus `uv tool` jobs
-passed, while the aggregate CodeQL check is still red. Its Linux failures
-were three stale workflow fixtures; macOS failures were noncanonical temp paths and Linux-only
-benchmark expectations; Windows failed on unstable metadata APIs that the portable identity work
-removed. Coverage stopped on the same stale Linux fixtures. CodSpeed ran plain `cargo bench` and
-failed because the instrumented workspace variable was absent. The local workflow now installs matching
-`cargo-codspeed` 5.0.1, builds in simulation mode, and runs the instrumented binaries; it still
-needs a fresh remote proof. The mutation baseline also ran benchmark tests in a copied tree without
-`.git`, which made five baseline tests fail before mutation scoring. The benchmark tests now build
-their own committed temporary repository. The normal suite and an explicit source copy without
-`.git` both pass; no current-candidate mutation run has started. Do not push merely to refresh these checks
-while the fix pass is still changing. A push starts the mutation workflow and invalidates its result
-on the next source change.
+Remote PR status was re-verified on 2026-08-21 after the handoff push. The stale `865e568`
+paragraph that stood here is retired: PR #45 is an open draft whose remote head IS the current
+branch head `8306c165e782c67ca422f969a9585a3a0f27f19d`, and GitHub reports it mergeable. The
+complete check rollup at that head has 10 green checks — CodeQL (aggregate and all three language
+analyses), CodeRabbit, CodSpeed, Docs build (deploy correctly skipped on a PR), the benchmark A/B
+pull request comparison, dependency and workflow audit, and PyPI plus `uv tool` compatibility — and
+7 red checks with three distinct roots (see the failure inventory below). PR #44 remains an open
+draft at the fixed head above with a conflicting merge state; it is historical evidence only.
+
+The 2026-08-21 failure inventory at `8306c16` (runs 32538327971 CI, 32538327972 benchmark,
+32538327970 mutation):
+
+- `test_rename_survives_doctor_rebuild` (`port_test_rename.rs:276`) fails the ubuntu test job, the
+  format/lint/documentation job, the coverage job, and the mutation baseline. Root: the CI runners
+  have no `uv` on PATH; with one python entry, v0.4 `doctor` exits 1 when uv is missing
+  (`cli.py` `_uv_required` + `typer.Exit(0 if uv or not _uv_required(entries) else 1)`), and the
+  Rust product matches (`cli.rs` `UvHealth::Missing` -> exit 1). The product is correct; the test
+  is not hermetic — the same class `b32dc70` fixed with a private uv probe in other doctor owners.
+- macOS fails 7 `cli::tests` owned-draft owners on `/private/var` vs `/var` canonical temp paths.
+  One panic ("refusing to remove a file outside skit's drafts directory") shows the product's
+  draft claim/containment seam mixes canonicalized and literal paths — a real product defect when
+  the data directory sits behind a symlink, plus test expectations that assume literal paths.
+- Windows fails one benchmark unit
+  (`suites::footprint::tests::record_distribution_sizes_count_an_external_binary_exactly_once`,
+  3 vs 8 bytes): the fixture writes a POSIX `venv/bin/skit` external binary that the Windows
+  discovery path does not see. Fixture portability, not product.
+- The benchmark PR-profile job completes every real step (Python 3.13 verification, release build,
+  Criterion, PR profile, budgets, upload) and fails only in the setup-uv v10 post step: the cache
+  path does not exist because the workflow installs no packages. `benchmark.yml` and
+  `benchmark-nightly.yml` still set `enable-cache: true`; `benchmark-compare.yml` already disables
+  it. Fix: `enable-cache: false` (keep the v10.0.1 commit pin; do not downgrade).
+
+The three platform test jobs are fail-fast at the target level, so each platform list is a lower
+bound: ubuntu stopped at `port_test_rename`, macOS inside the `skit-cli` lib tests, Windows inside
+`skit-benchmarks`. Before the next push, run the full workspace suite twice locally: once with uv
+hidden from PATH (simulates the runner) and once with `TMPDIR` behind a symlink (simulates macOS
+`/private/var`). Do not push merely to refresh checks while fixes are still changing. A push
+starts the mutation workflow and invalidates its result on the next source change.
 
 The first current-head CodeQL run exposed four high cache-poisoning alerts in the benchmark
 comparison workflow. Disabling the uv cache was not enough because `workflow_dispatch` still ran
 caller-selected refs in the default-branch cache scope. The follow-up changes the workflow to the
 low-privilege `pull_request` event and checks out only the event's fixed base and head SHAs. The
 tooling and benchmark front-door contracts reject a return to arbitrary input refs, and Actionlint
-plus Zizmor pass. Confirm that the next CodeQL run closes alerts 8 through 11 before completion.
+plus Zizmor pass. Confirmed 2026-08-21: the CodeQL aggregate check and all three language analyses
+are green at `8306c16`, so alerts 8 through 11 are closed.
 
 The first complete PR #45 run at `f09e488` then produced eight red checks. They were not eight
 product regressions. The final local follow-up fixes seven fixture/workflow roots: the Fish owner
