@@ -33,7 +33,9 @@ jobs:
           version: "0.12.3"
           python-version: "3.13"
           activate-environment: true
-          enable-cache: true
+          # This job installs no package with uv, so uv never makes its cache directory. The
+          # setup-uv post step then fails on the absent path. Keep the cache off.
+          enable-cache: false
       - name: Verify benchmark Python 3.13
         run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version'
       - name: Install Node

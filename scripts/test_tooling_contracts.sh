@@ -34,7 +34,15 @@ if grep -Eq '^[[:space:]]*run:[[:space:]]*cargo codspeed run[[:space:]]*$' \
   echo 'CodSpeed build and run must select the same workspace packages' >&2
   exit 1
 fi
-expect_text .github/workflows/benchmark-compare.yml 'enable-cache: false'
+for benchmark_workflow in benchmark.yml benchmark-nightly.yml benchmark-compare.yml; do
+  # No benchmark job installs a package with uv, so uv never makes its cache directory and the
+  # setup-uv post step fails on the absent path.
+  expect_text ".github/workflows/$benchmark_workflow" 'enable-cache: false'
+  if grep -Eq 'enable-cache:[[:space:]]*true' ".github/workflows/$benchmark_workflow"; then
+    echo "$benchmark_workflow must not ask setup-uv to cache a directory that stays absent" >&2
+    exit 1
+  fi
+done
 expect_text .github/workflows/benchmark-compare.yml 'ref: ${{ github.event.pull_request.base.sha }}'
 expect_text .github/workflows/benchmark-compare.yml 'ref: ${{ github.event.pull_request.head.sha }}'
 if grep -Eq 'workflow_dispatch:|inputs\.(base|head)' .github/workflows/benchmark-compare.yml; then
