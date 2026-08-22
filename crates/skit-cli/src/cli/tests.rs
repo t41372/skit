@@ -10149,6 +10149,32 @@ fn owned_drafts_keep_the_caller_spelling_when_the_data_directory_is_a_symlink() 
     );
     assert!(!resolved_draft.exists());
     assert!(owned_draft_quarantines(&data_dir).is_empty());
+
+    // A restore failure names the quarantine skit made. That name must keep the caller's spelling
+    // too, because the user reads it to find the file skit kept.
+    let kept = data_dir.join("drafts/skit-new-kept.py");
+    fs::write(&kept, b"print('kept')\n").unwrap();
+    let kept_snapshot = tui_add_source(&data_dir, &kept).unwrap();
+    // Replace the claimed file, so the check fails and skit takes the restore path.
+    let staged = data_dir.join("drafts/replacement.tmp");
+    fs::write(&staged, b"print('replacement')\n").unwrap();
+    fs::remove_file(&kept).unwrap();
+    fs::rename(&staged, &kept).unwrap();
+    let error = consume_owned_draft_with_test_hook(&data_dir, &kept_snapshot, |point, _| {
+        if point == DraftConsumeTestPoint::Quarantined {
+            fs::write(&kept, b"print('new arrival')\n").unwrap();
+        }
+    })
+    .unwrap_err();
+    let quarantines = owned_draft_quarantines(&data_dir);
+    assert_eq!(quarantines.len(), 1);
+    let message = error.message().localize(Locale::En);
+    assert!(
+        message.contains(&quarantines[0].display().to_string()),
+        "{message}"
+    );
+    assert!(!message.contains(&real.display().to_string()), "{message}");
+    fs::remove_dir_all(quarantines[0].parent().unwrap()).unwrap();
 }
 
 #[cfg(unix)]
