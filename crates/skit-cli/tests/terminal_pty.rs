@@ -434,6 +434,10 @@ fn run_pty_configured(
     }
     let status = child.wait().unwrap();
     drop(writer);
+    // Release the terminal before waiting for the reader: a Windows pseudo-console keeps the
+    // stream open while any handle to it is held, so the reader would wait for an end that
+    // never arrives.
+    drop(pair.master);
     drain.join().unwrap();
     let raw = captured.lock().unwrap().clone();
     let output = String::from_utf8_lossy(&raw).into_owned();
@@ -1447,6 +1451,10 @@ fn run_with_null_stdin_in_pty(
     let writer = pair.master.take_writer().unwrap();
     let status = child.wait().unwrap();
     drop(writer);
+    // Release the terminal before waiting for the reader: a Windows pseudo-console keeps the
+    // stream open while any handle to it is held, so the reader would wait for an end that
+    // never arrives.
+    drop(pair.master);
     let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
     (status.exit_code(), output)
 }
@@ -1603,6 +1611,10 @@ fn read_pty_screen(args: &[&str], data: &Path, state: &Path, config: &Path) -> S
     let _ = child.kill();
     let _ = child.wait();
     drop(writer);
+    // Release the terminal before waiting for the reader: a Windows pseudo-console keeps the
+    // stream open while any handle to it is held, so the reader would wait for an end that
+    // never arrives.
+    drop(pair.master);
     let raw = drain.join().unwrap();
     String::from_utf8_lossy(&raw)
         .chars()

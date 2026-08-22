@@ -680,6 +680,12 @@ fn run_agent_install_pty(
     }
     let status = child.wait().unwrap();
     drop(writer);
+    // Release the terminal itself before waiting for the reader. A Unix terminal reports the end of
+    // its output once the child is gone, so the reader stops on its own. A Windows pseudo-console
+    // keeps the stream open while any handle to it is held, and this harness holds one, so the
+    // reader waits for an end that never arrives. Every other terminal harness here already drops
+    // it at this point; this one did not.
+    drop(pair.master);
     drain.join().unwrap();
     let output = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
     (status.exit_code(), output)
