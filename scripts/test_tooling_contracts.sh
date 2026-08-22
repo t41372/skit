@@ -12,12 +12,12 @@ expect_text() {
 
 expect_text Cargo.toml 'tree-sitter = "0.26.12"'
 setup_uv_pin='astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1'
-test "$(rg -F "$setup_uv_pin" .github/workflows | wc -l)" -eq 7 || {
+test "$(grep -rF "$setup_uv_pin" .github/workflows | wc -l)" -eq 7 || {
   echo 'every setup-uv use must share the pinned v10.0.1 action' >&2
   exit 1
 }
-if rg -q 'astral-sh/setup-uv@(?!20cfd1bf945f4377ade1205e4dbc17946fc9a30d)' \
-  .github/workflows --pcre2; then
+if grep -rE 'astral-sh/setup-uv@' .github/workflows |
+  grep -qv '20cfd1bf945f4377ade1205e4dbc17946fc9a30d'; then
   echo 'a workflow uses a stale or unpinned setup-uv action' >&2
   exit 1
 fi
@@ -185,14 +185,14 @@ sed -n "${shell_gate_step_line},${shell_gate_line}p" .github/workflows/ci.yml |
     exit 1
 }
 
-test "$(rg -l 'activate-environment: true' \
+test "$(grep -lF 'activate-environment: true' \
   .github/workflows/benchmark.yml \
   .github/workflows/benchmark-nightly.yml \
   .github/workflows/benchmark-compare.yml | wc -l)" -eq 3 || {
   echo 'every benchmark workflow must activate its pinned Python environment' >&2
   exit 1
 }
-test "$(rg -l "sys.version_info\[:2\] == \(3, 13\)" \
+test "$(grep -lF 'sys.version_info[:2] == (3, 13)' \
   .github/workflows/benchmark.yml \
   .github/workflows/benchmark-nightly.yml \
   .github/workflows/benchmark-compare.yml | wc -l)" -eq 3 || {
