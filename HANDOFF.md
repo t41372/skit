@@ -546,6 +546,33 @@ under plain and symlinked TMPDIR); cfg-swap `cargo check` for both cfg(windows) 
 workspace 4065 / 0 / 525; fresh workspace LCOV `complete executable-source line coverage`.
 Windows runtime proof is the next CI run.
 
+Stage 1 was pushed as head `a2365e5`. Its run: ubuntu/coverage/lint green; macOS red on the
+SAME preset test as wave 4 (the new diagnostics finally named the class: child alive, ZERO
+cursor questions, the only post-checkpoint bytes were the ECHO of the key the harness had
+just sent); Windows HUNG 2+ hours and the run was cancelled without a flushed log — ci.yml
+had no job time bounds. Wave 6 stage 2 (2026-08-22, `9265344` / `2ec0011`):
+
+- `9265344` — every job in every workflow now carries `timeout-minutes` (15 jobs were
+  unbounded across ci/codspeed/docs/release; mutation and the benchmark workflows already
+  had bounds). A hang now fails its job with a flushed log naming the site. A fail-closed
+  tooling contract keeps the bound from disappearing (removing one produces
+  "workflow job has no timeout-minutes", exit 1).
+- `2ec0011` — the macOS preset stall mechanism: the harness wrote a key the instant prompt
+  TEXT appeared, but the OPTIONAL_SECRET prompt changes terminal mode before reading and a
+  TCSAFLUSH-style change discards pending input; the echoed "
+" was the swallowed key.
+  Every plain-flow write now settles first (30 ms of child silence, bounded 5 s); the
+  timeout diagnostics also report the last keys written. Linux cannot reproduce (15 loaded
+  runs on pre-fix code: 0 failures); the next macOS run is the discriminator.
+
+Deferred by evidence, awaiting the first BOUNDED Windows log: the S2c audit reduced the shim
+wall to ONE real file (`port_test_declared_params` — 53 argv-echo parsers plus PATHEXT kind
+inference; `port_test_config_cmd` and `port_test_js_deps` shims are already unix-gated, the
+wave-5 file-level counts were inflated), and the S2d survey found `terminal_pty.rs:998-1016`
+carries DELIBERATE Windows runner support (`.cmd` + `cmd.exe /C`), so blind-gating the
+real-PTY targets would discard real work; the oracle itself has no real-PTY tests (Textual
+in-process pilot only). Both proceed once the bounded run names actual failures.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
