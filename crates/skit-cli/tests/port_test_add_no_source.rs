@@ -1191,7 +1191,14 @@ fn unknown_plain_kind_selector_ctrl_c_cancels_without_writing() {
         || {},
     );
 
-    assert_eq!(status.signal(), Some("Interrupt"), "{status:?}: {output}");
+    // The host names the signal, and the two spellings differ: glibc gives "Interrupt", macOS gives
+    // "Interrupt: 2". Both must still prove that SIGINT ended the child, not a normal exit.
+    assert!(
+        status
+            .signal()
+            .is_some_and(|name| name == "Interrupt" || name.starts_with("Interrupt:")),
+        "{status:?}: {output}"
+    );
     assert_eq!(fs::read(&source).unwrap(), source_bytes);
     assert_eq!(root_snapshots(&sandbox), roots_before);
 }
