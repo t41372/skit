@@ -376,6 +376,55 @@ hid. Seven code commits follow the docs correction `3797ceb`:
   macOS failures that the lib-test failures had masked. Shared helper:
   `crates/skit-cli/tests/support/temp_root.rs`. No test name, assertion, or ledger row changed.
 
+The wave was pushed on 2026-08-22 as PR #45 head `7ce111d03709ed86d87e7366822b17cc0c5f80b5`
+(with `e3edce7` docs and `7ce111d` mutation-probe owner on top). The remote result validated
+every fix: benchmark run 32561430103, benchmark-compare 32561430063, CodSpeed 32561430087,
+Docs 32561430081, and CodeQL 32561428241 are green, and every previous test-failure class is
+gone from CI run 32561430067. That run then unmasked exactly three NEW latent failures (each
+platform is fail-fast, so they had never executed): the completion-detection test got a
+PowerShell script on a bash host, macOS spelled the SIGINT name "Interrupt: 2", and the
+Windows checkout rewrote `benchmarks/budgets.toml` line endings. The mutation run 32561430085
+died on the first of these in its baseline.
+
+The 2026-08-22 second wave closed all three, each adjudicated against the oracle:
+
+- `19ff59e` — product fix: `detect_shell` asked for `PSModulePath` before `SHELL`, so any host
+  that exports PowerShell modules (every GitHub Linux runner) got a PowerShell completion
+  script for a bash login. v0.4's chain (Typer -> shellingham) walks the parent process tree
+  and reads `PSModulePath` on no platform. `SHELL` now answers first; `PSModulePath` is the
+  match's last arm (PowerShell sets no `SHELL`, so Windows is unchanged). A new
+  `edge_workflows` owner pins bash/zsh winning over an exported `PSModulePath`; a reverse
+  probe (re-inserting the old early return) fails it, so the plain suite kills the reordering
+  mutant. The pre-existing fallback and error-arm owners survive untouched.
+- `b0eabe0` — the Ctrl-C owner accepts both host spellings of the SIGINT name ("Interrupt"
+  and "Interrupt: N") while still refusing a normal exit. A workspace sweep found no other
+  exact signal-string assertion (the other signal owners assert numeric `128+N` codes).
+- `ec3a8fa` — the repository had no `.gitattributes`, and Windows runners check out with
+  `core.autocrlf=true`, which breaks every byte-exact contract (four corpus fixtures carry
+  CRLF on purpose; `benchmarks/budgets.toml` must match the renderer). A root `* -text` rule
+  now keeps the committed bytes of every path on every platform; `git check-attr` over all
+  611 tracked paths reports `text: unset`. The tooling contract fails closed if the file or
+  the rule goes missing. Windows proof is by-construction plus the next CI run.
+
+A GHA-simulating full-workspace sweep (`SHELL` unset, `PSModulePath`/`CI`/`GITHUB_ACTIONS`
+set) and the plain suite both hold at 4062 / 0 / 525 after the second wave; fmt, workspace
+Clippy `-D warnings`, tooling contracts, Actionlint, and Zizmor pass.
+
+- `24fe85c` — local instrumented runs flaked twice on the 6-second mirror-PTY child-exit
+  deadline (`cli/tests.rs` `finish()`, panic at tests.rs:8015): instrumented children flush
+  coverage profiles on exit and need more headroom under parallel load. Both child-exit-wait
+  deadlines (the `finish()` loop and the same-purpose sibling in
+  `skit-tui/tests/terminal_pty.rs`) are now 30 seconds, per the `08046bd` precedent — a
+  harness budget, never a product timeout. Six consecutive instrumented runs pass. The
+  per-needle output budgets are unchanged; two other exit-wait constants were surveyed and
+  deliberately left (`port_test_add_no_source.rs:244` asserts on its own expiry flag, so a
+  bump would change test meaning — flagged as a latent instrumented-flake candidate).
+
+A fresh committed-state workspace `cargo llvm-cov --locked --workspace --all-targets
+--all-features` run after the second wave (with `24fe85c`) passed 4062 / 0 / 525 and
+`scripts/check_coverage.sh` returned `complete executable-source line coverage`; no checker
+rule or exclusion changed.
+
 Receipts at `f274fea`: `cargo fmt --all --check`, workspace Clippy `-D warnings`, Rustdoc
 `-D warnings`, English gate, tooling contracts, Actionlint, and Zizmor pass. The full workspace
 suite is **4062 passed / 0 failed / 525 ignored**, identical in three configurations: plain;
