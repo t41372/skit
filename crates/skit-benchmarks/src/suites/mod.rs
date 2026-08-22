@@ -56,9 +56,10 @@ pub fn run(context: &RunContext, plan: &SuitePlan) -> Result<SuiteOutput, SuiteE
 pub(crate) mod tests {
     use std::{
         collections::BTreeMap,
-        fs,
+        fs, io,
         os::unix::fs::PermissionsExt as _,
         path::{Path, PathBuf},
+        time::Duration,
     };
 
     use tempfile::TempDir;
@@ -70,9 +71,46 @@ pub(crate) mod tests {
         test_support::initialized_git_repository,
     };
 
+    /// The one argument a warm probe passes.
+    ///
+    /// No suite invocation can pass it. Every real call names a subcommand, a flag, or a path, and
+    /// the product spells none of those with leading and trailing underscores.
+    pub(crate) const PROBE_ARGUMENT: &str = "__skit_probe__";
+
+    /// Put the probe guard directly under the shebang, above everything the shim records.
+    ///
+    /// A probe must leave no trace, because tests count what these programs write.
+    pub(crate) fn probe_guarded(body: &str) -> String {
+        let (shebang, rest) = body
+            .split_once('\n')
+            .expect("every shim body starts with its #! line");
+        format!("{shebang}\n[ \"$1\" = {PROBE_ARGUMENT} ] && exit 0\n{rest}")
+    }
+
+    /// Start the new program once, so the suite under test never meets the fork window.
+    ///
+    /// Another test in this binary can fork for its own child while the write handle above is still
+    /// open, and the fork gives that child a copy of the handle. Every start of this program then
+    /// fails with "Text file busy" until that child reaches its own start. One successful start
+    /// proves the window is closed, and nothing writes this file again.
+    pub(crate) fn wait_past_the_fork_window(path: &Path) {
+        for _ in 0..49 {
+            match std::process::Command::new(path)
+                .arg(PROBE_ARGUMENT)
+                .output()
+            {
+                Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => return,
+            }
+        }
+    }
+
     pub(crate) fn executable(path: &Path, body: &str) -> PathBuf {
-        fs::write(path, body).unwrap();
+        fs::write(path, probe_guarded(body)).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        wait_past_the_fork_window(path);
         path.to_path_buf()
     }
 

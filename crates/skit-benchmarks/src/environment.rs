@@ -326,13 +326,18 @@ mod tests {
     use crate::{BenchmarkProfile, test_support::initialized_git_repository};
 
     fn executable(root: &Path, name: &str, output: &str, status: i32) -> std::path::PathBuf {
+        use crate::suites::tests::{probe_guarded, wait_past_the_fork_window};
+
         let path = root.join(name);
         fs::write(
             &path,
-            format!("#!/bin/sh\nprintf '%s\\n' '{output}'\nexit {status}\n"),
+            probe_guarded(&format!(
+                "#!/bin/sh\nprintf '%s\\n' '{output}'\nexit {status}\n"
+            )),
         )
         .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        wait_past_the_fork_window(&path);
         path
     }
 
