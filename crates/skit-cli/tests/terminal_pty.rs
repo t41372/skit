@@ -426,11 +426,16 @@ fn run_pty_configured(
     (status.exit_code(), output)
 }
 
+/// One byte string a terminal program writes when it asks where the cursor is.
+const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+
 struct LiveTui {
     child: Box<dyn portable_pty::Child + Send + Sync>,
     writer: Box<dyn std::io::Write + Send>,
     chunks: Receiver<Vec<u8>>,
     output: Vec<u8>,
+    /// How many cursor questions this terminal has already answered.
+    answered_queries: usize,
 }
 
 impl LiveTui {
@@ -491,6 +496,7 @@ impl LiveTui {
             writer,
             chunks,
             output: Vec::new(),
+            answered_queries: 0,
         }
     }
 
@@ -525,8 +531,16 @@ impl LiveTui {
                 return visible;
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                let state = self.child_state();
+                let answered = self.answered_queries;
+                let total = self.output.len();
+                let raw =
+                    String::from_utf8_lossy(&self.output[checkpoint.min(total)..]).into_owned();
                 panic!(
-                    "timed out waiting for {needle:?} after checkpoint {checkpoint}; new terminal output:\n{visible}"
+                    "timed out waiting for {needle:?} after checkpoint {checkpoint}; {state}; \
+                     cursor questions answered: {answered}; total bytes read: {total}; \
+                     new bytes: {}; new terminal output:\n{visible}\nraw bytes since the checkpoint:\n{raw:?}",
+                    total.saturating_sub(checkpoint)
                 );
             };
             match self
@@ -589,19 +603,46 @@ impl LiveTui {
         while let Ok(chunk) = self.chunks.try_recv() {
             self.output.extend_from_slice(&chunk);
         }
+        self.answer_new_cursor_queries();
     }
 
-    fn answer_cursor_query_after(&mut self, checkpoint: usize) {
-        const QUERY: &[u8] = b"\x1b[6n";
+    /// Answer every cursor question this terminal has not answered yet.
+    ///
+    /// A program that asks where the cursor is waits for the answer before it writes anything more.
+    /// A real terminal always answers. When only the tests that press keys answered, a prompt that
+    /// asks in any other place stopped the child: it stayed alive, wrote nothing, and the test
+    /// waited for text the child could not reach.
+    fn answer_new_cursor_queries(&mut self) {
+        let asked = self
+            .output
+            .windows(CURSOR_QUERY.len())
+            .filter(|window| *window == CURSOR_QUERY)
+            .count();
+        while self.answered_queries < asked {
+            self.writer.write_all(b"\x1b[1;1R").unwrap();
+            self.writer.flush().unwrap();
+            self.answered_queries = self.answered_queries.saturating_add(1);
+        }
+    }
 
+    /// What the child is doing, for a timeout message.
+    fn child_state(&mut self) -> String {
+        match self.child.try_wait() {
+            Ok(Some(status)) => format!("child exited with {}", status.exit_code()),
+            Ok(None) => "child still running".to_owned(),
+            Err(error) => format!("child status unreadable: {error}"),
+        }
+    }
+
+    /// Wait until the child asks where the cursor is. `drain` has already answered it.
+    fn answer_cursor_query_after(&mut self, checkpoint: usize) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.drain();
             if self.output[checkpoint.min(self.output.len())..]
-                .windows(QUERY.len())
-                .any(|window| window == QUERY)
+                .windows(CURSOR_QUERY.len())
+                .any(|window| window == CURSOR_QUERY)
             {
-                self.send(b"\x1b[1;1R");
                 return;
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
