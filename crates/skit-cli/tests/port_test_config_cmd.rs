@@ -134,27 +134,15 @@ fn read_key(sandbox: &Sandbox, key: &str) -> String {
     doc.remove(key).unwrap_or_default()
 }
 
-/// Parse the flat `{"key":"value",...}` object the CLI emits (a string->string map, no nesting;
-/// values here never contain a quote or comma). This local parser keeps the file self-contained
-/// (no `serde_json` dev-dependency).
+/// Parse the flat `{"key":"value",...}` object the CLI emits (a string->string map, no nesting).
+///
+/// A real JSON reader does this, because JSON values are escaped. A reader that only splits on the
+/// punctuation and trims the quotes returns the escaped text as if it were the value. A value that
+/// holds a backslash then comes back doubled and never equals what it came from. Every absolute
+/// path on Windows holds backslashes, so such a reader passes on unix and fails there.
 fn parse_flat_json(text: &str) -> BTreeMap<String, String> {
-    let trimmed = text.trim();
-    let body = trimmed
-        .strip_prefix('{')
-        .and_then(|inner| inner.strip_suffix('}'))
-        .unwrap_or_else(|| panic!("not a JSON object: {text:?}"));
-    let mut map = BTreeMap::new();
-    if body.is_empty() {
-        return map;
-    }
-    for pair in body.split(',') {
-        let (key, value) = pair.split_once(':').unwrap();
-        map.insert(
-            key.trim().trim_matches('"').to_owned(),
-            value.trim().trim_matches('"').to_owned(),
-        );
-    }
-    map
+    serde_json::from_str(text)
+        .unwrap_or_else(|error| panic!("not a flat JSON object: {text:?}: {error}"))
 }
 
 // --- bare `skit config`: list everything ---

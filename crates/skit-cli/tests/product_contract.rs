@@ -533,13 +533,23 @@ fn doctor_accepts_the_v040_private_uv_location() {
         fs::set_permissions(&uv, permissions).unwrap();
     }
 
-    sandbox
+    // Read the value, not the text that carries it. JSON escapes a backslash, so a path searched
+    // for in the raw output never matches on Windows, where every path holds them. Reading the
+    // field also states the stronger thing: the report names this uv exactly, not somewhere inside
+    // a longer string.
+    let output = sandbox
         .command()
         .env("PATH", "")
         .args(["doctor", "--json"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(uv.display().to_string()));
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "doctor failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["uv"], uv.display().to_string());
 }
 
 #[test]
