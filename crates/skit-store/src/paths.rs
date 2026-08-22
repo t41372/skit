@@ -1,6 +1,7 @@
 //! Resolve entry payload paths from the v0.4 data layout.
 
 use std::{
+    borrow::Cow,
     fs,
     path::{Path, PathBuf},
 };
@@ -19,8 +20,41 @@ use crate::FileStore;
 pub fn expand_user_path(path: &Path) -> PathBuf {
     path.to_str().map_or_else(
         || path.to_path_buf(),
-        |value| PathBuf::from(shellexpand::tilde(value).as_ref()),
+        |value| PathBuf::from(expand_leading_tilde(value).as_ref()),
     )
+}
+
+/// Expand a leading `~` with the home directory this host names.
+#[cfg(not(windows))]
+fn expand_leading_tilde(value: &str) -> Cow<'_, str> {
+    shellexpand::tilde(value)
+}
+
+/// Expand a leading `~` the way version 0.4 expands it on this host.
+///
+/// Version 0.4 expands with CPython's `os.path.expanduser`. Its Windows form reads USERPROFILE, and
+/// then HOMEDRIVE together with HOMEPATH, from the environment. The default adapter asks the shell
+/// for the profile folder instead, and no environment can redirect that answer, so a caller that
+/// names a home directory was ignored. Read what version 0.4 reads first, and keep the shell answer
+/// as the last resort.
+#[cfg(windows)]
+fn expand_leading_tilde(value: &str) -> Cow<'_, str> {
+    windows_home().map_or_else(
+        || shellexpand::tilde(value),
+        |home| shellexpand::tilde_with_context(value, || Some(home)),
+    )
+}
+
+/// The home directory the environment names, in the order version 0.4 reads it.
+#[cfg(windows)]
+fn windows_home() -> Option<String> {
+    fn named(variable: &str) -> Option<String> {
+        std::env::var(variable)
+            .ok()
+            .filter(|value| !value.is_empty())
+    }
+
+    named("USERPROFILE").or_else(|| Some(format!("{}{}", named("HOMEDRIVE")?, named("HOMEPATH")?)))
 }
 
 /// Return the stored copy name for a known entry kind.
