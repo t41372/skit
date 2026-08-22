@@ -331,6 +331,33 @@ fn rust_additive_system_gate_runner_captures_node_rejection() {
     assert!(!output.stderr.is_empty());
 }
 
+/// Run one gate check, and retry only the fork window of a sibling spawn.
+///
+/// A test writes the program it is about to run. Another test in the same binary can fork for its
+/// own child while that write handle is still open, and the fork gives the new child a copy of the
+/// handle. An exec of the program then fails with ETXTBSY until that child reaches its own exec.
+/// The window is short and closes without help, so a few tries are enough. Every other answer,
+/// including the timeout these tests want, returns at once.
+#[cfg(unix)]
+fn check_past_the_fork_window(
+    program: &Path,
+    source: &Path,
+    timeout: std::time::Duration,
+) -> Result<JavaScriptSyntaxGateOutput, JavaScriptSyntaxGateUnavailable> {
+    for _ in 0..9 {
+        let result = SystemJavaScriptSyntaxGateRunner.check(program, source, timeout);
+        let busy = matches!(
+            &result,
+            Err(JavaScriptSyntaxGateUnavailable::Spawn { reason }) if reason.contains("Text file busy")
+        );
+        if !busy {
+            return result;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    SystemJavaScriptSyntaxGateRunner.check(program, source, timeout)
+}
+
 #[cfg(unix)]
 #[test]
 fn rust_additive_system_gate_runner_bounds_a_stuck_process() {
@@ -344,13 +371,12 @@ fn rust_additive_system_gate_runner_bounds_a_stuck_process() {
     drop(file);
     fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
 
-    let error = SystemJavaScriptSyntaxGateRunner
-        .check(
-            &program,
-            Path::new("x.js"),
-            std::time::Duration::from_millis(10),
-        )
-        .unwrap_err();
+    let error = check_past_the_fork_window(
+        &program,
+        Path::new("x.js"),
+        std::time::Duration::from_millis(10),
+    )
+    .unwrap_err();
 
     assert_eq!(error, JavaScriptSyntaxGateUnavailable::Timeout);
 }
@@ -373,9 +399,8 @@ fn rust_additive_system_gate_drains_large_stderr_before_waiting() {
     let source = root.path().join("source.js");
     fs::write(&source, "const broken = ;\n").unwrap();
 
-    let output = SystemJavaScriptSyntaxGateRunner
-        .check(&program, &source, std::time::Duration::from_secs(5))
-        .unwrap();
+    let output =
+        check_past_the_fork_window(&program, &source, std::time::Duration::from_secs(5)).unwrap();
     assert!(!output.success);
     assert!(output.stderr.len() > 65_536);
     let gate = FakeGate::one(Ok(output));
