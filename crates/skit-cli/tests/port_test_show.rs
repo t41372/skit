@@ -54,7 +54,11 @@ use skit_domain::parameters::{
 };
 use skit_language::write_managed_params;
 use skit_store::{FileFormStateStore, FileStore};
-use tempfile::TempDir;
+
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
 
 // --- The oracle's stable-shape contract (module-level constants) --------------------------------
 
@@ -135,18 +139,18 @@ const SUBPARSERS: &str = concat!(
 // --- one isolated skit library (private data/state/config plus a source scratch dir) ------------
 
 struct Lib {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
-    src: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
+    src: TempRoot,
 }
 
 fn lib() -> Lib {
     Lib {
-        data: TempDir::new().unwrap(),
-        state: TempDir::new().unwrap(),
-        config: TempDir::new().unwrap(),
-        src: TempDir::new().unwrap(),
+        data: TempRoot::new(),
+        state: TempRoot::new(),
+        config: TempRoot::new(),
+        src: TempRoot::new(),
     }
 }
 

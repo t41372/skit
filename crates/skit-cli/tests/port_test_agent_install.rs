@@ -51,6 +51,11 @@ use skit_application::{
 use skit_store::FileAgentSkillStore;
 use tempfile::TempDir;
 
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
+
 /// Python `SKILL_MARKER`.
 const SKILL_MARKER: &str = "---\nname: skit\n";
 
@@ -67,23 +72,23 @@ const BUNDLED_SKILL: &str = include_str!("../../../skills/skit/SKILL.md");
 /// real `~/.claude`, matching the oracle's `fake_home` fixture; the three `SKIT_*_DIR` variables
 /// keep every write inside the sandbox; `project` is the working directory (`fake_cwd`).
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
-    home: TempDir,
-    project: TempDir,
-    scratch: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
+    home: TempRoot,
+    project: TempRoot,
+    scratch: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
-            home: TempDir::new().unwrap(),
-            project: TempDir::new().unwrap(),
-            scratch: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
+            home: TempRoot::new(),
+            project: TempRoot::new(),
+            scratch: TempRoot::new(),
         }
     }
 

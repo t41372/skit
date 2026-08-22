@@ -69,7 +69,11 @@ use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
 use skit_language::write_managed_params;
-use tempfile::TempDir;
+
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
 
 /// The distinctive prefix skit prints iff an injected temp copy is made — the black-box witness
 /// for the oracle's `script_override is not None`.
@@ -80,13 +84,13 @@ const RAW_CONFLICT: &str =
     "--raw runs the script as-is; --set, --preset, and --save-preset do not apply.";
 
 /// A fresh sandbox root holding `data/`, `state/`, and `config/` subtrees.
-fn sandbox() -> TempDir {
-    TempDir::new().unwrap()
+fn sandbox() -> TempRoot {
+    TempRoot::new()
 }
 
 /// The oracle's `runner.invoke(cli.app, ...)`: the real `skit` binary with all three roots pinned
 /// under the sandbox and the locale fixed to English.
-fn skit(root: &TempDir) -> assert_cmd::Command {
+fn skit(root: &TempRoot) -> assert_cmd::Command {
     let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
     command
         .env("SKIT_DATA_DIR", root.path().join("data"))
@@ -97,7 +101,7 @@ fn skit(root: &TempDir) -> assert_cmd::Command {
 }
 
 /// Register one hand-built entry directory in the authoritative membership index.
-fn register(root: &TempDir, slug: &str) {
+fn register(root: &TempRoot, slug: &str) {
     let data = root.path().join("data");
     fs::create_dir_all(&data).unwrap();
     fs::write(data.join("registry.toml"), format!("[entries.{slug}]\n")).unwrap();
@@ -105,7 +109,7 @@ fn register(root: &TempDir, slug: &str) {
 
 /// Write a hand-built shell entry (the uv-free injection vehicle). `extra_meta` appends optional
 /// metadata lines (for a pinned interpreter).
-fn shell_entry(root: &TempDir, slug: &str, name: &str, source: &str, extra_meta: &str) {
+fn shell_entry(root: &TempRoot, slug: &str, name: &str, source: &str, extra_meta: &str) {
     let dir = root.path().join("data/scripts").join(slug);
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("script.sh"), source).unwrap();
@@ -143,14 +147,14 @@ fn times() -> ParamDecl {
 
 /// The oracle's `_inject_entry`: a shell entry declaring the `CITY` (str) and `TIMES` (int)
 /// managed consts, assigned in the body and echoed.
-fn build_trip(root: &TempDir) {
+fn build_trip(root: &TempRoot) {
     let body = "CITY=Taipei\nTIMES=2\nprintf '%s\\n' \"$CITY\" \"$TIMES\"\n";
     let source = write_managed_params("shell", body, &[city(), times()]).unwrap();
     shell_entry(root, "trip", "Trip", &source, "");
 }
 
 /// Read `state/values/<slug>.toml` back as text (the oracle's `argstate.load_state(slug)`).
-fn state_text(root: &TempDir, slug: &str) -> Option<String> {
+fn state_text(root: &TempRoot, slug: &str) -> Option<String> {
     fs::read_to_string(
         root.path()
             .join("state/values")
@@ -160,7 +164,7 @@ fn state_text(root: &TempDir, slug: &str) -> Option<String> {
 }
 
 /// Seed a preset directly in argstate (the oracle's `argstate.save_preset`).
-fn seed_preset(root: &TempDir, slug: &str, body: &str) {
+fn seed_preset(root: &TempRoot, slug: &str, body: &str) {
     let values = root.path().join("state/values");
     fs::create_dir_all(&values).unwrap();
     fs::write(values.join(format!("{slug}.toml")), body).unwrap();

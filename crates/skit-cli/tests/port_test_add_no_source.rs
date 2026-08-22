@@ -53,23 +53,27 @@ use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::Value;
-use tempfile::TempDir;
+
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
 
 /// A fresh four-directory sandbox so skit writes only inside temp dirs, never the repo or cwd.
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
-    scratch: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
+    scratch: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
-            scratch: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
+            scratch: TempRoot::new(),
         }
     }
 

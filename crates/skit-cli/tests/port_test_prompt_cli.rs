@@ -56,6 +56,11 @@ use serde_json::Value;
 use skit_store::{FileConfigStore, PromptRunner};
 use tempfile::TempDir;
 
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
+
 // AUTO_MANAGE_LIMIT (langs/prompt/analyzer.py:40) — above this many detections nothing is
 // auto-managed.
 const AUTO_MANAGE_LIMIT: usize = 30;
@@ -65,17 +70,17 @@ const LIST_PREVIEW_LIMIT: usize = 20;
 const ARGV_LIMIT: usize = 100_000;
 
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
         }
     }
 

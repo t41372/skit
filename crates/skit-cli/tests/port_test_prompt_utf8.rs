@@ -45,6 +45,11 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use tempfile::TempDir;
 
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
+
 // The oracle's `_invalid_prompt` fixture body: a CRLF line then a lone `\xc3` lead byte.
 const INVALID_PROMPT: &[u8] = b"Review {{target}}\r\ninvalid:\xc3(\n";
 // The oracle's invalid stdin body: `\xff` at index 7.
@@ -65,17 +70,17 @@ fn flatten(text: &str) -> String {
 }
 
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
         }
     }
 

@@ -51,6 +51,11 @@ use std::sync::Mutex;
 
 use tempfile::TempDir;
 
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
+
 use skit_application::{
     CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
     form_state::FormStateRepository as _, payload_stored_name,
@@ -188,17 +193,17 @@ const PY_MANIFEST_CHALK5: &str =
 // --- Composition root: fresh sandbox + the real `skit` binary ---
 
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
         }
     }
 

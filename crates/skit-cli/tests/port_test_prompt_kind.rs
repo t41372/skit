@@ -60,6 +60,11 @@ use skit_runtime::{
 };
 use skit_store::{FileConfigStore, FilePromptSelectionStore, FileStore, PromptRunner};
 use tempfile::TempDir;
+
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
 use toml::{Table, Value};
 
 // ===========================================================================
@@ -190,19 +195,19 @@ fn preview_argv(runner_argv: &[&str], body: &str, extra: &[&str]) -> Vec<String>
 // --- store scaffolding: the real `skit` binary in a fresh three-directory sandbox ---
 
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
-    scratch: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
+    scratch: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
-            scratch: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
+            scratch: TempRoot::new(),
         }
     }
 
