@@ -6,8 +6,13 @@
 //! from an unresolved root therefore compares two different spellings of one directory.
 //!
 //! Resolving the root once, before any path comes off it, gives the tests the same ground the
-//! oracle had: inside a sandbox the given spelling and the resolved spelling are the same on every
-//! platform.
+//! oracle had.
+//!
+//! What that buys differs by host, and the difference matters. On Unix the resolved spelling is the
+//! spelling, so the two are equal. On Windows they are not: resolving a path returns the verbatim
+//! `\\?\C:\...` form. Expectations there match the product only because the product resolves the
+//! same way for the same reason, so both sides carry the prefix. Any path that stops being resolved
+//! on one side alone will disagree with the other.
 
 use std::{
     fs,
