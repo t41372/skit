@@ -1,3 +1,7 @@
+// The plain-lane helpers below are `#[cfg(unix)]` at their call sites, so a Windows build
+// compiles them without a caller. This keeps that build quiet, as fa8464b did.
+#![cfg_attr(not(unix), allow(dead_code))]
+
 use std::{
     collections::BTreeMap,
     fs,
@@ -347,6 +351,15 @@ fn run_in_pty(
     run_pty(args, data, state, config, input, true)
 }
 
+/// Run `skit` on a terminal in the plain lane. No Ratatui form answers a cursor query here, so the
+/// prompts a run must answer are `dialoguer`'s, and `dialoguer` reads the console one record at a
+/// time.
+///
+/// Every test in this lane is `#[cfg(unix)]`. The same choreography, settled writes into
+/// `dialoguer` prompts across a pseudo-console, stopped the Windows job three times in
+/// `port_test_add_no_source.rs`; two rounds of mechanism fixes were refuted on the host (444bbd9,
+/// then 4c2609c), and fa8464b gated that class for this reason. The other half of this file drives
+/// Ratatui through `LiveTui`, which reads Crossterm events instead, so it stays live on every host.
 fn run_plain_in_pty(
     args: &[&str],
     data: &Path,
@@ -1379,6 +1392,10 @@ fn zero_runner_save_failure_keeps_the_required_editor_and_config() {
     let _ = tui.wait_for_exit_after(quit);
 }
 
+// Windows gate: the plain lane reached through `run_pty_configured(.., false, ..)` instead of
+// the `run_plain_in_pty` wrapper, to pass a `configure` closure. The reads are the same
+// `dialoguer` reads. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn bare_agent_install_lists_existing_targets_and_writes_only_the_confirmed_choice() {
     let data = TempDir::new().unwrap();
@@ -1642,6 +1659,9 @@ fn read_pty_screen(args: &[&str], data: &Path, state: &Path, config: &Path) -> S
         .collect()
 }
 
+// Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
+// across a pseudo-console. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn bare_add_plain_menu_and_typed_cancel_keep_the_latest_main_contract() {
     let data = TempDir::new().unwrap();
@@ -2117,6 +2137,9 @@ fn plain_preset_collection_saves_typed_nonsecrets_in_three_locales() {
     }
 }
 
+// Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
+// across a pseudo-console. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn interactive_run_refuses_invalid_presets_before_form_or_storage_work() {
     for (with_parameter, args, expected) in [
@@ -2223,6 +2246,10 @@ fn analyzer_preset_notices_use_real_sources_in_three_locales() {
     }
 }
 
+// Windows gate: the plain lane reached through `run_pty_configured(.., false, ..)` instead of
+// the `run_plain_in_pty` wrapper, to pass a `configure` closure. The reads are the same
+// `dialoguer` reads. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn test_promptform_prints_input_binding_hint() {
     for (locale, degraded, input) in [
@@ -2661,6 +2688,9 @@ fn terminal_authoring_and_confirmation_paths_need_no_hidden_cli_knowledge() {
     assert_eq!(code, 0, "{output}");
 }
 
+// Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
+// across a pseudo-console. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn interactive_preset_save_collects_current_values_instead_of_saving_the_prefill_unasked() {
     let data = TempDir::new().unwrap();
@@ -2688,6 +2718,9 @@ fn interactive_preset_save_collects_current_values_instead_of_saving_the_prefill
     assert!(saved.contains("name = \"Grace\""), "{saved}");
 }
 
+// Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
+// across a pseudo-console. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn add_onboarding_accepts_clean_defaults_and_leaves_demoted_candidates_unmanaged() {
     let data = TempDir::new().unwrap();
@@ -2718,6 +2751,9 @@ fn add_onboarding_accepts_clean_defaults_and_leaves_demoted_candidates_unmanaged
     assert!(!stored.contains("name = \"COUNT\""), "{stored}");
 }
 
+// Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
+// across a pseudo-console. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn add_onboarding_space_toggles_the_focused_checkbox() {
     let data = TempDir::new().unwrap();
@@ -2744,6 +2780,9 @@ fn add_onboarding_space_toggles_the_focused_checkbox() {
     assert!(!stored.contains("[tool.skit]"), "{stored}");
 }
 
+// Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
+// across a pseudo-console. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn an_empty_onboarding_selection_does_not_delete_existing_managed_metadata() {
     let data = TempDir::new().unwrap();
@@ -2784,6 +2823,9 @@ fn an_empty_onboarding_selection_does_not_delete_existing_managed_metadata() {
     assert_eq!(stored, original);
 }
 
+// Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
+// across a pseudo-console. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn add_onboarding_distinguishes_modeled_and_dynamic_cli_surfaces() {
     let data = TempDir::new().unwrap();
@@ -2845,6 +2887,9 @@ fn add_onboarding_distinguishes_modeled_and_dynamic_cli_surfaces() {
     assert!(stored.contains("name = \"VALUE\""), "{stored}");
 }
 
+// Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
+// across a pseudo-console. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn reference_add_reports_onboarding_but_never_writes_the_original() {
     let data = TempDir::new().unwrap();
@@ -2871,6 +2916,9 @@ fn reference_add_reports_onboarding_but_never_writes_the_original() {
     assert_eq!(fs::read(source).unwrap(), original);
 }
 
+// Windows gate: this drives the plain lane, where settled writes answer `dialoguer` prompts
+// across a pseudo-console. See the note on `run_plain_in_pty`.
+#[cfg(unix)]
 #[test]
 fn terminal_plain_launch_menu_uses_the_same_prefill_and_argument_contract() {
     let data = TempDir::new().unwrap();
