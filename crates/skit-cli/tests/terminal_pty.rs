@@ -436,6 +436,8 @@ struct LiveTui {
     output: Vec<u8>,
     /// How many cursor questions this terminal has already answered.
     answered_queries: usize,
+    /// The most recent keys written, for a timeout message.
+    last_sent: Vec<u8>,
 }
 
 impl LiveTui {
@@ -497,12 +499,43 @@ impl LiveTui {
             chunks,
             output: Vec::new(),
             answered_queries: 0,
+            last_sent: Vec::new(),
         }
     }
 
+    /// Let the child settle, then write.
+    ///
+    /// A prompt's text reaching this terminal means the child wrote it, not that the child is
+    /// reading yet. A prompt that hides what it types changes the terminal mode before it reads,
+    /// and that change drops input that arrived before it. Writing into that gap loses the keys:
+    /// the terminal still echoes them, the child never sees them, and both sides then wait. Waiting
+    /// for a quiet moment puts every write after the change.
     fn send(&mut self, bytes: &[u8]) {
+        self.settle();
+        self.last_sent = bytes.to_vec();
         self.writer.write_all(bytes).unwrap();
         self.writer.flush().unwrap();
+    }
+
+    /// Wait until the child has written nothing for a short while.
+    ///
+    /// Silence is the only sign this terminal gets that the child finished drawing and is now
+    /// waiting for a key. The whole wait is bounded, so a child that chatters cannot hold the test.
+    fn settle(&mut self) {
+        const QUIET: Duration = Duration::from_millis(30);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match self.chunks.recv_timeout(QUIET) {
+                Ok(chunk) => {
+                    self.output.extend_from_slice(&chunk);
+                    self.answer_new_cursor_queries();
+                }
+                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                    return;
+                }
+            }
+        }
     }
 
     fn send_effect_key(&mut self, bytes: &[u8]) {
@@ -532,12 +565,14 @@ impl LiveTui {
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 let state = self.child_state();
+                let sent = String::from_utf8_lossy(&self.last_sent).into_owned();
                 let answered = self.answered_queries;
                 let total = self.output.len();
                 let raw =
                     String::from_utf8_lossy(&self.output[checkpoint.min(total)..]).into_owned();
                 panic!(
                     "timed out waiting for {needle:?} after checkpoint {checkpoint}; {state}; \
+                     last keys written: {sent:?}; \
                      cursor questions answered: {answered}; total bytes read: {total}; \
                      new bytes: {}; new terminal output:\n{visible}\nraw bytes since the checkpoint:\n{raw:?}",
                     total.saturating_sub(checkpoint)
