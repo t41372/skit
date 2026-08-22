@@ -751,7 +751,9 @@ fn test_deps_need_replaces_whole_list() {
         sandbox.deps_json("d")["needs"],
         serde_json::json!(["jq", "ffmpeg"])
     );
-    assert!(!sandbox.meta_toml("d").contains("old"));
+    // Quote the value: the file also records the source path, and a macOS temporary directory sits
+    // under /var/folders, where "folders" holds the letters of "old". Only a TOML string matches.
+    assert!(!sandbox.meta_toml("d").contains("\"old\""));
     assert_eq!(sandbox.payload_bytes("d", "script.sh"), payload);
     assert_eq!(tree_bytes(sandbox.config.path()), config);
     assert_eq!(tree_bytes(sandbox.state.path()), state);
