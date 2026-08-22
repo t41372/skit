@@ -204,6 +204,15 @@ expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--lo
 expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
 expect_text .github/workflows/ci.yml 'zizmor .github/workflows .github/actions/install-hyperfine/action.yml'
 
+# Windows runners check out with autocrlf=true, which rewrites line endings. Every byte-exact
+# contract — tests/corpus, the four CRLF fixtures in it, and the rendered budgets file — needs the
+# committed bytes to survive the checkout, so the repository must turn that rewrite off.
+test -f .gitattributes || {
+  echo '.gitattributes must exist so a checkout keeps the committed bytes' >&2
+  exit 1
+}
+expect_text .gitattributes '* -text'
+
 for demo in \
   'README.md en' \
   'README.zh-CN.md zh-CN' \
