@@ -58,6 +58,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "support/shim.rs"]
+mod shim;
+
 use serde_json::Value;
 use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::write_managed_params;
@@ -249,16 +252,12 @@ fn drifted_python_source() -> String {
     write_managed_params("python", "CITY = 'x'\nprint(CITY)\n", &[city, gone]).unwrap()
 }
 
-/// Write an executable stand-in for `uv` into a directory (so a python entry's interpreter
-/// resolves), matching `find_program`'s `mode & 0o111` check.
+/// Write a stand-in for `uv` into a directory, so a python entry's interpreter resolves.
+///
+/// The maker writes the dialect the host runs and names the file the way `find_program` looks for
+/// it: an execute bit on Unix, a `PATHEXT` suffix on Windows.
 fn make_fake_uv(dir: &Path) {
-    let uv = dir.join("uv");
-    fs::write(&uv, "#!/bin/sh\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&uv, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let _ = shim::write_shim(dir, "uv", shim::Shim::Exit(0));
 }
 
 // ---------------------------------------------------------------- entry_drifted

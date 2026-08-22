@@ -1,5 +1,8 @@
 use std::{fs, net::TcpListener};
 
+#[path = "support/shim.rs"]
+mod shim;
+
 use assert_cmd::Command;
 use serde_json::Value;
 use skit_store::FileConfigStore;
@@ -970,16 +973,14 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
 fn run_pipeline_materializes_javascript_and_preserves_trusted_command_semantics() {
     let sandbox = Sandbox::new();
     let tools = TempDir::new().unwrap();
-    let node = tools.path().join("node");
-    let npm = tools.path().join("npm");
-    fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::write(&npm, "#!/bin/sh\n/bin/mkdir -p node_modules\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // The product finds these by bare name on PATH, so each maker names the file the way this host
+    // looks for it. npm makes its directory below the working directory the product chose.
+    let _node = shim::write_shim(tools.path(), "node", shim::Shim::Exit(0));
+    let _npm = shim::write_shim(
+        tools.path(),
+        "npm",
+        shim::Shim::MakeDirectory("node_modules"),
+    );
 
     let javascript = sandbox.source("launch.js", b"console.log('ok');\n");
     sandbox.ok(&["add", &javascript, "--name", "Launch JS"]);
@@ -999,13 +1000,8 @@ fn run_pipeline_materializes_javascript_and_preserves_trusted_command_semantics(
             .join("scripts/launch-js/node_modules")
             .is_dir()
     );
-    let custom_runtime = tools.path().join("custom-js");
-    fs::write(&custom_runtime, "#!/bin/sh\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&custom_runtime, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // This one is named by path, so the call below uses the path the maker wrote.
+    let custom_runtime = shim::write_shim(tools.path(), "custom-js", shim::Shim::Exit(0));
     let unsupported = sandbox.source("unsupported.js", b"console.log('custom');\n");
     sandbox.ok(&["add", &unsupported, "--name", "Unsupported runtime"]);
     sandbox.ok(&["deps", "unsupported-runtime", "--dep", "chalk"]);
