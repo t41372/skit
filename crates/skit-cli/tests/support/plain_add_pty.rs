@@ -97,7 +97,12 @@ impl PlainAddPty {
     }
 
     pub(crate) fn send_line(&mut self, answer: &str) {
-        self.writer.write_all(answer.as_bytes()).unwrap();
+        // Translate any embedded line feed too, so an answer that carries one still reads as
+        // Enter on a host where only a carriage return does
+        // (`console/src/windows_term/mod.rs:449`). The terminator below is already one.
+        self.writer
+            .write_all(&keystrokes(answer.as_bytes()))
+            .unwrap();
         self.writer.write_all(b"\r").unwrap();
         self.writer.flush().unwrap();
     }
@@ -117,4 +122,16 @@ impl PlainAddPty {
             .replace('\r', "");
         (status.exit_code(), output)
     }
+}
+
+/// Deliver the typed part of one answer the way a terminal delivers it.
+///
+/// Unix reads a line feed and a carriage return alike as Enter
+/// (`console/src/unix_term.rs:323`), so this changes nothing here and keeps one convention with the
+/// other terminal harnesses.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
 }

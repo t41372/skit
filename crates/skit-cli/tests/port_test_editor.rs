@@ -369,7 +369,7 @@ fn run_pty(
     std::thread::sleep(Duration::from_millis(100));
     for bytes in input {
         std::thread::sleep(Duration::from_millis(150));
-        if writer.write_all(bytes).is_err() {
+        if writer.write_all(&keystrokes(bytes)).is_err() {
             break;
         }
         let _ = writer.flush();
@@ -453,7 +453,7 @@ fn run_pty_after_prompt(
     }
 
     let mut writer = pair.master.take_writer().unwrap();
-    writer.write_all(answer).unwrap();
+    writer.write_all(&keystrokes(answer)).unwrap();
     writer.flush().unwrap();
     let status = child.wait().unwrap();
     drop(writer);
@@ -1938,4 +1938,20 @@ fn test_params_edit_missing_copy_refused() {
         ["meta.toml"],
         "the missing payload was not recreated"
     );
+}
+
+/// Deliver one canned answer the way a terminal delivers it.
+///
+/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
+/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
+/// character, so the prompt keeps waiting and both sides stop
+/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
+/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
+/// Unix exactly as it was. This file runs only on Unix today, and keeps the convention so that a
+/// later change of that gate cannot bring the fault back.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
 }
