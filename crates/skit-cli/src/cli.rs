@@ -2055,9 +2055,6 @@ fn write_completion(shell: Shell, output: &mut dyn io::Write) {
 }
 
 fn detect_shell() -> Result<Shell, CliError> {
-    if env::var_os("PSModulePath").is_some() {
-        return Ok(Shell::PowerShell);
-    }
     let name = env::var_os("SHELL")
         .and_then(|value| PathBuf::from(value).file_name().map(ToOwned::to_owned))
         .and_then(|value| value.to_str().map(str::to_ascii_lowercase))
@@ -2068,6 +2065,10 @@ fn detect_shell() -> Result<Shell, CliError> {
         "fish" => Ok(Shell::Fish),
         "pwsh" | "powershell" | "powershell.exe" | "pwsh.exe" => Ok(Shell::PowerShell),
         "zsh" => Ok(Shell::Zsh),
+        // PowerShell does not set SHELL, and its module path is the only mark it leaves. That mark
+        // is the last answer, never the first: hosts that run PowerShell tools keep the variable in
+        // the environment of every other shell, so a named shell always wins.
+        _ if env::var_os("PSModulePath").is_some() => Ok(Shell::PowerShell),
         _ => Err(CliError::Usage(Message::new(
             "could not detect the shell; set SHELL before completion setup",
         ))),

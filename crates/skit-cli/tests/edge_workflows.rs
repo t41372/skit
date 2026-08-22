@@ -166,6 +166,24 @@ fn configuration_runner_and_completion_edges_are_explicit() {
             .assert()
             .success();
     }
+    // A machine that ships PowerShell tools keeps PSModulePath in the environment of every other
+    // shell. GitHub's Linux runners do. The shell the host names must still win.
+    for shell in ["bash", "zsh"] {
+        let shown = sandbox
+            .command()
+            .env("SHELL", format!("/bin/{shell}"))
+            .env("PSModulePath", sandbox.home.path())
+            .arg("--show-completion")
+            .output()
+            .unwrap();
+        assert!(shown.status.success(), "{shell}");
+        let script = String::from_utf8(shown.stdout).unwrap();
+        assert!(script.contains("_skit"), "{shell}: {script}");
+        assert!(
+            !script.contains("Register-ArgumentCompleter"),
+            "{shell}: {script}"
+        );
+    }
     sandbox
         .command()
         .env("SHELL", "/bin/unknown-shell")
