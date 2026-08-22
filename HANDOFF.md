@@ -645,6 +645,27 @@ actionlint / zizmor / tooling contracts (six fail-closed probes) green, plain an
 symlinked-TMPDIR suites green for every touched harness. Windows runtime proof for the
 Enter dialect is the next bounded run.
 
+The 444bbd9 run refuted sufficiency of the Enter translation: the SAME four
+port_test_add_no_source tests hung with the translation verified present. Wave 10
+(`3124103`) found the real discriminator structurally: the hanging harness NEVER READS
+output (blind clock-paced writes; the drain thread joins only at the end), while every
+dialoguer harness that passes on Windows waits for the prompt text before typing. The
+console crate's Windows intake (`ReadConsoleInputW` one record at a time, discarding
+non-key and key-up records, console/src/windows_term/mod.rs:531-560) does not give an early
+answer the tty line-buffer guarantee, so a key typed into the gap is not there when the
+prompt reads — the macOS TCSAFLUSH shape on another platform. The flush theory was checked
+and is NEGATIVE (no FlushConsoleInputBuffer anywhere in console; dialoguer's init flushes
+are output-only). All three clock-typing harnesses (pty_in_locale, pty_after_output,
+terminal_pty::run_pty_configured, plus the unix-gated port_test_editor::run_pty for
+consistency) now settle before every write; unix suites are green and FASTER (fixed pauses
+became silence-detection). Agreed fallback: if the next bounded run still hangs these four,
+they get gated with the recorded reason (Rust-additive interactive PTY choreography, no
+oracle counterpart, outcomes owned by non-PTY owners, Windows interactivity falls to the
+hands-on gate) — the fix commit touches only harness internals so the gate commit stays
+clean. Also: stale queued single-job mutation runs at old heads were cancelled; GitHub's
+concurrency keeps only the newest pending run, and the label-gated workflow skips instantly
+on unlabeled pushes.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
