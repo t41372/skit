@@ -1364,12 +1364,23 @@ fn platform_config_dir() -> Option<PathBuf> {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn platform_config_dir() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
+    unix_config_dir(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"))
+}
+
+/// Name the configuration directory from the two variables that can hold it.
+///
+/// The values arrive as parameters, so a test can ask for both answers without changing the
+/// environment of the whole process.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn unix_config_dir(
+    xdg_config_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    xdg_config_home
         .map(PathBuf::from)
         .map(|path| path.join("skit"))
         .or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
+            home.map(PathBuf::from)
                 .map(|path| path.join(".config").join("skit"))
         })
 }
@@ -2205,6 +2216,26 @@ mod tests {
             .unwrap();
         assert_eq!(pinned.name, "local");
         assert_eq!(selection.last_runner(), "prior");
+    }
+
+    /// Both answers, without asking the host what its own environment holds.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn unix_config_dir_prefers_xdg_and_falls_back_to_home() {
+        use std::ffi::OsString;
+
+        assert_eq!(
+            unix_config_dir(
+                Some(OsString::from("/xdg")),
+                Some(OsString::from("/home/user"))
+            ),
+            Some(PathBuf::from("/xdg/skit"))
+        );
+        assert_eq!(
+            unix_config_dir(None, Some(OsString::from("/home/user"))),
+            Some(PathBuf::from("/home/user/.config/skit"))
+        );
+        assert_eq!(unix_config_dir(None, None), None);
     }
 
     #[test]
