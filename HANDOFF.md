@@ -728,6 +728,16 @@ workspace scan of every \x04 site found one live-on-Windows candidate that is em
 green (left ungated, over-gating refused) and zero \x1a dependence. Deferred commission
 once Windows is fully green: split the phases so default+reprompt return to Windows.
 
+The ef86cba run cleared agent_install entirely and advanced into port_test_config_cmd
+(60/1, 2.12s). Wave 16 (`85c21fc`) closed the JSON-escaping class: the failure's root was a
+hand-rolled parse_flat_json that never unescapes (its "no serde_json dev-dependency"
+justification was obsolete), replaced with serde_json; the sweep found ONE more member (the
+doctor private-uv owner searched raw JSON for a path — now an exact parsed-field equality,
+strictly stronger) and classified every non-member (token-valued reads, URL values,
+plain-text stdout, the two {:?}-escaped TOML writers, three non-JSON hand-rolled readers).
+RED was reproduced ON LINUX by naming a probe file `ba\sh` — a legal unix filename whose
+serde escaping shows the exact doubled-separator signature.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
