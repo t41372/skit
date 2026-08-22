@@ -301,7 +301,14 @@ mod private_tests {
 
     #[test]
     fn runtime_names_and_process_faults_are_typed_and_cleanup_is_mandatory() {
+        // Every name, so no arm waits for a host that has that runtime installed.
+        assert_eq!(JavaScriptRuntimeKind::Deno.name(), "deno");
         assert_eq!(JavaScriptRuntimeKind::Bun.name(), "bun");
+        assert_eq!(JavaScriptRuntimeKind::Node.name(), "node");
+        assert_eq!(
+            JavaScriptRuntimeKind::Other("mystery".to_owned()).name(),
+            "mystery"
+        );
 
         let output = finish_javascript_syntax_gate_with(
             FakeChild,
