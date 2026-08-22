@@ -50,6 +50,9 @@ fn add_workdir_keeps_script_prompt_executable_and_command_lanes_distinct() {
         add_workdir(&kind("prompt"), StorageMode::Reference),
         "invoke"
     );
+    // A copied program still runs beside its origin. Reference mode reaches "origin" by its own
+    // rule, so only this case shows that the executable kind decides for itself.
+    assert_eq!(add_workdir(&kind("exe"), StorageMode::Copy), "origin");
     assert_eq!(add_workdir(&kind("exe"), StorageMode::Reference), "origin");
     assert_eq!(
         add_workdir(&kind("command"), StorageMode::Reference),

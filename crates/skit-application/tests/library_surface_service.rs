@@ -106,6 +106,72 @@ fn prompt_entry() -> Entry {
     }
 }
 
+fn command_entry() -> Entry {
+    let mut meta = EntryMeta::minimal("Demo", EntryKind::parse("command").unwrap());
+    meta.added_at = "1969-12-31T00:00:00Z".to_owned();
+    Entry {
+        slug: Slug::parse("demo").unwrap(),
+        meta,
+    }
+}
+
+fn detail_template(entry: Entry, template: &str) -> Option<String> {
+    let repository = MemoryLibrary {
+        entry,
+        refreshes: Cell::new(0),
+    };
+    let state = MemoryState;
+    let form = FixedForm;
+    let template = template.to_owned();
+    let effective_settings = move |entry: &Entry, _: Option<&[u8]>| {
+        let mut settings = EntrySettings::from_meta(&entry.meta);
+        settings.template = template.clone();
+        settings
+    };
+    let service = LibrarySurfaceService::new(&repository, &state, &form, effective_settings);
+    service
+        .load_at(&[], OffsetDateTime::UNIX_EPOCH)
+        .unwrap()
+        .details[&Slug::parse("demo").unwrap()]
+        .template
+        .clone()
+}
+
+#[test]
+fn only_a_command_entry_with_a_template_shows_one() {
+    // Both halves decide together. A command entry shows the template it has.
+    assert_eq!(
+        detail_template(command_entry(), "echo mine"),
+        Some("echo mine".to_owned())
+    );
+    // A command entry with nothing stored shows nothing.
+    assert_eq!(detail_template(command_entry(), ""), None);
+    // Another kind shows nothing, even when its settings carry a template.
+    assert_eq!(detail_template(prompt_entry(), "echo not-mine"), None);
+}
+
+#[test]
+fn the_relative_age_buckets_end_where_version_0_4_ends_them() {
+    // Version 0.4 compares with `<` at every boundary, so each threshold belongs to the next
+    // bucket, not its own (`src/skit/tui.py:112-118`).
+    assert_eq!(
+        LibraryRunAge::from_elapsed("raw", Some(89)),
+        LibraryRunAge::JustNow
+    );
+    assert_eq!(
+        LibraryRunAge::from_elapsed("raw", Some(90)),
+        LibraryRunAge::Minutes(1)
+    );
+    assert_eq!(
+        LibraryRunAge::from_elapsed("raw", Some(129_599)),
+        LibraryRunAge::Hours(35)
+    );
+    assert_eq!(
+        LibraryRunAge::from_elapsed("raw", Some(129_600)),
+        LibraryRunAge::Days(1)
+    );
+}
+
 #[test]
 fn the_application_service_builds_one_complete_surface_from_ports() {
     let repository = MemoryLibrary {

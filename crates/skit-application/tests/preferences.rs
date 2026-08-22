@@ -24,6 +24,49 @@ fn snapshot(mirror: MirrorConfiguration) -> PreferencesSnapshot {
 }
 
 #[test]
+fn any_single_mirror_url_counts_as_configured() {
+    // The master switch reads "no URL anywhere". Each field alone must therefore answer that
+    // question on its own, so a draft that carries one URL and is switched off is not a fresh one.
+    for (name, mirror) in [
+        (
+            "pypi",
+            MirrorConfiguration {
+                pypi: "https://pypi.example/simple".to_owned(),
+                ..MirrorConfiguration::default()
+            },
+        ),
+        (
+            "python_install",
+            MirrorConfiguration {
+                python_install: "https://python.example/".to_owned(),
+                ..MirrorConfiguration::default()
+            },
+        ),
+        (
+            "uv_binary",
+            MirrorConfiguration {
+                uv_binary: "https://uv.example/".to_owned(),
+                ..MirrorConfiguration::default()
+            },
+        ),
+        (
+            "npm",
+            MirrorConfiguration {
+                npm: "https://npm.example/".to_owned(),
+                ..MirrorConfiguration::default()
+            },
+        ),
+    ] {
+        let draft = PreferencesDraft::from_snapshot(snapshot(mirror));
+        assert!(!draft.mirror_master, "{name} alone must count as a URL");
+    }
+
+    // With nothing set anywhere the switch is on, which is the fresh state.
+    let empty = PreferencesDraft::from_snapshot(snapshot(MirrorConfiguration::default()));
+    assert!(empty.mirror_master);
+}
+
+#[test]
 fn fresh_preferences_expose_every_default_and_each_mirror_axis() {
     let draft = PreferencesDraft::from_snapshot(snapshot(MirrorConfiguration::default()));
 
