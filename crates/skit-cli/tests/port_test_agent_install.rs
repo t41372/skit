@@ -620,6 +620,9 @@ fn test_agent_pick_target_backing_out_returns_none() {
 // behavior deterministic without guessing how long the child takes to start.
 // --------------------------------------------------------------------------
 
+/// One byte string a terminal program writes when it asks where the cursor is.
+const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+
 fn run_agent_install_pty(
     sandbox: &Sandbox,
     locale: &str,
@@ -663,6 +666,7 @@ fn run_agent_install_pty(
     });
     let mut writer = pair.master.take_writer().unwrap();
     let mut checkpoint = 0;
+    let mut answered_queries = 0;
     for (prompt, answer) in input {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -670,8 +674,23 @@ fn run_agent_install_pty(
             let position = bytes[checkpoint..]
                 .windows(prompt.len())
                 .position(|window| window == prompt.as_bytes());
+            let asked = bytes
+                .windows(CURSOR_QUERY.len())
+                .filter(|window| *window == CURSOR_QUERY)
+                .count();
             let shown = String::from_utf8_lossy(&bytes).into_owned();
             drop(bytes);
+            // Answer where the cursor is, the way a real terminal does. A program that asks waits
+            // for the answer before it writes anything more, so an unanswered question stops the
+            // child before it ever draws the prompt this loop is waiting to read. Unix does not ask
+            // here: the `console` crate reads the size and the position through an ioctl there, and
+            // only its Windows path sends this escape. The count drives the reply, so the loop
+            // costs nothing on a host that never asks.
+            while answered_queries < asked {
+                writer.write_all(b"\x1b[1;1R").unwrap();
+                writer.flush().unwrap();
+                answered_queries += 1;
+            }
             if let Some(position) = position {
                 checkpoint += position + prompt.len();
                 break;
