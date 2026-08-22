@@ -912,6 +912,7 @@ fn typed_add_workflow_round_trips_and_preserves_ordered_host_effects() {
         modified: 42,
         identity: None,
         permissions: SourcePermissions::default(),
+        content_hash: None,
     }]);
     let screen = Screen::Add(Box::new(add));
     let encoded = serde_json::to_string(&screen).unwrap();

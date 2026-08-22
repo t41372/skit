@@ -2135,6 +2135,7 @@ mod tests {
                 modified: u64::try_from(index).unwrap(),
                 identity: None,
                 permissions: SourcePermissions::default(),
+                content_hash: None,
             })
             .collect::<Vec<_>>();
         let mut state = AddWorkflowState::new(drafts);

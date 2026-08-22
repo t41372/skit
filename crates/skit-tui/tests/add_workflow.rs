@@ -189,6 +189,7 @@ fn every_advertised_add_action_is_scrollable_and_clickable_at_every_size_tier() 
         modified: 1,
         identity: None,
         permissions: SourcePermissions::default(),
+        content_hash: None,
     }]);
     let _ = confirm.reduce(AddAction::SelectDraft(0));
     let _ = confirm.reduce(AddAction::DeleteSelectedDraft);

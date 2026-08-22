@@ -81,7 +81,7 @@ use skit_store::{
     FileRunnerManagementStore, PromptRunner, RunnerManagementStoreError, RunnerRemovalCas,
     SystemDirectoryReader, expand_user_path,
 };
-use skit_store::{FileStore, stored_filenames};
+use skit_store::{FileStore, content_hash, stored_filenames};
 use skit_ui::{
     Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor,
     DraftDeleteOutcome, DraftKind, DraftSummary, Effect as UiEffect, FieldValue, FormField,
@@ -8328,6 +8328,8 @@ fn consume_owned_draft_with(
             identity: expected.identity.as_ref(),
             modified: None,
             permissions: None,
+            // The snapshot lane compares the exact bytes below, so it needs no separate witness.
+            content_hash: None,
             source: Some(expected),
         },
         hook,
@@ -8346,6 +8348,7 @@ fn consume_draft_summary(
             identity: expected.identity.as_ref(),
             modified: Some(expected.modified),
             permissions: Some(&expected.permissions),
+            content_hash: expected.content_hash.as_deref(),
             source: None,
         },
         |_, _| {},
@@ -8358,6 +8361,8 @@ struct DraftConsumeClaim<'a> {
     identity: Option<&'a SourceIdentity>,
     modified: Option<u64>,
     permissions: Option<&'a SourcePermissions>,
+    /// Content witness the row kept, for a host whose identity cannot see a write in place.
+    content_hash: Option<&'a str>,
     source: Option<&'a AddSourceSnapshot>,
 }
 
@@ -8372,6 +8377,7 @@ fn consume_owned_draft_claim(
         identity: expected_identity,
         modified: expected_modified,
         permissions: expected_permissions,
+        content_hash: expected_content_hash,
         source: expected_source,
     } = claim;
     if !claimed_as_draft || !has_owned_draft_shape(data_dir, path) {
@@ -8423,6 +8429,11 @@ fn consume_owned_draft_claim(
                 .and_then(|file| file.metadata().ok())
                 .is_some_and(|metadata| source_permissions(&metadata) == *expected)
         })
+        && expected_content_hash.is_none_or(|expected| {
+            opened
+                .as_mut()
+                .is_some_and(|file| file_content_matches(file, expected).unwrap_or(false))
+        })
         && expected_source.is_none_or(|source| {
             opened
                 .as_mut()
@@ -8467,6 +8478,11 @@ fn consume_owned_draft_claim(
                 .as_ref()
                 .and_then(|file| file.metadata().ok())
                 .is_some_and(|metadata| source_permissions(&metadata) == *expected)
+        })
+        && expected_content_hash.is_none_or(|expected| {
+            opened
+                .as_mut()
+                .is_some_and(|file| file_content_matches(file, expected).unwrap_or(false))
         })
         && expected_source.is_none_or(|source| {
             opened
@@ -8515,6 +8531,16 @@ fn consume_owned_draft_claim(
     fs::remove_dir(&quarantine_dir)
         .map_err(|error| source_error("remove", &quarantine_dir, error))?;
     Ok(DraftConsumeOutcome::Removed)
+}
+
+/// Whether the open file still holds the content the row recorded.
+///
+/// A read that fails answers no, so an unreadable draft is kept, never removed.
+fn file_content_matches(file: &mut File, expected: &str) -> Result<bool, io::Error> {
+    file.rewind()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(content_hash(&bytes) == expected)
 }
 
 fn source_file_matches(file: &mut File, expected: &AddSourceSnapshot) -> Result<bool, io::Error> {
@@ -8960,9 +8986,30 @@ fn tui_drafts_after(
                 modified,
                 identity: source_identity_at(&item.path(), &metadata),
                 permissions: source_permissions(&metadata),
+                content_hash: draft_content_witness(&item.path()),
             })
         })
         .collect()
+}
+
+/// Read the content witness a listed draft needs on this host.
+///
+/// A Unix identity carries the change time, which every write in place moves, so the identity alone
+/// already reports an edit and the rows need no witness and no extra read.
+#[cfg(not(windows))]
+fn draft_content_witness(_path: &Path) -> Option<String> {
+    None
+}
+
+/// Read the content witness a listed draft needs on this host.
+///
+/// A Windows identity is a volume number, a file number, and a creation time. A write in place
+/// moves none of them, and the modified time can repeat when two writes share one clock tick. The
+/// row therefore keeps the content itself, so deletion can see an edit the rest cannot. An
+/// unreadable draft returns `None`, which leaves deletion with the checks it had before.
+#[cfg(windows)]
+fn draft_content_witness(path: &Path) -> Option<String> {
+    fs::read(path).ok().map(|bytes| content_hash(&bytes))
 }
 
 fn modified_ns(metadata: &Metadata) -> Option<u64> {

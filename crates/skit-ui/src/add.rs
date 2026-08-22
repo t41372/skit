@@ -135,6 +135,14 @@ pub struct DraftSummary {
     /// Permissions captured with the row so deletion detects an in-place mode change.
     #[serde(default)]
     pub permissions: SourcePermissions,
+    /// Content witness captured with the row, for hosts whose identity cannot see a content edit.
+    ///
+    /// A host identity that carries a change time already reports an edit in place. A host identity
+    /// built from a file number and a creation time does not, and its modified time can repeat
+    /// inside one clock tick. This witness closes that gap. `None` means the host does not need it,
+    /// or the row could not be read, and deletion then judges by identity, time, and permissions.
+    #[serde(default)]
+    pub content_hash: Option<String>,
 }
 
 /// Result of one identity-checked kept-draft deletion.
@@ -2269,6 +2277,7 @@ mod tests {
                 modified: index as u64,
                 identity: None,
                 permissions: SourcePermissions::default(),
+                content_hash: None,
             })
             .collect();
         assert_eq!(AddSourceState::new(drafts).draft_overflow(), 1);
@@ -2461,6 +2470,7 @@ mod tests {
             modified: 1,
             identity: None,
             permissions: SourcePermissions::default(),
+            content_hash: None,
         };
         let mut deleted = AddWorkflowState::new(vec![draft.clone()]);
         let _ = deleted.reduce(AddAction::SelectDraft(0));
@@ -2505,12 +2515,14 @@ mod tests {
             modified: 1,
             identity: None,
             permissions: SourcePermissions::default(),
+            content_hash: None,
         };
         let second = DraftSummary {
             path: PathBuf::from("skit-new-second.py"),
             modified: 2,
             identity: None,
             permissions: SourcePermissions::default(),
+            content_hash: None,
         };
         let mut workflow = AddWorkflowState::new(vec![first.clone(), second.clone()]);
         let _ = workflow.reduce(AddAction::SelectDraft(0));
@@ -2535,6 +2547,7 @@ mod tests {
             modified: 3,
             identity: None,
             permissions: SourcePermissions::default(),
+            content_hash: None,
         };
         assert!(
             workflow
@@ -2588,6 +2601,7 @@ mod tests {
             modified: 1,
             identity: None,
             permissions: SourcePermissions::default(),
+            content_hash: None,
         };
         let mut workflow = AddWorkflowState::new(vec![draft.clone()]);
         let _ = workflow.reduce(AddAction::SelectDraft(0));

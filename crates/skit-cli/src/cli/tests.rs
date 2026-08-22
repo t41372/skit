@@ -1890,7 +1890,14 @@ fn tui_delete_in_place_content_and_permission_changes_return_refreshed_claims() 
         panic!("an in-place content edit must refresh instead of deleting");
     };
     assert_eq!(refreshed.path, content_path);
-    assert!(refreshed.modified != initial.modified || refreshed.identity != initial.identity);
+    // The refreshed row must differ in at least one witness. A host whose identity holds no change
+    // time, and whose modified time can repeat inside one clock tick, differs only in the content
+    // witness, so the row is read through all three.
+    assert!(
+        refreshed.modified != initial.modified
+            || refreshed.identity != initial.identity
+            || refreshed.content_hash != initial.content_hash
+    );
     assert_eq!(fs::read(&content_path).unwrap(), b"print('new')\n");
 
     let permissions = TempDir::new().unwrap();
@@ -10098,6 +10105,40 @@ fn owned_draft_quarantine_restore_failure_keeps_every_file() {
         "quarantine files are never resumable rows"
     );
     assert_eq!(visible[0].path, original);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn draft_delete_reads_the_content_witness_the_row_kept() {
+    let root = TempDir::new().unwrap();
+    let drafts = root.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let path = drafts.join("skit-new-witness.py");
+    fs::write(&path, b"print('kept')\n").unwrap();
+
+    // The row reports the file as it is now, so identity, time, and permissions all agree. Only the
+    // witness can disagree, which is the case a host with no change time in its identity depends on.
+    let row = tui_drafts(root.path()).pop().unwrap();
+
+    let mut edited = row.clone();
+    edited.content_hash = Some(content_hash(b"print('other')\n"));
+    assert_eq!(
+        consume_draft_summary(root.path(), &edited).unwrap(),
+        DraftConsumeOutcome::Changed
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"print('kept')\n");
+    assert!(owned_draft_quarantines(root.path()).is_empty());
+
+    // The refusal above restored the file, which gave it a new identity. Read the row again so the
+    // witness stays the only field that can decide.
+    let mut unchanged = tui_drafts(root.path()).pop().unwrap();
+    unchanged.content_hash = Some(content_hash(b"print('kept')\n"));
+    assert_eq!(
+        consume_draft_summary(root.path(), &unchanged).unwrap(),
+        DraftConsumeOutcome::Removed
+    );
+    assert!(!path.exists());
+    assert!(owned_draft_quarantines(root.path()).is_empty());
 }
 
 #[cfg(unix)]

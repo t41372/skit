@@ -422,12 +422,14 @@ fn test_ctrl_d_deletes_the_highlighted_draft_after_confirm() {
         modified: 1,
         identity: None,
         permissions: SourcePermissions::default(),
+        content_hash: None,
     };
     let doomed = DraftSummary {
         path: PathBuf::from("skit-new-doomed.py"),
         modified: 2,
         identity: None,
         permissions: SourcePermissions::default(),
+        content_hash: None,
     };
     let mut workflow = AddWorkflowState::new(vec![keep.clone(), doomed.clone()]);
     let doomed_index = workflow
@@ -500,6 +502,7 @@ fn test_ctrl_d_confirm_esc_keeps_the_draft() {
         modified: 1,
         identity: None,
         permissions: SourcePermissions::default(),
+        content_hash: None,
     };
     let mut workflow = AddWorkflowState::new(vec![draft]);
     let _ = workflow.reduce(AddAction::SelectDraft(0));
@@ -532,6 +535,7 @@ fn test_ctrl_d_while_editing_a_field_is_the_inputs_delete_right() {
         modified: 1,
         identity: None,
         permissions: SourcePermissions::default(),
+        content_hash: None,
     };
     let mut workflow = AddWorkflowState::new(vec![draft.clone()]);
     let _ = workflow.reduce(AddAction::SetSourcePath("abc".to_owned())); // typing in the path field
@@ -602,6 +606,7 @@ fn test_delete_draft_action_is_a_noop_when_nothing_highlighted() {
         modified: 1,
         identity: None,
         permissions: SourcePermissions::default(),
+        content_hash: None,
     };
     let mut workflow = AddWorkflowState::new(vec![draft]);
     // Nothing selected (the `if highlighted is None: return` guard).
@@ -624,6 +629,7 @@ fn test_delete_draft_chip_only_renders_when_drafts_exist() {
         modified: 1,
         identity: None,
         permissions: SourcePermissions::default(),
+        content_hash: None,
     }]);
     let _ = present.reduce(AddAction::SelectDraft(0));
     let mut session = AddScreenSession::default();
