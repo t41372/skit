@@ -208,7 +208,7 @@ fn run_child_in_pty(
     }
 
     if let Some((input, marker)) = after_marker {
-        writer.write_all(input).unwrap();
+        writer.write_all(&keystrokes(input)).unwrap();
         writer.flush().unwrap();
         let deadline = Instant::now() + Duration::from_secs(6);
         loop {
@@ -250,4 +250,19 @@ fn run_child_in_pty(
             Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
         }
     }
+}
+
+/// Deliver one canned answer the way a terminal delivers it.
+///
+/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
+/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
+/// character, so the prompt keeps waiting and both sides stop
+/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
+/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
+/// Unix exactly as it was.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
 }

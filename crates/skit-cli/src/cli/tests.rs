@@ -7983,7 +7983,7 @@ impl MirrorPromptPty {
 
     fn send(&mut self, answer: &str) {
         let writer = self.writer.as_mut().unwrap();
-        writer.write_all(answer.as_bytes()).unwrap();
+        writer.write_all(&keystrokes(answer.as_bytes())).unwrap();
         writer.flush().unwrap();
     }
 
@@ -11671,4 +11671,19 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
         ),
         [r"C:\tools\edit.exe", "--wait"]
     );
+}
+
+/// Deliver one canned answer the way a terminal delivers it.
+///
+/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
+/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
+/// character, so the prompt keeps waiting and both sides stop
+/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
+/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
+/// Unix exactly as it was.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
 }

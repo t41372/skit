@@ -415,7 +415,7 @@ fn run_pty_configured(
     }
     for bytes in input {
         thread::sleep(Duration::from_millis(120));
-        if writer.write_all(bytes).is_err() {
+        if writer.write_all(&keystrokes(bytes)).is_err() {
             break;
         }
         let _ = writer.flush();
@@ -513,7 +513,7 @@ impl LiveTui {
     fn send(&mut self, bytes: &[u8]) {
         self.settle();
         self.last_sent = bytes.to_vec();
-        self.writer.write_all(bytes).unwrap();
+        self.writer.write_all(&keystrokes(bytes)).unwrap();
         self.writer.flush().unwrap();
     }
 
@@ -2921,4 +2921,19 @@ fn terminal_plain_launch_menu_uses_the_same_prefill_and_argument_contract() {
         output.contains("Prompt runner choices: backup, local [local]:"),
         "{output}"
     );
+}
+
+/// Deliver one canned answer the way a terminal delivers it.
+///
+/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
+/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
+/// character, so the prompt keeps waiting and both sides stop
+/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
+/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
+/// Unix exactly as it was.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
 }

@@ -143,7 +143,7 @@ impl Sandbox {
         }
         for bytes in inputs {
             thread::sleep(Duration::from_millis(140));
-            if writer.write_all(bytes).is_err() {
+            if writer.write_all(&keystrokes(bytes)).is_err() {
                 break;
             }
             let _ = writer.flush();
@@ -232,7 +232,7 @@ impl Sandbox {
         if early_status.is_none() {
             before_input();
             for input in inputs {
-                writer.write_all(input).unwrap();
+                writer.write_all(&keystrokes(input)).unwrap();
                 writer.flush().unwrap();
                 thread::sleep(Duration::from_millis(80));
             }
@@ -1506,4 +1506,19 @@ fn test_cancelled_add_exact_line_and_exit_code() {
 #[ignore = "cross-crate: calls the private `cli._add_no_source_ask()` and captures the tui command door's `_print_add_summary(entry, [], [], secrets)` args (empty deps/managed, exactly the secret holes). Private skit-cli/skit-tui seam (cli.rs:1461-1462, print_add_summary cli.rs:3095); no captured-kwarg black-box surface."]
 fn test_bare_add_tui_command_door_summary_call_contract() {
     // The command door hands the summary empty deps/managed and exactly the secret holes.
+}
+
+/// Deliver one canned answer the way a terminal delivers it.
+///
+/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
+/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
+/// character, so the prompt keeps waiting and both sides stop
+/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
+/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
+/// Unix exactly as it was.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
 }

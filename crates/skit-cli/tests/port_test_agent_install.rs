@@ -674,7 +674,7 @@ fn run_agent_install_pty(
             thread::sleep(Duration::from_millis(10));
         }
         if !answer.is_empty() {
-            writer.write_all(answer).unwrap();
+            writer.write_all(&keystrokes(answer)).unwrap();
             writer.flush().unwrap();
         }
     }
@@ -683,4 +683,19 @@ fn run_agent_install_pty(
     drain.join().unwrap();
     let output = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
     (status.exit_code(), output)
+}
+
+/// Deliver one canned answer the way a terminal delivers it.
+///
+/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
+/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
+/// character, so the prompt keeps waiting and both sides stop
+/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
+/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
+/// Unix exactly as it was.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
 }

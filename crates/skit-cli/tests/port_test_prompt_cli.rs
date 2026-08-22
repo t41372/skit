@@ -336,7 +336,7 @@ fn run_runner_confirmation_in_locale(
     let mut writer = pair.master.take_writer().unwrap();
     wait_until_pty_output(&shared, prompt_needle);
     before_answer();
-    writer.write_all(answer).unwrap();
+    writer.write_all(&keystrokes(answer)).unwrap();
     writer.flush().unwrap();
     let status = child.wait().unwrap();
     drop(writer);
@@ -424,7 +424,7 @@ fn run_prompt_editor_pty(
     let mut writer = pair.master.take_writer().unwrap();
     for (prompt, answer) in answers {
         wait_until_pty_output(&shared, prompt);
-        writer.write_all(answer).unwrap();
+        writer.write_all(&keystrokes(answer)).unwrap();
         writer.flush().unwrap();
     }
     let status = child.wait().unwrap();
@@ -3615,4 +3615,19 @@ fn test_edit_non_prompt_keeps_the_generic_drift_hint() {
         combined.contains("skit reconciles parameter drift at run time"),
         "{combined}"
     );
+}
+
+/// Deliver one canned answer the way a terminal delivers it.
+///
+/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
+/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
+/// character, so the prompt keeps waiting and both sides stop
+/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
+/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
+/// Unix exactly as it was.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
 }
