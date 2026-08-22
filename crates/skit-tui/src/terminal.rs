@@ -573,59 +573,74 @@ mod tests {
 
     #[test]
     fn terminal_takes_an_event_for_every_wait_the_loop_can_choose() {
-        let arrived = event::Event::FocusGained;
+        use std::cell::Cell;
 
-        // A blocking wait takes the next event and never polls: there is nothing else to do.
-        assert_eq!(
-            read_terminal_event_with(
-                TerminalEventWait::Blocking,
-                || Ok(arrived.clone()),
-                |_| panic!("a blocking wait must not poll"),
-            )
-            .unwrap(),
-            Some(arrived.clone())
-        );
+        const WINDOW: Duration = Duration::from_millis(25);
 
-        // A polling wait takes the event only when the window reports one.
+        // One pair of stubs serves every case, and each keeps a count. A case that must not reach a
+        // call proves it by the count standing still, so nothing here is written to never run.
+        let reads = Cell::new(0_u32);
+        let polls = Cell::new(0_u32);
+        let asked_for = Cell::new(Duration::ZERO);
+        let window_has_event = Cell::new(true);
+        let read_fails = Cell::new(false);
+        let poll_fails = Cell::new(false);
+
+        let read = || {
+            reads.set(reads.get() + 1);
+            if read_fails.get() {
+                Err(io::Error::other("read failed"))
+            } else {
+                Ok(event::Event::FocusGained)
+            }
+        };
+        let poll = |waited: Duration| {
+            polls.set(polls.get() + 1);
+            asked_for.set(waited);
+            if poll_fails.get() {
+                Err(io::Error::other("poll failed"))
+            } else {
+                Ok(window_has_event.get())
+            }
+        };
+
+        // A blocking wait takes the next event, and never polls: it has nothing else to do.
         assert_eq!(
-            read_terminal_event_with(
-                TerminalEventWait::Poll(Duration::from_millis(25)),
-                || Ok(arrived.clone()),
-                |window| {
-                    assert_eq!(window, Duration::from_millis(25));
-                    Ok(true)
-                },
-            )
-            .unwrap(),
-            Some(arrived.clone())
+            read_terminal_event_with(TerminalEventWait::Blocking, read, poll).unwrap(),
+            Some(event::Event::FocusGained)
         );
+        assert_eq!(reads.get(), 1);
+        assert_eq!(polls.get(), 0, "a blocking wait must not poll");
+
+        // A polling wait asks for the loop's window, and takes the event it reports.
         assert_eq!(
-            read_terminal_event_with(
-                TerminalEventWait::Poll(Duration::from_millis(25)),
-                || panic!("an empty window must not take an event"),
-                |_| Ok(false),
-            )
-            .unwrap(),
+            read_terminal_event_with(TerminalEventWait::Poll(WINDOW), read, poll).unwrap(),
+            Some(event::Event::FocusGained)
+        );
+        assert_eq!(asked_for.get(), WINDOW);
+        assert_eq!((reads.get(), polls.get()), (2, 1));
+
+        // An empty window reports nothing to take, so nothing is taken.
+        window_has_event.set(false);
+        assert_eq!(
+            read_terminal_event_with(TerminalEventWait::Poll(WINDOW), read, poll).unwrap(),
             None
         );
+        assert_eq!(reads.get(), 2, "an empty window must not take an event");
+        assert_eq!(polls.get(), 2);
 
-        // A failure on either call is the caller's to handle, not something to swallow.
-        assert!(
-            read_terminal_event_with(
-                TerminalEventWait::Blocking,
-                || Err(io::Error::other("read failed")),
-                |_| panic!("a blocking wait must not poll"),
-            )
-            .is_err()
-        );
-        assert!(
-            read_terminal_event_with(
-                TerminalEventWait::Poll(Duration::from_millis(25)),
-                || panic!("a failed window must not take an event"),
-                |_| Err(io::Error::other("poll failed")),
-            )
-            .is_err()
-        );
+        // A window that fails stops there, and the failure reaches the caller.
+        poll_fails.set(true);
+        assert!(read_terminal_event_with(TerminalEventWait::Poll(WINDOW), read, poll).is_err());
+        assert_eq!(reads.get(), 2, "a failed window must not take an event");
+        assert_eq!(polls.get(), 3);
+
+        // A failure while taking the event reaches the caller too.
+        poll_fails.set(false);
+        read_fails.set(true);
+        assert!(read_terminal_event_with(TerminalEventWait::Blocking, read, poll).is_err());
+        assert_eq!(reads.get(), 3);
+        assert_eq!(polls.get(), 3, "a blocking wait must not poll");
     }
 
     #[test]
