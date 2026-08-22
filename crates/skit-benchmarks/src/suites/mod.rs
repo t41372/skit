@@ -269,6 +269,30 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
     }
 
     #[test]
+    fn the_fork_window_wait_returns_once_the_writer_lets_go() {
+        use std::{fs::OpenOptions, thread, time::Instant};
+
+        // A program that any process holds open for writing cannot start: the host answers "Text
+        // file busy". Holding the handle here asks for that answer on purpose, which is the answer
+        // a forked child produces by accident.
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("held-shim");
+        fs::write(&path, probe_guarded("#!/bin/sh\nexit 0\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let hold = OpenOptions::new().append(true).open(&path).unwrap();
+
+        let probed = path.clone();
+        let started = Instant::now();
+        let waiter = thread::spawn(move || wait_past_the_fork_window(&probed));
+        thread::sleep(Duration::from_millis(80));
+        drop(hold);
+
+        // The wait ends, and only after the writer let go, so it paused at least once.
+        waiter.join().unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(20));
+    }
+
+    #[test]
     fn every_suite_dispatches_and_preserves_its_public_metric_and_raw_contract() {
         let fixture = Fixture::new();
         let context = &fixture.context;
