@@ -703,6 +703,18 @@ READ-PATH boundary (two reached through inlined run_pty_configured(.., false, ..
 wrapper name was not the class), while the 14 LiveTui/crossterm tests stay LIVE on Windows
 for empirical adjudication and 9 are neither. Aggregate unchanged at 4070 / 0 / 525.
 
+The fc93b5c run marked the regime change: Windows now FAILS FAST with full diagnostics
+instead of hanging (10s failure, no bound hit). Its three agent_install failures showed the
+child emitting a CSI 6n cursor query and waiting: unix console answers position through an
+ioctl and never sends the escape, so only Windows needs the reply. Wave 14 (`30d9ec7`)
+taught run_agent_install_pty the repo's canonical data-driven answerer (count queries in
+the stream, answer each once, inside the needle-wait loop), with a LOCAL RED/GREEN: a
+scripted child emitting CSI 6n reproduced the CI failure byte-identically and passed in
+1.02s after the fix. An 11-harness exposure scan found no other exposed harness; the one
+residual (skit-tui's run_child_in_pty answers only in its first loop; its later loops wait
+on file metadata and child exit, were green on Windows, and a blind extension could add a
+unix write-after-exit flake) is flagged in the code review record, not patched.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
