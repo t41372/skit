@@ -502,6 +502,33 @@ unmasking. The fourth wave (2026-08-22, `9abfe71`..`e3a6d7f`) closed them:
   least one beat elapsed. The arm went from 0 to 4 hits; `suites/mod.rs` has no uncovered
   line.
 
+The fourth wave was pushed as head `dff74a1c76df18307c042e393279602e5c30c5c6`. The macOS
+test job went green for the first time; only Windows remained, down to one lib-test failure —
+and that one was a REAL Windows data-loss defect, fixed in the fifth wave:
+
+- `30d0326` — deleting a kept draft checks identity, modified time, and permissions. The
+  Windows identity is volume number, file number, and creation time: an in-place write moves
+  none of them, the modified time can repeat inside one clock tick, and permissions carry one
+  bit — so an edited draft was judged unchanged and REMOVED. Windows draft rows now carry a
+  content witness (a `content_hash` read at listing), the delete check verifies it wherever
+  it reads the other fields, and a mismatched or unreadable witness answers "changed", so the
+  draft is kept and the row refreshed. Unix records no witness and reads no extra bytes: its
+  identity carries the change time, so behavior and work are byte-identical. The snapshot
+  lane already compares exact bytes. Three mutant probes go RED against the plain suite.
+
+The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
+fails to compile on Windows; the `\?\` verbatim class is neutralized because
+canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
+extensionless `#!/bin/sh` shims are "not found" on Windows, concentrated in
+`edge_workflows.rs` (first alphabetically), then `port_test_config_cmd`,
+`port_test_declared_params`, and `port_test_js_deps` (143 tests). The highest-leverage
+remedy is `#[cfg(windows)]` `.cmd` counterparts for the ~6 shared shim helpers, extending
+the repo's existing `uv.exe`/PATHEXT conventions. `terminal_pty` under ConPTY risks
+target-level timeouts (VT chatter, EOF semantics), which must not be misread as infra
+flakes. The `support/temp_root.rs` doc comment overclaims "same spelling on every platform"
+(false on Windows; harmless today because both sides canonicalize) and needs one honest
+sentence.
+
 After the fourth wave the full workspace suite is 4064 / 0 / 525 (one new test name, the
 fork-window owner). fmt, workspace Clippy `-D warnings`, and the terminal_pty suite under
 plain and symlinked TMPDIR pass. A fresh committed-state workspace LCOV run at the fourth-wave tree passed
