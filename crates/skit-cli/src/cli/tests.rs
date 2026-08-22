@@ -10091,6 +10091,68 @@ fn owned_draft_quarantine_restore_failure_keeps_every_file() {
 
 #[cfg(unix)]
 #[test]
+fn owned_drafts_keep_the_caller_spelling_when_the_data_directory_is_a_symlink() {
+    use std::os::unix::fs::symlink;
+
+    // A data directory behind a symlink is the macOS default: $TMPDIR sits under /var, and /var is a
+    // link to /private/var. Ownership checks resolve every link. Rows, claims, and user text keep the
+    // spelling the caller gave.
+    let root = TempDir::new().unwrap();
+    let real = root.path().join("real-data");
+    fs::create_dir_all(real.join("drafts")).unwrap();
+    let data_dir = root.path().join("linked-data");
+    symlink(&real, &data_dir).unwrap();
+
+    assert_eq!(
+        create_owned_drafts_dir(&data_dir).unwrap(),
+        data_dir.join("drafts")
+    );
+
+    let draft = data_dir.join("drafts/skit-new-linked.py");
+    fs::write(&draft, b"print('linked')\n").unwrap();
+
+    let rows = tui_drafts(&data_dir);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path, draft);
+    assert_eq!(refreshed_draft(&data_dir, &draft).unwrap().path, draft);
+
+    let snapshot = tui_add_source(&data_dir, &draft).unwrap();
+    assert!(snapshot.is_draft);
+    assert_eq!(snapshot.path, draft);
+    // Provenance stays resolved: the store records where the file really is.
+    assert_eq!(
+        snapshot.source_record,
+        fs::canonicalize(&draft).unwrap().display().to_string()
+    );
+
+    assert!(has_owned_draft_shape(&data_dir, &snapshot.path));
+    assert_eq!(
+        consume_owned_draft(&data_dir, &snapshot).unwrap(),
+        DraftConsumeOutcome::Removed
+    );
+    assert!(!draft.exists());
+    assert!(owned_draft_quarantines(&data_dir).is_empty());
+
+    // A claim that spells the data directory the resolved way names the same owned draft. The `skit
+    // add <draft>` lane builds one, because it resolves the source it reads.
+    let resolved_draft = fs::canonicalize(&real)
+        .unwrap()
+        .join("drafts/skit-new-resolved.py");
+    fs::write(&resolved_draft, b"print('resolved')\n").unwrap();
+    let resolved_snapshot = tui_add_source(&data_dir, &resolved_draft).unwrap();
+    assert!(resolved_snapshot.is_draft);
+    assert_eq!(resolved_snapshot.path, resolved_draft);
+    assert!(has_owned_draft_shape(&data_dir, &resolved_snapshot.path));
+    assert_eq!(
+        consume_owned_draft(&data_dir, &resolved_snapshot).unwrap(),
+        DraftConsumeOutcome::Removed
+    );
+    assert!(!resolved_draft.exists());
+    assert!(owned_draft_quarantines(&data_dir).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
 fn owned_draft_preconditions_and_quarantine_move_failures_preserve_every_source() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
 

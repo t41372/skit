@@ -152,9 +152,13 @@ pub enum DraftDeleteOutcome {
 /// A byte-exact source snapshot captured before review.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SourceSnapshot {
-    /// Canonical or otherwise host-resolved source path.
+    /// The source path the host reads and names in its messages.
+    ///
+    /// One of skit's own kept drafts keeps the spelling skit made from the data directory, because
+    /// the cleanup claim and the warning must name the draft at the path the user saw. The host
+    /// resolves every other source.
     pub path: PathBuf,
-    /// Provenance stored in entry metadata.
+    /// Provenance stored in entry metadata. The host resolves every symlink for this record.
     pub source_record: String,
     /// Exact source bytes read for the transaction.
     pub bytes: Vec<u8>,

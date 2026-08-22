@@ -8063,7 +8063,11 @@ fn complete_add_effect_with(
 
 fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, CliError> {
     let expanded = expand_user_path(input);
-    let path = resolve_add_source(&expanded)?;
+    let resolved = resolve_add_source(&expanded)?;
+    // skit's own kept drafts keep skit's own spelling: skit made the path from the data directory
+    // and told the user about it. Every other source resolves to where the file really is.
+    let is_draft = is_owned_draft(data_dir, &expanded);
+    let path = if is_draft { expanded } else { resolved.clone() };
     let metadata = fs::metadata(&path).map_err(|error| source_error("inspect", &path, error))?;
     let is_directory = metadata.is_dir();
     let (bytes, permissions, is_regular, identity) = if metadata.is_file() {
@@ -8088,10 +8092,9 @@ fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, Cl
             source_identity_at(&path, &metadata),
         )
     };
-    let is_draft = is_owned_draft(data_dir, &path);
     let executable = source_is_host_executable(&path, is_regular, permissions);
     Ok(AddSourceSnapshot {
-        source_record: path.display().to_string(),
+        source_record: resolved.display().to_string(),
         path,
         bytes,
         permissions,
@@ -8201,6 +8204,20 @@ fn discard_authored_draft(data_dir: &Path, expected: &AddSourceSnapshot) -> Resu
     }
 }
 
+/// The two spellings of skit's own drafts directory.
+///
+/// A data directory can sit behind a symlink. macOS does this for every temporary directory: `/var`
+/// is a link to `/private/var`. The two spellings keep one policy for the whole draft seam.
+struct OwnedDraftsDir {
+    /// The directory as the caller spelled it.
+    ///
+    /// Product paths, returned claims, and user-visible text use this spelling. It also keeps
+    /// Windows verbatim `\\?\` prefixes out of the interface.
+    literal: PathBuf,
+    /// The directory with every symlink resolved. Only ownership comparisons use this spelling.
+    canonical: PathBuf,
+}
+
 fn is_owned_draft(data_dir: &Path, path: &Path) -> bool {
     let Some(drafts_dir) = existing_owned_drafts_dir(data_dir) else {
         return false;
@@ -8210,27 +8227,38 @@ fn is_owned_draft(data_dir: &Path, path: &Path) -> bool {
         && path
             .parent()
             .and_then(|parent| fs::canonicalize(parent).ok())
-            .is_some_and(|parent| parent == drafts_dir)
+            .is_some_and(|parent| parent == drafts_dir.canonical)
 }
 
+/// Whether a claimed path names `<data dir>/drafts/skit-*` directly.
+///
+/// This is the structural precondition of a destructive draft operation. Both comparisons stay
+/// literal, because a resolved comparison also accepts `drafts/../drafts/skit-x`, and skit must not
+/// remove a file that a lexical detour names. A claim can spell the data directory the way the
+/// caller gave it or the way the host resolves it. The two spellings differ when a link holds the
+/// data directory, and both name skit's own drafts directory.
 fn has_owned_draft_shape(data_dir: &Path, path: &Path) -> bool {
-    let Some(data_dir) = fs::canonicalize(data_dir).ok() else {
+    // The resolution doubles as the existence probe. An absent data directory holds no drafts.
+    let Ok(resolved_data_dir) = fs::canonicalize(data_dir) else {
         return false;
     };
+    let parent = path.parent();
     path.file_name()
         .is_some_and(|name| name.to_string_lossy().starts_with("skit-"))
-        && path.parent() == Some(data_dir.join("drafts").as_path())
+        && (parent == Some(data_dir.join("drafts").as_path())
+            || parent == Some(resolved_data_dir.join("drafts").as_path()))
 }
 
-fn existing_owned_drafts_dir(data_dir: &Path) -> Option<PathBuf> {
-    let raw = data_dir.join("drafts");
-    let metadata = fs::symlink_metadata(&raw).ok()?;
+fn existing_owned_drafts_dir(data_dir: &Path) -> Option<OwnedDraftsDir> {
+    let literal = data_dir.join("drafts");
+    let metadata = fs::symlink_metadata(&literal).ok()?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return None;
     }
-    let data_dir = fs::canonicalize(data_dir).ok()?;
-    let drafts_dir = fs::canonicalize(raw).ok()?;
-    (drafts_dir.parent() == Some(data_dir.as_path())).then_some(drafts_dir)
+    let canonical_data_dir = fs::canonicalize(data_dir).ok()?;
+    let canonical = fs::canonicalize(&literal).ok()?;
+    (canonical.parent() == Some(canonical_data_dir.as_path()))
+        .then_some(OwnedDraftsDir { literal, canonical })
 }
 
 fn create_owned_drafts_dir(data_dir: &Path) -> Result<PathBuf, CliError> {
@@ -8241,11 +8269,14 @@ fn create_owned_drafts_dir(data_dir: &Path) -> Result<PathBuf, CliError> {
     if fs::symlink_metadata(&raw).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
         fs::create_dir(&raw).map_err(|error| source_error("create", &raw, error))?;
     }
-    existing_owned_drafts_dir(data_dir).ok_or_else(|| {
-        CliError::Failure(
-            Message::new("skit's drafts path is not an owned directory: {}").with(raw.display()),
-        )
-    })
+    existing_owned_drafts_dir(data_dir)
+        .map(|drafts_dir| drafts_dir.literal)
+        .ok_or_else(|| {
+            CliError::Failure(
+                Message::new("skit's drafts path is not an owned directory: {}")
+                    .with(raw.display()),
+            )
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -8348,12 +8379,14 @@ fn consume_owned_draft_claim(
             Message::new("the kept draft has no filesystem identity: {}").with(path.display()),
         ));
     };
-    let drafts_dir = existing_owned_drafts_dir(data_dir).ok_or_else(|| {
-        CliError::Failure(
-            Message::new("skit's drafts path is not an owned directory: {}")
-                .with(data_dir.join("drafts").display()),
-        )
-    })?;
+    let drafts_dir = existing_owned_drafts_dir(data_dir)
+        .map(|drafts_dir| drafts_dir.literal)
+        .ok_or_else(|| {
+            CliError::Failure(
+                Message::new("skit's drafts path is not an owned directory: {}")
+                    .with(data_dir.join("drafts").display()),
+            )
+        })?;
     let path_metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -8903,6 +8936,7 @@ fn tui_drafts_after(
     let Some(drafts_dir) = existing_owned_drafts_dir(data_dir) else {
         return Vec::new();
     };
+    let drafts_dir = drafts_dir.literal;
     after_directory_check(&drafts_dir);
     let Ok(items) = fs::read_dir(&drafts_dir) else {
         return Vec::new();
