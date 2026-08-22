@@ -329,6 +329,71 @@ hidden from PATH (simulates the runner) and once with `TMPDIR` behind a symlink 
 `/private/var`). Do not push merely to refresh checks while fixes are still changing. A push
 starts the mutation workflow and invalidates its result on the next source change.
 
+The 2026-08-22 fix wave closed every root above plus four latent failures the fail-fast masking
+hid. Seven code commits follow the docs correction `3797ceb`:
+
+- `257f0a5` — the footprint fixture models the running platform's venv script layout
+  (`Scripts\skit.exe` on Windows, `bin/skit` elsewhere). Explicit negative finding: no product
+  bug — `venv_skit` already reads the real Windows layout.
+- `8f712d7` — `benchmark.yml` and `benchmark-nightly.yml` set `enable-cache: false` (the jobs
+  install no packages, so the setup-uv v10 post step failed on the absent cache dir);
+  `benchmark-compare.yml`, `release.yml`, and `ci.yml` already disable it. The tooling contract
+  now fails closed on `enable-cache: true` in the three benchmark workflows (RED: flipping
+  `benchmark.yml` back fails the gate). The v10.0.1 commit pin is unchanged.
+- `732329c` — the editor launch-failure guard replaces the random scratch prefix before its
+  "XX"-sentinel read; the oracle's guarded message (`code --wait`, test_editor.py:218) holds no
+  random text, and one full-suite run drew a `.tmpXXxWk9` directory. The exact-message assertion
+  is untouched.
+- `e665966` — `test_rename_survives_doctor_rebuild` installs a private uv probe
+  (`<data>/bin/uv`, `uv.exe` on Windows); RED reproduced the CI failure byte-for-byte with a
+  uv-hidden shadow PATH. The same helper in `port_test_prompt_cli.rs` now also writes `uv.exe`
+  on Windows — its probe was invisible there (a latent Windows failure no Linux sweep can see).
+  Two new `product_contract.rs` owners close the previously unowned `--rebuild` exit cells:
+  a clean rebuilt report still exits 1 without uv for a python and for an empty library (human
+  and JSON), and a command-only library exits 0 (a forced `code = 0` mutation fails the new
+  owner). One new store owner proves scalar `needs`/`parameters` hide only their own entry and
+  rewrite no byte, completing the P3 scalar-container verification.
+- `195587e` — product fix: the owned-draft seam kept two spellings of the drafts directory and
+  compared them asymmetrically, so a data directory behind a symlink (every macOS temp path)
+  made skit refuse a legitimate draft cleanup ("refusing to remove a file outside skit's drafts
+  directory"). Ownership checks now resolve both sides; rows, claims, quarantine, and
+  user-visible text keep the caller's spelling; `source_record` provenance stays resolved
+  (store.py:329). RED: all 7 macOS failures reproduced on Linux under a symlinked `TMPDIR`,
+  plus an 8th latent one (`owned_draft_restore_and_cleanup_failures_never_clobber_or_rollback`).
+  The 7 original tests pass unchanged; one added owner proves the symlinked-data-dir case under
+  a normal `TMPDIR`. The consume guard keeps literal comparisons for both spellings so a
+  `drafts/../drafts/skit-x` lexical detour is still refused.
+- `2af1e3d` — product fix: the CLI `doctor --rebuild` receipt used the invented one-off
+  "Registry rebuilt: {}" while the TUI face already used the v0.4 ngettext pair. The CLI now
+  prints "Index rebuilt: {} entry" / "Index rebuilt: {} entries"; both catalog rows repeat the
+  shipped `.po` verbatim (`索引已重建:{} 条` / `索引已重建:{} 筆`, half-width colon); the
+  invented key's row is removed. Singular, plural, and all three locales have owners. Known
+  residuals deliberately not reopened: the OK/ERROR/WARN prefixes, the missing install-hint
+  tail on the uv line, the rebuild line's position, and the Library line format are adjudicated
+  design, recorded here for the release reviewer.
+- `f274fea` — nine port-test sandboxes resolve their root at creation, as pytest's `tmp_path`
+  does (the oracle fixtures compared resolved with resolved). This closes the 13 next-wave
+  macOS failures that the lib-test failures had masked. Shared helper:
+  `crates/skit-cli/tests/support/temp_root.rs`. No test name, assertion, or ledger row changed.
+
+Receipts at `f274fea`: `cargo fmt --all --check`, workspace Clippy `-D warnings`, Rustdoc
+`-D warnings`, English gate, tooling contracts, Actionlint, and Zizmor pass. The full workspace
+suite is **4062 passed / 0 failed / 525 ignored**, identical in three configurations: plain;
+uv-hidden PATH; and combined symlinked-`TMPDIR` plus uv-hidden PATH. A fresh committed-state
+workspace `cargo llvm-cov --locked --workspace --all-targets --all-features` run at `f274fea`
+also passed 4062 / 0 / 525 and `scripts/check_coverage.sh` returned
+`complete executable-source line coverage`; no checker rule or exclusion changed. (Two earlier
+local coverage attempts died on a full disk and on a mid-run `cargo clean`; a third hit the
+6-second mirror-PTY finish deadline in two lib owners under cold-cache instrumented load — the
+CI coverage job passed those same owners under instrumentation at `8306c16`, and the warm rerun
+passed them, so that was scheduling, not a regression.) Arithmetic from the
+`8306c16` baseline: `e665966` added 3 owners and repaired 1 flake (4060), `195587e` added the
+symlink owner (4061), `2af1e3d` added the catalog owner (4062); the ignored count 525 is
+unchanged throughout. The prompt-audit item "runner = 123 typed corruption" was verified CLOSED
+at `8306c16` before this wave: `test_meta_rejects_wrong_typed_runner_at_the_corruption_boundary`
+is an active green owner, `RawMeta` types `runner`/`dependencies`/`needs`/`params`/`parameters`,
+and the three-locale corruption copy exists in the catalog.
+
 The first current-head CodeQL run exposed four high cache-poisoning alerts in the benchmark
 comparison workflow. Disabling the uv cache was not enough because `workflow_dispatch` still ran
 caller-selected refs in the default-branch cache scope. The follow-up changes the workflow to the
