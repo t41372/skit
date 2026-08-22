@@ -137,6 +137,9 @@ fn print_environment_argv() -> Vec<String> {
 }
 
 /// The command that stays busy for about a second, so a short deadline must end it.
+///
+/// The Windows form names the program itself instead of a shell, because the environment below
+/// carries no search path that a shell could use to find one.
 #[cfg(unix)]
 fn slow_argv() -> Vec<String> {
     vec!["/bin/sh".to_owned(), "-c".to_owned(), "sleep 1".to_owned()]
@@ -145,10 +148,28 @@ fn slow_argv() -> Vec<String> {
 #[cfg(windows)]
 fn slow_argv() -> Vec<String> {
     vec![
-        std::env::var("COMSPEC").unwrap(),
-        "/C".to_owned(),
-        "ping -n 3 127.0.0.1".to_owned(),
+        format!(
+            "{}\\System32\\PING.EXE",
+            std::env::var("SystemRoot").unwrap()
+        ),
+        "-n".to_owned(),
+        "3".to_owned(),
+        "127.0.0.1".to_owned(),
     ]
+}
+
+/// The environment the slow command needs to start at all.
+#[cfg(unix)]
+fn slow_env() -> BTreeMap<String, String> {
+    BTreeMap::from([("PATH".to_owned(), "/usr/bin:/bin".to_owned())])
+}
+
+#[cfg(windows)]
+fn slow_env() -> BTreeMap<String, String> {
+    BTreeMap::from([(
+        "SystemRoot".to_owned(),
+        std::env::var("SystemRoot").unwrap(),
+    )])
 }
 
 /// Check what the child received.
@@ -184,7 +205,7 @@ fn process_runner_builds_a_complete_environment_and_enforces_timeouts() {
     let timeout = run(&ProcessSpec {
         argv: slow_argv(),
         cwd: std::env::temp_dir(),
-        env: BTreeMap::from([("PATH".to_owned(), "/usr/bin:/bin".to_owned())]),
+        env: slow_env(),
         timeout: Duration::from_millis(20),
         check: true,
     });
