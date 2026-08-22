@@ -747,9 +747,14 @@ mod tests {
         let site = venv.join("lib/python3.13/site-packages");
         let dist = site.join("skit_cli-0.5.0.dist-info");
         fs::create_dir_all(&dist).unwrap();
-        fs::create_dir_all(venv.join("bin")).unwrap();
+        // A venv puts the console script in `Scripts\skit.exe` on Windows and in `bin/skit`
+        // elsewhere. Model the layout of the running platform, because that is the only layout
+        // the measurement looks in. The literal names keep this test independent of `venv_skit`.
+        let script_dir = venv.join(if cfg!(windows) { "Scripts" } else { "bin" });
+        let script = script_dir.join(if cfg!(windows) { "skit.exe" } else { "skit" });
+        fs::create_dir_all(&script_dir).unwrap();
         fs::write(site.join("payload"), b"abc").unwrap();
-        fs::write(venv.join("bin/skit"), b"12345").unwrap();
+        fs::write(&script, b"12345").unwrap();
         fs::write(dist.join("RECORD"), "payload,,\n").unwrap();
         fs::write(
             dist.join("METADATA"),
