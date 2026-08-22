@@ -38,11 +38,28 @@ const fn terminal_event_wait(path_completion_pending: bool) -> TerminalEventWait
 }
 
 fn read_terminal_event(wait: TerminalEventWait) -> io::Result<Option<event::Event>> {
+    read_terminal_event_with(wait, event::read, event::poll)
+}
+
+/// Take the next event, or report that the poll window closed with nothing to take.
+///
+/// The two terminal calls arrive as parameters, so a test can drive every answer without a live
+/// terminal and without waiting on one. A blocking wait must never poll: it has nothing else to do
+/// until a key arrives.
+fn read_terminal_event_with<R, P>(
+    wait: TerminalEventWait,
+    read: R,
+    poll: P,
+) -> io::Result<Option<event::Event>>
+where
+    R: FnOnce() -> io::Result<event::Event>,
+    P: FnOnce(Duration) -> io::Result<bool>,
+{
     match wait {
-        TerminalEventWait::Blocking => event::read().map(Some),
+        TerminalEventWait::Blocking => read().map(Some),
         TerminalEventWait::Poll(duration) => {
-            if event::poll(duration)? {
-                event::read().map(Some)
+            if poll(duration)? {
+                read().map(Some)
             } else {
                 Ok(None)
             }
@@ -552,6 +569,63 @@ mod tests {
 
     fn harmless_host(_effect: Effect) -> Result<Action, HostError> {
         Ok(Action::ClearStatus)
+    }
+
+    #[test]
+    fn terminal_takes_an_event_for_every_wait_the_loop_can_choose() {
+        let arrived = event::Event::FocusGained;
+
+        // A blocking wait takes the next event and never polls: there is nothing else to do.
+        assert_eq!(
+            read_terminal_event_with(
+                TerminalEventWait::Blocking,
+                || Ok(arrived.clone()),
+                |_| panic!("a blocking wait must not poll"),
+            )
+            .unwrap(),
+            Some(arrived.clone())
+        );
+
+        // A polling wait takes the event only when the window reports one.
+        assert_eq!(
+            read_terminal_event_with(
+                TerminalEventWait::Poll(Duration::from_millis(25)),
+                || Ok(arrived.clone()),
+                |window| {
+                    assert_eq!(window, Duration::from_millis(25));
+                    Ok(true)
+                },
+            )
+            .unwrap(),
+            Some(arrived.clone())
+        );
+        assert_eq!(
+            read_terminal_event_with(
+                TerminalEventWait::Poll(Duration::from_millis(25)),
+                || panic!("an empty window must not take an event"),
+                |_| Ok(false),
+            )
+            .unwrap(),
+            None
+        );
+
+        // A failure on either call is the caller's to handle, not something to swallow.
+        assert!(
+            read_terminal_event_with(
+                TerminalEventWait::Blocking,
+                || Err(io::Error::other("read failed")),
+                |_| panic!("a blocking wait must not poll"),
+            )
+            .is_err()
+        );
+        assert!(
+            read_terminal_event_with(
+                TerminalEventWait::Poll(Duration::from_millis(25)),
+                || panic!("a failed window must not take an event"),
+                |_| Err(io::Error::other("poll failed")),
+            )
+            .is_err()
+        );
     }
 
     #[test]
