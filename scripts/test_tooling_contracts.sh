@@ -204,6 +204,27 @@ expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--lo
 expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
 expect_text .github/workflows/ci.yml 'zizmor .github/workflows .github/actions/install-hyperfine/action.yml'
 
+# Mutation testing runs as shards, because one job cannot finish every mutant inside the platform
+# ceiling. The three places that name the shard count must agree, or some shard silently never runs
+# and the gate passes on a partial result.
+mutation_shards="$(sed -nE 's|.*--shard \$\{\{ matrix\.shard \}\}/([0-9]+).*|\1|p' \
+  .github/workflows/mutation.yml)"
+test -n "$mutation_shards" || {
+  echo 'the mutation workflow must run cargo-mutants with --shard' >&2
+  exit 1
+}
+mutation_matrix="$(sed -nE 's|^        shard: \[(.*)\]$|\1|p' .github/workflows/mutation.yml |
+  tr ',' '\n' | grep -c '[0-9]')"
+test "$mutation_matrix" -eq "$mutation_shards" || {
+  echo "the mutation matrix lists $mutation_matrix shards but runs --shard k/$mutation_shards" >&2
+  exit 1
+}
+expect_text .github/workflows/mutation.yml "SHARD_COUNT: \"$mutation_shards\""
+# The aggregation must survive, and it must fail closed: a shard that never reported is not a pass.
+expect_text .github/workflows/mutation.yml '    needs: mutation'
+expect_text .github/workflows/mutation.yml 'if-no-files-found: error'
+expect_text .github/workflows/mutation.yml 'reported no outcomes'
+
 # Every workflow job needs a time bound. Without one a stuck job runs to the six-hour default, and
 # the run is cancelled before the log flushes, so the failure teaches nothing about where it stuck.
 while IFS= read -r unbounded; do

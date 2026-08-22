@@ -17,11 +17,15 @@ concurrency:
 
 jobs:
   mutation:
-    name: cargo-mutants (zero survivors)
+    name: cargo-mutants shard ${{ matrix.shard }}/48
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 300
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
     steps:
       - name: Check out the source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,12 +36,55 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
       - name: Run mutation tests
-        run: cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0
+        run: cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0 --shard ${{ matrix.shard }}/48
       - name: Upload mutation records
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: mutation-results
+          name: mutation-shard-${{ matrix.shard }}
           path: mutants.out/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
+
+  aggregate:
+    name: cargo-mutants (zero survivors)
+    needs: mutation
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Download every shard's records
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: mutation-shard-*
+          path: shards
+      - name: Require every shard to report zero survivors
+        env:
+          SHARD_COUNT: "48"
+        run: |
+          set -euo pipefail
+          # Fail closed. A shard that never reported is a failure, not a pass: the run only proves
+          # zero survivors when every shard's own record says so.
+          missing=0
+          for shard in $(seq 0 $((SHARD_COUNT - 1))); do
+            record="shards/mutation-shard-$shard"
+            if [ ! -s "$record/outcomes.json" ]; then
+              echo "shard $shard reported no outcomes" >&2
+              missing=$((missing + 1))
+              continue
+            fi
+            for kind in missed timeout; do
+              if [ -s "$record/$kind.txt" ]; then
+                echo "shard $shard reported $kind mutants:" >&2
+                cat "$record/$kind.txt" >&2
+                missing=$((missing + 1))
+              fi
+            done
+          done
+          test "$missing" -eq 0 || {
+            echo "mutation testing did not prove zero survivors" >&2
+            exit 1
+          }
+          echo "every one of $SHARD_COUNT shards reported zero survivors"
