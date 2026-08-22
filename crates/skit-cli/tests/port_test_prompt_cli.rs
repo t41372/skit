@@ -135,10 +135,16 @@ impl Sandbox {
         fs::write(self.config_path(), toml).unwrap();
     }
 
+    /// Put an executable file at the private uv path the product reads.
+    ///
+    /// `skit_runtime::managed_uv_path` names the file `uv.exe` on Windows and `uv` elsewhere, so
+    /// the probe must use the same name. A probe named `uv` on Windows is invisible to the
+    /// product, and `doctor` then exits 1 for an empty library.
     fn install_private_uv_probe(&self) {
         let bin = self.data.path().join("bin");
         fs::create_dir_all(&bin).unwrap();
-        fs::copy(env!("CARGO_BIN_EXE_skit"), bin.join("uv")).unwrap();
+        let name = if cfg!(windows) { "uv.exe" } else { "uv" };
+        fs::copy(env!("CARGO_BIN_EXE_skit"), bin.join(name)).unwrap();
     }
 
     fn read_config(&self) -> String {

@@ -231,6 +231,48 @@ fn known_runtime_list_containers_reject_scalars_without_hiding_the_field() {
 }
 
 #[test]
+fn known_runtime_list_scalars_hide_only_their_own_entry_and_keep_every_byte() {
+    // The sibling above owns the typed diagnostic for `needs` and `parameters`. This owns the
+    // rest of the boundary contract that `test_list_entries_skips_scalar_dependencies_meta`
+    // owns for `dependencies`: the valid sibling stays visible, and the read rewrites no byte
+    // of either meta. `parameters` is not `params` — they are separate fields in RawMeta.
+    for field in ["needs", "parameters"] {
+        let root = TempDir::new().unwrap();
+        let good = write_good(&root);
+        let bad = write_meta(
+            &root,
+            "bad-type-slug",
+            &format!("schema = 1\nname = \"bad\"\nkind = \"future-kind\"\n{field} = 5\n"),
+        );
+        write_registry_row(&root, "bad-type-slug", "bad");
+        let good_before = fs::read(&good).unwrap();
+        let bad_before = fs::read(&bad).unwrap();
+
+        let scan = FileStore::new(root.path()).scan().unwrap();
+
+        assert_eq!(
+            scan.entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Good"],
+            "{field}"
+        );
+        assert!(
+            scan.diagnostics.iter().any(|item| {
+                item.code == DiagnosticCode::CorruptMetadata
+                    && item.slug.as_deref() == Some("bad-type-slug")
+                    && item.message.contains(field)
+            }),
+            "{field}: {:?}",
+            scan.diagnostics
+        );
+        assert_eq!(fs::read(&good).unwrap(), good_before, "{field}");
+        assert_eq!(fs::read(&bad).unwrap(), bad_before, "{field}");
+    }
+}
+
+#[test]
 fn test_list_entries_skips_scalar_dependencies_meta() {
     let root = TempDir::new().unwrap();
     let good = write_good(&root);

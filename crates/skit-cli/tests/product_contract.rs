@@ -442,6 +442,83 @@ fn doctor_keeps_the_v040_fresh_install_uv_check() {
 }
 
 #[test]
+fn doctor_rebuild_keeps_the_uv_exit_rule_over_a_clean_report() {
+    // --rebuild does not change the uv exit rule, and the rule reads only uv. A python library
+    // that rebuilds with no problem at all still exits 1 without uv, on both output paths. The
+    // sibling `doctor_keeps_the_v040_fresh_install_uv_check` owns the same rule without
+    // --rebuild.
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("tool.py");
+    fs::write(&source, "print(1)\n").unwrap();
+    sandbox
+        .command()
+        .args(["add", source.to_str().unwrap(), "--name", "Tool"])
+        .assert()
+        .success();
+
+    // PATH holds the data directory, which carries no uv, and there is no private uv below it.
+    let output = sandbox
+        .command()
+        .env("PATH", sandbox.data.path())
+        .args(["doctor", "--rebuild", "--json"])
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&output.stdout).expect("doctor --json is one doc");
+    // The report names no problem, so only the missing uv can explain the exit code.
+    assert_eq!(report["uv"], Value::Null);
+    assert_eq!(report["entries"], 1);
+    assert_eq!(report["rebuilt"], 1);
+    assert_eq!(report["rebuild_problems"], serde_json::json!([]));
+    assert_eq!(report["diagnostics"], serde_json::json!([]));
+    assert_eq!(report["missing"], serde_json::json!([]));
+    assert_eq!(report["drift"], serde_json::json!([]));
+    assert_eq!(output.status.code(), Some(1), "{report}");
+
+    // The human path reports the same rebuild and the same exit code.
+    sandbox
+        .command()
+        .env("PATH", sandbox.data.path())
+        .args(["doctor", "--rebuild"])
+        .assert()
+        .code(1)
+        .stdout(
+            predicate::str::contains("ERROR uv: not found")
+                .and(predicate::str::contains("Registry rebuilt: 1")),
+        );
+}
+
+#[test]
+fn doctor_rebuild_keeps_the_uv_exit_rule_for_every_library_shape() {
+    // The rule that selects the exit code reads the library the same way with --rebuild as
+    // without it: an empty library needs uv, and a library with no python entry does not.
+    let empty = Sandbox::new();
+    empty
+        .command()
+        .env("PATH", empty.data.path())
+        .args(["doctor", "--rebuild", "--json"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("\"uv\":null"));
+    empty
+        .command()
+        .env("PATH", empty.data.path())
+        .args(["doctor", "--rebuild"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("ERROR uv: not found"));
+
+    let commands = Sandbox::new();
+    commands.write_command_entry();
+    commands
+        .command()
+        .env("PATH", commands.data.path())
+        .args(["doctor", "--rebuild", "--json"])
+        .assert()
+        .code(0)
+        .stdout(predicate::str::contains("\"uv\":null"));
+}
+
+#[test]
 fn doctor_accepts_the_v040_private_uv_location() {
     let sandbox = Sandbox::new();
     let bin = sandbox.data.path().join("bin");

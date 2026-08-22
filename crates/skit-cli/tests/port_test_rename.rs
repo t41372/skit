@@ -140,6 +140,20 @@ impl Lib {
             None
         }
     }
+
+    /// Make uv visible to `doctor` without a dependency on the host machine.
+    ///
+    /// `doctor` exits 1 when uv is missing and the library needs uv (an empty library, or any
+    /// python entry). This library holds a python entry, so a machine without uv fails the
+    /// command for a reason this test does not assert. The product also accepts the private uv
+    /// below the data directory (`skit_runtime::managed_uv_path`), so put an executable file at
+    /// that exact path. The skit binary itself is the executable that is always available here.
+    fn install_private_uv_probe(&self) {
+        let bin = self.data.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let name = if cfg!(windows) { "uv.exe" } else { "uv" };
+        fs::copy(env!("CARGO_BIN_EXE_skit"), bin.join(name)).unwrap();
+    }
 }
 
 /// Both streams a user would see, joined (mirrors Python's `result.output`).
@@ -265,6 +279,7 @@ fn test_rename_survives_doctor_rebuild() {
     // meta.toml is the truth: rebuilding the registry from the per-slug metas recovers the new
     // name with no problems.
     let workspace = lib();
+    workspace.install_private_uv_probe(); // the exit code must not depend on the host machine
     workspace.add_python("a.py", "old");
     workspace
         .cmd()
