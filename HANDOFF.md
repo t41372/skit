@@ -469,6 +469,46 @@ without rg), Actionlint, Zizmor, and the English gate pass. A fresh committed-st
 LCOV run at the third-wave tree passed 4063 / 0 / 525 and `scripts/check_coverage.sh`
 returned `complete executable-source line coverage`.
 
+The third wave was pushed as head `e329419ec8a0327e017693ffa5d364ee99cb7292` (runs: CI
+32565964925, mutation 32565964953). The coverage job and the lint job went green for the
+first time; ubuntu stayed green; only macOS and Windows remained, still progressively
+unmasking. The fourth wave (2026-08-22, `9abfe71`..`e3a6d7f`) closed them:
+
+- `9abfe71` — three Windows lib-test failures: Debug-formatted output escapes backslashes,
+  so `contains(raw_path)` can never match (compare against the `{:?}` spelling); a
+  slash-joined skills path never matches the store's backslash join (join per component);
+  and the "invalid arguments" fixture used an unpaired single quote, which Windows argument
+  rules read as an ordinary character — an unpaired double quote is invalid on every host.
+- `9a79b0c` — the macOS PTY stall: the live terminal sends cursor-position queries and waits
+  for the reply, but the harness answered them only while delivering effect keys, so a query
+  that arrived between keystrokes stalled the child forever on a timing-dependent host. The
+  harness now answers every cursor question whenever it reads output, file-wide, and the
+  timeout panic reports the child's status so the next failure names its class outright.
+- `910a736` — the class sweep (367 files, three needle classes) found one member the first
+  grep missed: a `format!`-wrapped mixed-separator needle in `v040_compatibility.rs`. Final
+  counts: Debug-escape class 1, exec-bit class 0, separator class 2, all fixed. Watch-flag:
+  `Message::quoted()` Debug-escapes its value; all 20 call sites pass names today.
+- `e3a6d7f` — the wave-3 ETXTBSY class resurfaced in a skit-benchmarks pipeline test whose
+  shims log every invocation, so the plain warm-up retry would break the counting owner.
+  All three shim makers now inject a `__skit_probe__` guard directly under the shebang
+  (above every side effect) and warm each new shim with a bounded busy-retry. The counting
+  owner still reads exactly 3; five consecutive under-load suite runs stay green. All shim
+  modules are unix-gated, and no test pins shim script bytes.
+
+- `1ee58ac` — the LCOV gate flagged the new ETXTBSY retry arm as uncovered (it runs only when
+  the race fires). A deterministic owner now forces the busy answer: the test holds a write
+  handle on a probe-guarded shim (exec of a file the process holds open for write is ETXTBSY
+  by definition), releases it after ~4 retry beats, and asserts the wait returned with at
+  least one beat elapsed. The arm went from 0 to 4 hits; `suites/mod.rs` has no uncovered
+  line.
+
+After the fourth wave the full workspace suite is 4064 / 0 / 525 (one new test name, the
+fork-window owner). fmt, workspace Clippy `-D warnings`, and the terminal_pty suite under
+plain and symlinked TMPDIR pass. A fresh committed-state workspace LCOV run at the fourth-wave tree passed
+4064 / 0 / 525 and `scripts/check_coverage.sh` returned
+`complete executable-source line coverage`. macOS and Windows proof is by construction plus
+the next CI run.
+
 Receipts at `f274fea`: `cargo fmt --all --check`, workspace Clippy `-D warnings`, Rustdoc
 `-D warnings`, English gate, tooling contracts, Actionlint, and Zizmor pass. The full workspace
 suite is **4062 passed / 0 failed / 525 ignored**, identical in three configurations: plain;
