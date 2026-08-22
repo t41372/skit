@@ -608,6 +608,43 @@ payload_policy.rs:190 (delete match arm "exe" in add_workdir), preferences.rs:28
 (`||`->`&&` in MirrorConfiguration::has_urls). Each needs a killing owner; expect more
 survivors from the unscored remainder — plan a full local mutants run once the tree freezes.
 
+The seventh wave was pushed as head `fb91d5b`. Its run: SIX jobs green (macOS, ubuntu,
+coverage, lint, both audits); Windows hit its bound with a flushed log naming four hangs in
+`port_test_add_no_source.rs` (three directory-consent Confirms and the plain-menu path
+Input). Waves 8 and 9 (2026-08-22, `fddcf44`..`4c512d9`):
+
+- `fddcf44` / `1060094` -- the mutation gate is restructured: 9,700 measured mutants cannot
+  fit one hosted job (both rate estimates give 8-14 h at n=16), so mutation.yml is a 48-way
+  cargo-mutants `--shard k/48` matrix (flag semantics verified against the pinned 27.1.0:
+  indices 0..47), each shard bounded at 300 minutes, with a fail-closed aggregate: a missing
+  or empty shard record is a FAILURE, and missed/timeout lists must be empty. On pull
+  requests the whole set is opt-in via the `mutation-requested` label (unlabeled pushes skip
+  instantly) because 48 shards per push would starve the account's concurrency and a push
+  invalidates the previous result anyway; push-to-main, the nightly cron, and dispatch are
+  unchanged. The tooling contract cross-checks the shard count in three places, pins the
+  label gate on both jobs, and pins `.cargo/mutants.toml` to EXACTLY one excluded function.
+- `b27e119` -- seven of the eight partial-run survivors are killed with per-mutant hand-probe
+  RED receipts; the age-bucket boundaries are asserted at the oracle's strict `<` thresholds
+  (tui.py:112-118: 90 s IS Minutes(1), 129,600 s IS Days(1)). The eighth is a false survivor
+  inside `#[cfg(windows)]` (the mutant edits code Linux never compiles), excluded in
+  `.cargo/mutants.toml` with the reason recorded; `ArgumentDialect` deliberately did NOT gain
+  a Default derive for a test's convenience.
+- `8016c43` / `4c512d9` -- the four Windows hangs were an input-dialect defect in the PTY
+  harnesses, not ConPTY breakage (12 of 14 edge_workflows PTY tests already passed on real
+  Windows): the `console` crate reads Enter as CARRIAGE RETURN ONLY on Windows
+  (console/src/windows_term/mod.rs:449) while unix accepts either (unix_term.rs:323), so a
+  harness that typed b"n\n" appended a printable character and both sides waited. Every
+  harness that types into a live terminal now translates the line feed at the WRITER (one
+  cited convention line per harness, 12 sites across 8 harnesses; source literals keep \n so
+  no assertion needle drifts). Untranslated writes are cursor replies, interrupt bytes, and
+  pipe/file writes, each with the reason recorded.
+
+Receipts: full workspace 4070 / 0 / 525 (arithmetic: 4066 + 4 survivor owners), fresh
+workspace LCOV `complete executable-source line coverage`, fmt / Clippy `-D warnings` /
+actionlint / zizmor / tooling contracts (six fail-closed probes) green, plain and
+symlinked-TMPDIR suites green for every touched harness. Windows runtime proof for the
+Enter dialect is the next bounded run.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
