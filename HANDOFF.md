@@ -715,6 +715,19 @@ residual (skit-tui's run_child_in_pty answers only in its first loop; its later 
 on file metadata and child exit, were green on Windows, and a blind extension could add a
 unix write-after-exit flake) is flagged in the code review record, not patched.
 
+The 30d9ec7 run validated the cursor-answer fix (2 of 3 tests green on real Windows). The
+last, the EOF choreography, is a platform absence, gated in wave 15 (`ef86cba`): the phase
+sends the VEOF character (\x04), which the unix line discipline converts to end-of-input
+at the child's read — ConPTY runs no line discipline, the byte arrives as an ordinary
+Ctrl-D key event, and Windows' own console EOF spelling (Ctrl-Z + Enter, cooked by the real
+console host) is equally undeliverable through a pseudo-console. The gate records honestly
+that the test's reprompt, bare-Enter default hint, and both CJK locale passes are unique to
+it and fall to the hands-on gate on Windows (the two passing siblings cover only a valid
+English numbered choice); the abort SENTENCE stays owned on every host by the catalog. A
+workspace scan of every \x04 site found one live-on-Windows candidate that is empirically
+green (left ungated, over-gating refused) and zero \x1a dependence. Deferred commission
+once Windows is fully green: split the phases so default+reprompt return to Windows.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
