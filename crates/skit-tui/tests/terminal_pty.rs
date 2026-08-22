@@ -233,7 +233,9 @@ fn run_child_in_pty(
 
     writer.write_all(b"\x03\x03").unwrap();
     writer.flush().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(6);
+    // An instrumented child writes its coverage profile as it exits, and parallel load makes that
+    // take more than six seconds. This deadline only stops a hung child from holding the suite.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             assert!(status.success(), "PTY child failed: {status:?}");

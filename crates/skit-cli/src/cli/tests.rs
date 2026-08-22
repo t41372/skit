@@ -8007,7 +8007,10 @@ impl MirrorPromptPty {
 
     fn finish(mut self) -> (String, String) {
         self.writer.take();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+        // An instrumented child writes its coverage profile as it exits, and parallel load makes
+        // that take more than six seconds. This deadline only stops a hung child from holding the
+        // suite, so it can be generous.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let status = loop {
             if let Some(status) = self.child.try_wait().unwrap() {
                 break status;
