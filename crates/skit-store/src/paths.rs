@@ -1,7 +1,10 @@
-//! Resolve entry payload paths from the v0.4 data layout.
+//! Resolve entry payload paths from the v0.4 data layout, and the host directories that
+//! layout sits in.
 
 use std::{
     borrow::Cow,
+    env,
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
@@ -55,6 +58,136 @@ fn windows_home() -> Option<String> {
     }
 
     named("USERPROFILE").or_else(|| Some(format!("{}{}", named("HOMEDRIVE")?, named("HOMEPATH")?)))
+}
+
+/// The directory name skit appends to every host root.
+const APPLICATION: &str = "skit";
+
+/// Name one of skit's host directories.
+///
+/// A redirect variable wins when the host sets one. Otherwise the directory sits below the home
+/// directory at the parts this host uses, and a host that names neither has no directory. The
+/// values arrive as parameters, so an owner can ask for every answer without changing the
+/// environment of the whole process.
+fn platform_directory(
+    redirect: Option<OsString>,
+    home: Option<OsString>,
+    home_parts: &[&str],
+) -> Option<PathBuf> {
+    redirect
+        .map(|redirect| PathBuf::from(redirect).join(APPLICATION))
+        .or_else(|| {
+            home.map(|home| {
+                let mut path = PathBuf::from(home);
+                path.extend(home_parts);
+                path.push(APPLICATION);
+                path
+            })
+        })
+}
+
+/// Name skit's data directory: `$XDG_DATA_HOME`, or `~/.local/share`.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[must_use]
+pub fn platform_data_dir() -> Option<PathBuf> {
+    platform_directory(
+        env::var_os("XDG_DATA_HOME"),
+        env::var_os("HOME"),
+        &[".local", "share"],
+    )
+}
+
+/// Name skit's state directory: `$XDG_STATE_HOME`, or `~/.local/state`.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[must_use]
+pub fn platform_state_dir() -> Option<PathBuf> {
+    platform_directory(
+        env::var_os("XDG_STATE_HOME"),
+        env::var_os("HOME"),
+        &[".local", "state"],
+    )
+}
+
+/// Name skit's configuration directory: `$XDG_CONFIG_HOME`, or `~/.config`.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[must_use]
+pub fn platform_config_dir() -> Option<PathBuf> {
+    platform_directory(
+        env::var_os("XDG_CONFIG_HOME"),
+        env::var_os("HOME"),
+        &[".config"],
+    )
+}
+
+/// Name skit's data directory below the macOS application-support directory.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn platform_data_dir() -> Option<PathBuf> {
+    platform_directory(
+        None,
+        env::var_os("HOME"),
+        &["Library", "Application Support"],
+    )
+}
+
+/// Name skit's state directory. macOS keeps state with the data.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn platform_state_dir() -> Option<PathBuf> {
+    platform_data_dir()
+}
+
+/// Name skit's configuration directory. macOS keeps the configuration with the data.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn platform_config_dir() -> Option<PathBuf> {
+    platform_data_dir()
+}
+
+/// Name skit's data directory below `%LOCALAPPDATA%`, or below `%APPDATA%`.
+#[cfg(windows)]
+#[must_use]
+pub fn platform_data_dir() -> Option<PathBuf> {
+    platform_directory(
+        env::var_os("LOCALAPPDATA").or_else(|| env::var_os("APPDATA")),
+        None,
+        &[],
+    )
+}
+
+/// Name skit's state directory. Windows keeps state with the data.
+#[cfg(windows)]
+#[must_use]
+pub fn platform_state_dir() -> Option<PathBuf> {
+    platform_data_dir()
+}
+
+/// Name skit's configuration directory below `%APPDATA%`.
+#[cfg(windows)]
+#[must_use]
+pub fn platform_config_dir() -> Option<PathBuf> {
+    platform_directory(env::var_os("APPDATA"), None, &[])
+}
+
+/// Name skit's data directory. A host that is neither Unix nor Windows names none.
+#[cfg(not(any(unix, windows)))]
+#[must_use]
+pub fn platform_data_dir() -> Option<PathBuf> {
+    None
+}
+
+/// Name skit's state directory. A host that is neither Unix nor Windows names none.
+#[cfg(not(any(unix, windows)))]
+#[must_use]
+pub fn platform_state_dir() -> Option<PathBuf> {
+    None
+}
+
+/// Name skit's configuration directory. A host that is neither Unix nor Windows names none.
+#[cfg(not(any(unix, windows)))]
+#[must_use]
+pub fn platform_config_dir() -> Option<PathBuf> {
+    None
 }
 
 /// Return the stored copy name for a known entry kind.
@@ -159,5 +292,108 @@ fn io_error(
         operation,
         path: path.display().to_string(),
         reason: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every answer the shared rule can give, without asking this host what it holds.
+    ///
+    /// The redirect wins, the home directory answers next at the parts the caller names, and a
+    /// caller that holds neither gets nothing.
+    #[test]
+    fn a_platform_directory_prefers_a_redirect_then_the_home_directory() {
+        let redirect = Some(OsString::from("/redirect"));
+        let home = Some(OsString::from("/home/user"));
+
+        assert_eq!(
+            platform_directory(redirect.clone(), home.clone(), &[".local", "share"]),
+            Some(PathBuf::from("/redirect/skit"))
+        );
+        assert_eq!(
+            platform_directory(None, home.clone(), &[".local", "share"]),
+            Some(PathBuf::from("/home/user/.local/share/skit"))
+        );
+        assert_eq!(
+            platform_directory(None, home.clone(), &[".config"]),
+            Some(PathBuf::from("/home/user/.config/skit"))
+        );
+        assert_eq!(
+            platform_directory(None, home, &["Library", "Application Support"]),
+            Some(PathBuf::from("/home/user/Library/Application Support/skit"))
+        );
+        // A root that needs no home directory keeps the root, and holds no parts.
+        assert_eq!(
+            platform_directory(redirect, None, &[]),
+            Some(PathBuf::from("/redirect/skit"))
+        );
+        assert_eq!(platform_directory(None, None, &[".local", "share"]), None);
+    }
+
+    /// Each directory reads the variables its own host names, and falls back where it should.
+    ///
+    /// The answer is compared with the shared rule over the same values, so a directory that
+    /// starts reading another variable, or that loses its fallback parts, fails here.
+    #[test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn each_platform_directory_reads_the_variables_this_host_names() {
+        let home = env::var_os("HOME");
+
+        assert_eq!(
+            platform_data_dir(),
+            platform_directory(
+                env::var_os("XDG_DATA_HOME"),
+                home.clone(),
+                &[".local", "share"]
+            )
+        );
+        assert_eq!(
+            platform_state_dir(),
+            platform_directory(
+                env::var_os("XDG_STATE_HOME"),
+                home.clone(),
+                &[".local", "state"]
+            )
+        );
+        assert_eq!(
+            platform_config_dir(),
+            platform_directory(env::var_os("XDG_CONFIG_HOME"), home, &[".config"])
+        );
+    }
+
+    /// macOS keeps state and configuration with the data, below one application-support root.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn each_platform_directory_reads_the_variables_this_host_names() {
+        let expected = platform_directory(
+            None,
+            env::var_os("HOME"),
+            &["Library", "Application Support"],
+        );
+
+        assert_eq!(platform_data_dir(), expected);
+        assert_eq!(platform_state_dir(), expected);
+        assert_eq!(platform_config_dir(), expected);
+    }
+
+    /// Windows keeps state with the data below the local root, and the configuration below the
+    /// roaming root.
+    #[test]
+    #[cfg(windows)]
+    fn each_platform_directory_reads_the_variables_this_host_names() {
+        let data = platform_directory(
+            env::var_os("LOCALAPPDATA").or_else(|| env::var_os("APPDATA")),
+            None,
+            &[],
+        );
+
+        assert_eq!(platform_data_dir(), data);
+        assert_eq!(platform_state_dir(), data);
+        assert_eq!(
+            platform_config_dir(),
+            platform_directory(env::var_os("APPDATA"), None, &[])
+        );
     }
 }

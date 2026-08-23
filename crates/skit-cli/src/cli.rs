@@ -79,7 +79,8 @@ use skit_store::{
     CONFIG_KEYS, ConfigError, CoordinatedStateError, ExternalRollbackOutcome, FileAgentSkillStore,
     FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
     FileRunnerManagementStore, PromptRunner, RunnerManagementStoreError, RunnerRemovalCas,
-    SystemDirectoryReader, expand_user_path,
+    SystemDirectoryReader, expand_user_path, platform_config_dir, platform_data_dir,
+    platform_state_dir,
 };
 use skit_store::{FileStore, content_hash, stored_filenames};
 use skit_ui::{
@@ -10621,100 +10622,6 @@ fn resolve_config_dir() -> Result<PathBuf, CliError> {
         return Ok(PathBuf::from(path));
     }
     platform_config_dir().ok_or(CliError::DirectoryUnavailable("configuration"))
-}
-
-#[cfg(target_os = "windows")]
-fn platform_data_dir() -> Option<PathBuf> {
-    env::var_os("LOCALAPPDATA")
-        .or_else(|| env::var_os("APPDATA"))
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-}
-
-#[cfg(target_os = "windows")]
-fn platform_state_dir() -> Option<PathBuf> {
-    platform_data_dir()
-}
-
-#[cfg(target_os = "windows")]
-fn platform_config_dir() -> Option<PathBuf> {
-    env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-}
-
-#[cfg(target_os = "macos")]
-fn platform_state_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from).map(|path| {
-        path.join("Library")
-            .join("Application Support")
-            .join("skit")
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn platform_config_dir() -> Option<PathBuf> {
-    platform_state_dir()
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn platform_state_dir() -> Option<PathBuf> {
-    env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-        .or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|path| path.join(".local").join("state").join("skit"))
-        })
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn platform_config_dir() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-        .or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|path| path.join(".config").join("skit"))
-        })
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn platform_state_dir() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn platform_config_dir() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn platform_data_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from).map(|path| {
-        path.join("Library")
-            .join("Application Support")
-            .join("skit")
-    })
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn platform_data_dir() -> Option<PathBuf> {
-    env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-        .or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|path| path.join(".local").join("share").join("skit"))
-        })
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn platform_data_dir() -> Option<PathBuf> {
-    None
 }
 
 #[derive(Debug, Error)]
