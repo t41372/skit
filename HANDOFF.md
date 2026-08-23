@@ -738,6 +738,22 @@ plain-text stdout, the two {:?}-escaped TOML writers, three non-JSON hand-rolled
 RED was reproduced ON LINUX by naming a probe file `ba\sh` — a legal unix filename whose
 serde escaping shows the exact doubled-separator signature.
 
+The 85c21fc run cleared config_cmd and reached the S2c stronghold, port_test_declared_params
+(49/3/1, whole binary ran). Wave 17 (`260b1c4` / `6adce1a`) converted all three rather than
+gating: the two launched sh fixtures became host-dialect shims (new EchoArguments /
+EchoEnvironment behaviors; one explicit CRLF normalization at the single line-boundary
+assertion), and the secret-env command text is cfg-selected (`echo $TOKEN` / `echo %TOKEN%`)
+so the contract is asserted identically on both hosts. A 23-binary forward sweep found ZERO
+remaining members of the launched-fixture or POSIX-command shapes — and two members of a
+THIRD shape (runner rows naming POSIX-only programs: `printf` in v040_compatibility:1504,
+`python3` in port_test_prompt_kind:247), both pre-fixed. Trap recorded: several files carry
+`#[cfg(unix)]` on a chmod-only STATEMENT — those tests DO run on Windows and are safe only
+because nothing launches. Honest limit: the Windows shim halves (the `set /p` no-newline
+idiom in particular) are by construction until the next run. Supervisor directive now in
+force for later waves: fix subagents run on Fable (forks), and every brief demands an
+explicit root-cause-versus-manifestation analysis; the PTY-harness consolidation (the
+structural root of the Windows saga) is scheduled for the post-green review rounds.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
