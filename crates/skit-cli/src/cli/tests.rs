@@ -299,8 +299,8 @@ fn zsh_completion_keeps_runtime_validated_targets_without_parser_conflict_groups
     write_completion(Shell::Zsh, &mut output);
     let output = String::from_utf8(output).unwrap();
     let row_spec = concat!(
-        "'--row=[Remove one malformed raw row by its zero-based index or ",
-        "\\`container\\`]:ROW:_default' \\\n"
+        "'--row=[Remove one raw row index from '\\''runner list --all'\\'' ",
+        "(or '\\''container'\\'')]:ROW:_default' \\\n"
     );
 
     assert!(output.contains(row_spec), "{output}");
@@ -311,11 +311,17 @@ fn zsh_completion_keeps_runtime_validated_targets_without_parser_conflict_groups
     );
 
     for spec in [
-        "'--cmd=[Register a command template instead of a file]:COMMAND_TEMPLATE:_default' \\\n",
-        "'-e[Write a new source in the configured editor, then add it]' \\\n",
-        "'--edit[Write a new source in the configured editor, then add it]' \\\n",
-        "'--prompt[Treat the source as a prompt entry]' \\\n",
-        "'--exe[Force executable kind inference]' \\\n",
+        concat!(
+            "'--cmd=[Register a command template, e.g. --cmd '\\''ffmpeg -i {input}'\\'']",
+            ":COMMAND_TEMPLATE:_default' \\\n"
+        ),
+        "'-e[Write a brand-new script in your editor, then add it]' \\\n",
+        "'--edit[Write a brand-new script in your editor, then add it]' \\\n",
+        concat!(
+            "'--prompt[Add the file as a prompt for an AI agent ",
+            "(with no path\\: draft one in your editor)]' \\\n"
+        ),
+        "'--exe[Force the executable kind (normally inferred from the file itself)]' \\\n",
     ] {
         assert!(output.contains(spec), "missing spec {spec:?}: {output}");
     }
@@ -6486,6 +6492,416 @@ fn the_localized_command_tree_translates_every_description() {
     assert!(!rendered.contains("--說明"));
 }
 
+#[test]
+fn every_translated_help_string_keeps_the_version_0_4_wording() {
+    // Version 0.4 wrote each of these with gettext, and its .po files translate every one.
+    // The wording is the contract a user reads, so it is pinned here: an invented replacement
+    // is what let the whole set drift before. A description keeps the oracle text without its
+    // final period, which Clap removes from a doc comment.
+    const HELP: &[(&str, Option<&str>, &str)] = &[
+        (
+            "add",
+            None,
+            "Add a script, executable, prompt, or command to skit",
+        ),
+        (
+            "add",
+            Some("--cmd"),
+            "Register a command template, e.g. --cmd 'ffmpeg -i {input}'",
+        ),
+        (
+            "add",
+            Some("--dep"),
+            "A dependency (repeat for more; skips the interactive question)",
+        ),
+        (
+            "add",
+            Some("--description"),
+            "Description (inferred from the source when possible)",
+        ),
+        (
+            "add",
+            Some("--edit"),
+            "Write a brand-new script in your editor, then add it",
+        ),
+        (
+            "add",
+            Some("--exe"),
+            "Force the executable kind (normally inferred from the file itself)",
+        ),
+        (
+            "add",
+            Some("--kind"),
+            "Force the language kind (e.g. shell, js) for an extensionless file",
+        ),
+        (
+            "add",
+            Some("--name"),
+            "Name / alias (defaults to the file name)",
+        ),
+        (
+            "add",
+            Some("--no-input"),
+            "Never prompt; accept the detected suggestions",
+        ),
+        (
+            "add",
+            Some("--no-interpolate"),
+            "Prompt only: no variable insertion at all — the body travels exactly as written",
+        ),
+        (
+            "add",
+            Some("--prompt"),
+            "Add the file as a prompt for an AI agent (with no path: draft one in your editor)",
+        ),
+        (
+            "add",
+            Some("--python"),
+            "Python version constraint, e.g. \">=3.11\"",
+        ),
+        (
+            "add",
+            Some("--ref"),
+            "Reference mode: link to the original file instead of copying it",
+        ),
+        (
+            "add",
+            Some("--runner"),
+            "Pin the agent a prompt entry runs with (see skit runner list)",
+        ),
+        (
+            "agent install",
+            None,
+            "Install skit's Agent Skill into an AI agent's skills directory",
+        ),
+        (
+            "agent install",
+            Some("--project"),
+            "Install into the current project (./.claude, ./.codex) instead of your home directory",
+        ),
+        (
+            "agent install",
+            Some("--to"),
+            "Install into this skills directory instead of a named target",
+        ),
+        (
+            "agent",
+            None,
+            "Connect skit to AI agents: install the official Agent Skill",
+        ),
+        (
+            "config",
+            None,
+            "Read or set skit's settings (language, editor, mirror, form style, after-run)",
+        ),
+        ("config", Some("--json"), "Output as JSON"),
+        ("deps", Some("--clear"), "Remove every dependency"),
+        (
+            "deps",
+            Some("--clear-needs"),
+            "Remove every needed external command",
+        ),
+        (
+            "deps",
+            Some("--dep"),
+            "A dependency (repeat for more; replaces the whole list)",
+        ),
+        ("deps", Some("--json"), "Output as JSON"),
+        (
+            "deps",
+            Some("--need"),
+            "An external command the entry needs on PATH (repeat; replaces the whole list)",
+        ),
+        (
+            "deps",
+            Some("--python"),
+            "Python version constraint, e.g. \">=3.11\"",
+        ),
+        ("doctor", Some("--json"), "Output as JSON"),
+        (
+            "doctor",
+            Some("--rebuild"),
+            "Rebuild the index from each entry's meta.toml",
+        ),
+        (
+            "edit",
+            None,
+            "Open a script or prompt source in your editor (offers to create a script if the name is new)",
+        ),
+        ("list", Some("--json"), "Output as JSON"),
+        (
+            "params",
+            Some("--add"),
+            "Declare a new parameter on an exe/command entry, by name (repeatable)",
+        ),
+        (
+            "params",
+            Some("--choices"),
+            "Set a declared parameter's choices, as NAME=a,b,c (comma separated)",
+        ),
+        (
+            "params",
+            Some("--default"),
+            "Set a declared parameter's default, as NAME=VALUE",
+        ),
+        (
+            "params",
+            Some("--deliver"),
+            "Set how a declared parameter reaches the program, as NAME=env|flag|placeholder",
+        ),
+        (
+            "params",
+            Some("--env-source"),
+            "Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable)",
+        ),
+        (
+            "params",
+            Some("--flag"),
+            "Set a declared flag parameter's option, as NAME=--out (empty = positional)",
+        ),
+        (
+            "params",
+            Some("--help-text"),
+            "Set a declared parameter's help text, as NAME=text",
+        ),
+        (
+            "params",
+            Some("--interpolate"),
+            "Prompt only: turn variable insertion on/off for this prompt (off = the body travels exactly as written)",
+        ),
+        (
+            "params",
+            Some("--interpreter"),
+            "Pin the interpreter/runtime an interpreted entry runs with (e.g. zsh, bun; empty value returns to automatic)",
+        ),
+        ("params", Some("--json"), "Output the read view as JSON"),
+        (
+            "params",
+            Some("--manage"),
+            "Bring a currently detected candidate under management (repeatable)",
+        ),
+        (
+            "params",
+            Some("--no-secret"),
+            "Remove the secret mark from a managed parameter (repeatable)",
+        ),
+        (
+            "params",
+            Some("--normalize"),
+            "Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable)",
+        ),
+        (
+            "params",
+            Some("--optional"),
+            "Mark a declared parameter as optional (repeatable)",
+        ),
+        (
+            "params",
+            Some("--prompt"),
+            "Set a parameter's form prompt, as NAME=text (repeatable)",
+        ),
+        (
+            "params",
+            Some("--required"),
+            "Mark a declared parameter as required (repeatable)",
+        ),
+        (
+            "params",
+            Some("--resync"),
+            "Prune definitions that no longer match the script and refresh changed types",
+        ),
+        (
+            "params",
+            Some("--rm"),
+            "Remove a declared parameter, by name (repeatable)",
+        ),
+        (
+            "params",
+            Some("--runner"),
+            "Prompt only: pin the agent this prompt runs with (empty value clears the pin)",
+        ),
+        (
+            "params",
+            Some("--secret"),
+            "Mark a managed parameter as secret (repeatable)",
+        ),
+        (
+            "params",
+            Some("--template"),
+            "Command only: rewrite the template ({placeholders} are re-read from it)",
+        ),
+        (
+            "params",
+            Some("--type"),
+            "Set a declared parameter's type, as NAME=str|int|float|bool|choice|path",
+        ),
+        (
+            "params",
+            Some("--unmanage"),
+            "Drop a managed parameter (repeatable)",
+        ),
+        (
+            "params",
+            Some("--workdir"),
+            "Set where the entry runs: origin (its own folder), store, invoke (where you run skit from), or an absolute path",
+        ),
+        ("preset delete", None, "Delete a named preset from an entry"),
+        ("preset list", None, "List an entry's saved presets"),
+        ("preset list", Some("--json"), "Output as JSON"),
+        (
+            "preset save",
+            None,
+            "Save a set of parameter values as a named preset",
+        ),
+        (
+            "preset save",
+            Some("--from-last"),
+            "Save the last run's values without asking (automation-friendly)",
+        ),
+        (
+            "preset",
+            None,
+            "Manage named parameter presets for an entry",
+        ),
+        ("remove", Some("--yes"), "Skip confirmation"),
+        ("run", None, "Run a registered entry in the terminal"),
+        (
+            "run",
+            Some("--dry-run"),
+            "Print the exact command that would run (tokens and globs expanded), then exit",
+        ),
+        (
+            "run",
+            Some("--forget-args"),
+            "Forget the remembered extra arguments before this run (they are otherwise reused when you pass none)",
+        ),
+        (
+            "run",
+            Some("--no-input"),
+            "Never prompt; reuse last values and defaults",
+        ),
+        (
+            "run",
+            Some("--plain"),
+            "Line-by-line prompts instead of the inline form",
+        ),
+        (
+            "run",
+            Some("--preset"),
+            "Named preset of parameter values to prefill the form with",
+        ),
+        (
+            "run",
+            Some("--raw"),
+            "Skip the parameter form and injection and run the script as-is (escape hatch)",
+        ),
+        (
+            "run",
+            Some("--runner"),
+            "Run a prompt entry with this agent (overrides its pin for one run)",
+        ),
+        (
+            "run",
+            Some("--save-preset"),
+            "Save this run's values as a named preset",
+        ),
+        (
+            "run",
+            Some("--set"),
+            "Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the form no longer asks for a field you set)",
+        ),
+        (
+            "runner add",
+            None,
+            "Register a runner: skit runner add NAME COMMAND… ({{prompt}} marks where the rendered prompt goes; each shell word becomes one argument, no shell involved)",
+        ),
+        (
+            "runner add",
+            Some("--force"),
+            "Replace the runner if the name already exists (the edit path)",
+        ),
+        (
+            "runner list",
+            None,
+            "List the configured runners (seeds them into config on first use)",
+        ),
+        (
+            "runner list",
+            Some("--all"),
+            "Include malformed raw rows and their repair indexes",
+        ),
+        ("runner list", Some("--json"), "Output as JSON"),
+        ("runner remove", None, "Remove a configured runner"),
+        ("runner remove", Some("--no-input"), "Never prompt"),
+        (
+            "runner remove",
+            Some("--row"),
+            "Remove one raw row index from 'runner list --all' (or 'container')",
+        ),
+        ("runner remove", Some("--yes"), "Skip confirmation"),
+        (
+            "runner",
+            None,
+            "Manage the agents (runners) that prompt entries run with",
+        ),
+        ("show", Some("--json"), "Output as JSON"),
+    ];
+
+    let english = translate_command(Cli::command(), Locale::En);
+    for (path, flag, expected) in HELP {
+        let mut command = &english;
+        for name in path.split_whitespace() {
+            command = command
+                .get_subcommands()
+                .find(|sub| sub.get_name() == name)
+                .unwrap_or_else(|| panic!("the {path} command exists"));
+        }
+        let actual = match flag {
+            None => command.get_about().map(ToString::to_string),
+            Some(flag) => command
+                .get_arguments()
+                .find(|argument| {
+                    argument
+                        .get_long()
+                        .is_some_and(|long| format!("--{long}") == *flag)
+                })
+                .and_then(|argument| argument.get_help().map(ToString::to_string)),
+        };
+        assert_eq!(
+            actual.as_deref(),
+            Some(*expected),
+            "path={path:?} flag={flag:?}"
+        );
+        for locale in [Locale::ZhCn, Locale::ZhTw] {
+            let translated = text(locale, expected);
+            assert_ne!(
+                translated.as_ref(),
+                *expected,
+                "{locale:?} has no row for {expected:?}"
+            );
+        }
+    }
+
+    // Three canaries hold the exact Chinese the oracle ships, so a row cannot be reworded.
+    assert_eq!(
+        text(
+            Locale::ZhCn,
+            "Manage the agents (runners) that prompt entries run with"
+        ),
+        "管理提示词条目使用的执行器(AI agent)"
+    );
+    assert_eq!(
+        text(Locale::ZhTw, "Python version constraint, e.g. \">=3.11\""),
+        "Python 版本約束,如 \">=3.11\""
+    );
+    assert_eq!(
+        text(
+            Locale::ZhCn,
+            "Register a command template, e.g. --cmd 'ffmpeg -i {input}'"
+        ),
+        "登记命令模板,如 --cmd 'ffmpeg -i {input}'"
+    );
+}
 #[test]
 fn windows_argument_encoding_round_trips_every_quoting_shape() {
     // Each row is one argument list that must survive join then split byte for byte.
