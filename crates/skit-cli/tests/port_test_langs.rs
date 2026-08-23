@@ -404,6 +404,20 @@ fn test_unknown_kind_never_reports_missing() {
     assert_eq!(detail.missing_target, None);
 }
 
+/// A custom-workdir literal that is absolute on the running host.
+///
+/// The probe filesystem is fiction, but the custom-workdir arm applies the host's real
+/// `Path::is_absolute` BEFORE any probe check (launch.rs:1246), and a `/workdir/ok` spelling is
+/// not absolute on Windows, where an absolute path needs a drive. Prefix one there so the same
+/// fiction satisfies the real check; the probe stores the identical spelling, so equality holds.
+fn virtual_workdir(tail: &str) -> String {
+    if cfg!(windows) {
+        format!("C:\\{}", tail.replace('/', "\\"))
+    } else {
+        format!("/{tail}")
+    }
+}
+
 #[test]
 fn test_unknown_kind_preflight_still_checks_workdir() {
     // Rust fuses preflight into build_launch_plan, which resolves and validates the workdir
@@ -411,9 +425,11 @@ fn test_unknown_kind_preflight_still_checks_workdir() {
     // UnknownKind refusal) and a missing workdir is still caught first — exactly the oracle's
     // "no strategy checks, workdir fine" / "raises on missing workdir".
     let mut ok = entry("martian");
-    ok.meta.workdir = "/workdir/ok".to_owned();
+    ok.meta.workdir = virtual_workdir("workdir/ok");
     let mut probe = probe_for("/copy/script");
-    probe.dirs.push(PathBuf::from("/workdir/ok"));
+    probe
+        .dirs
+        .push(PathBuf::from(virtual_workdir("workdir/ok")));
     let error = build_launch_plan(
         &ok,
         &paths("/copy/script"),
@@ -430,7 +446,7 @@ fn test_unknown_kind_preflight_still_checks_workdir() {
     );
 
     let mut gone = entry("martian");
-    gone.meta.workdir = "/workdir/gone".to_owned();
+    gone.meta.workdir = virtual_workdir("workdir/gone");
     let error = build_launch_plan(
         &gone,
         &paths("/copy/script"),
