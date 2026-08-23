@@ -1148,3 +1148,39 @@ gate, and the frontend-neutral seam.
 
 Aggregate 4097 / 0 / 525 with complete executable-source line coverage.
 
+Round 6 (`7b942b0` / `5f48312`) adjudicated the 40 packaged TUI strings one by one and
+DISPROVED most of the package: only 6 were genuine, fixable absences. 17 are present in
+other words at the same surface (the runner CAS notices, the unknown-type/no-choices/bad-
+default family, the command-template refusal, the purge receipt, the Flag label, the
+draft buttons), and 17 are recorded — 10 of them `_refresh_status` calls already covered
+by the post-run status-line deviation. The package also mis-claimed that the draft-delete
+string had no .po row; its key carried a stray `)`.
+
+Two of the six were REAL defects, not missing text: the kept-draft confirmation said
+"Remove this entry:" (a draft is a file, not a library entry, and nothing said the copy is
+the only one), and the PEP 723 block printed only `dependencies.join(", ")`, so a fence
+that pins `requires-python` and installs nothing rendered as an EMPTY LIST with the Python
+requirement dropped entirely. Both now follow the oracle: the confirmation names the draft
+and warns, and the fence lists its Python requirement and each install, with `(none
+declared)` when it declares neither. The editable dependency and Python fields regained
+their hint lines. Three owners with RED probes pin all of it.
+
+The responsive tiers match the oracle EXACTLY (80/16/10/28 breakpoints, footer caps 1:1,
+detail pinning). The reviewing fork first read the oracle's docstring as "narrow AND tall
+stacks" and flagged a divergence, then went to the authoritative CSS
+(`Screen.-w-narrow.-h-normal #main, Screen.-w-narrow.-h-tall #main { layout: vertical; }`)
+and corrected itself: that is precisely our `narrow && !is_short`. No capability is lost at
+any tier.
+
+Two process notes worth keeping: the catalog gate caught the fork mid-flight replacing the
+CLI's `…(PEP 723): {}` row when the oracle keeps TWO spellings (inline for the command
+line at cli.py:192, a heading for the TUI at tui_add.py:930) — both now exist with a
+comment; and the new hint rows cost two rows, pushing a PTY owner's last assertions below
+the fold, so that harness was raised from 24 to 32 rows rather than the assertion weakened.
+
+Aggregate 4097 / 0 / 525 with complete executable-source line coverage.
+
+MUTATION SCHEDULING NOTE: the 48-shard matrix re-queues on every push and has repeatedly
+been superseded before getting runner capacity. The tree must FREEZE for it to finish; the
+label stays attached, so the run on the frozen head is the one to read.
+
