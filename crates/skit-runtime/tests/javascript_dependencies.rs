@@ -732,33 +732,55 @@ fn crash_left_backup_index_temp_does_not_block_recovery() {
 
 #[test]
 fn system_dependency_runner_reports_real_child_status() {
+    // The contract is real child status and stderr passthrough, not one shell: each host runs
+    // its own command interpreter and expects the exact bytes that interpreter writes. The cmd
+    // forms are the flat Windows-validated idioms (`>&2 echo`, no space before `&`), and cmd's
+    // echo always ends a line with CRLF, so the expected bytes name that per host.
+    let (program, flag) = if cfg!(windows) {
+        (PathBuf::from("cmd.exe"), "/C")
+    } else {
+        (PathBuf::from("/bin/sh"), "-c")
+    };
+    let (success_command, success_stderr): (&str, &[u8]) = if cfg!(windows) {
+        (
+            "echo ignored& >&2 echo diagnostic& exit 0",
+            b"diagnostic\r\n",
+        )
+    } else {
+        (
+            "printf ignored; printf diagnostic >&2; exit 0",
+            b"diagnostic",
+        )
+    };
+    let (failure_command, failure_stderr): (&str, &[u8]) = if cfg!(windows) {
+        (">&2 echo actionable& exit 23", b"actionable\r\n")
+    } else {
+        ("printf actionable >&2; exit 23", b"actionable")
+    };
     let root = TempDir::new().unwrap();
     let runner = SystemDependencyCommandRunner;
     let success = runner
         .run(&DependencyCommand {
-            program: PathBuf::from("/bin/sh"),
-            args: vec![
-                "-c".to_owned(),
-                "printf ignored; printf diagnostic >&2; exit 0".to_owned(),
-            ],
+            program: program.clone(),
+            args: vec![flag.to_owned(), success_command.to_owned()],
             cwd: root.path().to_owned(),
             environment: BTreeMap::new(),
         })
         .unwrap();
     assert!(success.success);
     assert_eq!(success.exit_code, Some(0));
-    assert_eq!(success.stderr, b"diagnostic");
+    assert_eq!(success.stderr, success_stderr);
     let failure = runner
         .run(&DependencyCommand {
-            program: PathBuf::from("/bin/sh"),
-            args: vec!["-c".to_owned(), "printf actionable >&2; exit 23".to_owned()],
+            program,
+            args: vec![flag.to_owned(), failure_command.to_owned()],
             cwd: root.path().to_owned(),
             environment: BTreeMap::new(),
         })
         .unwrap();
     assert!(!failure.success);
     assert_eq!(failure.exit_code, Some(23));
-    assert_eq!(failure.stderr, b"actionable");
+    assert_eq!(failure.stderr, failure_stderr);
 }
 
 /// Build one crash backup directory with the given items.

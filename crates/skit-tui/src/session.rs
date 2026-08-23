@@ -3069,6 +3069,30 @@ mod path_suggestion_tests {
         ));
     }
 
+    /// The session can drop its result channel while a worker still computes a suggestion. The
+    /// worker must then stop instead of looping. This return only ran when a test's teardown
+    /// happened to race a computation, so it owns the path deterministically: one queued job, a
+    /// receiver that is already gone, and the worker called on this thread — returning IS the
+    /// proof, because a worker that ignored the closed channel would wait here forever.
+    #[test]
+    fn a_worker_stops_when_the_session_no_longer_listens_for_results() {
+        let (requests_tx, request_rx) = mpsc::sync_channel(1);
+        requests_tx
+            .try_send(PathSuggestionJob {
+                generation: 1,
+                field: 0,
+                request: Box::new(request("/new")),
+            })
+            .unwrap();
+        let requests = Arc::new(Mutex::new(request_rx));
+        let (results, result_rx) = mpsc::channel();
+        drop(result_rx);
+
+        run_path_suggestion_worker(Arc::new(ContextProvider), requests, results);
+
+        drop(requests_tx);
+    }
+
     #[test]
     fn path_dialect_policy_keeps_both_host_shapes_explicit() {
         assert_eq!(path_dialect_for(false), PathInputDialect::Posix);

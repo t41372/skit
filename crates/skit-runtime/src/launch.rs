@@ -1677,12 +1677,12 @@ mod private_tests {
 
         // The contract is real operating-system exit status, not one shell: spawn the host's own
         // command interpreter. A bare `cmd.exe` resolves through the system directory before any
-        // PATH entry, so a controlled PATH cannot hide it.
-        let (shell, flag) = if cfg!(windows) {
-            ("cmd.exe", "/C")
-        } else {
-            ("/bin/sh", "-c")
-        };
+        // PATH entry, so a controlled PATH cannot hide it. Compile-time arms keep the other
+        // host's tuple out of this host's executable lines, which the coverage gate counts.
+        #[cfg(windows)]
+        let (shell, flag) = ("cmd.exe", "/C");
+        #[cfg(not(windows))]
+        let (shell, flag) = ("/bin/sh", "-c");
         let plan = LaunchPlan {
             program: PathBuf::from(shell),
             args: vec![flag.to_owned(), "exit 7".to_owned()],
