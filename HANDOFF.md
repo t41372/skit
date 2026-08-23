@@ -1116,3 +1116,35 @@ a seam that takes the host's preferences as a parameter.
 
 Aggregate 4093 / 0 / 525 with complete executable-source line coverage.
 
+Round 6 adjudicated the 40 packaged TUI strings ONE BY ONE and proved the package's high
+false-positive rate: only 6 were genuine absences (17 present in other words at the same
+surface, 17 recorded — 10 of them status-line calls already covered by that deviation).
+Two of the six were REAL DEFECTS, not just missing text (`7b942b0`, `5f48312`): the
+draft-delete confirmation said "Remove this entry:" — a kept draft is a file, not a
+library entry, and the sentence never said the copy is the only one — and the PEP 723
+block rendered only `dependencies.join(", ")`, so a fence pinning `requires-python` with
+no installs showed an EMPTY LIST and dropped the Python requirement entirely. The
+responsive tiers match exactly (breakpoints and footer caps 1:1); an apparent portrait
+divergence was settled by the authoritative source — the oracle's CSS names both tiers
+where its docstring named one.
+
+The colour owner then failed on Windows for the measurement class again, fixed in
+`3674c5a` by reading each line's ACTIVE SGR state rather than the byte stream
+(`visible_with_styles`/`styles_over` now live beside the stripper under invariant 6);
+ConPTY repaints and moves a style code across the line break, yet the style over each
+line's characters is identical on both hosts. That fork also found a VACUOUS assertion in
+its sibling's owner: the quiet-mode runs sat after the entry removal, so the yellow half
+had no line to check.
+
+The coverage gate then flagged the now-unreachable `"Remove this entry:"` fallback, and
+the honest answer was neither "delete dead code" nor "add an owner" (`e29db41`): the arm
+WAS reachable, and its reachability was the defect. `ConfirmDraftDelete(true)` took the
+candidate without changing the stage, so `stage == ConfirmDraftDelete && candidate ==
+None` was a real reducer state that today's synchronous CLI host merely hides — a Tauri
+host drawing while the delete runs would land there. The candidate now lives exactly as
+long as the stage that names it, and the fallback has no state left to serve. Three
+mechanisms had to agree to surface this: oracle wording comparison, the 100% coverage
+gate, and the frontend-neutral seam.
+
+Aggregate 4097 / 0 / 525 with complete executable-source line coverage.
+
