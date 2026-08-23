@@ -771,7 +771,8 @@ fn command_plan<P: ProgramProbe>(
     );
     #[cfg(windows)]
     {
-        let shell = require_program("cmd.exe", probe)?;
+        let shell =
+            windows_command_shell(env::var_os("COMSPEC"), env::var_os("SystemRoot"), probe)?;
         return Ok((
             shell,
             vec!["/C".to_owned(), command],
@@ -1163,6 +1164,36 @@ fn require_file<P: ProgramProbe>(path: &Path, probe: &P) -> Result<(), LaunchErr
     }
 }
 
+/// Resolve the shell that runs a command entry, the way version 0.4 reaches it on Windows.
+///
+/// Version 0.4 runs a command entry through `subprocess.run(..., shell=True)`
+/// (launcher.py:293-298). On Windows, CPython reads COMSPEC and falls back to the bare name
+/// `cmd.exe`, which CreateProcess finds in the system directory before any PATH entry. A plain
+/// PATH probe therefore diverges: a child environment with a reduced PATH still runs command
+/// entries under version 0.4. Read what version 0.4 reads: COMSPEC verbatim (no existence
+/// check, exactly as CPython passes it), then the system directory's cmd.exe, then PATH.
+///
+/// The environment values arrive as parameters, so a test can drive every arm on every host.
+// The production caller sits in the cfg(windows) arm of command_plan; the function itself
+// compiles on every host so its owner runs — and its mutants die — on the Linux gates.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_command_shell<P: ProgramProbe>(
+    comspec: Option<std::ffi::OsString>,
+    system_root: Option<std::ffi::OsString>,
+    probe: &P,
+) -> Result<PathBuf, LaunchError> {
+    if let Some(value) = comspec.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(value));
+    }
+    if let Some(root) = system_root.filter(|value| !value.is_empty()) {
+        let fallback = PathBuf::from(root).join("System32").join("cmd.exe");
+        if probe.is_file(&fallback) {
+            return Ok(fallback);
+        }
+    }
+    require_program("cmd.exe", probe)
+}
+
 fn require_program<P: ProgramProbe>(name: &str, probe: &P) -> Result<PathBuf, LaunchError> {
     probe
         .find_program(name)
@@ -1478,6 +1509,52 @@ mod private_tests {
         assert!(matches!(
             build_launch_plan(&command, &paths(), &assembly, None, None, &probe),
             Err(LaunchError::WorkdirMissing { .. })
+        ));
+    }
+
+    /// The command shell resolves the way version 0.4's `shell=True` reaches it: COMSPEC
+    /// verbatim, then the system directory's cmd.exe, then PATH, then a typed refusal. The
+    /// pure function runs on every host, so each arm stays owned and mutation-killable here.
+    #[test]
+    fn windows_command_shell_reads_comspec_before_the_system_directory_and_path() {
+        use std::ffi::OsString;
+
+        let empty = Probe::default();
+        assert_eq!(
+            windows_command_shell(Some(OsString::from("C:\\shell\\cmd.exe")), None, &empty)
+                .unwrap(),
+            PathBuf::from("C:\\shell\\cmd.exe")
+        );
+
+        let fallback = PathBuf::from("C:\\Windows")
+            .join("System32")
+            .join("cmd.exe");
+        let system = Probe {
+            files: vec![fallback.clone()],
+            ..Probe::default()
+        };
+        assert_eq!(
+            windows_command_shell(
+                Some(OsString::new()),
+                Some(OsString::from("C:\\Windows")),
+                &system
+            )
+            .unwrap(),
+            fallback
+        );
+
+        let path_only = Probe {
+            programs: BTreeMap::from([("cmd.exe".to_owned(), PathBuf::from("D:\\tools\\cmd.exe"))]),
+            ..Probe::default()
+        };
+        assert_eq!(
+            windows_command_shell(None, None, &path_only).unwrap(),
+            PathBuf::from("D:\\tools\\cmd.exe")
+        );
+
+        assert!(matches!(
+            windows_command_shell(None, Some(OsString::from("C:\\Windows")), &empty),
+            Err(LaunchError::ProgramNotFound { name }) if name == "cmd.exe"
         ));
     }
 

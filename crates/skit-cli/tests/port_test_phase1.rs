@@ -609,8 +609,10 @@ fn test_command_params_fill_and_escape() {
         &command_probe(),
     )
     .unwrap();
-    // Rust lowers a command template to `sh -c "<rendered>"`, so the rendered text is `args[1]`.
-    assert_eq!(plan.args[0], "-c");
+    // Rust lowers a command template to the host shell (`sh -c` / `cmd.exe /C`), so the
+    // rendered text is `args[1]` on both hosts. The Windows shell resolves through the COMSPEC
+    // convention (the way version 0.4's `shell=True` reaches it), so no cmd.exe seed is needed.
+    assert_eq!(plan.args[0], if cfg!(windows) { "/C" } else { "-c" });
     assert_eq!(plan.args[1], "convert a.png to b.jpg keep {braces}");
 }
 
