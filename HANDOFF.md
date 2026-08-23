@@ -854,6 +854,14 @@ owner now cfg-matches the host's variant with both policies named; the test's ot
 assertions were rechecked host-neutral and the rest of launch_plan.rs is empirically
 Windows-proven. Aggregate 4073 / 0 / 525.
 
+Wave 26b (`00a1e8a`) swept the policy-divergence class suite-wide: four members total
+(launch_plan, two interpreters asserts including configured zsh, one module doc), all
+cfg-matched; every cfg-divergent policy point (COMSPEC lane, prompt argv limits, template
+renderer, uv spelling, PATHEXT/dialect/editor/tilde) is ticked against its owners with
+member/non-member evidence. Three vacuous unix-spelling negative asserts in Windows-proven
+files are flagged for the cleanup rounds, not churned mid-convergence. Aggregate
+4073 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
