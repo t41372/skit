@@ -623,7 +623,6 @@ mod private_tests {
     }
 
     fn durability_fixture() -> (Vec<u8>, UvAsset, &'static [u8]) {
-        let executable_name = if cfg!(windows) { "uv.exe" } else { "uv" };
         let bytes = b"complete verified uv";
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut tar = tar::Builder::new(encoder);
@@ -633,16 +632,12 @@ mod private_tests {
         header.set_cksum();
         tar.append_data(
             &mut header,
-            format!("release/{executable_name}"),
+            format!("release/{}", host_executable_name()),
             bytes.as_slice(),
         )
         .unwrap();
         let archive = tar.into_inner().unwrap().finish().unwrap();
         let asset = test_asset("https://example.invalid/uv.tar.gz".to_owned(), &archive);
-        let asset = UvAsset {
-            executable_name: executable_name.to_owned(),
-            ..asset
-        };
         (archive, asset, bytes)
     }
 
@@ -967,6 +962,15 @@ mod private_tests {
         }));
     }
 
+    /// The executable name the host convention gives a managed uv.
+    ///
+    /// Production assets carry `uv.exe` for Windows targets (`uv_asset`), and `managed_uv_path`
+    /// reads the same name back. A fixture that hardcodes `uv` installs a file the second
+    /// bootstrap call cannot find on Windows, so it falls through to a fetch that must not run.
+    fn host_executable_name() -> &'static str {
+        if cfg!(windows) { "uv.exe" } else { "uv" }
+    }
+
     fn tar_archive() -> Vec<u8> {
         let encoder = GzEncoder::new(Vec::new(), Compression::default());
         let mut tar = tar::Builder::new(encoder);
@@ -975,8 +979,12 @@ mod private_tests {
         header.set_size(bytes.len() as u64);
         header.set_mode(0o755);
         header.set_cksum();
-        tar.append_data(&mut header, "release/uv", bytes.as_slice())
-            .unwrap();
+        tar.append_data(
+            &mut header,
+            format!("release/{}", host_executable_name()),
+            bytes.as_slice(),
+        )
+        .unwrap();
         tar.into_inner().unwrap().finish().unwrap()
     }
 
@@ -986,7 +994,7 @@ mod private_tests {
             filename: "uv-test.tar.gz".to_owned(),
             url,
             checksum: hex_digest(archive),
-            executable_name: "uv".to_owned(),
+            executable_name: host_executable_name().to_owned(),
         }
     }
 

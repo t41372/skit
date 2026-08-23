@@ -1663,7 +1663,11 @@ mod private_tests {
             probe.find_program(executable.to_str().unwrap()),
             Some(executable)
         );
-        assert!(probe.find_program("sh").is_some());
+        assert!(
+            probe
+                .find_program(if cfg!(windows) { "cmd" } else { "sh" })
+                .is_some()
+        );
         assert!(
             probe
                 .find_program("skit-program-that-does-not-exist")
@@ -1671,9 +1675,17 @@ mod private_tests {
         );
         assert!(!probe.is_executable(root.path()));
 
+        // The contract is real operating-system exit status, not one shell: spawn the host's own
+        // command interpreter. A bare `cmd.exe` resolves through the system directory before any
+        // PATH entry, so a controlled PATH cannot hide it.
+        let (shell, flag) = if cfg!(windows) {
+            ("cmd.exe", "/C")
+        } else {
+            ("/bin/sh", "-c")
+        };
         let plan = LaunchPlan {
-            program: PathBuf::from("/bin/sh"),
-            args: vec!["-c".to_owned(), "exit 7".to_owned()],
+            program: PathBuf::from(shell),
+            args: vec![flag.to_owned(), "exit 7".to_owned()],
             env: BTreeMap::new(),
             cwd: root.path().to_owned(),
             display: String::new(),
