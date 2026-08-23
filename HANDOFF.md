@@ -824,6 +824,17 @@ per-class reasons; the needle-sync conversion is folded into the planned PTY con
 wave-15's mistaken "green on Windows" note for the VEOF test is corrected. Aggregate
 4072 / 0 / 525.
 
+The 8675393 run FULLY CLEARED skit-cli on Windows and moved into skit-runtime's lib
+(51/2/1). Wave 24 (`12df0f9`): the uv bootstrap failure was the uv-vs-uv.exe class inside
+the SHARED test fixture (`test_asset`/`tar_archive` hardcoded unix spellings while
+production installs `uv.exe`; the durability fixture's local host-aware patch was the
+smoking gun of the shared defect and is removed with the root fix); the system-probe
+failure spawned a literal `/bin/sh` where the contract is real OS status passthrough — it
+now spawns the host interpreter per the wave-22 resolution semantics. The in-src sweep of
+every remaining unproven crate's `#[cfg(test)]` modules found ZERO further members, with
+reasoned clearances (component-wise Path equality for the `/`-literal suspects, cfg-gated
+PermissionsExt, parser-input shebangs). Aggregate 4072 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
