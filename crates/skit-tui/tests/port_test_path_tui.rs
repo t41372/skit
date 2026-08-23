@@ -323,16 +323,25 @@ fn completion_worker_test() -> MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// How long a worker answer may take before the harness declares a failure.
+///
+/// A full workspace run can oversubscribe the host before a test's two fresh workers get a time
+/// slice, and coverage instrumentation slows every slice further — a 10-second budget expired
+/// once on the instrumented CI runner. 30 seconds follows the harness-budget precedent
+/// (`08046bd`, `24fe85c`): the deadline exists only to stop a hung worker from stalling the
+/// suite, and the polls below read the real checkpoint, so a healthy run never waits it out.
+const WORKER_ANSWER_BUDGET: Duration = Duration::from_secs(30);
+
 fn wait_for_completion(session: &mut TuiSession) {
-    // A full workspace run can oversubscribe the host before this test's two fresh workers get a
-    // time slice. Poll the actual result checkpoint and keep a generous failure deadline; do not
-    // add a fixed delay to the successful path.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // Poll the actual result checkpoint; do not add a fixed delay to the successful path. The
+    // short sleep between polls keeps the waiter from competing for the very time slices the
+    // workers need on an oversubscribed host.
+    let deadline = Instant::now() + WORKER_ANSWER_BUDGET;
     while Instant::now() < deadline {
         if session.refresh_background() {
             return;
         }
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
     }
     panic!("path completion worker did not answer");
 }
@@ -1132,7 +1141,10 @@ fn stale_out_of_order_completion_never_replaces_the_latest_ghost() {
     let _ = drive_root(&mut session, &mut state, &geometry, key(KeyCode::Backspace));
     type_run_value(&mut session, &mut state, &geometry, "b");
 
-    let deadline = Instant::now() + Duration::from_secs(2);
+    // Same worker-answer wait as `wait_for_completion`, with the checkpoint read through a
+    // render because this test asserts what the user SEES; the shared budget keeps the two
+    // waits on one convention.
+    let deadline = Instant::now() + WORKER_ANSWER_BUDGET;
     loop {
         let _ = session.refresh_background();
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
@@ -1150,7 +1162,7 @@ fn stale_out_of_order_completion_never_replaces_the_latest_ghost() {
             Instant::now() < deadline,
             "latest completion did not arrive"
         );
-        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
     }
     std::thread::sleep(Duration::from_millis(125));
     let _ = session.refresh_background();
