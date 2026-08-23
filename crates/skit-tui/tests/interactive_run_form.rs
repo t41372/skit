@@ -871,7 +871,10 @@ fn run_file_picker_uses_the_shared_explorer_for_keyboard_mouse_and_missing_roots
     let workdir = temp.path().join("work");
     fs::create_dir(&workdir).unwrap();
     fs::write(workdir.join("alpha.txt"), "alpha").unwrap();
-    fs::write(workdir.join("beta file*.txt"), "beta").unwrap();
+    // The picked name carries a space and glob metacharacters to prove literal placement. The
+    // brackets are the metacharacters Python's glob.escape centers on, and Windows permits them
+    // where it forbids a star, so one spelling serves every host.
+    fs::write(workdir.join("beta file[1].txt"), "beta").unwrap();
     let mut path = ParamDecl::new("path");
     path.parameter_type = ParameterType::Path;
     let form = RunFormView::from_declarations(
@@ -957,11 +960,11 @@ fn run_file_picker_uses_the_shared_explorer_for_keyboard_mouse_and_missing_roots
         key(KeyCode::Enter, KeyModifiers::NONE),
     );
     let (terminal, geometry) = draw(&mut session, &state, 84, 26);
-    let beta_row = row_containing(terminal.backend().buffer(), "beta file*.txt");
+    let beta_row = row_containing(terminal.backend().buffer(), "beta file[1].txt");
     drive(&mut session, &mut state, &geometry, mouse(12, beta_row));
     assert_eq!(
         state.run_form().unwrap().fields()[0].control.value(),
-        "beta file*.txt"
+        "beta file[1].txt"
     );
 
     let missing = temp.path().join("gone").join("child");
