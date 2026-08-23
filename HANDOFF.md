@@ -770,6 +770,18 @@ mutants); a four-combination parameterized owner covers the boolean mutants. Agg
 4071 / 0 / 525 (+1 owner, arithmetic exact); fresh workspace LCOV returned
 `complete executable-source line coverage`.
 
+The wave-18 run validated the terminal-claim guard on real Windows and advanced deep into
+the p-range with no hangs, failing fast on one js-inject batch-c test. Wave 19 (`0c80bde`,
+Fable fork) root-caused it as a CLASS: the only cmd dialect this repository has ever
+validated on a real Windows host is the flat one-statement-per-line form; the failing twins
+were authored in the parenthesized compound dialect — including one certain defect
+(`exit /b %errorlevel%` inside parens expands at parse time, returning the pre-node status).
+The product gate chain was verified sound end to end (candidate-name kind detection, nonzero
+refusal, no cfg divergence, std's bat encoding read at source). Both batch-c twins are
+rewritten flat (goto/labels, line-level exits); the family audit table confirms every other
+twin was already flat. Asserts reordered into diagnosis order, nothing weakened. Aggregate
+4071 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
