@@ -301,6 +301,7 @@ fn test_python_command_uses_uv_run_script() {
     assert_eq!(plan.args[plan.args.len() - 2..], ["--x", "1"]);
 }
 
+#[cfg(unix)]
 #[test]
 fn test_command_template_appends_extra_args() {
     // A command entry builds a shell command with the extra args appended. Python returns the
@@ -415,15 +416,29 @@ fn test_workdir_origin_no_source_falls_back_to_cwd() {
     );
 }
 
+/// A fictional absolute workdir, spelled the way THIS host spells an absolute path.
+///
+/// The custom-workdir arm applies the host's real `Path::is_absolute` before any probe check
+/// (crates/skit-runtime/src/launch.rs), so a POSIX literal is rejected as relative on Windows
+/// before the probe-driven fiction can answer. The contract under test is host-neutral; only
+/// the spelling is host-owned.
+fn virtual_workdir(tail: &str) -> String {
+    if cfg!(windows) {
+        format!("C:\\{}", tail.replace('/', "\\"))
+    } else {
+        format!("/{tail}")
+    }
+}
+
 #[test]
 fn test_workdir_absolute_path_used_directly() {
     // An absolute custom workdir is used verbatim. (Python's resolver does no existence check;
     // the Rust resolver folds one in, so the probe must know the directory exists.)
     let mut py = entry("python");
-    let custom = "/custom/work";
-    py.meta.workdir = custom.to_owned();
+    let custom = virtual_workdir("custom/work");
+    py.meta.workdir = custom.clone();
     let probe = FakeProbe {
-        dirs: vec![PathBuf::from(custom)],
+        dirs: vec![PathBuf::from(&custom)],
         ..FakeProbe::default()
     };
     let paths = paths("/data/scripts/demo/script.py");
@@ -553,7 +568,8 @@ fn test_run_entry_missing_workdir_raises() {
     // A non-existent absolute workdir refuses before spawn, naming the missing path. Rust
     // resolves the workdir before any kind dispatch, so no uv lookup is needed to surface it.
     let mut py = entry("python");
-    py.meta.workdir = "/nonexistent/path/that/does/not/exist".to_owned();
+    let missing = virtual_workdir("nonexistent/path/that/does/not/exist");
+    py.meta.workdir = missing.clone();
     let probe = FakeProbe::default();
 
     let error = build_launch_plan(
@@ -567,11 +583,15 @@ fn test_run_entry_missing_workdir_raises() {
     .unwrap_err();
     assert!(
         matches!(error, LaunchError::WorkdirMissing { ref path }
-            if path.as_path() == Path::new("/nonexistent/path/that/does/not/exist")),
+            if path.as_path() == Path::new(&missing)),
         "{error:?}"
     );
 }
 
+// Command templates lower through `sh -c` only under cfg(not(windows)); on Windows the
+// same builder takes the render_windows_command_template arm, so asserting the sh program
+// or its POSIX-rendered argv states a unix contract.
+#[cfg(unix)]
 #[test]
 fn test_run_entry_command_entry() {
     // A shell command entry runs through the shell and returns exit 0. Real execution via

@@ -448,6 +448,10 @@ fn command_template_refuses_only_unrepresentable_nested_backtick_quotes() {
     );
 }
 
+// Command templates lower through `sh -c` only under cfg(not(windows)); on Windows the
+// same builder takes the render_windows_command_template arm, so asserting the sh program
+// or its POSIX-rendered argv states a unix contract.
+#[cfg(unix)]
 #[test]
 fn command_template_appends_extra_arguments_after_rendering() {
     let mut command = entry("command");

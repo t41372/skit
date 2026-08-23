@@ -1440,6 +1440,10 @@ mod private_tests {
         }
     }
 
+    // Command templates lower through `sh -c` only under cfg(not(windows)); on Windows the
+    // same builder takes the render_windows_command_template arm, so asserting the sh program
+    // or its POSIX-rendered argv states a unix contract.
+    #[cfg(unix)]
     #[test]
     fn command_and_workdir_plans_cover_literal_and_refusal_paths() {
         let mut command = entry("command");

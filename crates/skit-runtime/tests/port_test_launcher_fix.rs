@@ -48,6 +48,10 @@
 //!   The oracle reaches it by monkeypatching `sys.platform`, which a compile-time cfg cannot
 //!   emulate. Python assertions kept as comments.
 
+// Nine tests here state the unix contract (sh lowering, POSIX quoting, signal exit codes),
+// so on Windows their helpers and imports go unused; the allowance keeps that compile clean
+// without loosening the unix build.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 #![cfg(not(windows))]
 
 use std::cell::Cell;
@@ -74,6 +78,7 @@ fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         .collect()
 }
 
+#[cfg(unix)]
 /// The oracle's real-execution proof: run one shell string through absolute `/bin/sh -c` and
 /// return (success, stdout).
 fn run_sh(command: &str) -> (bool, String) {
@@ -207,6 +212,7 @@ impl ProgramProbe for ShellProbe {
     }
 }
 
+#[cfg(unix)]
 /// A directly-built `sh -c <script>` plan (Python `run_entry` reduces to this after render).
 fn sh_plan(script: &str, cwd: &Path) -> LaunchPlan {
     LaunchPlan {
@@ -219,6 +225,7 @@ fn sh_plan(script: &str, cwd: &Path) -> LaunchPlan {
     }
 }
 
+#[cfg(unix)]
 /// Run a command entry end-to-end: render + spawn `sh -c` + normalize the exit code, exactly the
 /// Python `run_entry(entry, values=…, invoke_cwd=cwd)` path.
 fn run_command_entry(template: &str, values: &[(&str, &str)], cwd: &Path) -> i32 {
@@ -243,6 +250,11 @@ fn run_command_entry(template: &str, values: &[(&str, &str)], cwd: &Path) -> i32
 
 // ---------- Double-brace unescape must not corrupt substituted values ----------
 
+// The active contract here is the POSIX arm of a compile-time host branch (command
+// templates lower through `sh -c` only under cfg(not(windows)); Windows lowers through
+// render_windows_command_template). Asserting the POSIX rendering or running /bin/sh on a
+// Windows host tests nothing real, so the unix gate states the contract's platform.
+#[cfg(unix)]
 #[test]
 fn test_placeholder_value_with_double_braces_round_trips() {
     // A value containing a literal "{{"/"}}" (e.g. a Jinja/Go-template fragment) must survive
@@ -256,6 +268,7 @@ fn test_placeholder_value_with_double_braces_round_trips() {
     assert_eq!(cmd, "run --q '{{ .name }}'");
 }
 
+#[cfg(unix)]
 #[test]
 fn test_placeholder_value_with_double_braces_inside_quoted_template_slot() {
     // An `echo {msg}` template must preserve escape-like braces embedded in msg itself.
@@ -264,6 +277,7 @@ fn test_placeholder_value_with_double_braces_inside_quoted_template_slot() {
     assert!(cmd.contains("prefix{{inner}}suffix"), "{cmd:?}");
 }
 
+#[cfg(unix)]
 #[test]
 fn test_template_escape_still_unescaped_alongside_a_corrupting_value() {
     // The template's OWN {{name}} escape must still be unescaped to a literal brace, while a
@@ -278,6 +292,7 @@ fn test_template_escape_still_unescaped_alongside_a_corrupting_value() {
     assert!(cmd.contains("{{escaped-looking}}"), "{cmd:?}"); // value content: left exactly as given
 }
 
+#[cfg(unix)]
 #[test]
 fn test_run_entry_executes_correctly_with_double_brace_value() {
     // End-to-end: run the assembled command for real and check the child actually received the
@@ -299,6 +314,7 @@ fn test_run_entry_executes_correctly_with_double_brace_value() {
 
 // ---------- Signal-death exit codes must be normalized to 128+N ----------
 
+#[cfg(unix)]
 #[test]
 fn test_normalize_exit_code_maps_negative_returncode_to_128_plus_n() {
     // Python asserts the private `_normalize_exit_code(-11) == 139` (SIGSEGV), `-15 == 143`
@@ -318,6 +334,7 @@ fn test_normalize_exit_code_maps_negative_returncode_to_128_plus_n() {
     assert_eq!(execute_launch(&sh_plan("exit 2", dir.path())).unwrap(), 2);
 }
 
+#[cfg(unix)]
 #[test]
 fn test_run_entry_normalizes_signal_killed_child_to_shell_convention() {
     // End-to-end: a command entry that kills its own shell with SIGTERM must come back as 143
@@ -385,6 +402,7 @@ fn test_build_python_healthy_script_still_calls_ensure_uv() {
 
 // ---------- Command-template placeholder values must be shell-quoted ----------
 
+#[cfg(unix)]
 #[test]
 fn test_placeholder_value_with_space_is_quoted_as_one_word() {
     let cmd = render_command_template(
@@ -398,6 +416,7 @@ fn test_placeholder_value_with_space_is_quoted_as_one_word() {
     // exact single-quoted string above pins that byte-for-byte.
 }
 
+#[cfg(unix)]
 #[test]
 fn test_placeholder_value_with_shell_metacharacters_cannot_inject() {
     let hostile = "a; rm -rf x";
@@ -410,6 +429,7 @@ fn test_placeholder_value_with_shell_metacharacters_cannot_inject() {
     assert_eq!(out, format!("{hostile}\n"));
 }
 
+#[cfg(unix)]
 #[test]
 fn test_run_entry_placeholder_value_with_space_reaches_child_intact() {
     // End-to-end: a value with an embedded space must arrive at the child as ONE argument,
