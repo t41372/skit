@@ -294,7 +294,7 @@ struct Cli {
 enum Command {
     /// List every registered entry.
     List {
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -303,55 +303,55 @@ enum Command {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Add one file as a copied or referenced entry.
+    /// Add a script, executable, prompt, or command to skit.
     Add {
         /// Source file to register.
         source: Option<PathBuf>,
-        /// Force an interpreted kind or exe. With stdin, prompt is also valid.
+        /// Force the language kind (e.g. shell, js) for an extensionless file.
         #[arg(long, add = ArgValueCandidates::new(add_kind_candidates))]
         kind: Option<String>,
-        /// Display name. The source stem is the default.
+        /// Name / alias (defaults to the file name).
         #[arg(long, short = 'n')]
         name: Option<String>,
-        /// Description shown in the library.
+        /// Description (inferred from the source when possible).
         #[arg(long, short = 'd')]
         description: Option<String>,
-        /// Write a new source in the configured editor, then add it.
+        /// Write a brand-new script in your editor, then add it.
         #[arg(long, short = 'e')]
         edit: bool,
-        /// Reference the original instead of storing a copy.
+        /// Reference mode: link to the original file instead of copying it.
         #[arg(long = "ref", alias = "reference")]
         reference: bool,
-        /// Register a command template instead of a file.
+        /// Register a command template, e.g. --cmd 'ffmpeg -i {input}'.
         #[arg(long = "cmd")]
         command_template: Option<String>,
-        /// Treat the source as a prompt entry.
+        /// Add the file as a prompt for an AI agent (with no path: draft one in your editor).
         #[arg(long)]
         prompt: bool,
-        /// Force executable kind inference.
+        /// Force the executable kind (normally inferred from the file itself).
         #[arg(long)]
         exe: bool,
-        /// Pin a prompt runner.
+        /// Pin the agent a prompt entry runs with (see skit runner list).
         #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
         runner: Option<String>,
-        /// Disable prompt placeholder insertion.
+        /// Prompt only: no variable insertion at all — the body travels exactly as written.
         #[arg(long)]
         no_interpolate: bool,
-        /// Add one package dependency. Repeat for more than one value.
+        /// A dependency (repeat for more; skips the interactive question).
         #[arg(long = "dep")]
         dependencies: Option<Vec<String>>,
-        /// Set the Python version constraint.
+        /// Python version constraint, e.g. ">=3.11".
         #[arg(long)]
         python: Option<String>,
-        /// Refuse interactive questions.
+        /// Never prompt; accept the detected suggestions.
         #[arg(long)]
         no_input: bool,
     },
-    /// Run one library entry.
+    /// Run a registered entry in the terminal.
     Run(RunArgs),
     /// Set an entry's description (shown in the Library and skit list).
     Describe {
@@ -374,14 +374,14 @@ enum Command {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
-        /// Confirm the destructive operation.
+        /// Skip confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
         /// Refuse to ask for confirmation.
         #[arg(long)]
         no_input: bool,
     },
-    /// Open an entry source in the configured editor.
+    /// Open a script or prompt source in your editor (offers to create a script if the name is new).
     Edit {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -396,34 +396,34 @@ enum Command {
     Deps(DepsArgs),
     /// Check that uv is available and the entry library is intact.
     Doctor {
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
-        /// Rebuild the derived registry.
+        /// Rebuild the index from each entry's meta.toml.
         #[arg(long)]
         rebuild: bool,
     },
-    /// Read or set skit configuration.
+    /// Read or set skit's settings (language, editor, mirror, form style, after-run).
     Config {
         /// Configuration key.
         key: Option<String>,
         /// Replacement value.
         value: Option<String>,
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Manage prompt runners.
+    /// Manage the agents (runners) that prompt entries run with.
     Runner {
         #[command(subcommand)]
         command: RunnerCommand,
     },
-    /// Manage named parameter presets.
+    /// Manage named parameter presets for an entry.
     Preset {
         #[command(subcommand)]
         command: PresetCommand,
     },
-    /// Install the official Agent Skill.
+    /// Connect skit to AI agents: install the official Agent Skill.
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
@@ -437,22 +437,22 @@ struct DepsArgs {
     /// Entry slug or display name.
     #[arg(add = ArgValueCandidates::new(entry_candidates))]
     selector: String,
-    /// Replace package dependencies. Repeat for more than one value.
+    /// A dependency (repeat for more; replaces the whole list).
     #[arg(long = "dep")]
     dependencies: Vec<String>,
-    /// Clear all package dependencies.
+    /// Remove every dependency.
     #[arg(long)]
     clear: bool,
-    /// Replace the Python version constraint.
+    /// Python version constraint, e.g. ">=3.11".
     #[arg(long = "python")]
     requires_python: Option<String>,
-    /// Replace required external commands. Repeat for more than one value.
+    /// An external command the entry needs on PATH (repeat; replaces the whole list).
     #[arg(long = "need")]
     needs: Vec<String>,
-    /// Clear required external commands.
+    /// Remove every needed external command.
     #[arg(long)]
     clear_needs: bool,
-    /// Emit stable machine-readable output.
+    /// Output as JSON.
     #[arg(long)]
     json: bool,
 }
@@ -462,40 +462,40 @@ struct ParamsArgs {
     /// Entry slug or display name.
     #[arg(add = ArgValueCandidates::new(entry_candidates))]
     selector: String,
-    /// Reconcile managed definitions with the current source.
+    /// Prune definitions that no longer match the script and refresh changed types.
     #[arg(long)]
     resync: bool,
-    /// Manage one detected source parameter.
+    /// Bring a currently detected candidate under management (repeatable).
     #[arg(long = "manage")]
     manage: Vec<String>,
-    /// Stop managing one source parameter.
+    /// Drop a managed parameter (repeatable).
     #[arg(long = "unmanage")]
     unmanage: Vec<String>,
-    /// Normalize one shell constant to an environment default.
+    /// Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable).
     #[arg(long = "normalize")]
     normalize: Vec<String>,
-    /// Add a hand-declared parameter.
+    /// Declare a new parameter on an exe/command entry, by name (repeatable).
     #[arg(long = "add")]
     add: Vec<String>,
-    /// Remove a declared parameter.
+    /// Remove a declared parameter, by name (repeatable).
     #[arg(long = "rm")]
     remove: Vec<String>,
-    /// Set a parameter type as NAME=TYPE.
+    /// Set a declared parameter's type, as NAME=str|int|float|bool|choice|path.
     #[arg(long = "type")]
     parameter_types: Vec<String>,
-    /// Set a default as NAME=VALUE.
+    /// Set a declared parameter's default, as NAME=VALUE.
     #[arg(long = "default")]
     defaults: Vec<String>,
-    /// Set choices as NAME=A,B,C.
+    /// Set a declared parameter's choices, as NAME=a,b,c (comma separated).
     #[arg(long)]
     choices: Vec<String>,
-    /// Set delivery as NAME=DELIVERY.
+    /// Set how a declared parameter reaches the program, as NAME=env|flag|placeholder.
     #[arg(long = "deliver", alias = "delivery")]
     delivery: Vec<String>,
     /// Set source binding as NAME=BINDING.
     #[arg(long = "binding")]
     bindings: Vec<String>,
-    /// Set a flag as NAME=--FLAG. An empty flag makes the field positional.
+    /// Set a declared flag parameter's option, as NAME=--out (empty = positional).
     #[arg(long = "flag")]
     flags: Vec<String>,
     /// Allow more than one value for a field.
@@ -516,84 +516,84 @@ struct ParamsArgs {
     /// Set a boolean flag action as NAME=ACTION.
     #[arg(long = "action")]
     actions: Vec<String>,
-    /// Set help text as NAME=TEXT.
+    /// Set a declared parameter's help text, as NAME=text.
     #[arg(long = "help-text")]
     help_text: Vec<String>,
-    /// Set a form prompt as NAME=TEXT.
+    /// Set a parameter's form prompt, as NAME=text (repeatable).
     #[arg(long = "prompt")]
     prompts: Vec<String>,
-    /// Set a secret environment source as NAME=ENVVAR.
+    /// Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable).
     #[arg(long = "env-source")]
     env_sources: Vec<String>,
-    /// Mark fields as required.
+    /// Mark a declared parameter as required (repeatable).
     #[arg(long)]
     required: Vec<String>,
-    /// Mark fields as optional.
+    /// Mark a declared parameter as optional (repeatable).
     #[arg(long)]
     optional: Vec<String>,
-    /// Mark fields as secret.
+    /// Mark a managed parameter as secret (repeatable).
     #[arg(long)]
     secret: Vec<String>,
-    /// Remove the secret marker from fields.
+    /// Remove the secret mark from a managed parameter (repeatable).
     #[arg(long = "no-secret")]
     no_secret: Vec<String>,
-    /// Replace the work-directory policy.
+    /// Set where the entry runs: origin (its own folder), store, invoke (where you run skit from), or an absolute path.
     #[arg(long)]
     workdir: Option<String>,
-    /// Replace a command template.
+    /// Command only: rewrite the template ({placeholders} are re-read from it).
     #[arg(long)]
     template: Option<String>,
-    /// Pin an interpreter or JavaScript runtime.
+    /// Pin the interpreter/runtime an interpreted entry runs with (e.g. zsh, bun; empty value returns to automatic).
     #[arg(long)]
     interpreter: Option<String>,
-    /// Pin a prompt runner. An empty value clears the pin.
+    /// Prompt only: pin the agent this prompt runs with (empty value clears the pin).
     #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
     runner: Option<String>,
-    /// Enable prompt interpolation.
+    /// Prompt only: turn variable insertion on/off for this prompt (off = the body travels exactly as written).
     #[arg(long, conflicts_with = "no_interpolate")]
     interpolate: bool,
     /// Disable prompt interpolation.
     #[arg(long)]
     no_interpolate: bool,
-    /// Emit stable machine-readable output.
+    /// Output the read view as JSON.
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Debug, Subcommand)]
 enum RunnerCommand {
-    /// List configured prompt runners.
+    /// List the configured runners (seeds them into config on first use).
     List {
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
-        /// Include malformed rows when supported.
+        /// Include malformed raw rows and their repair indexes.
         #[arg(long)]
         all: bool,
     },
-    /// Add one direct argv prompt runner.
+    /// Register a runner: skit runner add NAME COMMAND… ({{prompt}} marks where the rendered prompt goes; each shell word becomes one argument, no shell involved).
     Add {
         /// Stable runner name.
         name: String,
         /// Program and arguments. One token must contain `{{prompt}}`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
-        /// Replace an existing name.
+        /// Replace the runner if the name already exists (the edit path).
         #[arg(long)]
         force: bool,
     },
-    /// Remove one configured prompt runner.
+    /// Remove a configured runner.
     Remove {
         /// Stable runner name.
         #[arg(add = ArgValueCandidates::new(runner_candidates))]
         name: Option<String>,
-        /// Remove one malformed raw row by its zero-based index or `container`.
+        /// Remove one raw row index from 'runner list --all' (or 'container').
         #[arg(long, allow_negative_numbers = true)]
         row: Option<String>,
-        /// Confirm removal.
+        /// Skip confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Refuse to prompt.
+        /// Never prompt.
         #[arg(long)]
         no_input: bool,
     },
@@ -601,27 +601,27 @@ enum RunnerCommand {
 
 #[derive(Debug, Subcommand)]
 enum PresetCommand {
-    /// Save a named preset.
+    /// Save a set of parameter values as a named preset.
     Save {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Preset name.
         name: String,
-        /// Copy the exact public values from the most recent run.
+        /// Save the last run's values without asking (automation-friendly).
         #[arg(long)]
         from_last: bool,
     },
-    /// List named presets.
+    /// List an entry's saved presets.
     List {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Delete one named preset.
+    /// Delete a named preset from an entry.
     Delete {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -640,14 +640,14 @@ enum PresetCommand {
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
-    /// Install the bundled Agent Skill.
+    /// Install skit's Agent Skill into an AI agent's skills directory.
     Install {
         /// Agent convention: claude, codex, or agents.
         target: Option<String>,
-        /// Install below this explicit directory.
+        /// Install into this skills directory instead of a named target.
         #[arg(long = "to")]
         directory: Option<PathBuf>,
-        /// Use the current project instead of the user directory.
+        /// Install into the current project (./.claude, ./.codex) instead of your home directory.
         #[arg(long)]
         project: bool,
     },

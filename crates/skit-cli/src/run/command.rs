@@ -70,11 +70,11 @@ pub(crate) struct RunArgs {
     #[arg(add = ArgValueCandidates::new(entry_candidates))]
     pub(crate) selector: String,
 
-    /// Set one field for this run.
+    /// Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the form no longer asks for a field you set).
     #[arg(long = "set", value_name = "NAME=VALUE")]
     pub(crate) values: Vec<String>,
 
-    /// Load one named preset.
+    /// Named preset of parameter values to prefill the form with.
     #[arg(
         long,
         short = 'p',
@@ -82,11 +82,11 @@ pub(crate) struct RunArgs {
     )]
     pub(crate) preset: Option<String>,
 
-    /// Save accepted values as a named preset after the run.
+    /// Save this run's values as a named preset.
     #[arg(long, value_name = "NAME")]
     pub(crate) save_preset: Option<String>,
 
-    /// Select a prompt runner for this run.
+    /// Run a prompt entry with this agent (overrides its pin for one run).
     #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
     pub(crate) runner: Option<String>,
 
@@ -94,23 +94,23 @@ pub(crate) struct RunArgs {
     #[arg(skip)]
     pub(crate) runner_was_picked: bool,
 
-    /// Print the masked launch command and do not start a child.
+    /// Print the exact command that would run (tokens and globs expanded), then exit.
     #[arg(long)]
     pub(crate) dry_run: bool,
 
-    /// Do not open an interactive form.
+    /// Never prompt; reuse last values and defaults.
     #[arg(long)]
     pub(crate) no_input: bool,
 
-    /// Disable enhanced terminal presentation for this run.
+    /// Line-by-line prompts instead of the inline form.
     #[arg(long)]
     pub(crate) plain: bool,
 
-    /// Bypass parameter handling and pass only the argument tail.
+    /// Skip the parameter form and injection and run the script as-is (escape hatch).
     #[arg(long)]
     pub(crate) raw: bool,
 
-    /// Clear the remembered argument tail before this run.
+    /// Forget the remembered extra arguments before this run (they are otherwise reused when you pass none).
     #[arg(long)]
     pub(crate) forget_args: bool,
 
