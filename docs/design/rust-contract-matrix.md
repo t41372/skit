@@ -57,6 +57,35 @@ item, which can now be a prompt or a command. Owners pin the new spelling in all
 The exit codes and the machine surfaces are unchanged: a missing entry still exits 1, and `--json`
 carries no prose.
 
+### A Chinese Windows desktop reads as Chinese
+
+Both versions choose the language from `SKIT_LANG`, then the configuration, then `LC_ALL`,
+`LC_MESSAGES`, and `LANG`. A Windows desktop normally sets none of those, so the last step decides,
+and there the two versions ask the host a different question.
+
+Version 0.4 reads `locale.getlocale()[0]`, which answers with a Windows locale name such as
+`Chinese (Traditional)_Taiwan`. Its own normalizer turns that into `chinese (traditional)-taiwan`,
+which matches no supported tag, so the negotiation falls back to English. Version 0.5 asks
+`GetUserPreferredUILanguages` for the same preference and receives the tag `zh-TW`, which the
+catalog serves.
+
+A Chinese Windows user therefore sees English in version 0.4 and Chinese in version 0.5. This is
+the language the desktop asks for, and product rule 1 wants every user-visible string localized, so
+version 0.5 keeps the answer it gets. Nothing is lost: the environment variables above still
+override it, and `--json` never carries prose. The unix answer is unchanged, where 24 tag and
+precedence cases match the oracle exactly.
+
+### The post-run status line names the outcome, not the entry
+
+Version 0.4 writes one transient line into the Library status bar after a run: `Last: {name} ✓
+finished`, `Last: {name} ✗ failed (code {code})`, or `Last: {name} ✗ couldn't launch`. Version 0.5
+writes `Run finished with exit status {code}` there, and reports a launch failure as the error it
+met, which names the cause instead of the fact.
+
+The outcome and the exit status reach the user in both versions; the entry name and the glyph do
+not, because the Rust status line belongs to the screen that already shows which entry is selected.
+The detail panel, which both versions keep, renders the same last-run sentence in both.
+
 The matrix is a release contract. A row can become `Complete` only after the pinned latest-Python
 oracle is represented by executable Rust tests and all additive behavior has independent tests.
 New frontends and entry kinds must use the same application ports, form plans, UI command registry,

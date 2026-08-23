@@ -250,3 +250,4 @@ D	1	crates/skit-runtime/tests/launch_plan.rs	"tool --name '\"it's $HOME\"'"	trus
 D	1	crates/skit-runtime/tests/launch_plan.rs	&BTreeMap::from([("name".to_owned(), "it's $HOME".to_owned())]),	trusted authored fixture payload; not skit English copy
 D	1	crates/skit-runtime/tests/launch_plan.rs	&BTreeMap::from([("value".to_owned(), "it's $HOME".to_owned())]),	trusted authored fixture payload; not skit English copy
 D	1	crates/skit-runtime/tests/port_test_template_context_quoting.rs	(r#"printf "%s\n" "`printf %s '{v}'`""#, "it's $HOME"),	trusted authored fixture payload; not skit English copy
+A	1	docs/design/rust-contract-matrix.md	finished`, `Last: {name} ✗ failed (code {code})`, or `Last: {name} ✗ couldn't launch`. Version 0.5	oracle msgid quoted in the deviation record

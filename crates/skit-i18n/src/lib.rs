@@ -4230,7 +4230,20 @@ pub fn requested_locale(value: Option<&str>) -> Option<Locale> {
 /// Read the platform locale through the maintained operating-system adapter.
 #[must_use]
 pub fn system_locale() -> Locale {
-    sys_locale::get_locales()
+    negotiated_system_locale(sys_locale::get_locales())
+}
+
+/// The locale a host serves for the preferences it names, in the order it names them.
+///
+/// The preferences arrive as a parameter because only the host can produce them: a Windows desktop
+/// answers with tags such as `zh-TW`, and a unix one with values such as `zh_TW.UTF-8`. The rule
+/// that reads them is the same on every host, so it is owned here rather than left to the host a
+/// test happens to run on. The first supported preference wins, and English answers for a host that
+/// names none.
+#[must_use]
+pub fn negotiated_system_locale(preferences: impl IntoIterator<Item = String>) -> Locale {
+    preferences
+        .into_iter()
         .find_map(|value| requested_locale(Some(&value)))
         .unwrap_or_default()
 }
