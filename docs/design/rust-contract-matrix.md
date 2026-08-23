@@ -30,6 +30,33 @@ progress` is a release blocker; it is not a permitted behavior change.
 | PyPI/Maturin wheel, `uv tool`, archives, security, coverage, docs, benchmarks | In progress | Local wheel/sdist installs, embedded-Skill and real-run smoke, corpus/manifest checks, deny/audit/Zizmor, 100% LCOV, docs build/link check, 112 metrics with 8/8 evaluated enforced budgets, and 23 Criterion estimates pass; native and declared-runtime CI, hands-on UI review, and approved mutation remain |
 | Future Tauri uses the same application/form/UI state and command registry | Complete | serializable `skit-ui` round-trip, frontend-neutral effects, typed application/form ports, and frontend-parity tests |
 
+## Recorded deviations
+
+Version 0.5 keeps the behavior of the pinned oracle. Where it says something differently on
+purpose, the change is recorded here with both spellings, so a reader never has to guess whether a
+difference is a decision or a defect.
+
+### The library item is an "entry", not a "script"
+
+Version 0.4 calls every library item a script, because it started as a script launcher. Version 0.5
+holds prompts, command templates, and programs as well, so the product says "entry" wherever the
+noun means the item itself. The user-visible refusal changed with it:
+
+| Locale | Version 0.4 | Version 0.5 |
+| --- | --- | --- |
+| English | `Script not found: {name}` | `entry not found: {name}` |
+| Simplified Chinese | `找不到脚本:{name}` | `找不到条目：{name}` |
+| Traditional Chinese | `找不到腳本:{name}` | `找不到項目：{name}` |
+
+The change is scoped, not sweeping. Of the 92 oracle messages that name a script, 48 keep the word
+verbatim: they describe a real script file, such as reading its arguments, parsing its syntax, or
+declaring its dependencies. The messages that changed are the ones where the word meant the library
+item, which can now be a prompt or a command. Owners pin the new spelling in all three locales
+(`typed_error_locales.rs`, `source_management.rs`, `port_test_rename.rs`).
+
+The exit codes and the machine surfaces are unchanged: a missing entry still exits 1, and `--json`
+carries no prose.
+
 The matrix is a release contract. A row can become `Complete` only after the pinned latest-Python
 oracle is represented by executable Rust tests and all additive behavior has independent tests.
 New frontends and entry kinds must use the same application ports, form plans, UI command registry,
