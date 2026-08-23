@@ -1448,6 +1448,15 @@ impl AddWorkflowState {
         self.review.as_ref()
     }
 
+    /// Kept draft the confirmation stage asks about.
+    ///
+    /// The confirmation names the draft, because deleting it removes the only copy
+    /// (`src/skit/tui_add.py:176`).
+    #[must_use]
+    pub const fn delete_candidate(&self) -> Option<&DraftSummary> {
+        self.delete_candidate.as_ref()
+    }
+
     /// Typed validation or host problem.
     #[must_use]
     pub const fn problem(&self) -> Option<&AddProblem> {

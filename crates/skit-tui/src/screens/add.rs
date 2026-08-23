@@ -869,7 +869,18 @@ fn build_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         AddStage::Review => review_rows(state, locale),
         AddStage::ConfirmDraftDelete => vec![
             RenderRow::Note(
-                text(locale, "Remove this entry:").into_owned(),
+                // A kept draft is a file, not a library entry, and deleting it is not undoable:
+                // version 0.4 names the draft and says so (`src/skit/tui_add.py:176`).
+                state.delete_candidate().map_or_else(
+                    || text(locale, "Remove this entry:").into_owned(),
+                    |draft| {
+                        format_text(
+                            locale,
+                            "Delete the draft \"{}\"? It is the only copy.",
+                            &[&draft_display_name(draft)],
+                        )
+                    },
+                ),
                 Style::default().fg(Color::Red),
             ),
             RenderRow::Button(
@@ -993,6 +1004,23 @@ fn kind_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     rows
 }
 
+/// Name one kept draft the way its row in the list names it.
+fn draft_display_name(draft: &skit_ui::DraftSummary) -> String {
+    draft
+        .path
+        .file_name()
+        .map_or_else(String::new, |value| value.to_string_lossy().into_owned())
+}
+
+/// One dim guidance line under the control it explains.
+///
+/// Version 0.4 writes these as `hint`-classed statics beside the field they describe
+/// (`src/skit/tui_add.py:925`, `:963`), so the reader learns what the field takes without leaving
+/// the screen.
+fn hint(body: String) -> RenderRow {
+    RenderRow::Note(body, Style::default().add_modifier(Modifier::DIM))
+}
+
 fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     let review = state
         .review()
@@ -1016,25 +1044,53 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
                 AddTextField::Dependencies,
                 text(locale, "Package dependencies").into_owned(),
             ));
+            rows.push(hint(
+                text(locale, "detected from the script's imports — edit freely").into_owned(),
+            ));
             rows.push(RenderRow::Input(
                 AddTextField::PythonConstraint,
                 text(locale, "Python constraint").into_owned(),
             ));
+            rows.push(hint(
+                text(
+                    locale,
+                    "Python version (requires-python) — prefilled from the #! line when it pins one; empty means automatic",
+                )
+                .into_owned(),
+            ));
         }
         DependencySurface::PythonOwned(metadata) => {
             rows.push(RenderRow::Note(
-                format_text(
+                text(
                     locale,
-                    "The script declares its own dependencies (PEP 723): {}",
-                    &[&metadata.dependencies.join(", ")],
-                ),
+                    "The script declares its own dependencies (PEP 723):",
+                )
+                .into_owned(),
                 Style::default().add_modifier(Modifier::DIM),
             ));
+            if !metadata.requires_python.is_empty() {
+                rows.push(hint(format!(
+                    "· {}",
+                    format_text(locale, "needs Python {}", &[&metadata.requires_python])
+                )));
+            }
+            for dependency in &metadata.dependencies {
+                rows.push(hint(format!(
+                    "· {}",
+                    format_text(locale, "installs {}", &[dependency])
+                )));
+            }
+            if metadata.requires_python.is_empty() && metadata.dependencies.is_empty() {
+                rows.push(hint(text(locale, "(none declared)").into_owned()));
+            }
         }
         DependencySurface::Npm if review.storage() == StorageMode::Copy => {
             rows.push(RenderRow::Input(
                 AddTextField::Dependencies,
                 text(locale, "Package dependencies").into_owned(),
+            ));
+            rows.push(hint(
+                text(locale, "detected from the script's imports — edit freely").into_owned(),
             ));
         }
         DependencySurface::Npm => {}
@@ -2805,5 +2861,81 @@ mod tests {
         })
         .unwrap();
         assert_eq!(session.footer_scroll.scroll_offset(), 0);
+    }
+
+    /// Version 0.4 names the draft and says the copy is the only one
+    /// (`src/skit/tui_add.py:176`). "Remove this entry:" belongs to the entry-removal modal, and a
+    /// kept draft is a file, so the confirmation has to say which file and that it does not come
+    /// back.
+    #[test]
+    fn the_draft_confirmation_names_the_draft_and_warns_it_is_the_only_copy() {
+        let drafts = vec![skit_ui::DraftSummary {
+            path: PathBuf::from("/tmp/drafts/skit-new-task.py"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        }];
+        let mut state = AddWorkflowState::new(drafts);
+        let _ = state.reduce(AddAction::SelectDraft(0));
+        let _ = state.reduce(AddAction::DeleteSelectedDraft);
+        assert_eq!(state.stage(), AddStage::ConfirmDraftDelete);
+
+        let mut session = AddScreenSession::default();
+        session.sync(&state);
+        let (terminal, _) = draw(&state, &mut session, 80, 14);
+        let rendered = text_of(&terminal);
+        assert!(
+            rendered.contains("Delete the draft \"skit-new-task.py\"? It is the only copy."),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("Remove this entry:"), "{rendered}");
+    }
+
+    /// A script that carries its own PEP 723 fence is read-only at add time, so the review has to
+    /// print what the fence asks for: the Python requirement and each install
+    /// (`src/skit/tui_add.py:935-940`). Naming only the dependencies drops the Python line, and a
+    /// fence that declares neither would otherwise render as an empty list.
+    #[test]
+    fn a_declared_dependency_fence_names_its_python_and_its_installs() {
+        let owned = source(
+            "tool.py",
+            b"# /// script\n# requires-python = \">=3.12\"\n# dependencies = [\"rich\"]\n# ///\nprint(1)\n",
+            KnownEntryKind::Python,
+        );
+        let mut session = AddScreenSession::default();
+        session.sync(&owned);
+        let (terminal, _) = draw(&owned, &mut session, 80, 20);
+        let rendered = text_of(&terminal);
+        assert!(
+            rendered.contains("The script declares its own dependencies (PEP 723):"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("needs Python >=3.12"), "{rendered}");
+        assert!(rendered.contains("installs rich"), "{rendered}");
+    }
+
+    /// The editable dependency and Python fields say where their prefill came from and what an
+    /// empty value means (`src/skit/tui_add.py:925`, `:963`). Without the lines the reader cannot
+    /// tell a scanned suggestion from a value skit will keep.
+    #[test]
+    fn the_editable_dependency_fields_explain_their_prefill() {
+        let script = source(
+            "tool.py",
+            b"import rich\nprint(1)\n",
+            KnownEntryKind::Python,
+        );
+        let mut session = AddScreenSession::default();
+        session.sync(&script);
+        let (terminal, _) = draw(&script, &mut session, 100, 24);
+        let rendered = text_of(&terminal);
+        assert!(
+            rendered.contains("detected from the script's imports"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("Python version (requires-python)"),
+            "{rendered}"
+        );
     }
 }

@@ -1743,9 +1743,31 @@ const CATALOG: &[Translation] = &[
         "參照模式絕不會變更原始檔案，因此已略過參數設定。",
     ),
     row!(
-        "The script declares its own dependencies (PEP 723): {}",
-        "脚本声明了自己的依赖项（PEP 723）：{}",
-        "腳本宣告了自己的相依套件（PEP 723）：{}",
+        "The script declares its own dependencies (PEP 723):",
+        "脚本已用 PEP 723 语法声明依赖：",
+        "腳本已用 PEP 723 語法聲明依賴：",
+    ),
+    row!("needs Python {}", "需要 Python {}", "需要 Python {}"),
+    row!("installs {}", "会自动装 {}", "會自動裝 {}"),
+    row!(
+        "(none declared)",
+        "（没有声明任何依赖）",
+        "（沒有聲明任何依賴）"
+    ),
+    row!(
+        "detected from the script's imports — edit freely",
+        "检测自脚本的 import——可自由修改",
+        "偵測自腳本的 import——可自由修改"
+    ),
+    row!(
+        "Python version (requires-python) — prefilled from the #! line when it pins one; empty means automatic",
+        "Python 版本(requires-python)——若 #! 行指定了版本则预先填入;留空表示自动",
+        "Python 版本(requires-python)——若 #! 行有指定版本則預先填入;留空表示自動"
+    ),
+    row!(
+        "Delete the draft \"{}\"? It is the only copy.",
+        "删除草稿「{}」？这是唯一的副本。",
+        "刪除草稿「{}」？這是唯一的副本。"
     ),
     row!("Run", "运行", "執行"),
     row!("Run {}", "运行 {}", "執行 {}"),
