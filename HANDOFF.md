@@ -862,6 +862,12 @@ member/non-member evidence. Three vacuous unix-spelling negative asserts in Wind
 files are flagged for the cleanup rounds, not churned mid-convergence. Aggregate
 4073 / 0 / 525.
 
+Wave 27 (`53774b2`): the uvman manifest collector joined repo-relative paths with the
+host separator against forward-slash literals — one collection-point normalization fixes
+every comparison in the file; the sweep of the whole manifest/census family found no second
+member (component-wise PathBuf equality, name-keyed censuses, literal-sourced paths, or
+Windows-proven targets throughout). Aggregate 4073 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
