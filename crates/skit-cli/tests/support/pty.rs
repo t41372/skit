@@ -357,6 +357,13 @@ impl PtyChild {
         }
     }
 
+    /// End the child now. For a wrapper's `Drop`, so an assert that fails mid-session does not
+    /// leave a live process behind.
+    pub(crate) fn kill(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
     /// What the child is doing, for a timeout message.
     pub(crate) fn child_state(&mut self) -> String {
         match self.child.try_wait() {

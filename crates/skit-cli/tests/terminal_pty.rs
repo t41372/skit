@@ -5,14 +5,11 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::{Read as _, Write as _},
+    io::Write as _,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        mpsc::{self, Receiver},
-    },
+    sync::{Arc, Mutex},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -30,6 +27,11 @@ use skit_language::write_managed_params;
 use skit_store::{FileConfigStore, FileFormStateStore, FileStore, PromptRunner};
 use skit_ui::{KnownEntryKind, ReviewDefaults, ReviewState, SourceSnapshot};
 use tempfile::TempDir;
+
+#[path = "support/pty.rs"]
+mod pty;
+
+use pty::{AnswerQueries, PtyChild};
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
     let directory = data.join("scripts/demo");
@@ -398,14 +400,6 @@ fn run_pty_configured(
     answer_cursor_query: bool,
     configure: impl FnOnce(&mut CommandBuilder),
 ) -> (u32, String) {
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 100,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
     let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
     command.args(args);
     command.env("TERM", "xterm-256color");
@@ -414,63 +408,33 @@ fn run_pty_configured(
     command.env("SKIT_STATE_DIR", state);
     command.env("SKIT_CONFIG_DIR", config);
     configure(&mut command);
-    let mut child = pair.slave.spawn_command(command).unwrap();
-    drop(pair.slave);
-
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    let reader_capture = Arc::clone(&captured);
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let drain = thread::spawn(move || {
-        let mut chunk = [0_u8; 1024];
-        loop {
-            match reader.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => reader_capture
-                    .lock()
-                    .unwrap()
-                    .extend_from_slice(&chunk[..read]),
-            }
-        }
-    });
-    let mut writer = pair.master.take_writer().unwrap();
-    settle(&captured);
+    // This lane scripts its one cursor reply below, so the harness must not answer as well: a
+    // second reply would reach the child as ordinary keys.
+    let mut pty = PtyChild::spawn(
+        command,
+        PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+        AnswerQueries::Off,
+    );
+    pty.settle();
     if answer_cursor_query {
-        let _ = writer.write_all(b"\x1b[1;1R");
-        let _ = writer.flush();
+        pty.write_raw(pty::CURSOR_REPLY);
     }
     for bytes in input {
-        settle(&captured);
-        if writer.write_all(&keystrokes(bytes)).is_err() {
+        pty.settle();
+        if !pty.try_send(bytes) {
             break;
         }
-        let _ = writer.flush();
     }
-    // End on the child, not on the terminal saying its output is over. A Windows pseudo-console
-    // does not reliably say that for a child that exits without interacting, so a wait for it can
-    // never return. Waiting for the child under a deadline, then reading what is still buffered for
-    // a bounded moment, always returns. Releasing the terminal first helps where it does work.
-    let status = wait_for_exit(&mut child);
-    drop(writer);
-    drop(pair.master);
-    drop(drain);
-    settle(&captured);
-    let raw = captured.lock().unwrap().clone();
-    let output = String::from_utf8_lossy(&raw).into_owned();
-    (status.exit_code(), output)
+    pty.finish()
 }
 
-/// One byte string a terminal program writes when it asks where the cursor is.
-const CURSOR_QUERY: &[u8] = b"\x1b[6n";
-
 struct LiveTui {
-    child: Box<dyn portable_pty::Child + Send + Sync>,
-    writer: Box<dyn std::io::Write + Send>,
-    chunks: Receiver<Vec<u8>>,
-    output: Vec<u8>,
-    /// How many cursor questions this terminal has already answered.
-    answered_queries: usize,
-    /// The most recent keys written, for a timeout message.
-    last_sent: Vec<u8>,
+    pty: PtyChild,
 }
 
 impl LiveTui {
@@ -485,8 +449,9 @@ impl LiveTui {
     /// pseudo-console: portable-pty attaches the child with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`
     /// -- the same mechanism Windows Terminal uses -- so the child holds real console handles,
     /// `is_terminal` answers yes, and the `run_in_pty` owners in this file start, drive, and
-    /// finish real sessions on Windows. Converting this harness to needle-based synchronization
-    /// is part of the planned PTY consolidation.
+    /// finish real sessions on Windows. The terminal mechanics themselves are the shared rules in
+    /// `support/pty.rs`; this wrapper adds only the session shape: the startup handshake, the
+    /// settled write, and the control-stripped view its assertions read.
     fn spawn(data: &Path, state: &Path, config: &Path, home: &Path) -> Self {
         let mut tui = Self::spawn_command(&["tui"], data, state, config, home, "en");
         tui.answer_cursor_query_after(0);
@@ -501,14 +466,6 @@ impl LiveTui {
         home: &Path,
         locale: &str,
     ) -> Self {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: 40,
-                cols: 120,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
         let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
         command.args(args);
         command.cwd(home);
@@ -520,32 +477,17 @@ impl LiveTui {
         command.env("SKIT_CONFIG_DIR", config);
         command.env("HOME", home);
         command.env("USERPROFILE", home);
-        let child = pair.slave.spawn_command(command).unwrap();
-        drop(pair.slave);
-
-        let mut reader = pair.master.try_clone_reader().unwrap();
-        let writer = pair.master.take_writer().unwrap();
-        let (sender, chunks) = mpsc::channel();
-        thread::spawn(move || {
-            let mut buffer = [0_u8; 8192];
-            loop {
-                match reader.read(&mut buffer) {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => {
-                        if sender.send(buffer[..read].to_vec()).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
         Self {
-            child,
-            writer,
-            chunks,
-            output: Vec::new(),
-            answered_queries: 0,
-            last_sent: Vec::new(),
+            pty: PtyChild::spawn(
+                command,
+                PtySize {
+                    rows: 40,
+                    cols: 120,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                },
+                AnswerQueries::On,
+            ),
         }
     }
 
@@ -557,31 +499,8 @@ impl LiveTui {
     /// the terminal still echoes them, the child never sees them, and both sides then wait. Waiting
     /// for a quiet moment puts every write after the change.
     fn send(&mut self, bytes: &[u8]) {
-        self.settle();
-        self.last_sent = bytes.to_vec();
-        self.writer.write_all(&keystrokes(bytes)).unwrap();
-        self.writer.flush().unwrap();
-    }
-
-    /// Wait until the child has written nothing for a short while.
-    ///
-    /// Silence is the only sign this terminal gets that the child finished drawing and is now
-    /// waiting for a key. The whole wait is bounded, so a child that chatters cannot hold the test.
-    fn settle(&mut self) {
-        const QUIET: Duration = Duration::from_millis(30);
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            match self.chunks.recv_timeout(QUIET) {
-                Ok(chunk) => {
-                    self.output.extend_from_slice(&chunk);
-                    self.answer_new_cursor_queries();
-                }
-                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
-                    return;
-                }
-            }
-        }
+        self.pty.settle_quiet(Duration::from_millis(30));
+        self.pty.send(bytes);
     }
 
     fn send_effect_key(&mut self, bytes: &[u8]) {
@@ -591,8 +510,7 @@ impl LiveTui {
     }
 
     fn checkpoint(&mut self) -> usize {
-        self.drain();
-        self.output.len()
+        self.pty.checkpoint()
     }
 
     fn wait_for(&mut self, needle: &str) -> String {
@@ -600,46 +518,10 @@ impl LiveTui {
     }
 
     fn wait_for_after(&mut self, checkpoint: usize, needle: &str) -> String {
-        // A full workspace run starts many real PTYs at once. Keep the checkpoint event-driven,
-        // but allow a loaded CI host enough time to schedule the child that owns this prompt.
-        let deadline = Instant::now() + Duration::from_secs(30);
-        loop {
-            self.drain();
-            let visible = self.visible_after(checkpoint);
-            if visible.contains(needle) {
-                return visible;
-            }
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                let state = self.child_state();
-                let sent = String::from_utf8_lossy(&self.last_sent).into_owned();
-                let answered = self.answered_queries;
-                let total = self.output.len();
-                let raw =
-                    String::from_utf8_lossy(&self.output[checkpoint.min(total)..]).into_owned();
-                panic!(
-                    "timed out waiting for {needle:?} after checkpoint {checkpoint}; {state}; \
-                     last keys written: {sent:?}; \
-                     cursor questions answered: {answered}; total bytes read: {total}; \
-                     new bytes: {}; new terminal output:\n{visible}\nraw bytes since the checkpoint:\n{raw:?}",
-                    total.saturating_sub(checkpoint)
-                );
-            };
-            match self
-                .chunks
-                .recv_timeout(remaining.min(Duration::from_millis(100)))
-            {
-                Ok(chunk) => self.output.extend_from_slice(&chunk),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    assert!(
-                        self.child.try_wait().unwrap().is_none(),
-                        "TUI exited while waiting for {needle:?}; new terminal output:\n{visible}"
-                    );
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => panic!(
-                    "TUI output closed while waiting for {needle:?}; new terminal output:\n{visible}"
-                ),
-            }
-        }
+        self.pty
+            .wait_for_after_rendered(checkpoint, needle, |bytes| {
+                strip_terminal_control(&String::from_utf8_lossy(bytes))
+            })
     }
 
     fn wait_for_exit_after(&mut self, checkpoint: usize) -> String {
@@ -647,111 +529,23 @@ impl LiveTui {
     }
 
     fn wait_for_exit_status_after(&mut self, checkpoint: usize) -> (u32, String) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            self.drain();
-            if let Some(status) = self.child.try_wait().unwrap() {
-                return (status.exit_code(), self.visible_after(checkpoint));
-            }
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                panic!(
-                    "timed out waiting for TUI exit; new terminal output:\n{}",
-                    self.visible_after(checkpoint)
-                );
-            };
-            match self
-                .chunks
-                .recv_timeout(remaining.min(Duration::from_millis(100)))
-            {
-                Ok(chunk) => self.output.extend_from_slice(&chunk),
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    if let Some(status) = self.child.try_wait().unwrap() {
-                        return (status.exit_code(), self.visible_after(checkpoint));
-                    }
-                }
-            }
-        }
+        let status = self.pty.wait_exit_within(Duration::from_secs(10));
+        (status.exit_code(), self.visible_after(checkpoint))
     }
 
     fn visible_after(&mut self, checkpoint: usize) -> String {
-        self.drain();
-        let checkpoint = checkpoint.min(self.output.len());
-        strip_terminal_control(&String::from_utf8_lossy(&self.output[checkpoint..]))
+        strip_terminal_control(&String::from_utf8_lossy(&self.pty.raw_after(checkpoint)))
     }
 
-    fn drain(&mut self) {
-        while let Ok(chunk) = self.chunks.try_recv() {
-            self.output.extend_from_slice(&chunk);
-        }
-        self.answer_new_cursor_queries();
-    }
-
-    /// Answer every cursor question this terminal has not answered yet.
-    ///
-    /// A program that asks where the cursor is waits for the answer before it writes anything more.
-    /// A real terminal always answers. When only the tests that press keys answered, a prompt that
-    /// asks in any other place stopped the child: it stayed alive, wrote nothing, and the test
-    /// waited for text the child could not reach.
-    fn answer_new_cursor_queries(&mut self) {
-        let asked = self
-            .output
-            .windows(CURSOR_QUERY.len())
-            .filter(|window| *window == CURSOR_QUERY)
-            .count();
-        while self.answered_queries < asked {
-            self.writer.write_all(b"\x1b[1;1R").unwrap();
-            self.writer.flush().unwrap();
-            self.answered_queries = self.answered_queries.saturating_add(1);
-        }
-    }
-
-    /// What the child is doing, for a timeout message.
-    fn child_state(&mut self) -> String {
-        match self.child.try_wait() {
-            Ok(Some(status)) => format!("child exited with {}", status.exit_code()),
-            Ok(None) => "child still running".to_owned(),
-            Err(error) => format!("child status unreadable: {error}"),
-        }
-    }
-
-    /// Wait until the child asks where the cursor is. `drain` has already answered it.
+    /// Wait until the child asks where the cursor is. The shared drain has already answered it.
     fn answer_cursor_query_after(&mut self, checkpoint: usize) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            self.drain();
-            if self.output[checkpoint.min(self.output.len())..]
-                .windows(CURSOR_QUERY.len())
-                .any(|window| window == CURSOR_QUERY)
-            {
-                return;
-            }
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                panic!("timed out waiting for the terminal cursor-position query");
-            };
-            match self
-                .chunks
-                .recv_timeout(remaining.min(Duration::from_millis(100)))
-            {
-                Ok(chunk) => self.output.extend_from_slice(&chunk),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    assert!(
-                        self.child.try_wait().unwrap().is_none(),
-                        "TUI exited before it requested the cursor position"
-                    );
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    panic!("TUI output closed before it requested the cursor position");
-                }
-            }
-        }
+        self.pty.wait_cursor_query_after(checkpoint);
     }
 }
 
 impl Drop for LiveTui {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        self.pty.kill();
     }
 }
 
@@ -1478,14 +1272,6 @@ fn run_with_null_stdin_in_pty(
     state: &Path,
     config: &Path,
 ) -> (u32, String) {
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 100,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
     let mut command = CommandBuilder::new("sh");
     command.args(["-c", "exec \"$@\" < /dev/null", "sh"]);
     command.arg(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
@@ -1495,37 +1281,17 @@ fn run_with_null_stdin_in_pty(
     command.env("SKIT_DATA_DIR", data);
     command.env("SKIT_STATE_DIR", state);
     command.env("SKIT_CONFIG_DIR", config);
-    let mut child = pair.slave.spawn_command(command).unwrap();
-    drop(pair.slave);
-
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    let reader_capture = Arc::clone(&captured);
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let drain = thread::spawn(move || {
-        let mut chunk = [0_u8; 1024];
-        loop {
-            match reader.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => reader_capture
-                    .lock()
-                    .unwrap()
-                    .extend_from_slice(&chunk[..read]),
-            }
-        }
-    });
-    let writer = pair.master.take_writer().unwrap();
-    // End on the child, not on the terminal saying its output is over. A Windows pseudo-console
-    // does not reliably say that for a child that exits without interacting, so a wait for it can
-    // never return. Waiting for the child under a deadline, then reading what is still buffered for
-    // a bounded moment, always returns. Releasing the terminal first helps where it does work.
-    let status = wait_for_exit(&mut child);
-    drop(writer);
-    drop(pair.master);
-    drop(drain);
-    settle(&captured);
-    let raw = captured.lock().unwrap().clone();
-    let output = String::from_utf8_lossy(&raw).into_owned();
-    (status.exit_code(), output)
+    let pty = PtyChild::spawn(
+        command,
+        PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+        AnswerQueries::Off,
+    );
+    pty.finish()
 }
 
 #[test]
@@ -1688,7 +1454,7 @@ fn read_pty_screen(args: &[&str], data: &Path, state: &Path, config: &Path) -> S
     drop(writer);
     drop(pair.master);
     drop(drain);
-    settle(&captured);
+    pty::settle_buffer(&captured);
     let raw = captured.lock().unwrap().clone();
     String::from_utf8_lossy(&raw)
         .chars()
@@ -3075,63 +2841,4 @@ fn terminal_plain_launch_menu_uses_the_same_prefill_and_argument_contract() {
         output.contains("Prompt runner choices: backup, local [local]:"),
         "{output}"
     );
-}
-
-/// Deliver one canned answer the way a terminal delivers it.
-///
-/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
-/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
-/// character, so the prompt keeps waiting and both sides stop
-/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
-/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
-/// Unix exactly as it was.
-fn keystrokes(answer: &[u8]) -> Vec<u8> {
-    answer
-        .iter()
-        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
-        .collect()
-}
-
-/// Wait until the child has written nothing for a short while, so an answer lands on a prompt that
-/// is already reading.
-///
-/// See the note on the same helper in `port_test_add_no_source.rs`: a fixed pause is enough where
-/// the terminal holds an early answer, and is not enough where the answer becomes console records
-/// the prompt reads one at a time (`console/src/windows_term/mod.rs:531-560`).
-fn settle(captured: &Arc<Mutex<Vec<u8>>>) {
-    const QUIET: Duration = Duration::from_millis(60);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut seen = captured.lock().unwrap().len();
-    let mut quiet_since = Instant::now();
-    while Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-        let now = captured.lock().unwrap().len();
-        if now == seen {
-            if quiet_since.elapsed() >= QUIET {
-                return;
-            }
-        } else {
-            seen = now;
-            quiet_since = Instant::now();
-        }
-    }
-}
-
-/// Wait for the terminal child to exit, under a deadline.
-///
-/// The end of a run is the child ending, not the terminal saying its output is over. A Windows
-/// pseudo-console does not reliably say that for a child that exits without interacting, so a wait
-/// keyed on it can never return.
-fn wait_for_exit(
-    child: &mut Box<dyn portable_pty::Child + Send + Sync>,
-) -> portable_pty::ExitStatus {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            return status;
-        }
-        assert!(Instant::now() < deadline, "the terminal child never exited");
-        thread::sleep(Duration::from_millis(10));
-    }
 }
