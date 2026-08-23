@@ -36,7 +36,10 @@
 //!    cursor question, mode switches, and a window title carrying the whole binary path
 //!    (`\x1b]0;D:\a\...\skit.exe\x07`). An assertion that measures or matches raw bytes reads
 //!    that chrome as if the product had printed it. [`strip_terminal_control`] gives the text a
-//!    person sees (wave 4 fold owners).
+//!    person sees (wave 4 fold owners). An assertion about colour cannot drop every sequence, so
+//!    [`visible_with_styles`] and [`styles_over`] read the same stream one layer up: the visible
+//!    lines, each with the styles the terminal painted over its own characters (round 5 colour
+//!    owner).
 //!
 //! Two harness families share these rules. [`PtyChild`] is the full channel-driven harness.
 //! The free functions ([`keystrokes`], [`settle_buffer`], [`wait_for_exit`]) serve the bespoke
@@ -47,6 +50,7 @@
 #![allow(dead_code)]
 
 use std::{
+    collections::BTreeSet,
     io::{Read as _, Write as _},
     sync::{
         Arc, Mutex,
@@ -530,4 +534,123 @@ pub(crate) fn strip_terminal_control(input: &str) -> String {
         }
     }
     String::from_utf8_lossy(&output).into_owned()
+}
+
+/// One line a terminal showed, with the styles it painted over that line's own characters.
+#[derive(Debug)]
+pub(crate) struct StyledLine {
+    /// The visible text, with no escape sequence and no carriage return.
+    pub(crate) text: String,
+    /// Every SGR parameter that was in effect over at least one visible character.
+    pub(crate) styles: BTreeSet<u16>,
+}
+
+/// The visible lines a terminal showed, each with the styles it painted over them (invariant 6).
+///
+/// An assertion about colour cannot read raw bytes either. A pseudo-console repaints the child's
+/// output in its own spelling: it closes a style with `\x1b[m` instead of `\x1b[0m`, and it can
+/// move a style code across the line break that precedes the line the style paints (measured on
+/// Windows: `Config: …\x1b[33m\r\nWARN …`). What survives both spellings is which style was in
+/// effect over a line's own characters, which is what a person sees. Session chrome paints
+/// nothing, so the cursor question, the mode switches, and the window title leave no style behind.
+pub(crate) fn visible_with_styles(input: &str) -> Vec<StyledLine> {
+    let bytes = input.as_bytes();
+    let mut lines = Vec::new();
+    let mut text: Vec<u8> = Vec::new();
+    let mut styles = BTreeSet::new();
+    let mut active = BTreeSet::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            0x1b => {
+                index += 1;
+                let Some(introducer) = bytes.get(index).copied() else {
+                    break;
+                };
+                match introducer {
+                    b'[' => {
+                        index += 1;
+                        let start = index;
+                        while index < bytes.len() && !(0x40..=0x7e).contains(&bytes[index]) {
+                            index += 1;
+                        }
+                        let Some(last) = bytes.get(index).copied() else {
+                            break;
+                        };
+                        let parameters = &bytes[start..index];
+                        index += 1;
+                        // Only a plain SGR sequence paints; a private one (`\x1b[?25h`) is the
+                        // terminal's own business.
+                        if last == b'm' && !parameters.starts_with(b"?") {
+                            repaint(parameters, &mut active);
+                        }
+                    }
+                    b']' => {
+                        index += 1;
+                        while index < bytes.len() {
+                            if bytes[index] == 0x07 {
+                                index += 1;
+                                break;
+                            }
+                            if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                                index += 2;
+                                break;
+                            }
+                            index += 1;
+                        }
+                    }
+                    _ => index += 1,
+                }
+            }
+            b'\r' => index += 1,
+            b'\n' => {
+                lines.push(StyledLine {
+                    text: String::from_utf8_lossy(&text).into_owned(),
+                    styles: std::mem::take(&mut styles),
+                });
+                text.clear();
+                index += 1;
+            }
+            byte => {
+                text.push(byte);
+                styles.extend(active.iter().copied());
+                index += 1;
+            }
+        }
+    }
+    if !text.is_empty() {
+        lines.push(StyledLine {
+            text: String::from_utf8_lossy(&text).into_owned(),
+            styles,
+        });
+    }
+    lines
+}
+
+/// Apply one SGR parameter list to the styles a terminal is painting with.
+///
+/// A zero and an absent parameter both clear, which is why `\x1b[m` and `\x1b[0m` mean the same.
+fn repaint(parameters: &[u8], active: &mut BTreeSet<u16>) {
+    for parameter in String::from_utf8_lossy(parameters).split(';') {
+        match parameter.trim().parse::<u16>().unwrap_or_default() {
+            0 => active.clear(),
+            value => {
+                active.insert(value);
+            }
+        }
+    }
+}
+
+/// The styles a terminal painted over the first visible line that holds `needle` (invariant 6).
+///
+/// Panics with every line it saw when no line holds the needle, so a failure names what the
+/// terminal actually showed.
+pub(crate) fn styles_over(input: &str, needle: &str) -> BTreeSet<u16> {
+    let lines = visible_with_styles(input);
+    lines
+        .iter()
+        .find(|line| line.text.contains(needle))
+        .unwrap_or_else(|| panic!("no line holds {needle:?}: {lines:?}"))
+        .styles
+        .clone()
 }

@@ -32,7 +32,7 @@ use unicode_width::UnicodeWidthStr as _;
 #[path = "support/pty.rs"]
 mod pty;
 
-use pty::{AnswerQueries, PtyChild, strip_terminal_control};
+use pty::{AnswerQueries, PtyChild, strip_terminal_control, styles_over};
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
     let directory = data.join("scripts/demo");
@@ -3016,17 +3016,34 @@ fn a_printed_line_wears_the_colour_of_its_sense_only_on_a_terminal() {
         pty.finish().1
     };
 
-    // A terminal shows the refusal in red and the warning in yellow, each closed the way Rich
-    // closes it.
+    // A terminal shows the refusal in red and the warning in yellow. The sense is read from the
+    // line the terminal painted, not from the bytes: a pseudo-console repaints in its own
+    // spelling and moves the style across the preceding line break (invariant 6).
     let coloured = doctor(&[]);
     assert!(
-        coloured.contains("\u{1b}[31mERROR uv: not found\u{1b}[0m"),
+        styles_over(&coloured, "ERROR uv: not found").contains(&31),
         "{coloured:?}"
     );
     assert!(
-        coloured.contains("\u{1b}[33mWARN "),
+        styles_over(&coloured, "WARN ").contains(&33),
         "the warning keeps its own sense: {coloured:?}"
     );
+
+    // The same run drops every style once the environment asks it to. The entry still stands
+    // here, so this run carries both senses and proves the absence of each.
+    for quiet in [("NO_COLOR", "1"), ("TERM", "dumb")] {
+        let plain = doctor(&[quiet]);
+        let refusal = styles_over(&plain, "ERROR uv: not found");
+        assert!(
+            !refusal.contains(&31),
+            "{quiet:?} must not colour the refusal: {refusal:?} in {plain:?}"
+        );
+        let warning = styles_over(&plain, "WARN ");
+        assert!(
+            !warning.contains(&33),
+            "{quiet:?} must not colour the warning: {warning:?} in {plain:?}"
+        );
+    }
 
     // A receipt carries the green sense, on the same terminal and by the same rule.
     let mut removal = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
@@ -3048,22 +3065,9 @@ fn a_printed_line_wears_the_colour_of_its_sense_only_on_a_terminal() {
     .finish()
     .1;
     assert!(
-        removed.contains("\u{1b}[32mRemoved: Tool\u{1b}[0m"),
+        styles_over(&removed, "Removed: Tool").contains(&32),
         "{removed:?}"
     );
-
-    // The same run drops every style once the environment asks it to.
-    for quiet in [("NO_COLOR", "1"), ("TERM", "dumb")] {
-        let plain = doctor(&[quiet]);
-        assert!(
-            plain.contains("ERROR uv: not found"),
-            "{quiet:?}: {plain:?}"
-        );
-        assert!(
-            !plain.contains("\u{1b}[31m") && !plain.contains("\u{1b}[33m"),
-            "{quiet:?} must not colour: {plain:?}"
-        );
-    }
 
     // A redirected stream carries no style at all, which is why every recorded output is unchanged.
     let piped = std::process::Command::new(env!("CARGO_BIN_EXE_skit"))
