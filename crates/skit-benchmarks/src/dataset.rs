@@ -13,7 +13,7 @@ use skit_domain::parameters::{ParamDecl, ParameterType};
 use skit_domain::{Entry, EntryKind, EntrySettings, Slug, StorageMode};
 use skit_store::{FileFormStateStore, FileStore, stored_filename};
 use thiserror::Error;
-use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Duration, OffsetDateTime};
 
 use crate::python_random::PythonRandom;
 
@@ -285,7 +285,7 @@ fn generate_with_before_count_hook(
         state
             .save_last(&entry.slug, declarations, Some(&values), None, false)
             .map_err(|error| DatasetError::Product(error.to_string()))?;
-        let at = (base + Duration::hours(index as i64)).format(&Rfc3339)?;
+        let at = skit_store::iso_stamp(base + Duration::hours(index as i64));
         state
             .record_run(&entry.slug, 0, &at, declarations, Some(&values))
             .map_err(|error| DatasetError::Product(error.to_string()))?;

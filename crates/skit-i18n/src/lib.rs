@@ -274,11 +274,6 @@ const CATALOG: &[Translation] = &[
     row!("stage", "暂存", "暫存"),
     row!("start editor for", "启动编辑器以打开", "啟動編輯器以開啟"),
     row!("create", "创建", "建立"),
-    row!(
-        "could not format add timestamp: {}",
-        "无法设置添加时间：{}",
-        "無法設定新增時間：{}",
-    ),
     row!("write", "写入", "寫入"),
     row!("open", "打开", "開啟"),
     row!("inspect", "检查", "檢查"),

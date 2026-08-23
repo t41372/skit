@@ -13,6 +13,7 @@ mod path_glob;
 mod paths;
 mod prompt_selection;
 mod read;
+mod stamp;
 mod state;
 mod toml_document;
 
@@ -33,4 +34,5 @@ pub use paths::{
 };
 pub use prompt_selection::FilePromptSelectionStore;
 pub use read::FileStore;
+pub use stamp::{iso_stamp, now_iso};
 pub use state::{CoordinatedStateError, ExternalRollbackOutcome, FileFormStateStore};

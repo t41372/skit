@@ -42,7 +42,7 @@ use skit_store::{
     FileStore, content_hash, override_directory, platform_config_dir, platform_state_dir,
 };
 use thiserror::Error;
-use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::cli::{entry_candidates, preset_candidates, runner_candidates};
 
@@ -768,9 +768,7 @@ pub(crate) fn run_with_roots(
     }
     let exit = execute_launch(&plan)?;
     let slug = &entry.slug;
-    let at = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned());
+    let at = skit_store::now_iso();
     let recorded_values = (!args.raw).then_some(&raw_values);
     state.record_completed_run_with(
         slug,
