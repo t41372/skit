@@ -889,6 +889,18 @@ the readonly temp file a failed Windows replace leaves behind is CPython-parity 
 stays (a product hardening would add an unix-unobservable mutation arm); revisit only with
 a native-Windows mutation story. Aggregate 4073 / 0 / 525.
 
+Wave 28b (`27f98bf`): both residuals of 28a's own fixes. The "single-line runtime cfg!"
+coverage rule is defeated by rustfmt splitting multi-line expressions — the robust form is
+`#[cfg]` CONSTS feeding one assert (const items emit no coverage lines and cannot be split
+into counted code); the rule is amended accordingly. The timestamp test advanced to its
+next sub-tick probe (7 ns truncates to 0 FILETIME ticks) — the whole test is now audited
+probe-by-probe (700 ns = 7 exact ticks keeps the nanosecond-unit proof) with the tick rule
+stated once. Product verdict, cited: sub-tick fidelity is NOT load-bearing — Windows
+freshness verification carries the authoritative content hash exactly because stable Rust
+exposes no change counter (registry.rs:318-323, :371-373, :458-480), so a same-tick
+in-place edit is still rejected by hash. Aggregate 4073 / 0 / 525; fresh workspace LCOV
+`complete executable-source line coverage`.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
