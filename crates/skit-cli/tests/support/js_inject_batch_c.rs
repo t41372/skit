@@ -110,16 +110,24 @@ cat "$1"
 printf '%s\n' 'FAKE_BODY_END'
 "#,
         );
+        // The flat one-statement-per-line dialect, like the proven inspector in
+        // port_test_js_inject_cli.rs. cmd's parenthesized blocks expand every %VAR% when the
+        // block is parsed and give `&`-chained `exit /b` and redirect tokens their own parse
+        // rules; the compound form of this twin passed the launch branch on real Windows but
+        // returned success from the reject branch. Labels remove that whole dialect class.
         #[cfg(windows)]
         self.write_program(
             "node",
             concat!(
                 "@echo off\r\n",
-                "if \"%~1\"==\"--check\" (\r\n",
-                "  if not \"%SKIT_TEST_GATE_MARKER%\"==\"\" type nul > \"%SKIT_TEST_GATE_MARKER%\"\r\n",
-                "  if \"%SKIT_TEST_REJECT_CHECK%\"==\"1\" (echo SyntaxError: boom 1>&2& exit /b 1)\r\n",
-                "  exit /b 0\r\n",
-                ")\r\n",
+                "if not \"%~1\"==\"--check\" goto launch\r\n",
+                "if not \"%SKIT_TEST_GATE_MARKER%\"==\"\" type nul > \"%SKIT_TEST_GATE_MARKER%\"\r\n",
+                "if \"%SKIT_TEST_REJECT_CHECK%\"==\"1\" goto reject\r\n",
+                "exit /b 0\r\n",
+                ":reject\r\n",
+                ">&2 echo SyntaxError: boom\r\n",
+                "exit /b 1\r\n",
+                ":launch\r\n",
                 "if not \"%SKIT_TEST_LAUNCH_MARKER%\"==\"\" type nul > \"%SKIT_TEST_LAUNCH_MARKER%\"\r\n",
                 "echo FAKE_PATH=%~1\r\n",
                 "echo FAKE_BODY_BEGIN\r\n",
@@ -154,20 +162,30 @@ fi
 exec "$SKIT_REAL_NODE" "$@"
 "#,
         );
+        // Flat dialect for the same reason as the inspector above. The compound form also
+        // carried a certain defect: inside a parenthesized block, `%errorlevel%` expands when
+        // the block is PARSED, so the check branch would have returned the errorlevel from
+        // before node ran. At line level the expansion happens after the node line.
         #[cfg(windows)]
         self.write_program(
             "node",
             concat!(
                 "@echo off\r\n",
-                "if \"%~1\"==\"--check\" (\r\n",
-                "  if exist \"%SKIT_TEST_ENTRY_DIR%\\package.json\" (echo package.json existed before gate 1>&2& exit /b 91)\r\n",
-                "  type nul > \"%SKIT_TEST_GATE_MARKER%\"\r\n",
-                "  \"%SKIT_REAL_NODE%\" %*\r\n",
-                "  exit /b %errorlevel%\r\n",
-                ")\r\n",
-                "if not exist \"%SKIT_TEST_ENTRY_DIR%\\package.json\" (echo package.json missing before launch 1>&2& exit /b 92)\r\n",
+                "if not \"%~1\"==\"--check\" goto launch\r\n",
+                "if exist \"%SKIT_TEST_ENTRY_DIR%\\package.json\" goto early\r\n",
+                "type nul > \"%SKIT_TEST_GATE_MARKER%\"\r\n",
                 "\"%SKIT_REAL_NODE%\" %*\r\n",
                 "exit /b %errorlevel%\r\n",
+                ":early\r\n",
+                ">&2 echo package.json existed before gate\r\n",
+                "exit /b 91\r\n",
+                ":launch\r\n",
+                "if not exist \"%SKIT_TEST_ENTRY_DIR%\\package.json\" goto missing\r\n",
+                "\"%SKIT_REAL_NODE%\" %*\r\n",
+                "exit /b %errorlevel%\r\n",
+                ":missing\r\n",
+                ">&2 echo package.json missing before launch\r\n",
+                "exit /b 92\r\n",
             ),
         );
     }

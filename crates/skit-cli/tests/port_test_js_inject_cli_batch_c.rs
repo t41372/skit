@@ -227,9 +227,11 @@ fn test_execute_syntax_gate_failure_never_launches() {
             .output()
             .unwrap();
         let text = output_text(&output);
-        assert_eq!(output.status.code(), Some(125), "locale={locale}: {text}");
+        // Stage order for diagnosis: first prove the check branch ran, then that the rejection
+        // stopped the launch, then the exit code and the voice. A failure then names its stage.
         assert!(gate.exists(), "node --check was not called: {text}");
         assert!(!launch.exists(), "rejected source launched: {text}");
+        assert_eq!(output.status.code(), Some(125), "locale={locale}: {text}");
         assert!(text.contains(expected), "locale={locale}: {text}");
         assert!(!text.contains("--resync"));
         sandbox.assert_no_dependency_artifacts("syntax");
