@@ -12188,6 +12188,50 @@ fn table_columns_shrink_only_until_the_table_fits() {
 
 /// A cell folds at its spaces, and a word that cannot fit alone is cut with an ellipsis.
 #[test]
+fn a_printed_line_wears_its_sense_and_drops_it_where_it_cannot_show() {
+    use std::ffi::OsStr;
+
+    // Every sense carries the sequence Rich writes for it, closed the way Rich closes it.
+    assert_eq!(super::HumanStyle::Plain.prefix(), "");
+    assert_eq!(super::HumanStyle::Green.prefix(), "\u{1b}[32m");
+    assert_eq!(super::HumanStyle::Dim.prefix(), "\u{1b}[2m");
+    assert_eq!(super::HumanStyle::Yellow.prefix(), "\u{1b}[33m");
+    assert_eq!(super::HumanStyle::Red.prefix(), "\u{1b}[31m");
+
+    // A terminal wears the sense; a redirected stream keeps the plain text.
+    assert_eq!(
+        super::paint_for_output("done", super::HumanStyle::Green, Some(40)),
+        "\u{1b}[32mdone\u{1b}[0m"
+    );
+    assert_eq!(
+        super::paint_for_output("done", super::HumanStyle::Green, None),
+        "done"
+    );
+    // A line that states a fact wears nothing, terminal or not.
+    assert_eq!(
+        super::paint_for_output("done", super::HumanStyle::Plain, Some(40)),
+        "done"
+    );
+    // The colour follows the fold, so a folded line wears one sequence around the whole answer.
+    assert_eq!(
+        super::paint_for_output("aaa bbb", super::HumanStyle::Red, Some(3)),
+        "\u{1b}[31maaa\nbbb\u{1b}[0m"
+    );
+
+    // Rich drops every style for either answer, and keeps it otherwise.
+    assert!(super::colour_is_welcome_for(None, None));
+    assert!(super::colour_is_welcome_for(
+        Some(OsStr::new("")),
+        Some(OsStr::new("xterm-256color"))
+    ));
+    assert!(!super::colour_is_welcome_for(Some(OsStr::new("1")), None));
+    assert!(!super::colour_is_welcome_for(
+        None,
+        Some(OsStr::new("dumb"))
+    ));
+}
+
+#[test]
 fn a_cell_folds_at_its_spaces_before_it_is_cut() {
     assert_eq!(wrap_cell("hello world", 11), ["hello world"]);
     assert_eq!(wrap_cell("hello world", 5), ["hello", "world"]);

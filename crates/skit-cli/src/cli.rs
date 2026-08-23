@@ -2699,10 +2699,24 @@ impl HumanStyle {
 /// Rich drops every style when `NO_COLOR` holds a value or the terminal calls itself `dumb`, and
 /// version 0.4 keeps those defaults, so the same two answers decide it here.
 fn colour_is_welcome() -> bool {
-    if env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+    colour_is_welcome_for(
+        env::var_os("NO_COLOR").as_deref(),
+        env::var_os("TERM").as_deref(),
+    )
+}
+
+/// The same answer for the two variables a caller names.
+///
+/// The variables arrive as parameters so every combination is owned without a test changing the
+/// environment of the process it shares with every other test.
+fn colour_is_welcome_for(
+    no_colour: Option<&std::ffi::OsStr>,
+    term: Option<&std::ffi::OsStr>,
+) -> bool {
+    if no_colour.is_some_and(|value| !value.is_empty()) {
         return false;
     }
-    !env::var_os("TERM").is_some_and(|value| value == "dumb")
+    !term.is_some_and(|value| value == "dumb")
 }
 
 /// A printed sentence, wearing the colour its sense asks for.
