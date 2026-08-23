@@ -21,9 +21,14 @@
 //! 4. **End on the child, never on the terminal saying its output is over.** A pseudo-console
 //!    does not reliably deliver the reader's end-of-input, so a teardown that joins the drain
 //!    thread can never return; wait for the child under a deadline, then read what is buffered
-//!    for a bounded moment (waves 12-13, `330ff09`/`d8737f1`). The master handle is dropped at
-//!    spawn, right after the reader and writer are cloned from it — the shape every harness that
-//!    passes on Windows shares.
+//!    for a bounded moment (waves 12-13, `330ff09`/`d8737f1`). The same rule governs a wait: the
+//!    child's state decides, and a closed reader is only a reason to stop expecting more bytes.
+//!    The master is held for the whole session and released at teardown, after the child has
+//!    exited. The pseudo-console lives in the master, and the reader and the writer are plain
+//!    pipe handles that do not keep it alive (`portable-pty-0.9.0/src/win/conpty.rs`), so
+//!    dropping the master at spawn closes the console under a live child
+//!    (`PsuedoCon::drop` calls `ClosePseudoConsole`, `win/psuedocon.rs:73-77`) and the reader
+//!    then reports an end of input the child never sent.
 //! 5. **The reader thread fills a channel and is never joined on end-of-input.** The drain is
 //!    detached; nothing downstream depends on it finishing.
 //!
@@ -60,6 +65,8 @@ const EXIT_BUDGET: Duration = Duration::from_secs(60);
 const SETTLE_BOUND: Duration = Duration::from_secs(5);
 /// The default quiet window a settle waits for.
 const SETTLE_QUIET: Duration = Duration::from_millis(60);
+/// How long a poll rests when the terminal has stopped delivering but the child still runs.
+const POLL_PAUSE: Duration = Duration::from_millis(10);
 
 /// Whether the harness answers cursor questions by itself while it reads.
 ///
@@ -75,6 +82,8 @@ pub(crate) enum AnswerQueries {
 /// A live child on a pseudo-terminal, with the platform rules applied in one place.
 pub(crate) struct PtyChild {
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// The terminal itself, held until teardown so the console outlives the child (invariant 4).
+    master: Box<dyn portable_pty::MasterPty + Send>,
     writer: Box<dyn std::io::Write + Send>,
     chunks: Receiver<Vec<u8>>,
     output: Vec<u8>,
@@ -91,16 +100,16 @@ impl PtyChild {
     /// Start the child on a fresh pseudo-terminal.
     ///
     /// The caller owns the command (program, arguments, environment, working directory); the
-    /// harness owns the terminal. The master handle is dropped here, after the reader and the
-    /// writer are cloned from it (invariant 4).
+    /// harness owns the terminal. The master is kept until teardown: it owns the console the
+    /// child is attached to (invariant 4).
     pub(crate) fn spawn(command: CommandBuilder, size: PtySize, answer: AnswerQueries) -> Self {
         let pair = native_pty_system().openpty(size).unwrap();
         let child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
 
-        let mut reader = pair.master.try_clone_reader().unwrap();
-        let writer = pair.master.take_writer().unwrap();
-        drop(pair.master);
+        let master = pair.master;
+        let mut reader = master.try_clone_reader().unwrap();
+        let writer = master.take_writer().unwrap();
         let (sender, chunks) = mpsc::channel();
         thread::spawn(move || {
             let mut buffer = [0_u8; 8192];
@@ -117,6 +126,7 @@ impl PtyChild {
         });
         Self {
             child,
+            master,
             writer,
             chunks,
             output: Vec::new(),
@@ -217,9 +227,16 @@ impl PtyChild {
                         "child exited while waiting for {needle:?}; new terminal output:\n{visible}"
                     );
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => panic!(
-                    "terminal output closed while waiting for {needle:?}; new terminal output:\n{visible}"
-                ),
+                // The terminal saying its output is over ends the reading, not the exchange
+                // (invariant 4). The child decides: report only once it has exited, so the
+                // message names the cause instead of the messenger.
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    assert!(
+                        self.child.try_wait().unwrap().is_none(),
+                        "child exited while waiting for {needle:?}; new terminal output:\n{visible}"
+                    );
+                    thread::sleep(POLL_PAUSE);
+                }
             }
         }
     }
@@ -325,8 +342,13 @@ impl PtyChild {
                         "child exited before it requested the cursor position"
                     );
                 }
+                // The child decides here too (invariant 4).
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    panic!("terminal output closed before it requested the cursor position")
+                    assert!(
+                        self.child.try_wait().unwrap().is_none(),
+                        "child exited before it requested the cursor position"
+                    );
+                    thread::sleep(POLL_PAUSE);
                 }
             }
         }
@@ -352,7 +374,9 @@ impl PtyChild {
                 .recv_timeout(remaining.min(Duration::from_millis(100)))
             {
                 Ok(chunk) => self.output.extend_from_slice(&chunk),
-                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                // A closed reader returns at once, so rest before asking the child again.
+                Err(mpsc::RecvTimeoutError::Disconnected) => thread::sleep(POLL_PAUSE),
             }
         }
     }
@@ -387,7 +411,10 @@ impl PtyChild {
     /// moment (invariant 4). Returns the exit code and everything the terminal showed.
     pub(crate) fn finish(mut self) -> (u32, String) {
         let status = self.wait_exit_within(EXIT_BUDGET);
+        // Release the terminal only now, with the child already gone: the console lives here, and
+        // closing it under a live child ends the reading early (invariant 4).
         drop(self.writer);
+        drop(self.master);
         let deadline = Instant::now() + SETTLE_BOUND;
         while Instant::now() < deadline {
             match self.chunks.recv_timeout(SETTLE_QUIET) {

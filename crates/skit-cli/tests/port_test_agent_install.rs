@@ -667,3 +667,37 @@ fn run_agent_install_pty(
     }
     pty.finish()
 }
+
+/// A wait names the child, never the terminal that stopped delivering.
+///
+/// Rust-additive. The shared harness once failed a wait the moment its reader closed, and a
+/// pseudo-console closes that reader while the child still runs, so a passing exchange reported a
+/// terminal that had merely gone quiet. The child decides (invariant 4 of `support/pty.rs`): here
+/// it exits without ever writing the needle, and both the closed reader and the idle poll must
+/// reach the same verdict.
+#[test]
+fn rust_additive_a_wait_reports_the_child_not_the_closed_terminal() {
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(["--version"]);
+    let mut pty = PtyChild::spawn(
+        command,
+        PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+        AnswerQueries::On,
+    );
+    let refusal = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        pty.wait_for_after(0, "Install where?");
+    }))
+    .expect_err("a needle the child never writes must not report success");
+    let reported = refusal
+        .downcast_ref::<String>()
+        .expect("the wait reports its diagnosis as a message");
+    assert!(
+        reported.contains("child exited while waiting"),
+        "{reported}"
+    );
+}
