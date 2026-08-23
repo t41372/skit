@@ -11673,6 +11673,10 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
     );
 }
 
+// This src test module deliberately keeps its own copy of the terminal rules instead of
+// including `tests/support/pty.rs`: an include from src would compile 450 harness lines into
+// the library test build, where the coverage checker counts every line. The canonical rules and
+// their wave evidence live in that module; keep this copy in step with it.
 /// Deliver one canned answer the way a terminal delivers it.
 ///
 /// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and

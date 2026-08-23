@@ -49,20 +49,30 @@
 #![cfg_attr(not(unix), allow(dead_code))]
 
 use std::fs;
-use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, PtySize};
 use serde_json::Value;
 
+#[path = "support/pty.rs"]
+mod pty;
 #[path = "support/temp_root.rs"]
 mod temp_root;
 
 use temp_root::TempRoot;
+
+/// The terminal geometry every test in this file uses.
+fn pty_size() -> PtySize {
+    PtySize {
+        rows: 24,
+        cols: 100,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
 
 /// A fresh four-directory sandbox so skit writes only inside temp dirs, never the repo or cwd.
 struct Sandbox {
@@ -104,9 +114,9 @@ impl Sandbox {
 
     /// A `skit` invocation on a real pty — the oracle's forced-interactive terminal. `inputs` are
     /// the canned line answers the oracle fed through monkeypatched `Prompt.ask`/`Confirm.ask`.
-    /// `answer_cursor` replies to a Ratatui cursor-position query (needed only for tui-form paths).
-    fn pty(&self, args: &[&str], inputs: &[&[u8]], answer_cursor: bool) -> (u32, String) {
-        self.pty_in_locale(args, inputs, answer_cursor, "en")
+    /// The shared terminal answers a Ratatui cursor-position query by itself when one appears.
+    fn pty(&self, args: &[&str], inputs: &[&[u8]]) -> (u32, String) {
+        self.pty_in_locale(args, inputs, "en")
     }
 
     /// Drive one real terminal with canned answers.
@@ -119,21 +129,30 @@ impl Sandbox {
     /// proves about outcomes is proved again on every host by the no-input and plain lanes in this
     /// file and by the non-terminal owners elsewhere. Interactive behavior on Windows belongs to
     /// the hands-on gate until the cause is known.
-    fn pty_in_locale(
-        &self,
-        args: &[&str],
-        inputs: &[&[u8]],
-        answer_cursor: bool,
-        locale: &str,
-    ) -> (u32, String) {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: 24,
-                cols: 100,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
+    fn pty_in_locale(&self, args: &[&str], inputs: &[&[u8]], locale: &str) -> (u32, String) {
+        let mut child = pty::PtyChild::spawn(
+            self.pty_command(args, locale),
+            pty_size(),
+            pty::AnswerQueries::On,
+        );
+        for bytes in inputs {
+            // The settle-paced blind write is this gated lane's exact semantics (fa8464b): the
+            // prompts here never echo a stable needle, so silence is the only signal available.
+            child.settle();
+            if !child.try_send(bytes) {
+                break;
+            }
+        }
+        let status = child.wait_exit_within(Duration::from_secs(60));
+        child.settle();
+        let raw = child.raw_after(0);
+        // Python `capsys`/`result.output`: keep newlines, drop ESC/`\r` and other control bytes so
+        // SGR/cursor residue cannot masquerade as text. `contains` on full phrases is unaffected.
+        (status.exit_code(), terminal_text(&raw))
+    }
+
+    /// The `skit` command this sandbox runs on a terminal, with every directory pinned.
+    fn pty_command(&self, args: &[&str], locale: &str) -> CommandBuilder {
         let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
         command.args(args);
         command.env("TERM", "xterm-256color");
@@ -141,44 +160,7 @@ impl Sandbox {
         command.env("SKIT_DATA_DIR", self.data.path());
         command.env("SKIT_STATE_DIR", self.state.path());
         command.env("SKIT_CONFIG_DIR", self.config.path());
-        let mut child = pair.slave.spawn_command(command).unwrap();
-        drop(pair.slave);
-
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let reader_capture = Arc::clone(&captured);
-        let mut reader = pair.master.try_clone_reader().unwrap();
-        let drain = thread::spawn(move || {
-            let mut chunk = [0_u8; 1024];
-            loop {
-                match reader.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => reader_capture
-                        .lock()
-                        .unwrap()
-                        .extend_from_slice(&chunk[..read]),
-                }
-            }
-        });
-        let mut writer = pair.master.take_writer().unwrap();
-        settle(&captured);
-        if answer_cursor {
-            let _ = writer.write_all(b"\x1b[1;1R");
-            let _ = writer.flush();
-        }
-        for bytes in inputs {
-            settle(&captured);
-            if writer.write_all(&keystrokes(bytes)).is_err() {
-                break;
-            }
-            let _ = writer.flush();
-        }
-        let status = child.wait().unwrap();
-        drop(writer);
-        drain.join().unwrap();
-        let raw = captured.lock().unwrap().clone();
-        // Python `capsys`/`result.output`: keep newlines, drop ESC/`\r` and other control bytes so
-        // SGR/cursor residue cannot masquerade as text. `contains` on full phrases is unaffected.
-        (status.exit_code(), terminal_text(&raw))
+        command
     }
 
     /// Wait for one real rendered prompt, change external state, then answer it.
@@ -191,60 +173,23 @@ impl Sandbox {
         args: &[&str],
         wait_for: &str,
         inputs: &[&[u8]],
-        answer_cursor: bool,
         before_input: F,
     ) -> (portable_pty::ExitStatus, String)
     where
         F: FnOnce(),
     {
-        let pair = native_pty_system()
-            .openpty(PtySize {
-                rows: 24,
-                cols: 100,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .unwrap();
-        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
-        command.args(args);
-        command.env("TERM", "xterm-256color");
-        command.env("SKIT_LANG", "en");
-        command.env("SKIT_DATA_DIR", self.data.path());
-        command.env("SKIT_STATE_DIR", self.state.path());
-        command.env("SKIT_CONFIG_DIR", self.config.path());
-        let mut child = pair.slave.spawn_command(command).unwrap();
-        drop(pair.slave);
-
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let reader_capture = Arc::clone(&captured);
-        let mut reader = pair.master.try_clone_reader().unwrap();
-        let drain = thread::spawn(move || {
-            let mut chunk = [0_u8; 1024];
-            loop {
-                match reader.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(read) => reader_capture
-                        .lock()
-                        .unwrap()
-                        .extend_from_slice(&chunk[..read]),
-                }
-            }
-        });
-        let mut writer = pair.master.take_writer().unwrap();
-        if answer_cursor {
-            writer.write_all(b"\x1b[1;1R").unwrap();
-            writer.flush().unwrap();
-        }
+        let mut child = pty::PtyChild::spawn(
+            self.pty_command(args, "en"),
+            pty_size(),
+            pty::AnswerQueries::On,
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         let early_status = loop {
-            let shown = {
-                let bytes = captured.lock().unwrap();
-                terminal_text(bytes.as_slice())
-            };
+            let shown = terminal_text(&child.raw_after(0));
             if shown.contains(wait_for) {
                 break None;
             }
-            if let Some(status) = child.try_wait().unwrap() {
+            if let Some(status) = child.try_wait_status() {
                 break Some(status);
             }
             assert!(
@@ -257,9 +202,11 @@ impl Sandbox {
         if early_status.is_none() {
             before_input();
             for input in inputs {
-                settle(&captured);
-                writer.write_all(&keystrokes(input)).unwrap();
-                writer.flush().unwrap();
+                child.settle();
+                assert!(
+                    child.try_send(input),
+                    "child closed its terminal mid-answer"
+                );
             }
         }
         let mut timed_out = false;
@@ -268,22 +215,22 @@ impl Sandbox {
             None => {
                 let exit_deadline = Instant::now() + Duration::from_secs(5);
                 loop {
-                    if let Some(status) = child.try_wait().unwrap() {
+                    if let Some(status) = child.try_wait_status() {
                         break status;
                     }
                     if Instant::now() >= exit_deadline {
                         timed_out = true;
-                        child.kill().unwrap();
-                        break child.wait().unwrap();
+                        child.kill();
+                        break child
+                            .try_wait_status()
+                            .expect("a killed child has a status");
                     }
                     thread::sleep(Duration::from_millis(10));
                 }
             }
         };
-        drop(writer);
-        drain.join().unwrap();
-        let raw = captured.lock().unwrap().clone();
-        let shown = terminal_text(&raw);
+        child.settle();
+        let shown = terminal_text(&child.raw_after(0));
         assert!(!timed_out, "child did not exit after input: {shown}");
         (status, shown)
     }
@@ -465,7 +412,7 @@ fn test_bare_add_interactive_refuses_each_orphan_flag() {
         let sandbox = Sandbox::new();
         let mut args = vec!["add"];
         args.extend_from_slice(flag);
-        let (code, output) = sandbox.pty(&args, &[], false);
+        let (code, output) = sandbox.pty(&args, &[]);
         assert_eq!(code, 2, "{flag:?}: {output}");
         assert!(output.contains("need a source"), "{flag:?}: {output}");
         assert!(output.contains(shown), "{flag:?}: {output}");
@@ -499,7 +446,6 @@ fn test_plain_menu_choice4_command_template_happy_path() {
     let (code, output) = sandbox.pty(
         &["add"],
         &[b"4\n", b"ffmpeg -i {input}\n", b"encode\n", b"\n"],
-        false,
     );
     assert_eq!(code, 0, "{output}");
     assert_eq!(sandbox.show_json("encode")["kind"], "command");
@@ -512,7 +458,7 @@ fn test_plain_menu_choice4_command_template_happy_path() {
 fn test_plain_menu_choice4_empty_template_cancels() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
-    let (code, output) = sandbox.pty(&["add"], &[b"4\n", b"   \n"], false);
+    let (code, output) = sandbox.pty(&["add"], &[b"4\n", b"   \n"]);
     assert_eq!(code, 130, "{output}");
     assert!(
         output.to_lowercase().contains("nothing was added"),
@@ -527,7 +473,7 @@ fn test_plain_menu_choice4_empty_name_cancels() {
     // One cancellation rule: an empty NAME cancels (130), no retry loop.
     let sandbox = Sandbox::new();
     sandbox.form("plain");
-    let (code, output) = sandbox.pty(&["add"], &[b"4\n", b"echo {x}\n", b"   \n"], false);
+    let (code, output) = sandbox.pty(&["add"], &[b"4\n", b"echo {x}\n", b"   \n"]);
     assert_eq!(code, 130, "{output}");
     assert!(
         output.to_lowercase().contains("nothing was added"),
@@ -545,7 +491,6 @@ fn test_plain_menu_choice4_stores_the_description() {
     let (code, output) = sandbox.pty(
         &["add"],
         &[b"4\n", b"echo {x}\n", b"shout\n", b"say it loud\n"],
-        false,
     );
     assert_eq!(code, 0, "{output}");
     let entry = sandbox.show_json("shout");
@@ -565,7 +510,7 @@ fn test_plain_menu_choice1_path_continues_into_a_real_add() {
     fs::write(&exe, "opaque bytes\n").unwrap();
     fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
     let path_line = format!("{}\n", exe.display());
-    let (code, output) = sandbox.pty(&["add"], &[b"1\n", path_line.as_bytes()], false);
+    let (code, output) = sandbox.pty(&["add"], &[b"1\n", path_line.as_bytes()]);
     assert_eq!(code, 0, "{output}");
     assert_eq!(sandbox.show_json("tool")["kind"], "exe");
 }
@@ -575,7 +520,7 @@ fn test_plain_menu_choice1_path_continues_into_a_real_add() {
 fn test_plain_menu_choice1_empty_path_cancels() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
-    let (code, output) = sandbox.pty(&["add"], &[b"1\n", b"\n"], false);
+    let (code, output) = sandbox.pty(&["add"], &[b"1\n", b"\n"]);
     assert_eq!(code, 130, "{output}");
     assert!(
         output.to_lowercase().contains("nothing was added"),
@@ -599,7 +544,7 @@ fn test_bare_add_tui_form_cancel_exits_130() {
     // form=tui (default) bare add: cancelling the hosted source step (Esc, the oracle's
     // run_add_source -> None) exits 130 and stores nothing.
     let sandbox = Sandbox::new();
-    let (code, output) = sandbox.pty(&["add"], &[b"\x1b"], true);
+    let (code, output) = sandbox.pty(&["add"], &[b"\x1b"]);
     assert_eq!(code, 130, "{output}");
     assert!(
         output.to_lowercase().contains("nothing was added"),
@@ -628,7 +573,7 @@ fn test_unknown_plain_pick_language_adds_it() {
     let source_bytes = b"echo hi\n";
     fs::write(&source, source_bytes).unwrap();
     let (_, state_before, config_before) = root_snapshots(&sandbox);
-    let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"9\n"], false);
+    let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"9\n"]);
     assert_eq!(code, 0, "{output}");
     assert!(
         output.contains("What is mystery.xyz? skit can't tell from the name."),
@@ -657,7 +602,7 @@ fn test_unknown_plain_pick_exe_adds_it() {
     let source_bytes = b"some opaque text\n";
     fs::write(&source, source_bytes).unwrap();
     let (_, state_before, config_before) = root_snapshots(&sandbox);
-    let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"11\n"], false);
+    let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"11\n"]);
     assert_eq!(code, 0, "{output}");
     let shown = sandbox.show_json("mystery");
     assert_eq!(shown["kind"], "exe");
@@ -682,7 +627,7 @@ fn test_unknown_plain_cancel_exits_130() {
     let source_bytes = b"some opaque text\n";
     fs::write(&source, source_bytes).unwrap();
     let roots_before = root_snapshots(&sandbox);
-    let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"-\n"], false);
+    let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"-\n"]);
     assert_eq!(code, 130, "{output}");
     assert!(
         output.contains("Cancelled — nothing was added."),
@@ -705,7 +650,6 @@ fn test_unknown_plain_pick_language_with_runner_hits_prompt_only_refusal() {
     let (code, output) = sandbox.pty(
         &["add", &source.to_string_lossy(), "--runner", "claude"],
         &[b"9\n"],
-        false,
     );
     assert_eq!(code, 2, "{output}");
     assert!(
@@ -727,11 +671,7 @@ fn test_unknown_plain_pick_prompt_runs_prompt_onboarding() {
     let source_bytes = b"do {{thing}}\n";
     fs::write(&source, source_bytes).unwrap();
     let (_, state_before, config_before) = root_snapshots(&sandbox);
-    let (code, output) = sandbox.pty(
-        &["add", &source.to_string_lossy()],
-        &[b"12\n", b"-\n"],
-        false,
-    );
+    let (code, output) = sandbox.pty(&["add", &source.to_string_lossy()], &[b"12\n", b"-\n"]);
     assert_eq!(code, 0, "{output}");
     let shown = sandbox.show_json("mystery");
     assert_eq!(shown["kind"], "prompt");
@@ -759,7 +699,7 @@ fn test_unknown_plain_kept_draft_offers_no_program_option() {
     let draft_bytes = b"some opaque text\n";
     fs::write(&draft, draft_bytes).unwrap();
     let roots_before = root_snapshots(&sandbox);
-    let (code, output) = sandbox.pty(&["add", &draft.to_string_lossy()], &[b"-\n"], false);
+    let (code, output) = sandbox.pty(&["add", &draft.to_string_lossy()], &[b"-\n"]);
     assert_eq!(code, 130, "{output}");
     assert!(!output.contains("A program (run it directly)"), "{output}");
     assert!(output.contains("A prompt for an AI agent"), "{output}");
@@ -883,7 +823,7 @@ fn test_ans_plain_menu_lines_are_exact() {
     // The plain menu's four printed lines, verbatim (a choice-1 + empty path cancels out).
     let sandbox = Sandbox::new();
     sandbox.form("plain");
-    let (_code, output) = sandbox.pty(&["add"], &[b"1\n", b"\n"], false);
+    let (_code, output) = sandbox.pty(&["add"], &[b"1\n", b"\n"]);
     assert!(output.contains("What would you like to add?"), "{output}");
     assert!(
         output.contains("  1. A file you already have — a script, program, or prompt"),
@@ -911,7 +851,6 @@ fn test_ans_choice4_reports_params_and_stores_description() {
     let (code, output) = sandbox.pty(
         &["add"],
         &[b"4\n", b"tpl {a} {b}\n", b"cmd4\n", b"a fine command\n"],
-        false,
     );
     assert_eq!(code, 0, "{output}");
     let entry = sandbox.show_json("cmd4");
@@ -931,7 +870,7 @@ fn test_ans_choice4_reports_params_and_stores_description() {
 fn test_ans_choice4_empty_template_cancels_with_exact_message() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
-    let (code, output) = sandbox.pty(&["add"], &[b"4\n", b"   \n"], false);
+    let (code, output) = sandbox.pty(&["add"], &[b"4\n", b"   \n"]);
     assert_eq!(code, 130, "{output}");
     assert!(
         output.contains("Cancelled — nothing was added."),
@@ -945,7 +884,7 @@ fn test_ans_choice4_empty_template_cancels_with_exact_message() {
 fn test_ans_choice4_empty_name_cancels_with_exact_message() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
-    let (code, output) = sandbox.pty(&["add"], &[b"4\n", b"echo {x}\n", b"  \n"], false);
+    let (code, output) = sandbox.pty(&["add"], &[b"4\n", b"echo {x}\n", b"  \n"]);
     assert_eq!(code, 130, "{output}");
     assert!(
         output.contains("Cancelled — nothing was added."),
@@ -959,7 +898,7 @@ fn test_ans_choice4_empty_name_cancels_with_exact_message() {
 fn test_ans_choice1_empty_path_cancels_with_exact_message() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
-    let (code, output) = sandbox.pty(&["add"], &[b"1\n", b"  \n"], false);
+    let (code, output) = sandbox.pty(&["add"], &[b"1\n", b"  \n"]);
     assert_eq!(code, 130, "{output}");
     assert!(
         output.contains("Cancelled — nothing was added."),
@@ -980,11 +919,7 @@ fn test_ans_choice1_returns_the_typed_path() {
 fn test_cli_plain_choice4_prompt_labels_and_choices() {
     let sandbox = Sandbox::new();
     sandbox.form("plain");
-    let (code, output) = sandbox.pty(
-        &["add"],
-        &[b"4\n", b"tpl {a} {b}\n", b"enc\n", b"\n"],
-        false,
-    );
+    let (code, output) = sandbox.pty(&["add"], &[b"4\n", b"tpl {a} {b}\n", b"enc\n", b"\n"]);
     assert_eq!(code, 0, "{output}");
     let stored = sandbox.show_json("enc");
     assert_eq!(stored["kind"], "command");
@@ -1007,11 +942,7 @@ fn test_cli_plain_choice1_path_label() {
     fs::write(&exe, "bytes\n").unwrap();
     fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
     let path_line = format!("{}\n", exe.display());
-    let (code, output) = sandbox.pty(
-        &["add"],
-        &[b"1\n", path_line.as_bytes(), b"\n", b"\n"],
-        false,
-    );
+    let (code, output) = sandbox.pty(&["add"], &[b"1\n", path_line.as_bytes(), b"\n", b"\n"]);
     assert_eq!(code, 0, "{output}");
     assert!(flat(&output).contains("Path to the file:"), "{output}");
     assert_eq!(sandbox.show_json("tool")["kind"], "exe");
@@ -1065,12 +996,8 @@ fn test_cli_ask_kind_plain_full_layout() {
         let source = sandbox.scratch.path().join("mystery.xyz");
         fs::write(&source, "opaque text\n").unwrap();
         let roots_before = root_snapshots(&sandbox);
-        let (code, output) = sandbox.pty_in_locale(
-            &["add", &source.to_string_lossy()],
-            &[b"-\n"],
-            false,
-            locale,
-        );
+        let (code, output) =
+            sandbox.pty_in_locale(&["add", &source.to_string_lossy()], &[b"-\n"], locale);
         assert_eq!(code, 130, "locale={locale}: {output}");
         assert!(
             output.lines().any(|line| line.trim() == question),
@@ -1128,12 +1055,8 @@ fn test_cli_ask_kind_plain_shebang_question() {
         let source = sandbox.scratch.path().join("mystery.xyz");
         fs::write(&source, "#!/usr/bin/env florblang\ncode\n").unwrap();
         let roots_before = root_snapshots(&sandbox);
-        let (code, output) = sandbox.pty_in_locale(
-            &["add", &source.to_string_lossy()],
-            &[b"-\n"],
-            false,
-            locale,
-        );
+        let (code, output) =
+            sandbox.pty_in_locale(&["add", &source.to_string_lossy()], &[b"-\n"], locale);
         assert_eq!(code, 130, "locale={locale}: {output}");
         assert!(
             output.lines().any(|line| line.trim() == question),
@@ -1156,7 +1079,6 @@ fn unknown_plain_kind_selector_reprompts_invalid_answers_without_writing() {
     let (code, output) = sandbox.pty(
         &["add", &source.to_string_lossy()],
         &[b"0\n", b"13\n", b"not-a-number\n", b"-\n"],
-        false,
     );
 
     assert_eq!(code, 130, "{output}");
@@ -1187,7 +1109,7 @@ fn unknown_kind_noninteractive_paths_refuse_without_rendering_a_selector_or_writ
             args.push("--no-input");
         }
         let (code, output) = if terminal {
-            sandbox.pty(&args, &[], false)
+            sandbox.pty(&args, &[])
         } else {
             let output = sandbox
                 .bin()
@@ -1235,7 +1157,6 @@ fn unknown_plain_kind_selector_ctrl_c_cancels_without_writing() {
         &["add", &source.to_string_lossy()],
         "What is mystery.xyz? skit can't tell from the name.",
         &[b"\x03"],
-        false,
         || {},
     );
 
@@ -1266,7 +1187,6 @@ fn unknown_plain_kind_selector_uses_the_pre_question_source_snapshot() {
         &["add", &source.to_string_lossy()],
         "What is mystery.xyz? skit can't tell from the name.",
         &[b"9\n"],
-        false,
         || fs::write(&source, changed).unwrap(),
     );
 
@@ -1297,7 +1217,6 @@ fn unknown_tui_form_keeps_kind_selection_inside_the_hosted_workflow() {
         &["add", &source.to_string_lossy()],
         "What is mystery.xyz? skit can't tell from the name.",
         &[b"\x1b", b"\x1b"],
-        true,
         || {},
     );
 
@@ -1365,7 +1284,6 @@ fn test_add_unknown_directory_plain_confirm_yes_adds_program() {
     let (code, output) = sandbox.pty(
         &["add", &dir.to_string_lossy()],
         &[b"\n", b"toolname\n", b"a dir-shaped tool\n"],
-        false,
     );
     assert_eq!(code, 0, "{output}");
     let entry = sandbox.show_json("toolname");
@@ -1399,7 +1317,7 @@ fn test_add_unknown_directory_plain_confirm_no_cancels() {
     let state_before = snapshot_tree(sandbox.state.path());
     let config_before = snapshot_tree(sandbox.config.path());
     let directory_before = snapshot_tree(&dir);
-    let (code, output) = sandbox.pty(&["add", &dir.to_string_lossy()], &[b"n\n"], false);
+    let (code, output) = sandbox.pty(&["add", &dir.to_string_lossy()], &[b"n\n"]);
     assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
     assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
     assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
@@ -1424,7 +1342,7 @@ fn test_add_unknown_directory_plain_confirm_call_contract() {
     let config_before = snapshot_tree(sandbox.config.path());
     let directory_before = snapshot_tree(&dir);
 
-    let (code, output) = sandbox.pty(&["add", &dir.to_string_lossy()], &[b"n\n"], false);
+    let (code, output) = sandbox.pty(&["add", &dir.to_string_lossy()], &[b"n\n"]);
 
     assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
     assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
@@ -1489,7 +1407,6 @@ fn test_plain_menu_choice4_secret_hole_gets_never_saved_note() {
     let (code, output) = sandbox.pty(
         &["add"],
         &[b"4\n", b"deploy {AUTH_TOKEN}\n", b"deployer\n", b"\n"],
-        false,
     );
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("Detected parameters"), "{output}");
@@ -1526,7 +1443,7 @@ fn test_bare_add_refusal_names_only_lanes_that_honor_the_flag() {
         let sandbox = Sandbox::new();
         let mut args = vec!["add"];
         args.extend_from_slice(flag);
-        let (code, output) = sandbox.pty(&args, &[], false);
+        let (code, output) = sandbox.pty(&args, &[]);
         assert_eq!(code, 2, "{flag:?}: {output}");
         let joined = flat(&output);
         match advice {
@@ -1561,49 +1478,4 @@ fn test_cancelled_add_exact_line_and_exit_code() {
 #[ignore = "cross-crate: calls the private `cli._add_no_source_ask()` and captures the tui command door's `_print_add_summary(entry, [], [], secrets)` args (empty deps/managed, exactly the secret holes). Private skit-cli/skit-tui seam (cli.rs:1461-1462, print_add_summary cli.rs:3095); no captured-kwarg black-box surface."]
 fn test_bare_add_tui_command_door_summary_call_contract() {
     // The command door hands the summary empty deps/managed and exactly the secret holes.
-}
-
-/// Deliver one canned answer the way a terminal delivers it.
-///
-/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
-/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
-/// character, so the prompt keeps waiting and both sides stop
-/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
-/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
-/// Unix exactly as it was.
-fn keystrokes(answer: &[u8]) -> Vec<u8> {
-    answer
-        .iter()
-        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
-        .collect()
-}
-
-/// Wait until the child has written nothing for a short while, so an answer lands on a prompt that
-/// is already reading.
-///
-/// A fixed pause was enough on Unix, where the terminal holds an early answer until the prompt asks
-/// for it. Windows does not hold it the same way: what a terminal delivers becomes console records
-/// that a prompt reads one at a time, keeping only key presses and dropping everything else
-/// (`console/src/windows_term/mod.rs:531-560`). An answer typed before the prompt reads is simply
-/// not there when it looks, and both sides then wait. Silence is the only sign this harness has
-/// that the child stopped drawing and started reading. The wait is bounded, so a child that keeps
-/// writing cannot hold the test.
-fn settle(captured: &Arc<Mutex<Vec<u8>>>) {
-    const QUIET: Duration = Duration::from_millis(60);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut seen = captured.lock().unwrap().len();
-    let mut quiet_since = Instant::now();
-    while Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-        let now = captured.lock().unwrap().len();
-        if now == seen {
-            if quiet_since.elapsed() >= QUIET {
-                return;
-            }
-        } else {
-            seen = now;
-            quiet_since = Instant::now();
-        }
-    }
 }

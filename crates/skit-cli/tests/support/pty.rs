@@ -375,10 +375,12 @@ impl PtyChild {
 
     /// Whether the child has exited, and with what code.
     pub(crate) fn try_exit_code(&mut self) -> Option<u32> {
-        self.child
-            .try_wait()
-            .unwrap()
-            .map(|status| status.exit_code())
+        self.try_wait_status().map(|status| status.exit_code())
+    }
+
+    /// Whether the child has exited, with the complete status for a caller that reads signals.
+    pub(crate) fn try_wait_status(&mut self) -> Option<ExitStatus> {
+        self.child.try_wait().unwrap()
     }
 
     /// End the exchange on the child's exit, then read what is still buffered for a bounded
