@@ -201,6 +201,17 @@ struct Sandbox {
     scratch: TempRoot,
 }
 
+/// The name a host resolves for a Python 3 interpreter.
+///
+/// Unix installs name it `python3`. A Windows install names it `python`, and `python3` is not
+/// dependable there.
+#[cfg(not(windows))]
+const PYTHON: &str = "python3";
+
+/// The name a host resolves for a Python 3 interpreter.
+#[cfg(windows)]
+const PYTHON: &str = "python";
+
 impl Sandbox {
     fn new() -> Self {
         Self {
@@ -258,7 +269,7 @@ impl Sandbox {
                 "runner",
                 "add",
                 name,
-                "python3",
+                PYTHON,
                 recorder.to_str().unwrap(),
                 out.to_str().unwrap(),
                 "{{prompt}}",

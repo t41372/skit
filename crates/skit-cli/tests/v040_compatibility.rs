@@ -9,6 +9,9 @@ mod temp_root;
 
 use temp_root::TempRoot;
 
+#[path = "support/shim.rs"]
+mod shim;
+
 struct Sandbox {
     data: TempRoot,
     state: TempRoot,
@@ -1499,9 +1502,19 @@ fn run_uses_user_configured_prompt_runner_rows() {
         .args(["add", prompt.to_str().unwrap(), "--name", "Review"])
         .assert()
         .success();
+    // The row names a real program, and `printf` is not one on every host. The stand-in writes
+    // its first argument with no line end after it, which is what this assertion reads, and the
+    // row itself is what the test is about.
+    let emit = shim::write_shim(sandbox.state.path(), "emit", shim::Shim::WriteArgumentRaw);
     sandbox
         .command()
-        .args(["runner", "add", "custom", "printf", "%s", "{{prompt}}"])
+        .args([
+            "runner",
+            "add",
+            "custom",
+            emit.to_str().unwrap(),
+            "{{prompt}}",
+        ])
         .assert()
         .success();
     sandbox

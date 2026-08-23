@@ -33,6 +33,8 @@ pub(crate) enum Shim {
     TouchFromEnvironment(&'static str),
     /// Write every argument it was given, one to a line, then exit zero.
     EchoArguments,
+    /// Write the first argument, with no line end after it, then exit zero.
+    WriteArgumentRaw,
     /// Write `label=value` for the named environment variable, then exit zero.
     EchoEnvironment {
         /// The name written before the equals sign.
@@ -87,6 +89,7 @@ fn body(shim: Shim) -> String {
             format!("#!/bin/sh\n: > \"${variable}\"\nexit 0\n")
         }
         Shim::EchoArguments => "#!/bin/sh\nprintf '%s\\n' \"$@\"\n".to_owned(),
+        Shim::WriteArgumentRaw => "#!/bin/sh\nprintf '%s' \"$1\"\n".to_owned(),
         Shim::EchoEnvironment { label, variable } => {
             format!("#!/bin/sh\necho \"{label}=${variable}\"\n")
         }
@@ -115,6 +118,11 @@ fn body(shim: Shim) -> String {
             "goto next\r\n",
         )
         .to_owned(),
+        // `set /p` reads nothing here, which leaves a failing status behind, so the exit is
+        // stated. The quotes delimit the text and are not written.
+        Shim::WriteArgumentRaw => {
+            "@echo off\r\n<nul set /p dummy=\"%~1\"\r\nexit /b 0\r\n".to_owned()
+        }
         Shim::EchoEnvironment { label, variable } => {
             format!("@echo off\r\necho {label}=%{variable}%\r\nexit /b 0\r\n")
         }
