@@ -846,6 +846,14 @@ expectations. Every other real-spawn clearance in skit-runtime tests/ was re-ver
 individually. Aggregate 4073 / 0 / 525 (+1 worker owner); fresh workspace LCOV
 `complete executable-source line coverage`.
 
+Wave 26 (`4bf3114`): the last Windows failure was a NEW class — policy divergence in an
+owner's EXPECTED ERROR VARIANT (no path ever touches the host, so no earlier needle matched
+it): the shell lane's missing-runtime refusal is `ProgramNotFound` on unix but the
+adjudicated `WindowsShellMissing` under the Windows bash policy (launch.rs:1216-1231). The
+owner now cfg-matches the host's variant with both policies named; the test's other
+assertions were rechecked host-neutral and the rest of launch_plan.rs is empirically
+Windows-proven. Aggregate 4073 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
