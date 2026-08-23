@@ -48,6 +48,13 @@ impl FormStateRepository for NarrowReadState {
         panic!("the read contract must not update state")
     }
 
+    fn try_update<T, E, F>(&self, _slug: &Slug, _update: F) -> Result<Result<T, E>, StateWriteError>
+    where
+        F: FnOnce(&mut PersistedFormState) -> Result<T, E>,
+    {
+        panic!("the read contract must not update state")
+    }
+
     fn forget(&self, _slug: &Slug) -> Result<(), StateWriteError> {
         panic!("the read contract must not remove state")
     }
@@ -79,6 +86,22 @@ impl FormStateRepository for MemoryState {
         let mut states = self.states.lock().unwrap();
         let state = states.entry(slug.as_str().to_owned()).or_default();
         Ok(update(state))
+    }
+
+    fn try_update<T, E, F>(&self, slug: &Slug, update: F) -> Result<Result<T, E>, StateWriteError>
+    where
+        F: FnOnce(&mut PersistedFormState) -> Result<T, E>,
+    {
+        let mut states = self.states.lock().unwrap();
+        let state = states.entry(slug.as_str().to_owned()).or_default();
+        let before = state.clone();
+        match update(state) {
+            Ok(result) => Ok(Ok(result)),
+            Err(error) => {
+                *state = before;
+                Ok(Err(error))
+            }
+        }
     }
 
     fn forget(&self, slug: &Slug) -> Result<(), StateWriteError> {
@@ -303,6 +326,138 @@ fn purge_secrets_scrubs_values_presets_and_last_run_in_one_transaction() {
     assert!(!state.presets.contains_key("secret-only"));
     assert_eq!(state.last_run.values, Some(map(&[("city", "Rome")])));
     assert_eq!(state.last_run.exit, Some(0));
+}
+
+#[test]
+fn completed_run_re_resolves_once_and_commits_every_state_surface_together() {
+    let repository = MemoryState::default();
+    repository
+        .update(&slug(), |state| {
+            state.values = map(&[("token", "old"), ("city", "Berlin")]);
+            state
+                .presets
+                .insert("legacy".to_owned(), map(&[("token", "old")]));
+            state.last_run.values = Some(map(&[("token", "old")]));
+        })
+        .unwrap();
+    let service = FormStateService::new(repository);
+    let resolutions = AtomicUsize::new(0);
+    let values = map(&[("city", "Paris"), ("empty", ""), ("token", "new-secret")]);
+
+    service
+        .record_completed_run_with(
+            &slug(),
+            3,
+            "2026-08-21T01:02:03Z",
+            Some(&values),
+            Some(vec!["--tail".to_owned()]),
+            false,
+            Some("fresh"),
+            || {
+                resolutions.fetch_add(1, Ordering::Relaxed);
+                Ok::<_, ()>(declarations())
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(resolutions.load(Ordering::Relaxed), 1);
+    let state = service.load(&slug());
+    assert!(state.values.is_empty());
+    assert_eq!(state.extra_args, ["--tail"]);
+    assert!(!state.extra_args_raw);
+    assert!(!state.presets.contains_key("legacy"));
+    assert_eq!(
+        state.presets["fresh"],
+        map(&[("city", "Paris"), ("empty", "")])
+    );
+    assert_eq!(state.last_run.at.as_deref(), Some("2026-08-21T01:02:03Z"));
+    assert_eq!(state.last_run.exit, Some(3));
+    assert_eq!(
+        state.last_run.values,
+        Some(map(&[("city", "Paris"), ("empty", "")]))
+    );
+}
+
+#[test]
+fn completed_run_resolution_failure_changes_no_state_surface() {
+    let repository = MemoryState::default();
+    repository
+        .update(&slug(), |state| {
+            state.values = map(&[("city", "Berlin")]);
+            state.extra_args = vec!["--old".to_owned()];
+            state.extra_args_raw = true;
+            state
+                .presets
+                .insert("saved".to_owned(), map(&[("city", "Rome")]));
+            state.last_run = LastRunState {
+                at: Some("before".to_owned()),
+                exit: Some(2),
+                values: Some(map(&[("city", "Tokyo")])),
+            };
+        })
+        .unwrap();
+    let service = FormStateService::new(repository);
+    let before = service.load(&slug());
+
+    let result = service
+        .record_completed_run_with(
+            &slug(),
+            0,
+            "after",
+            Some(&map(&[("city", "Paris")])),
+            Some(vec!["--new".to_owned()]),
+            false,
+            Some("new"),
+            || Err::<Vec<ParamDecl>, _>("source changed"),
+        )
+        .unwrap();
+
+    assert_eq!(result, Err("source changed"));
+    assert_eq!(service.load(&slug()), before);
+}
+
+#[test]
+fn raw_completed_run_preserves_form_state_and_clears_only_the_run_snapshot() {
+    let repository = MemoryState::default();
+    repository
+        .update(&slug(), |state| {
+            state.values = map(&[("city", "Berlin")]);
+            state.extra_args = vec!["--old".to_owned()];
+            state.extra_args_raw = true;
+            state
+                .presets
+                .insert("saved".to_owned(), map(&[("city", "Rome")]));
+            state.last_run.values = Some(map(&[("city", "Tokyo")]));
+        })
+        .unwrap();
+    let service = FormStateService::new(repository);
+
+    service
+        .record_completed_run_with(
+            &slug(),
+            7,
+            "2026-08-21T02:03:04Z",
+            None,
+            Some(vec!["--ignored".to_owned()]),
+            false,
+            Some("ignored"),
+            || -> Result<Vec<ParamDecl>, ()> {
+                panic!("raw completion must not resolve form declarations")
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+    let state = service.load(&slug());
+    assert_eq!(state.values, map(&[("city", "Berlin")]));
+    assert_eq!(state.extra_args, ["--old"]);
+    assert!(state.extra_args_raw);
+    assert_eq!(state.presets["saved"], map(&[("city", "Rome")]));
+    assert!(!state.presets.contains_key("ignored"));
+    assert_eq!(state.last_run.at.as_deref(), Some("2026-08-21T02:03:04Z"));
+    assert_eq!(state.last_run.exit, Some(7));
+    assert_eq!(state.last_run.values, None);
 }
 
 #[test]

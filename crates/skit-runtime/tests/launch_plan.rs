@@ -395,6 +395,19 @@ fn command_template_tracks_nested_posix_quote_contexts() {
 
 #[cfg(not(windows))]
 #[test]
+fn a_closed_command_substitution_restores_the_outer_quote_context() {
+    assert_eq!(
+        render_command_template(
+            r#"tool "$(printf done) {value}""#,
+            &BTreeMap::from([("value".to_owned(), "$HOME".to_owned())]),
+        )
+        .unwrap(),
+        r#"tool "$(printf done) \$HOME""#,
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
 fn command_template_neutralizes_a_dangling_escape_before_a_value() {
     assert_eq!(
         render_command_template(
@@ -435,6 +448,10 @@ fn command_template_refuses_only_unrepresentable_nested_backtick_quotes() {
     );
 }
 
+// Command templates lower through `sh -c` only under cfg(not(windows)); on Windows the
+// same builder takes the render_windows_command_template arm, so asserting the sh program
+// or its POSIX-rendered argv states a unix contract.
+#[cfg(unix)]
 #[test]
 fn command_template_appends_extra_arguments_after_rendering() {
     let mut command = entry("command");
@@ -583,16 +600,27 @@ fn unknown_kinds_and_missing_runtimes_are_typed_refusals() {
     ));
 
     let shell_probe = probe_for("/copy/script.sh");
+    let missing_shell = build_launch_plan(
+        &entry("shell"),
+        &paths("/copy/script.sh"),
+        &Assembly::default(),
+        None,
+        None,
+        &shell_probe,
+    );
+    // A missing shell is a typed refusal on every host, and the variant follows each host's
+    // adjudicated policy (`resolve_interpreter`): unix resolves interpreters from PATH only, so
+    // the refusal is ProgramNotFound; Windows falls from PATH to the configured bash path and
+    // refuses as WindowsShellMissing.
+    #[cfg(not(windows))]
     assert!(matches!(
-        build_launch_plan(
-            &entry("shell"),
-            &paths("/copy/script.sh"),
-            &Assembly::default(),
-            None,
-            None,
-            &shell_probe,
-        ),
+        missing_shell,
         Err(LaunchError::ProgramNotFound { .. })
+    ));
+    #[cfg(windows)]
+    assert!(matches!(
+        missing_shell,
+        Err(LaunchError::WindowsShellMissing { .. })
     ));
 
     let mut missing_file_probe = shell_probe;

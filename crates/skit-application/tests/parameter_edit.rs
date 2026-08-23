@@ -1,5 +1,6 @@
 use skit_application::parameter_edit::{ParameterEditError, finish_parameter_edit};
 use skit_domain::parameters::{ParamDecl, ParameterDelivery, ParameterType, ParameterValue};
+use skit_i18n::{Locale, Localize as _};
 
 fn flagged(parameter_type: ParameterType, default: Option<ParameterValue>) -> ParamDecl {
     ParamDecl {
@@ -31,6 +32,23 @@ fn an_on_by_default_boolean_flag_is_refused_without_mutating_the_row() {
         })
     );
     assert_eq!(declaration, before);
+
+    let error = ParameterEditError::BoolFlagOnByDefault {
+        name: "verbose".to_owned(),
+    };
+    assert_eq!(
+        error.message().localize(Locale::En),
+        "verbose is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-verbose and the like), with default false."
+    );
+    assert_eq!(error.to_string(), error.message().localize(Locale::En));
+    assert_eq!(
+        error.message().localize(Locale::ZhCn),
+        "verbose 默认就是开的，它的标志只会再开一次。请改成声明用来关掉它的那个标志(--no-verbose 之类)，默认 false。"
+    );
+    assert_eq!(
+        error.message().localize(Locale::ZhTw),
+        "verbose 預設就是開的，它的旗標只會再開一次。請改成宣告用來關掉它的那個旗標(--no-verbose 之類)，預設 false。"
+    );
 }
 
 #[test]

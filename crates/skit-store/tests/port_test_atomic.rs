@@ -4,38 +4,38 @@
 //! The Python module unit-tests `skit.atomic` directly: `load_toml_recoverable`,
 //! `advisory_file_lock` / `try_advisory_file_lock`, `atomic_write_bytes/text/toml`,
 //! `atomic_write_text_keep_mode`, and the internal `_replace_with_retry` / `_try_native_lock`
-//! / `_fsync_dir` seams. The Rust rewrite has NO equivalent public "atomic" module: the atomic
-//! write/replace, the corrupt-TOML backup, and the file lock are internal helpers
-//! (`crates/skit-store/src/fs_ops.rs`, `src/mutations/atomic.rs`, `src/config.rs`) that are only
-//! reachable through the public stores `FileConfigStore` and `FileStore`. Every port therefore
-//! drives the mechanism through the closest public seam. Each test keeps its exact Python name and
-//! carries a WHY comment. Tests use `tempfile::TempDir`, never real user directories, matching the
-//! existing skit-store test harness (`tests/mutations.rs`, `tests/config_store.rs`).
+//! / `_fsync_dir` seams. The Rust rewrite has no equivalent public "atomic" module. Public outcome
+//! owners use `FileConfigStore`, `FileFormStateStore`, and `FileStore`; syscall-order and fault
+//! owners run beside the crate-private shared writer, using its actual algorithm with controlled
+//! operations. Each test keeps its exact Python name and carries a WHY comment. Tests use
+//! `tempfile::TempDir`, never real user directories, matching the existing skit-store test harness.
 //!
 //! FINDINGS the supervisor must read (see the flagged tests below):
-//!   * DATA-SAFETY: `atomic_write_bytes` removes the temp file only when the rename fails, NOT when
-//!     `sync_all()` fails — a temp-fsync failure leaks a `.tmp` residue, diverging from the Python
-//!     contract (`test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file`). No public
-//!     fsync-injection seam exists to reproduce it, so it is `#[ignore]`d and flagged.
+//!   * DATA-SAFETY: the temp-fsync cleanup owner moved to the shared atomic primitive's unit tests,
+//!     where a deterministic sync failure exercises the real cleanup path for every store adapter.
 //!   * FEATURE PARITY: RESOLVED. The Windows sharing-violation rename retry (Python's
 //!     `_replace_with_retry`, issue #4, A1) and the non-blocking `try_advisory_file_lock` (A2) now
-//!     both exist -- `fs_ops::{replace_with_retry, try_acquire_lock}`. The retry rides on Linux
-//!     through the injectable `replace_with_retry_impl` seam (the three `test_replace_*` tests
-//!     below); the try-lock is crate-private (its production caller is the read-path self-heal), so
-//!     its contract is proven by `fs_ops.rs` unit tests and by the self-heal tests in
+//!     both exist in `fs_ops`. The retry owners moved beside the actual atomic writer, where
+//!     controlled operations verify retry, cleanup, and no-clobber through the same algorithm the
+//!     real wrapper calls. The try-lock is crate-private (its production caller is the read-path
+//!     self-heal), so its contract is proven by `fs_ops.rs` unit tests and by the self-heal tests in
 //!     `port_test_store.rs` rather than the try-lock stubs below.
+//!   * ACCOUNTING: `port_test_atomic_manifest.rs` requires all 32 frozen names exactly once as 15
+//!     common exact owners, 7 target-gated exact owners, and 10 structured architecture closures.
 
 use std::{
     fs::{self, OpenOptions},
-    path::Path,
     sync::mpsc,
     thread,
     time::Duration,
 };
 
-use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
-use skit_domain::{Entry, EntryKind, EntrySettings, StorageMode};
-use skit_store::{FileConfigStore, FileStore, content_hash};
+use skit_application::{
+    CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions,
+    form_state::FormStateRepository,
+};
+use skit_domain::{Entry, EntryKind, EntrySettings, Slug, StorageMode};
+use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -70,16 +70,14 @@ fn create_entry(root: &TempDir, name: &str, bytes: &[u8], mode: u32) -> (FileSto
     (store, entry)
 }
 
-/// Names in `dir` that look like the atomic writer's private temp file (`.<name>.<id>.tmp`).
-///
-/// A successful atomic write must leave none: the temp is renamed onto the target, never left as a
-/// partial commit beside it.
-fn temp_residue(dir: &Path) -> Vec<String> {
-    fs::read_dir(dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| name.contains(".tmp"))
-        .collect()
+fn set_readonly(path: &std::path::Path, readonly: bool) {
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_readonly(readonly);
+    fs::set_permissions(path, permissions).unwrap();
+}
+
+fn architecture_closure() -> ! {
+    panic!("architecture closure; see port_test_atomic_manifest")
 }
 
 // ===========================================================================
@@ -227,142 +225,49 @@ fn test_advisory_file_lock_serializes_two_waiting_threads() {
     worker.join().unwrap();
 }
 
-#[ignore = "UNMAPPED: crash-release-flock needs a child process that acquires skit's lock then \
-            hard-exits (os._exit). There is no public API to acquire-and-hold the lock without a \
-            full mutation, and no helper binary may be added. Release-on-close is a kernel \
-            guarantee that std File::lock inherits; not a skit-specific behavior."]
-#[test]
-fn test_advisory_file_lock_is_released_by_kernel_after_process_crash() {}
-
 #[ignore = "UNMAPPED: Windows msvcrt one-byte-seek/retry/unlock seam. The POSIX build uses flock \
             (std File::lock); there is no msvcrt path to exercise."]
 #[test]
-fn test_windows_locking_uses_one_byte_seek_retry_and_unlock() {}
+fn test_windows_locking_uses_one_byte_seek_retry_and_unlock() {
+    architecture_closure()
+}
 
 #[ignore = "UNMAPPED: `_try_native_lock`'s errno classification (EAGAIN retryable vs EBADF/ENOSPC \
             loud) is a non-blocking-lock concept. Rust has only the blocking `File::lock()` and no \
             errno-classifying try seam."]
 #[test]
-fn test_native_lock_distinguishes_contention_from_unexpected_os_errors() {}
+fn test_native_lock_distinguishes_contention_from_unexpected_os_errors() {
+    architecture_closure()
+}
 
-#[ignore = "UNMAPPED: Python layers a per-path in-process threading.Lock over flock and tests that \
-            a failed lockfile open releases that mutex. Rust relies solely on kernel flock \
-            (per-fd), so there is no in-process mutex layer to leak or release."]
 #[test]
-fn test_advisory_lock_open_failure_releases_its_thread_mutex() {}
+fn test_advisory_lock_open_failure_releases_its_thread_mutex() {
+    // Rust has no per-path thread mutex. Its public equivalent is that a failed lock-file open
+    // leaves no lock resource behind: the same store can retry after the filesystem obstruction is
+    // removed.
+    let root = TempDir::new().unwrap();
+    let lock_path = root.path().join("config.lock");
+    fs::create_dir(&lock_path).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert!(store.set("form", "plain").is_err());
+    assert!(!root.path().join("config.toml").exists());
+
+    fs::remove_dir(&lock_path).unwrap();
+    store.set("form", "plain").unwrap();
+
+    assert_eq!(store.get("form").unwrap(), "plain");
+    assert!(lock_path.is_file());
+    assert!(lock_path.metadata().unwrap().len() >= 1);
+}
 
 #[ignore = "UNMAPPED: same two-layer (thread-mutex + native) design as above. In Rust a failed \
             lock drops its File, closing the fd via RAII, and there is no thread mutex; there is \
             also no seam to force `File::lock()` itself to fail on POSIX."]
 #[test]
-fn test_advisory_lock_native_failure_closes_fd_and_releases_mutex() {}
-
-// ===========================================================================
-// atomic_write_* — durability (fsync temp before replace, fsync dir after replace).
-// The fsync/replace ORDER and the dir fsync are not observable through the public API; each test
-// ports the OBSERVABLE OUTCOME of the atomic swap (exact bytes land, no partial/temp commit) and
-// carries a MUST-VERIFY note pinning the source that the supervisor must confirm by inspection.
-// ===========================================================================
-
-#[test]
-fn test_atomic_write_bytes_fsyncs_before_replace() {
-    // WHY: outcome of the atomic swap. MUST-VERIFY (source-only): the temp file is `sync_all()`ed
-    // BEFORE `fs::rename` (mutations/atomic.rs:163-167, fs_ops.rs:51-58), so a crash cannot leave
-    // the target renamed-but-unflushed.
-    let root = TempDir::new().unwrap();
-    let (store, entry) = create_entry(&root, "Payload", b"before", 0o644);
-    let dir = root.path().join("scripts/payload");
-
-    let edited = store
-        .commit_copy_edit(&entry, b"payload", &entry.meta.source_hash)
-        .unwrap();
-
-    assert_eq!(fs::read(dir.join("script.py")).unwrap(), b"payload");
-    assert_eq!(edited.meta.source_hash, content_hash(b"payload"));
-    assert!(temp_residue(&dir).is_empty()); // no partial commit beside the file
+fn test_advisory_lock_native_failure_closes_fd_and_releases_mutex() {
+    architecture_closure()
 }
-
-#[test]
-fn test_atomic_write_text_fsyncs_before_replace() {
-    // WHY: same durability guarantee for text content. MUST-VERIFY: fsync-before-rename ordering.
-    let root = TempDir::new().unwrap();
-    let (store, entry) = create_entry(&root, "Note", b"old", 0o644);
-    let dir = root.path().join("scripts/note");
-
-    store
-        .commit_copy_edit(&entry, b"hello", &entry.meta.source_hash)
-        .unwrap();
-
-    assert_eq!(fs::read_to_string(dir.join("script.py")).unwrap(), "hello");
-    assert!(temp_residue(&dir).is_empty());
-}
-
-#[test]
-fn test_atomic_write_toml_fsyncs_before_replace() {
-    // WHY: the TOML write lands atomically. Byte-exact serializer formatting is impl-specific, so
-    // the parsed value is asserted. MUST-VERIFY: fsync-before-rename ordering (config writes go
-    // through the same fs_ops::atomic_write_bytes).
-    let root = TempDir::new().unwrap();
-    let store = FileConfigStore::new(root.path());
-
-    store.set("lang", "en").unwrap();
-
-    let document = fs::read_to_string(root.path().join("config.toml"))
-        .unwrap()
-        .parse::<toml::Table>()
-        .unwrap();
-    assert_eq!(document["language"].as_str(), Some("en"));
-    assert!(temp_residue(root.path()).is_empty());
-}
-
-#[test]
-fn test_atomic_write_bytes_fsyncs_parent_dir_after_replace() {
-    // WHY: outcome of the write. MUST-VERIFY (source-only, POSIX): after the rename lands the
-    // parent directory fd is `sync_all()`ed best-effort (mutations/atomic.rs:171 -> sync_directory,
-    // fs_ops.rs:58), so the rename survives a lost/rolled-back directory entry across power loss.
-    let root = TempDir::new().unwrap();
-    let (store, entry) = create_entry(&root, "Durable", b"before", 0o644);
-    let dir = root.path().join("scripts/durable");
-
-    store
-        .commit_copy_edit(&entry, b"payload", &entry.meta.source_hash)
-        .unwrap();
-
-    assert_eq!(fs::read(dir.join("script.py")).unwrap(), b"payload");
-    assert!(temp_residue(&dir).is_empty());
-}
-
-#[test]
-fn test_atomic_write_bytes_dir_fsync_failure_is_swallowed() {
-    // WHY: the post-replace directory fsync is best-effort — a failure must not fail the write.
-    // MUST-VERIFY (source-only): the call is `let _ = sync_directory(parent);` so its Err is
-    // discarded; the content durability was already secured by the temp-file fsync before rename.
-    // The observable outcome (the write still succeeds) is ported here.
-    let root = TempDir::new().unwrap();
-    let (store, entry) = create_entry(&root, "BestEffort", b"before", 0o644);
-    let dir = root.path().join("scripts/besteffort");
-
-    store
-        .commit_copy_edit(&entry, b"payload", &entry.meta.source_hash)
-        .unwrap();
-
-    assert_eq!(fs::read(dir.join("script.py")).unwrap(), b"payload");
-}
-
-#[ignore = "UNMAPPED: platform-cfg. On POSIX the `#[cfg(unix)]` sync_directory arm is compiled; \
-            the Windows no-op (`#[cfg(not(unix))]` sync_directory -> Ok(())) is not built here and \
-            has no runtime seam to observe."]
-#[test]
-fn test_atomic_write_bytes_skips_dir_fsync_on_windows() {}
-
-#[ignore = "UNMAPPED + MUST-VERIFY DATA-SAFETY FINDING: Python asserts a temp-file fsync failure \
-            propagates AND leaves NO temp residue (destination as if the write never started). The \
-            Rust atomic_write_bytes removes the temp ONLY on rename failure (mutations/atomic.rs \
-            168-169, fs_ops.rs 54-56); on `sync_all()` failure the `?` returns early and the \
-            `.tmp` file LEAKS. No public fsync-injection seam exists to reproduce it. Candidate \
-            temp-residue / partial-commit gap — supervisor MUST review."]
-#[test]
-fn test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file() {}
 
 // ===========================================================================
 // atomic_write_text_keep_mode — preserve an existing file's permission bits across the replace.
@@ -370,18 +275,52 @@ fn test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file() {}
 // file BEFORE the rename (`preserve_permissions_best_effort`), reachable via `commit_copy_edit`.
 // ===========================================================================
 
-#[cfg(unix)]
 #[test]
 fn test_atomic_write_text_keep_mode_preserves_existing_mode() {
-    // WHY: an existing file's bits survive the atomic replace. The stored script is set to a
-    // non-default 0o750; after a copy-edit the new content lands AND 0o750 is preserved exactly
-    // (the writer would otherwise strand the file at the temp's create-time mode).
-    use std::os::unix::fs::PermissionsExt as _;
-
+    // Both public adapters use the shared atomic writer. A readonly state file and a readonly
+    // stored copy must keep that portable permission after replacement while the new bytes land.
     let root = TempDir::new().unwrap();
+
+    let state_root = root.path().join("state");
+    let state_store = FileFormStateStore::new(&state_root);
+    let state_slug = Slug::parse("permission-state").unwrap();
+    state_store
+        .update(&state_slug, |state| {
+            state.values.insert("before".to_owned(), "1".to_owned());
+        })
+        .unwrap();
+    // The oracle probes preservation with chmod(0o755) and notes that Windows maps POSIX modes
+    // to nothing (test_atomic.py:445-460): its replace always lands on a WRITABLE file there,
+    // and CPython's os.replace requires that -- a read-only destination is refused with
+    // PermissionError on Windows. Probe with a read-only file only where the platform can
+    // replace one, and assert preservation of whatever the platform reports, exactly as the
+    // oracle does.
+    let probe_readonly = cfg!(unix);
+    let state_path = state_root.join("values/permission-state.toml");
+    set_readonly(&state_path, probe_readonly);
+
+    state_store
+        .update(&state_slug, |state| {
+            state.values.insert("after".to_owned(), "2".to_owned());
+        })
+        .unwrap();
+
+    assert_eq!(
+        fs::metadata(&state_path).unwrap().permissions().readonly(),
+        probe_readonly
+    );
+    assert_eq!(
+        state_store
+            .load(&state_slug)
+            .values
+            .get("after")
+            .map(String::as_str),
+        Some("2")
+    );
+
     let (store, entry) = create_entry(&root, "Script", b"old\n", 0o644);
     let script = root.path().join("scripts/script/script.py");
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o750)).unwrap();
+    set_readonly(&script, probe_readonly);
 
     store
         .commit_copy_edit(&entry, b"new content\n", &entry.meta.source_hash)
@@ -389,158 +328,39 @@ fn test_atomic_write_text_keep_mode_preserves_existing_mode() {
 
     assert_eq!(fs::read(&script).unwrap(), b"new content\n");
     assert_eq!(
-        fs::metadata(&script).unwrap().permissions().mode() & 0o777,
-        0o750 // bits preserved exactly, not reset to the temp file's mode
+        fs::metadata(&script).unwrap().permissions().readonly(),
+        probe_readonly
     );
+
+    // Windows does not remove readonly files during recursive cleanup. Restore only after the
+    // assertions so this temporary fixture cannot leak.
+    set_readonly(&state_path, false);
+    set_readonly(&script, false);
 }
-
-#[ignore = "UNMAPPED seam-spy (+MUST-VERIFY): Python spies on the temp file's mode at rename time \
-            to prove the bits ride along BEFORE the swap (no crash window at the temp's default \
-            mode). Rust applies the mode to the temp fd before drop/rename \
-            (mutations/atomic.rs:159-167, fs_ops.rs:47-54) with no post-rename chmod, so there is \
-            no rename-seam to observe the pre-rename mode; the preserved-final-mode outcome is \
-            covered by test_atomic_write_text_keep_mode_preserves_existing_mode."]
-#[test]
-fn test_atomic_write_text_keep_mode_applies_mode_before_the_rename() {}
-
-#[test]
-fn test_atomic_write_text_keep_mode_missing_target_skips_chmod() {
-    // WHY: with no existing target, preserve_permissions_best_effort's fs::metadata(path) fails, so
-    // no mode is captured or applied and the fresh write still lands. Exercised via the first
-    // config write to a non-existent config.toml.
-    let root = TempDir::new().unwrap();
-    let path = root.path().join("config.toml");
-    assert!(!path.exists());
-    let store = FileConfigStore::new(root.path());
-
-    store.set("editor", "vim").unwrap();
-
-    assert_eq!(store.get("editor").unwrap(), "vim");
-    assert!(path.is_file());
-}
-
-#[ignore = "UNMAPPED (+MUST-VERIFY): a chmod failure is best-effort — the write still succeeds. \
-            Rust swallows it as `let _ = apply(permissions)` in preserve_permissions_best_effort \
-            (fs_ops.rs:68-70); this exact swallow is proven in-module by \
-            `a_permission_restore_failure_does_not_turn_a_committed_write_into_an_error`. No public \
-            seam forces set_permissions to fail on the temp fd."]
-#[test]
-fn test_atomic_write_text_keep_mode_suppresses_chmod_failure() {}
 
 #[ignore = "UNMAPPED: Windows-only. Python restores bits with a post-rename os.chmod because \
             Windows lacks os.fchmod. Rust uses one cross-platform path — File::set_permissions on \
             the temp handle before the rename — with no fchmod-vs-chmod split to exercise on POSIX."]
 #[test]
-fn test_atomic_write_text_keep_mode_falls_back_to_chmod_on_windows() {}
-
-// ===========================================================================
-// _replace_with_retry — Windows sharing-violation backoff (issue #4).
-// The Rust atomic_write_bytes calls `fs::rename` directly with NO retry, so the transient-retry
-// contract is absent, not merely off-seam.
-// ===========================================================================
-
-#[test]
-fn test_replace_retries_through_transient_permission_error() {
-    // WHY: two sharing violations then success -- the write lands, with exact backoff. RESOLVED
-    // (A1): the retry now exists (fs_ops::replace_with_retry). It is Windows-only in production
-    // (POSIX renames open files freely), so it is driven here on Linux through the injectable
-    // `replace_with_retry_impl` seam, whose `rename`/`sleep` stand in for `fs::rename` and
-    // `std::thread::sleep` -- the analog of the oracle's monkeypatched `os.replace`/`time.sleep`.
-    use std::cell::{Cell, RefCell};
-
-    let attempts = Cell::new(0_u32);
-    let sleeps = RefCell::new(Vec::new());
-
-    let result = skit_store::replace_with_retry_impl(
-        |_src, _dst| {
-            attempts.set(attempts.get() + 1);
-            if attempts.get() <= 2 {
-                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-            } else {
-                Ok(())
-            }
-        },
-        |delay| sleeps.borrow_mut().push(delay),
-        Path::new("src"),
-        Path::new("dst"),
-    );
-
-    assert!(result.is_ok());
-    assert_eq!(attempts.get(), 3);
-    assert_eq!(
-        *sleeps.borrow(),
-        vec![Duration::from_millis(10), Duration::from_millis(20)] // exponential, from the base
-    );
-}
-
-#[test]
-fn test_replace_gives_up_loudly_after_bounded_attempts() {
-    // WHY: a target held open forever (antivirus, a leak) must surface, not spin. RESOLVED (A1):
-    // after the bounded retries the final attempt's error propagates. 8 attempts total (7 retried +
-    // 1 final loud), with the exact exponential backoff sequence.
-    use std::cell::{Cell, RefCell};
-
-    let attempts = Cell::new(0_u32);
-    let sleeps = RefCell::new(Vec::new());
-
-    let result = skit_store::replace_with_retry_impl(
-        |_src, _dst| {
-            attempts.set(attempts.get() + 1);
-            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
-        },
-        |delay| sleeps.borrow_mut().push(delay),
-        Path::new("src"),
-        Path::new("dst"),
-    );
-
-    assert_eq!(
-        result.unwrap_err().kind(),
-        std::io::ErrorKind::PermissionDenied
-    );
-    assert_eq!(attempts.get(), 8); // 7 retried + 1 final loud attempt
-    assert_eq!(
-        *sleeps.borrow(),
-        [10, 20, 40, 80, 160, 320, 640]
-            .map(Duration::from_millis)
-            .to_vec()
-    );
-}
-
-#[test]
-fn test_replace_other_oserrors_are_not_retried() {
-    // WHY: only the Windows sharing violation (PermissionDenied) is transient; anything else stays
-    // immediate -- one attempt, no sleep. RESOLVED (A1): the retry guard keys on PermissionDenied.
-    use std::cell::{Cell, RefCell};
-
-    let attempts = Cell::new(0_u32);
-    let sleeps = RefCell::new(Vec::new());
-
-    let result = skit_store::replace_with_retry_impl(
-        |_src, _dst| {
-            attempts.set(attempts.get() + 1);
-            Err(std::io::Error::other("is a directory"))
-        },
-        |delay| sleeps.borrow_mut().push(delay),
-        Path::new("src"),
-        Path::new("dst"),
-    );
-
-    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Other);
-    assert_eq!(attempts.get(), 1);
-    assert!(sleeps.borrow().is_empty());
+fn test_atomic_write_text_keep_mode_falls_back_to_chmod_on_windows() {
+    architecture_closure()
 }
 
 #[ignore = "UNMAPPED: Windows-only fallback guard (skip the post-rename chmod when the target \
             vanished, so None is never handed to os.chmod). Rust has no post-rename Windows chmod \
             branch on POSIX to exercise."]
 #[test]
-fn test_keep_mode_windows_fallback_is_skipped_when_there_is_no_mode() {}
+fn test_keep_mode_windows_fallback_is_skipped_when_there_is_no_mode() {
+    architecture_closure()
+}
 
 #[ignore = "UNMAPPED: Windows-only. The post-rename restore's best-effort suppression is the \
             Windows chmod branch, not built or reachable on POSIX; the POSIX swallow is covered in \
             the keep_mode suppression note above."]
 #[test]
-fn test_keep_mode_windows_fallback_suppresses_a_chmod_failure() {}
+fn test_keep_mode_windows_fallback_suppresses_a_chmod_failure() {
+    architecture_closure()
+}
 
 // ===========================================================================
 // try_advisory_file_lock — the never-waits variant for read-path writes.
@@ -557,20 +377,28 @@ fn test_keep_mode_windows_fallback_suppresses_a_chmod_failure() {}
             declines. try_acquire_lock is crate-private (read-path self-heal caller), so the \
             acquire/second-taker-declines contract is proven in-crate, not through this external stub."]
 #[test]
-fn test_try_lock_acquires_when_free_and_excludes_a_second_taker() {}
+fn test_try_lock_acquires_when_free_and_excludes_a_second_taker() {
+    architecture_closure()
+}
 
 #[ignore = "RESOLVED (A2) -> fs_ops.rs unit test try_lock_declines_while_the_blocking_lock_is_held \
             (crate-private try_acquire_lock)."]
 #[test]
-fn test_try_lock_declines_while_the_blocking_lock_is_held() {}
+fn test_try_lock_declines_while_the_blocking_lock_is_held() {
+    architecture_closure()
+}
 
 #[ignore = "RESOLVED (A2): the cross-process decline-when-native-lock-held path is proven through \
             the read-path self-heal in port_test_store.rs::test_a_listing_never_blocks_on_the_\
             registry_lock (a held flock makes the listing's try_acquire_lock decline)."]
 #[test]
-fn test_try_lock_declines_when_only_the_native_lock_is_held() {}
+fn test_try_lock_declines_when_only_the_native_lock_is_held() {
+    architecture_closure()
+}
 
 #[ignore = "RESOLVED (A2) -> fs_ops.rs unit test try_lock_treats_an_unopenable_path_as_not_acquired \
             (crate-private try_acquire_lock)."]
 #[test]
-fn test_try_lock_treats_an_unopenable_lock_file_as_not_acquired() {}
+fn test_try_lock_treats_an_unopenable_lock_file_as_not_acquired() {
+    architecture_closure()
+}

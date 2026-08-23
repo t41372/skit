@@ -134,27 +134,15 @@ fn read_key(sandbox: &Sandbox, key: &str) -> String {
     doc.remove(key).unwrap_or_default()
 }
 
-/// Parse the flat `{"key":"value",...}` object the CLI emits (a string->string map, no nesting;
-/// values here never contain a quote or comma). This local parser keeps the file self-contained
-/// (no `serde_json` dev-dependency).
+/// Parse the flat `{"key":"value",...}` object the CLI emits (a string->string map, no nesting).
+///
+/// A real JSON reader does this, because JSON values are escaped. A reader that only splits on the
+/// punctuation and trims the quotes returns the escaped text as if it were the value. A value that
+/// holds a backslash then comes back doubled and never equals what it came from. Every absolute
+/// path on Windows holds backslashes, so such a reader passes on unix and fails there.
 fn parse_flat_json(text: &str) -> BTreeMap<String, String> {
-    let trimmed = text.trim();
-    let body = trimmed
-        .strip_prefix('{')
-        .and_then(|inner| inner.strip_suffix('}'))
-        .unwrap_or_else(|| panic!("not a JSON object: {text:?}"));
-    let mut map = BTreeMap::new();
-    if body.is_empty() {
-        return map;
-    }
-    for pair in body.split(',') {
-        let (key, value) = pair.split_once(':').unwrap();
-        map.insert(
-            key.trim().trim_matches('"').to_owned(),
-            value.trim().trim_matches('"').to_owned(),
-        );
-    }
-    map
+    serde_json::from_str(text)
+        .unwrap_or_else(|error| panic!("not a flat JSON object: {text:?}: {error}"))
 }
 
 // --- bare `skit config`: list everything ---
@@ -501,7 +489,7 @@ fn test_unknown_axis_value_exits_2() {
 
 #[test]
 fn test_npm_axis_rejects_pypi_vendor_name() {
-    // The old single-axis grammar's core lie, now a hard error: PyPI vendors aren't npm vendors.
+    // The old single-axis grammar's core lie, now a hard error: PyPI vendors are not npm vendors.
     let sandbox = Sandbox::new();
     let result = sandbox.run(&["config", "mirror.npm", "tsinghua"]);
     assert_eq!(result.code, 2);
@@ -882,10 +870,39 @@ fn test_set_bash_path_to_existing_file() {
 #[test]
 fn test_set_bash_path_to_missing_file_is_usage_error() {
     let sandbox = Sandbox::new();
+    let original = concat!(
+        "future = \"keep\" # preserve this comment\n",
+        "[shell]\n",
+        "other = \"keep too\"\n",
+    );
+    sandbox.write_config(original);
     let ghost = sandbox.data.path().join("nope"); // never created
-    let result = sandbox.run(&["config", "shell.bash_path", ghost.to_str().unwrap()]);
-    assert_eq!(result.code, 2);
-    assert_eq!(read_key(&sandbox, "shell.bash_path"), ""); // nothing written on the rejection
+    let directory = sandbox.data.path().join("directory");
+    fs::create_dir(&directory).unwrap();
+    for invalid in [&ghost, &directory] {
+        let result = sandbox.run(&["config", "shell.bash_path", invalid.to_str().unwrap()]);
+        assert_eq!(result.code, 2, "{}", result.both());
+        assert!(result.both().contains("No such file"), "{}", result.both());
+        assert!(
+            result.both().contains(invalid.to_str().unwrap()),
+            "{}",
+            result.both()
+        );
+        assert_eq!(sandbox.read_config(), original); // no partial write or recovery
+        assert!(!sandbox.config_path().with_extension("toml.bak").exists());
+    }
+    assert_eq!(read_key(&sandbox, "shell.bash_path"), "");
+    assert_eq!(sandbox.read_config(), original); // reads also do not normalize or rewrite
+
+    let corrupt = Sandbox::new();
+    let corrupt_source = b"[shell\nbash_path = broken\n";
+    fs::write(corrupt.config_path(), corrupt_source).unwrap();
+    let missing = corrupt.data.path().join("missing");
+    let result = corrupt.run(&["config", "shell.bash_path", missing.to_str().unwrap()]);
+    assert_eq!(result.code, 2, "{}", result.both());
+    assert!(result.both().contains(missing.to_str().unwrap()));
+    assert_eq!(fs::read(corrupt.config_path()).unwrap(), corrupt_source);
+    assert!(!corrupt.config_path().with_extension("toml.bak").exists());
 }
 
 #[test]
@@ -927,6 +944,52 @@ fn test_set_js_runner() {
         assert_eq!(read_key(&sandbox, "js.runner"), *name);
         assert!(result.stdout.contains(name));
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_runner_config_override() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("configured.js");
+    let bin = sandbox.data.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    fs::write(&source, "console.log('script body');\n").unwrap();
+    for (name, marker) in [("deno", "wrong-deno"), ("node", "configured-node")] {
+        let executable = bin.join(name);
+        fs::write(&executable, format!("#!/bin/sh\necho {marker}\n")).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    assert_eq!(sandbox.run(&["config", "js.runner", "node"]).code, 0);
+    let add = sandbox
+        .command("en")
+        .args(["add"])
+        .arg(&source)
+        .args(["--name", "configured", "--no-input"])
+        .output()
+        .unwrap();
+    assert!(
+        add.status.success(),
+        "{}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let output = sandbox
+        .command("en")
+        .env("PATH", &bin)
+        .args(["run", "configured", "--no-input"])
+        .output()
+        .unwrap();
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "{combined}");
+    assert!(combined.contains("configured-node"), "{combined}");
+    assert!(!combined.contains("wrong-deno"), "{combined}");
 }
 
 #[test]

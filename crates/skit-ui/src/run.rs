@@ -1,6 +1,7 @@
 //! Typed launch-form state and product semantics.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use nucleo_matcher::{
     Config as MatcherConfig, Matcher, Utf32Str,
@@ -9,6 +10,9 @@ use nucleo_matcher::{
 use serde::{Deserialize, Serialize};
 use skit_application::{
     form_feedback::{GlobCountRequest, glob_count_request},
+    path_completion::{
+        PathCompletionContext, PathCompletionKind, PathCompletionRequest, PathInputDialect,
+    },
     path_insertion::{PathInsertionError, RunPathInsertMode, insert_picked_path},
     tokens::{TokenContext, TokenError, has_tokens, preview_typed},
     value_preparation::{ValuePreparationError, validate_form_value},
@@ -471,28 +475,7 @@ impl RunFormView {
             } else {
                 runners[0].clone()
             };
-            fields.push(RunField {
-                key: "_skit_runner".to_owned(),
-                label: "Runner".to_owned(),
-                help: String::new(),
-                role: RunFieldRole::Runner,
-                parameter_type: ParameterType::Choice,
-                multiple: false,
-                binding: ParameterBinding::None,
-                delivery: ParameterDelivery::Flag,
-                control: FormControl::Choice(ChoiceControl {
-                    options: runners.to_vec(),
-                    selected,
-                    presentation: ChoicePresentation::Picker,
-                }),
-                required: true,
-                default: None,
-                degraded: false,
-                input_binding: false,
-                env_source: String::new(),
-                validation_error: None,
-                feedback: RunFieldFeedback::default(),
-            });
+            fields.push(runner_field(runners, selected));
         }
         if !declarations.is_empty() && !presets.is_empty() {
             fields.push(preset_field(presets.keys().cloned(), String::new()));
@@ -681,21 +664,26 @@ impl RunFormView {
         if self.selector != selector {
             return;
         }
-        let Some(field) = self
+        if let Some(field) = self
             .fields
             .iter_mut()
             .find(|field| matches!(field.role, RunFieldRole::Runner))
-        else {
-            return;
-        };
-        let FormControl::Choice(choice) = &mut field.control else {
-            return;
-        };
-        if !choice.options.contains(&runner) {
-            choice.options.push(runner.clone());
+        {
+            let FormControl::Choice(choice) = &mut field.control else {
+                return;
+            };
+            if !choice.options.contains(&runner) {
+                choice.options.push(runner.clone());
+            }
+            choice.selected = runner;
+            field.validation_error = None;
+        } else {
+            self.fields.insert(
+                0,
+                runner_field(core::slice::from_ref(&runner), runner.clone()),
+            );
+            self.focused = self.focused.saturating_add(1);
         }
-        choice.selected = runner;
-        field.validation_error = None;
         self.runner_was_picked = true;
     }
 
@@ -748,6 +736,40 @@ impl RunFormView {
             }
         };
         Some((context, mode))
+    }
+
+    /// Build one path-completion request without reading the filesystem.
+    #[must_use]
+    pub fn path_completion_request(
+        &self,
+        index: usize,
+        value: &str,
+        dialect: PathInputDialect,
+    ) -> Option<PathCompletionRequest> {
+        let field = self.fields.get(index)?;
+        let FormControl::Text(control) = &field.control else {
+            return None;
+        };
+        if control.secret || control.multiline {
+            return None;
+        }
+        let context = self.context.as_ref()?;
+        let paths = context.path.as_ref()?;
+        Some(PathCompletionRequest {
+            value: value.to_owned(),
+            kind: if field.parameter_type == ParameterType::Path {
+                PathCompletionKind::Path
+            } else {
+                PathCompletionKind::Text
+            },
+            shlexy: field.multiple || matches!(field.role, RunFieldRole::ExtraArguments),
+            placeholder_braces: field.delivery == ParameterDelivery::Placeholder,
+            dialect,
+            context: PathCompletionContext {
+                workdir: PathBuf::from(&paths.workdir),
+                tokens: context.tokens.clone(),
+            },
+        })
     }
 
     /// Return saved preset names in stable order.
@@ -862,12 +884,12 @@ impl RunFormView {
         let Some(field) = self.fields.get_mut(index) else {
             return;
         };
-        if !field.resettable() {
-            return;
-        }
         let Some(value) = field.default.clone() else {
             return;
         };
+        if !field.resettable() {
+            return;
+        }
         field.control.set_value(&value);
         field.validation_error = None;
     }
@@ -1019,6 +1041,31 @@ fn preset_field(names: impl IntoIterator<Item = String>, selected: String) -> Ru
             presentation: ChoicePresentation::Picker,
         }),
         required: false,
+        default: None,
+        degraded: false,
+        input_binding: false,
+        env_source: String::new(),
+        validation_error: None,
+        feedback: RunFieldFeedback::default(),
+    }
+}
+
+fn runner_field(runners: &[String], selected: String) -> RunField {
+    RunField {
+        key: "_skit_runner".to_owned(),
+        label: "Runner".to_owned(),
+        help: String::new(),
+        role: RunFieldRole::Runner,
+        parameter_type: ParameterType::Choice,
+        multiple: false,
+        binding: ParameterBinding::None,
+        delivery: ParameterDelivery::Flag,
+        control: FormControl::Choice(ChoiceControl {
+            options: runners.to_vec(),
+            selected,
+            presentation: ChoicePresentation::Picker,
+        }),
+        required: true,
         default: None,
         degraded: false,
         input_binding: false,

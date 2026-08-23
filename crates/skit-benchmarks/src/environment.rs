@@ -302,7 +302,14 @@ fn absolute(path: &Path) -> Result<PathBuf, EnvironmentError> {
     if path.is_absolute() {
         return Ok(path.to_path_buf());
     }
-    std::env::current_dir()
+    absolute_from(path, std::env::current_dir())
+}
+
+fn absolute_from(
+    path: &Path,
+    current_dir: std::io::Result<PathBuf>,
+) -> Result<PathBuf, EnvironmentError> {
+    current_dir
         .map(|cwd| cwd.join(path))
         .map_err(|source| EnvironmentError::Resolve {
             path: path.to_path_buf(),
@@ -312,20 +319,25 @@ fn absolute(path: &Path) -> Result<PathBuf, EnvironmentError> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt as _, path::Path};
+    use std::{fs, io, os::unix::fs::PermissionsExt as _, path::Path};
 
     use tempfile::TempDir;
 
-    use crate::BenchmarkProfile;
+    use crate::{BenchmarkProfile, test_support::initialized_git_repository};
 
     fn executable(root: &Path, name: &str, output: &str, status: i32) -> std::path::PathBuf {
+        use crate::suites::tests::{probe_guarded, wait_past_the_fork_window};
+
         let path = root.join(name);
         fs::write(
             &path,
-            format!("#!/bin/sh\nprintf '%s\\n' '{output}'\nexit {status}\n"),
+            probe_guarded(&format!(
+                "#!/bin/sh\nprintf '%s\\n' '{output}'\nexit {status}\n"
+            )),
         )
         .unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        wait_past_the_fork_window(&path);
         path
     }
 
@@ -335,7 +347,8 @@ mod tests {
         let skit = executable(tools.path(), "skit", "skit 0.5.0", 0);
         let python = executable(tools.path(), "python", "Python 3.13.5", 0);
         let uv = executable(tools.path(), "uv", "uv 0.11.26", 0);
-        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let repo = tools.path().join("repo");
+        initialized_git_repository(&repo);
 
         let meta = super::collect_meta(
             BenchmarkProfile::Compare,
@@ -360,6 +373,21 @@ mod tests {
             super::collect_meta(BenchmarkProfile::Pr, &repo, &skit, None, None).unwrap();
         assert_eq!(without_optional.python, "unknown");
         assert_eq!(without_optional.uv, "unknown");
+    }
+
+    #[test]
+    fn relative_path_resolution_preserves_the_failed_target() {
+        let target = Path::new("relative-work");
+        let error = super::absolute_from(
+            target,
+            Err(io::Error::other("test current-directory failure")),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            super::EnvironmentError::Resolve { path, .. } if path == target
+        ));
     }
 
     #[test]

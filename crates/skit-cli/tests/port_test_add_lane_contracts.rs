@@ -25,25 +25,32 @@
 //!   a `boom_editor` (touches a marker; the test asserts the marker is absent). The Rust editor
 //!   lane (`add_draft`, cli.rs:1399) does NOT gate on an interactive terminal, so these lanes
 //!   are reachable under `assert_cmd`.
-//! - Python `monkeypatch.setattr(cli, "_is_interactive", lambda: True)` has NO analogue:
-//!   `assert_cmd` is never a terminal. Where a test's contract depends on the forced-terminal
-//!   branch, the divergence note records the actual non-tty Rust behavior.
+//! - Python `monkeypatch.setattr(cli, "_is_interactive", lambda: True)` -> a real PTY for the one
+//!   contract that depends on both streams being terminals. The helper waits for command output;
+//!   it does not use a fixed sleep.
 //!
-//! Bucket disposition (all 21 defs drive the binary and COMPILE; zero absent/cross-crate stubs):
-//! - 15 PASS asserting tests: the 5 versioned/piped/reader-notice lanes, both editor-lane
+//! Bucket disposition (all 21 oracle defs plus one Rust-additive commit-failure reverse drive the
+//! binary; zero absent/cross-crate stubs):
+//! - 20 active oracle contracts plus the Rust-additive failed-commit reverse: the
+//!   selector-collision contract, the 5
+//!   versioned/piped/reader-notice lanes, both editor-lane
 //!   `--description` threads, the versioned-shebang editor lane, the normal-file no-unlink lane,
 //!   the JSON-is-one-document flip lane, both parameter read views, and both unknown-runner
-//!   early-refusal lanes, plus the post-editor Python-flag refusal.
-//! - 6 FAILING CONTRACT (divergence) tests: full asserting bodies kept intact behind
-//!   `#[ignore]`; each label was verified against the built binary. Most tie to pending tasks
-//!   #15 (refuse the add-lane inputs v0.4 refuses) and #16 (params batch fault tolerance). The
-//!   recurring shapes are: no one-voice selector-collision refusal (clap `conflicts_with`
-//!   answers first with a different message), pipe spelling, no resumed-draft cleanup / kept-draft
-//!   `--ref` guard on the plain path lane, and no flip note.
+//!   early-refusal lanes, the post-editor Python-flag refusal, and the managed-form flip note.
+//! - 1 semantic-duplicate closure: the path-lane reference refusal is owned by the stronger
+//!   all-flags boundary matrix in `port_test_add_validation_contracts`.
 
 use std::fs;
+#[cfg(unix)]
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+#[cfg(unix)]
+use std::sync::{Arc, Mutex};
+#[cfg(unix)]
+use std::thread;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tempfile::TempDir;
@@ -73,6 +80,68 @@ impl Sandbox {
             .env("SKIT_CONFIG_DIR", self.config.path())
             .env("SKIT_LANG", "en");
         command
+    }
+
+    #[cfg(unix)]
+    fn run_pty_until(&self, args: &[&str], editor: &Path, needle: &str) -> (u32, String) {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 200,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.args(args);
+        command.cwd(self.scratch.path());
+        command.env("TERM", "xterm-256color");
+        command.env("SKIT_LANG", "en");
+        command.env("SKIT_DATA_DIR", self.data.path());
+        command.env("SKIT_STATE_DIR", self.state.path());
+        command.env("SKIT_CONFIG_DIR", self.config.path());
+        command.env("VISUAL", editor);
+        command.env("EDITOR", editor);
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let drain_target = Arc::clone(&captured);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let drain = thread::spawn(move || {
+            let mut buffer = [0_u8; 1024];
+            while let Ok(count) = reader.read(&mut buffer) {
+                if count == 0 {
+                    break;
+                }
+                drain_target
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&buffer[..count]);
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let found = String::from_utf8_lossy(&captured.lock().unwrap()).contains(needle);
+            if found {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PTY output never contained {needle:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let status = child.wait().unwrap();
+        drop(pair.master);
+        drain.join().unwrap();
+        let bytes = captured.lock().unwrap().clone();
+        let output = String::from_utf8_lossy(&bytes)
+            .replace("\r\n", "\n")
+            .replace('\r', "");
+        (status.exit_code(), output)
     }
 
     /// Python `store.resolve(name)` via `skit show NAME --json` — parse stdout as one document.
@@ -122,6 +191,29 @@ fn combined(output: &Output) -> String {
     text.push('\n');
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     text
+}
+
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
 }
 
 /// Python `_flat(text)` — collapse rich's soft-wrap so an 80-col-split message matches as one.
@@ -194,7 +286,6 @@ fn boom_editor(dir: &Path, marker: &Path) -> PathBuf {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle refuses colliding lane SELECTORS with one voice BEFORE dispatch (src/skit/cli.py:1603-1612, '%(flags)s each pick a different way to add — use exactly one'). Rust makes --edit/--cmd clap-`conflicts_with` `source` (cli.rs:302,311), so a collision is a clap 'the argument … cannot be used with …' error — same exit 2, but the one-voice message and the named selectors ('a file path'/'--edit') never appear. Ties to pending task #15. Verified against the built binary."]
 fn test_selector_collisions_are_refused_one_voice() {
     // --cmd / --edit / stdin('-') / a file path each pick a DIFFERENT add lane; any pair is
     // a usage error with the single 'each pick a different way to add' voice, BEFORE the flag
@@ -206,24 +297,36 @@ fn test_selector_collisions_are_refused_one_voice() {
     let real = sandbox.scratch.path().join("real.py");
     fs::write(&real, "print(1)\n").unwrap();
     let real = real.display().to_string();
-    let cases: [(Vec<String>, &str); 4] = [
-        (
-            vec![
-                "add".into(),
-                real.clone(),
-                "--cmd".into(),
-                "echo {x}".into(),
-            ],
-            "a file path",
-        ),
-        (
-            vec!["add".into(), "-".into(), "--cmd".into(), "echo {x}".into()],
-            "stdin ('-')",
-        ),
-        (vec!["add".into(), "--edit".into(), real.clone()], "--edit"),
-        (vec!["add".into(), "--edit".into(), "-".into()], "--edit"),
+    let cases: [Vec<String>; 5] = [
+        vec![
+            "add".into(),
+            "--cmd".into(),
+            "echo {x}".into(),
+            "--edit".into(),
+        ],
+        vec![
+            "add".into(),
+            real.clone(),
+            "--cmd".into(),
+            "echo {x}".into(),
+        ],
+        vec!["add".into(), "-".into(), "--cmd".into(), "echo {x}".into()],
+        vec!["add".into(), "--edit".into(), real.clone()],
+        vec!["add".into(), "--edit".into(), "-".into()],
     ];
-    for (argv, needle) in cases {
+    let expected = [
+        "--cmd, --edit each pick a different way to add — use exactly one (nothing was added).",
+        "--cmd, a file path each pick a different way to add — use exactly one (nothing was added).",
+        "--cmd, stdin ('-') each pick a different way to add — use exactly one (nothing was added).",
+        "--edit, a file path each pick a different way to add — use exactly one (nothing was added).",
+        "--edit, stdin ('-') each pick a different way to add — use exactly one (nothing was added).",
+    ];
+    for (argv, expected) in cases.into_iter().zip(expected) {
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
+        let scratch_before = snapshot_tree(sandbox.scratch.path());
+        let source_before = fs::read(&real).unwrap();
         let output = sandbox
             .command()
             .env("EDITOR", &editor)
@@ -238,15 +341,28 @@ fn test_selector_collisions_are_refused_one_voice() {
             "{argv:?}: {}",
             combined(&output)
         );
-        let flat = flat(&output);
-        assert!(
-            flat.contains("each pick a different way to add"),
-            "{argv:?}: {flat}"
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before, "{argv:?}");
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            state_before,
+            "{argv:?}"
         );
-        assert!(flat.contains(needle), "{argv:?}: {flat}"); // the colliding selectors are named
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            config_before,
+            "{argv:?}"
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.scratch.path()),
+            scratch_before,
+            "{argv:?}"
+        );
+        assert_eq!(fs::read(&real).unwrap(), source_before, "{argv:?}");
         assert!(list_entries(&sandbox).is_empty(), "{argv:?}"); // nothing landed
         assert!(drafts(&sandbox).is_empty(), "{argv:?}"); // drafts home untouched
         assert!(!marker.exists(), "the editor stayed shut: {argv:?}");
+        let flat = flat(&output);
+        assert!(flat.contains(expected), "{argv:?}: {flat}");
     }
 }
 
@@ -278,13 +394,8 @@ fn test_editor_lane_versioned_python_shebang_onboards_as_python() {
         sandbox.scratch.path(),
         "#!/usr/bin/env python3.12\nprint('hi')\n",
     );
-    sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "-e", "-n", "vpy"])
-        .assert()
-        .success();
+    let (code, output) = sandbox.run_pty_until(&["add", "-e", "-n", "vpy"], &editor, "Added:");
+    assert_eq!(code, 0, "{output}");
     assert_eq!(sandbox.show_json("vpy")["kind"], "python");
 }
 
@@ -345,7 +456,7 @@ fn test_prompt_editor_bogus_runner_refused_before_the_editor() {
 #[cfg(unix)]
 #[test]
 fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
-    // --edit opens an editor — interaction — so --no-input can't keep the never-prompt
+    // --edit opens an editor — interaction — so --no-input cannot keep the never-prompt
     // promise: it is refused up front, pointing at the stdin spelling. (The oracle forces
     // interactive True to prove the no_input check fires first, not the interactivity gate;
     // Rust's check is unconditional.)
@@ -369,27 +480,39 @@ fn test_edit_no_input_is_refused_with_the_pipe_spelling() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle forces an interactive terminal (monkeypatched `_is_interactive`), where `--prompt --no-input` opens an editor no keyboard-stdin can feed and is refused with 'skit add - --prompt -n NAME' (src/skit/cli.py:1216). assert_cmd is never a terminal, so Rust takes the pipe branch (cli.rs:1048-1051), reads (empty) stdin, and ADDS the prompt — exit 0, no refusal. Unreproducible without a PTY, and the spelling differs even then ('--name' vs '-n'). Verified against the built binary."]
 fn test_prompt_editor_no_input_in_a_terminal_is_refused() {
     // --prompt with no path in a terminal opens an editor; --no-input there is refused with
     // the prompt pipe spelling — no body can arrive from a keyboard-attached stdin.
     let sandbox = Sandbox::new();
     let marker = sandbox.scratch.path().join("editor-ran");
     let editor = boom_editor(sandbox.scratch.path(), &marker);
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "--prompt", "-n", "p", "--no-input"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2), "{}", combined(&output));
-    assert!(
-        combined(&output).contains("skit add - --prompt -n NAME"),
-        "{}",
-        combined(&output)
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let drafts_before = snapshot_tree(&sandbox.data.path().join("drafts"));
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "--prompt", "-n", "p", "--no-input"],
+        &editor,
+        "skit add - --prompt",
     );
+    assert_eq!(code, 2, "{output}");
     assert!(!marker.exists());
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert_eq!(
+        snapshot_tree(&sandbox.data.path().join("drafts")),
+        drafts_before
+    );
+    let frozen = "--prompt with no path opens your editor, which --no-input forbids — pipe the body in instead: skit add - --prompt -n NAME";
+    assert!(
+        output
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .contains(frozen),
+        "{output}"
+    );
 }
 
 #[test]
@@ -426,13 +549,12 @@ fn test_edit_description_flag_wins_over_python_docstring() {
         sandbox.scratch.path(),
         "\"\"\"Docstring one\"\"\"\nprint(1)\n",
     );
-    sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "-e", "-n", "dpy", "--description", "flag wins"])
-        .assert()
-        .success();
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "-e", "-n", "dpy", "--description", "flag wins"],
+        &editor,
+        "Added:",
+    );
+    assert_eq!(code, 0, "{output}");
     assert_eq!(sandbox.show_json("dpy")["description"], "flag wins");
 }
 
@@ -443,13 +565,12 @@ fn test_edit_description_flag_on_non_python_draft_is_stored() {
     // the description is not a python-only field.
     let sandbox = Sandbox::new();
     let editor = writer_editor(sandbox.scratch.path(), "#!/usr/bin/env bash\necho hi\n");
-    sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "-e", "-n", "dsh", "--description", "shell note"])
-        .assert()
-        .success();
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "-e", "-n", "dsh", "--description", "shell note"],
+        &editor,
+        "Added:",
+    );
+    assert_eq!(code, 0, "{output}");
     let entry = sandbox.show_json("dsh");
     assert_eq!(entry["kind"], "shell");
     assert_eq!(entry["description"], "shell note");
@@ -470,20 +591,17 @@ fn test_edit_post_editor_refusal_keeps_draft_and_announces_short() {
         sandbox.scratch.path(),
         "#!/usr/bin/env bash\necho drafted\n",
     );
-    let output = sandbox
-        .command()
-        .env("EDITOR", &editor)
-        .env("VISUAL", &editor)
-        .args(["add", "-e", "-n", "d", "--dep", "foo"])
-        .output()
-        .unwrap();
-    let combined = combined(&output);
-    assert_eq!(output.status.code(), Some(2), "{combined}");
-    assert!(combined.contains("python flags"), "{combined}"); // the --dep refusal
-    assert!(combined.contains("Your draft was kept at"), "{combined}"); // the kept announcement…
+    let (code, output) = sandbox.run_pty_until(
+        &["add", "-e", "-n", "d", "--dep", "foo"],
+        &editor,
+        "Your draft was kept at",
+    );
+    assert_eq!(code, 2, "{output}");
+    assert!(output.contains("python flags"), "{output}"); // the --dep refusal
+    assert!(output.contains("Your draft was kept at"), "{output}"); // the kept announcement…
     assert!(
-        !combined.contains("fix the problem and add it with"),
-        "{combined}"
+        !output.contains("fix the problem and add it with"),
+        "{output}"
     ); // …in its SHORT form
     assert_eq!(drafts(&sandbox).len(), 1, "the draft survived the refusal");
     assert!(!sandbox.entry_exists("d")); // nothing added
@@ -494,7 +612,6 @@ fn test_edit_post_editor_refusal_keeps_draft_and_announces_short() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's path lane consumes a resumed draft (a file under skit's OWN drafts home) on a successful copy. Rust's plain path lane never calls remove_owned_draft (only cli.rs:1353/5633/5659 do, all off the plain path) — the copy succeeds (mode copy) but the source draft SURVIVES. Verified against the built binary."]
 fn test_path_add_of_a_drafts_home_file_unlinks_it_on_copy() {
     // A resumed draft (a file living in skit's OWN drafts home) added in copy mode reaches
     // the store, then the source is unlinked — the same 'the store holds the copy' cleanup the
@@ -503,18 +620,76 @@ fn test_path_add_of_a_drafts_home_file_unlinks_it_on_copy() {
     let drafts_dir = sandbox.data.path().join("drafts");
     fs::create_dir_all(&drafts_dir).unwrap();
     let draft = drafts_dir.join("skit-new-resumeme.py");
-    fs::write(&draft, "print('resume')\n").unwrap();
+    const SOURCE: &[u8] = b"print('resume')\n";
+    fs::write(&draft, SOURCE).unwrap();
     sandbox
         .command()
         .args(["add", draft.to_str().unwrap(), "-n", "res", "--no-input"])
         .assert()
         .success();
-    assert_eq!(sandbox.show_json("res")["mode"], "copy");
+    let shown = sandbox.show_json("res");
+    assert_eq!(shown["mode"], "copy");
+    assert_eq!(shown["kind"], "python");
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/res/script.py")).unwrap(),
+        SOURCE,
+        "the durable stored copy exists before source cleanup can count as success"
+    );
+    assert!(
+        sandbox.data.path().join("scripts/res/meta.toml").is_file(),
+        "metadata committed"
+    );
+    assert!(
+        sandbox.data.path().join("registry.toml").is_file(),
+        "registry committed"
+    );
     assert!(!draft.exists()); // the resumed draft was cleaned up
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle refuses --ref against its OWN kept draft (a reference into drafts/ would list a live entry's file as a resumable/deletable draft) with exit 2 '… one of skit's own kept drafts … Drop --ref.' (src/skit/cli.py:1917-1933). Rust has no kept-draft guard on the path lane — it ADDS the reference (exit 0) and the draft remains. Ties to pending task #15. Verified against the built binary."]
+fn rust_additive_failed_copy_commit_keeps_the_owned_draft() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.scratch.path().join("original.py");
+    fs::write(&original, b"print('original')\n").unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            original.to_str().unwrap(),
+            "-n",
+            "taken",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+    let entry = sandbox.data.path().join("scripts/taken");
+    let payload_before = fs::read(entry.join("script.py")).unwrap();
+    let meta_before = fs::read(entry.join("meta.toml")).unwrap();
+    let registry_before = fs::read(sandbox.data.path().join("registry.toml")).unwrap();
+
+    let drafts = sandbox.data.path().join("drafts");
+    fs::create_dir_all(&drafts).unwrap();
+    let draft = drafts.join("skit-new-conflict.py");
+    let draft_bytes = b"print('only copy')\n";
+    fs::write(&draft, draft_bytes).unwrap();
+    let output = sandbox
+        .command()
+        .args(["add", draft.to_str().unwrap(), "-n", "taken", "--no-input"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success(), "{}", combined(&output));
+    assert_eq!(fs::read(&draft).unwrap(), draft_bytes);
+    assert_eq!(fs::read(entry.join("script.py")).unwrap(), payload_before);
+    assert_eq!(fs::read(entry.join("meta.toml")).unwrap(), meta_before);
+    assert_eq!(
+        fs::read(sandbox.data.path().join("registry.toml")).unwrap(),
+        registry_before
+    );
+}
+
+#[test]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger canonical three-locale, real-PTY guard-before-question, full-tree no-write owner is port_test_add_validation_contracts::test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref. Keep this frozen path-lane body for oracle accounting."]
 fn test_path_add_of_a_drafts_home_file_refuses_reference() {
     // --ref on skit's OWN kept draft is refused: a reference entry pointing into drafts/ would
     // leave a live entry's file listed as a resumable draft — offered for re-adding and for
@@ -608,6 +783,17 @@ fn test_shell_dynamic_getopts_add_prints_the_passthrough_notice() {
     assert_eq!(output.status.code(), Some(0), "{combined}");
     assert!(combined.contains("parses its own arguments"), "{combined}");
     assert!(combined.contains("getopts"), "{combined}"); // the framework is named
+
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+    let shown = sandbox.show_json("dyn");
+    assert_eq!(shown["param_source"], "argparse");
+    assert_eq!(shown["degraded_reason"], "dynamic");
+    assert_eq!(shown["fields"], serde_json::json!([]));
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 #[test]
@@ -702,7 +888,6 @@ fn test_params_python_constants_only_still_offers_manage() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle prints a one-time flip note when a reader-driven-ONLY entry first gets a managed const — 'The run form now asks for the managed parameters …' naming the set-aside reader form (getopts) (src/skit/cli.py:4575). Rust's params has no such note at all. Verified against the built binary."]
 fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
     // A getopts shell entry that ALSO holds a constant: the first `--manage CONST` prints the
     // flip note naming getopts (managed params REPLACE the reader form). A second --manage on the
@@ -725,12 +910,29 @@ fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
         .output()
         .unwrap();
     assert_eq!(first.status.code(), Some(0), "{}", combined(&first));
+    let first_text = combined(&first);
+    let receipt = "Updated both. Managed parameters: CITY";
+    let flip_note = "The run form now asks for the managed parameters — the script's own command-line form (getopts) is set aside until they are removed (--unmanage).";
+    let receipt_at = first_text
+        .find(receipt)
+        .unwrap_or_else(|| panic!("missing receipt: {first_text}"));
+    let note_at = first_text
+        .find(flip_note)
+        .unwrap_or_else(|| panic!("missing flip note: {first_text}"));
+    assert!(receipt_at < note_at, "{first_text}");
+
+    // Repeating an already-managed name changes no form owner and prints no second flip note.
+    let already = sandbox
+        .command()
+        .args(["params", "both", "--manage", "CITY"])
+        .output()
+        .unwrap();
+    assert_eq!(already.status.code(), Some(0), "{}", combined(&already));
     assert!(
-        combined(&first).contains("The run form now asks for the managed parameters"),
+        !combined(&already).contains("The run form now asks for the managed parameters"),
         "{}",
-        combined(&first)
+        combined(&already)
     );
-    assert!(combined(&first).contains("getopts"), "{}", combined(&first)); // the reader form set aside is named
 
     // A constant is already managed now → the entry is no longer reader-driven-only, so a
     // second manage prints no flip note.
@@ -760,6 +962,47 @@ fn test_manage_flip_note_names_the_reader_form_then_stays_quiet() {
         !combined(&again).contains("The run form now asks for the managed parameters"),
         "{}",
         combined(&again)
+    );
+
+    // A dynamic getopts surface has no modeled fields to set aside. Managing a constant is
+    // additive there, so detecting the framework alone must not trigger the note.
+    let dynamic = sandbox.scratch.path().join("dynamic.sh");
+    fs::write(
+        &dynamic,
+        "#!/usr/bin/env bash\nCITY=Taipei\nOPTS=\"n:v\"\nwhile getopts \"$OPTS\" opt; do :; done\necho $CITY\n",
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            dynamic.to_str().unwrap(),
+            "-n",
+            "dynamic",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+    let dynamic_manage = sandbox
+        .command()
+        .args(["params", "dynamic", "--manage", "CITY"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        dynamic_manage.status.code(),
+        Some(0),
+        "{}",
+        combined(&dynamic_manage)
+    );
+    assert!(
+        combined(&dynamic_manage).contains("Updated dynamic. Managed parameters: CITY"),
+        "{}",
+        combined(&dynamic_manage)
+    );
+    assert!(
+        !combined(&dynamic_manage).contains("The run form now asks for the managed parameters"),
+        "{}",
+        combined(&dynamic_manage)
     );
 }
 

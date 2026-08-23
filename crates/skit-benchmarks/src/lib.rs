@@ -22,6 +22,8 @@ pub mod runner;
 pub mod sources;
 pub mod stats;
 pub mod suites;
+#[cfg(test)]
+mod test_support;
 pub mod tui_probe;
 
 pub use budget::BudgetOutcome;

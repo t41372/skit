@@ -8,9 +8,10 @@
 //! point, can hold the answer.
 
 use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use skit_domain::parameters::{ParamDecl, ParameterValue};
 use skit_i18n::Locale;
-use skit_tui::{TuiSession, ViewGeometry, render_with_session};
+use skit_tui::{EventHandling, TuiSession, ViewGeometry, render_with_session};
 use skit_ui::{Action, LibraryState, Screen, SettingsInputs, SettingsView};
 
 /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
@@ -59,6 +60,28 @@ fn draw(width: u16, height: u16) -> String {
         })
         .unwrap();
     rendered(terminal.backend().buffer())
+}
+
+#[test]
+fn settings_cursor_movement_is_consumed_before_global_dispatch() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Settings(Box::new(banner_view()))));
+    let mut session = TuiSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(DEMO_WIDTH, DEMO_HEIGHT)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &state, Locale::En, &mut session);
+        })
+        .unwrap();
+    assert_eq!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
 }
 
 /// The first frame reaches the parameter section, with no key pressed.

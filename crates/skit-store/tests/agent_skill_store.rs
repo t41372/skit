@@ -46,6 +46,29 @@ fn an_upgrade_preserves_existing_permissions_and_follows_a_skill_file_symlink() 
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn relative_skill_links_are_followed_and_cycles_are_refused() {
+    let root = TempDir::new().unwrap();
+    let skills = root.path().join("skills");
+    let skill_dir = skills.join("skit");
+    fs::create_dir_all(&skill_dir).unwrap();
+    let shared = skill_dir.join("shared.md");
+    fs::write(&shared, b"old").unwrap();
+    std::os::unix::fs::symlink("shared.md", skill_dir.join("SKILL.md")).unwrap();
+
+    FileAgentSkillStore.install(&skills, b"new").unwrap();
+    assert_eq!(fs::read(&shared).unwrap(), b"new");
+
+    fs::remove_file(skill_dir.join("SKILL.md")).unwrap();
+    std::os::unix::fs::symlink("cycle.md", skill_dir.join("SKILL.md")).unwrap();
+    std::os::unix::fs::symlink("SKILL.md", skill_dir.join("cycle.md")).unwrap();
+    let error = FileAgentSkillStore
+        .install(&skills, b"blocked")
+        .unwrap_err();
+    assert!(error.to_string().contains("symbolic link cycle"));
+}
+
 #[test]
 fn a_blocking_file_refuses_without_changing_it() {
     let root = TempDir::new().unwrap();

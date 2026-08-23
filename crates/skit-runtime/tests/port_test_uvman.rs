@@ -21,14 +21,11 @@
 //! Buckets:
 //! - Bucket 1 (target/URL/checksum/atomic-install byte logic): the bulk of real asserting tests
 //!   below, driving the real public API.
-//! - Bucket 2 (cross-crate / white-box, `#[ignore]`d): interactive consent (`_ask_consent`) lives in
-//!   skit-cli's `TerminalUvConsent` (`crates/skit-cli/src/run/command.rs`); musl detection is the
-//!   private, `/lib`-hardcoded `host_uses_musl` with no injectable seam; the fsync spy tests target
-//!   internals with no public seam; the blank-`uv_binary` fallback is resolved in skit-cli/skit-store.
-//! - Bucket 3 (divergences, `#[ignore]`d): three oracle behaviors the Rust surface does not match —
-//!   the checksum error drops the expected/actual digests, a directory-fsync failure is propagated
-//!   rather than swallowed, and an unpinned triple is a construction-time `expect` panic rather than
-//!   a typed fail-closed error. See the module notes in the port ledger.
+//! - Bucket 2 (owning private/cross-crate targets): consent and mirror composition live in existing
+//!   skit-cli policy, PTY, and workflow targets. Musl detection and install durability run against
+//!   crate-private typed seams in `uv.rs`. The frozen exact names stay unique across those owners.
+//! - Bucket 3 (semantic closures and platform gates, `#[ignore]`d): quiet bootstrap and unpinned
+//!   construction map to stronger Rust owners. Directory-fsync omission remains a Windows-host gate.
 //! - Bucket 4 (opt-in network liveness, `#[ignore]`d): the two `@net` tests, faithful to the Python
 //!   `SKIT_NET_TESTS` skip; run them when bumping `UV_VERSION`.
 
@@ -155,13 +152,13 @@ fn test_triples_covers_every_pinned_and_producible_triple() {
     // TRIPLES is exactly what the two network tests below iterate over. If it ever drifts from the
     // full set of pinned / producible triples, the live cross-check would silently stop covering the
     // missing triple(s), and a bad pin could ship undetected. This test is offline but proves the
-    // drift can't happen silently: any future producible triple must also be added here.
+    // drift cannot happen silently: any future producible triple must also be added here.
     let produced = producible_triples();
     let declared: BTreeSet<String> = TRIPLES.iter().map(|t| (*t).to_owned()).collect();
     assert_eq!(declared, produced);
     // Every producible triple resolves to a pinned asset: `uv_asset` fails closed on a missing
     // pin, so an Ok for each target proves the producible -> pinned direction (Python's
-    // `== _UV_SHA256`). The reverse (no EXTRA stale pin) can't be checked here — `CHECKSUMS` is
+    // `== _UV_SHA256`). The reverse (no EXTRA stale pin) cannot be checked here — `CHECKSUMS` is
     // private to skit-runtime.
     for target in all_targets() {
         assert!(uv_asset(&target, None).is_ok());
@@ -169,7 +166,7 @@ fn test_triples_covers_every_pinned_and_producible_triple() {
 }
 
 #[test]
-#[ignore = "network liveness (opt-in): run when bumping UV_VERSION, like the oracle's SKIT_NET_TESTS gate"]
+#[ignore = "external network gate: run with SKIT_NET_TESTS=1 and --ignored when UV_VERSION changes; target: Astral uv release assets"]
 fn test_pinned_uv_release_exists() {
     let agent = ureq_agent();
     for target in all_targets() {
@@ -183,11 +180,11 @@ fn test_pinned_uv_release_exists() {
 }
 
 #[test]
-#[ignore = "network liveness (opt-in): cross-checks each pinned hash against Astral's live .sha256 sidecar"]
+#[ignore = "external network gate: run with SKIT_NET_TESTS=1 and --ignored when UV_VERSION changes; target: Astral uv SHA-256 sidecars"]
 fn test_pinned_sha256_matches_live_sidecar() {
     // A future UV_VERSION bump that forgets to refresh the pinned table must fail loudly here: every
     // pinned hash must equal the official `.sha256` sidecar. Built from the canonical GitHub base
-    // (mirror_base = None) so a configured mirror can't skew the check.
+    // (mirror_base = None) so a configured mirror cannot skew the check.
     let agent = ureq_agent();
     for target in all_targets() {
         let asset = uv_asset(&target, None).unwrap();
@@ -210,44 +207,6 @@ fn test_pinned_sha256_matches_live_sidecar() {
 }
 
 // ---- Download consent (_ask_consent) ----------
-
-#[test]
-#[ignore = "CROSS-CRATE: the interactive tty/stdin/EOF consent (_ask_consent, uvman.py:63-88) is skit-cli's TerminalUvConsent (crates/skit-cli/src/run/command.rs:757). skit-runtime exposes only the UvDownloadConsent trait + AllowUvDownload (the never-ask/`nobody to ask` branch)."]
-fn test_consent_non_interactive_auto_yes() {
-    // Oracle: pipe / CI context (neither stdin nor stderr is a tty) -> honour A9 zero-friction, do
-    // not block waiting for input; _ask_consent returns True.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE: interactive consent answers (bare Enter/y/Y/yes = yes, n/N/no = no, whitespace stripped) are skit-cli's TerminalUvConsent (crates/skit-cli/src/run/command.rs:757)."]
-fn test_consent_interactive_answers() {
-    // Oracle parametrization: "" -> True (default Y), "y"/"Y"/"yes" -> True, "n"/"N"/"no" -> False,
-    // "  n  " -> False (leading/trailing whitespace stripped).
-}
-
-#[test]
-#[ignore = "CROSS-CRATE: EOF-counts-as-consent (semi-interactive terminal, uvman.py:83-87) is skit-cli's TerminalUvConsent (crates/skit-cli/src/run/command.rs:757)."]
-fn test_consent_eof_is_yes() {
-    // Oracle: isatty True but input() raises EOFError -> return True so the first run doesn't hang.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE: the decline->raise flow (ensure_uv_downloaded raising UvDeclinedError, uvman.py:251-256) is wired in skit-cli (crates/skit-cli/src/run/command.rs:733). This crate owns only the Declined message asserted below, which is verbatim identical to the oracle's."]
-fn test_declined_raises_with_guidance() {
-    // Declining the download raises UvDeclinedError, and the message includes self-install guidance.
-    assert_eq!(
-        UvBootstrapError::Declined.to_string(),
-        "Download declined. Install uv yourself \
-         (https://docs.astral.sh/uv/getting-started/installation/) and skit will pick it up \
-         automatically.",
-    );
-}
-
-#[test]
-#[ignore = "CROSS-CRATE: quiet=True consent-bypass (uvman.py:251) is skit-cli's job — ensure_managed_uv takes no consent argument; consent is checked before it in crates/skit-cli/src/run/command.rs:733."]
-fn test_quiet_skips_consent() {
-    // Oracle: quiet=True (programmatic call) bypasses consent entirely; _ask_consent is never called.
-}
 
 // ---- _triple: architecture / platform resolution ----------
 
@@ -294,24 +253,6 @@ fn test_triple_linux_aarch64() {
 }
 
 // ---- _triple / _is_musl: musl (Alpine) detection ----------
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): the private in-crate helper host_uses_musl (crates/skit-runtime/src/uv.rs:441-450) is cfg-gated to linux and hardcodes /lib with no injectable seam. Its logic (presence of /lib/ld-musl-*.so.1) matches the oracle, but the public surface takes `musl: bool` explicitly (UvTarget::from_parts), so the filesystem-probe assertion can't be driven from an integration test."]
-fn test_is_musl_true_when_ld_musl_present() {
-    // Oracle: a fake /lib containing ld-musl-x86_64.so.1 -> _is_musl() is True.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): private host_uses_musl (crates/skit-runtime/src/uv.rs:441-450), hardcoded /lib, no injectable seam."]
-fn test_is_musl_false_when_ld_musl_absent() {
-    // Oracle: an empty /lib (no ld-musl-*.so.1) -> _is_musl() is False.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): private host_uses_musl (crates/skit-runtime/src/uv.rs:441-450); read_dir on a missing /lib returns false, not an error, matching the oracle."]
-fn test_is_musl_false_when_lib_dir_missing() {
-    // Oracle: a missing /lib (minimal container) must not raise — just means "not musl".
-}
 
 #[test]
 fn test_triple_linux_musl_x86_64() {
@@ -397,32 +338,6 @@ fn test_ensure_uv_network_error_wrapped() {
     assert!(matches!(error, UvBootstrapError::Download { .. }));
 }
 
-#[test]
-fn test_download_url_uses_configured_mirror() {
-    // A configured uv_binary mirror base is used as the download root. (The config plumbing that
-    // resolves an enabled, non-blank uv_binary to this base lives in skit-cli / skit-store; here we
-    // pass the resolved base directly — the oracle's config.UV_BINARY_MIRROR.)
-    let base = "https://mirror.nju.edu.cn/github-release/astral-sh/uv";
-    let target = UvTarget::from_parts("aarch64", "darwin", false).unwrap();
-    let url = uv_asset(&target, Some(base)).unwrap().url;
-    assert!(url.starts_with(base));
-    assert!(url.contains(&format!("{UV_VERSION}/uv-aarch64-apple-darwin.tar.gz")));
-}
-
-#[test]
-fn test_download_url_defaults_to_github_without_mirror() {
-    let target = UvTarget::from_parts("x86_64", "linux", false).unwrap();
-    let url = uv_asset(&target, None).unwrap().url;
-    assert!(url.starts_with("https://github.com/astral-sh/uv/releases/download"));
-    assert!(url.ends_with(".tar.gz"));
-}
-
-#[test]
-#[ignore = "CROSS-CRATE: (e) mirror enabled but uv_binary blank -> fall back to the GitHub base. The blank -> None resolution is in skit-cli (crates/skit-cli/src/run/command.rs:413-414) and skit-store's config load blanks a non-https uv_binary (crates/skit-store/src/config.rs:1033). uv_asset itself only sees an already-resolved Option<&str>."]
-fn test_download_url_github_when_uv_binary_blank() {
-    // Oracle: MirrorConfig(enabled=True, uv_binary="") -> download_url returns the GitHub base.
-}
-
 // ---- SHA256 pinning + checksum verification (no network) ----------
 
 #[test]
@@ -480,92 +395,4 @@ fn test_checksum_mismatch_raises_checksum_error_not_generic() {
     assert!(!destination.path().join("uv").exists()); // a mismatched archive is never extracted
 }
 
-// ---- _extract_uv: atomic install (no partial binary survives a mid-install failure) ----------
-//
-// Rust's atomic install has no `shutil.copy2` seam to monkeypatch. These ports force the failure by
-// occupying the final `uv` path with a directory: `fs::rename(staged, target)` onto a directory
-// fails (EISDIR), which is the same failure class (the install cannot complete) the oracle simulates
-// with a mid-copy OSError. The contract under test is unchanged: no torn binary at the final path,
-// no stray staged `.tmp`, and a later attempt succeeds once the obstruction is gone.
-
-#[test]
-fn test_extract_uv_failed_copy_leaves_no_partial_binary() {
-    let archive = tar_gz_with_uv("uv", b"genuine-uv-bytes");
-    let asset = asset_for("uv.tar.gz", "uv", &archive);
-    let destination = TempDir::new().unwrap();
-    fs::create_dir(destination.path().join("uv")).unwrap(); // block the final rename
-
-    assert!(matches!(
-        install_verified_uv_archive(&archive, &asset, destination.path()),
-        Err(UvBootstrapError::Io { .. }),
-    ));
-
-    // The staged tmp file was cleaned up — nothing poisoned.
-    assert!(fs::read_dir(destination.path()).unwrap().all(|entry| {
-        !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .ends_with(".tmp")
-    }));
-    // The final `uv` path holds no torn binary (still the obstruction, never a partial file).
-    assert!(destination.path().join("uv").is_dir());
-}
-
-#[test]
-fn test_extract_uv_self_heals_after_interrupted_install() {
-    // After a failed install leaves no binary at dest, a fresh (unobstructed) extraction attempt must
-    // succeed cleanly — proving the failure didn't poison the destination for next time.
-    let archive = tar_gz_with_uv("uv", b"the-real-uv-binary");
-    let asset = asset_for("uv.tar.gz", "uv", &archive);
-    let destination = TempDir::new().unwrap();
-    let obstruction = destination.path().join("uv");
-    fs::create_dir(&obstruction).unwrap();
-    assert!(install_verified_uv_archive(&archive, &asset, destination.path()).is_err());
-
-    fs::remove_dir(&obstruction).unwrap(); // clear the obstruction (restore a clean dest)
-    let installed = install_verified_uv_archive(&archive, &asset, destination.path()).unwrap();
-    assert_eq!(installed, destination.path().join("uv"));
-    assert_eq!(fs::read(&installed).unwrap(), b"the-real-uv-binary");
-}
-
 // ---- _extract_uv: staged-file fsync (durability across power loss) ----------
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): the oracle spies on os.fsync vs os.replace call order. Rust's install does file.sync_all() before fs::rename in one private closure (crates/skit-runtime/src/uv.rs:335-337) with no seam to observe the ordering from an integration test. The ordering is correct in code."]
-fn test_extract_uv_fsyncs_staged_file_before_replace() {
-    // Oracle: os.fsync of the staged file must run before os.replace commits the rename.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): the directory-fsync swallow is implemented — install_verified_uv_archive wraps the post-rename sync_directory in `let _ =` (crates/skit-runtime/src/uv.rs), matching uvman.py:210-212 contextlib.suppress — but no public API can force sync_directory to fail, so the asserting body is not drivable from an integration test."]
-fn test_extract_uv_dir_fsync_failure_is_swallowed() {
-    // Oracle: the post-replace directory fsync is best-effort; a failure there must not fail the
-    // install (dest's content durability was already secured by the staged-file fsync).
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): a staged-file fsync failure must propagate AND compose with the cleanup-on-failure. Rust does exactly this — file.sync_all()? propagates and the closure's `if result.is_err() { remove_file(staged) }` cleans up (crates/skit-runtime/src/uv.rs:335-343) — but there is no seam to force sync_all to fail from an integration test."]
-fn test_extract_uv_staged_fsync_failure_triggers_existing_cleanup() {
-    // Oracle: a failure fsync'ing the staged file's data propagates and the staged tmp file is
-    // unlinked; dest_dir is left as if the install never started.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box + platform): directory fsync must not even be attempted on Windows. Rust cfg-gates it to a no-op — sync_directory is `#[cfg(not(unix))] -> Ok(())` (crates/skit-runtime/src/uv.rs:435-438) — matching the oracle, but there is no fsync spy seam and this can't be observed from a POSIX runner."]
-fn test_extract_uv_skips_dir_fsync_on_windows() {
-    // Oracle: on win32 only the staged file is fsync'd, never the directory.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): the end-to-end self-heal needs a fake-served archive to reach install. The public path (ensure_managed_uv) fetches from a real URL and verifies against the real pinned checksum for the current triple, so a fake archive can't pass the gate; the injectable fetch (ensure_managed_uv_from_asset) is private. The self-heal contract is covered at install level (test_extract_uv_self_heals_after_interrupted_install) and by in-crate private_tests (crates/skit-runtime/src/uv.rs:531-554)."]
-fn test_ensure_uv_downloaded_atomic_install_self_heals() {
-    // Oracle: a flaky first install raises but leaves no binary; the next call re-downloads and
-    // installs successfully.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (white-box): the fail-closed path is implemented — uv_asset returns UvBootstrapError::NoPinnedChecksum naming the triple (uvman.py:229-233 parity) — but every producible UvTarget triple is pinned, so the branch is reachable only by constructing a martian triple in-crate. Covered by private_tests::unpinned_triple_fails_closed_with_a_typed_error (crates/skit-runtime/src/uv.rs)."]
-fn test_checksum_fail_closed_when_triple_unpinned() {
-    // Oracle: a triple with no pinned hash raises UvDownloadError naming the triple, never extracts.
-}

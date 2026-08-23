@@ -30,7 +30,14 @@ skit                 # 打開選單——選、填、跑
 
 你的 AI agent 也能用 skit：你從選單操作，agent 走確定性的 CLI 和 skill——AI 寫完的腳本存進去，之後隨時都能再拿出來用。
 
-<video src="https://github.com/user-attachments/assets/5899c4f2-a65d-4a22-b386-4ed24a62cdce" controls></video>
+### 介面
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh-TW.png" alt="skit 指令稿庫" width="49%">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh-TW.png" alt="skit 啟動表單" width="49%">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh-TW.png" alt="skit 加入流程" width="49%">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh-TW.png" alt="skit 設定" width="49%">
+</p>
 
 ## 它做什麼
 

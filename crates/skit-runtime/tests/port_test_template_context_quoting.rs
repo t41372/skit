@@ -37,6 +37,12 @@
 //!   branch, which Rust selects at COMPILE time (`#[cfg(windows)]`) and does not build here; the
 //!   oracle reaches it by monkeypatching `sys.platform`, which a `cfg` cannot emulate.
 
+// Every active test in this module asserts the POSIX arm of `render_command_template`, a
+// compile-time host branch: on Windows the same wrapper renders through
+// render_windows_command_template, so the POSIX expectations test nothing real there. The
+// Windows arm's two owners remain cross-crate ignored stubs (the platform gap is recorded in
+// the module doc); running this file on Windows would only fail honest POSIX assertions.
+#![cfg(unix)]
 #![cfg(not(windows))]
 
 use std::collections::BTreeMap;

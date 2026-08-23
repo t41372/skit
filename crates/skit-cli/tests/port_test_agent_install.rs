@@ -38,8 +38,9 @@ use std::{
     io::{Read as _, Write as _},
     path::{Path, PathBuf},
     process::Output,
+    sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -49,6 +50,11 @@ use skit_application::{
 };
 use skit_store::FileAgentSkillStore;
 use tempfile::TempDir;
+
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
 
 /// Python `SKILL_MARKER`.
 const SKILL_MARKER: &str = "---\nname: skit\n";
@@ -66,23 +72,23 @@ const BUNDLED_SKILL: &str = include_str!("../../../skills/skit/SKILL.md");
 /// real `~/.claude`, matching the oracle's `fake_home` fixture; the three `SKIT_*_DIR` variables
 /// keep every write inside the sandbox; `project` is the working directory (`fake_cwd`).
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
-    home: TempDir,
-    project: TempDir,
-    scratch: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
+    home: TempRoot,
+    project: TempRoot,
+    scratch: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
-            home: TempDir::new().unwrap(),
-            project: TempDir::new().unwrap(),
-            scratch: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
+            home: TempRoot::new(),
+            project: TempRoot::new(),
+            scratch: TempRoot::new(),
         }
     }
 
@@ -105,6 +111,36 @@ fn combined(output: &Output) -> String {
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&output.stderr));
     text
+}
+
+fn tree_snapshot(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Option<Vec<u8>>)>) {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let relative = path.strip_prefix(root).unwrap().to_owned();
+            if path.is_dir() {
+                output.push((relative, None));
+                visit(root, &path, output);
+            } else {
+                output.push((relative, Some(fs::read(path).unwrap())));
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
+}
+
+fn sandbox_snapshot(sandbox: &Sandbox) -> [Vec<(PathBuf, Option<Vec<u8>>)>; 5] {
+    [
+        tree_snapshot(sandbox.data.path()),
+        tree_snapshot(sandbox.state.path()),
+        tree_snapshot(sandbox.config.path()),
+        tree_snapshot(sandbox.home.path()),
+        tree_snapshot(sandbox.project.path()),
+    ]
 }
 
 /// Resolve one named target through the public plan and return its `skills_dir`.
@@ -396,57 +432,52 @@ fn test_cli_bare_non_interactive_refuses() {
     // assert_cmd's stdin is not a tty, so bare mode is non-interactive: it refuses (exit 2) rather
     // than guessing, and writes nothing anywhere.
     let sandbox = Sandbox::new();
+    let before = sandbox_snapshot(&sandbox);
     sandbox
         .command()
         .args(["agent", "install"])
         .assert()
         .code(2);
-    assert_eq!(fs::read_dir(sandbox.home.path()).unwrap().count(), 0);
+    assert_eq!(sandbox_snapshot(&sandbox), before);
 }
 
+// This is the only test here that gives the harness no answers, so the child refuses and exits at
+// once. A Windows pseudo-console does not reliably report the end of output for a child that exits
+// without interacting, and neither answering in that host's Enter spelling (8016c43) nor releasing
+// the terminal before the wait (330ff09) changed that. The refusal it checks needs a terminal to
+// reach at all, because a run that is not interactive stops earlier with a different error
+// (`agent_skill.rs:156-157`), so no plain command can stand in for it here. What the refusal
+// promises is held on every host by `skit-application`'s own owner instead:
+// `bare_interactive_install_reports_no_existing_targets` proves the typed refusal, its failing exit
+// class, and the sentence that names `--to`. Windows interactivity falls to the hands-on gate.
+#[cfg(unix)]
 #[test]
 fn test_cli_bare_interactive_no_candidates_exits_1() {
     // Interactive (pty) but no marker directories exist: exit 1, and the message steers to --to.
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    let data = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
-    let config = TempDir::new().unwrap();
-    let (code, output) = run_agent_install_pty(
-        home.path(),
-        project.path(),
-        data.path(),
-        state.path(),
-        config.path(),
-        &[],
-    );
+    let sandbox = Sandbox::new();
+    let before = sandbox_snapshot(&sandbox);
+    let (code, output) = run_agent_install_pty(&sandbox, "en", &[]);
     assert_eq!(code, 1, "{output}");
     assert!(output.contains("--to"), "{output}");
+    assert_eq!(sandbox_snapshot(&sandbox), before);
 }
 
 #[test]
 fn test_cli_bare_interactive_picks_and_confirms() {
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    let data = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
-    let config = TempDir::new().unwrap();
-    fs::create_dir(home.path().join(".claude")).unwrap();
-    fs::create_dir(project.path().join(".agents")).unwrap();
+    let sandbox = Sandbox::new();
+    fs::create_dir(sandbox.home.path().join(".claude")).unwrap();
+    fs::create_dir(sandbox.project.path().join(".agents")).unwrap();
     let (code, output) = run_agent_install_pty(
-        home.path(),
-        project.path(),
-        data.path(),
-        state.path(),
-        config.path(),
-        &[b"2\n", b"y\n"],
+        &sandbox,
+        "en",
+        &[("Install where?", b"2\n"), ("Write the skill into", b"y\n")],
     );
     assert_eq!(code, 0, "{output}");
     // The menu text is part of the contract a mouse-less user reads. `_agent_pick_target`'s exact
     // pin is white-box, so it is salvaged here as full-line assertions. The pty rewrites \n to
     // \r\n, so each line is matched on its own, never across a boundary.
-    let claude_skills = home.path().join(".claude").join("skills");
-    let agents_skills = project.path().join(".agents").join("skills");
+    let claude_skills = sandbox.home.path().join(".claude").join("skills");
+    let agents_skills = sandbox.project.path().join(".agents").join("skills");
     assert!(
         output.contains("Agent directories on this machine:"),
         "{output}"
@@ -470,19 +501,13 @@ fn test_cli_bare_interactive_picks_and_confirms() {
 
 #[test]
 fn test_cli_bare_interactive_backing_out_writes_nothing() {
-    let home = TempDir::new().unwrap();
-    let project = TempDir::new().unwrap();
-    let data = TempDir::new().unwrap();
-    let state = TempDir::new().unwrap();
-    let config = TempDir::new().unwrap();
-    fs::create_dir(home.path().join(".claude")).unwrap();
+    let sandbox = Sandbox::new();
+    fs::create_dir(sandbox.home.path().join(".claude")).unwrap();
+    let before = sandbox_snapshot(&sandbox);
     let (code, output) = run_agent_install_pty(
-        home.path(),
-        project.path(),
-        data.path(),
-        state.path(),
-        config.path(),
-        &[b"1\n", b"n\n"],
+        &sandbox,
+        "en",
+        &[("Install where?", b"1\n"), ("Write the skill into", b"n\n")],
     );
     assert_eq!(code, 0, "{output}");
     assert!(
@@ -490,9 +515,105 @@ fn test_cli_bare_interactive_backing_out_writes_nothing() {
         "{output}"
     );
     assert!(
-        !home.path().join(".claude").join("skills").exists(),
+        !sandbox.home.path().join(".claude").join("skills").exists(),
         "{output}"
     );
+    assert_eq!(sandbox_snapshot(&sandbox), before);
+}
+
+// Windows gate: the end-of-input half of this test cannot happen on a Windows pseudo-console.
+// The phase sends the VEOF byte (0x04). A unix terminal runs a line discipline, which turns that
+// byte into the end of the input at the child's read, so the prompt stops and the command aborts
+// with 130. A pseudo-console runs no line discipline: the same byte arrives as an ordinary Ctrl-D
+// key through the console API, the prompt keeps it as a character and keeps waiting, and the child
+// never exits. Windows spells the end of console input as Ctrl-Z and Enter, which is a convention
+// of the real console host, so a pseudo-console cannot deliver that either. The abort itself stays
+// owned by the unix run of this test. Its sentence stays owned on every host by the catalog row
+// for `operation cancelled` (`skit-i18n/src/lib.rs:3076`).
+//
+// Gating the whole test also takes the other two halves off Windows, and the two siblings that now
+// pass there do not stand in for them: `test_cli_bare_interactive_picks_and_confirms` and
+// `test_cli_bare_interactive_backing_out_writes_nothing` both send a numbered choice in English
+// only. The bare-Enter default with its `[1-1]` hint, the invalid choice and its reprompt, and both
+// Chinese locales are unique to this test, so on Windows they fall to the hands-on gate.
+#[cfg(unix)]
+#[test]
+fn test_cli_bare_interactive_default_reprompt_and_eof_are_localized() {
+    for (locale, install_prompt, invalid, confirm, cancelled, aborted) in [
+        (
+            "en",
+            "Install where?",
+            "Choose a number from 1 to 2.",
+            "Write the skill into",
+            "Cancelled — nothing was written.",
+            "operation cancelled",
+        ),
+        (
+            "zh-CN",
+            "安装到哪里？",
+            "请选择 1 到 2 之间的数字。",
+            "将 Skill 写入",
+            "已取消，未写入任何内容。",
+            "操作已取消",
+        ),
+        (
+            "zh-TW",
+            "要安裝到哪裡？",
+            "請選擇 1 到 2 之間的數字。",
+            "要將 Skill 寫入",
+            "已取消，未寫入任何內容。",
+            "操作已取消",
+        ),
+    ] {
+        let single = Sandbox::new();
+        fs::create_dir(single.home.path().join(".claude")).unwrap();
+        let data_before = tree_snapshot(single.data.path());
+        let state_before = tree_snapshot(single.state.path());
+        let config_before = tree_snapshot(single.config.path());
+        let project_before = tree_snapshot(single.project.path());
+        let (code, output) = run_agent_install_pty(
+            &single,
+            locale,
+            &[(install_prompt, b"\n"), (confirm, b"y\n")],
+        );
+        assert_eq!(code, 0, "{locale}: {output}");
+        assert!(output.contains("[1-1]"), "{locale}: {output}");
+        assert_eq!(tree_snapshot(single.data.path()), data_before);
+        assert_eq!(tree_snapshot(single.state.path()), state_before);
+        assert_eq!(tree_snapshot(single.config.path()), config_before);
+        assert_eq!(tree_snapshot(single.project.path()), project_before);
+        assert_eq!(
+            fs::read(single.home.path().join(".claude/skills/skit/SKILL.md")).unwrap(),
+            BUNDLED_SKILL.as_bytes()
+        );
+
+        let eof = Sandbox::new();
+        fs::create_dir(eof.home.path().join(".claude")).unwrap();
+        let before = sandbox_snapshot(&eof);
+        let (code, output) = run_agent_install_pty(&eof, locale, &[(install_prompt, b"\x04")]);
+        assert_eq!(code, 130, "{locale}: {output}");
+        assert!(output.contains(aborted), "{locale}: {output}");
+        assert_eq!(sandbox_snapshot(&eof), before);
+
+        let reprompt = Sandbox::new();
+        fs::create_dir(reprompt.home.path().join(".claude")).unwrap();
+        fs::create_dir(reprompt.project.path().join(".agents")).unwrap();
+        let before = sandbox_snapshot(&reprompt);
+        let (code, output) = run_agent_install_pty(
+            &reprompt,
+            locale,
+            &[
+                (install_prompt, b"9\n"),
+                (invalid, b""),
+                (install_prompt, b"2\n"),
+                (confirm, b"n\n"),
+            ],
+        );
+        assert_eq!(code, 0, "{locale}: {output}");
+        assert!(output.contains(invalid), "{locale}: {output}");
+        assert!(output.contains(cancelled), "{locale}: {output}");
+        assert_eq!(sandbox_snapshot(&reprompt), before);
+    }
 }
 
 #[test]
@@ -511,18 +632,17 @@ fn test_agent_pick_target_backing_out_returns_none() {
 // --------------------------------------------------------------------------
 // pty harness for the interactive bare-mode lanes
 //
-// Timing copied verbatim from `terminal_pty.rs::run_pty_configured` (the proven-non-flaky
-// configuration): 40ms settle, 120ms per input chunk, no cursor-query answer, and the slave is
-// dropped before the reader thread starts.
+// Each answer waits for the prompt that owns it. This keeps invalid-input reprompts and EOF
+// behavior deterministic without guessing how long the child takes to start.
 // --------------------------------------------------------------------------
 
+/// One byte string a terminal program writes when it asks where the cursor is.
+const CURSOR_QUERY: &[u8] = b"\x1b[6n";
+
 fn run_agent_install_pty(
-    home: &Path,
-    cwd: &Path,
-    data: &Path,
-    state: &Path,
-    config: &Path,
-    input: &[&[u8]],
+    sandbox: &Sandbox,
+    locale: &str,
+    input: &[(&str, &[u8])],
 ) -> (u32, String) {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -535,33 +655,136 @@ fn run_agent_install_pty(
     let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
     command.args(["agent", "install"]);
     command.env("TERM", "xterm-256color");
-    command.env("SKIT_LANG", "en");
-    command.env("SKIT_DATA_DIR", data);
-    command.env("SKIT_STATE_DIR", state);
-    command.env("SKIT_CONFIG_DIR", config);
-    command.env("HOME", home);
-    command.env("USERPROFILE", home);
-    command.cwd(cwd);
+    command.env("SKIT_LANG", locale);
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("HOME", sandbox.home.path());
+    command.env("USERPROFILE", sandbox.home.path());
+    command.cwd(sandbox.project.path());
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader().unwrap();
+    let output = Arc::new(Mutex::new(Vec::new()));
+    let reader_output = Arc::clone(&output);
     let drain = thread::spawn(move || {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).unwrap();
-        bytes
+        let mut bytes = [0_u8; 1024];
+        loop {
+            match reader.read(&mut bytes) {
+                Ok(0) | Err(_) => break,
+                Ok(read) => reader_output
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&bytes[..read]),
+            }
+        }
     });
     let mut writer = pair.master.take_writer().unwrap();
-    thread::sleep(Duration::from_millis(40));
-    for bytes in input {
-        thread::sleep(Duration::from_millis(120));
-        if writer.write_all(bytes).is_err() {
-            break;
+    let mut checkpoint = 0;
+    let mut answered_queries = 0;
+    for (prompt, answer) in input {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let bytes = output.lock().unwrap();
+            let position = bytes[checkpoint..]
+                .windows(prompt.len())
+                .position(|window| window == prompt.as_bytes());
+            let asked = bytes
+                .windows(CURSOR_QUERY.len())
+                .filter(|window| *window == CURSOR_QUERY)
+                .count();
+            let shown = String::from_utf8_lossy(&bytes).into_owned();
+            drop(bytes);
+            // Answer where the cursor is, the way a real terminal does. A program that asks waits
+            // for the answer before it writes anything more, so an unanswered question stops the
+            // child before it ever draws the prompt this loop is waiting to read. Unix does not ask
+            // here: the `console` crate reads the size and the position through an ioctl there, and
+            // only its Windows path sends this escape. The count drives the reply, so the loop
+            // costs nothing on a host that never asks.
+            while answered_queries < asked {
+                writer.write_all(b"\x1b[1;1R").unwrap();
+                writer.flush().unwrap();
+                answered_queries += 1;
+            }
+            if let Some(position) = position {
+                checkpoint += position + prompt.len();
+                break;
+            }
+            assert!(Instant::now() < deadline, "did not see {prompt:?}: {shown}");
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "child exited before {prompt:?}: {shown}"
+            );
+            thread::sleep(Duration::from_millis(10));
         }
-        let _ = writer.flush();
+        if !answer.is_empty() {
+            writer.write_all(&keystrokes(answer)).unwrap();
+            writer.flush().unwrap();
+        }
     }
-    let status = child.wait().unwrap();
+    // End on the child, not on the terminal saying its output is over. A Windows pseudo-console
+    // does not reliably say that for a child that exits without interacting, so a wait keyed on it
+    // can never return. Waiting for the child under a deadline, then reading what is still
+    // buffered for a bounded moment, always returns. Releasing the terminal first helps where it
+    // does work.
+    let status = wait_for_exit(&mut child);
     drop(writer);
-    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    drop(pair.master);
+    drop(drain);
+    settle(&output);
+    let output = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
     (status.exit_code(), output)
+}
+
+/// Deliver one canned answer the way a terminal delivers it.
+///
+/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
+/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
+/// character, so the prompt keeps waiting and both sides stop
+/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
+/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
+/// Unix exactly as it was.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
+}
+
+/// Wait for the terminal child to exit, under a deadline.
+///
+/// The end of a run is the child ending, not the terminal saying its output is over.
+fn wait_for_exit(
+    child: &mut Box<dyn portable_pty::Child + Send + Sync>,
+) -> portable_pty::ExitStatus {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "the terminal child never exited");
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Read whatever the child left behind, for a bounded moment.
+fn settle(captured: &Arc<Mutex<Vec<u8>>>) {
+    const QUIET: Duration = Duration::from_millis(60);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = captured.lock().unwrap().len();
+    let mut quiet_since = Instant::now();
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+        let now = captured.lock().unwrap().len();
+        if now == seen {
+            if quiet_since.elapsed() >= QUIET {
+                return;
+            }
+        } else {
+            seen = now;
+            quiet_since = Instant::now();
+        }
+    }
 }

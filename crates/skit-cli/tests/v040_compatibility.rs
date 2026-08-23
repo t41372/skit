@@ -4,18 +4,26 @@ use predicates::prelude::*;
 use serde_json::Value;
 use tempfile::TempDir;
 
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
+
+#[path = "support/shim.rs"]
+mod shim;
+
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
         }
     }
 
@@ -130,7 +138,13 @@ fn human_list_marks_a_missing_copy_target_without_reading_full_metadata() {
         ])
         .assert()
         .success();
-    let payload = sandbox.data.path().join("scripts/gone/script.py");
+    // Join one name at a time, the way the store joins them, so the host chooses the separator.
+    let payload = sandbox
+        .data
+        .path()
+        .join("scripts")
+        .join("gone")
+        .join("script.py");
     fs::remove_file(&payload).unwrap();
 
     let output = sandbox.command().arg("list").output().unwrap();
@@ -1117,16 +1131,16 @@ fn params_cli_can_set_every_frontend_neutral_parameter_axis() {
         ])
         .assert()
         .success();
-    let parameter = |sandbox: &Sandbox, index: usize| -> Value {
+    let parameter = |sandbox: &Sandbox, selector: &str, index: usize| -> Value {
         let output = sandbox
             .command()
-            .args(["params", "demo", "--json"])
+            .args(["params", selector, "--json"])
             .output()
             .unwrap();
         let record: Value = serde_json::from_slice(&output.stdout).unwrap();
         record["parameters"][index].clone()
     };
-    let field = parameter(&sandbox, 0);
+    let field = parameter(&sandbox, "demo", 0);
     assert_eq!(field["binding"], "none");
     assert_eq!(field["multiple"], true);
     assert_eq!(field["repeat"], true);
@@ -1138,11 +1152,20 @@ fn params_cli_can_set_every_frontend_neutral_parameter_axis() {
     // The action axis belongs to a bool flag. Declaring one with no action records
     // store_true, because "pass the flag when on" is what the checkbox means
     // (`src/skit/params.py:488-491`).
+    let executable = sandbox.state.path().join("program");
+    fs::write(&executable, b"program").unwrap();
+    sandbox
+        .command()
+        .arg("add")
+        .arg(&executable)
+        .args(["--exe", "--name", "Bools", "--no-input"])
+        .assert()
+        .success();
     sandbox
         .command()
         .args([
             "params",
-            "demo",
+            "bools",
             "--add",
             "verbose",
             "--type",
@@ -1154,22 +1177,22 @@ fn params_cli_can_set_every_frontend_neutral_parameter_axis() {
         ])
         .assert()
         .success();
-    assert_eq!(parameter(&sandbox, 1)["action"], "store_true");
+    assert_eq!(parameter(&sandbox, "bools", 0)["action"], "store_true");
 
     sandbox
         .command()
-        .args(["params", "demo", "--action", "verbose=store_false"])
+        .args(["params", "bools", "--action", "verbose=store_false"])
         .assert()
         .success();
-    assert_eq!(parameter(&sandbox, 1)["action"], "store_false");
+    assert_eq!(parameter(&sandbox, "bools", 0)["action"], "store_false");
 
     // Moving the same row off bool sheds the action again.
     sandbox
         .command()
-        .args(["params", "demo", "--type", "verbose=str"])
+        .args(["params", "bools", "--type", "verbose=str"])
         .assert()
         .success();
-    assert_eq!(parameter(&sandbox, 1)["action"], "");
+    assert_eq!(parameter(&sandbox, "bools", 0)["action"], "");
 
     sandbox
         .command()
@@ -1479,9 +1502,19 @@ fn run_uses_user_configured_prompt_runner_rows() {
         .args(["add", prompt.to_str().unwrap(), "--name", "Review"])
         .assert()
         .success();
+    // The row names a real program, and `printf` is not one on every host. The stand-in writes
+    // its first argument with no line end after it, which is what this assertion reads, and the
+    // row itself is what the test is about.
+    let emit = shim::write_shim(sandbox.state.path(), "emit", shim::Shim::WriteArgumentRaw);
     sandbox
         .command()
-        .args(["runner", "add", "custom", "printf", "%s", "{{prompt}}"])
+        .args([
+            "runner",
+            "add",
+            "custom",
+            emit.to_str().unwrap(),
+            "{{prompt}}",
+        ])
         .assert()
         .success();
     sandbox
@@ -1625,7 +1658,7 @@ fn deps_refuses_package_axes_for_kinds_without_package_management() {
         .assert()
         .code(2)
         .stderr(predicate::str::contains(
-            "does not take package dependencies",
+            "doesn't take package dependencies",
         ));
     sandbox
         .command()

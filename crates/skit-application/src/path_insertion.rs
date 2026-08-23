@@ -54,16 +54,19 @@ pub fn insert_picked_path_for_dialect(
     }
 
     let literal = escape_glob_metacharacters(picked);
-    let piece = match (mode, dialect) {
-        (RunPathInsertMode::Shlex, _) | (RunPathInsertMode::Arguments, ArgumentDialect::Posix) => {
-            shlex::try_quote(&literal)
-                .map_err(|_| PathInsertionError::Nul)?
-                .into_owned()
+    let piece = match dialect {
+        ArgumentDialect::Posix => shlex::try_quote(&literal)
+            .map_err(|_| PathInsertionError::Nul)?
+            .into_owned(),
+        ArgumentDialect::Windows => {
+            if mode == RunPathInsertMode::Arguments {
+                quote_windows_argument(&literal)
+            } else {
+                shlex::try_quote(&literal)
+                    .map_err(|_| PathInsertionError::Nul)?
+                    .into_owned()
+            }
         }
-        (RunPathInsertMode::Arguments, ArgumentDialect::Windows) => {
-            quote_windows_argument(&literal)
-        }
-        (RunPathInsertMode::Replace, _) => unreachable!("replace returned before quoting"),
     };
     let existing = existing.trim();
     Ok(if existing.is_empty() {
@@ -87,12 +90,14 @@ fn escape_glob_metacharacters(value: &str) -> String {
     escaped
 }
 
+#[cfg(windows)]
 const fn current_argument_dialect() -> ArgumentDialect {
-    if cfg!(windows) {
-        ArgumentDialect::Windows
-    } else {
-        ArgumentDialect::Posix
-    }
+    ArgumentDialect::Windows
+}
+
+#[cfg(not(windows))]
+const fn current_argument_dialect() -> ArgumentDialect {
+    ArgumentDialect::Posix
 }
 
 fn quote_windows_argument(argument: &str) -> String {

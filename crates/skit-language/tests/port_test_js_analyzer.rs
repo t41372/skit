@@ -786,7 +786,7 @@ fn test_parseargs_option_spec_without_type_keeps_str_and_reads_default() {
 
 #[test]
 fn test_parseargs_shorthand_property_in_options_is_skipped() {
-    // A shorthand property (`{name, real:{...}}`) isn't a pair — skipped, not crashed on.
+    // A shorthand property (`{name, real:{...}}`) is not a pair — skipped, not crashed on.
     let f = only_field(
         "js",
         "parseArgs({options:{shorthand, real:{type:\"string\"}}});\n",
@@ -809,7 +809,7 @@ fn test_parseargs_empty_options_object_is_a_readable_zero_field_surface() {
 
 #[test]
 fn test_no_parseargs_surface_returns_none() {
-    // A plain identifier call that isn't parseArgs (not an identifier match, not a member call).
+    // A plain identifier call that is not parseArgs (not an identifier match, not a member call).
     assert!(matches!(
         surface("js", "const x = 5;\nfoo(x);\n"),
         CliSurface::Absent

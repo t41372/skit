@@ -8,10 +8,18 @@ use std::{
 use std::fs::Permissions;
 
 use skit_application::{EntryPayload, RepositoryError, SourcePermissions};
-use skit_domain::{EntryId, EntryMeta};
+use skit_domain::EntryMeta;
 use skit_i18n::Message;
 
-use crate::fs_ops::preserve_permissions_best_effort;
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_NEW_FILE_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_next_new_file_write() {
+    FAIL_NEXT_NEW_FILE_WRITE.set(true);
+}
 
 #[derive(Debug)]
 pub(super) struct FileLock {
@@ -92,6 +100,17 @@ pub(super) fn write_new_file(path: &Path, payload: &EntryPayload) -> Result<(), 
         .create_new(true)
         .open(path)
         .map_err(|error| io_error("create", path, error))?;
+    #[cfg(test)]
+    if FAIL_NEXT_NEW_FILE_WRITE.replace(false) {
+        let partial = payload.bytes.len().min(4);
+        file.write_all(&payload.bytes[..partial])
+            .map_err(|error| io_error("write", path, error))?;
+        return Err(io_error(
+            "write",
+            path,
+            io::Error::other("injected payload write failure"),
+        ));
+    }
     file.write_all(&payload.bytes)
         .map_err(|error| io_error("write", path, error))?;
     apply_permissions(&file, payload.permissions, path)?;
@@ -124,7 +143,7 @@ fn apply_permissions(
     let mode = source
         .unix_mode
         .unwrap_or(if source.readonly { 0o400 } else { 0o600 });
-    file.set_permissions(Permissions::from_mode(mode & 0o777))
+    file.set_permissions(Permissions::from_mode(mode & 0o7777))
         .map_err(|error| io_error("chmod", path, error))
 }
 
@@ -144,58 +163,7 @@ fn apply_permissions(
 }
 
 pub(super) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), RepositoryError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid(Message::new("write path has no parent directory")))?;
-    create_dir_all(parent, "create")?;
-    let temp = unique_sibling(path, "tmp")?;
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|error| io_error("create", &temp, error))?;
-    file.write_all(bytes)
-        .map_err(|error| io_error("write", &temp, error))?;
-    preserve_permissions_best_effort(
-        fs::metadata(path).map(|metadata| metadata.permissions()),
-        |permissions| file.set_permissions(permissions),
-    );
-    file.sync_all()
-        .map_err(|error| io_error("sync", &temp, error))?;
-    drop(file);
-
-    let result = fs::rename(&temp, path).map_err(|error| io_error("replace", path, error));
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    } else {
-        let _ = sync_directory(parent);
-    }
-    result
-}
-
-#[cfg(unix)]
-pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
-}
-
-#[cfg(not(unix))]
-pub(super) fn sync_directory(_path: &Path) -> io::Result<()> {
-    Ok(())
-}
-
-fn unique_sibling(path: &Path, suffix: &str) -> Result<PathBuf, RepositoryError> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid(Message::new("temporary path has no parent directory")))?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("entry");
-    Ok(parent.join(format!(
-        ".{name}.{}.{}",
-        EntryId::generate().as_str(),
-        suffix
-    )))
+    crate::fs_ops::atomic_write_bytes_with(path, bytes, io_error, File::sync_all)
 }
 
 pub(super) fn create_dir_all(path: &Path, operation: &'static str) -> Result<(), RepositoryError> {
@@ -231,11 +199,5 @@ mod tests {
             .map(|item| item.unwrap().file_name())
             .collect::<Vec<_>>();
         assert_eq!(names, ["target"]);
-    }
-
-    #[test]
-    fn a_real_directory_can_be_synchronized_after_a_rename() {
-        let root = TempDir::new().unwrap();
-        sync_directory(root.path()).unwrap();
     }
 }

@@ -22,50 +22,55 @@
 //!   where the shipping CLI composition and `form_plan` disagree).
 //! - Python `FormField.source` -> `PreparedField.declaration.delivery`; `FormPlan.source`
 //!   -> `FormSource` (`.as_str()` gives the machine spelling `command`/`declared`/`none`/
-//!   `argparse`/`inject`).
+//!   `argparse`/`inject`). The exact reader+rider form contract lives in the existing
+//!   `skit-form/tests/form_params.rs` owner; this target keeps its CLI consumers.
 //! - Python `flows.assemble(plan, values, extra, ...)` -> `skit_application::delivery::assemble(
 //!   &declarations, &prepared_values, &extra)`; the Python cwd/env token pass happens BEFORE
 //!   this Rust boundary, so the token-free oracle values map to `PreparedValue::Scalar`.
-//! - Python `ScriptMeta.to_toml_dict` / `from_toml_dict` non-dict-row dropping ->
-//!   `EntrySettings::{write_to_meta, from_meta}` (`from_meta` drops non-object rows).
+//! - Python `ScriptMeta.to_toml_dict` raw parameter rows -> `EntryMeta::extra`; its typed,
+//!   non-object-filtering view -> `EntrySettings::from_meta`. Rust intentionally splits the raw
+//!   persistence model from the semantic parameter model.
 //! - Python `store.add_*` / CLI `params` / `run` / `show` -> the real `skit` binary via
 //!   `assert_cmd`. Human-string assertions read Python's `result.output`; because the exact
 //!   stdout/stderr split is not what those tests measure, they are checked against the
 //!   COMBINED stream. The explicit `--json` purity tests keep the streams separate.
+//! - Python `store.write_parameters` / `read_parameters` -> the real `FileStore`
+//!   create/resolve/update-settings transaction in `skit-store/tests/mutations.rs`. It is a store
+//!   persistence contract, not the CLI's broader `params --rm` product action.
 //!
 //! Buckets:
-//! - REAL asserting `#[test]` (API exists): the pure-schema, form-plan, assemble, meta-model,
-//!   and the CLI tests whose behavior the Rust product reproduces.
-//! - DIVERGENCE (full asserting body, `#[ignore]`d): the assertion is faithful to the oracle
-//!   and compiles; it fails because Rust diverges. Fixing the impl and deleting the `#[ignore]`
-//!   line turns it green. These capture: the absent confirmation/warning strings
-//!   ("Declared parameters:", "has no managed parameters", "Ignored a malformed value",
-//!   "Removed previously stored plaintext"), the `params` batch
-//!   fault-tolerance gap (a malformed/bad value hard-errors exit 2 instead of warning at
-//!   exit 0), the `add --cmd` placeholder pre-seeding (which makes `--add <placeholder>`
-//!   refuse with exit 2), the non-placeholder template `--add` defaulting to `flag` not `env`,
-//!   and the reader-kind env-rider source label ("declared" not "argparse").
-//! - UNMAPPABLE white-box (`#[ignore]` stub): `test_cli_declared_warning_codes_render` drives
-//!   the Python-private `cli._render_declared_warning`; the Rust warnings are localized
-//!   messages with no public renderer to observe, and their observable outcomes are covered
-//!   (or recorded as divergences) by the CLI tests here.
+//! - REAL asserting `#[test]`: pure schema, form plans, assembly, metadata, typed domain edits,
+//!   and CLI warning/partial-success behavior are executable through public APIs or the real binary.
+//! - ARCHITECTURE-CLOSED / SPLIT-SEAM (`#[ignore]`): the Python `ScriptMeta` owner combines raw
+//!   row pass-through and typed row filtering in one class. Rust keeps raw rows in
+//!   `EntryMeta::extra` and projects typed rows through `EntrySettings`; both executable legs live
+//!   in the active `skit-domain` and `skit-store` owners.
 //!
-//! Windows note: the oracle's `sys.platform == "win32"` fixture arms are dropped; these tests
-//! run the Unix `#!/bin/sh` fixtures only.
+//! Windows note: the oracle's `sys.platform == "win32"` fixture arms are dropped. A fixture this
+//! file launches is now written in the dialect the host runs, so the executable and command lanes
+//! are proven on both hosts; a fixture that is only registered or read stays `#!/bin/sh` text.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Output;
 
 use serde_json::{Value, json};
-use skit_application::delivery::{PreparedValue, assemble};
-use skit_domain::parameters::{
-    ParamDecl, ParameterDelivery, ParameterType, ParameterValue, declared_for_template,
-    declared_from_meta, synthesized_placeholder,
+use skit_application::{
+    CreateEntry, EntryMutationRepository as _,
+    delivery::{PreparedValue, assemble},
 };
-use skit_domain::{EntryKind, EntryMeta, EntrySettings};
+use skit_domain::parameters::{
+    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    declared_for_template, declared_from_meta, synthesized_placeholder,
+};
+use skit_domain::{EntryKind, EntryMeta, EntrySettings, StorageMode};
 use skit_form::{FormPlan, FormSource, form_plan};
+use skit_language::write_managed_params;
+use skit_store::FileStore;
 use tempfile::TempDir;
+
+#[path = "support/shim.rs"]
+mod shim;
 
 // ---- shared helpers (self-contained; this file edits no shared module) --------------------------
 
@@ -137,6 +142,30 @@ fn lib() -> Lib {
     }
 }
 
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = std::fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    std::fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
+}
+
 impl Lib {
     fn cmd(&self) -> assert_cmd::Command {
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
@@ -165,9 +194,11 @@ impl Lib {
         path
     }
 
-    /// Add the oracle's `_exe` fixture: an argv-echoing shell program registered under `name`.
+    /// Add the oracle's `_exe` fixture: an argv-echoing program registered under `name`.
+    ///
+    /// The program is written in the dialect the host runs, because this fixture is launched.
     fn add_exe(&self, name: &str) {
-        let exe = self.write_script("t", "#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
+        let exe = shim::write_shim(self.src.path(), "t", shim::Shim::EchoArguments);
         self.cmd()
             .arg("add")
             .arg(&exe)
@@ -192,6 +223,17 @@ impl Lib {
                 .join(format!("{slug}.toml")),
         )
         .unwrap_or_default()
+    }
+
+    fn meta(&self, slug: &str) -> String {
+        std::fs::read_to_string(
+            self.data
+                .path()
+                .join("scripts")
+                .join(slug)
+                .join("meta.toml"),
+        )
+        .unwrap()
     }
 }
 
@@ -283,7 +325,7 @@ fn test_declared_flag_row_is_dropped_for_templates() {
 
 #[test]
 fn test_declared_row_with_wrong_delivery_for_its_placeholder_is_replaced_by_synth() {
-    // A row named like a placeholder but declared env can't fill the {slot}; the
+    // A row named like a placeholder but declared env cannot fill the {slot}; the
     // placeholder still needs a value, so the synthesized field steps back in.
     let row = meta_row(|decl| {
         decl.name = "file".to_owned();
@@ -456,7 +498,14 @@ fn test_run_entry_env_overlay_wins_last() {
     // and reads the child env; here a real `#!/bin/sh` child prints $WIDTH, the ambient value
     // is set on the invocation, and the declared env parameter overlays it.
     let workspace = lib();
-    let child = workspace.write_script("t", "#!/bin/sh\necho \"W=$WIDTH\"\n");
+    let child = shim::write_shim(
+        workspace.src.path(),
+        "t",
+        shim::Shim::EchoEnvironment {
+            label: "W",
+            variable: "WIDTH",
+        },
+    );
     workspace
         .cmd()
         .arg("add")
@@ -535,46 +584,6 @@ fn test_transparency_shows_masked_env_prefix() {
 }
 
 // ================================================================================================
-// store round-trip  (skit binary + meta.toml)
-// ================================================================================================
-
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): the placeholder-name cache (meta.params) must stay the template's truth independent of declared schema — downgrade safety (src/skit/store.write_parameters leaves `params` untouched). In Rust, `params --rm b` also strips \"b\" from the params cache even though the template still contains {b} (crates/skit-cli/src/cli.rs / skit-store mutations). Entangled with the `add --cmd` placeholder pre-seeding: the oracle's add_command stores no [[parameters]], so there is no b row to remove."]
-fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
-    // The placeholder-name cache stays the template's truth (downgrade safety), independent of
-    // which subset carries declared schema; clearing the declared rows removes the whole
-    // `[[parameters]]` table while the cache survives.
-    let workspace = lib();
-    workspace
-        .cmd()
-        .args(["add", "--cmd", "run {a} {b}", "--name", "rt", "--no-input"])
-        .assert()
-        .success();
-    let meta_path = workspace.data.path().join("scripts/rt/meta.toml");
-    let read_meta = || std::fs::read_to_string(&meta_path).unwrap();
-    assert!(read_meta().contains("params = [\n    \"a\",\n    \"b\",\n]"));
-
-    // Reduce the declared rows to a single int/optional `a` (the oracle's write_parameters([a])).
-    workspace.run(&["params", "rt", "--rm", "b"]);
-    workspace.run(&["params", "rt", "--type", "a=int", "--optional", "a"]);
-    let back = stdout_json(&workspace.run(&["params", "rt", "--json"]));
-    let declared = back["declared"].as_array().unwrap();
-    assert_eq!(declared.len(), 1);
-    assert_eq!(declared[0]["name"], "a");
-    assert_eq!(declared[0]["type"], "int");
-    // the placeholder-name cache is still the template's truth
-    assert!(read_meta().contains("\"a\""));
-    assert!(read_meta().contains("\"b\""));
-
-    // clearing works: no [[parameters]] table remains
-    workspace.run(&["params", "rt", "--rm", "a"]);
-    let cleared = stdout_json(&workspace.run(&["params", "rt", "--json"]));
-    assert!(cleared["declared"].as_array().unwrap().is_empty());
-    assert!(!read_meta().contains("[[parameters]]"));
-    assert!(read_meta().contains("params = ["));
-}
-
-// ================================================================================================
 // execute wiring  (skit binary, env reaches the child)
 // ================================================================================================
 
@@ -615,34 +624,37 @@ fn test_execute_passes_env_values_to_run_entry() {
 // ================================================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's to_toml_dict passes raw parameter dicts through verbatim, so a minimal {name, delivery} row stays 2-key (models.py:112-113), and from_toml_dict keeps dict rows raw (models.py:163-167) -- the 'keep unknown TOML fields' rule for the [[parameters]] array. Rust's typed Vec<ParamDecl> re-serializes every row through to_meta_map, which ALWAYS emits `type` (parameters.rs:340-349) and drops any key ParamDecl does not model, so the stored row is {name, delivery, type} and unknown keys are lost."]
+#[ignore = "ARCHITECTURE-CLOSED / SPLIT-SEAM: frozen ScriptMeta combines raw row pass-through and non-dict filtering. Rust keeps the raw sparse/extension-bearing array in EntryMeta::extra, while EntrySettings::from_meta owns the typed filtered projection; executable assertions live in entry_settings::legacy_extra_fields_decode_to_one_typed_runtime_view and skit-store::test_write_read_parameters_roundtrip_and_legacy_params_untouched. ParamDecl::to_meta_map is the separate frozen typed-writer seam and correctly includes type."]
 fn test_meta_parameters_roundtrip_and_non_dict_rows_dropped() {
-    // Oracle (test_declared_params.py:328-338): a raw parameter dict round-trips through to_toml_dict
-    // verbatim, and a hand-edited array holding non-table garbage keeps only the real rows.
-    let mut declared = ParamDecl::new("a");
-    declared.delivery = ParameterDelivery::Placeholder;
-    let settings = EntrySettings {
-        parameters: vec![declared],
-        ..EntrySettings::default()
-    };
+    // Oracle (test_declared_params.py:328-338): ScriptMeta retains raw tables verbatim, then its
+    // typed consumer ignores non-table rows. Rust represents those responsibilities separately.
     let mut meta = EntryMeta::minimal("x", EntryKind::parse("command").unwrap());
-    settings.write_to_meta(&mut meta);
-    // EXACT equality, matching the oracle's `d["parameters"] == [{"name": "a", "delivery":
-    // "placeholder"}]`: the raw 2-key row must survive verbatim, with no `type` added. Rust adds
-    // `type`, so this is the failing half of the contract above.
+    let raw = json!([
+        {"name": "a", "delivery": "placeholder", "future_axis": "keep"},
+        "garbage",
+        5,
+        {"name": "b"}
+    ]);
+    meta.extra.insert("parameters".to_owned(), raw.clone());
     assert_eq!(
         meta.extra.get("parameters"),
-        Some(&json!([{"name": "a", "delivery": "placeholder"}]))
+        Some(&raw),
+        "the raw persistence model keeps sparse and unknown row data"
     );
 
-    meta.extra.insert(
-        "parameters".to_owned(),
-        json!([{"name": "a"}, "garbage", 5]),
-    );
     let back = EntrySettings::from_meta(&meta);
-    // Non-dict rows ("garbage", 5) are dropped; the one real row is kept.
-    assert_eq!(back.parameters.len(), 1);
-    assert_eq!(back.parameters[0].name, "a");
+    assert_eq!(
+        back.parameters
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(
+        meta.extra.get("parameters"),
+        Some(&raw),
+        "building the typed view does not rewrite the raw model"
+    );
 }
 
 #[test]
@@ -687,7 +699,6 @@ fn test_exe_with_only_placeholder_rows_falls_through_to_none() {
 // ================================================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle prints the confirmation summary \"Declared parameters: width\" after `params --add` (src/skit/cli.py); the Rust product has no such string (absent from skit-i18n) — it prints the full read-view param table instead. The add+run-delivery behavior itself works (the argv assembles to --width 1024)."]
 fn test_cli_add_flag_param_on_exe_then_run_set() {
     let workspace = lib();
     workspace.add_exe("prog");
@@ -706,7 +717,12 @@ fn test_cli_add_flag_param_on_exe_then_run_set() {
         "width=800",
     ]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("Declared parameters: width"));
+    let receipt = combined(&output);
+    assert!(
+        receipt.contains("Updated prog. Declared parameters: width"),
+        "{receipt}"
+    );
+    assert!(!receipt.contains("Managed parameters:"), "{receipt}");
     let declared = stdout_json(&workspace.run(&["params", "prog", "--json"]));
     let row = &declared["declared"][0];
     assert_eq!(row["name"], "width");
@@ -718,8 +734,12 @@ fn test_cli_add_flag_param_on_exe_then_run_set() {
     // run --set assembles the real flag
     let run = workspace.run(&["run", "prog", "--set", "width=1024", "--no-input"]);
     assert!(run.status.success(), "{}", combined(&run));
+    // The child writes one argument to a line, and the two hosts end a line differently. The
+    // assertion is about the order of the two arguments, so the line ending is made one form here.
     assert!(
-        combined(&run).contains("--width\n1024"),
+        combined(&run)
+            .replace("\r\n", "\n")
+            .contains("--width\n1024"),
         "{}",
         combined(&run)
     );
@@ -780,9 +800,62 @@ fn test_cli_declared_edit_with_json_emits_the_final_read_view() {
         "--json",
     ]);
     assert!(output.status.success(), "{}", combined(&output));
+    assert!(
+        !combined(&output).contains("Updated prog. Declared parameters:"),
+        "{}",
+        combined(&output)
+    );
     let payload = stdout_json(&output);
     assert_eq!(payload["declared"][0]["name"], "width");
     assert_eq!(payload["declared"][0]["delivery"], "flag");
+}
+
+#[test]
+fn test_cli_declared_edit_json_preserves_a_legacy_non_form_row() {
+    let workspace = lib();
+    let mut legacy = ParamDecl::new("LEGACY");
+    legacy.delivery = ParameterDelivery::Inject;
+    FileStore::new(workspace.data.path())
+        .create(CreateEntry {
+            name: "Legacy command".to_owned(),
+            kind: EntryKind::parse("command").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings {
+                template: "true".to_owned(),
+                parameters: vec![legacy],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
+
+    let output = workspace.run(&[
+        "params",
+        "legacy-command",
+        "--default",
+        "LEGACY=first",
+        "--default",
+        "LEGACY=last",
+        "--json",
+    ]);
+
+    assert!(output.status.success(), "{}", combined(&output));
+    let payload = stdout_json(&output);
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["declared"][0]["name"], "LEGACY");
+    assert_eq!(payload["declared"][0]["delivery"], "inject");
+    assert_eq!(payload["declared"][0]["default"], "last");
+    assert_eq!(payload["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["parameters"][0]["name"], "LEGACY");
+    assert_eq!(payload["parameters"][0]["delivery"], "inject");
+    assert_eq!(payload["parameters"][0]["default"], "last");
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
@@ -857,7 +930,6 @@ fn test_cli_python_manage_with_json_emits_the_final_read_view() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `--add <placeholder-name>` on a command must create the declared placeholder row and exit 0 (src/skit/params.py edit_declared add branch); the Rust `add --cmd` pre-seeds a `[[parameters]]` placeholder row per template slot, so `--add size` reports \"parameter already exists: size\" and exits 2, aborting the batch (crates/skit-cli/src/cli.rs)."]
 fn test_cli_add_choice_placeholder_on_command_then_run() {
     let workspace = lib();
     workspace
@@ -872,6 +944,15 @@ fn test_cli_add_choice_placeholder_on_command_then_run() {
         ])
         .assert()
         .success();
+    let initial = stdout_json(&workspace.run(&["params", "conv", "--json"]));
+    assert_eq!(initial["placeholders"], json!(["size"]));
+    assert_eq!(initial["declared"], json!([]));
+    assert_eq!(initial["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(initial["parameters"][0]["name"], "size");
+    assert_eq!(initial["parameters"][0]["delivery"], "placeholder");
+    assert_eq!(initial["parameters"][0]["required"], true);
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
     let output = workspace.run(&[
         "params",
         "conv",
@@ -893,16 +974,33 @@ fn test_cli_add_choice_placeholder_on_command_then_run() {
     assert_eq!(decl["type"], "choice");
     assert_eq!(decl["choices"], json!(["s", "m", "l"]));
     assert_eq!(decl["default"], "m");
-    assert_eq!(decl["required"], false);
+    assert!(decl.get("required").is_none()); // false is omitted from the raw explicit row
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["parameters"][0]["delivery"], "placeholder");
+    assert_eq!(payload["parameters"][0]["type"], "choice");
+    assert_eq!(payload["parameters"][0]["choices"], json!(["s", "m", "l"]));
+    assert_eq!(payload["parameters"][0]["default"], "m");
+    assert_eq!(payload["placeholders"], json!(["size"]));
+    let show = stdout_json(&workspace.run(&["show", "conv", "--json"]));
+    assert_eq!(show["fields"][0]["required"], false); // effective machine field is total
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
+    assert!(
+        workspace
+            .meta("conv")
+            .contains("template = \"convert {size}\"")
+    );
 
     // run --no-input: the declared default fills the placeholder without prompting
     let run = workspace.run(&["run", "conv", "--no-input", "--dry-run"]);
     assert!(run.status.success(), "{}", combined(&run));
     assert!(combined(&run).contains("convert m"), "{}", combined(&run));
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the enriched command show must carry the schema `optional` marker for `msg`, but reaching it requires `--add msg` (a placeholder) to succeed — the Rust pre-seeded-placeholder + exit-2 abort (see test_cli_add_choice_placeholder_on_command_then_run) prevents the msg tweaks from applying, and a non-placeholder `--add RETRIES` on a template defaults to flag, not env."]
 fn test_cli_command_show_enriched_and_env_rider() {
     let workspace = lib();
     workspace
@@ -910,7 +1008,14 @@ fn test_cli_command_show_enriched_and_env_rider() {
         .args(["add", "--cmd", "echo {msg}", "--name", "c", "--no-input"])
         .assert()
         .success();
-    workspace.run(&[
+    let initial = stdout_json(&workspace.run(&["params", "c", "--json"]));
+    assert_eq!(initial["placeholders"], json!(["msg"]));
+    assert_eq!(initial["declared"], json!([]));
+    assert_eq!(initial["parameters"][0]["name"], "msg");
+    assert_eq!(initial["parameters"][0]["delivery"], "placeholder");
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
+    let first = workspace.run(&[
         "params",
         "c",
         "--add",
@@ -922,7 +1027,8 @@ fn test_cli_command_show_enriched_and_env_rider() {
         "--optional",
         "msg",
     ]);
-    workspace.run(&[
+    assert!(first.status.success(), "{}", combined(&first));
+    let second = workspace.run(&[
         "params",
         "c",
         "--add",
@@ -930,6 +1036,10 @@ fn test_cli_command_show_enriched_and_env_rider() {
         "--deliver",
         "RETRIES=env",
     ]);
+    assert!(second.status.success(), "{}", combined(&second));
+    let data_before_reads = snapshot_tree(workspace.data.path());
+    let state_before_reads = snapshot_tree(workspace.state.path());
+    let config_before_reads = snapshot_tree(workspace.config.path());
     let human = workspace.run(&["params", "c"]);
     assert!(human.status.success(), "{}", combined(&human));
     assert!(combined(&human).contains("msg"));
@@ -942,8 +1052,38 @@ fn test_cli_command_show_enriched_and_env_rider() {
         .iter()
         .map(|row| row["name"].as_str().unwrap())
         .collect();
-    assert!(declared_names.contains(&"msg"));
-    assert!(declared_names.contains(&"RETRIES"));
+    assert_eq!(declared_names, ["msg", "RETRIES"]);
+    assert_eq!(payload["declared"][0]["delivery"], "placeholder");
+    assert_eq!(payload["declared"][0]["default"], "hi");
+    assert!(payload["declared"][0].get("required").is_none());
+    assert_eq!(payload["declared"][1]["delivery"], "env");
+    assert_eq!(payload["placeholders"], json!(["msg"]));
+    let effective_names = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(effective_names, ["msg", "RETRIES"]);
+    let show = stdout_json(&workspace.run(&["show", "c", "--json"]));
+    let shown_fields = show["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| {
+            (
+                field["key"].as_str().unwrap(),
+                field["source"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(shown_fields, [("msg", "placeholder"), ("RETRIES", "env")]);
+    assert_eq!(show["template"], "echo {msg}");
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before_reads);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before_reads);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before_reads);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
@@ -985,24 +1125,115 @@ fn test_cli_python_declared_op_is_refused() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a malformed `--type NOEQUALS` (no `=`) must be tolerated — the oracle warns \"Ignored a malformed value\" and exits 0 (src/skit/cli.py batch fault tolerance). The Rust product hard-errors exit 2 with \"type needs NAME=VALUE\" on stderr and applies nothing (pending task: params batch fault tolerance)."]
 fn test_cli_declared_malformed_value_warns() {
     let workspace = lib();
     workspace.add_exe("prog");
+    let data_before = snapshot_tree(workspace.data.path());
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
     let output = workspace.run(&["params", "prog", "--type", "NOEQUALS"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("Ignored a malformed value"));
+    assert!(
+        stderr_text(&output)
+            .contains("Ignored a malformed value: --type: NOEQUALS (expected NAME=VALUE)."),
+        "{}",
+        combined(&output)
+    );
+    assert!(
+        combined(&output).contains("Updated prog. Declared parameters: —"),
+        "{}",
+        combined(&output)
+    );
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "UNMAPPABLE white-box: the oracle drives the Python-private `cli._render_declared_warning(code)` for the 7 closed warning codes (not-declared/already-declared/bad-delivery/not-a-placeholder/bad-type/bad-default/choice-without-choices). The Rust warnings are localized messages with no public renderer to call, and their observable outcomes are covered (or recorded as divergences) by the CLI tests in this file. Not a MUST-FIX feature."]
 fn test_cli_declared_warning_codes_render() {
-    // for code in the 7 closed warning codes: line = cli._render_declared_warning(code);
-    // assert "x" in line and the code prefix isn't leaked into the message.
+    let workspace = lib();
+    workspace.add_exe("prog");
+    for args in [
+        &["params", "prog", "--add", "a", "--flag", "a=--a"][..],
+        &["params", "prog", "--add", "number", "--type", "number=int"][..],
+        &["params", "prog", "--add", "choice"][..],
+        &[
+            "params",
+            "prog",
+            "--add",
+            "verbose",
+            "--flag",
+            "verbose=--verbose",
+        ][..],
+    ] {
+        let output = workspace.run(args);
+        assert!(output.status.success(), "{}", combined(&output));
+    }
+    workspace
+        .cmd()
+        .args(["add", "--cmd", "echo hi", "--name", "cmd", "--no-input"])
+        .assert()
+        .success();
+    workspace.run(&["params", "cmd", "--add", "rider"]);
+
+    let cases = [
+        (
+            workspace.run(&["params", "prog", "--rm", "ghost"]),
+            "ghost isn't a declared parameter; skipped.",
+        ),
+        (
+            workspace.run(&["params", "prog", "--add", "a"]),
+            "a is already declared; skipped.",
+        ),
+        (
+            workspace.run(&["params", "prog", "--deliver", "a=placeholder"]),
+            "a: that delivery isn't available for this kind; skipped.",
+        ),
+        (
+            workspace.run(&["params", "cmd", "--deliver", "rider=placeholder"]),
+            "rider isn't a template placeholder, so it can't use placeholder delivery; skipped.",
+        ),
+        (
+            workspace.run(&["params", "prog", "--type", "a=integer"]),
+            "a: unknown type; skipped (use str, int, float, bool, choice, or path).",
+        ),
+        (
+            workspace.run(&["params", "prog", "--default", "number=bad"]),
+            "number: the default doesn't fit its type; skipped.",
+        ),
+        (
+            workspace.run(&["params", "prog", "--env-source", "a=TOKEN"]),
+            "a isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+        ),
+        (
+            workspace.run(&["params", "prog", "--type", "choice=choice"]),
+            "choice: a choice parameter needs choices; set --choices choice=a,b,c.",
+        ),
+        (
+            workspace.run(&[
+                "params",
+                "prog",
+                "--type",
+                "verbose=bool",
+                "--default",
+                "verbose=true",
+            ]),
+            "verbose is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-verbose and the like), with default false.",
+        ),
+    ];
+    for (output, expected) in cases {
+        assert!(output.status.success(), "{}", combined(&output));
+        assert!(
+            stderr_text(&output).contains(expected),
+            "{}",
+            combined(&output)
+        );
+        assert!(!stderr_text(&output).contains("bad-type:"));
+        assert!(!stderr_text(&output).contains("not-declared:"));
+    }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a bad `--type w=integer` must be tolerated — the oracle warns \"unknown type\" (exit 0) and leaves the type unchanged (src/skit/cli.py batch fault tolerance). The Rust product hard-errors exit 2 with \"unknown parameter type: integer\" on stderr (pending task: params batch fault tolerance)."]
 fn test_cli_bad_type_warns_and_skips() {
     let workspace = lib();
     workspace.add_exe("prog");
@@ -1016,15 +1247,34 @@ fn test_cli_bad_type_warns_and_skips() {
         "--type",
         "w=str",
     ]);
+    let data_before = snapshot_tree(workspace.data.path());
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
     let output = workspace.run(&["params", "prog", "--type", "w=integer"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("unknown type"));
+    assert!(
+        stderr_text(&output)
+            .contains("w: unknown type; skipped (use str, int, float, bool, choice, or path)."),
+        "{}",
+        combined(&output)
+    );
     let payload = stdout_json(&workspace.run(&["params", "prog", "--json"]));
     assert_eq!(payload["declared"][0]["type"], "str"); // unchanged
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
+
+    let json_warning = workspace.run(&["params", "prog", "--type", "w=integer", "--json"]);
+    assert!(json_warning.status.success(), "{}", combined(&json_warning));
+    assert_eq!(stdout_json(&json_warning)["declared"][0]["type"], "str");
+    assert!(stderr_text(&json_warning).contains("w: unknown type; skipped"));
+    assert!(!String::from_utf8_lossy(&json_warning.stdout).contains("unknown type"));
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the {token_file} secret-override end-to-end needs `--add token_file` (a pre-seeded command placeholder) to succeed so `--no-secret` un-secrets it; the Rust pre-seeded-placeholder path makes `--add token_file` report \"parameter already exists\" and exit 2, aborting before --no-secret applies (secret stays true). Same seam as test_cli_add_choice_placeholder_on_command_then_run."]
 fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
     let workspace = lib();
     workspace
@@ -1032,13 +1282,21 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
         .args([
             "add",
             "--cmd",
-            "auth {token_file}",
+            "printf '%s' {token_file}",
             "--name",
             "auth",
             "--no-input",
         ])
         .assert()
         .success();
+    let initial = stdout_json(&workspace.run(&["params", "auth", "--json"]));
+    assert_eq!(initial["placeholders"], json!(["token_file"]));
+    assert_eq!(initial["declared"], json!([]));
+    assert_eq!(initial["parameters"][0]["name"], "token_file");
+    assert_eq!(initial["parameters"][0]["delivery"], "placeholder");
+    assert_eq!(initial["parameters"][0]["secret"], true);
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
     let output = workspace.run(&[
         "params",
         "auth",
@@ -1049,7 +1307,22 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
     ]);
     assert!(output.status.success(), "{}", combined(&output));
     let payload = stdout_json(&workspace.run(&["params", "auth", "--json"]));
-    assert_eq!(payload["declared"][0]["secret"], false); // overridden away from the heuristic
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["declared"][0]["name"], "token_file");
+    assert_eq!(payload["declared"][0]["delivery"], "placeholder");
+    assert!(payload["declared"][0].get("secret").is_none()); // false is the sparse raw row
+    assert_eq!(payload["parameters"].as_array().unwrap().len(), 1);
+    assert!(payload["parameters"][0].get("secret").is_none());
+    assert_eq!(payload["placeholders"], json!(["token_file"]));
+    let show = stdout_json(&workspace.run(&["show", "auth", "--json"]));
+    assert_eq!(show["fields"][0]["secret"], false); // effective machine field is total
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
+    assert!(
+        workspace
+            .meta("auth")
+            .contains("template = \"printf '%s' {token_file}\"")
+    );
 
     let run = workspace.run(&[
         "run",
@@ -1059,9 +1332,13 @@ fn test_cli_secret_override_persists_value_now_that_it_isnt_secret() {
         "--no-input",
     ]);
     assert!(run.status.success(), "{}", combined(&run));
-    // Now that it isn't secret, the value IS remembered (the old behavior scrubbed it).
+    // Now that it is not secret, the value IS remembered (the old behavior scrubbed it).
     assert!(workspace.values_file("auth").contains("token_file"));
     assert!(workspace.values_file("auth").contains("creds.json"));
+    let after_run = stdout_json(&workspace.run(&["params", "auth", "--json"]));
+    assert_eq!(after_run["last_values"]["token_file"], "creds.json");
+    assert!(after_run["declared"][0].get("secret").is_none());
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 #[test]
@@ -1072,9 +1349,27 @@ fn test_cli_secret_declared_env_purges_prior_plaintext() {
     workspace.seed_values("prog", "[values]\nTOKEN = \"plaintext\"\n");
     let output = workspace.run(&["params", "prog", "--secret", "TOKEN"]);
     assert!(output.status.success(), "{}", combined(&output));
-    assert!(combined(&output).contains("Removed previously stored plaintext"));
+    let shown = combined(&output);
+    let purge = shown
+        .find("Removed previously stored plaintext")
+        .unwrap_or_else(|| panic!("missing purge notice: {shown}"));
+    let receipt = shown
+        .find("Updated prog. Declared parameters: TOKEN")
+        .unwrap_or_else(|| panic!("missing declared receipt: {shown}"));
+    assert!(purge < receipt, "{shown}");
     assert!(!workspace.values_file("prog").contains("TOKEN"));
 }
+
+/// A command entry that writes the value of `TOKEN`, in the dialect the host's interpreter reads.
+///
+/// The contract here is that a declared secret reaches the child's environment. Which spelling
+/// reads an environment variable is the host's business, not the contract's.
+#[cfg(not(windows))]
+const ECHO_TOKEN: &str = "echo $TOKEN";
+
+/// A command entry that writes the value of `TOKEN`, in the dialect the host's interpreter reads.
+#[cfg(windows)]
+const ECHO_TOKEN: &str = "echo %TOKEN%";
 
 #[test]
 fn test_cli_declared_secret_env_source_resolves_without_prompting() {
@@ -1083,7 +1378,7 @@ fn test_cli_declared_secret_env_source_resolves_without_prompting() {
     let workspace = lib();
     workspace
         .cmd()
-        .args(["add", "--cmd", "echo $TOKEN", "--name", "svc", "--no-input"])
+        .args(["add", "--cmd", ECHO_TOKEN, "--name", "svc", "--no-input"])
         .assert()
         .success();
     workspace.run(&[
@@ -1152,6 +1447,16 @@ fn test_cli_rm_declared_param() {
         .map(|row| row["name"].as_str().unwrap())
         .collect();
     assert_eq!(remaining, ["b"]);
+
+    let remove_last = workspace.run(&["params", "prog", "--rm", "b"]);
+    assert!(remove_last.status.success(), "{}", combined(&remove_last));
+    assert!(
+        combined(&remove_last).contains("Updated prog. Declared parameters: —"),
+        "{}",
+        combined(&remove_last)
+    );
+    let empty = stdout_json(&workspace.run(&["params", "prog", "--json"]));
+    assert_eq!(empty["declared"], serde_json::json!([]));
 }
 
 #[test]
@@ -1294,7 +1599,7 @@ fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
         ])
         .assert()
         .success();
-    // password is a pre-declared secret placeholder; give it a secret default.
+    // password is an implicit secret placeholder; the schema edit promotes only that row.
     workspace.run(&[
         "params",
         "lg",
@@ -1310,9 +1615,127 @@ fn test_cli_command_show_masks_secret_placeholder_and_undeclared() {
     assert_eq!(text.matches("•••").count(), 2, "{text}");
     assert!(!text.contains("Current default: seed"), "{text}");
     assert!(!text.contains("Last value: stale"), "{text}");
-    assert_eq!(text.matches("Current default:").count(), 1, "{text}");
-    assert_eq!(text.matches("Last value:").count(), 1, "{text}");
-    assert!(text.contains("other")); // the undeclared placeholder is still listed
+    assert!(
+        text.contains("  password = •••  str · default ••• · secret"),
+        "{text}"
+    );
+    assert!(text.contains("  other = —  str"), "{text}"); // implicit sibling remains listed
+    let payload = stdout_json(&workspace.run(&["params", "lg", "--json"]));
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["declared"][0]["name"], "password");
+}
+
+#[test]
+fn test_cli_python_human_params_falls_back_to_stored_schema_on_syntax_error() {
+    let workspace = lib();
+    let mut city = ParamDecl::new("CITY");
+    city.binding = ParameterBinding::Const;
+    city.delivery = ParameterDelivery::Inject;
+    city.default = Some(ParameterValue::String("stored".to_owned()));
+    let valid =
+        write_managed_params("python", "CITY = \"stored\"\nprint(CITY)\n", &[city]).unwrap();
+    let invalid = valid.replace("print(CITY)", "if (");
+    let source = workspace.write_script("broken.py", &invalid);
+    workspace
+        .cmd()
+        .arg("add")
+        .arg(&source)
+        .args(["--name", "broken", "--no-input"])
+        .assert()
+        .success();
+    let data_before = snapshot_tree(workspace.data.path());
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
+
+    for (locale, parameter, default) in [
+        ("en", "Parameter: CITY", "Current default: stored"),
+        ("zh-CN", "参数：CITY", "当前默认值：stored"),
+        ("zh-TW", "參數：CITY", "目前預設值：stored"),
+    ] {
+        let output = workspace
+            .cmd()
+            .env("SKIT_LANG", locale)
+            .args(["params", "broken"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{locale}: {}", combined(&output));
+        let human = combined(&output);
+        assert!(human.contains(parameter), "{locale}: {human}");
+        assert!(human.contains(default), "{locale}: {human}");
+    }
+
+    let payload = stdout_json(&workspace.run(&["params", "broken", "--json"]));
+    assert_eq!(payload["params"][0]["name"], "CITY");
+    assert_eq!(payload["params"][0]["kind"], "const");
+    assert_eq!(payload["params"][0]["default"], "stored");
+    assert_eq!(payload["parameters"], json!([]));
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
+}
+
+#[test]
+fn test_cli_powershell_reader_and_choice_rider_have_one_localized_read_view() {
+    let workspace = lib();
+    let source = workspace.write_script("reader.ps1", "param([string]$Name)\nWrite-Output $Name\n");
+    workspace
+        .cmd()
+        .arg("add")
+        .arg(&source)
+        .args(["--name", "reader", "--no-input"])
+        .assert()
+        .success();
+    let edit = workspace.run(&[
+        "params",
+        "reader",
+        "--add",
+        "MODE",
+        "--type",
+        "MODE=choice",
+        "--choices",
+        "MODE=red,blue",
+        "--optional",
+        "MODE",
+    ]);
+    assert!(edit.status.success(), "{}", combined(&edit));
+    let data_before = snapshot_tree(workspace.data.path());
+    let state_before = snapshot_tree(workspace.state.path());
+    let config_before = snapshot_tree(workspace.config.path());
+
+    for (locale, name_row, mode_row, choices) in [
+        (
+            "en",
+            "Parameter: Name",
+            "Parameter: MODE",
+            "Choices: red, blue",
+        ),
+        ("zh-CN", "参数：Name", "参数：MODE", "可选值：red, blue"),
+        ("zh-TW", "參數：Name", "參數：MODE", "可選值：red, blue"),
+    ] {
+        let output = workspace
+            .cmd()
+            .env("SKIT_LANG", locale)
+            .args(["params", "reader"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{locale}: {}", combined(&output));
+        let human = combined(&output);
+        assert!(human.contains(name_row), "{locale}: {human}");
+        assert!(human.contains(mode_row), "{locale}: {human}");
+        assert!(human.contains(choices), "{locale}: {human}");
+        assert!(!human.contains("--manage"), "{locale}: {human}");
+    }
+
+    let payload = stdout_json(&workspace.run(&["params", "reader", "--json"]));
+    let rows = payload["parameters"].as_array().unwrap();
+    assert!(rows.iter().any(|row| row["name"] == "Name"));
+    let mode = rows.iter().find(|row| row["name"] == "MODE").unwrap();
+    assert_eq!(mode["type"], "choice");
+    assert_eq!(mode["choices"], json!(["red", "blue"]));
+    assert_eq!(payload["unmanaged"], json!([]));
+    assert_eq!(snapshot_tree(workspace.data.path()), data_before);
+    assert_eq!(snapshot_tree(workspace.state.path()), state_before);
+    assert_eq!(snapshot_tree(workspace.config.path()), config_before);
 }
 
 // ---- Delivery capability honesty ---------------------------------------------------------------
@@ -1362,28 +1785,6 @@ fn test_declared_add_on_interpreted_kind_delivers_at_run() {
     let shown = combined(&output).replace('\n', "");
     assert!(shown.contains("--size"), "{shown}");
     assert!(shown.contains('5'), "{shown}");
-}
-
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): a reader kind (powershell) with a declared env rider must keep source == \"argparse\" while the rider rides along after the reader's fields (src/skit/flows.plan_for_entry). `skit_form::form_plan` returns early on any declared rider and labels the plan \"declared\", dropping the reader's Region field entirely (crates/skit-form/src/lib.rs:409-423). The shipping CLI keeps [Region, LOGLEVEL] but still labels it \"declared\", not \"argparse\"."]
-fn test_reader_kind_declared_env_rider_merges_not_erases() {
-    // A PowerShell entry reads its param() block statically; a declared env row must RIDE ALONG
-    // after the reader's fields, never short-circuit the plan and erase the whole form.
-    let mut loglevel = ParamDecl::new("LOGLEVEL");
-    loglevel.delivery = ParameterDelivery::Env;
-    let settings = EntrySettings {
-        parameters: vec![loglevel],
-        ..EntrySettings::default()
-    };
-    let plan = form_plan("powershell", "param([string]$Region)\n", &settings);
-    assert_eq!(plan.source, FormSource::Reader);
-    assert_eq!(
-        field_sources(&plan),
-        vec![
-            ("Region".to_owned(), ParameterDelivery::Flag),
-            ("LOGLEVEL".to_owned(), ParameterDelivery::Env),
-        ]
-    );
 }
 
 #[test]
@@ -1446,7 +1847,6 @@ fn test_declared_param_on_an_interpreted_kind_actually_delivers() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `--add <non-placeholder>` on a template must default to env delivery — the only delivery a template can always honour (src/skit/params.py edit_declared: allowed_deliveries[0] == \"env\" for templates). The Rust product defaults it to flag (crates/skit-cli/src/cli.rs), a row the run surface then can't honour."]
 fn test_template_add_of_a_non_placeholder_name_creates_a_deliverable_env_row() {
     let workspace = lib();
     workspace
@@ -1454,19 +1854,32 @@ fn test_template_add_of_a_non_placeholder_name_creates_a_deliverable_env_row() {
         .args(["add", "--cmd", "greet {WHO}", "--name", "tpl", "--no-input"])
         .assert()
         .success();
-    assert!(
-        workspace
-            .run(&["params", "tpl", "--add", "RETRIES"])
-            .status
-            .success()
+    let config_before = std::fs::read(workspace.config.path().join("config.toml")).ok();
+    assert_eq!(
+        std::fs::read_dir(workspace.state.path()).unwrap().count(),
+        0
     );
+    let edit = workspace.run(&["params", "tpl", "--add", "RETRIES"]);
+    assert!(edit.status.success(), "{}", combined(&edit));
     let payload = stdout_json(&workspace.run(&["params", "tpl", "--json"]));
+    assert_eq!(payload["placeholders"], json!(["WHO"]));
     let retries = payload["declared"]
         .as_array()
         .unwrap()
         .iter()
         .find(|row| row["name"] == "RETRIES")
         .unwrap();
+    let show = stdout_json(&workspace.run(&["show", "tpl", "--json"]));
+    assert_eq!(show["template"], "greet {WHO}");
+    assert!(workspace.values_file("tpl").is_empty());
+    assert_eq!(
+        std::fs::read_dir(workspace.state.path()).unwrap().count(),
+        0
+    );
+    assert_eq!(
+        std::fs::read(workspace.config.path().join("config.toml")).ok(),
+        config_before
+    );
     assert_eq!(retries["delivery"], "env");
 
     // and it really delivers, rather than being denied by --set

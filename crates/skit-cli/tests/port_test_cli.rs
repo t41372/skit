@@ -52,7 +52,7 @@
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use assert_cmd::Command;
 use serde_json::Value;
@@ -108,6 +108,29 @@ fn write_src(root: &TempDir, name: &str, body: &str) -> PathBuf {
     }
     fs::write(&path, body).unwrap();
     path
+}
+
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
 }
 
 /// Register one hand-built entry directory in the authoritative membership index.
@@ -270,7 +293,7 @@ fn test_add_interactive_plain_form_keeps_line_prompts() {
 }
 
 #[test]
-#[ignore = "cross-crate: TERM=dumb can't host a Textual panel, so the line-prompt path runs — same interactive tty seam as test_add_interactive_plain_form_keeps_line_prompts."]
+#[ignore = "cross-crate: TERM=dumb cannot host a Textual panel, so the line-prompt path runs — same interactive tty seam as test_add_interactive_plain_form_keeps_line_prompts."]
 fn test_add_term_dumb_keeps_line_prompts() {
     // TERM=dumb -> line prompts, not the panel.
 }
@@ -440,16 +463,22 @@ fn test_add_directory_path_clean_error_not_traceback() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a bare directory whose name claims no kind CAN be added as a program, so the oracle teaches --exe with exit 2 + \"is a directory\" + \"--exe\" (cli.py:1877). Rust has no such directory-consent lane — add() fails at read with exit 1 + \"could not read <dir>: Is a directory\", offering no --exe hint. Both exit code AND message diverge. Ties to pending task #15."]
 fn test_add_unknown_directory_suggests_exe_and_exits_usage() {
     let root = sandbox();
     let dir = root.path().join("plainbundle");
     fs::create_dir(&dir).unwrap();
+    let data_before = snapshot_tree(&root.path().join("data"));
+    let state_before = snapshot_tree(&root.path().join("state"));
+    let config_before = snapshot_tree(&root.path().join("config"));
     let (code, out) = run(skit(&root).arg("add").arg(&dir));
     assert_eq!(code, 2);
     assert!(out.contains("is a directory"), "{out}");
     assert!(out.contains("--exe"), "{out}");
     assert!(!out.contains("Not a file"), "{out}");
+    assert!(dir.is_dir());
+    assert_eq!(snapshot_tree(&root.path().join("data")), data_before);
+    assert_eq!(snapshot_tree(&root.path().join("state")), state_before);
+    assert_eq!(snapshot_tree(&root.path().join("config")), config_before);
 }
 
 #[test]
@@ -470,7 +499,7 @@ fn test_add_unknown_directory_with_exe_is_accepted() {
 
 #[test]
 fn test_add_unreadable_file_clean_error_not_traceback() {
-    // An existing-but-unreadable file must be reported cleanly ("Can't read", distinct from
+    // An existing-but-unreadable file must report a clean read failure, distinct from
     // "File not found" since the path exists). Skipped when the euid bypasses perms — root reads
     // through chmod 0o000, exactly the oracle's `skipif(geteuid() == 0)`.
     let root = sandbox();
@@ -488,7 +517,7 @@ fn test_add_unreadable_file_clean_error_not_traceback() {
 #[test]
 #[ignore = "cross-crate: the oracle monkeypatches Path.read_text to raise PermissionError mid-add, exercising cli.py's `except OSError` read guard regardless of euid. A black-box binary harness cannot inject a read fault into skit's own process; the guard is cli.rs's read-error branch. Owning seam: cli.rs add read guard."]
 fn test_add_read_error_reports_clean_message() {
-    // A mid-add read failure surfaces as a localized "Can't read", never a traceback.
+    // A mid-add read failure surfaces as a localized read error, never a traceback.
 }
 
 #[test]
@@ -911,19 +940,32 @@ fn test_run_shim_error() {
 #[test]
 fn test_run_bad_typed_value_caught_at_validation() {
     let root = sandbox();
+    let marker = root.path().join("typed-value-child.ran");
     inject_shell(
         &root,
         "j",
         "J",
-        "RETRIES=3\nprintf '%s\\n' \"$RETRIES\"\n",
+        &format!(
+            "RETRIES=3\nprintf child > {}\nprintf '%s\\n' \"$RETRIES\"\n",
+            marker.display()
+        ),
         &[const_int("RETRIES", Some(3))],
     );
     seed_state(&root, "j", "[values]\nRETRIES = \"not-a-number\"\n");
+    let data_before = snapshot_tree(&root.path().join("data"));
+    let state_before = snapshot_tree(&root.path().join("state"));
+    let config_before = snapshot_tree(&root.path().join("config"));
+
     let (code, out) = run(skit(&root).args(["run", "j", "--no-input"]));
+
     assert_eq!(code, 125);
     assert!(out.contains("not-a-number"), "{out}");
     assert!(out.contains("whole number"), "{out}");
     assert!(!out.to_lowercase().contains("resync"), "{out}");
+    assert!(!marker.exists(), "validation reached the child process");
+    assert_eq!(snapshot_tree(&root.path().join("data")), data_before);
+    assert_eq!(snapshot_tree(&root.path().join("state")), state_before);
+    assert_eq!(snapshot_tree(&root.path().join("config")), config_before);
 }
 
 #[test]
@@ -1382,7 +1424,7 @@ fn test_doctor_rebuild() {
 }
 
 #[test]
-fn test_doctor_reports_missing_reference() {
+fn rust_additive_doctor_cli_reports_missing_reference_without_failing() {
     let root = sandbox();
     let bin = install_uv(&root);
     let src = write_src(&root, "src.py", "print(1)\n");
@@ -1426,7 +1468,7 @@ fn test_parse_kv_opts() {
 }
 
 #[test]
-#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` (cli.py:171). An existing PEP 723 block is the source of truth: don't ask, don't fill -> ([], \"\"). Private in cli.rs add lane; no `pub` surface."]
+#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` (cli.py:171). An existing PEP 723 block is the source of truth: do not ask, do not fill -> ([], \"\"). Private in cli.rs add lane; no `pub` surface."]
 fn test_resolve_metadata_existing_block_not_asked() {
     // A script with its own block -> ([], "").
 }
@@ -1456,19 +1498,19 @@ fn test_resolve_metadata_non_interactive_uses_suggestions() {
 }
 
 #[test]
-#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` with a tty + stubbed Prompt.ask — the interactive deps/python prompts. Private in cli.rs add lane + interactive tty seam."]
+#[ignore = "SEMANTIC DUPLICATE: the stronger real-PTY owners are port_test_add_validation_contracts::test_interactive_deps_reask_then_python_reask_then_accept and test_interactive_valid_deps_accepted_first_try."]
 fn test_resolve_metadata_interactive() {
     // answers "requests, rich" / ">=3.12" -> (["requests","rich"], ">=3.12").
 }
 
 #[test]
-#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` — '-' at the deps prompt clears the suggested deps. Private in cli.rs add lane + interactive tty seam."]
+#[ignore = "SEMANTIC DUPLICATE: '-' clearing is covered through the real plain-form PTY by port_test_add_validation_contracts::test_interactive_deps_reask_then_python_reask_then_accept."]
 fn test_resolve_metadata_interactive_dash_clears_deps() {
     // '-' -> deps == [].
 }
 
 #[test]
-#[ignore = "cross-crate: direct unit test of CLI-private `cli._resolve_python_metadata` — 'None' at the deps prompt clears the suggested deps. Private in cli.rs add lane + interactive tty seam."]
+#[ignore = "SEMANTIC DUPLICATE: the shared '-'/'none' branch is covered by the real-PTY '-' canonical; this private spelling has no separate product surface."]
 fn test_resolve_metadata_interactive_none_word_clears_deps() {
     // 'None' -> deps == [].
 }
@@ -1631,6 +1673,141 @@ fn test_add_not_py_file_warning_escapes_markup_in_filename() {
 }
 
 #[test]
+fn params_command_matrix_updates_every_declared_axis_and_preserves_machine_shape() {
+    let root = sandbox();
+    let (code, out) = run(skit(&root).args(["add", "--cmd", "echo {topic}", "--name", "matrix"]));
+    assert_eq!(code, 0, "{out}");
+
+    let (code, out) = run(skit(&root).args([
+        "params",
+        "matrix",
+        "--add",
+        "topic",
+        "--add",
+        "extra",
+        "--type",
+        "extra=int",
+        "--default",
+        "extra=3",
+        "--deliver",
+        "extra=env",
+        "--env-target",
+        "extra=EXTRA",
+        "--help-text",
+        "extra=Number of runs",
+        "--prompt",
+        "extra=Count",
+        "--required",
+        "extra",
+        "--add",
+        "choice",
+        "--type",
+        "choice=choice",
+        "--choices",
+        "choice=a,b",
+        "--default",
+        "choice=a",
+        "--add",
+        "secret",
+        "--secret",
+        "secret",
+        "--env-source",
+        "secret=TOKEN",
+        "--add",
+        "items",
+        "--multiple",
+        "items",
+        "--repeat",
+        "items",
+        "--flag",
+        "items=--item",
+        "--add",
+        "verbose",
+        "--type",
+        "verbose=bool",
+        "--flag",
+        "verbose=--verbose",
+        "--action",
+        "verbose=store_true",
+    ]));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("Declared parameters"), "{out}");
+
+    let output = skit(&root)
+        .args(["params", "matrix", "--json"])
+        .output()
+        .expect("skit runs");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rows = payload["parameters"].as_array().unwrap();
+    let row = |name: &str| {
+        rows.iter()
+            .find(|row| row["name"] == name)
+            .unwrap_or_else(|| panic!("missing {name}: {payload}"))
+    };
+    assert_eq!(row("topic")["delivery"], "placeholder");
+    assert_eq!(row("extra")["type"], "int");
+    assert_eq!(row("extra")["default"], 3);
+    assert_eq!(row("extra")["delivery"], "env");
+    assert_eq!(row("extra")["env_target"], "EXTRA");
+    assert_eq!(row("extra")["required"], true);
+    assert_eq!(row("choice")["choices"], serde_json::json!(["a", "b"]));
+    assert_eq!(row("secret")["secret"], true);
+    assert_eq!(row("secret")["env_source"], "TOKEN");
+    assert_eq!(row("items")["multiple"], true);
+    assert_eq!(row("items")["repeat"], true);
+    assert_eq!(row("items")["flag"], "--item");
+    assert_eq!(row("verbose")["action"], "store_true");
+
+    let (code, out) = run(skit(&root).args([
+        "params",
+        "matrix",
+        "--optional",
+        "extra",
+        "--no-secret",
+        "secret",
+        "--no-multiple",
+        "items",
+        "--no-repeat",
+        "items",
+        "--rm",
+        "choice",
+    ]));
+    assert_eq!(code, 0, "{out}");
+    let (code, out) = run(skit(&root).args(["params", "matrix", "--workdir", "invoke"]));
+    assert_eq!(code, 0, "{out}");
+    let output = skit(&root)
+        .args(["params", "matrix", "--json"])
+        .output()
+        .expect("skit runs");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rows = payload["parameters"].as_array().unwrap();
+    assert!(rows.iter().all(|row| row["name"] != "choice"));
+    assert!(
+        rows.iter()
+            .find(|row| row["name"] == "extra")
+            .unwrap()
+            .get("required")
+            .is_none()
+    );
+    let secret = rows.iter().find(|row| row["name"] == "secret").unwrap();
+    assert!(secret.get("secret").is_none());
+    assert!(secret.get("env_source").is_none());
+    let items = rows.iter().find(|row| row["name"] == "items").unwrap();
+    assert_eq!(items["multiple"], false);
+    assert_eq!(items["repeat"], false);
+
+    let before = snapshot_tree(root.path());
+    let (code, out) = run(skit(&root).args(["params", "matrix", "--add", "extra"]));
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("extra is already declared; skipped."), "{out}");
+    assert_eq!(snapshot_tree(root.path()), before);
+}
+
+#[test]
 fn test_remove_escapes_markup_in_name() {
     let root = sandbox();
     run(skit(&root).args(["add", "--cmd", "echo hi", "--name", "[blue]hi[/blue]"]));
@@ -1649,18 +1826,51 @@ fn test_not_found_error_escapes_markup_in_argument() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): a hand-edited [tool.skit] const carries markup in its name/default and the `skit params` table must render it (the oracle lists every managed definition verbatim). Rust's `params` view reconciles managed const definitions against the CURRENT source and hides any whose assignment is absent — a `[red]NAME[/red]` const the body never assigns (it is not a valid identifier, so it cannot be) renders nothing at all (verified: empty stdout, exit 0). The markup-escaping behavior is unobservable because the row is dropped before rendering. Owning ref: params source-reconcile step."]
 fn test_params_table_escapes_markup_in_name_and_default() {
-    // A hand-edited [tool.skit] block can carry markup in a param name/default; the table shows it.
+    // A canonical [tool.skit] block can carry markup in a param name/default; the table shows it.
     let root = sandbox();
-    let block = "# /// script\n# [tool.skit]\n# schema = 1\n#\n# [[tool.skit.params]]\n# name = \"[red]NAME[/red]\"\n# binding = \"const\"\n# type = \"str\"\n# default = \"[blue]hi[/blue]\"\n# ///\nprint(1)\n";
-    let path = write_src(&root, "a.py", block);
+    let source = write_managed_params(
+        "python",
+        "print(1)\n",
+        &[const_str("[red]NAME[/red]", Some("[blue]hi[/blue]"))],
+    )
+    .unwrap();
+    let path = write_src(&root, "a.py", &source);
     run(skit(&root)
         .arg("add")
         .arg(&path)
         .args(["--name", "a", "--kind", "python", "--no-input"]));
+
+    let data = root.path().join("data");
+    let entry = data.join("scripts/a");
+    let payload_path = entry.join("script.py");
+    let meta_path = entry.join("meta.toml");
+    let registry_path = data.join("registry.toml");
+    let payload_before = fs::read(&payload_path).unwrap();
+    let meta_before = fs::read(&meta_path).unwrap();
+    let registry_before = fs::read(&registry_path).unwrap();
+    let state_before = snapshot_tree(&root.path().join("state"));
+
+    let output = skit(&root)
+        .args(["params", "a", "--json"])
+        .output()
+        .expect("skit runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(record["params"][0]["name"], "[red]NAME[/red]");
+    assert_eq!(record["params"][0]["kind"], "const");
+    assert_eq!(record["params"][0]["default"], "[blue]hi[/blue]");
+
     let (code, out) = run(skit(&root).args(["params", "a"]));
     assert_eq!(code, 0, "{out}");
+    assert_eq!(fs::read(payload_path).unwrap(), payload_before);
+    assert_eq!(fs::read(meta_path).unwrap(), meta_before);
+    assert_eq!(fs::read(registry_path).unwrap(), registry_before);
+    assert_eq!(snapshot_tree(&root.path().join("state")), state_before);
     assert!(out.contains("[red]NAME[/red]"), "{out}");
     assert!(out.contains("[blue]hi[/blue]"), "{out}");
 }
@@ -1847,7 +2057,6 @@ fn test_edit_missing_reference_source_escapes_markup_in_path() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `skit params <name> --resync` must print an updated-summary naming the ENTRY (oracle echoes the entry name so markup renders literally). Rust's --resync prints only the refreshed parameter table (\"Parameter: X ...\"), never the entry name, so `[blue]a[/blue]` never appears. Owning ref src/skit/cli.py params resync summary."]
 fn test_edit_params_updated_summary_escapes_markup_in_name() {
     let root = sandbox();
     let block = "# /// script\n# [tool.skit]\n# schema = 1\n#\n# [[tool.skit.params]]\n# name = \"X\"\n# binding = \"const\"\n# type = \"int\"\n# default = 1\n# ///\nX = 1\nprint(X)\n";
@@ -1859,13 +2068,28 @@ fn test_edit_params_updated_summary_escapes_markup_in_name() {
         "python",
         "--no-input",
     ]));
+    let entry = root.path().join("data").join("scripts").join("blue-a-blue");
+    let payload = entry.join("script.py");
+    let meta = entry.join("meta.toml");
+    let registry = root.path().join("data").join("registry.toml");
+    let payload_before = fs::read(&payload).unwrap();
+    let meta_before = fs::read(&meta).unwrap();
+    let registry_before = fs::read(&registry).unwrap();
+    let state_before = snapshot_tree(&root.path().join("state"));
     let (code, out) = run(skit(&root).args(["params", "[blue]a[/blue]", "--resync"]));
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("[blue]a[/blue]"), "{out}");
+    assert!(
+        out.contains("Updated [blue]a[/blue]. Managed parameters: X"),
+        "{out}"
+    );
+    assert!(!out.contains("Parameter: X"), "{out}");
+    assert_eq!(fs::read(payload).unwrap(), payload_before);
+    assert_eq!(fs::read(meta).unwrap(), meta_before);
+    assert_eq!(fs::read(registry).unwrap(), registry_before);
+    assert_eq!(snapshot_tree(&root.path().join("state")), state_before);
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): `--prompt [red]bad[/red]` (no `=`) is a malformed NAME=VALUE that the oracle COLLECTS as a warning and echoes (`--prompt: [red]bad[/red]`), exiting 0. Rust rejects a malformed `--prompt` as a usage error: exit 2 + \"prompt needs NAME=VALUE\", not echoing the bad token. Both exit code (0 vs 2) and the echo diverge."]
 fn test_edit_params_malformed_prompt_escapes_markup() {
     let root = sandbox();
     let block = "# /// script\n# [tool.skit]\n# schema = 1\n#\n# [[tool.skit.params]]\n# name = \"X\"\n# binding = \"const\"\n# type = \"int\"\n# default = 1\n# ///\nX = 1\nprint(X)\n";
@@ -1876,7 +2100,10 @@ fn test_edit_params_malformed_prompt_escapes_markup() {
         .args(["--name", "a", "--kind", "python", "--no-input"]));
     let (code, out) = run(skit(&root).args(["params", "a", "--prompt", "[red]bad[/red]"]));
     assert_eq!(code, 0, "{out}");
-    assert!(out.contains("[red]bad[/red]"), "{out}");
+    assert!(
+        out.contains("Ignored a malformed value: --prompt: [red]bad[/red] (expected NAME=text)."),
+        "{out}"
+    );
 }
 
 #[test]

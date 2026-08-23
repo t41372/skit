@@ -76,6 +76,139 @@ fn versioned_python_shebangs_publish_kind_and_constraint_signals() {
     assert_eq!(shebang_program("#!/usr/bin/Env python3.12"), Some("Env"));
 }
 
+fn interpreter_shebang_kind(line: &str) -> Option<&'static str> {
+    infer_kind(Path::new("extensionless"), Some(line), false)
+}
+
+#[test]
+fn test_shebang_plain() {
+    assert_eq!(shebang_program("#!/bin/bash"), Some("bash"));
+}
+
+#[test]
+fn test_shebang_env_form() {
+    assert_eq!(shebang_program("#!/usr/bin/env python3"), Some("python3"));
+}
+
+#[test]
+fn test_shebang_env_dash_s_with_flags() {
+    assert_eq!(
+        shebang_program("#!/usr/bin/env -S deno run --allow-net"),
+        Some("deno")
+    );
+}
+
+#[test]
+fn test_shebang_none_when_no_shebang() {
+    assert_eq!(shebang_program("echo hi"), None);
+}
+
+#[test]
+fn test_shebang_none_when_empty_hashbang_line() {
+    assert_eq!(shebang_program("#!"), None);
+}
+
+#[test]
+fn test_shebang_env_with_only_flags_is_none() {
+    assert_eq!(shebang_program("#!/usr/bin/env -S"), None);
+}
+
+#[test]
+fn test_kind_for_shebang_maps_the_program_or_none() {
+    for (line, expected) in [
+        ("#!/usr/bin/env bash", Some("shell")),
+        ("#!/usr/bin/env node", Some("js")),
+        ("#!/usr/bin/env python3", Some("python")),
+        ("#!/usr/bin/env cobol", None),
+        ("echo hi", None),
+    ] {
+        assert_eq!(interpreter_shebang_kind(line), expected, "{line}");
+    }
+}
+
+#[test]
+fn test_kind_for_shebang_versioned_python_is_python() {
+    assert_eq!(
+        interpreter_shebang_kind("#!/usr/bin/env python3.12"),
+        Some("python")
+    );
+    assert_eq!(interpreter_shebang_kind("#!/usr/bin/env pythonw"), None);
+}
+
+#[test]
+fn test_kind_for_shebang_text_versioned_python_and_non_matches() {
+    for (line, expected) in [
+        ("#!/usr/bin/env python3.12", Some("python")),
+        ("#!/usr/bin/env python3", Some("python")),
+        ("#!/usr/bin/env python", Some("python")),
+        ("#!/usr/bin/env pythonw", None),
+        ("#!/usr/bin/awk -f", None),
+    ] {
+        assert_eq!(interpreter_shebang_kind(line), expected, "{line}");
+    }
+}
+
+#[test]
+fn test_infer_kind_versioned_python_shebang() {
+    assert_eq!(
+        infer_kind(
+            Path::new("runme"),
+            Some("#!/usr/bin/env python3.12"),
+            !cfg!(windows),
+        ),
+        Some("python")
+    );
+}
+
+#[test]
+fn test_infer_extension_beats_shebang() {
+    assert_eq!(
+        infer_kind(Path::new("j.py"), Some("#!/bin/bash"), true),
+        Some("python")
+    );
+}
+
+#[test]
+fn test_infer_shebang_beats_exec_bit() {
+    assert_eq!(
+        infer_kind(Path::new("deploy"), Some("#!/usr/bin/env bash"), true),
+        Some("shell")
+    );
+}
+
+#[test]
+fn test_infer_unknown_shebang_program_falls_to_exec_bit() {
+    assert_eq!(
+        infer_kind(
+            Path::new("prog"),
+            Some("#!/usr/bin/env frobnicator"),
+            !cfg!(windows),
+        ),
+        if cfg!(windows) { None } else { Some("exe") }
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn test_infer_exec_bit_only_is_exe() {
+    assert_eq!(infer_kind(Path::new("prog"), None, true), Some("exe"));
+}
+
+#[test]
+fn test_infer_plain_file_is_unknown() {
+    assert_eq!(infer_kind(Path::new("notes"), None, false), None);
+}
+
+#[test]
+fn test_infer_zsh_extension_is_shell() {
+    assert_eq!(infer_kind(Path::new("x.zsh"), None, false), Some("shell"));
+}
+
+#[test]
+fn test_infer_r_extension_is_case_insensitive() {
+    assert_eq!(infer_kind(Path::new("x.R"), None, false), Some("r"));
+}
+
 #[test]
 fn python_metadata_validation_uses_pep_508_and_pep_440_grammars() {
     for requirement in [

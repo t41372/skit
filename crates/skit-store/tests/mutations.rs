@@ -1,16 +1,22 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
+    path::{Path, PathBuf},
     sync::mpsc,
     sync::{Arc, Barrier},
     thread,
     time::Duration,
 };
 
+use serde_json::json;
 use skit_application::{
-    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, RepositoryError,
-    SourcePermissions, UpdateEntry,
+    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, ExternalCopyEdit,
+    FinalizeExternalCopyEditError, RepositoryError, SourcePermissions, UpdateEntry,
 };
-use skit_domain::{EntryKind, EntrySettings, StorageMode};
+use skit_domain::{
+    EntryKind, EntrySettings, StorageMode,
+    parameters::{ParamDecl, ParameterDelivery, ParameterType},
+};
 use skit_store::{FileStore, content_hash};
 use tempfile::TempDir;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
@@ -33,6 +39,40 @@ fn request(name: &str, bytes: &[u8]) -> CreateEntry {
         }),
         settings: EntrySettings::default(),
     }
+}
+
+fn javascript_request(name: &str, bytes: &[u8]) -> CreateEntry {
+    let mut request = request(name, bytes);
+    request.kind = EntryKind::parse("js").unwrap();
+    request.source = format!("/original/{name}.js");
+    request.payload.as_mut().unwrap().stored_name = Some("script.js".to_owned());
+    request.settings.dependencies = vec!["chalk".to_owned()];
+    request
+}
+
+fn directory_bytes(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+    fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<PathBuf, Vec<u8>>) {
+        let mut entries = fs::read_dir(directory)
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            if entry.file_type().unwrap().is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
 }
 
 fn write_legacy_meta(root: &TempDir, slug: &str, name: &str) {
@@ -106,6 +146,237 @@ fn create_is_atomic_mints_identity_and_preserves_payload_bytes() {
             0o755
         );
     }
+}
+
+#[test]
+fn test_write_read_parameters_roundtrip_and_legacy_params_untouched() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let mut create = request("rt", b"");
+    create.kind = EntryKind::parse("command").unwrap();
+    create.mode = StorageMode::Reference;
+    create.source.clear();
+    create.payload = None;
+    create.settings = EntrySettings {
+        template: "run {a} {b}".to_owned(),
+        params: vec!["a".to_owned(), "b".to_owned()],
+        ..EntrySettings::default()
+    };
+    let created = store.create(create).unwrap();
+    let entry_dir = root.path().join("scripts/rt");
+    let meta_path = entry_dir.join("meta.toml");
+
+    // A future root field is not part of EntrySettings, but every settings write must retain it.
+    let mut source = fs::read_to_string(&meta_path).unwrap();
+    source.push_str("\n[future]\nkeep = true\n");
+    fs::write(&meta_path, source).unwrap();
+    let metadata_before_read = fs::read(&meta_path).unwrap();
+    let held = store.resolve(created.slug.as_str()).unwrap();
+    assert_eq!(held.meta.extra["future"], json!({"keep": true}));
+    assert!(!held.meta.extra.contains_key("parameters"));
+    assert_eq!(
+        fs::read(&meta_path).unwrap(),
+        metadata_before_read,
+        "resolving and projecting settings must not rewrite metadata"
+    );
+    let registry_before_write = fs::read(root.path().join("registry.toml")).unwrap();
+
+    let mut a = ParamDecl::new("a");
+    a.delivery = ParameterDelivery::Placeholder;
+    a.parameter_type = ParameterType::Int;
+    a.required = false;
+    let mut settings = EntrySettings::from_meta(&held.meta);
+    assert_eq!(settings.params, ["a", "b"]);
+    assert_eq!(settings.template, "run {a} {b}");
+    assert!(settings.parameters.is_empty());
+    settings.parameters = vec![a.clone()];
+
+    let updated = store
+        .update_settings(&held, &settings, &held.meta.workdir)
+        .unwrap();
+    let back = EntrySettings::from_meta(&updated.meta);
+    assert_eq!(back.parameters, [a.clone()]);
+    assert_eq!(back.params, ["a", "b"]);
+    assert_eq!(back.template, "run {a} {b}");
+    assert_eq!(updated.meta.extra["future"], json!({"keep": true}));
+
+    let metadata_before_reread = fs::read(&meta_path).unwrap();
+    let resolved = store.resolve(created.slug.as_str()).unwrap();
+    assert_eq!(EntrySettings::from_meta(&resolved.meta), back);
+    assert_eq!(resolved.meta.extra["future"], json!({"keep": true}));
+    assert_eq!(
+        fs::read(&meta_path).unwrap(),
+        metadata_before_reread,
+        "reading typed parameter rows must not rewrite their stored bytes"
+    );
+    let document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert_eq!(
+        document["params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    let rows = document["parameters"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"].as_str(), Some("a"));
+    assert_eq!(rows[0]["delivery"].as_str(), Some("placeholder"));
+    assert_eq!(rows[0]["type"].as_str(), Some("int"));
+    assert!(rows[0].get("required").is_none());
+    assert_eq!(document["future"]["keep"].as_bool(), Some(true));
+
+    let registry_after_write = fs::read(root.path().join("registry.toml")).unwrap();
+    assert_ne!(registry_after_write, registry_before_write);
+    let scan = store.scan().unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    assert!(scan.diagnostics.is_empty());
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        registry_after_write,
+        "the settings write must publish a fresh registry projection"
+    );
+
+    let mut hand_edit = fs::read_to_string(&meta_path).unwrap();
+    hand_edit = hand_edit.replace(
+        "type = \"int\"\n",
+        "type = \"int\"\nfuture_axis = \"keep\"\n",
+    );
+    fs::write(&meta_path, hand_edit).unwrap();
+    let mut stale_settings = EntrySettings::from_meta(&resolved.meta);
+    stale_settings.parameters[0].help = "edited through the typed API".to_owned();
+    let merged = store
+        .update_settings(&resolved, &stale_settings, &resolved.meta.workdir)
+        .unwrap();
+    let document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert_eq!(
+        document["parameters"][0]["future_axis"].as_str(),
+        Some("keep")
+    );
+    assert_eq!(
+        document["parameters"][0]["help"].as_str(),
+        Some("edited through the typed API")
+    );
+
+    let mut cleared = EntrySettings::from_meta(&merged.meta);
+    cleared.parameters.clear();
+    let cleared = store
+        .update_settings(&merged, &cleared, &merged.meta.workdir)
+        .unwrap();
+    let expected_after = EntrySettings::from_meta(&cleared.meta);
+    assert!(expected_after.parameters.is_empty());
+    assert_eq!(expected_after.params, ["a", "b"]);
+    assert_eq!(expected_after.template, "run {a} {b}");
+    assert_eq!(cleared.meta.extra["future"], json!({"keep": true}));
+    let resolved_after = store.resolve(created.slug.as_str()).unwrap();
+    assert_eq!(
+        EntrySettings::from_meta(&resolved_after.meta),
+        expected_after
+    );
+    assert_eq!(resolved_after.meta.extra["future"], json!({"keep": true}));
+    let document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!document.contains_key("parameters"));
+    assert_eq!(
+        document["params"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    assert_eq!(document["future"]["keep"].as_bool(), Some(true));
+    let registry_after_clear = fs::read(root.path().join("registry.toml")).unwrap();
+    assert_ne!(registry_after_clear, registry_after_write);
+    let scan = store.scan().unwrap();
+    assert_eq!(scan.entries.len(), 1);
+    assert!(scan.diagnostics.is_empty());
+    assert_eq!(
+        fs::read(root.path().join("registry.toml")).unwrap(),
+        registry_after_clear,
+        "the clear must publish a fresh registry projection"
+    );
+
+    let mut files = fs::read_dir(entry_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(files, ["meta.toml".to_owned()]);
+}
+
+#[test]
+fn update_settings_sets_then_clears_needs_without_losing_extensions_or_rewriting_reads() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let created = store.create(request("needs", b"print('ok')\n")).unwrap();
+    let meta_path = root.path().join("scripts/needs/meta.toml");
+    let mut document = fs::read_to_string(&meta_path).unwrap();
+    document.push_str("\n[future]\nkeep = true\n");
+    fs::write(&meta_path, document).unwrap();
+    let held = store.resolve(created.slug.as_str()).unwrap();
+    let bytes_before_update = fs::read(&meta_path).unwrap();
+    assert_eq!(held.meta.extra["future"], json!({"keep": true}));
+    assert_eq!(fs::read(&meta_path).unwrap(), bytes_before_update);
+
+    let mut settings = EntrySettings::from_meta(&held.meta);
+    settings.needs = vec!["jq".to_owned(), "ffmpeg".to_owned()];
+    let updated = store
+        .update_settings(&held, &settings, &held.meta.workdir)
+        .unwrap();
+    assert_eq!(
+        EntrySettings::from_meta(&updated.meta).needs,
+        settings.needs
+    );
+    assert_eq!(updated.meta.extra["future"], json!({"keep": true}));
+    let set_document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert_eq!(
+        set_document["needs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["jq", "ffmpeg"]
+    );
+    assert_eq!(set_document["future"]["keep"].as_bool(), Some(true));
+
+    let set_bytes = fs::read(&meta_path).unwrap();
+    let reread = store.resolve(created.slug.as_str()).unwrap();
+    assert_eq!(EntrySettings::from_meta(&reread.meta).needs, settings.needs);
+    assert_eq!(fs::read(&meta_path).unwrap(), set_bytes);
+
+    settings.needs.clear();
+    let cleared = store
+        .update_settings(&reread, &settings, &reread.meta.workdir)
+        .unwrap();
+    assert!(EntrySettings::from_meta(&cleared.meta).needs.is_empty());
+    assert_eq!(cleared.meta.extra["future"], json!({"keep": true}));
+    let cleared_document = fs::read_to_string(&meta_path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!cleared_document.contains_key("needs"));
+    assert_eq!(cleared_document["future"]["keep"].as_bool(), Some(true));
+
+    let cleared_bytes = fs::read(&meta_path).unwrap();
+    let reread = store.resolve(created.slug.as_str()).unwrap();
+    assert!(EntrySettings::from_meta(&reread.meta).needs.is_empty());
+    assert_eq!(reread.meta.extra["future"], json!({"keep": true}));
+    assert_eq!(fs::read(&meta_path).unwrap(), cleared_bytes);
 }
 
 #[test]
@@ -285,6 +556,235 @@ fn copy_edit_is_identity_and_source_compare_and_swap() {
 }
 
 #[test]
+fn external_copy_edit_finalize_hashes_the_editors_current_bytes_without_rewriting_them() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::write(&source, b"written by editor").unwrap();
+
+    let finalized = store.finalize_external_copy_edit(&edit).unwrap();
+
+    assert_eq!(finalized.bytes(), b"written by editor");
+    assert_eq!(fs::read(&source).unwrap(), finalized.bytes());
+    assert_eq!(
+        finalized.entry().meta.source_hash,
+        content_hash(b"written by editor")
+    );
+    assert_eq!(
+        store.resolve("External").unwrap(),
+        finalized.entry().clone()
+    );
+}
+
+#[test]
+fn external_copy_edit_finalize_refuses_a_metadata_race_and_preserves_the_editors_bytes() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External Race", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::write(&source, b"written by editor").unwrap();
+    let raced = store
+        .describe(edit.entry(), "changed concurrently")
+        .unwrap();
+
+    let error = store.finalize_external_copy_edit(&edit).unwrap_err();
+
+    assert!(matches!(
+        error,
+        FinalizeExternalCopyEditError::Repository(RepositoryError::StaleEntry { .. })
+    ));
+    assert_eq!(fs::read(&source).unwrap(), b"written by editor");
+    assert_eq!(
+        store.resolve("External Race").unwrap().meta.description,
+        raced.meta.description
+    );
+    assert_eq!(
+        store.resolve("External Race").unwrap().meta.source_hash,
+        claimed.meta.source_hash
+    );
+}
+
+#[test]
+fn external_copy_edit_finalize_failure_never_restores_or_replaces_editor_output() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External Failure", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::write(&source, b"written by editor").unwrap();
+    let registry = root.path().join("registry.toml");
+    fs::remove_file(&registry).unwrap();
+    fs::create_dir(&registry).unwrap();
+    let corrupt = root.path().join("registry.toml.corrupt");
+    fs::create_dir(&corrupt).unwrap();
+    fs::write(corrupt.join("occupied"), b"keep").unwrap();
+
+    assert!(store.finalize_external_copy_edit(&edit).is_err());
+
+    assert_eq!(fs::read(&source).unwrap(), b"written by editor");
+    let metadata =
+        fs::read_to_string(root.path().join("scripts/external-failure/meta.toml")).unwrap();
+    assert!(metadata.contains(&claimed.meta.source_hash));
+    assert!(!metadata.contains(&content_hash(b"written by editor")));
+}
+
+#[test]
+fn concurrent_external_edit_finalizers_allow_one_metadata_cas_winner() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External CAS", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::write(&source, b"written by editor").unwrap();
+    let barrier = Arc::new(Barrier::new(3));
+    let handles = [(), ()].map(|()| {
+        let store = store.clone();
+        let edit = edit.clone();
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store.finalize_external_copy_edit(&edit)
+        })
+    });
+    barrier.wait();
+
+    let results = handles.map(|handle| handle.join().unwrap());
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    assert_eq!(
+        results
+            .iter()
+            .filter(|result| {
+                matches!(
+                    result,
+                    Err(FinalizeExternalCopyEditError::Repository(
+                        RepositoryError::StaleEntry { .. }
+                    ))
+                )
+            })
+            .count(),
+        1
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"written by editor");
+    assert_eq!(
+        store.resolve("External CAS").unwrap().meta.source_hash,
+        content_hash(b"written by editor")
+    );
+}
+
+#[test]
+fn test_concurrent_add_python_both_succeed_with_distinct_slugs() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let barrier = Arc::new(Barrier::new(8));
+    let cases = [
+        "Concurrent Add",
+        "Concurrent-Add",
+        "Concurrent_Add",
+        "Concurrent.Add",
+        "Concurrent/Add",
+        "Concurrent:Add",
+        "Concurrent+Add",
+        "Concurrent=Add",
+    ];
+    let workers: Vec<_> = cases
+        .into_iter()
+        .map(|name| {
+            let store = store.clone();
+            let barrier = Arc::clone(&barrier);
+            let name = name.to_owned();
+            thread::spawn(move || {
+                let bytes = format!("payload for {name}\n").into_bytes();
+                barrier.wait();
+                let entry = store.create(request(&name, &bytes)).unwrap();
+                (entry, bytes)
+            })
+        })
+        .collect();
+
+    let created: Vec<_> = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect();
+    let slugs: BTreeSet<_> = created
+        .iter()
+        .map(|(entry, _)| entry.slug.as_str())
+        .collect();
+    assert_eq!(created.len(), 8);
+    assert_eq!(slugs.len(), 8);
+
+    let registry: toml::Table =
+        toml::from_str(&fs::read_to_string(root.path().join("registry.toml")).unwrap()).unwrap();
+    let rows = registry
+        .get("entries")
+        .and_then(toml::Value::as_table)
+        .unwrap();
+    assert_eq!(rows.len(), 8);
+    for (entry, bytes) in &created {
+        let row = rows
+            .get(entry.slug.as_str())
+            .and_then(toml::Value::as_table)
+            .unwrap();
+        assert_eq!(
+            row.get("name").and_then(toml::Value::as_str),
+            Some(entry.meta.name.as_str())
+        );
+        assert_eq!(
+            fs::read(
+                root.path()
+                    .join("scripts")
+                    .join(entry.slug.as_str())
+                    .join("script.py")
+            )
+            .unwrap(),
+            *bytes
+        );
+    }
+    let staging = root.path().join(".staging");
+    assert!(
+        !staging.exists() || fs::read_dir(staging).unwrap().next().is_none(),
+        "concurrent creates must not leave staging residue"
+    );
+}
+
+#[test]
+fn external_copy_edit_finalize_reports_a_missing_payload_without_recreating_it() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("External Gone", b"base")).unwrap())
+        .unwrap();
+    let edit = store.prepare_external_copy_edit(&claimed).unwrap();
+    let source = edit.path().to_owned();
+    fs::remove_file(&source).unwrap();
+    let metadata = fs::read(root.path().join("scripts/external-gone/meta.toml")).unwrap();
+
+    let error = store.finalize_external_copy_edit(&edit).unwrap_err();
+
+    assert!(matches!(
+        error,
+        FinalizeExternalCopyEditError::Read { ref source, .. }
+            if source.kind() == std::io::ErrorKind::NotFound
+    ));
+    assert!(!source.exists());
+    assert_eq!(
+        fs::read(root.path().join("scripts/external-gone/meta.toml")).unwrap(),
+        metadata
+    );
+}
+
+#[test]
 fn combined_update_commits_metadata_and_source_under_one_identity_check() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
@@ -428,12 +928,13 @@ fn concurrent_copy_edits_allow_exactly_one_source_cas_winner() {
 }
 
 #[test]
-fn removal_waits_for_the_dependency_transaction_lock() {
+fn test_store_remove_waits_for_a_live_js_install_lock() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
     let claimed = store
-        .claim_identity(&store.create(request("Locked", b"base")).unwrap())
+        .create(javascript_request("Locked", b"console.log(1);\n"))
         .unwrap();
+    let entry_dir = store.entry_dir_path(&claimed.slug);
     let lock_path = root.path().join(".locks/locked.skit-deps.lock");
     fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
     let lock = OpenOptions::new()
@@ -441,7 +942,7 @@ fn removal_waits_for_the_dependency_transaction_lock() {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(lock_path)
+        .open(&lock_path)
         .unwrap();
     lock.lock().unwrap();
     let (started_tx, started_rx) = mpsc::channel();
@@ -462,6 +963,46 @@ fn removal_waits_for_the_dependency_transaction_lock() {
         "Locked"
     );
     worker.join().unwrap();
+    assert!(!entry_dir.exists());
+    assert!(
+        lock_path.is_file(),
+        "the persistent dependency lock inode was removed with the entry"
+    );
+}
+
+#[test]
+fn test_store_remove_surfaces_install_lock_failure_without_deleting_entry() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store
+        .create(javascript_request("Locked", b"console.log(1);\n"))
+        .unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    let meta = entry_dir.join("meta.toml");
+    let payload = store.payload_path(&entry).unwrap();
+    let registry = root.path().join("registry.toml");
+    let lock_path = root.path().join(".locks/locked.skit-deps.lock");
+    fs::create_dir_all(&lock_path).unwrap();
+
+    let entry_before = directory_bytes(&entry_dir);
+    let meta_before = fs::read(&meta).unwrap();
+    let payload_before = fs::read(&payload).unwrap();
+    let registry_before = fs::read(&registry).unwrap();
+
+    let error = store.remove(&entry).unwrap_err();
+
+    assert!(error.to_string().contains("skit-deps.lock"), "{error}");
+    assert!(entry_dir.is_dir());
+    assert_eq!(directory_bytes(&entry_dir), entry_before);
+    assert_eq!(fs::read(&meta).unwrap(), meta_before);
+    assert_eq!(fs::read(&payload).unwrap(), payload_before);
+    assert_eq!(fs::read(&registry).unwrap(), registry_before);
+    assert!(
+        lock_path.is_dir(),
+        "the refusing dependency-lock directory was replaced"
+    );
+    let fresh = store.resolve(entry.slug.as_str()).unwrap();
+    assert_eq!(fresh.meta, entry.meta);
 }
 
 #[test]

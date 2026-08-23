@@ -89,6 +89,11 @@ printf '%s\n' 'FAKE_BODY_END'
         let mut permissions = fs::metadata(&path).unwrap().permissions();
         permissions.set_mode(0o755);
         fs::set_permissions(path, permissions).unwrap();
+        let npm = self.bin.path().join("npm");
+        fs::write(&npm, "#!/bin/sh\nmkdir -p node_modules\n").unwrap();
+        let mut permissions = fs::metadata(&npm).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(npm, permissions).unwrap();
     }
 
     #[cfg(windows)]
@@ -106,9 +111,25 @@ printf '%s\n' 'FAKE_BODY_END'
             ),
         )
         .unwrap();
+        fs::write(
+            self.bin.path().join("npm.CMD"),
+            "@echo off\r\nmkdir node_modules 2>nul\r\n",
+        )
+        .unwrap();
     }
 
     fn create_managed_entry(&self, name: &str, kind: &str, origin: &str, source: &str) {
+        self.create_managed_entry_with_dependencies(name, kind, origin, source, Vec::new());
+    }
+
+    fn create_managed_entry_with_dependencies(
+        &self,
+        name: &str,
+        kind: &str,
+        origin: &str,
+        source: &str,
+        dependencies: Vec<String>,
+    ) {
         let kind_value = EntryKind::parse(kind).unwrap();
         let ParseOutcome::Parsed(document) = parse_document(kind, source) else {
             panic!("test fixture must parse as {kind}");
@@ -136,6 +157,7 @@ printf '%s\n' 'FAKE_BODY_END'
                 }),
                 settings: EntrySettings {
                     interpreter: "node".to_owned(),
+                    dependencies,
                     ..EntrySettings::default()
                 },
             })
@@ -181,7 +203,7 @@ printf '%s\n' 'FAKE_BODY_END'
             .unwrap()
             .filter_map(Result::ok)
             .map(|item| item.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with(".run-"))
+            .filter(|name| name.starts_with(".run-") || name.starts_with(".injected-"))
             .collect()
     }
 }
@@ -212,8 +234,34 @@ fn test_ts_temp_copy_has_ts_suffix() {
         tagged(&text, "FAKE_PATH=").trim_end().ends_with(".ts"),
         "{text}"
     );
+    assert!(
+        !Path::new(tagged(&text, "FAKE_PATH=").trim_end()).starts_with(sandbox.data.path()),
+        "dependency-free injected values must use OS private temp: {text}"
+    );
     assert!(text.contains("const N: number = 7;"), "{text}");
     assert!(sandbox.staged_files("tscopy").is_empty());
+}
+
+#[test]
+fn dependency_backed_javascript_keeps_the_injected_copy_next_to_node_modules() {
+    let sandbox = Sandbox::new();
+    sandbox.create_managed_entry_with_dependencies(
+        "withdeps",
+        "js",
+        "withdeps.js",
+        "const NAME = 'old';\n",
+        vec!["chalk".to_owned()],
+    );
+
+    let output = sandbox.run("withdeps", "NAME", "new");
+    let text = output_text(&output);
+    assert_eq!(output.status.code(), Some(0), "{text}");
+    let staged = Path::new(tagged(&text, "FAKE_PATH=").trim_end());
+    let entry = sandbox.store().resolve("withdeps").unwrap();
+    let entry_dir = sandbox.store().entry_dir_path(&entry.slug);
+    assert_eq!(staged.parent(), Some(entry_dir.as_path()), "{text}");
+    assert!(entry_dir.join("node_modules").is_dir());
+    assert!(sandbox.staged_files("withdeps").is_empty());
 }
 
 #[test]

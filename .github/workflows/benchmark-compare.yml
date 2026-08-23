@@ -1,19 +1,12 @@
 name: benchmark (compare)
 
 on:
-  workflow_dispatch:
-    inputs:
-      base:
-        description: "Base ref"
-        required: true
-      head:
-        description: "Head ref"
-        required: true
+  pull_request:
 
 permissions: {}
 
 concurrency:
-  group: benchmark-compare-${{ github.event.inputs.base }}-${{ github.event.inputs.head }}
+  group: benchmark-compare-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 env:
@@ -22,7 +15,7 @@ env:
 
 jobs:
   compare:
-    name: A/B (${{ inputs.base }} vs ${{ inputs.head }})
+    name: A/B pull request
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     permissions:
@@ -35,21 +28,26 @@ jobs:
       - name: Check out the base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.base }}
+          ref: ${{ github.event.pull_request.base.sha }}
           path: side-base
           persist-credentials: false
       - name: Check out the head
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.head }}
+          ref: ${{ github.event.pull_request.head.sha }}
           path: side-head
           persist-credentials: false
       - name: Install Python and uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
           python-version: "3.13"
-          enable-cache: true
+          activate-environment: true
+          # Either selected ref can execute arbitrary benchmark code. Do not let it write a cache
+          # that a later trusted run can restore.
+          enable-cache: false
+      - name: Verify benchmark Python 3.13
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version'
       - name: Install hyperfine
         uses: ./.github/actions/install-hyperfine
       - name: Validate comparison sides

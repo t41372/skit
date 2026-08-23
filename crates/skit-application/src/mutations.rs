@@ -1,4 +1,8 @@
-use std::{fmt::Debug, path::Path};
+use std::{
+    fmt::Debug,
+    io,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use skit_domain::{Entry, EntryKind, EntrySettings, StorageMode, parameters::ParameterInvariant};
@@ -65,13 +69,84 @@ pub struct UpdateEntry {
     pub expected_source_hash: String,
 }
 
+/// Repository-owned claim for one copy source prepared for an external editor.
+pub trait ExternalCopyEdit: Debug {
+    /// Return the claimed entry incarnation.
+    fn entry(&self) -> &Entry;
+
+    /// Return the authoritative stored source path passed to the editor.
+    fn path(&self) -> &Path;
+}
+
+/// Locked source snapshot and metadata produced by finalizing one external edit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinalizedExternalCopyEdit {
+    entry: Entry,
+    bytes: Vec<u8>,
+}
+
+impl FinalizedExternalCopyEdit {
+    /// Build one adapter result from the same locked source read used for its hash.
+    #[must_use]
+    pub const fn new(entry: Entry, bytes: Vec<u8>) -> Self {
+        Self { entry, bytes }
+    }
+
+    /// Return the finalized entry metadata.
+    #[must_use]
+    pub const fn entry(&self) -> &Entry {
+        &self.entry
+    }
+
+    /// Return the exact bytes read while the finalize lock was held.
+    #[must_use]
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Failure from finalizing an external edit.
+#[derive(Debug)]
+pub enum FinalizeExternalCopyEditError {
+    /// Identity, metadata, confinement, or projection failed.
+    Repository(RepositoryError),
+    /// The authoritative edited source could not be read while the lock was held.
+    Read {
+        /// Source path passed to the editor.
+        path: PathBuf,
+        /// Operating-system read failure.
+        source: io::Error,
+    },
+}
+
+impl From<RepositoryError> for FinalizeExternalCopyEditError {
+    fn from(error: RepositoryError) -> Self {
+        Self::Repository(error)
+    }
+}
+
+/// Failure from an update whose adapter preparation must finish before the entry can change.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PreparedEntryUpdateError<E> {
+    /// The entry read, identity claim, name preflight, or final repository update failed.
+    Repository(RepositoryError),
+    /// The host preparation failed before the repository update started.
+    Preparation(E),
+}
+
 /// Identity-gated mutation port shared by CLI, Ratatui, and future GUI adapters.
 pub trait EntryMutationRepository: Debug {
+    /// Repository-owned external-edit claim type.
+    type ExternalEdit: ExternalCopyEdit;
+
     /// Create a new entry atomically.
     fn create(&self, request: CreateEntry) -> Result<Entry, RepositoryError>;
 
     /// Verify a held entry and stamp legacy metadata with an immutable identity.
     fn claim_identity(&self, entry: &Entry) -> Result<Entry, RepositoryError>;
+
+    /// Verify identity and name availability before a fallible external preparation.
+    fn preflight_update_entry(&self, entry: &Entry, name: &str) -> Result<Entry, RepositoryError>;
 
     /// Replace an entry description while preserving its identity.
     fn describe(&self, entry: &Entry, description: &str) -> Result<Entry, RepositoryError>;
@@ -100,6 +175,18 @@ pub trait EntryMutationRepository: Debug {
         bytes: &[u8],
         expected_source_hash: &str,
     ) -> Result<Entry, RepositoryError>;
+
+    /// Claim one authoritative copy source before an external editor starts.
+    fn prepare_external_copy_edit(
+        &self,
+        entry: &Entry,
+    ) -> Result<Self::ExternalEdit, RepositoryError>;
+
+    /// Finalize bytes written in place by an external editor without replacing those bytes.
+    fn finalize_external_copy_edit(
+        &self,
+        edit: &Self::ExternalEdit,
+    ) -> Result<FinalizedExternalCopyEdit, FinalizeExternalCopyEditError>;
 }
 
 impl<R> LibraryService<R>
@@ -162,6 +249,62 @@ where
     ) -> Result<Entry, RepositoryError> {
         self.repository
             .commit_copy_edit(entry, bytes, expected_source_hash)
+    }
+
+    /// Claim one authoritative source before a user-paced external edit.
+    pub fn prepare_external_copy_edit(
+        &self,
+        entry: &Entry,
+    ) -> Result<R::ExternalEdit, RepositoryError> {
+        self.repository.prepare_external_copy_edit(entry)
+    }
+
+    /// Finalize an in-place external edit through the identity-gated port.
+    pub fn finalize_external_copy_edit(
+        &self,
+        edit: &R::ExternalEdit,
+    ) -> Result<FinalizedExternalCopyEdit, FinalizeExternalCopyEditError> {
+        self.repository.finalize_external_copy_edit(edit)
+    }
+}
+
+impl<R> LibraryService<R>
+where
+    R: EntryMutationRepository,
+{
+    /// Claim and preflight an entry, then prepare one external adapter.
+    ///
+    /// A caller can stop after preparation when the requested external effect does not need a
+    /// metadata rewrite. If it commits an update, the repository repeats its identity and name
+    /// checks. The early checks keep a fallible preparation from changing external state when the
+    /// request is already stale or its destination name is already taken.
+    pub fn prepare_entry_update<T, E>(
+        &self,
+        entry: &Entry,
+        update: &UpdateEntry,
+        prepare: impl FnOnce(&Entry) -> Result<T, E>,
+    ) -> Result<(Entry, T), PreparedEntryUpdateError<E>> {
+        validate_settings(&update.settings, &update.workdir)
+            .map_err(PreparedEntryUpdateError::Repository)?;
+        let claimed = self
+            .repository
+            .preflight_update_entry(entry, &update.name)
+            .map_err(PreparedEntryUpdateError::Repository)?;
+        let prepared = prepare(&claimed).map_err(PreparedEntryUpdateError::Preparation)?;
+        Ok((claimed, prepared))
+    }
+
+    /// Prepare one external adapter, then commit the entry update.
+    pub fn update_entry_after_preparation<E>(
+        &self,
+        entry: &Entry,
+        update: UpdateEntry,
+        prepare: impl FnOnce(&Entry) -> Result<(), E>,
+    ) -> Result<Entry, PreparedEntryUpdateError<E>> {
+        let (claimed, ()) = self.prepare_entry_update(entry, &update, prepare)?;
+        self.repository
+            .update_entry(&claimed, update)
+            .map_err(PreparedEntryUpdateError::Repository)
     }
 }
 

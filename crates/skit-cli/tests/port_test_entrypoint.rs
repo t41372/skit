@@ -131,14 +131,21 @@ fn test_a_real_command_still_reaches_the_cli() {
 #[test]
 fn test_no_arguments_reaches_the_cli() {
     // A bare `skit` opens the TUI, which is the CLI callback's job -- the version flag must not
-    // shortcut it. On a non-terminal the TUI cannot initialize, so it fails with skit's own
-    // "terminal I/O failed" message; nothing goes to stdout and no version line is printed. That
-    // failure IS the proof it reached the TUI path rather than a silent version-exit-0.
+    // shortcut it. On a non-terminal the TUI refuses to claim the terminal, with skit's own
+    // explicit reason; nothing goes to stdout and no version line is printed. That refusal IS
+    // the proof it reached the TUI path rather than a silent version-exit-0. The exact reason
+    // matters: the explicit claim is the one cross-platform guard (Unix raw mode fails on its
+    // own for a piped process; Windows crossterm attaches to the process console and would wait
+    // forever), so a fallback error spelling here means the guard is gone.
     let sandbox = Sandbox::new();
     let (code, stdout, stderr) = sandbox.run(&[]);
     assert_ne!(code, Some(0));
     assert_eq!(stdout, "");
     assert!(stderr.contains("terminal I/O failed"), "{stderr:?}");
+    assert!(
+        stderr.contains("stdin and stdout are not a terminal"),
+        "{stderr:?}"
+    );
 }
 
 #[test]

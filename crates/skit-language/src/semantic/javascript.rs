@@ -37,10 +37,10 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
     let Some(call) = first_parse_args_call(document) else {
         return CliSurface::Absent;
     };
-    let Some(arguments) = call.child_by_field_name("arguments") else {
-        return CliSurface::Absent;
-    };
-    let Some(config) = named_children(arguments).into_iter().next() else {
+    let Some(config) = call
+        .child_by_field_name("arguments")
+        .and_then(|arguments| named_children(arguments).into_iter().next())
+    else {
         return CliSurface::Absent;
     };
     if config.kind() != "object" {
@@ -59,13 +59,15 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
 
     let constants = constant_environment(document);
     let mut fields = Vec::new();
-    for pair in named_children(options) {
-        if pair.kind() != "pair" {
-            continue;
-        }
-        let Some(key) = pair.child_by_field_name("key") else {
-            continue;
-        };
+    for (pair, key, spec) in named_children(options)
+        .into_iter()
+        .filter(|pair| pair.kind() == "pair")
+        .filter_map(|pair| {
+            pair.child_by_field_name("key")
+                .zip(pair.child_by_field_name("value"))
+                .map(|(key, value)| (pair, key, value))
+        })
+    {
         if key.kind() == "computed_property_name" {
             continue;
         }
@@ -77,9 +79,6 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
         declaration.flag = format!("--{name}");
         declaration.secret = is_secret_name(&name);
         let mut degradation = None;
-        let Some(spec) = pair.child_by_field_name("value") else {
-            continue;
-        };
         if spec.kind() != "object" {
             declaration.degraded = true;
             degradation = Some(DegradationReason::DynamicDeclaration);
@@ -125,19 +124,17 @@ fn top_level_candidates(document: &ParsedDocument) -> Vec<SemanticCandidate> {
             .into_iter()
             .filter(|node| node.kind() == "variable_declarator")
         {
-            let Some(name_node) = declarator.child_by_field_name("name") else {
+            let Some((name_node, value)) = declarator
+                .child_by_field_name("name")
+                .zip(declarator.child_by_field_name("value"))
+                .filter(|(name, _)| name.kind() == "identifier")
+            else {
                 continue;
             };
-            if name_node.kind() != "identifier" {
-                continue;
-            }
             let name = text(document, name_node);
             if name.starts_with('_') {
                 continue;
             }
-            let Some(value) = declarator.child_by_field_name("value") else {
-                continue;
-            };
             let Some((parameter_type, default)) = literal_shape(document, value) else {
                 continue;
             };
@@ -282,14 +279,17 @@ fn top_level_declarations(document: &ParsedDocument) -> Vec<(tree_sitter::Node<'
     let mut output = Vec::new();
     for statement in named_children(document.tree.root_node()) {
         let keyword = match statement.kind() {
-            "lexical_declaration" => match statement
-                .child_by_field_name("kind")
-                .map_or("", |node| text(document, node))
-            {
-                "const" => "const",
-                "let" => "let",
-                _ => continue,
-            },
+            "lexical_declaration" => {
+                if statement
+                    .child_by_field_name("kind")
+                    .is_some_and(|node| text(document, node) == "const")
+                {
+                    "const"
+                } else {
+                    // JavaScript and TypeScript lexical declarations are `const` or `let`.
+                    "let"
+                }
+            }
             "variable_declaration" => "var",
             _ => continue,
         };
@@ -382,14 +382,15 @@ fn first_parse_args_call<'tree>(
         if found.is_some() || node.kind() != "call_expression" {
             return;
         }
-        let Some(function) = node.child_by_field_name("function") else {
-            return;
-        };
-        let matches = (function.kind() == "identifier" && text(document, function) == "parseArgs")
-            || (function.kind() == "member_expression"
-                && function
-                    .child_by_field_name("property")
-                    .is_some_and(|property| text(document, property) == "parseArgs"));
+        let matches = node
+            .child_by_field_name("function")
+            .is_some_and(|function| {
+                (function.kind() == "identifier" && text(document, function) == "parseArgs")
+                    || (function.kind() == "member_expression"
+                        && function
+                            .child_by_field_name("property")
+                            .is_some_and(|property| text(document, property) == "parseArgs"))
+            });
         if matches {
             found = Some(node);
         }
@@ -525,29 +526,38 @@ fn count_imports(
     else {
         return;
     };
-    for child in named_children(clause) {
-        match child.kind() {
-            "identifier" => count_one_name(document, child, counts),
-            "namespace_import" => {
-                if let Some(name) = named_children(child)
-                    .into_iter()
-                    .rev()
-                    .find(|node| node.kind() == "identifier")
-                {
-                    count_one_name(document, name, counts);
-                }
+    let children = named_children(clause);
+    for child in children
+        .iter()
+        .copied()
+        .filter(|child| child.kind() == "identifier")
+    {
+        count_one_name(document, child, counts);
+    }
+    for child in children
+        .iter()
+        .copied()
+        .filter(|child| child.kind() == "namespace_import")
+    {
+        if let Some(name) = named_children(child)
+            .into_iter()
+            .rev()
+            .find(|node| node.kind() == "identifier")
+        {
+            count_one_name(document, name, counts);
+        }
+    }
+    for child in children
+        .into_iter()
+        .filter(|child| child.kind() == "named_imports")
+    {
+        for specifier in named_children(child) {
+            let name = specifier
+                .child_by_field_name("alias")
+                .or_else(|| specifier.child_by_field_name("name"));
+            if let Some(name) = name {
+                count_one_name(document, name, counts);
             }
-            "named_imports" => {
-                for specifier in named_children(child) {
-                    let name = specifier
-                        .child_by_field_name("alias")
-                        .or_else(|| specifier.child_by_field_name("name"));
-                    if let Some(name) = name {
-                        count_one_name(document, name, counts);
-                    }
-                }
-            }
-            _ => {}
         }
     }
 }
@@ -560,16 +570,14 @@ fn apply_option_spec(
     degradation: &mut Option<DegradationReason>,
 ) {
     let mut properties = BTreeMap::new();
-    for pair in named_children(spec)
+    for (key, value) in named_children(spec)
         .into_iter()
         .filter(|node| node.kind() == "pair")
+        .filter_map(|pair| {
+            pair.child_by_field_name("key")
+                .zip(pair.child_by_field_name("value"))
+        })
     {
-        let Some(key) = pair.child_by_field_name("key") else {
-            continue;
-        };
-        let Some(value) = pair.child_by_field_name("value") else {
-            continue;
-        };
         let name = property_name(document, key);
         if !name.is_empty() {
             properties.insert(name, value);

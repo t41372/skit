@@ -207,7 +207,7 @@ fn test_typer_bool_default_true_degrades_not_guesses() {
         "import typer\n\ndef main(color: bool = True):\n    pass\n\ntyper.run(main)\n",
     );
     let field = &fields[0];
-    assert!(field.degraded); // --color/--no-color pairing can't be assembled faithfully
+    assert!(field.degraded); // --color/--no-color pairing cannot be assembled faithfully
     assert!(field.action.is_empty());
 }
 
@@ -425,7 +425,7 @@ fn test_click_is_flag_defaulting_on_degrades_not_guesses() {
         "@click.option('--color', is_flag=True, default=True)\ndef m(color): pass\n",
     ));
     let field = &fields[0];
-    assert!(field.degraded); // --color/--no-color pairing can't be assembled faithfully
+    assert!(field.degraded); // --color/--no-color pairing cannot be assembled faithfully
     assert!(field.action.is_empty());
 }
 
@@ -563,7 +563,7 @@ fn test_click_unknown_name_type_degrades() {
     let fields = static_fields(
         "import click\n@click.command()\n@click.option('--p', type=parse_color)\ndef m(p): pass\n",
     );
-    assert!(fields[0].degraded); // an arbitrary callable we won't execute
+    assert!(fields[0].degraded); // an arbitrary callable we will not execute
 }
 
 #[test]
@@ -793,7 +793,7 @@ fn test_annotated_bool_default_true_degrades() {
     ));
     let field = &fields[0];
     assert!(field.degraded);
-    assert!(field.action.is_empty()); // not a store_true -- the --no-color pairing can't be assembled
+    assert!(field.action.is_empty()); // not a store_true -- the --no-color pairing cannot be assembled
 }
 
 #[test]

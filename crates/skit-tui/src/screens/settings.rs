@@ -42,8 +42,8 @@ use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandl
 
 use crate::{
     session::{
-        checkbox_style, edit_textarea, new_textarea, render_line_input, render_textarea,
-        textarea_text,
+        TextAreaEventHandling, checkbox_style, edit_textarea, new_textarea, render_line_input,
+        render_textarea, textarea_text,
     },
     theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel},
 };
@@ -66,6 +66,8 @@ pub enum SettingsControlId {
     },
     /// The affordance that defines a new prompt runner without leaving the screen.
     NewRunner,
+    /// Open the full searchable detected-placeholder picker.
+    ChoosePromptCandidates,
 }
 
 /// One clickable screen region.
@@ -84,6 +86,8 @@ pub enum SettingsScreenEvent {
     Action(SettingsAction),
     /// Ephemeral cursor or scroll state changed and nothing else.
     Changed,
+    /// Open the isolated full detected-placeholder picker.
+    OpenPromptCandidates,
 }
 
 /// Responsive settings geometry.
@@ -150,6 +154,8 @@ enum Item {
     },
     /// The new-runner affordance.
     NewRunner(String),
+    /// Search all detected prompt placeholders beyond the capped inline preview.
+    ChoosePromptCandidates(String),
 }
 
 /// Everything one control needs to draw itself.
@@ -170,13 +176,14 @@ struct ControlDraw<'a> {
 
 /// Ephemeral terminal state for the settings screen.
 ///
-/// Only a text cursor lives here. Every other mark a control shows is read from the model again on
-/// each render, so nothing in this session can disagree with what a save would keep.
+/// Text and option cursors live here. Every selected mark a control shows is read from the model
+/// again on each render, so nothing in this session can disagree with what a save would keep.
 #[derive(Debug, Default)]
 pub struct SettingsScreenSession {
     signature: Option<Vec<(String, ControlShape)>>,
     inputs: BTreeMap<String, LineInput>,
     bodies: BTreeMap<String, Box<RichTextArea<'static>>>,
+    option_cursors: BTreeMap<String, usize>,
     scroll: ScrollableContentState,
     viewport: Rect,
     visible_height: usize,
@@ -223,6 +230,7 @@ impl SettingsScreenSession {
             self.signature = Some(signature);
             self.inputs.clear();
             self.bodies.clear();
+            self.option_cursors.clear();
             for field in fields(view) {
                 let value = field.value().as_text();
                 match shape(field) {
@@ -233,7 +241,14 @@ impl SettingsScreenSession {
                     ControlShape::Line { .. } => {
                         self.inputs.insert(field.key.clone(), LineInput::new(value));
                     }
-                    ControlShape::Toggle | ControlShape::Options { .. } | ControlShape::Static => {}
+                    ControlShape::Options { multiple: true, .. } => {
+                        self.option_cursors.insert(field.key.clone(), 0);
+                    }
+                    ControlShape::Toggle
+                    | ControlShape::Options {
+                        multiple: false, ..
+                    }
+                    | ControlShape::Static => {}
                 }
             }
             return;
@@ -325,6 +340,12 @@ impl SettingsScreenSession {
         if key.kind == KeyEventKind::Release {
             return None;
         }
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('o')
+            && view.prompt_picker_available()
+        {
+            return Some(SettingsScreenEvent::OpenPromptCandidates);
+        }
         // The nav pair wins over every control, so a text box can never strand the keyboard.
         match key.code {
             KeyCode::Tab => return Some(SettingsScreenEvent::Action(SettingsAction::FocusNext)),
@@ -339,6 +360,16 @@ impl SettingsScreenSession {
         }
         let focused = view.focused();
         let field = view.field(focused)?;
+        self.handle_field_key(focused, field, key)
+            .or_else(|| self.scroll_key(key))
+    }
+
+    fn handle_field_key(
+        &mut self,
+        focused: &str,
+        field: &Field,
+        key: KeyEvent,
+    ) -> Option<SettingsScreenEvent> {
         match &field.kind {
             FieldKind::Multiline => self.edit_body(focused, key),
             FieldKind::Boolean if matches!(key.code, KeyCode::Char(' ') | KeyCode::Enter) => {
@@ -348,8 +379,9 @@ impl SettingsScreenSession {
                 )
             }
             FieldKind::Boolean => nav(key),
-            FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
-                choice_key(field, options, key)
+            FieldKind::SingleChoice { options } => choice_key(field, options, key),
+            FieldKind::MultiChoice { options } => {
+                self.multiple_choice_key(focused, field, options, key)
             }
             FieldKind::ReadOnly => None,
             FieldKind::Text
@@ -358,7 +390,44 @@ impl SettingsScreenSession {
             | FieldKind::Path { .. }
             | FieldKind::ArgumentList { .. } => self.edit_line(focused, key),
         }
-        .or_else(|| self.scroll_key(key))
+    }
+
+    fn multiple_choice_key(
+        &mut self,
+        key: &str,
+        field: &Field,
+        options: &[ChoiceOption],
+        event: KeyEvent,
+    ) -> Option<SettingsScreenEvent> {
+        if options.is_empty() {
+            return None;
+        }
+        let cursor = self.option_cursors.entry(key.to_owned()).or_default();
+        match event.code {
+            KeyCode::Down | KeyCode::Right => {
+                *cursor = cursor
+                    .saturating_add(1)
+                    .min(options.len().saturating_sub(1));
+                Some(SettingsScreenEvent::Changed)
+            }
+            KeyCode::Up | KeyCode::Left => {
+                *cursor = cursor.saturating_sub(1);
+                Some(SettingsScreenEvent::Changed)
+            }
+            KeyCode::Home => {
+                *cursor = 0;
+                Some(SettingsScreenEvent::Changed)
+            }
+            KeyCode::End => {
+                *cursor = options.len().saturating_sub(1);
+                Some(SettingsScreenEvent::Changed)
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                let option = options.get(*cursor)?;
+                set_field(key, picked(field, &option.value))
+            }
+            _ => None,
+        }
     }
 
     fn handle_mouse(
@@ -399,11 +468,20 @@ impl SettingsScreenSession {
             }
             SettingsControlId::Option { field, value } => {
                 let owner = view.field(&field)?;
+                if let FieldKind::MultiChoice { options } = &owner.kind
+                    && let Some(position) = options.iter().position(|option| option.value == value)
+                {
+                    self.option_cursors.insert(field.clone(), position);
+                }
                 set_field(&field, picked(owner, &value))
             }
             SettingsControlId::NewRunner => {
                 Some(SettingsScreenEvent::Action(SettingsAction::NewRunner))
             }
+            SettingsControlId::ChoosePromptCandidates if view.prompt_picker_available() => {
+                Some(SettingsScreenEvent::OpenPromptCandidates)
+            }
+            SettingsControlId::ChoosePromptCandidates => None,
         }
     }
 
@@ -425,9 +503,10 @@ impl SettingsScreenSession {
     fn edit_body(&mut self, key: &str, event: KeyEvent) -> Option<SettingsScreenEvent> {
         let body = self.bodies.get_mut(key)?;
         let before = textarea_text(body);
-        let consumed = edit_textarea(body, event, &mut self.undo_group, &mut self.redo_group);
-        if !consumed {
-            return None;
+        match edit_textarea(body, event, &mut self.undo_group, &mut self.redo_group) {
+            TextAreaEventHandling::Ignored => return None,
+            TextAreaEventHandling::VerticalBoundary => return nav(event),
+            TextAreaEventHandling::Consumed => {}
         }
         let after = textarea_text(body);
         Some(if before == after {
@@ -530,7 +609,14 @@ impl SettingsScreenSession {
                 });
             }
             FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
-                render_options(frame, area, draw, options, hits);
+                render_options(
+                    frame,
+                    area,
+                    draw,
+                    options,
+                    self.option_cursors.get(&field.key).copied(),
+                    hits,
+                );
             }
             FieldKind::ReadOnly => render_read_only(frame, area, draw),
             FieldKind::Text
@@ -591,14 +677,16 @@ fn picked(field: &Field, value: &str) -> FieldValue {
     let FieldKind::MultiChoice { options } = &field.kind else {
         return FieldValue::Explicit(TypedValue::Choice(value.to_owned()));
     };
+    let current = match field.value().explicit() {
+        Some(TypedValue::Choices(values)) => values.clone(),
+        _ => Vec::new(),
+    };
     let mut selected = options
         .iter()
-        .filter(|option| option.value != value && is_selected(field, option))
+        .filter(|option| option.value != value && current.contains(&option.value))
         .map(|option| option.value.clone())
         .collect::<Vec<_>>();
-    if !options
-        .iter()
-        .any(|option| option.value == value && is_selected(field, option))
+    if !current.iter().any(|name| name == value)
         && let Some(position) = options.iter().position(|option| option.value == value)
     {
         // Keep the field's own option order, so the stored list never depends on click order.
@@ -608,6 +696,11 @@ fn picked(field: &Field, value: &str) -> FieldValue {
             .count();
         selected.insert(ahead, value.to_owned());
     }
+    selected.extend(
+        current
+            .into_iter()
+            .filter(|name| !options.iter().any(|option| option.value == *name)),
+    );
     FieldValue::Explicit(TypedValue::Choices(selected))
 }
 
@@ -620,17 +713,15 @@ fn choice_key(
     if options.is_empty() {
         return None;
     }
-    let multiple = matches!(field.kind, FieldKind::MultiChoice { .. });
     let current = options
         .iter()
         .position(|option| is_selected(field, option))
         .unwrap_or_default();
     let next = match key.code {
-        // An open set has no single cursor to walk, so the arrows move the keyboard instead.
-        KeyCode::Down | KeyCode::Right if !multiple => current
+        KeyCode::Down | KeyCode::Right => current
             .saturating_add(1)
             .min(options.len().saturating_sub(1)),
-        KeyCode::Up | KeyCode::Left if !multiple => current.saturating_sub(1),
+        KeyCode::Up | KeyCode::Left => current.saturating_sub(1),
         KeyCode::Char(' ') | KeyCode::Enter => current,
         _ => return nav(key),
     };
@@ -686,7 +777,8 @@ pub fn render_settings(
                     .spans
                     .insert(anchor.clone(), (item.start, end.saturating_sub(item.start)));
             }
-            Item::Spacer | Item::Copy(_) | Item::NewRunner(_) => {}
+            Item::Spacer | Item::Copy(_) | Item::NewRunner(_) | Item::ChoosePromptCandidates(_) => {
+            }
         }
     }
     let focused = view.focused().to_owned();
@@ -714,22 +806,21 @@ pub fn render_settings(
                 rect,
             ),
             Item::Control { key, label } => {
-                let Some(field) = view.field(key) else {
-                    continue;
-                };
-                let requested = session.requested_rect(item.start, item.height);
-                session.render_field(
-                    frame,
-                    rect,
-                    requested,
-                    &ControlDraw {
-                        field,
-                        label,
-                        focused: *key == focused,
-                        locale,
-                    },
-                    &mut hits,
-                );
+                if let Some(field) = view.field(key) {
+                    let requested = session.requested_rect(item.start, item.height);
+                    session.render_field(
+                        frame,
+                        rect,
+                        requested,
+                        &ControlDraw {
+                            field,
+                            label,
+                            focused: *key == focused,
+                            locale,
+                        },
+                        &mut hits,
+                    );
+                }
             }
             Item::NewRunner(label) => {
                 frame.render_widget(
@@ -742,6 +833,19 @@ pub fn render_settings(
                 hits.push(SettingsHitRegion {
                     area: rect,
                     target: SettingsControlId::NewRunner,
+                });
+            }
+            Item::ChoosePromptCandidates(label) => {
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        Span::styled("  Ctrl+O ", Style::default().fg(ACCENT)),
+                        Span::styled(label.as_str(), Style::default().fg(Color::White)),
+                    ])),
+                    rect,
+                );
+                hits.push(SettingsHitRegion {
+                    area: rect,
+                    target: SettingsControlId::ChoosePromptCandidates,
                 });
             }
         }
@@ -800,6 +904,17 @@ fn layout_items(view: &SettingsView, locale: Locale, width: u16) -> Vec<Position
                     let shown = note_text(locale, note);
                     let height = wrapped_height(&shown, width);
                     push(&mut items, &mut start, Item::Copy(shown), height);
+                    continue;
+                }
+                SettingsItem::PromptCandidatePicker => {
+                    push(
+                        &mut items,
+                        &mut start,
+                        Item::ChoosePromptCandidates(
+                            text(locale, "Choose variables…").into_owned(),
+                        ),
+                        1,
+                    );
                     continue;
                 }
                 SettingsItem::Field(field) => field.as_ref(),
@@ -900,6 +1015,7 @@ fn render_options(
     area: Rect,
     draw: &ControlDraw<'_>,
     options: &[ChoiceOption],
+    cursor: Option<usize>,
     hits: &mut Vec<SettingsHitRegion>,
 ) {
     let ControlDraw {
@@ -917,11 +1033,17 @@ fn render_options(
         );
         y = y.saturating_add(1);
     }
-    for option in options {
+    for (index, option) in options.iter().enumerate() {
         if y >= area.y.saturating_add(area.height) {
             break;
         }
         let selected = is_selected(field, option);
+        let highlighted = focused
+            && if multiple {
+                cursor == Some(index)
+            } else {
+                selected
+            };
         let glyph = match (multiple, selected) {
             (true, true) => "☑",
             (true, false) => "☐",
@@ -932,13 +1054,13 @@ fn render_options(
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    if focused && selected { "▶ " } else { "  " },
+                    if highlighted { "▶ " } else { "  " },
                     Style::default().fg(ACCENT),
                 ),
                 Span::styled(format!("{glyph} "), Style::default().fg(ACCENT)),
                 Span::styled(
                     option_text(locale, option),
-                    if focused && selected {
+                    if highlighted {
                         Style::default()
                             .fg(SELECT_FG)
                             .bg(SELECT_BG)
@@ -1101,9 +1223,10 @@ mod tests {
     };
 
     use super::{
-        ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyModifiers, Locale, MouseEvent,
-        MouseEventKind, Rect, SettingsControlId, SettingsItem, SettingsScreenEvent,
-        SettingsScreenGeometry, SettingsScreenSession, SettingsView, TypedValue, render_settings,
+        ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        Locale, MouseEvent, MouseEventKind, Rect, SettingsControlId, SettingsItem,
+        SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, SettingsView,
+        TypedValue, choice_key, is_selected, option_text, picked, render_settings,
     };
 
     /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
@@ -1341,7 +1464,7 @@ mod tests {
         };
         let heading = row_of("Parameters (the run form's fields)");
         // The row reads out its name, its type and its default in one line, exactly as v0.4 does.
-        let managed_row = row_of("GREETING  str world");
+        let managed_row = row_of("GREETING  str 'world'");
         let offer = row_of("Detected but not yet managed — tick to manage:");
         let candidate = row_of("WIDTH");
         let resync = row_of("Read the parameter definitions from the script again on save");
@@ -1521,8 +1644,12 @@ mod tests {
     }
 
     fn click(area: Rect) -> Event {
+        mouse(area, MouseEventKind::Down(MouseButton::Left))
+    }
+
+    fn mouse(area: Rect, kind: MouseEventKind) -> Event {
         Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
+            kind,
             column: area.x,
             row: area.y,
             modifiers: KeyModifiers::NONE,
@@ -1621,10 +1748,12 @@ mod tests {
     /// arrows when it needs them (`src/skit/tui_footer.py:72-94`).
     #[test]
     fn tab_always_moves_focus_and_a_choice_keeps_the_arrows_for_its_options() {
+        // A real multiline value keeps vertical arrows while the cursor can move, then yields Up
+        // at the top boundary to the same previous-field action as Shift+Tab.
         let mut session = SettingsScreenSession::default();
         let mut view = prompt_view();
+        view.set_value(DESCRIPTION_KEY, FieldValue::text("first\nmiddle\nlast"));
         let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
-
         assert_eq!(view.focused(), NAME_KEY);
         dispatch(
             &mut session,
@@ -1633,29 +1762,97 @@ mod tests {
             key(KeyCode::Tab, KeyModifiers::NONE),
         );
         assert_eq!(view.focused(), DESCRIPTION_KEY);
-        // A multi-line box owns the vertical arrows, so Tab is the way out of it.
-        dispatch(
-            &mut session,
-            &mut view,
-            &geometry,
-            key(KeyCode::Down, KeyModifiers::NONE),
-        );
-        assert_eq!(view.focused(), DESCRIPTION_KEY, "the body took the arrow");
-        dispatch(
-            &mut session,
-            &mut view,
-            &geometry,
-            key(KeyCode::BackTab, KeyModifiers::SHIFT),
+        assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, 2);
+        for row in [1, 0] {
+            assert_eq!(
+                dispatch(
+                    &mut session,
+                    &mut view,
+                    &geometry,
+                    key(KeyCode::Up, KeyModifiers::NONE),
+                ),
+                Some(SettingsScreenEvent::Changed)
+            );
+            assert_eq!(view.focused(), DESCRIPTION_KEY);
+            assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, row);
+        }
+        assert_eq!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                key(KeyCode::Up, KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::FocusPrevious))
         );
         assert_eq!(view.focused(), NAME_KEY);
-        // A single-line box does not use them, so they move the keyboard.
-        dispatch(
-            &mut session,
-            &mut view,
-            &geometry,
-            key(KeyCode::Down, KeyModifiers::NONE),
+        assert_eq!(
+            view.field(DESCRIPTION_KEY).unwrap().value().as_text(),
+            "first\nmiddle\nlast"
+        );
+
+        // The initial cursor is at Bottom+End. Down at that boundary yields the next form field.
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+        view.set_value(DESCRIPTION_KEY, FieldValue::text("first\nmiddle\nlast"));
+        view.update(SettingsAction::Focus {
+            key: DESCRIPTION_KEY.to_owned(),
+        });
+        let focusable = view.focusable_keys();
+        let next = focusable
+            .iter()
+            .position(|key| *key == DESCRIPTION_KEY)
+            .and_then(|index| focusable.get(index + 1))
+            .expect("description has a next focus stop")
+            .to_string();
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, 2);
+        assert_eq!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                key(KeyCode::Down, KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::FocusNext))
+        );
+        assert_eq!(view.focused(), next);
+
+        // Shift owns selection even at a vertical boundary. A plain boundary arrow also stays in
+        // the textarea while a selection is active, so focus cannot leave with a latent selection.
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+        view.set_value(DESCRIPTION_KEY, FieldValue::text("first\nmiddle\nlast"));
+        view.update(SettingsAction::Focus {
+            key: DESCRIPTION_KEY.to_owned(),
+        });
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        for row in [1, 0, 0] {
+            assert_eq!(
+                dispatch(
+                    &mut session,
+                    &mut view,
+                    &geometry,
+                    key(KeyCode::Up, KeyModifiers::SHIFT),
+                ),
+                Some(SettingsScreenEvent::Changed)
+            );
+            assert_eq!(view.focused(), DESCRIPTION_KEY);
+            assert_eq!(session.bodies[DESCRIPTION_KEY].cursor().0, row);
+            assert!(session.bodies[DESCRIPTION_KEY].selection_range().is_some());
+        }
+        let selection = session.bodies[DESCRIPTION_KEY].selection_range();
+        assert_eq!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                key(KeyCode::Up, KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Changed)
         );
         assert_eq!(view.focused(), DESCRIPTION_KEY);
+        assert_eq!(session.bodies[DESCRIPTION_KEY].selection_range(), selection);
 
         // On a closed option set the arrows walk the options and clamp at both ends.
         view.update(SettingsAction::Focus {
@@ -1722,6 +1919,32 @@ mod tests {
         let mut session = SettingsScreenSession::default();
         let mut view = prompt_view();
         let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+
+        // A field reacts to the button press only. Hover and release neither move focus nor edit.
+        let description = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.target == SettingsControlId::Field(DESCRIPTION_KEY.to_owned()))
+            .expect("the description box is clickable");
+        let description_value = view
+            .field(DESCRIPTION_KEY)
+            .unwrap()
+            .value()
+            .as_text()
+            .to_owned();
+        for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+            assert_eq!(
+                session.handle_event(mouse(description.area, kind), &view, &geometry),
+                None
+            );
+            assert_eq!(view.focused(), NAME_KEY);
+            assert_eq!(
+                view.field(DESCRIPTION_KEY).unwrap().value().as_text(),
+                description_value
+            );
+        }
+        dispatch(&mut session, &mut view, &geometry, click(description.area));
+        assert_eq!(view.focused(), DESCRIPTION_KEY);
 
         // Clicking a text box moves the keyboard to it.
         let needs = geometry
@@ -2060,6 +2283,321 @@ mod tests {
                     value: "fast".to_owned(),
                 }),
             "each multi-choice option is its own target"
+        );
+    }
+
+    #[test]
+    fn paste_sync_release_and_control_kinds_keep_typed_state_and_reverse_events() {
+        let mut session = SettingsScreenSession::default();
+        let mut view = prompt_view();
+        view.sections.push(SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![SettingsItem::field(Field::read_only(
+                "source:delivery",
+                "",
+                FieldOwner::Declared,
+                FieldValue::text("flag"),
+                ReadOnlyReason::FixedAtAddTime,
+            ))],
+        ));
+        view.update(SettingsAction::Focus {
+            key: DESCRIPTION_KEY.to_owned(),
+        });
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        let pasted = dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            Event::Paste("\nnew line".to_owned()),
+        );
+        assert!(matches!(
+            pasted,
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField { ref key, .. }))
+                if key == DESCRIPTION_KEY
+        ));
+        assert!(
+            view.field(DESCRIPTION_KEY)
+                .expect("description exists")
+                .value()
+                .as_text()
+                .contains("new line")
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &view, &geometry,),
+            Some(SettingsScreenEvent::Changed)
+        );
+        assert!(matches!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                key(KeyCode::Char('x'), KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField { ref key, .. }))
+                if key == DESCRIPTION_KEY
+        ));
+
+        view.set_value(DESCRIPTION_KEY, FieldValue::text("replacement\nbody"));
+        let _ = draw(&mut session, &view, DEMO_WIDTH, 90);
+        view.update(SettingsAction::Focus {
+            key: NAME_KEY.to_owned(),
+        });
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        assert!(matches!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                Event::Paste(" pasted".to_owned()),
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField { ref key, .. }))
+                if key == NAME_KEY
+        ));
+        assert_eq!(
+            session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &view, &geometry,),
+            Some(SettingsScreenEvent::Changed)
+        );
+        view.set_value(NAME_KEY, FieldValue::text("Host replacement"));
+        let _ = draw(&mut session, &view, DEMO_WIDTH, 90);
+
+        for event in [
+            Event::FocusGained,
+            Event::Resize(40, 10),
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            )),
+        ] {
+            assert_eq!(session.handle_event(event, &view, &geometry), None);
+        }
+        assert_eq!(
+            session.handle_event(
+                mouse(Rect::new(0, 0, 1, 1), MouseEventKind::Moved),
+                &view,
+                &geometry,
+            ),
+            None
+        );
+
+        let boolean = view
+            .fields()
+            .find(|field| matches!(field.kind, FieldKind::Boolean))
+            .expect("the complete settings view has a toggle")
+            .key
+            .clone();
+        view.update(SettingsAction::Focus {
+            key: boolean.clone(),
+        });
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Down, KeyModifiers::NONE), &view, &geometry),
+            Some(SettingsScreenEvent::Action(SettingsAction::FocusNext))
+        );
+
+        let read_only = view
+            .fields()
+            .find(|field| matches!(field.kind, FieldKind::ReadOnly))
+            .expect("the complete settings view has read-only source facts")
+            .key
+            .clone();
+        let read_only_field = view
+            .field(&read_only)
+            .expect("the read-only field stays addressable")
+            .clone();
+        assert_eq!(
+            session.handle_field_key(
+                &read_only,
+                &read_only_field,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            ),
+            None
+        );
+
+        let single = view
+            .fields()
+            .find(|field| matches!(field.kind, FieldKind::SingleChoice { .. }))
+            .expect("the complete settings view has one closed choice")
+            .key
+            .clone();
+        view.update(SettingsAction::Focus {
+            key: single.clone(),
+        });
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        assert!(matches!(
+            session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &view, &geometry),
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField { key, .. }))
+                if key == single
+        ));
+
+        let options = vec![ChoiceOption::plain("one"), ChoiceOption::plain("two")];
+        let multiple = Field::new(
+            "multiple",
+            "Multiple",
+            FieldKind::MultiChoice {
+                options: options.clone(),
+            },
+            FieldOwner::Declared,
+            FieldValue::Explicit(TypedValue::Choices(Vec::new())),
+        );
+        assert_eq!(
+            session.handle_field_key(
+                "multiple",
+                &multiple,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Changed)
+        );
+        assert_eq!(
+            session.handle_field_key(
+                "multiple",
+                &multiple,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField {
+                key: "multiple".to_owned(),
+                value: FieldValue::Explicit(TypedValue::Choices(vec!["two".to_owned()])),
+            }))
+        );
+        let with_hidden = Field::new(
+            "detected",
+            "Detected",
+            FieldKind::MultiChoice { options },
+            FieldOwner::Template,
+            FieldValue::Explicit(TypedValue::Choices(vec!["hidden".to_owned()])),
+        );
+        assert_eq!(
+            picked(&with_hidden, "one"),
+            FieldValue::Explicit(TypedValue::Choices(vec![
+                "one".to_owned(),
+                "hidden".to_owned()
+            ]))
+        );
+
+        let empty_choice = Field::new(
+            "empty",
+            "Empty",
+            FieldKind::SingleChoice {
+                options: Vec::new(),
+            },
+            FieldOwner::Declared,
+            FieldValue::Inherit,
+        );
+        assert_eq!(
+            choice_key(
+                &empty_choice,
+                &[],
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            None
+        );
+        let option = ChoiceOption::labelled("custom", "Custom {}").with_detail("/tmp/config");
+        assert!(option_text(Locale::En, &option).contains("/tmp/config"));
+        assert!(!is_selected(&empty_choice, &option));
+    }
+
+    #[test]
+    fn option_cursors_and_unavailable_picker_keep_keyboard_and_mouse_reverses() {
+        let mut session = SettingsScreenSession::default();
+        let options = vec![ChoiceOption::plain("one"), ChoiceOption::plain("two")];
+        let multiple = Field::new(
+            "multiple",
+            "Multiple",
+            FieldKind::MultiChoice {
+                options: options.clone(),
+            },
+            FieldOwner::Declared,
+            FieldValue::Explicit(TypedValue::Choices(Vec::new())),
+        );
+
+        for (code, expected) in [(KeyCode::Up, 0), (KeyCode::End, 1), (KeyCode::Home, 0)] {
+            assert_eq!(
+                session.handle_field_key(
+                    "multiple",
+                    &multiple,
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                ),
+                Some(SettingsScreenEvent::Changed)
+            );
+            assert_eq!(session.option_cursors["multiple"], expected);
+        }
+        assert_eq!(
+            session.handle_field_key(
+                "multiple",
+                &multiple,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            ),
+            None
+        );
+
+        let empty = Field::new(
+            "empty-multiple",
+            "Empty multiple",
+            FieldKind::MultiChoice {
+                options: Vec::new(),
+            },
+            FieldOwner::Declared,
+            FieldValue::Inherit,
+        );
+        assert_eq!(
+            session.handle_field_key(
+                "empty-multiple",
+                &empty,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            ),
+            None
+        );
+
+        let plain = Field::new(
+            "plain",
+            "Plain",
+            FieldKind::Text,
+            FieldOwner::Declared,
+            FieldValue::Inherit,
+        );
+        assert_eq!(
+            picked(&plain, "two"),
+            FieldValue::Explicit(TypedValue::Choice("two".to_owned()))
+        );
+        let wrong_value = Field::new(
+            "wrong",
+            "Wrong",
+            FieldKind::MultiChoice {
+                options: options.clone(),
+            },
+            FieldOwner::Declared,
+            FieldValue::Explicit(TypedValue::Text("not a choice list".to_owned())),
+        );
+        assert_eq!(
+            picked(&wrong_value, "two"),
+            FieldValue::Explicit(TypedValue::Choices(vec!["two".to_owned()]))
+        );
+
+        let view = prompt_view();
+        assert!(!view.prompt_picker_available());
+        let geometry = SettingsScreenGeometry {
+            body: Rect::new(0, 0, 20, 5),
+            first_visible: 0,
+            hits: vec![super::SettingsHitRegion {
+                area: Rect::new(0, 0, 8, 1),
+                target: SettingsControlId::ChoosePromptCandidates,
+            }],
+        };
+        let mouse = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 1,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(session.handle_mouse(&mouse, &view, &geometry), None);
+
+        assert_eq!(
+            choice_key(
+                &multiple,
+                &options,
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            ),
+            None
         );
     }
 }

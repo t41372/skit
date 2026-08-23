@@ -1,5 +1,5 @@
 //! Mechanical port of the Python oracle module `tests/test_ime_input.py`
-//! (`origin/main@206f9ef`): the CJK IME regression guard (the "can't type Chinese in
+//! (`origin/main@206f9ef`): the CJK IME regression guard (the "cannot type Chinese in
 //! iTerm2" incident). Each `#[test]` keeps its Python `def test_*` name so it traces back
 //! to its origin, and each Python "WHY" comment is preserved above it.
 //!

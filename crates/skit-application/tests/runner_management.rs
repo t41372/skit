@@ -92,3 +92,30 @@ fn runner_validation_allows_only_one_prompt_slot_after_the_program() {
     assert_eq!(valid(&["agent", "{literal}", "{{prompt}}"]), Ok(()));
     assert_eq!(valid(&["agent", "--message={{prompt}}"]), Ok(()));
 }
+
+#[test]
+fn every_runner_error_has_one_stable_reason_and_argv_errors_keep_their_kind() {
+    let argv_errors = [
+        (RunnerArgvError::EmptyCommand, "empty"),
+        (RunnerArgvError::PromptSlotCount, "prompt-slot-count"),
+        (RunnerArgvError::PromptInProgram, "prompt-in-binary"),
+        (RunnerArgvError::UnsupportedHole, "stray-hole"),
+    ];
+    for (error, reason) in argv_errors {
+        assert_eq!(error.reason_code(), reason);
+        let command_error = RunnerCommandError::from(error);
+        assert_eq!(command_error.reason_code(), reason);
+    }
+    assert_eq!(
+        RunnerCommandError::UnbalancedQuotes.reason_code(),
+        "unbalanced-quotes"
+    );
+}
+
+#[test]
+fn the_host_dialect_matches_the_compiled_platform() {
+    #[cfg(windows)]
+    assert_eq!(EditableArgvDialect::host(), EditableArgvDialect::Windows);
+    #[cfg(not(windows))]
+    assert_eq!(EditableArgvDialect::host(), EditableArgvDialect::Posix);
+}

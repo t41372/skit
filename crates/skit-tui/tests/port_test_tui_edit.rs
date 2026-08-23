@@ -130,7 +130,7 @@ fn test_edit_command_entry_reports_no_source() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (kind=cross-crate): the Rust design has NO per-app drift cache; drift is recomputed on every scan by skit-store library_surface (crates/skit-store/src/library_surface.rs:120 `drifted: !plan.drift.is_empty()`), unreachable from skit-tui. The mtime-keyed _drift_cache is an oracle-internal optimization; a post-edit reload re-derives drift from the file, so the observable guarantee holds without a cache to invalidate."]
+#[ignore = "CROSS-CRATE (kind=cross-crate): the Rust design has NO per-app drift cache; the application Library service asks the skit-form projector to recompute drift from each store snapshot, which is unreachable from skit-tui. The mtime-keyed _drift_cache is an oracle-internal optimization; a post-edit reload re-derives drift from the file, so the observable guarantee holds without a cache to invalidate."]
 fn test_edit_invalidates_the_drift_cache() {
     // After an edit, the stale drift sentinel is gone and the truth is re-derived from the file.
     //   app._drift_cache[entry.slug] = (0.0, True)

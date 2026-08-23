@@ -39,10 +39,9 @@
 //!   cheap REAL ports skit-cli-side (`port_test_show.rs`'s `Lib` harness) and are EXPECTED TO PASS;
 //!   11 is also a headline DIVERGENCE FINDING (the Rust plain form drops all three pre-prompt
 //!   hints).
-//! - DIVERGENCE (14): the entry-settings parameter row shows the stale block default rendered bare,
-//!   where the oracle shows the source's live literal single-quoted. The gap spans two tiers — a
-//!   host-only reconcile (skit-cli `settings_parameter_context`) AND a reachable `render_default`
-//!   quoting bug (skit-form) — both named in the test's `#[ignore]`. Full asserting body, `#[ignore]`d.
+//! - HOST-OWNED CONTRACT (14): the entry-settings parameter row needs both the real source
+//!   projection and the rendered Settings screen. Its canonical exact owner is the live-host test
+//!   in `skit-cli/tests/terminal_pty.rs`; lower-tier formatter coverage stays in `skit-form`.
 
 use std::collections::BTreeMap;
 
@@ -50,12 +49,10 @@ use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterType, ParameterValue};
 use skit_i18n::Locale;
 use skit_tui::{EventHandling, HitTarget, TuiSession, ViewGeometry, render_with_session};
-use skit_ui::{Action, LibraryState, RunFormView, Screen, SettingsInputs, SettingsView, UiCommand};
+use skit_ui::{Action, LibraryState, RunFormView, Screen, UiCommand};
 
 /// The exact English hint the intercepted-input field owes (i18n key kept verbatim).
 const INPUT_BINDING_HINT: &str = "Leave empty and the script will ask you in the terminal.";
@@ -400,8 +397,8 @@ fn test_footer_advertises_ctrl_o_only_when_some_field_is_resettable() {
 
 #[test]
 fn test_ctrl_o_on_field_without_default_leaves_value_unchanged() {
-    // Ctrl+O from a field with no default does nothing (the row isn't resettable) — the typed value
-    // survives, and nothing crashes. A reset naming a field index that isn't on the form is likewise
+    // Ctrl+O from a field with no default does nothing (the row is not resettable) — the typed value
+    // survives, and nothing crashes. A reset naming a field index that is not on the form is likewise
     // a safe no-op (reset_field's get_mut guard). Rust's focus is always a valid field index, so the
     // Python "no focused control" branch has no analog; the same guard is reset_field's resettable
     // and bounds check.
@@ -414,7 +411,7 @@ fn test_ctrl_o_on_field_without_default_leaves_value_unchanged() {
     state.update(Action::FocusField(0));
     state.update(Action::ResetFocusedRunField); // no default → the field is left exactly as typed
     assert_eq!(field_value(&state, 0), "typed");
-    state.update(Action::ResetRunField(99)); // a field index that isn't on the form: no row, no crash
+    state.update(Action::ResetRunField(99)); // a field index that is not on the form: no row, no crash
     assert_eq!(field_value(&state, 0), "typed");
 }
 
@@ -479,14 +476,6 @@ fn test_plain_const_field_renders_no_input_binding_hint() {
 }
 
 // ---------------------------------------------------------------------------
-// 6 (oracle). The plain line form prints the same input-binding hint
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli) + DIVERGENCE FINDING: the plain line form is skit-cli's private collect_plain_form (crates/skit-cli/src/cli.rs:1870-1922), reachable only behind run_entry's is_terminal() gate — a PTY, via crates/skit-cli/tests/terminal_pty.rs — so it cannot be constructed from skit-tui. Oracle promptform.collect (src/skit/promptform.py:29-38) prints THREE dim hints before asking (help, the degraded 'Leave empty to use the script's own default.', and the input-binding 'Leave empty and the script will ask you in the terminal.'), each only for the field that owns it; the Rust collect_plain_form prints only 'label: ' / 'label [value]: ' and drops all three. MUST-FIX: restore the pre-prompt hints in collect_plain_form. Oracle: test_reset_default_ui.py:365-384."]
-fn test_promptform_prints_input_binding_hint() {}
-
-// ---------------------------------------------------------------------------
 // 7 (oracle). CLI: params shows the source's live default; show carries delivers_empty
 // ---------------------------------------------------------------------------
 
@@ -497,57 +486,3 @@ fn test_params_default_column_shows_the_sources_live_value() {}
 #[test]
 #[ignore = "CROSS-CRATE (skit-cli): `skit show --json` is driven only through the binary (assert_cmd), unreachable from skit-tui. Cheap REAL port skit-cli-side, EXPECTED TO PASS: PreparedField::delivers_empty (crates/skit-form/src/lib.rs:104-119) is true for a defaulted str const (Str + Inject) and false for an int const (not Str|Path), and the live default rides the JSON as 'bonjour' via the managed_form_plan reconcile. Oracle: test_reset_default_ui.py:423-432."]
 fn test_show_json_delivers_empty_true_for_str_const_false_for_int() {}
-
-// ---------------------------------------------------------------------------
-// 8 (oracle). Script settings: the parameter row annotates the SOURCE's live default
-// ---------------------------------------------------------------------------
-
-#[test]
-#[ignore = "FAILING CONTRACT (divergence): the entry-settings parameter row shows the STALE block default rendered BARE, not the source's live literal single-quoted. The oracle contract splits across two tiers and BOTH must change for green. (1) CROSS-CRATE (host-only): the live-literal reconcile that would turn the stale cache 'hello' into the source's current 'bonjour' is the host's job — settings_parameter_context (crates/skit-cli/src/cli.rs:5259-5299) hands SettingsView the raw managed_params output (cli.rs:5274; skit-language managed_params, lib.rs:340, reads the block cache) with NO refresh_default reconcile, unlike the params/show path (skit-form managed_form_plan/refresh_default, lib.rs:497 and :567). The skit-ui reducer never reads the source, so the live literal cannot reach this tier at all. (2) RENDER (reachable): render_default (crates/skit-form/src/parameter_section.rs:382) prints a str default BARE, so even a reconciled 'bonjour' would render as bonjour, not 'bonjour'. The fixture below reproduces production faithfully — it passes exactly the block-cache managed decl settings_parameter_context passes ('hello'), so the row renders `NAME  str hello` and the oracle's 'bonjour' assertion fails at the real assertion. Oracle: test_reset_default_ui.py:440-456."]
-fn test_settings_param_row_shows_the_sources_live_default() {
-    // The Entry-settings parameter row's dim annotation must read the SOURCE's current default
-    // ('bonjour'), never the stale block cache ('hello') — the settings pane, `skit params`, and
-    // the run form must tell one story about one record.
-    //
-    // Faithful scenario (oracle `_managed`, test_reset_default_ui.py:392-409): greet.py was
-    // manage-time-written with `NAME = "hello"` and a [tool.skit] block that recorded default
-    // "hello", then its source literal was edited to `NAME = "bonjour"` while the block cache kept
-    // "hello". Production `settings_parameter_context` reads `managed_params(kind, source)`
-    // (cli.rs:5274), which returns the block-cache "hello" (skit-language reads the block, not the
-    // live literal), and the skit-ui reducer never re-reads greet.py. So the NAME decl below carries
-    // exactly that block-cache "hello" — the faithful input this tier receives — while the live
-    // literal "bonjour" lives only in the source a host-side reconcile would read.
-    let mut name = ParamDecl::new("NAME");
-    name.binding = ParameterBinding::Const;
-    name.delivery = ParameterDelivery::Inject;
-    name.parameter_type = ParameterType::Str;
-    // The manage-time block cache managed_params returns; the source's live literal is now "bonjour".
-    name.default = Some(ParameterValue::String("hello".to_owned()));
-    let mut count = ParamDecl::new("COUNT");
-    count.binding = ParameterBinding::Const;
-    count.delivery = ParameterDelivery::Inject;
-    count.parameter_type = ParameterType::Int;
-    count.default = Some(ParameterValue::Integer(3));
-
-    let view = SettingsView::from_inputs(&SettingsInputs {
-        selector: "greet".to_owned(),
-        kind: "python".to_owned(),
-        name: "greet".to_owned(),
-        // The linked source path; the reducer keeps it for display and never reads it for defaults.
-        source: "/x/greet.py".to_owned(),
-        has_analyzer: true,
-        has_original_file: true,
-        has_stored_name: true,
-        supports_modes: true,
-        managed: vec![name, count],
-        ..SettingsInputs::default()
-    });
-    let name_row = view
-        .fields()
-        .map(|field| field.label.as_str())
-        .find(|label| label.starts_with("NAME"))
-        .expect("a NAME parameter row")
-        .to_owned();
-    assert!(name_row.contains("'bonjour'"), "{name_row}"); // the live literal, single-quoted
-    assert!(!name_row.contains("hello"), "{name_row}"); // never the stale manage-time cache
-}

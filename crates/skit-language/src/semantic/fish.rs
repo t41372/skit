@@ -24,7 +24,7 @@ const VALUE_OPTIONS: [&str; 8] = [
 struct SetCommand {
     conditional: bool,
     query: bool,
-    name: Option<String>,
+    name: String,
     values: Vec<String>,
 }
 
@@ -34,7 +34,7 @@ pub(super) fn analysis(document: &ParsedDocument) -> SemanticAnalysis {
         .iter()
         .filter_map(|node| classify_set(document, *node))
         .filter(|set| !set.conditional && !set.query)
-        .filter_map(|set| set.name)
+        .map(|set| set.name)
         .collect::<BTreeSet<_>>();
     let mut candidates = Vec::new();
     let mut seen = BTreeSet::new();
@@ -54,9 +54,7 @@ pub(super) fn analysis(document: &ParsedDocument) -> SemanticAnalysis {
         {
             continue;
         }
-        let Some(name) = query.name else {
-            continue;
-        };
+        let name = query.name;
         if name.starts_with('_') || clobbered.contains(&name) || !seen.insert(name.clone()) {
             continue;
         }
@@ -206,7 +204,7 @@ fn classify_set(document: &ParsedDocument, node: tree_sitter::Node<'_>) -> Optio
     Ok::<_, ()>(SetCommand {
         conditional,
         query,
-        name: operands.first().cloned(),
+        name: operands.first().cloned()?,
         values: operands.into_iter().skip(1).collect(),
     })
     .ok()
@@ -287,8 +285,8 @@ fn command_arguments(document: &ParsedDocument, command: tree_sitter::Node<'_>) 
 
 fn command_argument_nodes(command: tree_sitter::Node<'_>) -> Vec<tree_sitter::Node<'_>> {
     (0..command.child_count())
+        .map_while(|index| u32::try_from(index).ok())
         .filter_map(|index| {
-            let index = u32::try_from(index).ok()?;
             (command.field_name_for_child(index) == Some("argument"))
                 .then(|| command.child(index))
                 .flatten()
@@ -335,16 +333,17 @@ fn decode_fish_word(raw: &str) -> String {
     } else {
         (raw, None)
     };
+    // The literal-word gate accepts quoted words only when the parser reports plain
+    // `string_content`. Quote escape nodes are dynamic and never reach this decoder. An unquoted
+    // concatenation can contain `escape_sequence`, so only that form needs backslash decoding.
+    if quote.is_some() {
+        return body.to_owned();
+    }
     let mut output = String::new();
     let mut characters = body.chars().peekable();
     while let Some(character) = characters.next() {
         if character == '\\'
             && let Some(next) = characters.peek().copied()
-            && (quote.is_none()
-                || matches!(
-                    (quote, next),
-                    (Some('\''), '\'' | '\\') | (Some('"'), '"' | '\\' | '$')
-                ))
         {
             output.push(next);
             characters.next();

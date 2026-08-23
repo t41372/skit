@@ -3,6 +3,9 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod library;
 mod run;
 
 pub use cli::entry;
+#[doc(hidden)]
+pub use library::library_surface;

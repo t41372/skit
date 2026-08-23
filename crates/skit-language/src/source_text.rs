@@ -270,3 +270,33 @@ const fn hex_value(byte: u8) -> Option<u8> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{byte_token, decode_invalid_utf8};
+
+    #[test]
+    fn malformed_private_byte_tokens_remain_literal_text() {
+        for text in [
+            "plain M text",
+            "M",
+            "M~0~M",
+            "M~00-no-close",
+            "M~GG~M",
+            "M~AF~M",
+        ] {
+            assert_eq!(decode_invalid_utf8(text, "M"), text.as_bytes());
+        }
+    }
+
+    #[test]
+    fn private_byte_tokens_require_exact_lowercase_hex_and_marker_boundaries() {
+        assert_eq!(byte_token("~af~Mtail", "M"), Some((0xaf, 5)));
+        assert_eq!(byte_token("~af~other", "M"), None);
+        assert_eq!(byte_token("-af~M", "M"), None);
+        assert_eq!(byte_token("~af-M", "M"), None);
+        assert_eq!(byte_token("~Af~M", "M"), None);
+        assert_eq!(byte_token("~aF~M", "M"), None);
+        assert_eq!(byte_token("~a", "M"), None);
+    }
+}

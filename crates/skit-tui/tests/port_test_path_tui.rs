@@ -22,9 +22,9 @@
 //!   `nearest_directory` (skit-tui); the missing-root bool is `run_modal::file_picker_contract`
 //!   (private).
 //! - Python `FilePickerModal` (Textual pilot) -> `FilePickerSession` + `render_file_picker`
-//!   (skit-tui): the pinned "(use this directory)" OptionList row is the mouse-only
-//!   `FilePickerHit::CurrentDirectory`; the parent step is a real `..` `EntryType::ParentDir`
-//!   row; `_list_filtered`'s rank is the free function `picker::apply_filter`.
+//!   (skit-tui): the pinned "(use this directory)" OptionList row is the keyboard-and-mouse
+//!   `FilePickerHit::CurrentDirectory`; the parent step is a real `..` `EntryType::ParentDir` row;
+//!   `_list_filtered`'s rank is the free function `picker::apply_filter`.
 //! - Python `RunFormScreen` browse/insert doors -> the `LibraryState` reducer
 //!   (`Action::OpenRunTokenMenu…`, `OpenRunFilePicker`, `OpenFocusedRunFilePicker`,
 //!   `SetRunPickedPathAndCloseModal`) over a `RunFormView::from_declarations(...).with_context`.
@@ -43,16 +43,23 @@
 //! - CROSS-CRATE stubs: `PathContext.for_entry` workdir/origin resolution is composed in
 //!   `skit-cli` (`cli.rs` builds `RunPathContext`); the cursor-position token insert is owned
 //!   by skit-tui's interactive `TuiSession` cursor layer (not the reducer surface here).
-//! - DIVERGENCE (full body, `#[ignore = "FAILING CONTRACT (divergence): …"]`): the mouse-only
-//!   use-this-directory affordance (no keyboard route) and the "(use this directory)" label.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
-use ratatui_core::{backend::TestBackend, terminal::Terminal};
+use ratatui_core::{
+    backend::TestBackend, buffer::Buffer, layout::Rect, style::Color, terminal::Terminal,
+};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use skit_application::path_completion::{
+    DirectoryEntry, DirectoryReadError, DirectoryReader, PathCompletionContext, PathCompletionKind,
+    PathCompletionProvider, PathCompletionRequest, PathCompletionService, PathInputDialect,
 };
 use skit_application::path_insertion::{
     ArgumentDialect, RunPathInsertMode, insert_picked_path_for_dialect,
@@ -61,14 +68,17 @@ use skit_application::runner_management::{EditableArgvDialect, split_editable_ar
 use skit_application::tokens::TokenContext;
 use skit_domain::parameters::{ParamDecl, ParameterType};
 use skit_i18n::Locale;
+use skit_store::SystemDirectoryReader;
 use skit_tui::{
-    FilePickerEvent, FilePickerGeometry, FilePickerHit, FilePickerSession, render_file_picker,
+    EventHandling, FilePickerEvent, FilePickerGeometry, FilePickerHit, FilePickerSession,
+    TuiSession, ViewGeometry, render_file_picker, render_with_session,
 };
 use skit_ui::{
     Action, LibraryState, ModalState, PathOutputPolicy, PathPickerState, PathSelectionMode,
     PickerPurpose, RunFormContext, RunFormView, RunPathContext, RunTokenOption, Screen,
 };
 use tempfile::TempDir;
+use unicode_width::UnicodeWidthStr as _;
 
 // --- Filesystem and event helpers (the oracle's `_tree`, `pilot.press`, `pilot.click`) ---
 
@@ -89,8 +99,12 @@ fn key(code: KeyCode) -> Event {
 }
 
 fn click(column: u16, row: u16) -> Event {
+    mouse(MouseEventKind::Down(MouseButton::Left), column, row)
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
+        kind,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -146,14 +160,37 @@ fn render(
     width: u16,
     height: u16,
 ) -> (String, FilePickerGeometry) {
+    let (buffer, geometry) = render_localized(session, width, height, Locale::En);
+    let text = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    (text, geometry)
+}
+
+fn render_localized(
+    session: &mut FilePickerSession,
+    width: u16,
+    height: u16,
+    locale: Locale,
+) -> (Buffer, FilePickerGeometry) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut geometry = FilePickerGeometry::default();
     terminal
-        .draw(|frame| geometry = render_file_picker(frame, frame.area(), session, Locale::En))
+        .draw(|frame| geometry = render_file_picker(frame, frame.area(), session, locale))
         .unwrap();
     let buffer = terminal.backend().buffer().clone();
-    let text = buffer.content().iter().map(|cell| cell.symbol()).collect();
-    (text, geometry)
+    (buffer, geometry)
+}
+
+fn region_text(buffer: &Buffer, area: Rect) -> String {
+    let mut text = String::new();
+    for row in area.y..area.bottom().min(buffer.area.height) {
+        let mut column = area.x;
+        while column < area.right().min(buffer.area.width) {
+            let symbol = buffer[(column, row)].symbol();
+            text.push_str(symbol);
+            column = column.saturating_add(u16::try_from(symbol.width()).unwrap_or(1).max(1));
+        }
+    }
+    text
 }
 
 // --- Run-form reducer helpers (the oracle's RunFormScreen / FieldRow) ---
@@ -210,10 +247,182 @@ fn field_value(state: &LibraryState, index: usize) -> String {
     state.run_form().unwrap().fields()[index].control.value()
 }
 
+fn render_root(session: &mut TuiSession, state: &LibraryState) -> ViewGeometry {
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, state, Locale::En, session);
+        })
+        .unwrap();
+    geometry
+}
+
+fn drive_root(
+    session: &mut TuiSession,
+    state: &mut LibraryState,
+    geometry: &ViewGeometry,
+    event: Event,
+) -> EventHandling {
+    let handling = session.handle_event(event, state, geometry);
+    if let EventHandling::Action(action) = &handling {
+        state.update(action.clone());
+    }
+    handling
+}
+
 fn token_options(state: &LibraryState) -> Vec<RunTokenOption> {
     match state.modal() {
         Some(ModalState::RunTokenMenu { options, .. }) => options.clone(),
         other => panic!("expected an open token menu, got {other:?}"),
+    }
+}
+
+fn completion_request(
+    workdir: &Path,
+    invoke_cwd: &Path,
+    value: &str,
+    kind: PathCompletionKind,
+) -> PathCompletionRequest {
+    PathCompletionRequest {
+        value: value.to_owned(),
+        kind,
+        shlexy: false,
+        placeholder_braces: false,
+        dialect: if cfg!(windows) {
+            PathInputDialect::Windows
+        } else {
+            PathInputDialect::Posix
+        },
+        context: PathCompletionContext {
+            workdir: workdir.to_path_buf(),
+            tokens: TokenContext {
+                cwd: invoke_cwd.display().to_string(),
+                home: None,
+                env: BTreeMap::new(),
+                today: "2026-08-10".to_owned(),
+                now: "10-11-12".to_owned(),
+            },
+        },
+    }
+}
+
+fn complete(request: PathCompletionRequest) -> Option<String> {
+    PathCompletionService::new(SystemDirectoryReader).complete(&request)
+}
+
+fn completion_session() -> TuiSession {
+    TuiSession::with_path_completion(Arc::new(PathCompletionService::new(SystemDirectoryReader)))
+}
+
+static COMPLETION_WORKER_TEST: Mutex<()> = Mutex::new(());
+
+fn completion_worker_test() -> MutexGuard<'static, ()> {
+    COMPLETION_WORKER_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// How long a worker answer may take before the harness declares a failure.
+///
+/// A full workspace run can oversubscribe the host before a test's two fresh workers get a time
+/// slice, and coverage instrumentation slows every slice further — a 10-second budget expired
+/// once on the instrumented CI runner. 30 seconds follows the harness-budget precedent
+/// (`08046bd`, `24fe85c`): the deadline exists only to stop a hung worker from stalling the
+/// suite, and the polls below read the real checkpoint, so a healthy run never waits it out.
+const WORKER_ANSWER_BUDGET: Duration = Duration::from_secs(30);
+
+fn wait_for_completion(session: &mut TuiSession) {
+    // Poll the actual result checkpoint; do not add a fixed delay to the successful path. The
+    // short sleep between polls keeps the waiter from competing for the very time slices the
+    // workers need on an oversubscribed host.
+    let deadline = Instant::now() + WORKER_ANSWER_BUDGET;
+    while Instant::now() < deadline {
+        if session.refresh_background() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    panic!("path completion worker did not answer");
+}
+
+fn type_run_value(
+    session: &mut TuiSession,
+    state: &mut LibraryState,
+    geometry: &ViewGeometry,
+    value: &str,
+) {
+    for character in value.chars() {
+        let handling = drive_root(session, state, geometry, key(KeyCode::Char(character)));
+        assert!(matches!(handling, EventHandling::Action(_)));
+    }
+}
+
+#[derive(Debug)]
+struct FixedDirectoryReader {
+    entries: Vec<DirectoryEntry>,
+    failure: Option<DirectoryReadError>,
+}
+
+impl DirectoryReader for FixedDirectoryReader {
+    fn read_directory(
+        &self,
+        _path: &Path,
+        scan_cap: usize,
+        filter: &skit_application::path_completion::DirectoryReadFilter,
+    ) -> Result<Vec<DirectoryEntry>, DirectoryReadError> {
+        if let Some(error) = &self.failure {
+            return Err(*error);
+        }
+        Ok(self
+            .entries
+            .iter()
+            .take(scan_cap)
+            .filter(|entry| filter.accepts(&entry.name))
+            .cloned()
+            .collect())
+    }
+}
+
+#[derive(Debug)]
+struct CountingProvider {
+    calls: Arc<AtomicUsize>,
+}
+
+impl PathCompletionProvider for CountingProvider {
+    fn complete(&self, request: &PathCompletionRequest) -> Option<String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Some(format!("{}-suggested", request.value))
+    }
+}
+
+#[derive(Debug)]
+struct RacingProvider;
+
+impl PathCompletionProvider for RacingProvider {
+    fn complete(&self, request: &PathCompletionRequest) -> Option<String> {
+        match request.value.as_str() {
+            "a" => {
+                std::thread::sleep(Duration::from_millis(100));
+                Some("alpha".to_owned())
+            }
+            "b" => Some("beta".to_owned()),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SlowProvider {
+    released: Arc<AtomicBool>,
+}
+
+impl PathCompletionProvider for SlowProvider {
+    fn complete(&self, _request: &PathCompletionRequest) -> Option<String> {
+        while !self.released.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        None
     }
 }
 
@@ -228,60 +437,258 @@ fn token_options(state: &LibraryState) -> Vec<RunTokenOption> {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "ABSENT gap: no ghost-text PathSuggester in the Rust surface. Oracle: tui_pathpick.PathSuggester.get_suggestion completes a bare prefix at the workdir ('da'->'data.csv', 'su'->'sub/'). MUST-FIX: restore the suggester (src/skit/tui_pathpick.py:194-216)."]
-fn test_path_field_completes_bare_prefix_at_workdir() {}
+fn test_path_field_completes_bare_prefix_at_workdir() {
+    let (_tmp, root) = tree();
+    assert_eq!(
+        complete(completion_request(
+            &root,
+            &root,
+            "da",
+            PathCompletionKind::Path,
+        )),
+        Some("data.csv".to_owned())
+    );
+    assert_eq!(
+        complete(completion_request(
+            &root,
+            &root,
+            "su",
+            PathCompletionKind::Path,
+        )),
+        Some("sub/".to_owned())
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a `str` field only completes path-shaped text ('da'->None, './da'->'./data.csv', 'sub/in'->'sub/inner.txt') via looks_pathy (tui_pathpick.py:200-201)."]
-fn test_str_field_needs_pathy_text() {}
+fn test_str_field_needs_pathy_text() {
+    let (_tmp, root) = tree();
+    assert_eq!(
+        complete(completion_request(
+            &root,
+            &root,
+            "da",
+            PathCompletionKind::Text,
+        )),
+        None
+    );
+    assert_eq!(
+        complete(completion_request(
+            &root,
+            &root,
+            "./da",
+            PathCompletionKind::Text,
+        )),
+        Some("./data.csv".to_owned())
+    );
+    assert_eq!(
+        complete(completion_request(
+            &root,
+            &root,
+            "sub/in",
+            PathCompletionKind::Text,
+        )),
+        Some("sub/inner.txt".to_owned())
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: 'zzz'->None; the suggester never invents beyond a real prefix (tui_pathpick.py:212-216)."]
-fn test_secretless_activation_never_guesses_beyond_prefix() {}
+fn test_secretless_activation_never_guesses_beyond_prefix() {
+    let (_tmp, root) = tree();
+    assert_eq!(
+        complete(completion_request(
+            &root,
+            &root,
+            "zzz",
+            PathCompletionKind::Path,
+        )),
+        None
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: '.h'->'.hidden' but 'd'->'data.csv' — hidden entries surface only behind a dot prefix (tui_pathpick.py:159, _list_matches)."]
-fn test_hidden_entries_only_behind_a_dot_prefix() {}
+fn test_hidden_entries_only_behind_a_dot_prefix() {
+    let (_tmp, root) = tree();
+    assert_eq!(
+        complete(completion_request(
+            &root,
+            &root,
+            ".h",
+            PathCompletionKind::Path,
+        )),
+        Some(".hidden".to_owned())
+    );
+    assert_eq!(
+        complete(completion_request(
+            &root,
+            &root,
+            "d",
+            PathCompletionKind::Path,
+        )),
+        Some("data.csv".to_owned())
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: '{cwd}/no'->'{cwd}/notes.md' completes at the invoke cwd, not the workdir (tui_pathpick.py:241-244, _lookup token expansion)."]
-fn test_cwd_token_completes_at_invoke_cwd_not_workdir() {}
+fn test_cwd_token_completes_at_invoke_cwd_not_workdir() {
+    let (_tmp, root) = tree();
+    let invoke = tempfile::tempdir().unwrap();
+    fs::write(invoke.path().join("notes.md"), "x").unwrap();
+    let request = completion_request(&root, invoke.path(), "{cwd}/no", PathCompletionKind::Path);
+    assert_eq!(complete(request), Some("{cwd}/notes.md".to_owned()));
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: '{env:SKIT_NO_SUCH_VAR}/d'->None (unexpandable token is silence, not a traceback) (tui_pathpick.py:242-246)."]
-fn test_unset_env_token_is_silence_not_a_traceback() {}
+fn test_unset_env_token_is_silence_not_a_traceback() {
+    let (_tmp, root) = tree();
+    assert_eq!(
+        complete(completion_request(
+            &root,
+            &root,
+            "{env:SKIT_NO_SUCH_VAR}/d",
+            PathCompletionKind::Path,
+        )),
+        None
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a relative env token falls back to the workdir rule: '{env:SKIT_REL_DIR}/in'->'{env:SKIT_REL_DIR}/inner.txt' (tui_pathpick.py:250-256)."]
-fn test_relative_env_token_falls_back_to_the_workdir_rule() {}
+fn test_relative_env_token_falls_back_to_the_workdir_rule() {
+    let (_tmp, root) = tree();
+    let mut request = completion_request(
+        &root,
+        &root,
+        "{env:SKIT_REL_DIR}/in",
+        PathCompletionKind::Path,
+    );
+    request
+        .context
+        .tokens
+        .env
+        .insert("SKIT_REL_DIR".to_owned(), "sub".to_owned());
+    assert_eq!(
+        complete(request),
+        Some("{env:SKIT_REL_DIR}/inner.txt".to_owned())
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: '~/no'->'~/notes.md' completes inside HOME; '~'->None with no separator yet (tui_pathpick.py:236-239)."]
-fn test_home_prefix_completes_inside_home() {}
+fn test_home_prefix_completes_inside_home() {
+    let (_tmp, root) = tree();
+    let home = tempfile::tempdir().unwrap();
+    fs::write(home.path().join("notes.md"), "x").unwrap();
+    let mut request = completion_request(&root, &root, "~/no", PathCompletionKind::Text);
+    request.context.tokens.home = Some(home.path().display().to_string());
+    assert_eq!(complete(request), Some("~/notes.md".to_owned()));
+    let mut bare = completion_request(&root, &root, "~", PathCompletionKind::Text);
+    bare.context.tokens.home = Some(home.path().display().to_string());
+    assert_eq!(complete(bare), None);
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a vanished workdir silences bare completion, 'da'->None (bare_root is None) (tui_pathpick.py:90-94, 238-240)."]
-fn test_missing_workdir_silences_bare_completion() {}
+fn test_missing_workdir_silences_bare_completion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let gone = tmp.path().join("vanished");
+    assert_eq!(
+        complete(completion_request(
+            &gone,
+            tmp.path(),
+            "da",
+            PathCompletionKind::Path,
+        )),
+        None
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a vanished workdir also silences the relative-token arm '{env:SKIT_REL_DIR}/in'->None (tui_pathpick.py:251-255)."]
-fn test_missing_workdir_silences_relative_token_lookup() {}
+fn test_missing_workdir_silences_relative_token_lookup() {
+    let tmp = tempfile::tempdir().unwrap();
+    let gone = tmp.path().join("vanished");
+    let mut request = completion_request(
+        &gone,
+        tmp.path(),
+        "{env:SKIT_REL_DIR}/in",
+        PathCompletionKind::Path,
+    );
+    request
+        .context
+        .tokens
+        .env
+        .insert("SKIT_REL_DIR".to_owned(), "sub".to_owned());
+    assert_eq!(complete(request), None);
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a shlexy field completes only the trailing piece ('first.txt dr'->'first.txt draft.txt'), refuses a quote-in-progress, and refuses an empty trailing piece (tui_pathpick.py:218-227)."]
-fn test_shlexy_field_completes_only_the_trailing_piece() {}
+fn test_shlexy_field_completes_only_the_trailing_piece() {
+    let (_tmp, root) = tree();
+    let mut request = completion_request(&root, &root, "first.txt dr", PathCompletionKind::Path);
+    request.shlexy = true;
+    assert_eq!(
+        PathCompletionService::new(SystemDirectoryReader).complete(&request),
+        Some("first.txt draft.txt".to_owned())
+    );
+    request.value = "'quote in progress".to_owned();
+    assert_eq!(complete(request.clone()), None);
+    request.value = "done.txt ".to_owned();
+    assert_eq!(complete(request), None);
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester (and no SCAN_CAP). Oracle: with SCAN_CAP=3 an entry in scan position 4 is never offered — pins the >= boundary (tui_pathpick.py:60, 139-141)."]
-fn test_scan_cap_stops_the_scan_exactly() {}
+fn test_scan_cap_stops_the_scan_exactly() {
+    let reader = FixedDirectoryReader {
+        entries: ["dax3", "dax2", "dax4", "daa-first"]
+            .into_iter()
+            .map(DirectoryEntry::file)
+            .collect(),
+        failure: None,
+    };
+    let root = Path::new("/root");
+    let service = PathCompletionService::with_scan_cap(reader, 3);
+    assert_eq!(
+        service.complete(&completion_request(
+            root,
+            root,
+            "da",
+            PathCompletionKind::Path,
+        )),
+        Some("dax2".to_owned())
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a scandir OSError degrades to no suggestion and _list_filtered==[] (tui_pathpick.py:150-152)."]
-fn test_scan_degrades_on_oserror() {}
+fn test_scan_degrades_on_oserror() {
+    let reader = FixedDirectoryReader {
+        entries: Vec::new(),
+        failure: Some(DirectoryReadError::Unavailable),
+    };
+    let root = Path::new("/root");
+    assert_eq!(
+        PathCompletionService::new(reader).complete(&completion_request(
+            root,
+            root,
+            "da",
+            PathCompletionKind::Path,
+        )),
+        None
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: an entry that raises mid-stat is treated as a plain file, still offered ('da'->'dax') (tui_pathpick.py:145-149)."]
-fn test_unstatable_entry_is_treated_as_a_file() {}
+fn test_unstatable_entry_is_treated_as_a_file() {
+    let reader = FixedDirectoryReader {
+        entries: vec![DirectoryEntry::file("dax")],
+        failure: None,
+    };
+    let root = Path::new("/root");
+    assert_eq!(
+        PathCompletionService::new(reader).complete(&completion_request(
+            root,
+            root,
+            "da",
+            PathCompletionKind::Path,
+        )),
+        Some("dax".to_owned())
+    );
+}
 
 // ---------------------------------------------------------------------------
 // PathContext: roots and inserted spellings (path.md §3, §5)
@@ -296,8 +703,25 @@ fn test_for_entry_resolves_the_entry_workdir() {}
 fn test_for_entry_reference_entry_roots_at_its_origin() {}
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-cli) + ABSENT: reference-mode workdir survival is skit-cli composition, and PathContext.bare_root has no Rust equivalent (it fed only the absent ghost). The picker_start degradation IS covered by test_picker_start_degrades_to_nearest_existing_ancestor. Oracle: workdir==origin, bare_root is None, picker_start()==(tmp/proj, True) (test_path_tui.py:218-234)."]
-fn test_vanished_origin_reference_entry_degrades() {}
+fn test_vanished_origin_reference_entry_degrades() {
+    let tmp = tempfile::tempdir().unwrap();
+    let parent = tmp.path().join("proj");
+    let origin = parent.join("deep");
+    fs::create_dir_all(&origin).unwrap();
+    fs::remove_dir(&origin).unwrap();
+
+    assert_eq!(
+        complete(completion_request(
+            &origin,
+            tmp.path(),
+            "da",
+            PathCompletionKind::Path,
+        )),
+        None
+    );
+    let session = FilePickerSession::new(contract(&origin, &origin));
+    assert_eq!(session.current_dir(), &parent);
+}
 
 #[test]
 #[ignore = "CROSS-CRATE (private) + UNPORTABLE: the whole-ancestor-chain-gone last resort lives in run_modal::file_picker_contract's `unwrap_or_else(invoke_cwd)`; FilePickerSession::new's nearest_directory falls back to std::env::current_dir. Neither is portably reachable — `/` always exists and Path::is_dir cannot be faked (needs the Python monkeypatch of Path.is_dir). Oracle: picker_start()==(invoke_cwd, True) (test_path_tui.py:237-242)."]
@@ -357,15 +781,74 @@ fn test_picker_enter_descends_then_picks_and_filter_clears() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the use-this-directory affordance is mouse-only (FilePickerHit::CurrentDirectory); there is no keyboard route. Up from the first real entry lands on the real `..` ParentDir row, so Enter ASCENDS to the parent instead of selecting the current directory. Oracle: up+enter picks PickedPath('.') (test_path_tui.py:293-310)."]
 fn test_picker_use_this_directory_row_by_real_keys() {
     let (_tmp, root) = tree();
     let mut session = picker(&root);
-    let _ = feed(&mut session, key(KeyCode::Up));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Up)),
+        Some(FilePickerEvent::Changed)
+    );
     assert_eq!(
         feed(&mut session, key(KeyCode::Enter)),
-        Some(FilePickerEvent::Accepted(vec![PathBuf::from(".")]))
+        Some(FilePickerEvent::Accepted(vec![PathBuf::new()]))
     );
+
+    // The composition root converts the frontend-neutral empty relative path into the oracle's
+    // visible PickedPath(".") value. Drive the real Run form, token menu, file picker, and reducer
+    // instead of publishing that action from the test.
+    let root_text = root.to_string_lossy().into_owned();
+    let mut state = form_state(
+        &[param("path", ParameterType::Path, false)],
+        &[("path", "old.txt")],
+        "",
+        Some(&root_text),
+    );
+    let mut root_session = TuiSession::default();
+    let geometry = render_root(&mut root_session, &state);
+    assert!(matches!(
+        drive_root(
+            &mut root_session,
+            &mut state,
+            &geometry,
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
+        ),
+        EventHandling::Action(_)
+    ));
+    let geometry = render_root(&mut root_session, &state);
+    assert!(matches!(
+        drive_root(
+            &mut root_session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Enter),
+        ),
+        EventHandling::Action(_)
+    ));
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunFilePicker { .. })
+    ));
+    let geometry = render_root(&mut root_session, &state);
+    assert_eq!(
+        drive_root(&mut root_session, &mut state, &geometry, key(KeyCode::Up),),
+        EventHandling::Consumed
+    );
+    assert_eq!(field_value(&state, 0), "old.txt");
+    let geometry = render_root(&mut root_session, &state);
+    assert_eq!(
+        drive_root(
+            &mut root_session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Enter),
+        ),
+        EventHandling::Action(Action::SetRunPickedPathAndCloseModal {
+            field: 0,
+            path: ".".to_owned(),
+        })
+    );
+    assert_eq!(field_value(&state, 0), ".");
+    assert!(state.modal().is_none());
 }
 
 #[test]
@@ -503,6 +986,19 @@ fn test_picker_filtering_hides_the_pinned_row() {
     // Enter acts on the first MATCH.
     assert_eq!(session.explorer().current_entry().unwrap().name, "data.csv");
     assert_eq!(session.explorer().cursor_index, 0);
+    let (buffer, geometry) = render_localized(&mut session, 100, 30, Locale::En);
+    assert!(
+        geometry
+            .hits
+            .iter()
+            .all(|hit| hit.target != FilePickerHit::CurrentDirectory),
+        "a nonempty filter must remove the pinned row and its click target"
+    );
+    assert!(!region_text(&buffer, geometry.rows).contains("(use this directory)"));
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Enter)),
+        Some(FilePickerEvent::Accepted(vec![PathBuf::from("data.csv")]))
+    );
 }
 
 #[test]
@@ -564,8 +1060,193 @@ fn test_picker_missing_workdir_opens_at_ancestor_with_notice() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "ABSENT gap: a `path` field carries FormInputKind::Path but there is NO suggester behind it (see the PathSuggester bucket). Oracle: the src row's Input has a PathSuggester and its label says 'path' (test_path_tui.py:541-548)."]
-fn test_path_fields_render_hint_and_suggester() {}
+fn test_path_fields_render_hint_and_suggester() {
+    let _workers = completion_worker_test();
+    let (_tmp, root) = tree();
+    let mut state = form_state(
+        &[param("src", ParameterType::Path, false)],
+        &[],
+        "",
+        root.to_str(),
+    );
+    let mut session = completion_session();
+    let geometry = render_root(&mut session, &state);
+    type_run_value(&mut session, &mut state, &geometry, "da");
+    wait_for_completion(&mut session);
+
+    let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+    terminal
+        .draw(|frame| {
+            let _ = render_with_session(frame, &state, Locale::En, &mut session);
+        })
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("path"), "{rendered}");
+    assert!(rendered.contains("data.csv"), "{rendered}");
+}
+
+#[test]
+fn right_accepts_only_the_current_ghost_at_the_end_of_the_input() {
+    let _workers = completion_worker_test();
+    let (_tmp, root) = tree();
+    let mut state = form_state(
+        &[param("src", ParameterType::Path, false)],
+        &[],
+        "",
+        root.to_str(),
+    );
+    let mut session = completion_session();
+    let geometry = render_root(&mut session, &state);
+    type_run_value(&mut session, &mut state, &geometry, "da");
+    wait_for_completion(&mut session);
+    assert_eq!(field_value(&state, 0), "da", "a ghost is not a value");
+
+    assert_eq!(
+        drive_root(&mut session, &mut state, &geometry, key(KeyCode::Home)),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        drive_root(&mut session, &mut state, &geometry, key(KeyCode::Right)),
+        EventHandling::Consumed,
+        "Right inside the value keeps its cursor meaning"
+    );
+    assert_eq!(field_value(&state, 0), "da");
+    let _ = drive_root(&mut session, &mut state, &geometry, key(KeyCode::End));
+    assert!(matches!(
+        drive_root(&mut session, &mut state, &geometry, key(KeyCode::Right)),
+        EventHandling::Action(Action::SetFieldValue { .. })
+    ));
+    assert_eq!(field_value(&state, 0), "data.csv");
+}
+
+#[test]
+fn stale_out_of_order_completion_never_replaces_the_latest_ghost() {
+    let _workers = completion_worker_test();
+    let root = tempfile::tempdir().unwrap();
+    let mut state = form_state(
+        &[param("src", ParameterType::Path, false)],
+        &[],
+        "",
+        root.path().to_str(),
+    );
+    let mut session = TuiSession::with_path_completion(Arc::new(RacingProvider));
+    let geometry = render_root(&mut session, &state);
+    type_run_value(&mut session, &mut state, &geometry, "a");
+    let _ = drive_root(&mut session, &mut state, &geometry, key(KeyCode::Backspace));
+    type_run_value(&mut session, &mut state, &geometry, "b");
+
+    // Same worker-answer wait as `wait_for_completion`, with the checkpoint read through a
+    // render because this test asserts what the user SEES; the shared budget keeps the two
+    // waits on one convention.
+    let deadline = Instant::now() + WORKER_ANSWER_BUDGET;
+    loop {
+        let _ = session.refresh_background();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = render_with_session(frame, &state, Locale::En, &mut session);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rendered = region_text(buffer, buffer.area);
+        if rendered.contains("beta") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "latest completion did not arrive"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    std::thread::sleep(Duration::from_millis(125));
+    let _ = session.refresh_background();
+    assert!(matches!(
+        drive_root(&mut session, &mut state, &geometry, key(KeyCode::Right)),
+        EventHandling::Action(Action::SetFieldValue { .. })
+    ));
+    assert_eq!(field_value(&state, 0), "beta");
+}
+
+#[test]
+fn secret_fields_never_dispatch_a_filesystem_completion_request() {
+    let _workers = completion_worker_test();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = CountingProvider {
+        calls: Arc::clone(&calls),
+    };
+    let mut secret = param("token", ParameterType::Str, false);
+    secret.secret = true;
+    let mut state = form_state(&[secret], &[], "", Some("/work"));
+    let mut session = TuiSession::with_path_completion(Arc::new(provider));
+    let geometry = render_root(&mut session, &state);
+    type_run_value(&mut session, &mut state, &geometry, "./token");
+    let _ = session.refresh_background();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_slow_completion_worker_does_not_block_escape() {
+    let _workers = completion_worker_test();
+    let released = Arc::new(AtomicBool::new(false));
+    let provider = SlowProvider {
+        released: Arc::clone(&released),
+    };
+    let mut state = form_state(
+        &[param("src", ParameterType::Path, false)],
+        &[],
+        "",
+        Some("/work"),
+    );
+    let mut session = TuiSession::with_path_completion(Arc::new(provider));
+    let geometry = render_root(&mut session, &state);
+    type_run_value(&mut session, &mut state, &geometry, "d");
+    let started = Instant::now();
+    assert_eq!(
+        session.handle_event(key(KeyCode::Esc), &state, &geometry),
+        EventHandling::Action(Action::Back)
+    );
+    assert!(started.elapsed() < Duration::from_millis(50));
+    released.store(true, Ordering::SeqCst);
+}
+
+#[test]
+fn path_hint_and_existing_browse_door_stay_complete_in_three_locales() {
+    let _workers = completion_worker_test();
+    let (_tmp, root) = tree();
+    for (locale, path_label, browse_label) in [
+        (Locale::En, "path", "browse"),
+        (Locale::ZhCn, "路径", "浏览"),
+        (Locale::ZhTw, "路徑", "瀏覽"),
+    ] {
+        let mut state = form_state(
+            &[param("src", ParameterType::Path, false)],
+            &[],
+            "",
+            root.to_str(),
+        );
+        let mut session = completion_session();
+        let geometry = render_root(&mut session, &state);
+        type_run_value(&mut session, &mut state, &geometry, "da");
+        wait_for_completion(&mut session);
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = render_with_session(frame, &state, locale, &mut session);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rendered = region_text(buffer, buffer.area);
+        assert!(rendered.contains(path_label), "{locale:?}: {rendered}");
+        assert!(rendered.contains(browse_label), "{locale:?}: {rendered}");
+        assert!(rendered.contains("data.csv"), "{locale:?}: {rendered}");
+    }
+}
 
 #[test]
 fn test_token_menu_puts_file_row_first_on_path_fields_and_picker_replaces() {
@@ -911,8 +1592,44 @@ fn test_insert_picked_escapes_glob_metacharacters() {
 }
 
 #[test]
-#[ignore = "ABSENT gap: no suggester exists to withhold from a secret field. The Rust equivalent gate is RunField::insertable()/browsable() returning false for a secret text control (covered structurally by the browse-link test). Oracle: a secret field's Input.suggester is None, a plain field's is a PathSuggester (test_path_tui.py:876-894)."]
-fn test_secret_field_never_gets_a_suggester() {}
+fn test_secret_field_never_gets_a_suggester() {
+    let (_tmp, root) = tree();
+    let mut secret = param("token", ParameterType::Str, false);
+    secret.secret = true;
+    let plain = param("out", ParameterType::Str, false);
+    let form = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[secret, plain],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: root.display().to_string(),
+            invoke_cwd: root.display().to_string(),
+        }),
+        tokens: TokenContext {
+            cwd: root.display().to_string(),
+            home: None,
+            env: BTreeMap::new(),
+            today: "2026-08-10".to_owned(),
+            now: "10-11-12".to_owned(),
+        },
+    });
+    assert!(
+        form.path_completion_request(0, "./da", PathInputDialect::Posix)
+            .is_none()
+    );
+    assert!(
+        form.path_completion_request(1, "./da", PathInputDialect::Posix)
+            .is_some()
+    );
+}
 
 #[test]
 fn test_token_menu_without_context_has_no_file_row() {
@@ -925,12 +1642,27 @@ fn test_token_menu_without_context_has_no_file_row() {
 }
 
 #[test]
-#[ignore = "ABSENT gap: looks_pathy has no Rust equivalent (it fed only the absent ghost activation). Oracle: on Windows a `..\\data` / `C:\\Users` / `C:/Users` is path-shaped, a bare word is not (test_path_tui.py:909-915)."]
-fn test_looks_pathy_windows_recognition() {}
+fn test_looks_pathy_windows_recognition() {
+    use skit_application::path_completion::looks_pathy;
+
+    assert!(looks_pathy(r"..\data", PathInputDialect::Windows));
+    assert!(looks_pathy(r"C:\Users", PathInputDialect::Windows));
+    assert!(looks_pathy("C:/Users", PathInputDialect::Windows));
+    assert!(!looks_pathy("data", PathInputDialect::Windows));
+    assert!(!looks_pathy(r"..\data", PathInputDialect::Posix));
+}
 
 #[test]
-#[ignore = "ABSENT gap: looks_pathy has no Rust equivalent. Oracle: '~'/'~project'/'{cwd}' are path-shaped, '{CWD}' is not (case-sensitive), any slash activates, a bare word does not (test_path_tui.py:918-928)."]
-fn test_looks_pathy_token_and_separator_spellings() {}
+fn test_looks_pathy_token_and_separator_spellings() {
+    use skit_application::path_completion::looks_pathy;
+
+    for value in ["~", "~project", "{cwd}", "a/b", "./x"] {
+        assert!(looks_pathy(value, PathInputDialect::Posix), "{value}");
+    }
+    for value in ["{CWD}", "plain"] {
+        assert!(!looks_pathy(value, PathInputDialect::Posix), "{value}");
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PathSuggester constructor contract, observed through Textual's _get_suggestion
@@ -938,12 +1670,40 @@ fn test_looks_pathy_token_and_separator_spellings() {}
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: case_sensitive=True — 'DA' matches the uppercase file DATA.csv verbatim (test_path_tui.py:955-966)."]
-fn test_suggester_is_case_sensitive_query_not_casefolded() {}
+fn test_suggester_is_case_sensitive_query_not_casefolded() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("DATA.csv"), "x").unwrap();
+    assert_eq!(
+        complete(completion_request(
+            root.path(),
+            root.path(),
+            "DA",
+            PathCompletionKind::Path,
+        )),
+        Some("DATA.csv".to_owned())
+    );
+    assert_eq!(
+        complete(completion_request(
+            root.path(),
+            root.path(),
+            "da",
+            PathCompletionKind::Path,
+        )),
+        None
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: use_cache=False — a re-query after the file is deleted re-scans and finds it gone (test_path_tui.py:969-982)."]
-fn test_suggester_does_not_cache_stale_results() {}
+fn test_suggester_does_not_cache_stale_results() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("data.csv");
+    fs::write(&target, "x").unwrap();
+    let request = completion_request(root.path(), root.path(), "da", PathCompletionKind::Path);
+    let service = PathCompletionService::new(SystemDirectoryReader);
+    assert_eq!(service.complete(&request), Some("data.csv".to_owned()));
+    fs::remove_file(target).unwrap();
+    assert_eq!(service.complete(&request), None);
+}
 
 // ---------------------------------------------------------------------------
 // PathSuggester internals: brace-escape flag, quote refusal, token-without-sep
@@ -951,20 +1711,66 @@ fn test_suggester_does_not_cache_stale_results() {}
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a normal field has brace_escapes=True, so '{{x}}/da' halves to the real dir {x} and completes (test_path_tui.py:1000-1004)."]
-fn test_brace_escapes_on_a_normal_field_halves_doubled_braces() {}
+fn test_brace_escapes_on_a_normal_field_halves_doubled_braces() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("{x}")).unwrap();
+    fs::write(root.path().join("{x}/data.csv"), "x").unwrap();
+    assert_eq!(
+        complete(completion_request(
+            root.path(),
+            root.path(),
+            "{{x}}/da",
+            PathCompletionKind::Path,
+        )),
+        Some("{{x}}/data.csv".to_owned())
+    );
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a placeholder field has brace_escapes=False, so '{{x}}/da' stays literal and completes nothing (test_path_tui.py:1007-1013)."]
-fn test_brace_escapes_off_on_a_placeholder_field_keeps_doubled_braces() {}
+fn test_brace_escapes_off_on_a_placeholder_field_keeps_doubled_braces() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("{x}")).unwrap();
+    fs::write(root.path().join("{x}/data.csv"), "x").unwrap();
+    let mut request = completion_request(
+        root.path(),
+        root.path(),
+        "{{x}}/da",
+        PathCompletionKind::Path,
+    );
+    request.placeholder_braces = true;
+    assert_eq!(complete(request), None);
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a trailing piece bearing either quote refuses to complete; a clean one still completes (test_path_tui.py:1016-1027)."]
-fn test_shlexy_trailing_piece_refuses_either_quote() {}
+fn test_shlexy_trailing_piece_refuses_either_quote() {
+    let (_tmp, root) = tree();
+    for value in ["done.txt 'q", "done.txt \"q"] {
+        let mut request = completion_request(&root, &root, value, PathCompletionKind::Path);
+        request.shlexy = true;
+        assert_eq!(complete(request), None);
+    }
+    let mut request = completion_request(&root, &root, "done.txt dr", PathCompletionKind::Path);
+    request.shlexy = true;
+    assert_eq!(complete(request), Some("done.txt draft.txt".to_owned()));
+}
 
 #[test]
-#[ignore = "ABSENT gap: no ghost suggester. Oracle: a '~' or '{' that has not reached a separator completes nothing, even with a matching file present (test_path_tui.py:1030-1038)."]
-fn test_bare_token_prefix_without_separator_is_silent() {}
+fn test_bare_token_prefix_without_separator_is_silent() {
+    let root = tempfile::tempdir().unwrap();
+    fs::write(root.path().join("~data.txt"), "x").unwrap();
+    fs::write(root.path().join("{data.txt"), "x").unwrap();
+    for value in ["~da", "{da"] {
+        assert_eq!(
+            complete(completion_request(
+                root.path(),
+                root.path(),
+                value,
+                PathCompletionKind::Path,
+            )),
+            None
+        );
+    }
+}
 
 // ---------------------------------------------------------------------------
 // _list_filtered ranking and hidden-entry rules (picker only)
@@ -1025,29 +1831,81 @@ fn test_list_filtered_tiebreak_is_case_insensitive() {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the pinned use-this-directory affordance is the mouse-only CurrentDirectory row, rendered as '▶ <current dir path>', not a localized '(use this directory)' OptionList row with id '__use_dir__'. Oracle: option 0 id is '__use_dir__' and its prompt ends with '(use this directory)' (test_path_tui.py:1079-1092)."]
 fn test_picker_pinned_row_shows_its_label() {
     let (_tmp, root) = tree();
+    for (locale, expected) in [
+        (Locale::En, "(use this directory)"),
+        (Locale::ZhCn, "(使用此目录)"),
+        (Locale::ZhTw, "(使用此目錄)"),
+    ] {
+        let mut session = picker(&root);
+        let (buffer, geometry) = render_localized(&mut session, 100, 30, locale);
+        let pinned = geometry
+            .hits
+            .iter()
+            .filter(|hit| hit.target == FilePickerHit::CurrentDirectory)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            pinned.len(),
+            1,
+            "{} must expose one typed row",
+            locale.tag()
+        );
+        let row = region_text(&buffer, pinned[0].area);
+        assert!(
+            row.trim_end().ends_with(expected),
+            "{} must render the exact localized label tail: {row:?}",
+            locale.tag(),
+        );
+    }
+
     let mut session = picker(&root);
-    let (text, _geometry) = render(&mut session, 100, 30);
-    assert!(text.contains("(use this directory)"));
+    let (_buffer, geometry) = render_localized(&mut session, 100, 30, Locale::En);
+    let area = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == FilePickerHit::CurrentDirectory)
+        .expect("a typed current-directory row")
+        .area;
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(mouse(kind, area.x, area.y), &geometry),
+            None,
+            "hover and release must not accept the directory"
+        );
+    }
+    assert_eq!(
+        session.handle_event(click(area.x, area.y), &geometry),
+        Some(FilePickerEvent::Accepted(vec![PathBuf::new()]))
+    );
 }
 
 #[test]
 fn test_picker_empty_directory_highlights_the_pinned_row() {
-    // An empty directory offers only the use-this-directory affordance: no real entries, and
-    // the mouse CurrentDirectory door is rendered.
+    // An empty directory offers only the use-this-directory affordance. It is both highlighted
+    // and keyboard-selectable.
     let tmp = tempfile::tempdir().unwrap();
     let empty = tmp.path().join("empty");
     fs::create_dir(&empty).unwrap();
     let mut session = picker(&empty);
     assert_eq!(listing(&session), Vec::<(String, bool)>::new());
-    let (_text, geometry) = render(&mut session, 100, 30);
+    let (buffer, geometry) = render_localized(&mut session, 100, 30, Locale::En);
+    let pinned = geometry
+        .hits
+        .iter()
+        .filter(|hit| hit.target == FilePickerHit::CurrentDirectory)
+        .collect::<Vec<_>>();
+    assert_eq!(pinned.len(), 1, "only one pinned row may be clickable");
     assert!(
-        geometry
-            .hits
-            .iter()
-            .any(|hit| hit.target == FilePickerHit::CurrentDirectory)
+        (pinned[0].area.x..pinned[0].area.right()).any(|column| {
+            let cell = &buffer[(column, pinned[0].area.y)];
+            cell.fg == Color::Rgb(0xEE, 0xEE, 0xEE) && cell.bg == Color::Rgb(0x5A, 0x2D, 0x1E)
+        }),
+        "the sole pinned row must use the selection highlight"
+    );
+    assert_eq!(
+        feed(&mut session, key(KeyCode::Enter)),
+        Some(FilePickerEvent::Accepted(vec![PathBuf::new()]))
     );
 }
 

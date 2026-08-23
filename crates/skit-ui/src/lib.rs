@@ -30,10 +30,10 @@ pub use skit_form::field::{
 
 pub use settings::{
     ADD_PARAMETER_KEY, DEPENDENCIES_KEY, DESCRIPTION_KEY, DependencyFlavor, INTERPOLATE_KEY,
-    INTERPRETER_KEY, MANAGE_KEY, NAME_KEY, NEEDS_KEY, NORMALIZE_KEY, PRESET_PREFIX, PYTHON_KEY,
-    RESYNC_KEY, RUNNER_KEY, SettingsAction, SettingsEffect, SettingsError, SettingsInputs,
-    SettingsItem, SettingsNote, SettingsSection, SettingsSectionId, SettingsView, TEMPLATE_KEY,
-    WORKDIR_CUSTOM, WORKDIR_KEY, WORKDIR_PATH_KEY, preset_key,
+    INTERPRETER_KEY, MANAGE_KEY, NAME_KEY, NEEDS_KEY, NORMALIZE_KEY, PRESET_PREFIX,
+    PROMPT_CANDIDATES_KEY, PYTHON_KEY, RESYNC_KEY, RUNNER_KEY, SettingsAction, SettingsEffect,
+    SettingsError, SettingsInputs, SettingsItem, SettingsNote, SettingsSection, SettingsSectionId,
+    SettingsView, TEMPLATE_KEY, WORKDIR_CUSTOM, WORKDIR_KEY, WORKDIR_PATH_KEY, preset_key,
 };
 pub use skit_application::path_insertion::RunPathInsertMode;
 
@@ -145,33 +145,37 @@ pub struct UiBinding {
     pub compact_hint: &'static str,
 }
 
-impl UiBinding {
-    const fn plain(key: UiKey, hint: &'static str, compact_hint: &'static str) -> Self {
-        Self {
-            key,
+macro_rules! plain_binding {
+    ($key:expr, $hint:expr, $compact_hint:expr $(,)?) => {
+        UiBinding {
+            key: $key,
             modifiers: UiModifiers::NONE,
-            hint,
-            compact_hint,
+            hint: $hint,
+            compact_hint: $compact_hint,
         }
-    }
+    };
+}
 
-    const fn control(key: UiKey, hint: &'static str, compact_hint: &'static str) -> Self {
-        Self {
-            key,
+macro_rules! control_binding {
+    ($key:expr, $hint:expr, $compact_hint:expr $(,)?) => {
+        UiBinding {
+            key: $key,
             modifiers: UiModifiers::CONTROL,
-            hint,
-            compact_hint,
+            hint: $hint,
+            compact_hint: $compact_hint,
         }
-    }
+    };
+}
 
-    const fn shift(key: UiKey, hint: &'static str, compact_hint: &'static str) -> Self {
-        Self {
-            key,
+macro_rules! shift_binding {
+    ($key:expr, $hint:expr, $compact_hint:expr $(,)?) => {
+        UiBinding {
+            key: $key,
             modifiers: UiModifiers::SHIFT,
-            hint,
-            compact_hint,
+            hint: $hint,
+            compact_hint: $compact_hint,
         }
-    }
+    };
 }
 
 /// The active command surface.
@@ -294,6 +298,8 @@ pub enum UiCommand {
     SaveSettings,
     /// Read the script's own parameter definitions again on the next entry-settings save.
     ResyncSettings,
+    /// Open the full detected prompt-variable picker from entry settings.
+    ChooseSettingsVariables,
     /// Close entry settings, through the discard guard when anything moved.
     CloseSettings,
     /// Return to the library workflow.
@@ -327,7 +333,7 @@ impl UiCommand {
             Self::Runners => Action::OpenRunners,
             Self::Search => Action::BeginSearch,
             Self::LeaveSearch => Action::FinishSearch,
-            Self::ToggleDetail => return None,
+            Self::ToggleDetail | Self::ChooseSettingsVariables => return None,
             Self::Help => Action::OpenHelp,
             Self::Reload => Action::Reload,
             Self::Quit => Action::Quit,
@@ -378,28 +384,23 @@ pub struct UiCommandSpec {
     pub help: bool,
 }
 
-const fn spec(
-    command: UiCommand,
-    context: CommandContext,
-    bindings: &'static [UiBinding],
-    label: &'static str,
-    footer: bool,
-    help: bool,
-) -> UiCommandSpec {
-    UiCommandSpec {
-        command,
-        context,
-        bindings,
-        label,
-        footer,
-        help,
-    }
+macro_rules! command_spec {
+    ($command:expr, $context:expr, $bindings:expr, $label:expr, $footer:expr, $help:expr $(,)?) => {
+        UiCommandSpec {
+            command: $command,
+            context: $context,
+            bindings: $bindings,
+            label: $label,
+            footer: $footer,
+            help: $help,
+        }
+    };
 }
 
-const PLAIN_ENTER: UiBinding = UiBinding::plain(UiKey::Enter, "Enter", "↵");
-const PLAIN_ESCAPE: UiBinding = UiBinding::plain(UiKey::Escape, "Esc", "Esc");
+const PLAIN_ENTER: UiBinding = plain_binding!(UiKey::Enter, "Enter", "↵");
+const PLAIN_ESCAPE: UiBinding = plain_binding!(UiKey::Escape, "Esc", "Esc");
 static COMMAND_SPECS: &[UiCommandSpec] = &[
-    spec(
+    command_spec!(
         UiCommand::Run,
         CommandContext::LibraryBrowse,
         &[PLAIN_ENTER],
@@ -407,196 +408,196 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Rerun,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::Character('r'), "r", "r")],
+        &[plain_binding!(UiKey::Character('r'), "r", "r")],
         "Rerun",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Settings,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::Character('p'), "p", "p")],
+        &[plain_binding!(UiKey::Character('p'), "p", "p")],
         "Entry settings",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Edit,
         CommandContext::LibraryBrowse,
         &[
-            UiBinding::plain(UiKey::Character('e'), "e", "e"),
-            UiBinding::control(UiKey::Character('e'), "Ctrl+E", "^E"),
+            plain_binding!(UiKey::Character('e'), "e", "e"),
+            control_binding!(UiKey::Character('e'), "Ctrl+E", "^E"),
         ],
         "Edit source",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Remove,
         CommandContext::LibraryBrowse,
         &[
-            UiBinding::plain(UiKey::Delete, "Del", "Del"),
-            UiBinding::plain(UiKey::Backspace, "Backspace", "⌫"),
+            plain_binding!(UiKey::Delete, "Del", "Del"),
+            plain_binding!(UiKey::Backspace, "Backspace", "⌫"),
         ],
         "Remove",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Add,
         CommandContext::LibraryBrowse,
         &[
-            UiBinding::plain(UiKey::Character('a'), "a", "a"),
-            UiBinding::control(UiKey::Character('n'), "Ctrl+N", "^N"),
+            plain_binding!(UiKey::Character('a'), "a", "a"),
+            control_binding!(UiKey::Character('n'), "Ctrl+N", "^N"),
         ],
         "Add entry",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Presets,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::Character('s'), "s", "s")],
+        &[plain_binding!(UiKey::Character('s'), "s", "s")],
         "Presets",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Search,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::Character('/'), "/", "/")],
+        &[plain_binding!(UiKey::Character('/'), "/", "/")],
         "Search",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::ToggleDetail,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::Tab, "Tab", "Tab")],
+        &[plain_binding!(UiKey::Tab, "Tab", "Tab")],
         "Detail pane",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Preferences,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::Character(','), ",", ",")],
+        &[plain_binding!(UiKey::Character(','), ",", ",")],
         "Preferences",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Health,
         CommandContext::LibraryBrowse,
         &[
-            UiBinding::shift(UiKey::Character('D'), "D", "D"),
-            UiBinding::plain(UiKey::Character('h'), "h", "h"),
+            shift_binding!(UiKey::Character('D'), "D", "D"),
+            plain_binding!(UiKey::Character('h'), "h", "h"),
         ],
         "Health check",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Help,
         CommandContext::LibraryBrowse,
-        &[UiBinding::shift(UiKey::Character('?'), "?", "?")],
+        &[shift_binding!(UiKey::Character('?'), "?", "?")],
         "Help",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Runners,
         CommandContext::LibraryBrowse,
-        &[UiBinding::shift(UiKey::Character('R'), "R", "R")],
+        &[shift_binding!(UiKey::Character('R'), "R", "R")],
         "Runners",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Rename,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::Function(2), "F2", "F2")],
+        &[plain_binding!(UiKey::Function(2), "F2", "F2")],
         "Rename",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Reload,
         CommandContext::LibraryBrowse,
-        &[UiBinding::control(UiKey::Character('r'), "Ctrl+R", "^R")],
+        &[control_binding!(UiKey::Character('r'), "Ctrl+R", "^R")],
         "Reload",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Quit,
         CommandContext::LibraryBrowse,
         &[
-            UiBinding::plain(UiKey::Character('q'), "q", "q"),
+            plain_binding!(UiKey::Character('q'), "q", "q"),
             PLAIN_ESCAPE,
         ],
         "Quit",
         true,
         true,
     ),
-    spec(
+    command_spec!(
         UiCommand::Previous,
         CommandContext::LibraryBrowse,
         &[
-            UiBinding::plain(UiKey::Up, "Up", "↑"),
-            UiBinding::plain(UiKey::Character('k'), "k", "k"),
+            plain_binding!(UiKey::Up, "Up", "↑"),
+            plain_binding!(UiKey::Character('k'), "k", "k"),
         ],
         "Previous",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Next,
         CommandContext::LibraryBrowse,
         &[
-            UiBinding::plain(UiKey::Down, "Down", "↓"),
-            UiBinding::plain(UiKey::Character('j'), "j", "j"),
+            plain_binding!(UiKey::Down, "Down", "↓"),
+            plain_binding!(UiKey::Character('j'), "j", "j"),
         ],
         "Next",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::PagePrevious,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::PageUp, "Page Up", "PgUp")],
+        &[plain_binding!(UiKey::PageUp, "Page Up", "PgUp")],
         "Previous page",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::PageNext,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::PageDown, "Page Down", "PgDn")],
+        &[plain_binding!(UiKey::PageDown, "Page Down", "PgDn")],
         "Next page",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Home,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::Home, "Home", "Home")],
+        &[plain_binding!(UiKey::Home, "Home", "Home")],
         "First",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::End,
         CommandContext::LibraryBrowse,
-        &[UiBinding::plain(UiKey::End, "End", "End")],
+        &[plain_binding!(UiKey::End, "End", "End")],
         "Last",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Run,
         CommandContext::LibrarySearch,
         &[PLAIN_ENTER],
@@ -604,7 +605,7 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::LeaveSearch,
         CommandContext::LibrarySearch,
         &[PLAIN_ESCAPE],
@@ -612,39 +613,39 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Previous,
         CommandContext::LibrarySearch,
-        &[UiBinding::plain(UiKey::Up, "Up", "↑")],
+        &[plain_binding!(UiKey::Up, "Up", "↑")],
         "Previous",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Next,
         CommandContext::LibrarySearch,
-        &[UiBinding::plain(UiKey::Down, "Down", "↓")],
+        &[plain_binding!(UiKey::Down, "Down", "↓")],
         "Next",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Backspace,
         CommandContext::LibrarySearch,
-        &[UiBinding::plain(UiKey::Backspace, "Backspace", "⌫")],
+        &[plain_binding!(UiKey::Backspace, "Backspace", "⌫")],
         "Backspace",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::ClearSearch,
         CommandContext::LibrarySearch,
-        &[UiBinding::control(UiKey::Character('u'), "Ctrl+U", "^U")],
+        &[control_binding!(UiKey::Character('u'), "Ctrl+U", "^U")],
         "Clear search",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Back,
         CommandContext::Form,
         &[PLAIN_ESCAPE],
@@ -652,81 +653,81 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::FocusNext,
         CommandContext::Form,
         &[
-            UiBinding::plain(UiKey::Tab, "Tab", "Tab"),
-            UiBinding::plain(UiKey::Down, "Down", "↓"),
+            plain_binding!(UiKey::Tab, "Tab", "Tab"),
+            plain_binding!(UiKey::Down, "Down", "↓"),
             PLAIN_ENTER,
         ],
         "Next field",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::FocusPrevious,
         CommandContext::Form,
         &[
-            UiBinding::shift(UiKey::BackTab, "Shift+Tab", "⇧Tab"),
-            UiBinding::plain(UiKey::Up, "Up", "↑"),
+            shift_binding!(UiKey::BackTab, "Shift+Tab", "⇧Tab"),
+            plain_binding!(UiKey::Up, "Up", "↑"),
         ],
         "Previous field",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Backspace,
         CommandContext::Form,
-        &[UiBinding::plain(UiKey::Backspace, "Backspace", "⌫")],
+        &[plain_binding!(UiKey::Backspace, "Backspace", "⌫")],
         "Backspace",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Submit,
         CommandContext::Form,
-        &[UiBinding::control(UiKey::Character('s'), "Ctrl+S", "^S")],
+        &[control_binding!(UiKey::Character('s'), "Ctrl+S", "^S")],
         "Submit",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Submit,
         CommandContext::RunForm,
         &[
             PLAIN_ENTER,
-            UiBinding::control(UiKey::Character('r'), "Ctrl+R", "^R"),
+            control_binding!(UiKey::Character('r'), "Ctrl+R", "^R"),
         ],
         "Run",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::InsertValue,
         CommandContext::RunForm,
-        &[UiBinding::control(UiKey::Character('t'), "Ctrl+T", "^T")],
+        &[control_binding!(UiKey::Character('t'), "Ctrl+T", "^T")],
         "Insert value",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::ResetDefault,
         CommandContext::RunForm,
-        &[UiBinding::control(UiKey::Character('o'), "Ctrl+O", "^O")],
+        &[control_binding!(UiKey::Character('o'), "Ctrl+O", "^O")],
         "Reset to default",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::SavePreset,
         CommandContext::RunForm,
-        &[UiBinding::control(UiKey::Character('s'), "Ctrl+S", "^S")],
+        &[control_binding!(UiKey::Character('s'), "Ctrl+S", "^S")],
         "Save as preset",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Back,
         CommandContext::RunForm,
         &[PLAIN_ESCAPE],
@@ -734,37 +735,37 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::FocusNext,
         CommandContext::RunForm,
         &[
-            UiBinding::plain(UiKey::Tab, "Tab", "Tab"),
-            UiBinding::plain(UiKey::Down, "Down", "↓"),
+            plain_binding!(UiKey::Tab, "Tab", "Tab"),
+            plain_binding!(UiKey::Down, "Down", "↓"),
         ],
         "Next field",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::FocusPrevious,
         CommandContext::RunForm,
         &[
-            UiBinding::shift(UiKey::BackTab, "Shift+Tab", "⇧Tab"),
-            UiBinding::plain(UiKey::Up, "Up", "↑"),
+            shift_binding!(UiKey::BackTab, "Shift+Tab", "⇧Tab"),
+            plain_binding!(UiKey::Up, "Up", "↑"),
         ],
         "Previous field",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::NewRunner,
         CommandContext::RunForm,
-        &[UiBinding::control(UiKey::Character('n'), "Ctrl+N", "^N")],
+        &[control_binding!(UiKey::Character('n'), "Ctrl+N", "^N")],
         "New agent",
         false,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Submit,
         CommandContext::RunPresetName,
         &[PLAIN_ENTER],
@@ -772,7 +773,7 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::CloseModal,
         CommandContext::RunPresetName,
         &[PLAIN_ESCAPE],
@@ -780,7 +781,7 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::CloseModal,
         CommandContext::RunTokenMenu,
         &[PLAIN_ESCAPE],
@@ -788,33 +789,41 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::SaveSettings,
         CommandContext::Settings,
-        &[UiBinding::control(UiKey::Character('s'), "Ctrl+S", "^S")],
+        &[control_binding!(UiKey::Character('s'), "Ctrl+S", "^S")],
         "Save",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::NewRunner,
         CommandContext::Settings,
-        &[UiBinding::control(UiKey::Character('n'), "Ctrl+N", "^N")],
+        &[control_binding!(UiKey::Character('n'), "Ctrl+N", "^N")],
         "New agent",
         true,
         false,
     ),
     // Version 0.4 advertises this only where a resync does something, because "advertising a key
     // that silently no-ops … teaches a dead chord" (`src/skit/tui_settings.py:408-415`).
-    spec(
+    command_spec!(
         UiCommand::ResyncSettings,
         CommandContext::Settings,
-        &[UiBinding::control(UiKey::Character('r'), "Ctrl+R", "^R")],
+        &[control_binding!(UiKey::Character('r'), "Ctrl+R", "^R")],
         "Resync",
         true,
         false,
     ),
-    spec(
+    command_spec!(
+        UiCommand::ChooseSettingsVariables,
+        CommandContext::Settings,
+        &[control_binding!(UiKey::Character('o'), "Ctrl+O", "^O")],
+        "Choose variables…",
+        false,
+        false,
+    ),
+    command_spec!(
         UiCommand::CloseSettings,
         CommandContext::Settings,
         &[PLAIN_ESCAPE],
@@ -822,37 +831,37 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::FocusNext,
         CommandContext::Settings,
         &[
-            UiBinding::plain(UiKey::Tab, "Tab", "Tab"),
-            UiBinding::plain(UiKey::Down, "Down", "↓"),
+            plain_binding!(UiKey::Tab, "Tab", "Tab"),
+            plain_binding!(UiKey::Down, "Down", "↓"),
         ],
         "Next field",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::FocusPrevious,
         CommandContext::Settings,
         &[
-            UiBinding::shift(UiKey::BackTab, "Shift+Tab", "⇧Tab"),
-            UiBinding::plain(UiKey::Up, "Up", "↑"),
+            shift_binding!(UiKey::BackTab, "Shift+Tab", "⇧Tab"),
+            plain_binding!(UiKey::Up, "Up", "↑"),
         ],
         "Previous field",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::SavePreferences,
         CommandContext::Preferences,
-        &[UiBinding::control(UiKey::Character('s'), "Ctrl+S", "^S")],
+        &[control_binding!(UiKey::Character('s'), "Ctrl+S", "^S")],
         "Save",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::ClosePreferences,
         CommandContext::Preferences,
         &[PLAIN_ESCAPE],
@@ -860,91 +869,113 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::ManageAgents,
         CommandContext::Preferences,
-        &[UiBinding::control(UiKey::Character('o'), "Ctrl+O", "^O")],
+        &[control_binding!(UiKey::Character('o'), "Ctrl+O", "^O")],
         "Manage agents…",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::InstallAgentSkill,
         CommandContext::Preferences,
-        &[UiBinding::control(UiKey::Character('k'), "Ctrl+K", "^K")],
+        &[control_binding!(UiKey::Character('k'), "Ctrl+K", "^K")],
         "Teach an AI agent skit…",
         true,
         false,
     ),
-    spec(
+    command_spec!(
+        UiCommand::FocusNext,
+        CommandContext::Preferences,
+        &[
+            plain_binding!(UiKey::Tab, "Tab", "Tab"),
+            plain_binding!(UiKey::Down, "Down", "↓"),
+        ],
+        "Next field",
+        true,
+        false,
+    ),
+    command_spec!(
+        UiCommand::FocusPrevious,
+        CommandContext::Preferences,
+        &[
+            shift_binding!(UiKey::BackTab, "Shift+Tab", "⇧Tab"),
+            plain_binding!(UiKey::Up, "Up", "↑"),
+        ],
+        "Previous field",
+        true,
+        false,
+    ),
+    command_spec!(
         UiCommand::Back,
         CommandContext::Report,
         &[
             PLAIN_ESCAPE,
-            UiBinding::plain(UiKey::Character('q'), "q", "q"),
+            plain_binding!(UiKey::Character('q'), "q", "q"),
         ],
         "Back",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Reload,
         CommandContext::Report,
         &[
-            UiBinding::plain(UiKey::Character('r'), "r", "r"),
-            UiBinding::control(UiKey::Character('r'), "Ctrl+R", "^R"),
+            plain_binding!(UiKey::Character('r'), "r", "r"),
+            control_binding!(UiKey::Character('r'), "Ctrl+R", "^R"),
         ],
         "Reload",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::Submit,
         CommandContext::ConfirmRemove,
-        &[UiBinding::plain(UiKey::Character('y'), "y", "y")],
+        &[plain_binding!(UiKey::Character('y'), "y", "y")],
         "Remove",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::CloseModal,
         CommandContext::ConfirmRemove,
         &[
             PLAIN_ESCAPE,
-            UiBinding::plain(UiKey::Character('n'), "n", "n"),
+            plain_binding!(UiKey::Character('n'), "n", "n"),
         ],
         "Cancel",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::DiscardChanges,
         CommandContext::ConfirmDiscard,
         // Version 0.4 binds `y` alone here (`src/skit/tui_settings.py:43-46`). Enter is left
         // deliberately unbound: a guard exists to catch a reflex, so the answer a reflex reaches
         // must be the one that keeps the work, not the one that throws it away.
-        &[UiBinding::plain(UiKey::Character('y'), "y", "y")],
+        &[plain_binding!(UiKey::Character('y'), "y", "y")],
         "Discard",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::KeepEditing,
         CommandContext::ConfirmDiscard,
         &[
             PLAIN_ESCAPE,
-            UiBinding::plain(UiKey::Character('n'), "n", "n"),
+            plain_binding!(UiKey::Character('n'), "n", "n"),
         ],
         "Keep editing",
         true,
         false,
     ),
-    spec(
+    command_spec!(
         UiCommand::CloseModal,
         CommandContext::Help,
         &[
             PLAIN_ESCAPE,
-            UiBinding::shift(UiKey::Character('?'), "?", "?"),
+            shift_binding!(UiKey::Character('?'), "?", "?"),
         ],
         "Close",
         true,
@@ -1033,6 +1064,15 @@ pub struct FormField {
     pub secret: bool,
     /// Permit embedded line breaks.
     pub multiline: bool,
+    /// User-authored help shown before a plain prompt.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub help: String,
+    /// An empty value keeps the script's own dynamic default.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub degraded: bool,
+    /// An empty value lets the source ask in the terminal.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub input_binding: bool,
 }
 
 impl FormField {
@@ -1051,6 +1091,9 @@ impl FormField {
             value: value.into(),
             secret: false,
             multiline: false,
+            help: String::new(),
+            degraded: false,
+            input_binding: false,
         }
     }
 
@@ -1340,6 +1383,9 @@ pub enum ModalState {
         owner: RunnerEditorOwner,
         /// Serializable editor values and validation state.
         view: Box<RunnerEditorView>,
+        /// Status published if this editor was the only route to a runnable prompt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cancel_status: Option<String>,
     },
 }
 
@@ -1563,6 +1609,13 @@ pub enum Action {
     Back,
     /// Present a screen built by the host adapter.
     Present(Screen),
+    /// Present a prompt launch form and require one configured runner before it can run.
+    PromptRunnerRequired {
+        /// Existing launch form that receives a successfully created runner.
+        form: Box<RunFormView>,
+        /// Localized status published if the runner editor is cancelled.
+        cancel_status: String,
+    },
     /// Finish an add transaction and select the created entry after its authoritative reload.
     AddCompleted {
         /// New library surface after the atomic create, detail facts included.
@@ -1876,7 +1929,7 @@ impl LibraryState {
                 | Screen::Health(_)
                 | Screen::Runners(_)
                 | Screen::Settings(_)
-                | Screen::Report(_) => {}
+                | Screen::Report(_) => return Effect::None,
             },
             Action::SetRunGlobCount {
                 field,
@@ -2017,6 +2070,7 @@ impl LibraryState {
                             selector: form.selector().to_owned(),
                         },
                         view: Box::default(),
+                        cancel_status: None,
                     });
                 }
             }
@@ -2037,6 +2091,7 @@ impl LibraryState {
                     self.modal = Some(ModalState::RunnerEditor {
                         owner: RunnerEditorOwner::Add,
                         view: Box::default(),
+                        cancel_status: None,
                     });
                 }
             }
@@ -2104,7 +2159,12 @@ impl LibraryState {
                 }
             }
             Action::RunnerEditor(action) => {
-                let Some(ModalState::RunnerEditor { owner, view }) = &mut self.modal else {
+                let Some(ModalState::RunnerEditor {
+                    owner,
+                    view,
+                    cancel_status,
+                }) = &mut self.modal
+                else {
                     return Effect::None;
                 };
                 match view.reduce(action) {
@@ -2115,7 +2175,15 @@ impl LibraryState {
                             owner: RunnerSaveOwner::Editor(owner.clone()),
                         };
                     }
-                    RunnerEditorEffect::Cancel => self.modal = None,
+                    RunnerEditorEffect::Cancel => {
+                        let cancel_status = cancel_status.clone();
+                        self.modal = None;
+                        if let Some(message) = cancel_status {
+                            self.workflow.return_to_library();
+                            self.input_mode = InputMode::Browse;
+                            self.status = Some(message);
+                        }
+                    }
                 }
             }
             Action::RunnerEditorSaved {
@@ -2154,6 +2222,7 @@ impl LibraryState {
                 if let Some(ModalState::RunnerEditor {
                     owner: current,
                     view,
+                    ..
                 }) = &mut self.modal
                     && current == &owner
                 {
@@ -2205,6 +2274,7 @@ impl LibraryState {
                         self.modal = Some(ModalState::RunnerEditor {
                             owner: RunnerEditorOwner::Settings { selector },
                             view: Box::default(),
+                            cancel_status: None,
                         });
                     }
                 }
@@ -2314,6 +2384,19 @@ impl LibraryState {
                 };
                 self.workflow.present(screen);
                 self.modal = None;
+            }
+            Action::PromptRunnerRequired {
+                form,
+                cancel_status,
+            } => {
+                let selector = form.selector().to_owned();
+                self.input_mode = InputMode::Form;
+                self.workflow.present(Screen::Run(form));
+                self.modal = Some(ModalState::RunnerEditor {
+                    owner: RunnerEditorOwner::Run { selector },
+                    view: Box::default(),
+                    cancel_status: Some(cancel_status),
+                });
             }
             Action::AddCompleted {
                 surface,
@@ -2474,6 +2557,9 @@ impl LibraryState {
             UiCommand::ResyncSettings => self
                 .settings_view()
                 .is_some_and(|view| view.field(RESYNC_KEY).is_some()),
+            UiCommand::ChooseSettingsVariables => self
+                .settings_view()
+                .is_some_and(SettingsView::prompt_picker_available),
             UiCommand::SavePreferences
             | UiCommand::ClosePreferences
             | UiCommand::ManageAgents
@@ -2681,8 +2767,14 @@ impl LibraryState {
             // stops. The shared nav commands still drive it: a footer chip that no-ops is the dead
             // chord version 0.4 refuses to advertise (`src/skit/tui_settings.py:408-415`).
             Screen::Settings(view) => view.move_focus(delta > 0),
+            Screen::Preferences(view) => {
+                let _ = view.update(if delta > 0 {
+                    PreferencesAction::Next
+                } else {
+                    PreferencesAction::Previous
+                });
+            }
             Screen::Library
-            | Screen::Preferences(_)
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
@@ -2702,7 +2794,7 @@ impl LibraryState {
             | Screen::Runners(_)
             | Screen::Settings(_)
             | Screen::Form(_)
-            | Screen::Report(_) => {}
+            | Screen::Report(_) => (),
         }
     }
 
@@ -2724,7 +2816,7 @@ impl LibraryState {
             | Screen::Health(_)
             | Screen::Runners(_)
             | Screen::Settings(_)
-            | Screen::Report(_) => {}
+            | Screen::Report(_) => (),
         }
     }
 
@@ -2746,7 +2838,7 @@ impl LibraryState {
             | Screen::Health(_)
             | Screen::Runners(_)
             | Screen::Settings(_)
-            | Screen::Report(_) => {}
+            | Screen::Report(_) => (),
         }
     }
 

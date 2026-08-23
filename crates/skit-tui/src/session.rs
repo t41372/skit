@@ -1,5 +1,7 @@
 //! Ephemeral state for mature terminal widgets.
 
+use std::sync::{Arc, Mutex, mpsc};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui_core::{
@@ -27,6 +29,9 @@ use ratatui_widgets::{
     borders::Borders,
     paragraph::{Paragraph, Wrap},
     scrollbar::{Scrollbar, ScrollbarOrientation, ScrollbarState},
+};
+use skit_application::path_completion::{
+    PathCompletionProvider, PathCompletionRequest, PathInputDialect,
 };
 use skit_domain::parameters::ParameterType;
 use skit_i18n::{Locale, format_text, text};
@@ -73,6 +78,24 @@ pub enum EventHandling {
     Ignored,
 }
 
+/// One header shape that can own visible rows in the terminal layout.
+pub(crate) enum HeaderKind<'a> {
+    Help,
+    ConfirmRemove,
+    ConfirmDiscardChanges,
+    RunPresetName,
+    RunTokenMenu,
+    RunEnvironmentPicker,
+    RunFilePicker,
+    RunnerEditor(skit_ui::RunnerEditorMode),
+    Library { query: &'a str, search: bool },
+    Preferences,
+    Add,
+    Health,
+    Runners,
+    Report(&'a str),
+}
+
 /// Stateful terminal widget session. This state is not serialized into `skit-ui`.
 #[derive(Debug, Default)]
 pub struct TuiSession {
@@ -83,10 +106,12 @@ pub struct TuiSession {
     help: HelpScreenSession,
     confirm_remove: ConfirmRemoveSession,
     run: RunWidgetSession,
+    path_suggestions: PathSuggestionSession,
     run_modal: RunModalSession,
     preferences: PreferencesWidgetSession,
     settings: SettingsScreenSession,
     settings_geometry: SettingsScreenGeometry,
+    settings_prompt_overlay: Option<(PromptCandidatePickerSession, ChoicePickerGeometry)>,
     add: AddScreenSession,
     add_geometry: AddScreenGeometry,
     add_overlay: Option<AddOverlay>,
@@ -96,6 +121,188 @@ pub struct TuiSession {
     form: FormWidgetSession,
     footer: FooterSession,
     clicks: ClickRegionRegistry<SessionHit>,
+}
+
+#[derive(Debug)]
+struct PathSuggestionJob {
+    generation: u64,
+    field: usize,
+    request: Box<PathCompletionRequest>,
+}
+
+#[derive(Debug)]
+struct PathSuggestionResult {
+    generation: u64,
+    field: usize,
+    value: String,
+    suggestion: Option<String>,
+}
+
+#[derive(Debug)]
+struct VisiblePathSuggestion {
+    generation: u64,
+    field: usize,
+    value: String,
+    suggestion: String,
+}
+
+#[derive(Debug, Default)]
+struct PathSuggestionSession {
+    requests: Option<mpsc::SyncSender<PathSuggestionJob>>,
+    results: Option<mpsc::Receiver<PathSuggestionResult>>,
+    generation: u64,
+    expected: Option<(u64, usize, PathCompletionRequest)>,
+    in_flight: bool,
+    retry_pending: bool,
+    visible: Option<VisiblePathSuggestion>,
+}
+
+impl PathSuggestionSession {
+    fn new(provider: Arc<dyn PathCompletionProvider>) -> Self {
+        let (request_tx, request_rx) = mpsc::sync_channel::<PathSuggestionJob>(2);
+        let (result_tx, result_rx) = mpsc::channel::<PathSuggestionResult>();
+        let request_rx = Arc::new(Mutex::new(request_rx));
+        for _ in 0..2 {
+            let provider = Arc::clone(&provider);
+            let requests = Arc::clone(&request_rx);
+            let results = result_tx.clone();
+            let _ = thread::Builder::new()
+                .name("skit-path-completion".to_owned())
+                .spawn(move || run_path_suggestion_worker(provider, requests, results));
+        }
+        Self {
+            requests: Some(request_tx),
+            results: Some(result_rx),
+            ..Self::default()
+        }
+    }
+
+    fn ensure(&mut self, field: usize, request: Option<PathCompletionRequest>) {
+        let Some(request) = request else {
+            self.clear();
+            return;
+        };
+        let current_matches = self
+            .expected
+            .as_ref()
+            .is_some_and(|(_, target, expected)| *target == field && expected == &request);
+        if current_matches {
+            return;
+        }
+        self.generation = self.generation.wrapping_add(1);
+        let generation = self.generation;
+        self.visible = None;
+        let job = PathSuggestionJob {
+            generation,
+            field,
+            request: Box::new(request.clone()),
+        };
+        match self.requests.as_ref().map(|sender| sender.try_send(job)) {
+            Some(Ok(())) => {
+                self.expected = Some((generation, field, request));
+                self.in_flight = true;
+                self.retry_pending = false;
+            }
+            Some(Err(mpsc::TrySendError::Full(_))) => {
+                self.expected = None;
+                self.in_flight = false;
+                self.retry_pending = true;
+            }
+            Some(Err(mpsc::TrySendError::Disconnected(_))) | None => self.clear(),
+        }
+    }
+
+    fn refresh(&mut self) -> bool {
+        let mut changed = false;
+        let Some(results) = &self.results else {
+            return false;
+        };
+        while let Ok(result) = results.try_recv() {
+            let is_current = self
+                .expected
+                .as_ref()
+                .is_some_and(|(generation, field, request)| {
+                    *generation == result.generation
+                        && *field == result.field
+                        && request.value == result.value
+                });
+            if !is_current {
+                continue;
+            }
+            self.visible = result.suggestion.and_then(|suggestion| {
+                (suggestion != result.value && suggestion.starts_with(&result.value)).then_some(
+                    VisiblePathSuggestion {
+                        generation: result.generation,
+                        field: result.field,
+                        value: result.value,
+                        suggestion,
+                    },
+                )
+            });
+            self.in_flight = false;
+            changed = true;
+        }
+        changed
+    }
+
+    fn visible(&self, field: usize, value: &str) -> Option<&str> {
+        self.visible.as_ref().and_then(|visible| {
+            (visible.field == field
+                && visible.value == value
+                && self.expected.as_ref().is_some_and(|expected| {
+                    expected.0 == visible.generation
+                        && expected.1 == field
+                        && expected.2.value == value
+                }))
+            .then_some(visible.suggestion.as_str())
+        })
+    }
+
+    fn take(&mut self, field: usize, value: &str) -> Option<String> {
+        let suggestion = self.visible(field, value)?.to_owned();
+        self.clear();
+        Some(suggestion)
+    }
+
+    fn clear(&mut self) {
+        self.expected = None;
+        self.in_flight = false;
+        self.retry_pending = false;
+        self.visible = None;
+    }
+
+    fn has_pending_work(&self) -> bool {
+        self.in_flight || self.retry_pending
+    }
+}
+
+fn run_path_suggestion_worker(
+    provider: Arc<dyn PathCompletionProvider>,
+    requests: Arc<Mutex<mpsc::Receiver<PathSuggestionJob>>>,
+    results: mpsc::Sender<PathSuggestionResult>,
+) {
+    loop {
+        let job = {
+            let Ok(receiver) = requests.lock() else {
+                return;
+            };
+            let Ok(job) = receiver.recv() else {
+                return;
+            };
+            job
+        };
+        let request = *job.request;
+        let suggestion = provider.complete(&request);
+        let result = PathSuggestionResult {
+            generation: job.generation,
+            field: job.field,
+            value: request.value,
+            suggestion,
+        };
+        if results.send(result).is_err() {
+            return;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -126,7 +333,7 @@ enum SessionHit {
     Target(HitTarget),
     Checkbox(usize),
     Select(usize),
-    RadioOption { field: usize, option: usize },
+    RadioOption { field: usize, value: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -215,7 +422,8 @@ struct RunChip {
 #[derive(Debug, Default)]
 struct FormWidgetSession {
     signature: Option<Vec<FieldSignature>>,
-    controls: Vec<WidgetControl>,
+    controls: Vec<FormWidgetControl>,
+    clicks: ClickRegionRegistry<usize>,
     focus: FocusManager<usize>,
     scroll: ScrollableContentState,
     viewport: Rect,
@@ -223,6 +431,21 @@ struct FormWidgetSession {
     row_starts: Vec<usize>,
     row_heights: Vec<usize>,
     pending_ensure_focus: bool,
+}
+
+#[derive(Debug)]
+enum FormWidgetControl {
+    Input {
+        state: LineInput,
+        secret: bool,
+        focused: bool,
+    },
+    TextArea {
+        state: Box<RichTextArea<'static>>,
+        focused: bool,
+        undo_group: usize,
+        redo_group: usize,
+    },
 }
 
 #[derive(Debug)]
@@ -248,6 +471,27 @@ enum WidgetControl {
 }
 
 impl TuiSession {
+    /// Construct a session whose path queries run on bounded background workers.
+    #[must_use]
+    pub fn with_path_completion(provider: Arc<dyn PathCompletionProvider>) -> Self {
+        Self {
+            path_suggestions: PathSuggestionSession::new(provider),
+            ..Self::default()
+        }
+    }
+
+    /// Apply completed background work before the next draw.
+    #[must_use]
+    pub fn refresh_background(&mut self) -> bool {
+        self.path_suggestions.refresh()
+    }
+
+    /// Report whether the terminal must poll for path-completion progress.
+    #[must_use]
+    pub(crate) fn has_pending_path_completion(&self) -> bool {
+        self.path_suggestions.has_pending_work()
+    }
+
     /// Dispatch one terminal event through the active mature widget first.
     #[must_use]
     pub fn handle_event(
@@ -314,7 +558,12 @@ impl TuiSession {
             | ModalState::RunFilePicker { .. }),
         ) = state.modal()
         {
+            let fallback = event.clone();
             return match self.run_modal.handle_event(event, modal) {
+                RunModalEvent::Handling(EventHandling::Ignored) => {
+                    map_event(fallback, state, geometry)
+                        .map_or(EventHandling::Ignored, EventHandling::Action)
+                }
                 RunModalEvent::Handling(handling) => handling,
                 RunModalEvent::Insert { field, text } => self.insert_run_text(field, &text),
                 RunModalEvent::OpenEnvironment { field } => {
@@ -351,6 +600,22 @@ impl TuiSession {
             return self.handle_add_event(event, state, view, geometry);
         }
         if let Screen::Settings(view) = state.screen() {
+            if let Some((session, geometry)) = self.settings_prompt_overlay.as_mut() {
+                return match session.handle_event(event, geometry) {
+                    Some(PromptCandidatePickerEvent::Changed) => EventHandling::Consumed,
+                    Some(PromptCandidatePickerEvent::Cancelled) => {
+                        self.settings_prompt_overlay = None;
+                        EventHandling::Consumed
+                    }
+                    Some(PromptCandidatePickerEvent::Accepted(names)) => {
+                        self.settings_prompt_overlay = None;
+                        EventHandling::Action(Action::Settings(
+                            skit_ui::SettingsAction::SetPromptCandidates(names),
+                        ))
+                    }
+                    None => EventHandling::Ignored,
+                };
+            }
             return match self
                 .settings
                 .handle_event(event.clone(), view, &self.settings_geometry)
@@ -359,17 +624,22 @@ impl TuiSession {
                     EventHandling::Action(Action::Settings(action))
                 }
                 Some(SettingsScreenEvent::Changed) => EventHandling::Consumed,
+                Some(SettingsScreenEvent::OpenPromptCandidates) => {
+                    self.open_settings_prompt_picker(view);
+                    EventHandling::Consumed
+                }
                 None => map_event(event, state, geometry)
                     .map_or(EventHandling::Ignored, EventHandling::Action),
             };
         }
         if let Screen::Preferences(view) = state.screen() {
-            return match self.preferences.handle_event(event, view) {
+            return match self.preferences.handle_event(event.clone(), view) {
                 PreferencesEventHandling::Action(action) => {
                     EventHandling::Action(Action::Preferences(action))
                 }
                 PreferencesEventHandling::Consumed => EventHandling::Consumed,
-                PreferencesEventHandling::Ignored => EventHandling::Ignored,
+                PreferencesEventHandling::Ignored => map_event(event, state, geometry)
+                    .map_or(EventHandling::Ignored, EventHandling::Action),
             };
         }
         if let Screen::Run(form) = state.screen() {
@@ -378,15 +648,20 @@ impl TuiSession {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     self.handle_run_key(key, form)
                 }
-                Event::Mouse(mouse) => self.handle_run_mouse(mouse, form, geometry),
+                Event::Mouse(mouse) => {
+                    let handling = self.handle_run_mouse(mouse, form, geometry);
+                    if handling == EventHandling::Ignored {
+                        map_event(Event::Mouse(mouse), state, geometry)
+                            .map_or(EventHandling::Ignored, EventHandling::Action)
+                    } else {
+                        handling
+                    }
+                }
                 Event::Paste(value) => self.handle_run_paste(&value, form),
                 Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
                     EventHandling::Ignored
                 }
             };
-        }
-        if let Some(modal) = state.modal() {
-            self.run_modal.sync(modal);
         }
         if let Screen::Form(form) = state.screen() {
             self.form.sync(form);
@@ -394,7 +669,15 @@ impl TuiSession {
                 Event::Key(key) if key.kind != KeyEventKind::Release => {
                     self.handle_form_key(key, form)
                 }
-                Event::Mouse(mouse) => self.handle_form_mouse(mouse, geometry),
+                Event::Mouse(mouse) => {
+                    let handling = self.handle_form_mouse(mouse, geometry);
+                    if handling == EventHandling::Ignored {
+                        map_event(Event::Mouse(mouse), state, geometry)
+                            .map_or(EventHandling::Ignored, EventHandling::Action)
+                    } else {
+                        handling
+                    }
+                }
                 Event::Paste(value) => self.handle_form_paste(&value, form),
                 Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
                     EventHandling::Ignored
@@ -402,6 +685,15 @@ impl TuiSession {
             };
         }
         map_event(event, state, geometry).map_or(EventHandling::Ignored, EventHandling::Action)
+    }
+
+    fn open_settings_prompt_picker(&mut self, view: &skit_ui::SettingsView) {
+        if view.prompt_picker_available() {
+            self.settings_prompt_overlay = Some((
+                PromptCandidatePickerSession::new(view.prompt_picker()),
+                ChoicePickerGeometry::default(),
+            ));
+        }
     }
 
     fn handle_add_event(
@@ -465,13 +757,12 @@ impl TuiSession {
                 EventHandling::Consumed
             }
             Some(AddScreenEvent::OpenPromptCandidates) => {
-                let Some(picker) = view.review().map(skit_ui::ReviewState::prompt_picker) else {
-                    return EventHandling::Ignored;
-                };
-                self.add_overlay = Some(AddOverlay::Prompt {
-                    session: PromptCandidatePickerSession::new(picker),
-                    geometry: ChoicePickerGeometry::default(),
-                });
+                if let Some(picker) = view.review().map(skit_ui::ReviewState::prompt_picker) {
+                    self.add_overlay = Some(AddOverlay::Prompt {
+                        session: PromptCandidatePickerSession::new(picker),
+                        geometry: ChoicePickerGeometry::default(),
+                    });
+                }
                 EventHandling::Consumed
             }
             Some(AddScreenEvent::OpenRunnerEditor) => {
@@ -489,14 +780,25 @@ impl TuiSession {
         self.search.sync(state.query());
         if let Screen::Run(form) = state.screen() {
             self.run.sync(form);
+            let field = form.focused();
+            let value = self.run.input_value(field).map(str::to_owned);
+            let request = value
+                .as_deref()
+                .and_then(|value| form.path_completion_request(field, value, host_path_dialect()));
+            self.path_suggestions.ensure(field, request);
         } else if let Screen::Add(view) = state.screen() {
+            self.path_suggestions.clear();
             self.add.sync(view);
         } else if let Screen::Settings(view) = state.screen() {
+            self.path_suggestions.clear();
             self.settings.sync(view);
         } else if let Screen::Form(form) = state.screen() {
+            self.path_suggestions.clear();
             self.form.sync(form);
         } else {
+            self.path_suggestions.clear();
             self.add_overlay = None;
+            self.settings_prompt_overlay = None;
         }
     }
 
@@ -550,66 +852,57 @@ impl TuiSession {
         &mut self,
         frame: &mut Frame,
         area: Rect,
-        state: &LibraryState,
+        kind: HeaderKind<'_>,
         locale: Locale,
     ) {
-        let title = match state.modal() {
-            Some(ModalState::Help) => text(locale, "Help").into_owned(),
-            Some(ModalState::ConfirmRemove { .. }) => text(locale, "Confirm removal").into_owned(),
-            Some(ModalState::ConfirmDiscardChanges) => {
+        let library_browse = matches!(&kind, HeaderKind::Library { search: false, .. });
+        let title = match kind {
+            HeaderKind::Help => text(locale, "Help").into_owned(),
+            HeaderKind::ConfirmRemove => text(locale, "Confirm removal").into_owned(),
+            HeaderKind::ConfirmDiscardChanges => {
                 text(locale, "Discard unsaved changes?").into_owned()
             }
-            Some(ModalState::RunPresetName { .. }) => text(locale, "Save as preset").into_owned(),
-            Some(ModalState::RunTokenMenu { .. }) => {
-                text(locale, "Insert a run-time value").into_owned()
-            }
-            Some(ModalState::RunEnvironmentPicker { .. }) => {
-                text(locale, "Environment variable").into_owned()
-            }
-            Some(ModalState::RunFilePicker { .. }) => {
-                text(locale, "Insert a file or folder").into_owned()
-            }
-            Some(ModalState::RunnerEditor { view, .. }) => match view.mode() {
+            HeaderKind::RunPresetName => text(locale, "Save as preset").into_owned(),
+            HeaderKind::RunTokenMenu => text(locale, "Insert a run-time value").into_owned(),
+            HeaderKind::RunEnvironmentPicker => text(locale, "Environment variable").into_owned(),
+            HeaderKind::RunFilePicker => text(locale, "Insert a file or folder").into_owned(),
+            HeaderKind::RunnerEditor(mode) => match mode {
                 skit_ui::RunnerEditorMode::New => text(locale, "New agent (runner)").into_owned(),
                 skit_ui::RunnerEditorMode::Edit | skit_ui::RunnerEditorMode::Repair => {
                     text(locale, "Edit agent (runner)").into_owned()
                 }
             },
-            None => match state.screen() {
-                Screen::Library if state.input_mode() == InputMode::Search => {
-                    self.search.sync(state.query());
-                    let label = text(locale, "Search");
-                    if area.height < 3 {
-                        render_flat_search_input(frame, area, &self.search.input, &label);
-                    } else {
-                        render_line_input(frame, area, &self.search.input, false, true, &label);
-                    }
-                    self.clicks.register(area, SessionHit::SearchInput);
-                    return;
+            HeaderKind::Library {
+                query,
+                search: true,
+            } => {
+                self.search.sync(query);
+                let label = text(locale, "Search");
+                if area.height < 3 {
+                    render_flat_search_input(frame, area, &self.search.input, &label);
+                } else {
+                    render_line_input(frame, area, &self.search.input, false, true, &label);
                 }
-                Screen::Library => format!(
-                    "{}: {}",
-                    text(locale, "Library"),
-                    if state.query().is_empty() {
-                        text(locale, "all entries").into_owned()
-                    } else {
-                        state.query().to_owned()
-                    }
-                ),
-                Screen::Run(form) => format_text(locale, "Run {}", &[&form.name()]),
-                Screen::Preferences(_) => text(locale, "Preferences").into_owned(),
-                // Version 0.4 names the entry on this screen, because settings for the wrong
-                // entry look exactly like settings for the right one
-                // (`src/skit/tui_settings.py:869-871`).
-                Screen::Settings(view) => {
-                    format_text(locale, "Entry settings · {}", &[&view.title])
+                self.clicks.register(area, SessionHit::SearchInput);
+                return;
+            }
+            HeaderKind::Library {
+                query,
+                search: false,
+            } => format!(
+                "{}: {}",
+                text(locale, "Library"),
+                if query.is_empty() {
+                    text(locale, "all entries").into_owned()
+                } else {
+                    query.to_owned()
                 }
-                Screen::Add(_) => text(locale, "Add").into_owned(),
-                Screen::Health(_) => text(locale, "Health").into_owned(),
-                Screen::Runners(_) => text(locale, "Agents (prompt runners)").into_owned(),
-                Screen::Form(form) => crate::form_title(locale, form),
-                Screen::Report(report) => text(locale, &report.title).into_owned(),
-            },
+            ),
+            HeaderKind::Preferences => text(locale, "Preferences").into_owned(),
+            HeaderKind::Add => text(locale, "Add").into_owned(),
+            HeaderKind::Health => text(locale, "Health").into_owned(),
+            HeaderKind::Runners => text(locale, "Agents (prompt runners)").into_owned(),
+            HeaderKind::Report(title) => text(locale, title).into_owned(),
         };
         frame.render_widget(
             Paragraph::new(title).block(
@@ -620,7 +913,7 @@ impl TuiSession {
             ),
             area,
         );
-        if state.modal().is_none() && matches!(state.screen(), Screen::Library) {
+        if library_browse {
             self.clicks.register(area, SessionHit::SearchInput);
         }
     }
@@ -633,6 +926,7 @@ impl TuiSession {
         locale: Locale,
     ) -> ViewGeometry {
         self.form.sync(form);
+        self.form.clicks.clear();
         let block = panel_block(crate::form_title(locale, form), BOX_MAROON);
         let inner = block.inner(area);
         frame.render_widget(block, area);
@@ -645,18 +939,16 @@ impl TuiSession {
             };
             let label = crate::field_label(locale, field);
             match &mut self.form.controls[index] {
-                WidgetControl::Input {
+                FormWidgetControl::Input {
                     state,
                     secret,
                     focused,
                 } => render_line_input(frame, row, state, *secret, *focused, &label),
-                WidgetControl::TextArea { state, focused, .. } => {
+                FormWidgetControl::TextArea { state, focused, .. } => {
                     render_textarea(frame, row, state, *focused, &label);
                 }
-                WidgetControl::Checkbox(_) | WidgetControl::Choice { .. } => {}
             }
-            self.clicks
-                .register(row, SessionHit::Target(HitTarget::FocusField(index)));
+            self.form.clicks.register(row, index);
             hits.push(HitRegion {
                 rect: row,
                 action: HitTarget::FocusField(index),
@@ -805,6 +1097,15 @@ impl TuiSession {
         view: &skit_ui::SettingsView,
         locale: Locale,
     ) -> ViewGeometry {
+        if let Some((session, geometry)) = self.settings_prompt_overlay.as_mut() {
+            *geometry = render_prompt_candidate_picker(frame, area, session, locale);
+            return ViewGeometry {
+                rows: geometry.rows,
+                first_visible: 0,
+                hits: Vec::new(),
+                detail_pane_visible: false,
+            };
+        }
         self.settings_geometry = render_settings(frame, area, view, &mut self.settings, locale);
         ViewGeometry {
             rows: self.settings_geometry.body,
@@ -960,7 +1261,12 @@ impl TuiSession {
                 secret,
                 focused,
             } => {
-                render_line_input(frame, area, state, *secret, *focused, "");
+                let suggestion = (*focused)
+                    .then(|| self.path_suggestions.visible(index, state.value()))
+                    .flatten();
+                render_line_input_with_suggestion(
+                    frame, area, state, *secret, *focused, "", suggestion,
+                );
                 self.clicks
                     .register(area, SessionHit::Target(HitTarget::FocusField(index)));
                 hits.push(HitRegion {
@@ -1016,33 +1322,29 @@ impl TuiSession {
             } => {
                 let mut x = area.x;
                 let mut y = area.y;
-                for (option, (option_label, button)) in
-                    options.iter().zip(buttons.iter()).enumerate()
-                {
-                    let width = u16::try_from(option_label.width().saturating_add(2))
-                        .unwrap_or(u16::MAX)
-                        .min(area.width.max(1));
-                    if x > area.x && x.saturating_add(width) > area.right() {
-                        x = area.x;
-                        y = y.saturating_add(1);
+                if area.width > 0 {
+                    for (option_label, button) in options.iter().zip(buttons.iter()) {
+                        let width = u16::try_from(option_label.width().saturating_add(2))
+                            .unwrap_or(u16::MAX)
+                            .min(area.width);
+                        if x > area.x && x.saturating_add(width) > area.right() {
+                            x = area.x;
+                            y = y.saturating_add(1);
+                        }
+                        let option_area = Rect::new(x, y, width, 1);
+                        let region = Button::new(option_label, button)
+                            .variant(ButtonVariant::Toggle)
+                            .style(radio_style())
+                            .render_stateful(option_area, frame.buffer_mut());
+                        self.clicks.register(
+                            region.area,
+                            SessionHit::RadioOption {
+                                field: index,
+                                value: option_label.clone(),
+                            },
+                        );
+                        x = x.saturating_add(width).saturating_add(1);
                     }
-                    let width = width.min(area.right().saturating_sub(x));
-                    if width == 0 {
-                        break;
-                    }
-                    let option_area = Rect::new(x, y, width, 1);
-                    let region = Button::new(option_label, button)
-                        .variant(ButtonVariant::Toggle)
-                        .style(radio_style())
-                        .render_stateful(option_area, frame.buffer_mut());
-                    self.clicks.register(
-                        region.area,
-                        SessionHit::RadioOption {
-                            field: index,
-                            option,
-                        },
-                    );
-                    x = x.saturating_add(width).saturating_add(1);
                 }
                 let field_area = area;
                 self.clicks
@@ -1065,21 +1367,20 @@ impl TuiSession {
     ) {
         for chip in chips {
             let width = chip.width.min(area.width.saturating_sub(chip.x));
-            if width == 0 {
-                continue;
+            if width > 0 {
+                let chip_area = Rect::new(area.x.saturating_add(chip.x), area.y, width, 1);
+                let state = ButtonState::enabled();
+                let region = Button::new(&chip.label, &state)
+                    .variant(ButtonVariant::SingleLine)
+                    .style(run_chip_style())
+                    .render_stateful(chip_area, frame.buffer_mut());
+                self.clicks
+                    .register(region.area, SessionHit::Target(chip.target));
+                hits.push(HitRegion {
+                    rect: region.area,
+                    action: chip.target,
+                });
             }
-            let chip_area = Rect::new(area.x.saturating_add(chip.x), area.y, width, 1);
-            let state = ButtonState::enabled();
-            let region = Button::new(&chip.label, &state)
-                .variant(ButtonVariant::SingleLine)
-                .style(run_chip_style())
-                .render_stateful(chip_area, frame.buffer_mut());
-            self.clicks
-                .register(region.area, SessionHit::Target(chip.target));
-            hits.push(HitRegion {
-                rect: region.area,
-                action: chip.target,
-            });
         }
     }
 
@@ -1112,9 +1413,6 @@ impl TuiSession {
             return handling;
         }
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                return EventHandling::Action(Action::Quit);
-            }
             (KeyCode::Char('r'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 return EventHandling::Action(Action::Submit);
             }
@@ -1146,6 +1444,20 @@ impl TuiSession {
 
         match &mut self.run.controls[focused] {
             WidgetControl::Input { state, .. } => {
+                if key.code == KeyCode::Right
+                    && key.modifiers.is_empty()
+                    && state.cursor() == state.value().chars().count()
+                    && let Some(suggestion) = self.path_suggestions.take(focused, state.value())
+                {
+                    *state = LineInput::new(suggestion.clone());
+                    let request =
+                        form.path_completion_request(focused, &suggestion, host_path_dialect());
+                    self.path_suggestions.ensure(focused, request);
+                    return EventHandling::Action(Action::SetFieldValue {
+                        field: focused,
+                        value: suggestion,
+                    });
+                }
                 let before = state.value().to_owned();
                 let response = state.handle_event(&Event::Key(key));
                 if response.is_none() {
@@ -1163,9 +1475,13 @@ impl TuiSession {
                 if before == state.value() {
                     EventHandling::Consumed
                 } else {
+                    let value = state.value().to_owned();
+                    let request =
+                        form.path_completion_request(focused, &value, host_path_dialect());
+                    self.path_suggestions.ensure(focused, request);
                     EventHandling::Action(Action::SetFieldValue {
                         field: focused,
-                        value: state.value().to_owned(),
+                        value,
                     })
                 }
             }
@@ -1176,9 +1492,9 @@ impl TuiSession {
                 ..
             } => {
                 let before = textarea_text(state);
-                let consumed = edit_textarea(state, key, undo_group, redo_group);
-                if !consumed {
-                    return EventHandling::Ignored;
+                match edit_textarea(state, key, undo_group, redo_group) {
+                    TextAreaEventHandling::Ignored => return EventHandling::Ignored,
+                    TextAreaEventHandling::Consumed | TextAreaEventHandling::VerticalBoundary => {}
                 }
                 let after = textarea_text(state);
                 if before == after {
@@ -1280,9 +1596,12 @@ impl TuiSession {
                 for character in value.chars() {
                     let _ = state.handle(InputRequest::InsertChar(character));
                 }
+                let value = state.value().to_owned();
+                let request = form.path_completion_request(focused, &value, host_path_dialect());
+                self.path_suggestions.ensure(focused, request);
                 EventHandling::Action(Action::SetFieldValue {
                     field: focused,
-                    value: state.value().to_owned(),
+                    value,
                 })
             }
             WidgetControl::TextArea {
@@ -1389,23 +1708,22 @@ impl TuiSession {
             }
         }
 
-        let Some(hit) = self.clicks.handle_click(mouse.column, mouse.row).cloned() else {
-            let _ = geometry;
-            return EventHandling::Ignored;
-        };
-        match hit {
-            SessionHit::SearchInput => EventHandling::Action(Action::BeginSearch),
-            SessionHit::Target(HitTarget::Command(command)) => {
+        match self.clicks.handle_click(mouse.column, mouse.row).cloned() {
+            None | Some(SessionHit::SearchInput) => {
+                let _ = geometry;
+                EventHandling::Ignored
+            }
+            Some(SessionHit::Target(HitTarget::Command(command))) => {
                 EventHandling::Action(command_action(command, geometry))
             }
-            SessionHit::Target(HitTarget::RunFieldCommand { field, command }) => {
+            Some(SessionHit::Target(HitTarget::RunFieldCommand { field, command })) => {
                 EventHandling::Action(run_field_command_action(field, command))
             }
-            SessionHit::Target(HitTarget::FocusField(index)) => {
+            Some(SessionHit::Target(HitTarget::FocusField(index))) => {
                 EventHandling::Action(Action::FocusField(index))
             }
-            SessionHit::Checkbox(index) => EventHandling::Action(Action::ToggleField(index)),
-            SessionHit::Select(index) => {
+            Some(SessionHit::Checkbox(index)) => EventHandling::Action(Action::ToggleField(index)),
+            Some(SessionHit::Select(index)) => {
                 if let Some(WidgetControl::Choice { state, .. }) = self.run.controls.get_mut(index)
                 {
                     state.open();
@@ -1416,19 +1734,7 @@ impl TuiSession {
                     EventHandling::Action(Action::FocusField(index))
                 }
             }
-            SessionHit::RadioOption { field, option } => {
-                let value = self
-                    .run
-                    .controls
-                    .get(field)
-                    .and_then(|control| match control {
-                        WidgetControl::Choice { options, .. } => options.get(option),
-                        WidgetControl::Input { .. }
-                        | WidgetControl::TextArea { .. }
-                        | WidgetControl::Checkbox(_) => None,
-                    })
-                    .cloned()
-                    .unwrap_or_default();
+            Some(SessionHit::RadioOption { field, value }) => {
                 EventHandling::Action(Action::SelectFieldOption { field, value })
             }
         }
@@ -1437,9 +1743,6 @@ impl TuiSession {
     fn handle_form_key(&mut self, key: KeyEvent, form: &FormView) -> EventHandling {
         let focused = form.focused.min(self.form.controls.len().saturating_sub(1));
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                return EventHandling::Action(Action::Quit);
-            }
             (KeyCode::Char('s'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 return EventHandling::Action(Action::Submit);
             }
@@ -1450,7 +1753,7 @@ impl TuiSession {
         }
 
         match &mut self.form.controls[focused] {
-            WidgetControl::Input { state, .. } => {
+            FormWidgetControl::Input { state, .. } => {
                 let before = state.value().to_owned();
                 let response = state.handle_event(&Event::Key(key));
                 if response.is_none() {
@@ -1477,15 +1780,16 @@ impl TuiSession {
                     })
                 }
             }
-            WidgetControl::TextArea {
+            FormWidgetControl::TextArea {
                 state,
                 undo_group,
                 redo_group,
                 ..
             } => {
                 let before = textarea_text(state);
-                if !edit_textarea(state, key, undo_group, redo_group) {
-                    return EventHandling::Ignored;
+                match edit_textarea(state, key, undo_group, redo_group) {
+                    TextAreaEventHandling::Ignored => return EventHandling::Ignored,
+                    TextAreaEventHandling::Consumed | TextAreaEventHandling::VerticalBoundary => {}
                 }
                 let after = textarea_text(state);
                 if before == after {
@@ -1497,14 +1801,13 @@ impl TuiSession {
                     })
                 }
             }
-            WidgetControl::Checkbox(_) | WidgetControl::Choice { .. } => EventHandling::Ignored,
         }
     }
 
     fn handle_form_paste(&mut self, value: &str, form: &FormView) -> EventHandling {
         let focused = form.focused.min(self.form.controls.len().saturating_sub(1));
         match &mut self.form.controls[focused] {
-            WidgetControl::Input { state, .. } => {
+            FormWidgetControl::Input { state, .. } => {
                 for character in value.chars() {
                     let _ = state.handle(InputRequest::InsertChar(character));
                 }
@@ -1513,7 +1816,7 @@ impl TuiSession {
                     value: state.value().to_owned(),
                 })
             }
-            WidgetControl::TextArea {
+            FormWidgetControl::TextArea {
                 state,
                 undo_group,
                 redo_group,
@@ -1528,7 +1831,6 @@ impl TuiSession {
                     value: textarea_text(state),
                 })
             }
-            WidgetControl::Checkbox(_) | WidgetControl::Choice { .. } => EventHandling::Ignored,
         }
     }
 
@@ -1549,28 +1851,20 @@ impl TuiSession {
         if !matches!(mouse.kind, MouseEventKind::Down(_)) {
             return EventHandling::Ignored;
         }
-        let Some(hit) = self.clicks.handle_click(mouse.column, mouse.row).cloned() else {
+        let Some(index) = self
+            .form
+            .clicks
+            .handle_click(mouse.column, mouse.row)
+            .copied()
+        else {
             let _ = geometry;
             return EventHandling::Ignored;
         };
-        match hit {
-            SessionHit::SearchInput => EventHandling::Action(Action::BeginSearch),
-            SessionHit::Target(HitTarget::Command(command)) => {
-                EventHandling::Action(command_action(command, geometry))
-            }
-            SessionHit::Target(HitTarget::RunFieldCommand { field, command }) => {
-                EventHandling::Action(run_field_command_action(field, command))
-            }
-            SessionHit::Target(HitTarget::FocusField(index)) => {
-                EventHandling::Action(Action::FocusField(index))
-            }
-            SessionHit::Checkbox(_) | SessionHit::Select(_) | SessionHit::RadioOption { .. } => {
-                EventHandling::Ignored
-            }
-        }
+        EventHandling::Action(Action::FocusField(index))
     }
 
     fn move_focus(&mut self, forward: bool) -> EventHandling {
+        self.path_suggestions.clear();
         if forward {
             self.run.focus.next();
         } else {
@@ -1618,6 +1912,15 @@ fn is_ctrl_c(event: &Event) -> bool {
 }
 
 impl RunWidgetSession {
+    fn input_value(&self, index: usize) -> Option<&str> {
+        match self.controls.get(index)? {
+            WidgetControl::Input { state, .. } => Some(state.value()),
+            WidgetControl::TextArea { .. }
+            | WidgetControl::Checkbox(_)
+            | WidgetControl::Choice { .. } => None,
+        }
+    }
+
     fn sync(&mut self, form: &RunFormView) {
         let signature = RunSignature {
             selector: form.selector().to_owned(),
@@ -1690,6 +1993,18 @@ impl RunWidgetSession {
     }
 }
 
+const fn path_dialect_for(windows: bool) -> PathInputDialect {
+    if windows {
+        PathInputDialect::Windows
+    } else {
+        PathInputDialect::Posix
+    }
+}
+
+const fn host_path_dialect() -> PathInputDialect {
+    path_dialect_for(cfg!(windows))
+}
+
 impl SearchWidgetSession {
     fn sync(&mut self, value: &str) {
         if self.input.value() != value {
@@ -1710,7 +2025,7 @@ impl FormWidgetSession {
             self.pending_ensure_focus = true;
         } else {
             for (control, field) in self.controls.iter_mut().zip(&form.fields) {
-                control.sync_form_value(field);
+                control.sync_value(field);
             }
         }
         if self.focus.current() != Some(&form.focused) {
@@ -1772,6 +2087,33 @@ impl FormWidgetSession {
             self.viewport.width,
             u16::try_from(clipped_end.saturating_sub(clipped_start)).unwrap_or(u16::MAX),
         ))
+    }
+}
+
+impl FormWidgetControl {
+    fn sync_value(&mut self, field: &FormField) {
+        match self {
+            Self::Input { state, .. } if state.value() != field.value => {
+                *state = LineInput::new(field.value.clone());
+            }
+            Self::TextArea { state, .. } if textarea_text(state) != field.value => {
+                **state = new_textarea(&field.value);
+            }
+            Self::Input { .. } | Self::TextArea { .. } => {}
+        }
+    }
+
+    fn set_focused(&mut self, focused: bool) {
+        match self {
+            Self::Input {
+                focused: is_focused,
+                ..
+            }
+            | Self::TextArea {
+                focused: is_focused,
+                ..
+            } => *is_focused = focused,
+        }
     }
 }
 
@@ -1839,21 +2181,6 @@ impl WidgetControl {
             }
         }
     }
-
-    fn sync_form_value(&mut self, field: &FormField) {
-        match self {
-            Self::Input { state, .. } if state.value() != field.value => {
-                *state = LineInput::new(field.value.clone());
-            }
-            Self::TextArea { state, .. } if textarea_text(state) != field.value => {
-                **state = new_textarea(&field.value);
-            }
-            Self::Input { .. }
-            | Self::TextArea { .. }
-            | Self::Checkbox(_)
-            | Self::Choice { .. } => {}
-        }
-    }
 }
 
 fn field_signature(field: &RunField) -> FieldSignature {
@@ -1884,16 +2211,16 @@ fn form_field_signature(field: &FormField) -> FieldSignature {
     }
 }
 
-fn form_widget_control(field: &FormField) -> WidgetControl {
+fn form_widget_control(field: &FormField) -> FormWidgetControl {
     if field.multiline && !field.secret {
-        WidgetControl::TextArea {
+        FormWidgetControl::TextArea {
             state: Box::new(new_textarea(&field.value)),
             focused: false,
             undo_group: 0,
             redo_group: 0,
         }
     } else {
-        WidgetControl::Input {
+        FormWidgetControl::Input {
             state: LineInput::new(field.value.clone()),
             secret: field.secret,
             focused: false,
@@ -1947,12 +2274,19 @@ fn widget_control(field: &RunField) -> WidgetControl {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TextAreaEventHandling {
+    Ignored,
+    Consumed,
+    VerticalBoundary,
+}
+
 pub(crate) fn edit_textarea(
     state: &mut RichTextArea<'static>,
     key: KeyEvent,
     undo_group: &mut usize,
     redo_group: &mut usize,
-) -> bool {
+) -> TextAreaEventHandling {
     if key.code == KeyCode::Char('z') && key.modifiers == KeyModifiers::CONTROL {
         let count = (*undo_group).max(1);
         for _ in 0..count {
@@ -1960,7 +2294,7 @@ pub(crate) fn edit_textarea(
         }
         *redo_group = count;
         *undo_group = 0;
-        return true;
+        return TextAreaEventHandling::Consumed;
     }
     if (key.code == KeyCode::Char('z')
         && key
@@ -1974,10 +2308,11 @@ pub(crate) fn edit_textarea(
         }
         *undo_group = count;
         *redo_group = 0;
-        return true;
+        return TextAreaEventHandling::Consumed;
     }
     let before = textarea_text(state);
     let selected = state.is_selecting();
+    let cursor = state.cursor();
     let _ = state.input(key);
     if textarea_text(state) != before {
         let inserts_after_delete =
@@ -1985,7 +2320,17 @@ pub(crate) fn edit_textarea(
         *undo_group = 1 + usize::from(inserts_after_delete);
         *redo_group = 0;
     }
-    textarea_accepts(key)
+    if !textarea_accepts(key) {
+        TextAreaEventHandling::Ignored
+    } else if matches!(key.code, KeyCode::Up | KeyCode::Down)
+        && key.modifiers.is_empty()
+        && !selected
+        && state.cursor() == cursor
+    {
+        TextAreaEventHandling::VerticalBoundary
+    } else {
+        TextAreaEventHandling::Consumed
+    }
 }
 
 fn textarea_accepts(key: KeyEvent) -> bool {
@@ -2468,6 +2813,18 @@ pub(crate) fn render_line_input(
     focused: bool,
     label: &str,
 ) {
+    render_line_input_with_suggestion(frame, area, state, secret, focused, label, None);
+}
+
+fn render_line_input_with_suggestion(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LineInput,
+    secret: bool,
+    focused: bool,
+    label: &str,
+    suggestion: Option<&str>,
+) {
     let border = if focused { ACCENT } else { BOX_DIM };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2478,14 +2835,22 @@ pub(crate) fn render_line_input(
     let width = usize::from(inner.width.max(1));
     let scroll = state.visual_scroll(width);
     let display = if secret {
-        "•".repeat(state.value().chars().count())
+        Line::from(Span::styled(
+            "•".repeat(state.value().chars().count()),
+            Style::default().fg(Color::White),
+        ))
     } else {
-        state.value().to_owned()
+        let suffix = suggestion.and_then(|suggestion| suggestion.strip_prefix(state.value()));
+        Line::from(vec![
+            Span::styled(state.value().to_owned(), Style::default().fg(Color::White)),
+            Span::styled(
+                suffix.unwrap_or_default().to_owned(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
     };
     frame.render_widget(
-        Paragraph::new(display)
-            .style(Style::default().fg(Color::White))
-            .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
+        Paragraph::new(display).scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
         inner,
     );
     if focused && inner.width > 0 && inner.height > 0 {
@@ -2584,4 +2949,185 @@ pub(crate) fn radio_style() -> ButtonStyle {
         .focused(SELECT_FG, SELECT_BG)
         .unfocused(Color::White, Color::Reset)
         .toggled(SELECT_FG, SELECT_BG)
+}
+
+#[cfg(test)]
+mod path_suggestion_tests {
+    use std::{
+        collections::BTreeMap,
+        path::{Path, PathBuf},
+    };
+
+    use skit_application::{
+        path_completion::{PathCompletionContext, PathCompletionKind},
+        tokens::TokenContext,
+    };
+
+    use super::*;
+
+    #[derive(Debug)]
+    struct ContextProvider;
+
+    impl PathCompletionProvider for ContextProvider {
+        fn complete(&self, request: &PathCompletionRequest) -> Option<String> {
+            if request.context.workdir.as_path() == Path::new("/old") {
+                thread::sleep(Duration::from_millis(75));
+                Some("old.txt".to_owned())
+            } else {
+                Some("new.txt".to_owned())
+            }
+        }
+    }
+
+    fn request(workdir: &str) -> PathCompletionRequest {
+        PathCompletionRequest {
+            value: "n".to_owned(),
+            kind: PathCompletionKind::Path,
+            shlexy: false,
+            placeholder_braces: false,
+            dialect: PathInputDialect::Posix,
+            context: PathCompletionContext {
+                workdir: PathBuf::from(workdir),
+                tokens: TokenContext {
+                    cwd: "/invoke".to_owned(),
+                    home: None,
+                    env: BTreeMap::new(),
+                    today: "2026-08-21".to_owned(),
+                    now: "12-00-00".to_owned(),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn same_value_in_a_new_context_replaces_the_old_pending_request() {
+        let mut suggestions = PathSuggestionSession::new(Arc::new(ContextProvider));
+        assert!(!suggestions.has_pending_work());
+        suggestions.ensure(0, Some(request("/old")));
+        assert!(suggestions.has_pending_work());
+        suggestions.ensure(0, Some(request("/new")));
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while suggestions.visible(0, "n") != Some("new.txt") {
+            let _ = suggestions.refresh();
+            assert!(Instant::now() < deadline, "new context did not complete");
+            thread::yield_now();
+        }
+        assert!(!suggestions.has_pending_work());
+
+        thread::sleep(Duration::from_millis(100));
+        let _ = suggestions.refresh();
+        assert_eq!(suggestions.visible(0, "n"), Some("new.txt"));
+        assert!(!suggestions.has_pending_work());
+
+        suggestions.clear();
+        assert!(!suggestions.has_pending_work());
+    }
+
+    #[test]
+    fn a_full_request_queue_retries_instead_of_publishing_a_stale_expectation() {
+        let (requests, held_requests) = mpsc::sync_channel(1);
+        requests
+            .try_send(PathSuggestionJob {
+                generation: 1,
+                field: 0,
+                request: Box::new(request("/held")),
+            })
+            .unwrap();
+        let (_results, result_rx) = mpsc::channel();
+        let mut suggestions = PathSuggestionSession {
+            requests: Some(requests),
+            results: Some(result_rx),
+            ..PathSuggestionSession::default()
+        };
+
+        suggestions.ensure(1, Some(request("/new")));
+
+        assert!(suggestions.expected.is_none());
+        assert!(!suggestions.in_flight);
+        assert!(suggestions.retry_pending);
+        drop(held_requests);
+    }
+
+    #[test]
+    fn a_poisoned_worker_queue_stops_without_running_the_provider() {
+        let (_requests, request_rx) = mpsc::sync_channel(1);
+        let requests = Arc::new(Mutex::new(request_rx));
+        let poison = Arc::clone(&requests);
+        let _ = thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison the worker queue");
+        })
+        .join();
+        let (results, result_rx) = mpsc::channel();
+
+        run_path_suggestion_worker(Arc::new(ContextProvider), requests, results);
+
+        assert!(matches!(
+            result_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    /// The session can drop its result channel while a worker still computes a suggestion. The
+    /// worker must then stop instead of looping. This return only ran when a test's teardown
+    /// happened to race a computation, so it owns the path deterministically: one queued job, a
+    /// receiver that is already gone, and the worker called on this thread — returning IS the
+    /// proof, because a worker that ignored the closed channel would wait here forever.
+    #[test]
+    fn a_worker_stops_when_the_session_no_longer_listens_for_results() {
+        let (requests_tx, request_rx) = mpsc::sync_channel(1);
+        requests_tx
+            .try_send(PathSuggestionJob {
+                generation: 1,
+                field: 0,
+                request: Box::new(request("/new")),
+            })
+            .unwrap();
+        let requests = Arc::new(Mutex::new(request_rx));
+        let (results, result_rx) = mpsc::channel();
+        drop(result_rx);
+
+        run_path_suggestion_worker(Arc::new(ContextProvider), requests, results);
+
+        drop(requests_tx);
+    }
+
+    #[test]
+    fn path_dialect_policy_keeps_both_host_shapes_explicit() {
+        assert_eq!(path_dialect_for(false), PathInputDialect::Posix);
+        assert_eq!(path_dialect_for(true), PathInputDialect::Windows);
+        assert_eq!(host_path_dialect(), path_dialect_for(cfg!(windows)));
+    }
+
+    #[test]
+    fn an_overlay_ignores_events_that_do_not_belong_to_its_picker() {
+        let names = (0..=skit_ui::PROMPT_LIST_PREVIEW_LIMIT)
+            .map(|index| format!("VALUE_{index}"))
+            .collect::<Vec<_>>();
+        let view = skit_ui::SettingsView::from_inputs(&skit_ui::SettingsInputs {
+            kind: "prompt".to_owned(),
+            name: "Prompt".to_owned(),
+            supports_modes: true,
+            interpolate: true,
+            candidates: names,
+            ..skit_ui::SettingsInputs::default()
+        });
+        assert!(view.prompt_picker_available());
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Settings(Box::new(view.clone()))));
+        let mut session = TuiSession {
+            settings_prompt_overlay: Some((
+                PromptCandidatePickerSession::new(view.prompt_picker()),
+                ChoicePickerGeometry::default(),
+            )),
+            ..TuiSession::default()
+        };
+
+        assert_eq!(
+            session.handle_event(Event::FocusGained, &state, &ViewGeometry::default()),
+            EventHandling::Ignored
+        );
+        assert!(session.settings_prompt_overlay.is_some());
+    }
 }

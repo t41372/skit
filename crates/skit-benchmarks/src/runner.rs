@@ -192,32 +192,48 @@ impl RunContext {
 
 fn discover_rust_tool(name: &'static str, repo_root: &Path) -> Option<PathBuf> {
     let discovered = which::which(name).ok()?;
-    let Ok(rustup) = which::which("rustup") else {
-        return Some(discovered);
+    let rustup = which::which("rustup").ok();
+    let probe_rustup = rustup.clone();
+    Some(resolve_rust_tool(discovered, rustup, || {
+        let rustup = probe_rustup?;
+        let mut environment = BTreeMap::new();
+        for variable in ["HOME", "PATH", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"] {
+            if let Ok(value) = env::var(variable) {
+                environment.insert(variable.to_owned(), value);
+            }
+        }
+        run(&ProcessSpec {
+            argv: vec![path_arg(&rustup), "which".to_owned(), name.to_owned()],
+            cwd: repo_root.to_path_buf(),
+            env: environment,
+            timeout: Duration::from_secs(30),
+            check: false,
+        })
+        .ok()
+        .map(|output| (output.status.success(), output.stdout))
+    }))
+}
+
+fn resolve_rust_tool(
+    discovered: PathBuf,
+    rustup: Option<PathBuf>,
+    probe: impl FnOnce() -> Option<(bool, Vec<u8>)>,
+) -> PathBuf {
+    let Some(rustup) = rustup else {
+        return discovered;
     };
     if !same_executable(&discovered, &rustup) {
-        return Some(discovered);
+        return discovered;
     }
-    let mut environment = BTreeMap::new();
-    for variable in ["HOME", "PATH", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"] {
-        if let Ok(value) = env::var(variable) {
-            environment.insert(variable.to_owned(), value);
-        }
-    }
-    let Ok(output) = run(&ProcessSpec {
-        argv: vec![path_arg(&rustup), "which".to_owned(), name.to_owned()],
-        cwd: repo_root.to_path_buf(),
-        env: environment,
-        timeout: Duration::from_secs(30),
-        check: false,
-    }) else {
-        return Some(discovered);
+    let Some((true, stdout)) = probe() else {
+        return discovered;
     };
-    if !output.status.success() {
-        return Some(discovered);
+    let resolved = PathBuf::from(String::from_utf8_lossy(&stdout).trim());
+    if resolved.is_file() {
+        resolved
+    } else {
+        discovered
     }
-    let resolved = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
-    resolved.is_file().then_some(resolved).or(Some(discovered))
 }
 
 fn same_executable(left: &Path, right: &Path) -> bool {
@@ -326,21 +342,23 @@ pub fn path_arg(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::Path};
+    use std::{collections::BTreeMap, fs};
 
     #[cfg(unix)]
-    use std::{fs, os::unix::fs::PermissionsExt as _};
+    use std::{os::unix::fs::PermissionsExt as _, path::Path};
 
-    use crate::hyperfine::Case;
     #[cfg(unix)]
-    use crate::{SuiteKind, suites::tests::plan};
+    use crate::{SuiteKind, hyperfine::Case, suites::tests::plan};
     use tempfile::TempDir;
 
     #[cfg(unix)]
     fn executable(root: &Path, name: &str, body: &str) -> std::path::PathBuf {
+        use crate::suites::tests::{probe_guarded, wait_past_the_fork_window};
+
         let path = root.join(name);
-        fs::write(&path, body).unwrap();
+        fs::write(&path, probe_guarded(body)).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        wait_past_the_fork_window(&path);
         path
     }
 
@@ -377,6 +395,22 @@ mod tests {
             Err(super::RunnerError::MissingDataset(99))
         ));
         assert!(context.environment_for(root.path()).is_err());
+
+        let dataset = root.path().join("dataset");
+        fs::create_dir(&dataset).unwrap();
+        fs::write(dataset.join("manifest.json"), "{}").unwrap();
+        let mut context = context;
+        context.cargo = Some(root.path().join("cargo"));
+        context.rustc = Some(root.path().join("rustc"));
+        let environment = context.environment_for(&dataset).unwrap();
+        assert_eq!(
+            environment["CARGO"],
+            root.path().join("cargo").display().to_string()
+        );
+        assert_eq!(
+            environment["RUSTC"],
+            root.path().join("rustc").display().to_string()
+        );
     }
 
     #[test]
@@ -398,23 +432,52 @@ mod tests {
     }
 
     #[test]
-    fn rustup_proxy_resolves_to_the_selected_toolchain() {
-        let Some(rustup) = which::which("rustup").ok() else {
-            return;
-        };
-        let Some(cargo) = super::discover_rust_tool("cargo", Path::new(".")) else {
-            panic!("cargo must be available when rustup is available");
-        };
-        if super::same_executable(&which::which("cargo").unwrap(), &rustup) {
-            assert_eq!(
-                cargo.file_name().and_then(|name| name.to_str()),
-                Some("cargo")
-            );
-            assert!(!super::same_executable(
-                &cargo,
-                &which::which("rustup").unwrap()
-            ));
+    fn rustup_proxy_resolution_keeps_every_fallback_deterministic() {
+        fn unavailable_probe() -> Option<(bool, Vec<u8>)> {
+            None
         }
+
+        let root = TempDir::new().unwrap();
+        let discovered = root.path().join("cargo");
+        let distinct = root.path().join("rustup-distinct");
+        let proxy = root.path().join("rustup-proxy");
+        let resolved = root.path().join("toolchains/stable/bin/cargo");
+        fs::write(&discovered, "proxy").unwrap();
+        fs::write(&distinct, "rustup").unwrap();
+        fs::hard_link(&discovered, &proxy).unwrap();
+        fs::create_dir_all(resolved.parent().unwrap()).unwrap();
+        fs::write(&resolved, "cargo").unwrap();
+
+        assert_eq!(
+            super::resolve_rust_tool(discovered.clone(), None, unavailable_probe),
+            discovered
+        );
+        assert_eq!(
+            super::resolve_rust_tool(discovered.clone(), Some(distinct), unavailable_probe),
+            discovered
+        );
+        assert_eq!(
+            super::resolve_rust_tool(discovered.clone(), Some(proxy.clone()), unavailable_probe),
+            discovered
+        );
+        assert_eq!(
+            super::resolve_rust_tool(discovered.clone(), Some(proxy.clone()), || {
+                Some((false, Vec::new()))
+            }),
+            discovered
+        );
+        assert_eq!(
+            super::resolve_rust_tool(discovered.clone(), Some(proxy.clone()), || {
+                Some((true, resolved.display().to_string().into_bytes()))
+            }),
+            resolved
+        );
+        assert_eq!(
+            super::resolve_rust_tool(discovered.clone(), Some(proxy), || {
+                Some((true, b"missing-tool".to_vec()))
+            }),
+            discovered
+        );
     }
 
     #[cfg(unix)]

@@ -42,11 +42,11 @@
 //! - ABSENT gaps: NONE. DIVERGENCE (failing-contract) tests: NONE.
 //!
 //! Error-string note: the oracle matches substrings of localized English messages (e.g.
-//! `match="exe"` inside "The executable doesn't exist"). The Rust ports assert the TYPED
+//! `match="exe"` inside the executable-missing message). The Rust ports assert the TYPED
 //! variant and its payload path instead (`TargetMissing { path }`, `TargetNotExecutable
 //! { path }`, `WorkdirMissing { path }`, `UnknownKind`), matching the established port
 //! convention in `crates/skit-runtime/tests/launch_plan.rs`. The English wording differs
-//! ("launch target does not exist" vs "The script/executable doesn't exist") but the
+//! (`launch target does not exist` vs the script/executable-missing messages) but the
 //! 127/126/125 exit contract and the offending path are preserved.
 
 use std::{
@@ -57,10 +57,19 @@ use std::{
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_runtime::{
-    LaunchError, LaunchPaths, ProgramProbe, SystemProbe, build_launch_plan, build_launch_preview,
-    execute_launch, resolve_launch_workdir,
+    InterpreterPlatform, InterpreterPolicy, LaunchError, LaunchPaths, ProgramProbe, SystemProbe,
+    build_launch_plan, build_launch_plan_with_interpreter_policy, build_launch_preview,
+    execute_launch, project_launch_workdir, resolve_interpreter, resolve_launch_workdir,
 };
 use tempfile::TempDir;
+
+#[test]
+fn interpreter_platform_current_matches_the_compiled_host() {
+    #[cfg(windows)]
+    assert_eq!(InterpreterPlatform::current(), InterpreterPlatform::Windows);
+    #[cfg(not(windows))]
+    assert_eq!(InterpreterPlatform::current(), InterpreterPlatform::Other);
+}
 
 // --- Fixtures: the `ProgramProbe` seam replaces the oracle's monkeypatching of
 // `shutil.which`, `skit.langs.launch.find_uv`, and the real filesystem. ---
@@ -122,6 +131,147 @@ fn probe_for(script: &str) -> FakeProbe {
     }
 }
 
+// ================================================================================================
+// Windows interpreter resolution (a typed, platform-neutral policy exercised on every host)
+// ================================================================================================
+
+#[test]
+fn test_resolve_bash_on_win32_uses_config_path_when_it_exists() {
+    let configured = PathBuf::from("C:/Program Files/Git/bin/bash.exe");
+    let mut probe = FakeProbe {
+        files: vec![configured.clone()],
+        ..FakeProbe::default()
+    };
+
+    assert_eq!(
+        resolve_interpreter(
+            "bash",
+            InterpreterPlatform::Windows,
+            Some(&configured),
+            &probe,
+        )
+        .unwrap(),
+        configured
+    );
+
+    let script = "/data/scripts/demo/script.sh";
+    let mut launch_probe = probe_for(script);
+    launch_probe.files.push(configured.clone());
+    let plan = build_launch_plan_with_interpreter_policy(
+        &entry("shell"),
+        &paths(script),
+        &Assembly::default(),
+        None,
+        None,
+        &InterpreterPolicy::new(InterpreterPlatform::Windows, Some(configured.clone())),
+        &launch_probe,
+    )
+    .unwrap();
+    assert_eq!(plan.program, configured);
+
+    let configured_directory = PathBuf::from("C:/hand-edited/git-bin");
+    let directory_probe = FakeProbe {
+        dirs: vec![configured_directory.clone()],
+        ..FakeProbe::default()
+    };
+    assert_eq!(
+        resolve_interpreter(
+            "sh",
+            InterpreterPlatform::Windows,
+            Some(&configured_directory),
+            &directory_probe,
+        )
+        .unwrap(),
+        configured_directory
+    );
+
+    probe.programs.insert(
+        "bash".to_owned(),
+        PathBuf::from("C:/Program Files/Git/usr/bin/bash.exe"),
+    );
+    assert_eq!(
+        resolve_interpreter(
+            "bash",
+            InterpreterPlatform::Windows,
+            Some(Path::new("C:/configured/bash.exe")),
+            &probe,
+        )
+        .unwrap(),
+        PathBuf::from("C:/Program Files/Git/usr/bin/bash.exe")
+    );
+}
+
+#[test]
+fn test_resolve_bash_on_win32_configured_but_missing_falls_through() {
+    let probe = FakeProbe::default();
+    let error = resolve_interpreter(
+        "bash",
+        InterpreterPlatform::Windows,
+        Some(Path::new("C:/gone/bash.exe")),
+        &probe,
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, LaunchError::WindowsShellMissing { ref name } if name == "bash"));
+    assert_windows_shell_error_messages(&error, "bash");
+}
+
+#[test]
+fn test_resolve_bash_on_win32_unset_names_both_escape_hatches() {
+    let error = resolve_interpreter(
+        "zsh",
+        InterpreterPlatform::Windows,
+        None,
+        &FakeProbe::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, LaunchError::WindowsShellMissing { ref name } if name == "zsh"));
+    assert_windows_shell_error_messages(&error, "zsh");
+}
+
+#[test]
+fn test_resolve_nonbash_on_win32_gets_generic_message() {
+    let error = resolve_interpreter(
+        "ruby",
+        InterpreterPlatform::Windows,
+        Some(Path::new("C:/configured/bash.exe")),
+        &FakeProbe::default(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, LaunchError::ProgramNotFound { ref name } if name == "ruby"));
+    assert!(error.to_string().contains("ruby"));
+    assert!(!error.to_string().contains("Git for Windows"));
+}
+
+fn assert_windows_shell_error_messages(error: &LaunchError, name: &str) {
+    use skit_i18n::{Locale, Localize as _};
+
+    for (locale, expected) in [
+        (
+            Locale::En,
+            format!(
+                "{name} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>"
+            ),
+        ),
+        (
+            Locale::ZhCn,
+            format!(
+                "此系统上没有 {name}。请安装 Git for Windows（自带的 bash 即可）或 WSL，或用 skit config shell.bash_path <path> 指定一个。"
+            ),
+        ),
+        (
+            Locale::ZhTw,
+            format!(
+                "此系統上沒有 {name}。請安裝 Git for Windows（內附的 bash 即可）或 WSL，或用 skit config shell.bash_path <path> 指定一個。"
+            ),
+        ),
+    ] {
+        assert_eq!(error.message().localize(locale), expected);
+    }
+}
+
 // ==================================================================================
 // ASSERTING TESTS
 // ==================================================================================
@@ -151,6 +301,7 @@ fn test_python_command_uses_uv_run_script() {
     assert_eq!(plan.args[plan.args.len() - 2..], ["--x", "1"]);
 }
 
+#[cfg(unix)]
 #[test]
 fn test_command_template_appends_extra_args() {
     // A command entry builds a shell command with the extra args appended. Python returns the
@@ -265,15 +416,29 @@ fn test_workdir_origin_no_source_falls_back_to_cwd() {
     );
 }
 
+/// A fictional absolute workdir, spelled the way THIS host spells an absolute path.
+///
+/// The custom-workdir arm applies the host's real `Path::is_absolute` before any probe check
+/// (crates/skit-runtime/src/launch.rs), so a POSIX literal is rejected as relative on Windows
+/// before the probe-driven fiction can answer. The contract under test is host-neutral; only
+/// the spelling is host-owned.
+fn virtual_workdir(tail: &str) -> String {
+    if cfg!(windows) {
+        format!("C:\\{}", tail.replace('/', "\\"))
+    } else {
+        format!("/{tail}")
+    }
+}
+
 #[test]
 fn test_workdir_absolute_path_used_directly() {
     // An absolute custom workdir is used verbatim. (Python's resolver does no existence check;
     // the Rust resolver folds one in, so the probe must know the directory exists.)
     let mut py = entry("python");
-    let custom = "/custom/work";
-    py.meta.workdir = custom.to_owned();
+    let custom = virtual_workdir("custom/work");
+    py.meta.workdir = custom.clone();
     let probe = FakeProbe {
-        dirs: vec![PathBuf::from(custom)],
+        dirs: vec![PathBuf::from(&custom)],
         ..FakeProbe::default()
     };
     let paths = paths("/data/scripts/demo/script.py");
@@ -403,7 +568,8 @@ fn test_run_entry_missing_workdir_raises() {
     // A non-existent absolute workdir refuses before spawn, naming the missing path. Rust
     // resolves the workdir before any kind dispatch, so no uv lookup is needed to surface it.
     let mut py = entry("python");
-    py.meta.workdir = "/nonexistent/path/that/does/not/exist".to_owned();
+    let missing = virtual_workdir("nonexistent/path/that/does/not/exist");
+    py.meta.workdir = missing.clone();
     let probe = FakeProbe::default();
 
     let error = build_launch_plan(
@@ -417,11 +583,15 @@ fn test_run_entry_missing_workdir_raises() {
     .unwrap_err();
     assert!(
         matches!(error, LaunchError::WorkdirMissing { ref path }
-            if path.as_path() == Path::new("/nonexistent/path/that/does/not/exist")),
+            if path.as_path() == Path::new(&missing)),
         "{error:?}"
     );
 }
 
+// Command templates lower through `sh -c` only under cfg(not(windows)); on Windows the
+// same builder takes the render_windows_command_template arm, so asserting the sh program
+// or its POSIX-rendered argv states a unix contract.
+#[cfg(unix)]
 #[test]
 fn test_run_entry_command_entry() {
     // A shell command entry runs through the shell and returns exit 0. Real execution via
@@ -521,6 +691,12 @@ fn test_resolve_workdir_reference_mode_not_masked_when_origin_gone() {
         ..FakeProbe::default()
     };
     let paths = paths("/data/scripts/demo/script.py");
+
+    assert_eq!(
+        project_launch_workdir(&reference, &paths, &probe).unwrap(),
+        PathBuf::from("/refdir"),
+        "a form keeps the semantic origin so completion can go silent and its picker can degrade"
+    );
 
     let error = resolve_launch_workdir(&reference, &paths, &probe).unwrap_err();
     assert!(

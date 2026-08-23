@@ -24,6 +24,7 @@ serde_json.workspace = true
 shlex.workspace = true
 skit-application.workspace = true
 skit-domain.workspace = true
+skit-form.workspace = true
 skit-i18n.workspace = true
 skit-language.workspace = true
 skit-runtime.workspace = true

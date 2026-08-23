@@ -1,13 +1,17 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skit_benchmarks::{
-    BenchmarkProfile, BudgetOutcome, GitInfo, HostInfo, Meta, Metric, Results, Skip, SuiteKind,
+    BenchmarkProfile, BudgetOutcome, GitInfo, HostInfo, Meta, Metric, PipelineError, Results, Skip,
+    SuiteKind, SuiteOutput,
     budget::{
         Budget, BudgetReport, BudgetRowResult, BudgetTier, evaluate, format_number, load_budgets,
         propose, render_budgets, render_report,
     },
     compare::{Delta, compare, render_markdown as render_comparison},
-    hyperfine::{Case, build_argv, metrics_from_export, parse_export, validate_case_names},
+    hyperfine::{
+        Case, HyperfineError, build_argv, metrics_from_export, parse_export, validate_case_names,
+    },
+    merge,
     stats::{median, nearest_rank_p95, sample_stddev},
 };
 
@@ -133,6 +137,117 @@ fn hyperfine_builder_and_parser_keep_real_argv_and_full_samples() {
     );
 }
 
+#[test]
+fn hyperfine_refuses_every_ambiguous_case_and_export_shape() {
+    let build = |cases: &[Case]| build_argv(cases, 0, 1, "result.json", "hyperfine");
+    assert!(matches!(build(&[]), Err(HyperfineError::EmptyCases)));
+    assert!(matches!(
+        build(&[Case::new("", ["true"])]),
+        Err(HyperfineError::EmptyName)
+    ));
+    assert!(matches!(
+        build(&[Case::new("empty", Vec::<String>::new())]),
+        Err(HyperfineError::EmptyArgv(name)) if name == "empty"
+    ));
+    assert!(matches!(
+        build(&[
+            Case::new("duplicate", ["true"]),
+            Case::new("duplicate", ["false"]),
+        ]),
+        Err(HyperfineError::DuplicateCase(name)) if name == "duplicate"
+    ));
+    assert!(matches!(
+        build(&[Case::new("nul", ["bad\0argument"])]),
+        Err(HyperfineError::Quote { case, .. }) if case == "nul"
+    ));
+
+    for export in [
+        r#"{"results":[]}"#,
+        r#"{"results":[{"command":"","times":[1]}]}"#,
+        r#"{"results":[{"command":"missing-times","times":[]}]}"#,
+    ] {
+        assert!(matches!(
+            parse_export(export),
+            Err(HyperfineError::Shape(_))
+        ));
+    }
+    assert!(matches!(
+        parse_export(
+            r#"{"results":[{"command":"same","times":[1]},{"command":"same","times":[2]}]}"#
+        ),
+        Err(HyperfineError::Shape(reason)) if reason.contains("duplicate hyperfine case")
+    ));
+}
+
+#[test]
+fn merge_rejects_duplicate_and_half_present_metric_contracts() {
+    let output = |suite, metrics| SuiteOutput {
+        suite,
+        duration_seconds: 0.0,
+        metrics,
+        skipped: Vec::new(),
+        raw: BTreeMap::new(),
+    };
+    assert!(matches!(
+        merge(
+            meta(),
+            vec![
+                output(
+                    SuiteKind::Imports,
+                    BTreeMap::from([("same.metric".to_owned(), metric(1.0, "count"))]),
+                ),
+                output(
+                    SuiteKind::Footprint,
+                    BTreeMap::from([("same.metric".to_owned(), metric(2.0, "count"))]),
+                ),
+            ],
+            0.0,
+        ),
+        Err(PipelineError::DuplicateMetric(metric)) if metric == "same.metric"
+    ));
+
+    assert!(matches!(
+        merge(
+            meta(),
+            vec![output(
+                SuiteKind::Startup,
+                BTreeMap::from([("startup.python.median_ms".to_owned(), metric(1.0, "ms"),)]),
+            )],
+            0.0,
+        ),
+        Err(PipelineError::HalfPresentDerivation {
+            present: "startup.python.median_ms",
+            absent: "startup.version.median_ms",
+            ..
+        })
+    ));
+
+    assert!(matches!(
+        merge(
+            meta(),
+            vec![output(
+                SuiteKind::Startup,
+                BTreeMap::from([
+                    ("startup.version.median_ms".to_owned(), metric(3.0, "ms")),
+                    ("startup.python.median_ms".to_owned(), metric(1.0, "ms")),
+                    ("startup.version.over_python_ms".to_owned(), metric(2.0, "ms")),
+                ]),
+            )],
+            0.0,
+        ),
+        Err(PipelineError::DuplicateMetric(metric))
+            if metric == "startup.version.over_python_ms"
+    ));
+}
+
+#[test]
+fn every_profile_and_suite_keeps_its_stable_artifact_token() {
+    assert_eq!(BenchmarkProfile::Compare.as_str(), "compare");
+    assert_eq!(SuiteKind::Rss.as_str(), "rss");
+    assert_eq!(SuiteKind::Micro.as_str(), "micro");
+    assert_eq!(SuiteKind::Syscalls.as_str(), "syscalls");
+}
+
 const ENFORCED: &str = r#"
 [[budget]]
 metric = "imports.version.modules"
@@ -183,6 +298,68 @@ fn budget_loader_and_evaluator_preserve_every_decay_channel() {
 
     assert!(load_budgets("[[budget]]\nmetric='x'\nmax=1\ntier='enforced'").is_err());
     assert!(load_budgets("[[budget]]\nmetric='x'\nmax=1\ntier='target'\nbogus=1").is_err());
+}
+
+#[test]
+fn test_loads_the_real_contract_file() {
+    let budgets = load_budgets(include_str!("../../../benchmarks/budgets.toml")).unwrap();
+    let enforced = budgets
+        .iter()
+        .filter(|budget| budget.tier == BudgetTier::Enforced)
+        .collect::<Vec<_>>();
+    assert!(enforced.iter().all(|budget| !budget.context.is_empty()));
+    let skip_profiles = enforced
+        .iter()
+        .filter(|budget| budget.metric == "pipeline.skipped_count")
+        .map(|budget| budget.profiles.clone())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        skip_profiles,
+        BTreeSet::from([vec!["full".to_owned()], vec!["pr".to_owned()]])
+    );
+    let wheel = enforced
+        .iter()
+        .find(|budget| budget.metric == "footprint.wheel_bytes")
+        .unwrap();
+    assert_eq!(wheel.profiles, ["pr", "full"]);
+    let ratchets = enforced
+        .iter()
+        .filter(|budget| budget.ratchet)
+        .collect::<Vec<_>>();
+    assert!(!ratchets.is_empty());
+    assert!(
+        ratchets
+            .iter()
+            .all(|budget| budget.context.get("python").map(String::as_str) == Some("3.13"))
+    );
+}
+
+#[test]
+fn test_budgets_file_is_canonical() {
+    let text = include_str!("../../../benchmarks/budgets.toml");
+    assert_eq!(render_budgets(&load_budgets(text).unwrap()).unwrap(), text);
+}
+
+#[test]
+fn test_budget_bounds_render_as_plain_numbers() {
+    let budgets = load_budgets(
+        "[[budget]]\nmetric='footprint.wheel_bytes'\nmax=1048576\ntier='enforced'\ncontext={commit='abc'}",
+    )
+    .unwrap();
+    let report = evaluate(
+        &budgets,
+        &results(&[("footprint.wheel_bytes", 461_803.0, "bytes")]),
+    );
+    let text = render_report(&report);
+    assert!(text.contains("461803 bytes ≤ 1048576"), "{text}");
+    assert!(!text.contains("e+06"), "{text}");
+}
+
+#[test]
+fn test_fractional_bounds_render_compactly() {
+    let budgets = load_budgets("[[budget]]\nmetric='ratio'\nmax=0.5\ntier='target'").unwrap();
+    let report = evaluate(&budgets, &results(&[("ratio", 0.25, "x")]));
+    assert!(render_report(&report).contains("0.25 x ≤ 0.5"));
 }
 
 #[test]

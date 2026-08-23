@@ -109,6 +109,15 @@ fn only_a_nonempty_static_reader_replaces_the_source_candidate_offer() {
     let modeled = onboarding_plan("python", "VALUE = 1\np.add_argument('--name')\n");
     assert_eq!(modeled.candidates.len(), 1);
     assert!(modeled.offered_candidates().is_empty());
+    assert_eq!(
+        modeled
+            .modeled_cli_fields()
+            .expect("static surface")
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["name"]
+    );
 
     let zero = onboarding_plan(
         "python",
@@ -121,9 +130,11 @@ fn only_a_nonempty_static_reader_replaces_the_source_candidate_offer() {
         "VALUE = 1\np.add_argument('--name')\np.add_subparsers()\n",
     );
     assert_eq!(dynamic.offered_candidates().len(), 1);
+    assert_eq!(dynamic.modeled_cli_fields(), None);
 
     let absent = onboarding_plan("python", "VALUE = 1\n");
     assert_eq!(absent.offered_candidates().len(), 1);
+    assert_eq!(absent.modeled_cli_fields(), None);
 }
 
 #[test]

@@ -58,6 +58,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "support/shim.rs"]
+mod shim;
+
 use serde_json::Value;
 use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use skit_language::write_managed_params;
@@ -249,16 +252,12 @@ fn drifted_python_source() -> String {
     write_managed_params("python", "CITY = 'x'\nprint(CITY)\n", &[city, gone]).unwrap()
 }
 
-/// Write an executable stand-in for `uv` into a directory (so a python entry's interpreter
-/// resolves), matching `find_program`'s `mode & 0o111` check.
+/// Write a stand-in for `uv` into a directory, so a python entry's interpreter resolves.
+///
+/// The maker writes the dialect the host runs and names the file the way `find_program` looks for
+/// it: an execute bit on Unix, a `PATHEXT` suffix on Windows.
 fn make_fake_uv(dir: &Path) {
-    let uv = dir.join("uv");
-    fs::write(&uv, "#!/bin/sh\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&uv, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    let _ = shim::write_shim(dir, "uv", shim::Shim::Exit(0));
 }
 
 // ---------------------------------------------------------------- entry_drifted
@@ -358,6 +357,9 @@ fn test_collect_reports_every_category_and_excludes_double_reports() {
         report["needs_missing"]["needs_sh"],
         Value::from(vec!["ffmpeg"])
     );
+    // Strong owner for test_missing_needs_returns_the_gap, test_doctor_flags_missing_needs, and
+    // test_doctor_json_needs_missing: this is the public report's typed name-to-missing-tools face,
+    // not the runtime's fail-fast single-tool launch error.
     // needs_entries carries the ENTRY object itself, not None (the keys of needs_missing).
     assert_eq!(key_set(&report["needs_missing"]), owned(&["needs_sh"]));
     // launch_blocked names the two truly-blocked entries with a real reason...
@@ -414,6 +416,8 @@ fn test_collect_clean_library_reports_nothing() {
 
     assert!(name_set(&report["missing"]).is_empty());
     assert!(name_set(&report["drift"]).is_empty());
+    // Strong owner for test_missing_needs_empty_when_all_present: the complete public report has
+    // one honest empty mapping when every declared program resolves.
     assert!(report["needs_missing"].as_object().unwrap().is_empty());
     assert!(report["launch_blocked"].as_object().unwrap().is_empty());
     assert!(report["runner_rows_invalid"].as_array().unwrap().is_empty());

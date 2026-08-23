@@ -3,9 +3,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     fs::{self, File, Metadata},
-    io::{self, IsTerminal as _, Read as _, Write as _},
+    io::{self, IsTerminal as _, Read as _, Seek as _, Write as _},
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
+    sync::Arc,
     time::UNIX_EPOCH,
 };
 
@@ -17,30 +18,35 @@ use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell,
 use dialoguer::{Confirm, Input, MultiSelect, Password};
 use skit_application::{
     AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope, AgentTarget, CreateEntry,
-    EntryPayload, ExitClass, LibraryScan, LibraryService, RepositoryError, RepositoryOperation,
+    EntryPayload, ExecutableDialect, ExecutableSourceFacts, ExitClass, ExternalCopyEdit as _,
+    FinalizeExternalCopyEditError, ForcedAddKind, LibraryScan, LibraryService,
+    PreparedEntryUpdateError, RepositoryError, RepositoryOperation, SourceIdentity,
     SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
     form_feedback::GlobCountPort,
-    form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill},
+    form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill, scrub_secrets},
     health::{
         HealthInspection, HealthIssue, HealthIssueKind, HealthRebuild, HealthRebuildOutcome,
         HealthService, HealthSnapshot, MirrorHealth, UvHealth,
     },
-    parameter_edit::finish_parameter_edit,
+    path_completion::{PathCompletionProvider, PathCompletionService},
     payload_stored_name, plan_agent_install,
     preferences::{
         AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot, github_preset_names, npm_preset_names,
-        pypi_preset_names,
+        PreferencesChangeSet, PreferencesDraft, PreferencesSnapshot, github_preset_names,
+        npm_preset_names, pypi_preset_names,
     },
     prompt_selection::PromptSelectionService,
-    supports_storage_modes,
+    runner_management::{EditableArgvDialect, split_editable_argv},
+    source_is_executable, supports_storage_modes,
     value_preparation::validate_form_value,
 };
 use skit_domain::{
     Entry, EntryKind, EntrySettings, EntrySummary, Slug, StorageMode,
     parameters::{
-        ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
-        coerce_default,
+        DeclaredEditContext, DeclaredEditRequest, DeclaredEditWarning, NamedEdit, ParamDecl,
+        ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, SourceEditRequest,
+        SourceEditWarning, SourceNormalizationRefusal, SourceNormalizationRefusalKind,
+        as_param_type, coerce_default, edit_declared, synthesized_placeholder,
     },
 };
 use skit_form::{
@@ -49,32 +55,38 @@ use skit_form::{
     onboarding_plan, parameter_section::apply_secrecy_rule,
 };
 use skit_i18n::{
-    Locale, Localize, Message, available_locale_tags, detect_locale, format_text, kind_label,
-    render as localize, requested_locale, system_locale, text,
+    Locale, Localize, Message, available_locale_tags, detect_locale, format_text,
+    kind_choice_label, kind_label, render as localize, requested_locale, system_locale, text,
 };
 use skit_language::{
-    LosslessSource, UvMetadata, UvMetadataEditError, cli_params, decode_prompt, detect_candidates,
-    effective_uv_metadata_bytes, external_dependencies_at, has_uv_metadata_block_bytes, infer_kind,
-    managed_params, normalize_shell_default, placeholder_params, plan_uv_metadata_edit,
-    python_version_pin, read_uv_metadata, shebang_program, suggest_description,
-    validate_pep440_specifiers, validate_pep508_requirement, write_managed_params,
-    write_managed_params_bytes, write_uv_metadata,
+    LosslessSource, ParseOutcome, UvMetadata, UvMetadataEditError, cli_params, decode_prompt,
+    detect_candidates, edit_source_declarations, effective_entry_settings,
+    effective_uv_metadata_bytes, external_dependencies_at, has_uv_metadata_block_bytes,
+    infer_draft_kind, infer_kind, managed_params, normalize_shell_defaults, parse_document,
+    placeholder_params, plan_uv_metadata_edit, python_version_pin, read_uv_metadata,
+    shebang_program, split_pep508_requirements, suggest_description, validate_pep440_specifiers,
+    validate_pep508_requirement, write_managed_params, write_managed_params_bytes,
+    write_uv_metadata,
 };
 use skit_runtime::{
-    DependencyError, LaunchPaths, NetworkProbe, ProgramProbe, SystemNetworkProbe, SystemProbe,
-    clear_javascript_dependencies, managed_uv_path, network_looks_blocked,
-    resolve_javascript_runtime, resolve_launch_workdir,
+    DependencyError, InterpreterPlatform, LaunchError, LaunchPaths, NetworkProbe,
+    PreparedJavaScriptDependencyCleanup, ProgramProbe, SystemNetworkProbe, SystemProbe,
+    managed_uv_path, network_looks_blocked, preflight_javascript_dependencies_for_module,
+    prepare_javascript_dependency_cleanup, project_launch_workdir, resolve_interpreter,
+    resolve_javascript_runtime,
 };
 use skit_store::{
-    CONFIG_KEYS, ConfigError, FileAgentSkillStore, FileConfigStore, FileFormStateStore,
-    FileGlobExpander, FilePromptSelectionStore, FileRunnerManagementStore, PromptRunner,
-    RunnerManagementStoreError, RunnerRemovalCas, expand_user_path,
+    CONFIG_KEYS, ConfigError, CoordinatedStateError, ExternalRollbackOutcome, FileAgentSkillStore,
+    FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
+    FileRunnerManagementStore, PromptRunner, RunnerManagementStoreError, RunnerRemovalCas,
+    SystemDirectoryReader, expand_user_path,
 };
-use skit_store::{FileStore, stored_filenames};
+use skit_store::{FileStore, content_hash, stored_filenames};
 use skit_ui::{
-    Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor, DraftKind,
-    DraftSummary, Effect as UiEffect, FieldValue, FormField, FormPurpose, FormView, HealthAction,
-    HealthView, HostRequest, LibraryState, PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT,
+    Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor,
+    DraftDeleteOutcome, DraftKind, DraftSummary, Effect as UiEffect, FieldValue, FormField,
+    FormPurpose, FormView, HealthAction, HealthView, HostRequest, KnownEntryKind, LibraryState,
+    PRESET_PREFIX, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY, PROMPT_LIST_PREVIEW_LIMIT,
     PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults, RunFormContext,
     RunFormOptions, RunFormView, RunPathContext, RunnerManagerAction, RunnerManagerView,
     RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, RunnerSaveRequest,
@@ -241,7 +253,7 @@ pub(crate) fn active_locale() -> Locale {
 #[derive(Debug, Parser)]
 #[command(
     name = "skit",
-    about = "A script, prompt, program, and command library",
+    about = "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -267,13 +279,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// List entries in the library.
+    /// List every registered entry.
     List {
         /// Emit stable machine-readable output.
         #[arg(long)]
         json: bool,
     },
-    /// Show one entry by exact slug or exact display name.
+    /// Show everything about one entry: metadata, dependencies, parameters, presets.
     Show {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -286,8 +298,8 @@ enum Command {
     Add {
         /// Source file to register.
         source: Option<PathBuf>,
-        /// Open entry-kind registry key.
-        #[arg(long)]
+        /// Force an interpreted kind or exe. With stdin, prompt is also valid.
+        #[arg(long, add = ArgValueCandidates::new(add_kind_candidates))]
         kind: Option<String>,
         /// Display name. The source stem is the default.
         #[arg(long, short = 'n')]
@@ -296,26 +308,19 @@ enum Command {
         #[arg(long, short = 'd')]
         description: Option<String>,
         /// Write a new source in the configured editor, then add it.
-        #[arg(
-            long,
-            short = 'e',
-            conflicts_with_all = ["source", "command_template", "prompt", "reference", "exe", "kind", "runner"]
-        )]
+        #[arg(long, short = 'e')]
         edit: bool,
         /// Reference the original instead of storing a copy.
         #[arg(long = "ref", alias = "reference")]
         reference: bool,
         /// Register a command template instead of a file.
-        #[arg(
-            long = "cmd",
-            conflicts_with_all = ["source", "prompt", "exe", "kind", "runner", "no_interpolate"]
-        )]
+        #[arg(long = "cmd")]
         command_template: Option<String>,
         /// Treat the source as a prompt entry.
-        #[arg(long, conflicts_with_all = ["exe", "kind"])]
+        #[arg(long)]
         prompt: bool,
         /// Force executable kind inference.
-        #[arg(long, conflicts_with_all = ["prompt", "kind", "runner", "no_interpolate"])]
+        #[arg(long)]
         exe: bool,
         /// Pin a prompt runner.
         #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
@@ -335,7 +340,7 @@ enum Command {
     },
     /// Run one library entry.
     Run(RunArgs),
-    /// Replace one entry description.
+    /// Set an entry's description (shown in the Library and skit list).
     Describe {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -343,7 +348,7 @@ enum Command {
         /// Replacement description.
         description: String,
     },
-    /// Rename one entry without changing its slug.
+    /// Rename an entry (presets, remembered values and history survive).
     Rename {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -351,7 +356,7 @@ enum Command {
         /// Replacement display name.
         name: String,
     },
-    /// Remove one entry.
+    /// Remove a registered entry (an original source file is left untouched).
     Remove {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -372,11 +377,11 @@ enum Command {
         #[arg(long)]
         no_input: bool,
     },
-    /// Read or edit managed and declared parameters.
+    /// Show or edit an entry's managed or declared parameters.
     Params(Box<ParamsArgs>),
-    /// Read or update dependencies and required commands.
+    /// View or update an entry's package dependencies, Python constraint, and needed commands.
     Deps(DepsArgs),
-    /// Check runtime and library health.
+    /// Check that uv is available and the entry library is intact.
     Doctor {
         /// Emit stable machine-readable output.
         #[arg(long)]
@@ -642,25 +647,29 @@ pub(crate) fn entry_candidates() -> Vec<CompletionCandidate> {
     )
 }
 
+pub(crate) fn add_kind_candidates() -> Vec<CompletionCandidate> {
+    ForcedAddKind::ALL
+        .iter()
+        .map(|kind| CompletionCandidate::new(kind.as_str()))
+        .chain(std::iter::once(CompletionCandidate::new("prompt")))
+        .collect()
+}
+
 fn entry_candidates_from(store: &FileStore) -> Vec<CompletionCandidate> {
-    LibraryService::new(store.clone()).list().map_or_else(
-        |_| Vec::new(),
-        |scan| {
-            scan.entries
-                .into_iter()
-                .flat_map(|entry| {
-                    let help = clap::builder::StyledStr::from(format!(
-                        "{} — {}",
-                        entry.kind, entry.description
-                    ));
-                    [
-                        CompletionCandidate::new(entry.slug.as_str()).help(Some(help.clone())),
-                        CompletionCandidate::new(entry.name).help(Some(help)),
-                    ]
-                })
-                .collect()
-        },
-    )
+    LibraryService::new(store.clone())
+        .list()
+        .unwrap_or_default()
+        .entries
+        .into_iter()
+        .flat_map(|entry| {
+            let help =
+                clap::builder::StyledStr::from(format!("{} — {}", entry.kind, entry.description));
+            [
+                CompletionCandidate::new(entry.slug.as_str()).help(Some(help.clone())),
+                CompletionCandidate::new(entry.name).help(Some(help)),
+            ]
+        })
+        .collect()
 }
 
 pub(crate) fn runner_candidates() -> Vec<CompletionCandidate> {
@@ -671,15 +680,12 @@ pub(crate) fn runner_candidates() -> Vec<CompletionCandidate> {
 }
 
 fn runner_candidates_from(store: &FileConfigStore) -> Vec<CompletionCandidate> {
-    store.runners().map_or_else(
-        |_| Vec::new(),
-        |runners| {
-            runners
-                .into_iter()
-                .map(|runner| CompletionCandidate::new(runner.name))
-                .collect()
-        },
-    )
+    store
+        .runners()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|runner| CompletionCandidate::new(runner.name))
+        .collect()
 }
 
 pub(crate) fn preset_candidates() -> Vec<CompletionCandidate> {
@@ -1047,18 +1053,163 @@ fn validate_explicit_python_flags(options: &AddOptions) -> Result<(), CliError> 
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AddLane {
+    Command,
+    Stdin,
+    Editor,
+    PromptEditor,
+    Path,
+    Bare,
+}
+
+fn validate_add_dispatch(options: &AddOptions, edit: bool) -> Result<AddLane, CliError> {
+    if options.prompt
+        && (edit
+            || options.executable
+            || options.command_template.is_some()
+            || options.kind.is_some())
+    {
+        return Err(CliError::Usage(Message::new(
+            "--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.",
+        )));
+    }
+
+    let mut selectors = Vec::new();
+    if options.command_template.is_some() {
+        selectors.push("--cmd".to_owned());
+    }
+    if edit {
+        selectors.push("--edit".to_owned());
+    }
+    if let Some(source) = options.source.as_deref() {
+        selectors.push(if source == Path::new("-") {
+            text(active_locale(), "stdin ('-')").into_owned()
+        } else {
+            text(active_locale(), "a file path").into_owned()
+        });
+    }
+    if selectors.len() > 1 {
+        return Err(CliError::Usage(
+            Message::new(
+                "{} each pick a different way to add — use exactly one (nothing was added).",
+            )
+            .with(selectors.join(", ")),
+        ));
+    }
+
+    let lane = if options.command_template.is_some() {
+        AddLane::Command
+    } else if edit {
+        AddLane::Editor
+    } else if options.source.as_deref() == Some(Path::new("-")) {
+        AddLane::Stdin
+    } else if options.source.is_some() {
+        AddLane::Path
+    } else if options.prompt {
+        AddLane::PromptEditor
+    } else {
+        AddLane::Bare
+    };
+
+    let flag_policy: Option<(&str, &[&str])> = match lane {
+        AddLane::Command => Some(("a --cmd template takes only --name/--description", &[])),
+        AddLane::Stdin => Some((
+            "stdin authors a brand-new copy, and --ref/--exe need an existing file",
+            &[
+                "--kind",
+                "--runner",
+                "--no-interpolate",
+                "--dep",
+                "--python",
+            ],
+        )),
+        AddLane::Editor => Some((
+            "--edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt",
+            &["--dep", "--python"],
+        )),
+        AddLane::PromptEditor => Some((
+            "a drafted prompt takes only --name/--description/--runner/--no-interpolate",
+            &["--runner", "--no-interpolate"],
+        )),
+        AddLane::Path | AddLane::Bare => None,
+    };
+    if let Some((hint, accepted)) = flag_policy {
+        let dependencies_explicit =
+            options.dependencies_explicit || !options.dependencies.is_empty();
+        let refused = [
+            ("--ref", options.reference),
+            ("--exe", options.executable),
+            ("--kind", options.kind.is_some()),
+            ("--runner", options.runner.is_some()),
+            ("--no-interpolate", options.no_interpolate),
+            ("--dep", dependencies_explicit),
+            ("--python", options.requires_python.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(flag, present)| (present && !accepted.contains(&flag)).then_some(flag))
+        .collect::<Vec<_>>();
+        if !refused.is_empty() {
+            return Err(CliError::Usage(
+                Message::new("{} can't apply here — {} (nothing was added).")
+                    .with(refused.join(", "))
+                    .with(text(active_locale(), hint)),
+            ));
+        }
+    }
+
+    if lane == AddLane::Path
+        && options.no_interpolate
+        && (options.executable || options.kind.as_deref().is_some_and(|kind| kind != "prompt"))
+    {
+        return Err(CliError::Usage(Message::new(
+            "--no-interpolate only applies to prompt entries — add one with --prompt.",
+        )));
+    }
+    if lane == AddLane::Path && options.runner.is_some() && options.executable {
+        return Err(CliError::Usage(Message::new(
+            "--runner only applies to prompt entries — add one with --prompt.",
+        )));
+    }
+
+    Ok(lane)
+}
+
 fn add_command(
     service: &LibraryService<FileStore>,
     mut options: AddOptions,
     edit: bool,
 ) -> Result<(), CliError> {
+    let lane = validate_add_dispatch(&options, edit)?;
+    if lane != AddLane::Command {
+        validate_explicit_add_kind(
+            options.kind.as_deref(),
+            options.executable,
+            lane == AddLane::Stdin,
+        )?;
+    }
+    preflight_owned_draft_boundary(service.repository().data_dir(), &options)?;
     let no_input = options.no_input;
-    if edit && no_input {
+    if lane == AddLane::Editor && no_input {
         return Err(CliError::Usage(Message::new(
             "--edit opens your editor, which --no-input forbids — pipe the script in instead: skit add - -n NAME",
         )));
     }
-    if edit {
+    if lane == AddLane::Editor {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err(CliError::Usage(Message::new(
+                "Writing a new script in an editor needs an interactive terminal.",
+            )));
+        }
+        validate_explicit_python_flags(&options)?;
+        if options.name.is_none() {
+            let name = add_plain_text("Name in skit")?;
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(CliError::Usage(Message::new("A name is required.")));
+            }
+            options.name = Some(name.to_owned());
+        }
         if let Some(name) = options
             .name
             .as_deref()
@@ -1076,12 +1227,11 @@ fn add_command(
                 Err(error) => return Err(error.into()),
             }
         }
-        validate_explicit_python_flags(&options)?;
         return add_draft(service, options, false);
     }
-    if options.source.is_none() && options.command_template.is_none() {
-        if options.prompt {
-            if !io::stdin().is_terminal() {
+    if matches!(lane, AddLane::PromptEditor | AddLane::Bare) {
+        if lane == AddLane::PromptEditor {
+            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
                 options.source = Some(PathBuf::from("-"));
                 return add(service, options);
             }
@@ -1092,9 +1242,36 @@ fn add_command(
             )?;
             if no_input {
                 return Err(CliError::Usage(Message::new(
-                    "a prompt body is required; pipe it to `skit add - --prompt --name NAME`",
+                    "--prompt with no path opens your editor, which --no-input forbids — pipe the body in instead: skit add - --prompt -n NAME",
                 )));
             }
+            let name = match options
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                Some(name) => name.to_owned(),
+                None => {
+                    let name = add_plain_text("Name in skit")?;
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Err(CliError::Usage(Message::new("A name is required.")));
+                    }
+                    name.to_owned()
+                }
+            };
+            match service.show(&name) {
+                Ok(_) | Err(RepositoryError::Ambiguous { .. }) => {
+                    return Err(CliError::Failure(
+                        Message::new("The name {} is already taken — pick another name.")
+                            .with(name.as_str()),
+                    ));
+                }
+                Err(RepositoryError::NotFound { .. }) => {}
+                Err(error) => return Err(error.into()),
+            }
+            options.name = Some(name);
             return add_draft(service, options, true);
         }
         if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -1133,6 +1310,71 @@ fn add_command(
         }
     }
     add(service, options)
+}
+
+fn preflight_owned_draft_boundary(data_dir: &Path, options: &AddOptions) -> Result<(), CliError> {
+    let Some(input) = options
+        .source
+        .as_deref()
+        .filter(|path| *path != Path::new("-"))
+    else {
+        return Ok(());
+    };
+    let Ok(snapshot) = tui_add_source(data_dir, input) else {
+        return Ok(());
+    };
+    if !snapshot.is_draft {
+        return Ok(());
+    }
+    let text = LosslessSource::from_bytes(&snapshot.bytes);
+    let shebang = text
+        .normalized_text()
+        .lines()
+        .next()
+        .filter(|line| line.starts_with("#!"));
+    let inferred = infer_draft_kind(&snapshot.path, shebang, snapshot.is_executable());
+    refuse_owned_draft_boundary(
+        &snapshot.path,
+        options.reference,
+        options.executable,
+        options.kind.as_deref() == Some("exe"),
+        options.kind.is_none() && !options.prompt && inferred == Some("exe"),
+    )
+}
+
+fn refuse_owned_draft_boundary(
+    source: &Path,
+    reference: bool,
+    executable_flag: bool,
+    kind_executable_flag: bool,
+    inferred_executable: bool,
+) -> Result<(), CliError> {
+    if !reference && !executable_flag && !kind_executable_flag && !inferred_executable {
+        return Ok(());
+    }
+    let mut flags = Vec::new();
+    if reference {
+        flags.push("--ref");
+    }
+    if executable_flag {
+        flags.push("--exe");
+    }
+    if kind_executable_flag {
+        flags.push("--kind exe");
+    }
+    let file = source.file_name().unwrap_or(source.as_os_str());
+    Err(CliError::Usage(if flags.is_empty() {
+        Message::new(
+            "{} is one of skit's own kept drafts, and a draft is always added as a script or prompt copy — pass --kind <language> to name its language.",
+        )
+        .with(file.to_string_lossy())
+    } else {
+        Message::new(
+            "{} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {}.",
+        )
+        .with(file.to_string_lossy())
+        .with(flags.join("/"))
+    }))
 }
 
 /// Report the source path an interactive add should review before it writes.
@@ -1286,6 +1528,156 @@ fn wants_tui_form(config_dir: &Path) -> Result<bool, CliError> {
     Ok(FileConfigStore::new(config_dir).get("form")? == "tui")
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlainKindSelection {
+    Pick(KnownEntryKind),
+    Cancel,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PlainKindSelector {
+    filename: String,
+    has_shebang: bool,
+    choices: Vec<KnownEntryKind>,
+}
+
+impl PlainKindSelector {
+    fn new(filename: impl Into<String>, has_shebang: bool, offer_executable: bool) -> Self {
+        Self {
+            filename: filename.into(),
+            has_shebang,
+            choices: KnownEntryKind::picker_choices(offer_executable),
+        }
+    }
+
+    fn question(&self) -> Message {
+        if self.has_shebang {
+            Message::new("The #! in {} names no interpreter skit knows. What is it?")
+                .with(&self.filename)
+        } else {
+            Message::new("What is {}? skit can't tell from the name.").with(&self.filename)
+        }
+    }
+
+    fn choices(&self) -> &[KnownEntryKind] {
+        &self.choices
+    }
+
+    fn parse(&self, answer: &str) -> Option<PlainKindSelection> {
+        let answer = answer.trim();
+        if answer == "-" {
+            return Some(PlainKindSelection::Cancel);
+        }
+        let index = answer.parse::<usize>().ok()?.checked_sub(1)?;
+        self.choices
+            .get(index)
+            .copied()
+            .map(PlainKindSelection::Pick)
+    }
+
+    fn choice_bracket(&self) -> String {
+        self.choices
+            .iter()
+            .enumerate()
+            .map(|(index, _)| (index + 1).to_string())
+            .chain(std::iter::once("-".to_owned()))
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+}
+
+struct PlainKindChoiceTheme {
+    choices: String,
+}
+
+impl dialoguer::theme::Theme for PlainKindChoiceTheme {
+    fn format_input_prompt(
+        &self,
+        formatter: &mut dyn std::fmt::Write,
+        prompt: &str,
+        _default: Option<&str>,
+    ) -> std::fmt::Result {
+        write!(formatter, "{prompt} [{}]: ", self.choices)
+    }
+}
+
+fn ask_plain_kind(selector: &PlainKindSelector) -> Result<KnownEntryKind, CliError> {
+    let locale = active_locale();
+    println!("{}", selector.question().localize(locale));
+    for (index, kind) in selector.choices().iter().enumerate() {
+        println!(
+            "  {}. {}",
+            index + 1,
+            kind_choice_label(locale, kind.as_str())
+        );
+    }
+    humanln!("- = cancel");
+    let theme = PlainKindChoiceTheme {
+        choices: selector.choice_bracket(),
+    };
+    let answer = Input::<String>::with_theme(&theme)
+        .with_prompt(text(locale, "Which one?").into_owned())
+        .validate_with(|value: &String| {
+            selector.parse(value).map_or_else(
+                || {
+                    Err(format_text(
+                        locale,
+                        "Choose a number from 1 to {}.",
+                        &[&selector.choices().len()],
+                    ))
+                },
+                |_| Ok(()),
+            )
+        })
+        .interact_text()
+        .map_err(add_dialoguer_error)?;
+    match selector
+        .parse(&answer)
+        .expect("the dialoguer validator accepts only typed selector answers")
+    {
+        PlainKindSelection::Pick(kind) => Ok(kind),
+        PlainKindSelection::Cancel => Err(CliError::AddCancelled),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlainAddChoice {
+    Path,
+    Script,
+    Prompt,
+    Command,
+}
+
+impl PlainAddChoice {
+    fn parse(value: &str) -> Result<Self, CliError> {
+        match value.trim() {
+            "1" => Ok(Self::Path),
+            "2" => Ok(Self::Script),
+            "3" => Ok(Self::Prompt),
+            "4" => Ok(Self::Command),
+            _ => Err(CliError::Usage(Message::new(
+                "Choose a number from 1 to 4.",
+            ))),
+        }
+    }
+}
+
+struct AddChoiceTheme;
+
+impl dialoguer::theme::Theme for AddChoiceTheme {
+    fn format_input_prompt(
+        &self,
+        formatter: &mut dyn std::fmt::Write,
+        prompt: &str,
+        default: Option<&str>,
+    ) -> std::fmt::Result {
+        match default {
+            Some(default) => write!(formatter, "{prompt} [1/2/3/4] ({default}): "),
+            None => write!(formatter, "{prompt} [1/2/3/4]: "),
+        }
+    }
+}
+
 fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Result<(), CliError> {
     let locale = active_locale();
     humanln!("What would you like to add?");
@@ -1308,18 +1700,19 @@ fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Res
         "  4. {}",
         text(locale, "A command template (e.g. ffmpeg -i {input})")
     );
-    let choice = Input::<String>::new()
+    let theme = AddChoiceTheme;
+    let choice = Input::<String>::with_theme(&theme)
         .with_prompt(text(locale, "Which one?").into_owned())
         .default("1".to_owned())
         .validate_with(|value: &String| {
-            matches!(value.trim(), "1" | "2" | "3" | "4")
-                .then_some(())
-                .ok_or_else(|| text(locale, "Choose a number from 1 to 4.").into_owned())
+            PlainAddChoice::parse(value)
+                .map(|_| ())
+                .map_err(|error| error.message().localize(locale))
         })
         .interact_text()
         .map_err(add_dialoguer_error)?;
-    match choice.trim() {
-        "1" => {
+    match PlainAddChoice::parse(&choice)? {
+        PlainAddChoice::Path => {
             let path = add_plain_text("Path to the file")?;
             if path.trim().is_empty() {
                 return Err(CliError::AddCancelled);
@@ -1332,9 +1725,9 @@ fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Res
                 },
             )
         }
-        "2" => add_plain_draft(service, config_dir, DraftKind::Script),
-        "3" => add_plain_draft(service, config_dir, DraftKind::Prompt),
-        "4" => {
+        PlainAddChoice::Script => add_plain_draft(service, config_dir, DraftKind::Script),
+        PlainAddChoice::Prompt => add_plain_draft(service, config_dir, DraftKind::Prompt),
+        PlainAddChoice::Command => {
             let template = add_plain_text("Command template")?;
             if template.trim().is_empty() {
                 return Err(CliError::AddCancelled);
@@ -1354,7 +1747,6 @@ fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Res
                 },
             )
         }
-        _ => unreachable!("the dialoguer validator accepts only four choices"),
     }
 }
 
@@ -1390,9 +1782,7 @@ fn add_plain_draft(
             ..empty_add_options()
         },
     );
-    if result.is_ok() {
-        remove_owned_draft(service.repository().data_dir(), &path)?;
-    } else {
+    if result.is_err() {
         humanerrln!("Your draft was kept at {}", path.display());
     }
     result
@@ -1406,13 +1796,99 @@ fn add_plain_text(prompt: &'static str) -> Result<String, CliError> {
         .map_err(add_dialoguer_error)
 }
 
+fn add_plain_text_default(prompt: &'static str, default: &str) -> Result<String, CliError> {
+    Input::<String>::new()
+        .with_prompt(text(active_locale(), prompt).into_owned())
+        .default(default.to_owned())
+        .allow_empty(true)
+        .interact_text()
+        .map_err(add_dialoguer_error)
+}
+
+fn prompt_python_metadata(
+    suggestions: &[String],
+    python_pin: Option<&str>,
+) -> Result<(Vec<String>, String), CliError> {
+    let dependencies = loop {
+        let answer = add_plain_text_default(
+            "Dependencies to install (Enter to accept, edit the list, or '-' for none)",
+            &suggestions.join(", "),
+        )?;
+        if matches!(answer.trim().to_ascii_lowercase().as_str(), "-" | "none") {
+            break Vec::new();
+        }
+        let dependencies = split_pep508_requirements(&answer);
+        let error = dependencies
+            .iter()
+            .find_map(|requirement| validate_pep508_requirement(requirement).err());
+        if let Some(error) = error {
+            eprintln!("{}", error.message().localize(active_locale()));
+        } else {
+            break dependencies;
+        }
+    };
+    let prompt = if python_pin.is_some() {
+        "Python version (Enter accepts the #! pin, '-' for automatic)"
+    } else {
+        "Python version (leave empty for automatic)"
+    };
+    let default = python_pin.unwrap_or_default();
+    loop {
+        let answer = add_plain_text_default(prompt, default)?;
+        let answer = answer.trim();
+        if matches!(answer.to_ascii_lowercase().as_str(), "-" | "none") {
+            return Ok((dependencies, String::new()));
+        }
+        match (!answer.is_empty()).then(|| validate_pep440_specifiers(answer)) {
+            None | Some(Ok(())) => return Ok((dependencies, answer.to_owned())),
+            Some(Err(error)) => {
+                eprintln!("{}", error.message().localize(active_locale()));
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+const fn should_prompt_python_metadata(
+    kind: &str,
+    dependencies_explicit: bool,
+    requires_python_explicit: bool,
+    has_own_uv_metadata: bool,
+    has_suggestions: bool,
+    no_input: bool,
+    interactive: bool,
+    tui_form: bool,
+) -> bool {
+    matches!(kind.as_bytes(), b"python")
+        && !dependencies_explicit
+        && !requires_python_explicit
+        && !has_own_uv_metadata
+        && has_suggestions
+        && !no_input
+        && interactive
+        && !tui_form
+}
+
 fn add_dialoguer_error(error: dialoguer::Error) -> CliError {
+    map_dialoguer_error(error, DialoguerAbort::Add)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum DialoguerAbort {
+    Add,
+    Operation,
+}
+
+fn map_dialoguer_error(error: dialoguer::Error, abort: DialoguerAbort) -> CliError {
     let error = io::Error::from(error);
     if matches!(
         error.kind(),
         io::ErrorKind::Interrupted | io::ErrorKind::UnexpectedEof
     ) {
-        CliError::AddCancelled
+        match abort {
+            DialoguerAbort::Add => CliError::AddCancelled,
+            DialoguerAbort::Operation => CliError::Aborted,
+        }
     } else {
         CliError::Io(error)
     }
@@ -1437,6 +1913,10 @@ fn empty_add_options() -> AddOptions {
     }
 }
 
+fn localized_prompt_starter() -> Vec<u8> {
+    format!("{}\n\n", text(active_locale(), "# New prompt")).into_bytes()
+}
+
 fn add_draft(
     service: &LibraryService<FileStore>,
     mut options: AddOptions,
@@ -1452,10 +1932,18 @@ fn add_draft(
         skit_domain::EntryId::generate().as_str(),
         suffix
     ));
-    fs::write(&draft, [])?;
+    let starter = if prompt {
+        localized_prompt_starter()
+    } else {
+        Vec::new()
+    };
+    fs::write(&draft, &starter)?;
     open_editor(&draft)?;
-    if fs::metadata(&draft)?.len() == 0 {
-        remove_owned_draft(service.repository().data_dir(), &draft)?;
+    let empty = fs::metadata(&draft)?.len() == 0;
+    let untouched_starter = prompt && !empty && fs::read(&draft)? == starter;
+    if empty || untouched_starter {
+        let snapshot = tui_add_source(service.repository().data_dir(), &draft)?;
+        let _ = consume_owned_draft(service.repository().data_dir(), &snapshot)?;
         if prompt {
             humanln!("Nothing was written, so no prompt was added.");
         } else {
@@ -1496,9 +1984,7 @@ fn add_draft(
     } else {
         add(service, options)
     };
-    if result.is_ok() {
-        fs::remove_file(&draft)?;
-    } else {
+    if result.is_err() {
         humanerrln!("Your draft was kept at {}", draft.display());
     }
     result
@@ -1569,9 +2055,6 @@ fn write_completion(shell: Shell, output: &mut dyn io::Write) {
 }
 
 fn detect_shell() -> Result<Shell, CliError> {
-    if env::var_os("PSModulePath").is_some() {
-        return Ok(Shell::PowerShell);
-    }
     let name = env::var_os("SHELL")
         .and_then(|value| PathBuf::from(value).file_name().map(ToOwned::to_owned))
         .and_then(|value| value.to_str().map(str::to_ascii_lowercase))
@@ -1582,6 +2065,10 @@ fn detect_shell() -> Result<Shell, CliError> {
         "fish" => Ok(Shell::Fish),
         "pwsh" | "powershell" | "powershell.exe" | "pwsh.exe" => Ok(Shell::PowerShell),
         "zsh" => Ok(Shell::Zsh),
+        // PowerShell does not set SHELL, and its module path is the only mark it leaves. That mark
+        // is the last answer, never the first: hosts that run PowerShell tools keep the variable in
+        // the environment of every other shell, so a named shell always wins.
+        _ if env::var_os("PSModulePath").is_some() => Ok(Shell::PowerShell),
         _ => Err(CliError::Usage(Message::new(
             "could not detect the shell; set SHELL before completion setup",
         ))),
@@ -1677,10 +2164,11 @@ fn run_entry(
         // advertised chips (Ctrl+S saves a preset) work there too.
         let state_dir = resolve_state_dir()?;
         let config_dir = resolve_config_dir()?;
-        skit_tui::collect_run_form(
+        skit_tui::collect_run_form_with_path_completion(
             forms.enhanced,
             |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
             active_locale(),
+            path_completion_provider(),
         )?
         .ok_or(CliError::Aborted)?
     };
@@ -1734,6 +2222,7 @@ fn interactive_run_form(
     let baseline = prefill(&declarations, &saved.values, preset);
     let fixed_values = run_fixed_values(&declarations, &args.values)?;
     let settings = EntrySettings::from_meta(&entry.meta);
+    let context = tui_run_context(store, &entry)?;
     let configured_runners = FileConfigStore::new(resolve_config_dir()?)
         .runners()?
         .into_iter()
@@ -1781,7 +2270,8 @@ fn interactive_run_form(
         dry_run: args.dry_run,
         include_extra: false,
         fixed_values,
-    });
+    })
+    .with_context(context);
     Ok(InteractiveRunForms {
         plain,
         enhanced,
@@ -1971,6 +2461,26 @@ where
 {
     let mut values = BTreeMap::new();
     for field in &form.fields {
+        if !field.help.is_empty() {
+            writeln!(output, "  {}", field.help)?;
+        }
+        if field.degraded {
+            writeln!(
+                output,
+                "  {}",
+                text(locale, "Leave empty to use the script's own default.")
+            )?;
+        }
+        if field.input_binding {
+            writeln!(
+                output,
+                "  {}",
+                text(
+                    locale,
+                    "Leave empty and the script will ask you in the terminal."
+                )
+            )?;
+        }
         let arguments = field
             .label_arguments
             .iter()
@@ -2570,20 +3080,8 @@ fn nonempty(value: &str) -> Option<&str> {
 }
 
 fn effective_settings(store: &FileStore, entry: &Entry) -> EntrySettings {
-    let mut settings = EntrySettings::from_meta(&entry.meta);
-    if entry.meta.kind.as_str() == "python" && entry.meta.mode == StorageMode::Copy {
-        let source = source_path(store, entry).and_then(|path| fs::read(path).ok());
-        let effective = effective_uv_metadata_bytes(
-            source.as_deref(),
-            &UvMetadata {
-                dependencies: settings.dependencies.clone(),
-                requires_python: settings.requires_python.clone(),
-            },
-        );
-        settings.dependencies = effective.dependencies;
-        settings.requires_python = effective.requires_python;
-    }
-    settings
+    let source = source_path(store, entry).and_then(|path| fs::read(path).ok());
+    effective_entry_settings(entry, source.as_deref())
 }
 
 fn uv_edit_error(name: &str, error: UvMetadataEditError) -> CliError {
@@ -2848,6 +3346,57 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
     add_with_config(service, &config_dir, options)
 }
 
+fn selected_add_kind<'a>(
+    explicit: Option<&'a str>,
+    inferred: Option<&'a str>,
+    picked: Option<KnownEntryKind>,
+    from_stdin: bool,
+) -> Result<&'a str, CliError> {
+    if let Some(kind) = explicit.or(inferred) {
+        return Ok(kind);
+    }
+    if let Some(kind) = picked {
+        return Ok(kind.as_str());
+    }
+    if from_stdin {
+        return Ok("python");
+    }
+    Err(CliError::Usage(Message::new(
+        "could not infer the entry kind; pass --kind KIND",
+    )))
+}
+
+fn validate_explicit_add_kind(
+    kind: Option<&str>,
+    executable: bool,
+    allow_stdin_prompt: bool,
+) -> Result<(), CliError> {
+    let Some(value) = kind else {
+        return Ok(());
+    };
+    if allow_stdin_prompt && value == "prompt" {
+        return Ok(());
+    }
+    let Some(kind) = ForcedAddKind::parse(value) else {
+        let choices = ForcedAddKind::ALL
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(CliError::Usage(
+            Message::new("Unknown kind: {}. Choose from: {}")
+                .with(value)
+                .with(choices),
+        ));
+    };
+    if executable && kind != ForcedAddKind::Executable {
+        return Err(CliError::Usage(Message::new(
+            "Use --kind or --exe, not both.",
+        )));
+    }
+    Ok(())
+}
+
 fn add_with_config(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
@@ -2856,12 +3405,12 @@ fn add_with_config(
     let AddOptions {
         source,
         kind,
-        name,
-        description,
+        mut name,
+        mut description,
         reference,
         command_template,
         prompt,
-        executable,
+        mut executable,
         runner,
         no_interpolate,
         dependencies,
@@ -2870,6 +3419,8 @@ fn add_with_config(
         no_input,
     } = options;
     let dependencies_explicit = dependencies_explicit || !dependencies.is_empty();
+    let executable_flag = executable;
+    let kind_executable_flag = kind.as_deref() == Some("exe");
     let mut dependencies = dependencies
         .into_iter()
         .map(|item| item.trim().to_owned())
@@ -2892,7 +3443,7 @@ fn add_with_config(
     if prompt {
         validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
     }
-    let explicit_executable = executable || kind.as_deref() == Some("exe");
+    let mut explicit_executable = executable || kind.as_deref() == Some("exe");
 
     if let Some(template) = command_template {
         if template.trim().is_empty() {
@@ -2913,7 +3464,6 @@ fn add_with_config(
         let parameters = placeholder_params("command", &template);
         let settings = EntrySettings {
             params: parameters.iter().map(|item| item.name.clone()).collect(),
-            parameters,
             template,
             ..EntrySettings::default()
         };
@@ -2948,31 +3498,85 @@ fn add_with_config(
         )));
     }
     let from_stdin = input == Path::new("-");
-    let (source, source_record, mut bytes, permissions, source_is_regular) = if from_stdin {
-        let mut bytes = Vec::new();
-        io::stdin().read_to_end(&mut bytes)?;
-        (
-            PathBuf::from("stdin"),
-            String::new(),
-            bytes,
-            SourcePermissions::default(),
-            true,
-        )
-    } else {
-        let expanded = expand_user_path(input);
-        let source = resolve_add_source(&expanded)?;
-        let require_regular = !explicit_executable
-            && (prompt || kind.is_some() || infer_kind(&source, None, false).is_some());
-        let snapshot = read_source(&source, explicit_executable, require_regular)?;
-        let source_record = source.display().to_string();
-        (
-            source,
-            source_record,
-            snapshot.bytes,
-            snapshot.permissions,
-            snapshot.is_regular,
-        )
-    };
+    let (source, source_record, mut bytes, permissions, source_is_regular, source_identity) =
+        if from_stdin {
+            let mut bytes = Vec::new();
+            io::stdin().read_to_end(&mut bytes)?;
+            (
+                PathBuf::from("stdin"),
+                String::new(),
+                bytes,
+                SourcePermissions::default(),
+                true,
+                None,
+            )
+        } else {
+            let expanded = expand_user_path(input);
+            let source = resolve_add_source(&expanded)?;
+            let path_inferred = infer_kind(&source, None, false);
+            let unknown_directory = source.is_dir()
+                && !explicit_executable
+                && !prompt
+                && kind.is_none()
+                && path_inferred.is_none();
+            if unknown_directory
+                && (no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal())
+            {
+                let file = source.file_name().unwrap_or(source.as_os_str());
+                return Err(CliError::Usage(
+                    Message::new(
+                        "{} is a directory — pass --exe to add it as a program that runs directly.",
+                    )
+                    .with(file.to_string_lossy()),
+                ));
+            }
+            if unknown_directory {
+                if !wants_tui_form(config_dir)? {
+                    let file = source.file_name().unwrap_or(source.as_os_str());
+                    let question =
+                        Message::new("{} is a directory. Add it as a program that runs directly?")
+                            .with(file.to_string_lossy())
+                            .localize(active_locale());
+                    let accepted = Confirm::new()
+                        .with_prompt(question)
+                        .default(true)
+                        .interact_opt()
+                        .map_err(add_dialoguer_error)?
+                        .ok_or(CliError::AddCancelled)?;
+                    if !accepted {
+                        return Err(CliError::AddCancelled);
+                    }
+                    if name.is_none() {
+                        let default = source_default_name(&source, false);
+                        let value = Input::<String>::new()
+                            .with_prompt(text(active_locale(), "Name in skit").into_owned())
+                            .default(default)
+                            .allow_empty(true)
+                            .interact_text()
+                            .map_err(add_dialoguer_error)?;
+                        name = (!value.trim().is_empty()).then(|| value.trim().to_owned());
+                    }
+                    if description.is_none() {
+                        description =
+                            Some(add_plain_text("Description (optional)")?.trim().to_owned());
+                    }
+                }
+                executable = true;
+                explicit_executable = true;
+            }
+            let require_regular =
+                !explicit_executable && (prompt || kind.is_some() || path_inferred.is_some());
+            let snapshot = read_source(&source, explicit_executable, require_regular)?;
+            let source_record = source.display().to_string();
+            (
+                source,
+                source_record,
+                snapshot.bytes,
+                snapshot.permissions,
+                snapshot.is_regular,
+                snapshot.identity,
+            )
+        };
     let mut source_text = LosslessSource::from_bytes(&bytes)
         .normalized_text()
         .to_owned();
@@ -2980,21 +3584,80 @@ fn add_with_config(
         .lines()
         .next()
         .filter(|line| line.starts_with("#!"));
-    let file_is_executable = permissions.unix_mode.is_some_and(|mode| mode & 0o111 != 0);
+    let file_is_executable = source_is_host_executable(&source, source_is_regular, permissions);
+    let owned_draft = !from_stdin && is_owned_draft(service.repository().data_dir(), &source);
+    let source_claim = owned_draft.then(|| AddSourceSnapshot {
+        path: source.clone(),
+        source_record: source_record.clone(),
+        bytes: bytes.clone(),
+        permissions,
+        executable: Some(file_is_executable),
+        is_regular: source_is_regular,
+        is_directory: !source_is_regular,
+        is_draft: true,
+        identity: source_identity,
+    });
     let inferred = if prompt {
         Some("prompt")
     } else if executable {
         Some("exe")
+    } else if owned_draft {
+        infer_draft_kind(&source, shebang, file_is_executable)
     } else {
         infer_kind(&source, shebang, file_is_executable)
     };
-    if kind.is_none() && inferred.is_none() && from_stdin && shebang.is_some() {
+    if owned_draft {
+        refuse_owned_draft_boundary(
+            &source,
+            reference,
+            executable_flag,
+            kind_executable_flag,
+            kind.is_none() && inferred == Some("exe"),
+        )?;
+    }
+    let picked_kind = if kind.is_none()
+        && inferred.is_none()
+        && !from_stdin
+        && !no_input
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+        && !wants_tui_form(config_dir)?
+    {
+        let filename = source.file_name().unwrap_or(source.as_os_str());
+        let selector = PlainKindSelector::new(
+            filename.to_string_lossy(),
+            shebang.is_some(),
+            !is_owned_draft(service.repository().data_dir(), &source),
+        );
+        Some(ask_plain_kind(&selector)?)
+    } else {
+        None
+    };
+    if kind.is_none()
+        && inferred.is_none()
+        && picked_kind.is_none()
+        && from_stdin
+        && shebang.is_some()
+    {
         return Err(CliError::Usage(Message::new(
             "The piped text's #! names no interpreter skit knows — pass --kind <language> to choose one.",
         )));
     }
-    if kind.is_none() && inferred.is_none() && !from_stdin && shebang.is_some() {
+    if kind.is_none()
+        && inferred.is_none()
+        && picked_kind.is_none()
+        && !from_stdin
+        && shebang.is_some()
+    {
         let file = source.file_name().unwrap_or(source.as_os_str());
+        if owned_draft {
+            return Err(CliError::Usage(
+                Message::new(
+                    "The #! in {} names no interpreter skit knows — pass --kind <language> to choose one.",
+                )
+                .with(file.to_string_lossy()),
+            ));
+        }
         return Err(CliError::Usage(
             Message::new(
                 "The #! in {} names no interpreter skit knows — pass --kind <language> to choose one, or --exe to run it directly.",
@@ -3004,6 +3667,7 @@ fn add_with_config(
     }
     if kind.is_none()
         && inferred.is_none()
+        && picked_kind.is_none()
         && !from_stdin
         && shebang.is_none()
         && !is_owned_draft(service.repository().data_dir(), &source)
@@ -3016,15 +3680,21 @@ fn add_with_config(
             .with(file.to_string_lossy()),
         ));
     }
-    let kind = kind
-        .as_deref()
-        .or(inferred)
-        .or(from_stdin.then_some("python"))
-        .ok_or_else(|| {
-            CliError::Usage(Message::new(
-                "could not infer the entry kind; pass --kind KIND",
-            ))
-        })?;
+    if kind.is_none()
+        && inferred.is_none()
+        && picked_kind.is_none()
+        && owned_draft
+        && shebang.is_none()
+    {
+        let file = source.file_name().unwrap_or(source.as_os_str());
+        return Err(CliError::Usage(
+            Message::new(
+                "{} is a kept draft skit can't classify — pass --kind <language> to add it as a script, or --prompt for an AI-agent prompt.",
+            )
+            .with(file.to_string_lossy()),
+        ));
+    }
+    let kind = selected_add_kind(kind.as_deref(), inferred, picked_kind, from_stdin)?;
     let name = name.unwrap_or_else(|| source_default_name(&source, kind == "prompt"));
     let kind =
         EntryKind::parse(kind.to_owned()).map_err(|error| RepositoryError::InvalidMutation {
@@ -3080,6 +3750,22 @@ fn add_with_config(
     if let Some(pin) = &derived_python_pin {
         requires_python = Some(pin.clone());
     }
+    let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let prompted_python_metadata = should_prompt_python_metadata(
+        &kind_name,
+        dependencies_explicit,
+        requires_python_explicit,
+        has_own_uv_metadata,
+        !dependencies.is_empty(),
+        no_input,
+        interactive,
+        interactive && wants_tui_form(config_dir)?,
+    );
+    if prompted_python_metadata {
+        let resolved = prompt_python_metadata(&dependencies, derived_python_pin.as_deref())?;
+        dependencies = resolved.0;
+        requires_python = Some(resolved.1);
+    }
     let supports_dependencies = matches!(kind_name.as_str(), "python" | "js" | "ts");
     if dependencies_explicit && !supports_dependencies {
         return Err(CliError::Usage(
@@ -3124,7 +3810,7 @@ fn add_with_config(
     } else {
         StorageMode::Copy
     };
-    if let Some(pin) = &derived_python_pin {
+    if !prompted_python_metadata && let Some(pin) = &derived_python_pin {
         humanln!(
             "The #! line pins a python version — recording requires-python {} (change it with --python).",
             pin
@@ -3176,13 +3862,21 @@ fn add_with_config(
         metadata_requires_python.clear();
     }
     bytes = onboard_add_source(&kind_name, mode, &bytes, &name, no_input)?;
+    let payload_permissions = if kind_name == "prompt" {
+        SourcePermissions {
+            readonly: permissions.readonly,
+            unix_mode: permissions.unix_mode.map(|mode| mode & 0o777),
+        }
+    } else {
+        permissions
+    };
     let payload = if kind_name == "exe" && !source_is_regular {
         None
     } else {
         Some(EntryPayload {
             bytes,
             stored_name: Some(stored_name),
-            permissions,
+            permissions: payload_permissions,
         })
     };
     let mut settings = EntrySettings {
@@ -3195,19 +3889,14 @@ fn add_with_config(
     };
     if kind_name == "prompt" && settings.interpolate {
         let detected = placeholder_params("prompt", &source_text);
-        settings.parameters = if detected.len() <= 30 {
-            detected
+        settings.params = if detected.len() <= 30 {
+            detected.into_iter().map(|item| item.name).collect()
         } else {
             Vec::new()
         };
-        settings.params = settings
-            .parameters
-            .iter()
-            .map(|item| item.name.clone())
-            .collect();
     }
     let workdir = add_workdir(&kind, mode).to_owned();
-    let entry = service.add(CreateEntry {
+    let create = CreateEntry {
         name,
         kind,
         mode,
@@ -3216,9 +3905,83 @@ fn add_with_config(
         description,
         payload,
         settings,
-    })?;
+    };
+    let (entry, cleanup) = commit_add_source(service, create, source_claim)?;
     print_add_summary(service.repository(), &entry)?;
+    report_draft_cleanup_warning(cleanup.as_ref(), &source, active_locale());
     Ok(())
+}
+
+fn report_draft_cleanup_warning(
+    cleanup: Option<&Result<DraftConsumeOutcome, CliError>>,
+    source: &Path,
+    locale: Locale,
+) {
+    let Some(cleanup) = cleanup else {
+        return;
+    };
+    if let Some(line) = draft_cleanup_warning_line(cleanup, source, locale) {
+        eprintln!("{line}");
+    }
+}
+
+fn draft_cleanup_warning_line(
+    cleanup: &Result<DraftConsumeOutcome, CliError>,
+    source: &Path,
+    locale: Locale,
+) -> Option<String> {
+    let warning = match cleanup {
+        Ok(DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing) => return None,
+        Ok(DraftConsumeOutcome::Changed) => {
+            Message::new("The kept draft changed before cleanup. skit kept it at {}.")
+                .with(source.display())
+        }
+        Err(error) => error.message(),
+    };
+    let warning = warning.localize(locale);
+    Some(format_text(locale, "warning: {}", &[&warning]))
+}
+
+type DraftCleanupResult = Option<Result<DraftConsumeOutcome, CliError>>;
+
+fn commit_add_source(
+    service: &LibraryService<FileStore>,
+    create: CreateEntry,
+    source_claim: Option<AddSourceSnapshot>,
+) -> Result<(Entry, DraftCleanupResult), CliError> {
+    commit_add_source_after(service, create, source_claim, || {})
+}
+
+#[cfg(test)]
+fn commit_add_source_with_hook(
+    service: &LibraryService<FileStore>,
+    create: CreateEntry,
+    source_claim: Option<AddSourceSnapshot>,
+    after_commit: impl FnOnce(),
+) -> Result<(Entry, Option<DraftConsumeOutcome>), CliError> {
+    let (entry, cleanup) = commit_add_source_after(service, create, source_claim, after_commit)?;
+    Ok((entry, cleanup.transpose()?))
+}
+
+fn commit_add_source_after(
+    service: &LibraryService<FileStore>,
+    create: CreateEntry,
+    source_claim: Option<AddSourceSnapshot>,
+    after_commit: impl FnOnce(),
+) -> Result<(Entry, DraftCleanupResult), CliError> {
+    if let Some(expected) = &source_claim {
+        verify_tui_add_source(service.repository().data_dir(), expected)?;
+    }
+    let consume = source_claim
+        .as_ref()
+        .filter(|_| create.mode == StorageMode::Copy)
+        .cloned();
+    let entry = service.add(create)?;
+    after_commit();
+    let cleanup = consume
+        .as_ref()
+        .map(|expected| consume_owned_draft(service.repository().data_dir(), expected));
+    Ok((entry, cleanup))
 }
 
 fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
@@ -3411,18 +4174,33 @@ fn resolve_editor_argv(config_dir: &Path) -> Vec<String> {
     let configured = FileConfigStore::new(config_dir)
         .get("editor")
         .unwrap_or_default();
-    let raw = [
-        configured,
-        env::var("VISUAL").unwrap_or_default(),
-        env::var("EDITOR").unwrap_or_default(),
-    ]
-    .into_iter()
-    .map(|candidate| candidate.trim().to_owned())
-    .find(|candidate| !candidate.is_empty())
-    .unwrap_or_else(|| platform_default_editor().to_owned());
-    let argv = shlex::split(&raw).unwrap_or_else(|| vec![raw.clone()]);
+    let visual = env::var("VISUAL").unwrap_or_default();
+    let editor = env::var("EDITOR").unwrap_or_default();
+    let raw = select_editor_candidate([&configured, &visual, &editor], platform_default_editor());
+    editor_argv_from_candidate(&raw, EditableArgvDialect::host(), platform_default_editor())
+}
+
+fn select_editor_candidate(candidates: [&str; 3], platform_default: &str) -> String {
+    candidates
+        .into_iter()
+        .map(str::trim)
+        .find(|candidate| !candidate.is_empty())
+        .unwrap_or(platform_default)
+        .to_owned()
+}
+
+fn editor_argv_from_candidate(
+    raw: &str,
+    dialect: EditableArgvDialect,
+    platform_default: &str,
+) -> Vec<String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return vec![platform_default.to_owned()];
+    }
+    let argv = split_editable_argv(raw, dialect).unwrap_or_else(|_| vec![raw.to_owned()]);
     if argv.is_empty() {
-        vec![platform_default_editor().to_owned()]
+        vec![platform_default.to_owned()]
     } else {
         argv
     }
@@ -3453,17 +4231,64 @@ fn launch_editor(argv: &[String], path: &Path) -> Result<std::process::ExitStatu
         })
 }
 
+fn report_unmanaged_prompt_candidates(unmanaged: &[String]) {
+    let visible = unmanaged
+        .iter()
+        .take(PROMPT_LIST_PREVIEW_LIMIT)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remaining = unmanaged.len().saturating_sub(PROMPT_LIST_PREVIEW_LIMIT);
+    if remaining == 0 && !visible.is_empty() {
+        humanln!(
+            "Detected but not yet managed: {} (use --add to manage them)",
+            visible
+        );
+    } else if remaining == 1 {
+        humanln!(
+            "Detected but not yet managed: {} … and {} more candidate (use --add to manage them)",
+            visible,
+            remaining
+        );
+    } else if remaining > 1 {
+        humanln!(
+            "Detected but not yet managed: {} … and {} more candidates (use --add to manage them)",
+            visible,
+            remaining
+        );
+    }
+}
+
 /// Print the edit lane's success report (cli.py:2731-2741).
 ///
 /// A prompt entry reconciles its placeholders instead of printing the generic
 /// drift hint.
-fn report_saved_edit(entry: &Entry) {
+fn report_saved_edit(entry: &Entry, edited: Option<&[u8]>) {
     humanln!("Saved {}.", entry.meta.name);
     if entry.meta.kind.as_str() != "prompt" {
         humanln!(
             "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
             entry.meta.name
         );
+        return;
+    }
+    let settings = EntrySettings::from_meta(&entry.meta);
+    if settings.interpolate
+        && (!io::stdin().is_terminal() || !io::stdout().is_terminal())
+        && let Some(edited) = edited
+    {
+        let text = std::str::from_utf8(edited).expect("prompt bytes were validated before report");
+        let managed = settings
+            .params
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let unmanaged = placeholder_params("prompt", text)
+            .into_iter()
+            .map(|item| item.name)
+            .filter(|name| !managed.contains(name.as_str()))
+            .collect::<Vec<_>>();
+        report_unmanaged_prompt_candidates(&unmanaged);
     }
 }
 
@@ -3473,6 +4298,17 @@ fn edit_with_config(
     config_dir: &Path,
     selector: &str,
     no_input: bool,
+) -> Result<(), CliError> {
+    edit_with_config_with_claim_hook(service, store, config_dir, selector, no_input, || {})
+}
+
+fn edit_with_config_with_claim_hook(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    config_dir: &Path,
+    selector: &str,
+    no_input: bool,
+    after_reference_claim: impl FnOnce(),
 ) -> Result<(), CliError> {
     let held = match service.show(selector) {
         Ok(entry) => entry,
@@ -3548,46 +4384,56 @@ fn edit_with_config(
                     .with(source.display()),
             ));
         }
+        let held = service.claim_identity(&held)?;
+        after_reference_claim();
+        let source = PathBuf::from(&held.meta.source);
+        if !source.exists() {
+            return Err(CliError::Failure(
+                Message::new("{}: the referenced source file is gone: {}")
+                    .with(&held.meta.name)
+                    .with(source.display()),
+            ));
+        }
         humanln!(
             "Editing the original file (reference mode): {}",
             source.display()
         );
         launch_editor(&argv, &source)?;
-        if held.meta.kind.as_str() == "prompt" {
+        let edited = if held.meta.kind.as_str() == "prompt" {
             // Keep the editor's bytes in place when validation fails. The next edit is the
             // recovery path.
-            let edited = fs::read(&source).map_err(|error| source_error("read", &source, error))?;
+            let edited = fs::read(&source).map_err(|error| source_read_error(&source, error))?;
             validate_prompt_utf8(&edited, &source.display().to_string())?;
-        }
-        report_saved_edit(&held);
+            Some(edited)
+        } else {
+            None
+        };
+        report_saved_edit(&held, edited.as_deref());
         return Ok(());
     }
 
-    let target = source_path(store, &held)
+    if source_path(store, &held)
         .filter(|path| path.exists())
-        .ok_or_else(|| {
-            CliError::Failure(Message::new("{} has no stored copy to edit.").with(&held.meta.name))
-        })?;
-    let original = fs::read(&target).map_err(|error| source_error("read", &target, error))?;
-    let temp = tempfile::tempdir().map_err(CliError::Io)?;
-    let staged = temp.path().join(
-        target
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("script")),
-    );
-    fs::write(&staged, &original).map_err(|error| source_error("stage", &staged, error))?;
-    launch_editor(&argv, &staged)?;
-    let edited = fs::read(&staged).map_err(|error| source_error("read", &staged, error))?;
-    if edited != original {
-        // Commit the editor's bytes before prompt validation. This preserves the user's work and
-        // updates the source hash, so the next edit can repair an invalid prompt.
-        let claimed = service.claim_identity(&held)?;
-        service.commit_copy_edit(&claimed, &edited, &held.meta.source_hash)?;
+        .is_none()
+    {
+        return Err(CliError::Failure(
+            Message::new("{} has no stored copy to edit.").with(&held.meta.name),
+        ));
     }
+    let edit = service.prepare_external_copy_edit(&held)?;
+    let target = edit.path();
+    launch_editor(&argv, target)?;
+    // The finalize lock's read is the sole authoritative post-editor snapshot. Metadata hash,
+    // validation, and the success report must all use these same bytes.
+    let finalized = service
+        .finalize_external_copy_edit(&edit)
+        .map_err(finalize_external_edit_error)?;
+    let held = finalized.entry();
+    let edited = finalized.bytes();
     if held.meta.kind.as_str() == "prompt" {
-        validate_prompt_utf8(&edited, &target.display().to_string())?;
+        validate_prompt_utf8(edited, &target.display().to_string())?;
     }
-    report_saved_edit(&held);
+    report_saved_edit(held, Some(edited));
     Ok(())
 }
 
@@ -3597,20 +4443,32 @@ fn open_editor(target: &Path) -> Result<(), CliError> {
 
 fn open_editor_in(config_dir: &Path, target: &Path) -> Result<(), CliError> {
     let argv = resolve_editor_argv(config_dir);
-    let status = launch_editor(&argv, target)?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(CliError::Usage(
-            Message::new("the editor exited with status {}").with(status.code().unwrap_or(1)),
-        ))
-    }
+    launch_editor(&argv, target).map(|_| ())
 }
 
 fn deps(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     args: DepsArgs,
+) -> Result<(), CliError> {
+    deps_with_source_reader(service, store, args, |path| fs::read(path))
+}
+
+#[cfg(test)]
+fn deps_with_test_source_reader(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    args: DepsArgs,
+    read_source: impl FnOnce(&Path) -> io::Result<Vec<u8>>,
+) -> Result<(), CliError> {
+    deps_with_source_reader(service, store, args, read_source)
+}
+
+fn deps_with_source_reader(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    args: DepsArgs,
+    read_source: impl FnOnce(&Path) -> io::Result<Vec<u8>>,
 ) -> Result<(), CliError> {
     let held = service.show(&args.selector)?;
     let original_settings = EntrySettings::from_meta(&held.meta);
@@ -3643,7 +4501,7 @@ fn deps(
     let package_change = dependencies_edit.is_some() || python_edit.is_some();
     if package_change && !matches!(kind.as_str(), "python" | "js" | "ts") {
         return Err(CliError::Usage(
-            Message::new("{} does not take package dependencies; only --need applies")
+            Message::new("{} doesn't take package dependencies; only --need applies")
                 .with(held.meta.name),
         ));
     }
@@ -3667,10 +4525,11 @@ fn deps(
         ));
     }
     let python_copy = kind == "python" && held.meta.mode == StorageMode::Copy;
-    let source = python_copy
-        .then(|| source_path(store, &held))
-        .flatten()
-        .and_then(|path| fs::read(path).ok());
+    let source = if python_copy {
+        source_path(store, &held).and_then(|path| read_source(&path).ok())
+    } else {
+        None
+    };
     let stored_uv = UvMetadata {
         dependencies: settings.dependencies.clone(),
         requires_python: settings.requires_python.clone(),
@@ -3710,6 +4569,7 @@ fn deps(
         plan.effective = effective_uv_metadata_bytes(source.as_deref(), &stored_uv);
         plan.rewritten_source = None;
     }
+    let needs_edit = args.clear_needs || !args.needs.is_empty();
     if args.clear_needs {
         settings.needs.clear();
     } else if !args.needs.is_empty() {
@@ -3721,36 +4581,298 @@ fn deps(
             .collect();
     }
 
-    if package_change
+    let clear_javascript = package_change
         && matches!(kind.as_str(), "js" | "ts")
-        && dependencies_edit.as_ref().is_some_and(Vec::is_empty)
-    {
-        // Cleanup can fail on a locked tree. Do it before metadata so the request is retryable.
-        clear_javascript_dependencies(&store.entry_dir_path(&held.slug))?;
-    }
-
-    let changed = settings != original_settings || plan.rewritten_source.is_some();
+        && dependencies_edit.as_ref().is_some_and(Vec::is_empty);
+    let update = UpdateEntry {
+        name: held.meta.name.clone(),
+        description: held.meta.description.clone(),
+        settings: settings.clone(),
+        workdir: held.meta.workdir.clone(),
+        source: plan.rewritten_source,
+        expected_source_hash: held.meta.source_hash.clone(),
+    };
+    let changed = settings != original_settings || update.source.is_some();
     let held = if changed {
-        let claimed = service.claim_identity(&held)?;
-        service.update_entry(
-            &claimed,
-            UpdateEntry {
-                name: held.meta.name.clone(),
-                description: held.meta.description.clone(),
-                settings: settings.clone(),
-                workdir: held.meta.workdir.clone(),
-                source: plan.rewritten_source,
-                expected_source_hash: held.meta.source_hash.clone(),
-            },
-        )?
+        update_entry_with_javascript_cleanup(service, store, &held, update, clear_javascript)?
     } else {
+        if clear_javascript {
+            prepare_javascript_cleanup(service, store, &held, &update, true)?;
+        }
         held
     };
     let mut output = EntrySettings::from_meta(&held.meta);
     output.dependencies = plan.effective.dependencies;
     output.requires_python = plan.effective.requires_python;
     output.needs = settings.needs;
-    write_deps(&output, args.json)
+    if args.json {
+        return write_deps(&output, true);
+    }
+    if dependencies_edit.is_none() && python_edit.is_none() && !needs_edit {
+        return write_deps(&output, false);
+    }
+    write_deps_receipts(
+        &held.meta.name,
+        &output,
+        dependencies_edit.is_some(),
+        python_edit.is_some(),
+        needs_edit,
+    );
+    Ok(())
+}
+
+/// Commit one entry update after the shared JavaScript cleanup preflight.
+///
+/// Both the deterministic dependency command and the Settings host use this boundary. Identity and
+/// name checks happen before the fallible cleanup, and cleanup happens before metadata or source
+/// bytes can commit. A locked or malformed private dependency tree therefore leaves every form
+/// axis retryable.
+#[derive(Debug)]
+struct CommittedEntryUpdate {
+    entry: Entry,
+    before: Entry,
+    before_source: Option<Vec<u8>>,
+    cleanup: Option<PreparedJavaScriptDependencyCleanup>,
+}
+
+type PreparedEntryJavaScriptCleanup = (
+    Entry,
+    Option<Vec<u8>>,
+    Option<PreparedJavaScriptDependencyCleanup>,
+);
+
+impl CommittedEntryUpdate {
+    fn finalize_cleanup(&mut self) -> Result<(), CliError> {
+        if let Some(cleanup) = self.cleanup.as_mut() {
+            cleanup.finalize()?;
+        }
+        Ok(())
+    }
+
+    fn rollback_entry(&self, service: &LibraryService<FileStore>) -> Result<(), CliError> {
+        let claimed = service.claim_identity(&self.entry)?;
+        if claimed.meta != self.entry.meta {
+            return Err(RepositoryError::StaleEntry {
+                slug: self.entry.slug.as_str().to_owned(),
+            }
+            .into());
+        }
+        service.update_entry(
+            &claimed,
+            UpdateEntry {
+                name: self.before.meta.name.clone(),
+                description: self.before.meta.description.clone(),
+                settings: EntrySettings::from_meta(&self.before.meta),
+                workdir: self.before.meta.workdir.clone(),
+                source: self.before_source.clone(),
+                expected_source_hash: self.entry.meta.source_hash.clone(),
+            },
+        )?;
+        Ok(())
+    }
+}
+
+fn prepare_entry_javascript_cleanup(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: &UpdateEntry,
+    clear_javascript: bool,
+) -> Result<PreparedEntryJavaScriptCleanup, CliError> {
+    match service.prepare_entry_update(entry, update, |claimed| {
+        let before_source = if update.source.is_some() {
+            let path = store.payload_path(claimed)?;
+            Some(fs::read(&path).map_err(|error| source_read_error(&path, error))?)
+        } else {
+            None
+        };
+        let cleanup = clear_javascript
+            .then(|| prepare_javascript_dependency_cleanup(&store.entry_dir_path(&claimed.slug)))
+            .transpose()?;
+        Ok::<_, CliError>((before_source, cleanup))
+    }) {
+        Ok((claimed, (before_source, cleanup))) => Ok((claimed, before_source, cleanup)),
+        Err(PreparedEntryUpdateError::Repository(error)) => Err(error.into()),
+        Err(PreparedEntryUpdateError::Preparation(error)) => Err(error),
+    }
+}
+
+fn commit_entry_with_javascript_cleanup(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: UpdateEntry,
+    clear_javascript: bool,
+) -> Result<CommittedEntryUpdate, CliError> {
+    commit_entry_with_javascript_cleanup_with_hook(
+        service,
+        store,
+        entry,
+        update,
+        clear_javascript,
+        |_| {},
+    )
+}
+
+fn commit_entry_with_javascript_cleanup_with_hook(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: UpdateEntry,
+    clear_javascript: bool,
+    after_prepare: impl FnOnce(&Entry),
+) -> Result<CommittedEntryUpdate, CliError> {
+    let (claimed, before_source, mut cleanup) =
+        prepare_entry_javascript_cleanup(service, store, entry, &update, clear_javascript)?;
+    after_prepare(&claimed);
+    match service.update_entry(&claimed, update) {
+        Ok(updated) => Ok(CommittedEntryUpdate {
+            entry: updated,
+            before: claimed,
+            before_source,
+            cleanup,
+        }),
+        Err(error) => {
+            let primary = CliError::Repository(error);
+            let Some(cleanup) = cleanup.as_mut() else {
+                return Err(primary);
+            };
+            match cleanup.rollback() {
+                Ok(()) => Err(primary),
+                Err(rollback) => Err(CliError::Rollback {
+                    primary: Box::new(primary),
+                    rollback: Box::new(rollback.into()),
+                }),
+            }
+        }
+    }
+}
+
+fn rollback_committed_entry_update(
+    committed: &mut CommittedEntryUpdate,
+    service: &LibraryService<FileStore>,
+) -> ExternalRollbackOutcome<CliError> {
+    let entry = committed.rollback_entry(service);
+    let cleanup = committed
+        .cleanup
+        .as_mut()
+        .map_or(Ok(()), PreparedJavaScriptDependencyCleanup::rollback)
+        .map_err(CliError::from);
+    match (entry, cleanup) {
+        (Ok(()), Ok(())) => ExternalRollbackOutcome::complete(),
+        (Ok(()), Err(error)) => ExternalRollbackOutcome::restored_with_error(error),
+        (Err(error), Ok(())) => ExternalRollbackOutcome::authoritative_failure(error),
+        (Err(primary), Err(rollback)) => {
+            ExternalRollbackOutcome::authoritative_failure(CliError::Rollback {
+                primary: Box::new(primary),
+                rollback: Box::new(rollback),
+            })
+        }
+    }
+}
+
+fn finalize_committed_entry_update(
+    service: &LibraryService<FileStore>,
+    committed: CommittedEntryUpdate,
+) -> Result<Entry, CliError> {
+    finalize_committed_entry_update_with_ops(
+        service,
+        committed,
+        CommittedEntryUpdate::finalize_cleanup,
+        rollback_committed_entry_update,
+    )
+}
+
+fn finalize_committed_entry_update_with_ops(
+    service: &LibraryService<FileStore>,
+    mut committed: CommittedEntryUpdate,
+    finalize: impl FnOnce(&mut CommittedEntryUpdate) -> Result<(), CliError>,
+    rollback: impl FnOnce(
+        &mut CommittedEntryUpdate,
+        &LibraryService<FileStore>,
+    ) -> ExternalRollbackOutcome<CliError>,
+) -> Result<Entry, CliError> {
+    if let Err(primary) = finalize(&mut committed) {
+        let rollback = rollback(&mut committed, service);
+        return match rollback.into_error() {
+            None => Err(primary),
+            Some(rollback) => Err(CliError::Rollback {
+                primary: Box::new(primary),
+                rollback: Box::new(rollback),
+            }),
+        };
+    }
+    Ok(committed.entry)
+}
+
+fn update_entry_with_javascript_cleanup(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: UpdateEntry,
+    clear_javascript: bool,
+) -> Result<Entry, CliError> {
+    let committed =
+        commit_entry_with_javascript_cleanup(service, store, entry, update, clear_javascript)?;
+    finalize_committed_entry_update(service, committed)
+}
+
+/// Run the shared preflight and optional cleanup without rewriting unchanged metadata.
+fn prepare_javascript_cleanup(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    entry: &Entry,
+    update: &UpdateEntry,
+    clear_javascript: bool,
+) -> Result<Entry, CliError> {
+    let (claimed, _, cleanup) =
+        prepare_entry_javascript_cleanup(service, store, entry, update, clear_javascript)?;
+    if let Some(mut cleanup) = cleanup {
+        cleanup.finalize()?;
+    }
+    Ok(claimed)
+}
+
+fn write_deps_receipts(
+    name: &str,
+    settings: &EntrySettings,
+    dependencies: bool,
+    python: bool,
+    needs: bool,
+) {
+    if dependencies {
+        humanln!(
+            "Dependencies of {} updated: {}",
+            name,
+            list_or_dash(&settings.dependencies)
+        );
+    }
+    if python {
+        humanln!(
+            "Python constraint of {} updated: {}",
+            name,
+            value_or_dash(&settings.requires_python)
+        );
+    }
+    if needs {
+        humanln!(
+            "Needs of {} updated: {}",
+            name,
+            list_or_dash(&settings.needs)
+        );
+    }
+}
+
+fn list_or_dash(values: &[String]) -> String {
+    if values.is_empty() {
+        "—".to_owned()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn value_or_dash(value: &str) -> &str {
+    if value.is_empty() { "—" } else { value }
 }
 
 fn write_deps(settings: &EntrySettings, json: bool) -> Result<(), CliError> {
@@ -3764,9 +4886,12 @@ fn write_deps(settings: &EntrySettings, json: bool) -> Result<(), CliError> {
             })
         );
     } else {
-        humanln!("Dependencies: {}", settings.dependencies.join(", "));
-        humanln!("Python constraint: {}", settings.requires_python);
-        humanln!("Required commands: {}", settings.needs.join(", "));
+        humanln!("Dependencies: {}", list_or_dash(&settings.dependencies));
+        humanln!(
+            "Python constraint: {}",
+            value_or_dash(&settings.requires_python)
+        );
+        humanln!("Required commands: {}", list_or_dash(&settings.needs));
     }
     Ok(())
 }
@@ -3794,79 +4919,144 @@ fn reconcile_template_parameters(template: &str, current: &[ParamDecl]) -> Vec<P
 }
 
 fn prepare_source_management(
+    entry_name: &str,
     kind: &str,
     mode: StorageMode,
     mut source: String,
-    resync: bool,
-    manage: &[String],
-    unmanage: &[String],
+    request: &SourceEditRequest,
     normalize: &[String],
-) -> Result<(String, Vec<ParamDecl>), CliError> {
-    if !resync && manage.is_empty() && unmanage.is_empty() && normalize.is_empty() {
+) -> Result<PreparedSourceManagement, CliError> {
+    if request.is_empty() && normalize.is_empty() {
         let managed = managed_params(kind, &source);
-        return Ok((source, managed));
+        return Ok(PreparedSourceManagement {
+            source,
+            managed,
+            ..PreparedSourceManagement::default()
+        });
+    }
+    if !normalize.is_empty() && kind != "shell" {
+        return Err(CliError::Failure(
+            Message::new(
+                "{} has no --normalize: it is a shell idiom (VAR=value -> VAR=\"${VAR:-value}\").",
+            )
+            .with(entry_name),
+        ));
     }
     if mode == StorageMode::Reference {
+        if !normalize.is_empty() {
+            return Err(CliError::Failure(
+                Message::new(
+                    "{} is in reference mode, and skit never writes the original file. Change the line to VAR=\"${VAR:-value}\" in the source directly.",
+                )
+                .with(entry_name),
+            ));
+        }
         return Err(CliError::Failure(Message::new(
             "source management applies only to a stored copy",
         )));
     }
     let mut managed = managed_params(kind, &source);
-    let candidates = detect_candidates(kind, &source);
-    if resync {
-        managed = managed
-            .into_iter()
-            .filter_map(|current| {
-                candidates
-                    .iter()
-                    .find(|candidate| candidate.name == current.name)
-                    .cloned()
-                    .map(|mut candidate| {
-                        candidate.secret = current.secret;
-                        candidate.env_source = current.env_source;
-                        if !current.prompt.is_empty() {
-                            candidate.prompt = current.prompt;
-                        }
-                        candidate
-                    })
-            })
-            .collect();
+    let mut warnings = Vec::new();
+    let mut applied = false;
+    if !request.is_empty() {
+        let result = edit_source_declarations(kind, &source, &managed, request)
+            .map_err(|error| CliError::Usage(error.message()))?;
+        applied = result.applied;
+        managed = result.declarations;
+        warnings = result.warnings;
     }
-    for name in manage {
-        if managed.iter().any(|item| item.name == *name) {
-            continue;
-        }
-        let candidate = candidates
+    let normalization = if normalize.is_empty() {
+        None
+    } else {
+        Some(
+            normalize_shell_defaults(&source, normalize)
+                .map_err(|error| CliError::Failure(error.message()))?,
+        )
+    };
+    if let Some(normalization) = &normalization {
+        source.clone_from(&normalization.source);
+        applied |= !normalization.normalized.is_empty();
+    }
+    let normalized_candidates = normalization
+        .as_ref()
+        .filter(|result| !result.normalized.is_empty())
+        .map(|_| detect_candidates(kind, &source))
+        .unwrap_or_default();
+    for name in normalization.iter().flat_map(|result| &result.normalized) {
+        let normalized = normalized_candidates
             .iter()
             .find(|item| item.name == *name)
             .cloned()
-            .ok_or_else(|| {
-                CliError::Usage(Message::new("unknown source parameter: {}").with(name))
-            })?;
-        managed.push(candidate);
-    }
-    if !unmanage.is_empty() {
-        managed.retain(|item| !unmanage.contains(&item.name));
-    }
-    for name in normalize {
-        if kind != "shell" {
-            return Err(CliError::Usage(Message::new(
-                "--normalize applies only to shell entries",
-            )));
-        }
-        source = normalize_shell_default(&source, name)
-            .map_err(|error| CliError::Usage(error.message()))?;
-        let normalized = detect_candidates(kind, &source)
-            .into_iter()
-            .find(|item| item.name == *name)
-            .ok_or_else(|| CliError::Usage(Message::new("could not normalize {}").with(name)))?;
+            .ok_or_else(|| CliError::Failure(Message::new("could not normalize {}").with(name)))?;
         if let Some(item) = managed.iter_mut().find(|item| item.name == *name) {
             *item = normalized;
         } else {
             managed.push(normalized);
         }
     }
-    Ok((source, managed))
+    Ok(PreparedSourceManagement {
+        source,
+        managed,
+        warnings,
+        normalization_refusals: normalization
+            .as_ref()
+            .map(|result| result.refused.clone())
+            .unwrap_or_default(),
+        normalized: normalization
+            .map(|result| result.normalized)
+            .unwrap_or_default(),
+        applied,
+    })
+}
+
+#[derive(Debug, Default)]
+struct PreparedSourceManagement {
+    source: String,
+    managed: Vec<ParamDecl>,
+    warnings: Vec<SourceEditWarning>,
+    normalization_refusals: Vec<SourceNormalizationRefusal>,
+    normalized: Vec<String>,
+    applied: bool,
+}
+
+fn rollback_source_edit_after_state_failure(
+    service: &LibraryService<FileStore>,
+    committed: &mut (Entry, bool),
+    original_bytes: &[u8],
+) -> Result<(), CliError> {
+    let (updated, changed) = committed;
+    if !*changed {
+        return Ok(());
+    }
+    let claimed = service.claim_identity(updated)?;
+    service.commit_copy_edit(&claimed, original_bytes, &updated.meta.source_hash)?;
+    Ok(())
+}
+
+fn commit_source_management_copy_edit(
+    service: &LibraryService<FileStore>,
+    entry: &Entry,
+    bytes: &[u8],
+) -> Result<Entry, CliError> {
+    commit_source_management_copy_edit_with_hook(service, entry, bytes, || {})
+}
+
+fn commit_source_management_copy_edit_with_hook(
+    service: &LibraryService<FileStore>,
+    entry: &Entry,
+    bytes: &[u8],
+    hook: impl FnOnce(),
+) -> Result<Entry, CliError> {
+    let claimed = service.claim_identity(entry)?;
+    hook();
+    Ok(service.commit_copy_edit(&claimed, bytes, &entry.meta.source_hash)?)
+}
+
+fn source_edit_state_rollback<'a>(
+    service: &'a LibraryService<FileStore>,
+    original_bytes: &'a [u8],
+) -> impl FnOnce(&mut (Entry, bool)) -> Result<(), CliError> + 'a {
+    move |committed| rollback_source_edit_after_state_failure(service, committed, original_bytes)
 }
 
 fn params(
@@ -3902,6 +5092,11 @@ fn params(
         || !args.secret.is_empty()
         || !args.no_secret.is_empty();
     let source_parameter_kind = source_owned_schema(kind);
+    let has_managed_edit_operation = source_parameter_kind
+        && (args.resync
+            || !args.manage.is_empty()
+            || !args.unmanage.is_empty()
+            || has_shared_parameter_tweaks);
     if source_parameter_kind && has_declared_schema_operation {
         // A kind whose schema lives in its own file cannot take a declared-schema flag. Version 0.4
         // names the two flags that do apply and treats it as a failed operation, not a malformed
@@ -3931,6 +5126,8 @@ fn params(
     .into_iter()
     .filter(|present| *present)
     .count();
+    let human_prompt_read = kind == "prompt" && !args.json && exclusive_operations == 0;
+    let human_command_read = kind == "command" && !args.json && exclusive_operations == 0;
     if exclusive_operations > 1 {
         return Err(CliError::Usage(Message::new(
             "run source, schema, launch, runner, and interpolation changes as separate params operations",
@@ -3983,6 +5180,7 @@ fn params(
         )));
     }
     let mut settings = EntrySettings::from_meta(&held.meta);
+    let prompt_schema_was_hidden = kind == "prompt" && !settings.interpolate;
     if kind == "prompt" && !settings.interpolate && has_metadata_schema_operation {
         return Err(CliError::Failure(
             Message::new(
@@ -4014,235 +5212,123 @@ fn params(
                 Message::new("{} has no stored copy to edit.").with(&held.meta.name),
             ));
         }
-        source.ok().flatten().unwrap_or_default()
+        match source {
+            Ok(source) => source.unwrap_or_default(),
+            Err(error)
+                if !args.normalize.is_empty() && error.kind() == io::ErrorKind::InvalidData =>
+            {
+                return Err(CliError::Failure(
+                    Message::new(
+                        "{} isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy.",
+                    )
+                    .with(&held.meta.name),
+                ));
+            }
+            Err(_) => String::new(),
+        }
     };
-    let (mut source, prepared_managed) = prepare_source_management(
+    if has_metadata_schema_operation {
+        return edit_declared_params(service, held, settings, &original_source, args);
+    }
+    let replaced_reader_frameworks = if source_parameter_kind && !args.manage.is_empty() {
+        let plan = onboarding_plan(held.meta.kind.as_str(), &original_source);
+        (managed_params(held.meta.kind.as_str(), &original_source).is_empty()
+            && plan
+                .modeled_cli_fields()
+                .is_some_and(|fields| !fields.is_empty()))
+        .then(|| plan.frameworks.join(", "))
+    } else {
+        None
+    };
+    let mut malformed_source_values = Vec::new();
+    let mut prompts = Vec::new();
+    for spec in &args.prompts {
+        let Some((name, value)) = spec
+            .split_once('=')
+            .filter(|(name, _)| !name.trim().is_empty())
+        else {
+            malformed_source_values.push(format!("--prompt: {spec}"));
+            continue;
+        };
+        prompts.push(NamedEdit::new(name, value));
+    }
+    let env_sources = args
+        .env_sources
+        .iter()
+        .map(|spec| {
+            let (name, value) = assignment(spec, "environment source")?;
+            Ok(NamedEdit::new(name, value))
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    let source_request = SourceEditRequest {
+        resync: args.resync,
+        add: args.manage.clone(),
+        remove: args.unmanage.clone(),
+        secret: args.secret.clone(),
+        no_secret: args.no_secret.clone(),
+        prompts,
+        env_sources,
+    };
+    let prepared_source = prepare_source_management(
+        &held.meta.name,
         held.meta.kind.as_str(),
         held.meta.mode,
         original_source.clone(),
-        args.resync,
-        &args.manage,
-        &args.unmanage,
+        &source_request,
         &args.normalize,
     )?;
-    let mut declarations = if source_parameter_kind && has_source_schema_operation {
-        form_params_from_managed(prepared_managed, &settings)
-    } else {
-        form_params(held.meta.kind.as_str(), &source, &settings)
-    };
-    for item in &settings.parameters {
-        if !declarations.iter().any(|current| current.name == item.name) {
-            declarations.push(item.clone());
-        }
-    }
-    let original_declarations = declarations.clone();
-    let mut tweaked_names = BTreeSet::new();
-    for specification in args
-        .parameter_types
-        .iter()
-        .chain(&args.defaults)
-        .chain(&args.choices)
-        .chain(&args.delivery)
-        .chain(&args.bindings)
-        .chain(&args.flags)
-        .chain(&args.env_targets)
-        .chain(&args.actions)
-        .chain(&args.help_text)
-        .chain(&args.prompts)
-        .chain(&args.env_sources)
-    {
-        if let Some((name, _)) = specification.split_once('=') {
-            tweaked_names.insert(name.to_owned());
-        }
-    }
-    for name in args
-        .multiple
-        .iter()
-        .chain(&args.no_multiple)
-        .chain(&args.repeat)
-        .chain(&args.no_repeat)
-        .chain(&args.required)
-        .chain(&args.optional)
-        .chain(&args.secret)
-        .chain(&args.no_secret)
-    {
-        tweaked_names.insert(name.clone());
-    }
-    let mut changed = false;
-
-    for name in args.add {
-        if declarations.iter().any(|item| item.name == name) {
-            return Err(CliError::Usage(
-                Message::new("parameter already exists: {}").with(name),
-            ));
-        }
-        declarations.push(ParamDecl::new(name));
-        changed = true;
-    }
-    if !args.remove.is_empty() {
-        let before = declarations.len();
-        declarations.retain(|item| !args.remove.contains(&item.name));
-        changed |= declarations.len() != before;
-    }
-    let tweak_baseline = declarations.clone();
-    for spec in args.parameter_types {
-        let (name, value) = assignment(&spec, "type")?;
-        parameter_mut(&mut declarations, name)?.parameter_type = parse_parameter_type(value)?;
-        changed = true;
-    }
-    for spec in args.choices {
-        let (name, value) = assignment(&spec, "choices")?;
-        parameter_mut(&mut declarations, name)?.choices = value
-            .split(',')
-            .filter(|item| !item.is_empty())
-            .map(str::to_owned)
-            .collect();
-        changed = true;
-    }
-    for spec in args.defaults {
-        let (name, value) = assignment(&spec, "default")?;
-        let item = parameter_mut(&mut declarations, name)?;
-        item.default = Some(
-            coerce_default(value, item.parameter_type)
-                .map_err(|error| CliError::Usage(error.message()))?,
-        );
-        changed = true;
-    }
-    for spec in args.delivery {
-        let (name, value) = assignment(&spec, "delivery")?;
-        parameter_mut(&mut declarations, name)?.delivery = parse_delivery(value)?;
-        changed = true;
-    }
-    for spec in args.bindings {
-        let (name, value) = assignment(&spec, "binding")?;
-        let item = parameter_mut(&mut declarations, name)?;
-        item.binding = parse_binding(value)?;
-        *item = item.clone().normalized();
-        changed = true;
-    }
-    for spec in args.flags {
-        let (name, value) = assignment(&spec, "flag")?;
-        parameter_mut(&mut declarations, name)?.flag = value.to_owned();
-        changed = true;
-    }
-    changed |= set_bool(
-        &mut declarations,
-        &args.multiple,
-        |item| &mut item.multiple,
-        true,
-    )?;
-    changed |= set_bool(
-        &mut declarations,
-        &args.no_multiple,
-        |item| &mut item.multiple,
-        false,
-    )?;
-    changed |= set_bool(
-        &mut declarations,
-        &args.repeat,
-        |item| &mut item.repeat,
-        true,
-    )?;
-    changed |= set_bool(
-        &mut declarations,
-        &args.no_repeat,
-        |item| &mut item.repeat,
-        false,
-    )?;
-    for spec in args.env_targets {
-        let (name, value) = assignment(&spec, "environment target")?;
-        parameter_mut(&mut declarations, name)?.env_target = value.to_owned();
-        changed = true;
-    }
-    for spec in args.actions {
-        let (name, value) = assignment(&spec, "action")?;
-        parameter_mut(&mut declarations, name)?.action = value.to_owned();
-        changed = true;
-    }
-    for spec in args.help_text {
-        let (name, value) = assignment(&spec, "help text")?;
-        parameter_mut(&mut declarations, name)?.help = value.to_owned();
-        changed = true;
-    }
-    for spec in args.prompts {
-        let (name, value) = assignment(&spec, "prompt")?;
-        let item = parameter_mut(&mut declarations, name)?;
-        if source_parameter_kind && item.binding == ParameterBinding::None {
-            return Err(CliError::Usage(
-                Message::new("parameter {} is not managed in the stored source").with(name),
-            ));
-        }
-        item.prompt = value.to_owned();
-        changed = true;
-    }
-    changed |= set_bool(
-        &mut declarations,
-        &args.required,
-        |item| &mut item.required,
-        true,
-    )?;
-    changed |= set_bool(
-        &mut declarations,
-        &args.optional,
-        |item| &mut item.required,
-        false,
-    )?;
-    if source_parameter_kind {
-        for name in args.secret.iter().chain(&args.no_secret) {
-            let item = declarations
-                .iter()
-                .find(|item| item.name == *name)
-                .ok_or_else(|| CliError::Usage(Message::new("unknown parameter: {}").with(name)))?;
-            if item.binding == ParameterBinding::None {
-                return Err(CliError::Usage(
-                    Message::new("parameter {} is not managed in the stored source").with(name),
-                ));
-            }
-        }
-    }
-    changed |= set_bool(
-        &mut declarations,
-        &args.secret,
-        |item| &mut item.secret,
-        true,
-    )?;
-    for name in &args.no_secret {
-        let item = parameter_mut(&mut declarations, name)?;
-        item.secret = false;
-        item.env_source.clear();
-        changed = true;
-    }
-    for spec in args.env_sources {
-        let (name, value) = assignment(&spec, "environment source")?;
-        let item = parameter_mut(&mut declarations, name)?;
-        if source_parameter_kind && item.binding == ParameterBinding::None {
-            return Err(CliError::Usage(
-                Message::new("parameter {} is not managed in the stored source").with(name),
-            ));
-        }
-        if !item.secret {
-            humanerrln!(
-                "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
-                name
-            );
-            continue;
-        }
-        item.env_source = value.trim().to_owned();
-        changed = true;
-    }
-
-    for name in tweaked_names {
-        let Some(previous) = tweak_baseline.iter().find(|item| item.name == name) else {
-            continue;
+    let mut source = prepared_source.source;
+    let prepared_managed = prepared_source.managed;
+    let source_edit_warnings = prepared_source.warnings;
+    let normalization_refusals = prepared_source.normalization_refusals;
+    let normalized_names = prepared_source.normalized;
+    let source_edit_applied = prepared_source.applied;
+    let (mut declarations, uses_self_location, has_injectable_const) =
+        if source_parameter_kind && has_source_schema_operation {
+            (
+                form_params_from_managed(prepared_managed, &settings),
+                false,
+                false,
+            )
+        } else {
+            let plan = form_plan(held.meta.kind.as_str(), &source, &settings);
+            (
+                plan.declarations(),
+                plan.uses_self_location,
+                plan.has_injectable_const,
+            )
         };
-        let item = parameter_mut(&mut declarations, &name)?;
-        if let Err(error) = finish_parameter_edit(item) {
-            *item = previous.clone();
-            eprintln!("{}", error.message().localize(active_locale()));
-        }
+    let template_placeholder_order = match held.meta.kind.as_str() {
+        "command" => placeholder_params("command", &settings.template)
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>(),
+        "prompt" => placeholder_params("prompt", &source)
+            .into_iter()
+            .map(|item| item.name)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let explicit_names = settings
+        .parameters
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut changed = false;
+    for item in malformed_source_values {
+        humanerrln!("Ignored a malformed value: {} (expected NAME=text).", item);
     }
-    if has_metadata_schema_operation {
-        changed = declarations != original_declarations;
+    for warning in &source_edit_warnings {
+        eprintln!(
+            "{}",
+            source_edit_warning_message(warning).localize(active_locale())
+        );
+    }
+    for refusal in &normalization_refusals {
+        eprintln!(
+            "{}",
+            source_normalization_refusal_message(refusal).localize(active_locale())
+        );
     }
 
     let mut workdir = held.meta.workdir.clone();
@@ -4273,46 +5359,720 @@ fn params(
             .filter(|item| item.binding != ParameterBinding::None)
             .cloned()
             .collect::<Vec<_>>();
-        source = write_managed_params(held.meta.kind.as_str(), &source, &managed)
-            .map_err(|error| CliError::Usage(error.message()))?;
-        if source != original_source {
-            let claimed = service.claim_identity(&held)?;
-            held = service.commit_copy_edit(&claimed, source.as_bytes(), &held.meta.source_hash)?;
-        }
-        if !args.secret.is_empty() {
-            let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
-            let purged = state.purge_secrets(&held.slug, &declarations)?;
+        // The frozen writer is byte-idempotent when resync keeps the same declarations. Keep the
+        // original bytes and avoid a needless compare-and-swap in that case.
+        let managed_changed = managed != managed_params(held.meta.kind.as_str(), &original_source);
+        source = if managed_changed || !args.normalize.is_empty() {
+            write_managed_params(held.meta.kind.as_str(), &source, &managed)
+                .map_err(|error| CliError::Usage(error.message()))?
+        } else {
+            original_source.clone()
+        };
+        if source_edit_applied && declarations.iter().any(|declaration| declaration.secret) {
+            let source_changed = source != original_source;
+            let state = FileFormStateStore::new(resolve_state_dir()?);
+            let original_bytes = original_source.as_bytes();
+            let ((updated, _), purged) = state
+                .update_after_external_commit(
+                    &held.slug,
+                    || -> Result<(Entry, bool), CliError> {
+                        if !source_changed {
+                            return Ok((held.clone(), false));
+                        }
+                        let updated =
+                            commit_source_management_copy_edit(service, &held, source.as_bytes())?;
+                        Ok((updated, true))
+                    },
+                    |state| scrub_secrets(&declarations, state),
+                    source_edit_state_rollback(service, original_bytes),
+                )
+                .map_err(coordinated_state_error)?;
+            held = updated;
             report_purged_secrets(purged, args.json);
+        } else if source != original_source {
+            held = commit_source_management_copy_edit(service, &held, source.as_bytes())?;
         }
     } else if changed {
-        settings.parameters = declarations.clone();
-        if matches!(held.meta.kind.as_str(), "command" | "prompt") {
-            settings.params = declarations
+        if !(prompt_schema_was_hidden && has_interpolation_policy) {
+            settings.parameters = declarations
+                .iter()
+                .filter(|item| explicit_names.contains(&item.name))
+                .cloned()
+                .collect();
+        }
+        if matches!(held.meta.kind.as_str(), "command" | "prompt")
+            && !(prompt_schema_was_hidden && has_interpolation_policy)
+        {
+            let current_order = if held.meta.kind.as_str() == "command" {
+                placeholder_params("command", &settings.template)
+                    .into_iter()
+                    .map(|item| item.name)
+                    .collect::<Vec<_>>()
+            } else {
+                template_placeholder_order.clone()
+            };
+            let placeholder_names = declarations
                 .iter()
                 .filter(|item| item.delivery == ParameterDelivery::Placeholder)
                 .map(|item| item.name.clone())
+                .collect::<BTreeSet<_>>();
+            settings.params = current_order
+                .into_iter()
+                .filter(|name| placeholder_names.contains(name))
                 .collect();
+            let remaining = declarations
+                .iter()
+                .filter(|item| {
+                    item.delivery == ParameterDelivery::Placeholder
+                        && !settings.params.contains(&item.name)
+                })
+                .map(|item| item.name.clone())
+                .collect::<Vec<_>>();
+            settings.params.extend(remaining);
         }
         let claimed = service.claim_identity(&held)?;
         held = service.update_settings(&claimed, &settings, &workdir)?;
-        if !args.secret.is_empty() {
-            let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
-            let purged = state.purge_secrets(&held.slug, &declarations)?;
-            report_purged_secrets(purged, args.json);
+    }
+    if !args.normalize.is_empty() && !args.json {
+        if !normalized_names.is_empty() {
+            let locale = active_locale();
+            let names = normalized_names.join(", ");
+            let message = Message::new(
+                "Normalized {} in {}: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).",
+            )
+            .named("names", names)
+            .named("name", &held.meta.name);
+            println!("{}", message.localize(locale));
+        }
+        return Ok(());
+    }
+    if has_managed_edit_operation && !args.json {
+        let names = declarations
+            .iter()
+            .filter(|item| item.binding != ParameterBinding::None)
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        humanln!(
+            "Updated {}. Managed parameters: {}",
+            held.meta.name,
+            if names.is_empty() { "—" } else { &names }
+        );
+        if let Some(frameworks) = replaced_reader_frameworks.filter(|_| {
+            declarations
+                .iter()
+                .any(|item| item.binding != ParameterBinding::None)
+        }) {
+            humanln!(
+                "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).",
+                frameworks
+            );
+        }
+        return Ok(());
+    }
+    if human_prompt_read && settings.interpolate {
+        write_human_prompt_params(&held, &source, &settings, &declarations)
+    } else if human_command_read {
+        write_human_command_params(&held, &settings, &declarations)
+    } else {
+        write_params(
+            &held,
+            &source,
+            &settings,
+            &declarations,
+            uses_self_location,
+            has_injectable_const,
+            args.json,
+        )
+    }
+}
+
+fn edit_declared_params(
+    service: &LibraryService<FileStore>,
+    mut held: Entry,
+    mut settings: EntrySettings,
+    source: &str,
+    args: ParamsArgs,
+) -> Result<(), CliError> {
+    let kind = held.meta.kind.as_str().to_owned();
+    let (parameter_types, mut malformed) = collect_named_values(&args.parameter_types, "--type");
+    let (defaults, bad) = collect_named_values(&args.defaults, "--default");
+    malformed.extend(bad);
+    let (choice_values, bad) = collect_named_values(&args.choices, "--choices");
+    malformed.extend(bad);
+    let (deliveries, bad) = collect_named_values(&args.delivery, "--deliver");
+    malformed.extend(bad);
+    let (binding_values, bad) = collect_named_values(&args.bindings, "--binding");
+    malformed.extend(bad);
+    let (flags, bad) = collect_named_values(&args.flags, "--flag");
+    malformed.extend(bad);
+    let (env_targets, bad) = collect_named_values(&args.env_targets, "--env-target");
+    malformed.extend(bad);
+    let (actions, bad) = collect_named_values(&args.actions, "--action");
+    malformed.extend(bad);
+    let (help, bad) = collect_named_values(&args.help_text, "--help-text");
+    malformed.extend(bad);
+    let (prompts, bad) = collect_named_values(&args.prompts, "--prompt");
+    malformed.extend(bad);
+    let (env_sources, bad) = collect_named_values(&args.env_sources, "--env-source");
+    malformed.extend(bad);
+
+    let bindings = binding_values
+        .into_iter()
+        .map(|edit| {
+            Ok(NamedEdit {
+                name: edit.name,
+                value: parse_binding(&edit.value)?,
+            })
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    let choices = choice_values
+        .into_iter()
+        .map(|edit| NamedEdit {
+            name: edit.name,
+            value: edit.value.split(',').map(str::to_owned).collect(),
+        })
+        .collect();
+
+    let placeholder_order = match kind.as_str() {
+        "command" => placeholder_params("command", &settings.template)
+            .into_iter()
+            .map(|row| row.name)
+            .collect::<Vec<_>>(),
+        "prompt" => placeholder_params("prompt", source)
+            .into_iter()
+            .map(|row| row.name)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let mut placeholder_truth = placeholder_order.clone();
+    if kind == "prompt" {
+        for name in &settings.params {
+            if !placeholder_truth.contains(name) {
+                placeholder_truth.push(name.clone());
+            }
         }
     }
-    write_params(&held, &source, &settings, &declarations, args.json)
+    let context = if matches!(kind.as_str(), "command" | "prompt") {
+        DeclaredEditContext::new(
+            ParameterDelivery::Env,
+            [ParameterDelivery::Placeholder],
+            placeholder_truth,
+        )
+    } else {
+        DeclaredEditContext::new(
+            ParameterDelivery::Flag,
+            [ParameterDelivery::Env],
+            Vec::<String>::new(),
+        )
+    };
+    let original_explicit = settings.parameters.clone();
+    let original_explicit_names = original_explicit
+        .iter()
+        .map(|row| row.name.clone())
+        .collect::<BTreeSet<_>>();
+    let implicit_order = if matches!(kind.as_str(), "command" | "prompt") {
+        settings.params.clone()
+    } else {
+        Vec::new()
+    };
+    let mut engine_input = implicit_order
+        .iter()
+        .map(|name| {
+            original_explicit
+                .iter()
+                .find(|row| row.name == *name)
+                .cloned()
+                .unwrap_or_else(|| synthesized_placeholder(name))
+        })
+        .collect::<Vec<_>>();
+    engine_input.extend(
+        original_explicit
+            .iter()
+            .filter(|row| !implicit_order.contains(&row.name))
+            .cloned(),
+    );
+    engine_input
+        .retain(|row| original_explicit_names.contains(&row.name) || !args.add.contains(&row.name));
+
+    let request = DeclaredEditRequest {
+        add: args.add.clone(),
+        remove: args.remove.clone(),
+        parameter_types,
+        defaults,
+        choices,
+        deliveries,
+        flags,
+        required: args.required.clone(),
+        optional: args.optional.clone(),
+        help,
+        prompts,
+        secret: args.secret.clone(),
+        no_secret: args.no_secret.clone(),
+        env_sources,
+        bindings,
+        multiple: args.multiple.clone(),
+        no_multiple: args.no_multiple.clone(),
+        repeat: args.repeat.clone(),
+        no_repeat: args.no_repeat.clone(),
+        env_targets,
+        actions,
+    };
+    let mut result = edit_declared(&engine_input, &request, &context);
+
+    let previous_managed = settings.params.clone();
+    if kind == "prompt" {
+        let removed = args
+            .remove
+            .iter()
+            .filter(|name| previous_managed.contains(name))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let mut keep = previous_managed
+            .iter()
+            .filter(|name| !removed.contains(*name))
+            .cloned()
+            .collect::<Vec<_>>();
+        for name in &args.add {
+            if placeholder_order.contains(name)
+                && !args.remove.contains(name)
+                && !keep.contains(name)
+            {
+                keep.push(name.clone());
+            }
+        }
+        settings.params = placeholder_order
+            .iter()
+            .filter(|name| keep.contains(*name))
+            .cloned()
+            .collect();
+        settings.params.extend(
+            keep.into_iter()
+                .filter(|name| !placeholder_order.contains(name)),
+        );
+        result.warnings.retain(|warning| {
+            !matches!(warning, DeclaredEditWarning::NotDeclared { name } if removed.contains(name))
+        });
+    }
+
+    for item in malformed {
+        humanerrln!("Ignored a malformed value: {} (expected NAME=VALUE).", item);
+    }
+    for warning in &result.warnings {
+        eprintln!(
+            "{}",
+            declared_edit_warning_message(warning).localize(active_locale())
+        );
+    }
+
+    let mut explicit_names = original_explicit_names;
+    explicit_names.retain(|name| !args.remove.contains(name));
+    for name in &args.add {
+        if result.declarations.iter().any(|row| row.name == *name) {
+            explicit_names.insert(name.clone());
+        }
+    }
+    for name in &implicit_order {
+        if explicit_names.contains(name) {
+            continue;
+        }
+        let baseline = synthesized_placeholder(name);
+        if result
+            .declarations
+            .iter()
+            .find(|row| row.name == *name)
+            .is_some_and(|row| row != &baseline)
+        {
+            explicit_names.insert(name.clone());
+        }
+    }
+    let managed_changed = settings.params != previous_managed;
+    settings.parameters = result
+        .declarations
+        .iter()
+        .filter(|row| explicit_names.contains(&row.name))
+        .cloned()
+        .collect();
+    let declared_changed = settings.parameters != original_explicit;
+    if declared_changed || managed_changed {
+        let claimed = service.claim_identity(&held)?;
+        let workdir = held.meta.workdir.clone();
+        held = service.update_settings(&claimed, &settings, &workdir)?;
+    }
+
+    let should_purge = args.secret.iter().any(|name| {
+        settings
+            .parameters
+            .iter()
+            .any(|row| row.name == *name && row.secret)
+    });
+    if should_purge {
+        let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
+        let purged = state.purge_secrets(&held.slug, &settings.parameters)?;
+        report_purged_secrets(purged, args.json);
+    }
+
+    if !args.json {
+        let names = settings
+            .parameters
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        humanln!(
+            "Updated {}. Declared parameters: {}",
+            held.meta.name,
+            if names.is_empty() { "—" } else { &names }
+        );
+        return Ok(());
+    }
+
+    let mut effective = form_params(&kind, source, &settings);
+    for row in &settings.parameters {
+        if !effective.iter().any(|current| current.name == row.name) {
+            effective.push(row.clone());
+        }
+    }
+    write_params(&held, source, &settings, &effective, false, false, true)
+}
+
+fn collect_named_values(raw: &[String], flag: &str) -> (Vec<NamedEdit<String>>, Vec<String>) {
+    let mut edits = Vec::<NamedEdit<String>>::new();
+    let mut malformed = Vec::new();
+    for item in raw {
+        let Some((name, value)) = item
+            .split_once('=')
+            .map(|(name, value)| (name.trim(), value))
+            .filter(|(name, _)| !name.is_empty())
+        else {
+            malformed.push(format!("{flag}: {item}"));
+            continue;
+        };
+        if let Some(edit) = edits.iter_mut().find(|edit| edit.name == name) {
+            edit.value = value.to_owned();
+        } else {
+            edits.push(NamedEdit::new(name, value));
+        }
+    }
+    (edits, malformed)
+}
+
+fn source_edit_warning_message(warning: &SourceEditWarning) -> Message {
+    match warning {
+        SourceEditWarning::ResyncSkipped => Message::new(
+            "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.",
+        ),
+        SourceEditWarning::ResyncDropped { name } => {
+            Message::new("Dropped {}: it no longer exists in the script.").with(name)
+        }
+        SourceEditWarning::ResyncRebound { name } => Message::new(
+            "{}: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct.",
+        )
+        .with(name),
+        SourceEditWarning::AlreadyManaged { name } => {
+            Message::new("{} is already managed; skipped.").with(name)
+        }
+        SourceEditWarning::NotCandidate { name } => {
+            Message::new("{} isn't a detectable parameter in the current script; skipped.")
+                .with(name)
+        }
+        SourceEditWarning::NotManaged { name } => {
+            Message::new("{} isn't a managed parameter; skipped.").with(name)
+        }
+        SourceEditWarning::EnvSourceNotManaged { name } => {
+            Message::new("{} isn't a managed parameter; --env-source skipped.").with(name)
+        }
+        SourceEditWarning::EnvSourceNotSecret { name } => Message::new(
+            "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+        )
+        .with(name),
+    }
+}
+
+fn source_normalization_refusal_message(refusal: &SourceNormalizationRefusal) -> Message {
+    match refusal.kind {
+        SourceNormalizationRefusalKind::NotAConst => Message::new(
+            "{} isn't a plain constant with a literal value, so there's nothing to normalize; skipped.",
+        )
+        .with(&refusal.name),
+        SourceNormalizationRefusalKind::MultipleAssignments => Message::new(
+            "{} is assigned more than once at the top level; normalizing it would change which value wins. Skipped.",
+        )
+        .with(&refusal.name),
+        SourceNormalizationRefusalKind::Readonly => Message::new(
+            "{} is readonly, so the script could never take a value from the environment; skipped.",
+        )
+        .with(&refusal.name),
+        SourceNormalizationRefusalKind::AlreadyEnv => {
+            Message::new("{} already reads from the environment; nothing to do.")
+                .with(&refusal.name)
+        }
+        SourceNormalizationRefusalKind::UnsafeLiteral => Message::new(
+            "{}'s value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.",
+        )
+        .with(&refusal.name),
+        SourceNormalizationRefusalKind::SyntaxError => {
+            Message::new("Could not parse the script (syntax error); nothing was normalized.")
+        }
+    }
+}
+
+fn declared_edit_warning_message(warning: &DeclaredEditWarning) -> Message {
+    match warning {
+        DeclaredEditWarning::NotDeclared { name } => {
+            Message::new("{} isn't a declared parameter; skipped.").with(name)
+        }
+        DeclaredEditWarning::AlreadyDeclared { name } => {
+            Message::new("{} is already declared; skipped.").with(name)
+        }
+        DeclaredEditWarning::BadDelivery { name } => {
+            Message::new("{}: that delivery isn't available for this kind; skipped.").with(name)
+        }
+        DeclaredEditWarning::NotAPlaceholder { name } => Message::new(
+            "{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",
+        )
+        .with(name),
+        DeclaredEditWarning::BadType { name } => Message::new(
+            "{}: unknown type; skipped (use str, int, float, bool, choice, or path).",
+        )
+        .with(name),
+        DeclaredEditWarning::BadDefault { name } => {
+            Message::new("{}: the default doesn't fit its type; skipped.").with(name)
+        }
+        DeclaredEditWarning::EnvSourceNotSecret { name } => Message::new(
+            "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+        )
+        .with(name),
+        DeclaredEditWarning::ChoiceWithoutChoices { name } => Message::new(
+            "{}: a choice parameter needs choices; set --choices {}=a,b,c.",
+        )
+        .with(name)
+        .with(name),
+        DeclaredEditWarning::BoolFlagOnByDefault { name } => Message::new(
+            "{} is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-{} and the like), with default false.",
+        )
+        .with(name)
+        .with(name),
+    }
 }
 
 fn report_purged_secrets(purged: BTreeSet<String>, json: bool) {
     if json || purged.is_empty() {
         return;
     }
-    let names = purged.into_iter().collect::<Vec<_>>().join(", ");
-    humanln!(
-        "Removed previously stored plaintext value(s) for now-secret parameter(s): {}",
-        names
+    println!(
+        "{}",
+        purged_secrets_message(&purged).localize(active_locale())
     );
+}
+
+fn purged_secrets_message(purged: &BTreeSet<String>) -> Message {
+    let names = purged.iter().cloned().collect::<Vec<_>>().join(", ");
+    Message::new("Removed previously stored plaintext value(s) for now-secret parameter(s): {}")
+        .with(names)
+}
+
+fn coordinated_state_error(error: CoordinatedStateError<CliError>) -> CliError {
+    match error {
+        CoordinatedStateError::State(error) => CliError::State(error),
+        CoordinatedStateError::Commit(error) => error,
+        CoordinatedStateError::StateAfterCommit {
+            state,
+            rollback: None,
+        } => CliError::State(state),
+        CoordinatedStateError::StateAfterCommit {
+            state,
+            rollback: Some(rollback),
+        } => CliError::StateRollback {
+            state,
+            rollback: Box::new(rollback),
+        },
+        CoordinatedStateError::FinalizeAfterState {
+            finalize,
+            rollback,
+            state_rollback,
+            authoritative_restored: _,
+        } => {
+            let primary = match rollback {
+                Some(rollback) => CliError::Rollback {
+                    primary: Box::new(finalize),
+                    rollback: Box::new(rollback),
+                },
+                None => finalize,
+            };
+            match state_rollback {
+                Some(state) => CliError::StateRestoreRollback {
+                    primary: Box::new(primary),
+                    state,
+                },
+                None => primary,
+            }
+        }
+    }
+}
+
+fn human_parameter_declarations(
+    kind: &str,
+    source: &str,
+    declarations: &[ParamDecl],
+) -> Vec<ParamDecl> {
+    if !source_owned_schema(kind) {
+        return declarations.to_vec();
+    }
+    let mut stored = managed_params(kind, source);
+    if stored.is_empty() {
+        return declarations.to_vec();
+    }
+    let current_defaults = match parse_document(kind, source) {
+        ParseOutcome::Parsed(document) => document.reconcile(&stored).current_defaults,
+        ParseOutcome::ParserUnavailable(_) | ParseOutcome::SyntaxError(_) => BTreeMap::new(),
+    };
+    for declaration in &mut stored {
+        if declaration.default.is_some()
+            && let Some(current) = current_defaults.get(&declaration.name)
+        {
+            declaration.default = Some(current.clone());
+        }
+    }
+    let managed_names = stored
+        .iter()
+        .map(|declaration| declaration.name.clone())
+        .collect::<BTreeSet<_>>();
+    stored.extend(
+        declarations
+            .iter()
+            .filter(|declaration| !managed_names.contains(&declaration.name))
+            .cloned(),
+    );
+    stored
+}
+
+fn prompt_schema_suffix(declaration: &ParamDecl) -> String {
+    let mut parts = vec![declaration.parameter_type.as_str().to_owned()];
+    if let Some(default) = &declaration.default {
+        let shown = if declaration.secret {
+            text(active_locale(), "•••").into_owned()
+        } else {
+            tui_parameter_value(default)
+        };
+        parts.push(format_text(active_locale(), "default {}", &[&shown]));
+    }
+    if !declaration.required {
+        parts.push(text(active_locale(), "optional").into_owned());
+    }
+    if declaration.secret {
+        parts.push(text(active_locale(), "secret").into_owned());
+    }
+    format!("  {}", parts.join(" · "))
+}
+
+fn write_prompt_parameter(
+    name: &str,
+    declaration: &ParamDecl,
+    last_values: &BTreeMap<String, String>,
+) {
+    let shown = if declaration.secret {
+        if last_values.contains_key(name) {
+            text(active_locale(), "•••").into_owned()
+        } else {
+            "—".to_owned()
+        }
+    } else {
+        last_values
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| "—".to_owned())
+    };
+    println!("  {name} = {shown}{}", prompt_schema_suffix(declaration));
+}
+
+fn write_human_command_params(
+    entry: &Entry,
+    settings: &EntrySettings,
+    declarations: &[ParamDecl],
+) -> Result<(), CliError> {
+    let state =
+        FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
+    let env_riders = declarations
+        .iter()
+        .filter(|item| {
+            item.delivery == ParameterDelivery::Env && !settings.params.contains(&item.name)
+        })
+        .collect::<Vec<_>>();
+    if settings.params.is_empty() && env_riders.is_empty() {
+        humanln!("{} has no managed parameters.", entry.meta.name);
+        return Ok(());
+    }
+    if !settings.params.is_empty() {
+        humanln!("Command template placeholders (the run form asks for them):");
+        // form_params puts each managed placeholder first, in settings order.
+        for (name, declaration) in settings.params.iter().zip(declarations) {
+            write_prompt_parameter(name, declaration, &state.values);
+        }
+    }
+    if !env_riders.is_empty() {
+        humanln!("Declared environment variables (set on the run):");
+        for declaration in env_riders {
+            write_prompt_parameter(&declaration.name, declaration, &state.values);
+        }
+    }
+    Ok(())
+}
+
+fn write_human_prompt_params(
+    entry: &Entry,
+    source: &str,
+    settings: &EntrySettings,
+    declarations: &[ParamDecl],
+) -> Result<(), CliError> {
+    let state =
+        FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
+    let fresh = placeholder_params("prompt", source)
+        .into_iter()
+        .map(|item| item.name)
+        .collect::<Vec<_>>();
+    let unmanaged = fresh
+        .iter()
+        .filter(|name| !settings.params.contains(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let gone = settings
+        .params
+        .iter()
+        .filter(|name| !fresh.contains(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let env_riders = declarations
+        .iter()
+        .filter(|item| {
+            item.delivery == ParameterDelivery::Env && !settings.params.contains(&item.name)
+        })
+        .collect::<Vec<_>>();
+    if settings.params.is_empty() && env_riders.is_empty() && unmanaged.is_empty() {
+        humanln!("{} has no managed parameters.", entry.meta.name);
+        return Ok(());
+    }
+    if !settings.params.is_empty() {
+        humanln!("Prompt placeholders (the run form asks for them):");
+        // form_params puts each managed placeholder first, in settings order.
+        for (name, declaration) in settings.params.iter().zip(declarations) {
+            write_prompt_parameter(name, declaration, &state.values);
+        }
+    }
+    if !env_riders.is_empty() {
+        humanln!("Declared environment variables (set on the run):");
+        for declaration in env_riders {
+            write_prompt_parameter(&declaration.name, declaration, &state.values);
+        }
+    }
+    report_unmanaged_prompt_candidates(&unmanaged);
+    if !gone.is_empty() {
+        humanln!(
+            "No longer in the prompt (the value would be ignored): {} — remove with --rm, or edit the body.",
+            gone.join(", ")
+        );
+    }
+    Ok(())
 }
 
 fn write_params(
@@ -4320,6 +6080,8 @@ fn write_params(
     source: &str,
     settings: &EntrySettings,
     declarations: &[ParamDecl],
+    uses_self_location: bool,
+    has_injectable_const: bool,
     json: bool,
 ) -> Result<(), CliError> {
     if !json && entry.meta.kind.as_str() == "prompt" && !settings.interpolate {
@@ -4455,6 +6217,8 @@ fn write_params(
                 );
             }
         }
+        let declarations =
+            human_parameter_declarations(entry.meta.kind.as_str(), source, declarations);
         let declared_names = declarations
             .iter()
             .map(|item| item.name.as_str())
@@ -4468,7 +6232,7 @@ fn write_params(
                 .filter(|name| !declared_names.contains(name.as_str()))
                 .collect::<Vec<_>>()
         };
-        for item in declarations {
+        for item in &declarations {
             humanln!("Parameter: {}", item.name);
             humanln!("Type: {}", item.parameter_type.as_str());
             humanln!("Delivery: {}", item.delivery.as_str());
@@ -4523,6 +6287,16 @@ fn write_params(
                     unmanaged.join(", ")
                 );
             }
+        }
+        if entry.meta.kind.as_str() == "shell"
+            && entry.meta.mode == StorageMode::Copy
+            && uses_self_location
+            && has_injectable_const
+        {
+            humanln!(
+                "This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME=\"${NAME:-value}\" delivers the value through the environment with no copy at all — `skit params {} --normalize NAME` does the rewrite for you on the stored copy.",
+                entry.meta.name
+            );
         }
         if entry.meta.kind.as_str() == "prompt" {
             humanln!(
@@ -4587,52 +6361,9 @@ fn assignment<'a>(value: &'a str, field: &'static str) -> Result<(&'a str, &'a s
         })
 }
 
-fn parameter_mut<'a>(
-    declarations: &'a mut [ParamDecl],
-    name: &str,
-) -> Result<&'a mut ParamDecl, CliError> {
-    declarations
-        .iter_mut()
-        .find(|item| item.name == name)
-        .ok_or_else(|| CliError::Usage(Message::new("unknown parameter: {}").with(name)))
-}
-
 fn parse_parameter_type(value: &str) -> Result<ParameterType, CliError> {
-    match value {
-        "str" => Ok(ParameterType::Str),
-        "int" => Ok(ParameterType::Int),
-        "float" => Ok(ParameterType::Float),
-        "bool" => Ok(ParameterType::Bool),
-        "choice" => Ok(ParameterType::Choice),
-        "path" => Ok(ParameterType::Path),
-        _ => Err(CliError::Usage(
-            Message::new("unknown parameter type: {}").with(value),
-        )),
-    }
-}
-
-fn parse_delivery(value: &str) -> Result<ParameterDelivery, CliError> {
-    match value {
-        "inject" => Ok(ParameterDelivery::Inject),
-        "env" => Ok(ParameterDelivery::Env),
-        "flag" => Ok(ParameterDelivery::Flag),
-        "placeholder" => Ok(ParameterDelivery::Placeholder),
-        _ => Err(CliError::Usage(
-            Message::new("unknown parameter delivery: {}").with(value),
-        )),
-    }
-}
-
-fn set_bool(
-    declarations: &mut [ParamDecl],
-    names: &[String],
-    field: impl Fn(&mut ParamDecl) -> &mut bool,
-    value: bool,
-) -> Result<bool, CliError> {
-    for name in names {
-        *field(parameter_mut(declarations, name)?) = value;
-    }
-    Ok(!names.is_empty())
+    as_param_type(value)
+        .ok_or_else(|| CliError::Usage(Message::new("unknown parameter type: {}").with(value)))
 }
 
 fn config(key: Option<&str>, value: Option<&str>, json: bool) -> Result<(), CliError> {
@@ -4648,6 +6379,7 @@ fn config_in(
 ) -> Result<(), CliError> {
     match (key, value) {
         (Some(key), Some(value)) => {
+            validate_preference_files(&BTreeMap::from([(key.to_owned(), value.to_owned())]))?;
             if let Some(recovery) = store.set_with_recovery(key, value)? {
                 if let Some(backup_path) = recovery.backup_path {
                     humanerrln!(
@@ -4945,13 +6677,10 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                     ))),
                 };
             }
-            if !matches!(&selection, RunnerSelection::Name(_)) && targets[0].reason.is_none() {
+            if let RunnerSelection::Row(row) = &selection
+                && targets[0].reason.is_none()
+            {
                 let name = targets[0].name.as_deref().unwrap_or_default();
-                let row = match &selection {
-                    RunnerSelection::Row(row) => row.to_string(),
-                    RunnerSelection::Container => "container".to_owned(),
-                    RunnerSelection::Name(_) => unreachable!("name selections use the stable path"),
-                };
                 return Err(CliError::Usage(
                     Message::new(
                         "Runner row {} is valid. Remove the agent by name instead: skit runner remove {}",
@@ -4995,8 +6724,12 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                     )
                     .into_owned(),
                 };
-                if !prompt_confirmation(&question, false)? {
-                    return Err(CliError::Aborted);
+                match prompt_confirmation(&question, false) {
+                    Ok(true) => {}
+                    Ok(false) | Err(CliError::Aborted) => {
+                        return Err(CliError::Failure(Message::new("operation cancelled")));
+                    }
+                    Err(error) => return Err(error),
                 }
             }
             let removed = match &selection {
@@ -5037,12 +6770,10 @@ fn prompt_runner_pin_count(
         .iter()
         .filter(|summary| summary.kind.as_str() == "prompt")
     {
-        match service.show(summary.slug.as_str()) {
-            Ok(entry) if EntrySettings::from_meta(&entry.meta).runner == runner => {
-                count += 1;
-            }
-            Ok(_) | Err(RepositoryError::NotFound { .. }) => {}
-            Err(error) => return Err(error.into()),
+        if let Ok(entry) = service.show(summary.slug.as_str())
+            && EntrySettings::from_meta(&entry.meta).runner == runner
+        {
+            count += 1;
         }
     }
     Ok(count)
@@ -5201,13 +6932,10 @@ fn collect_preset_value(
     locale: Locale,
 ) -> Result<String, CliError> {
     if declaration.parameter_type == ParameterType::Bool {
-        let checked = coerce_default(default, ParameterType::Bool)
-            .ok()
-            .and_then(|value| match value {
-                ParameterValue::Bool(value) => Some(value),
-                _ => None,
-            })
-            .unwrap_or(false);
+        let checked = matches!(
+            coerce_default(default, ParameterType::Bool),
+            Ok(ParameterValue::Bool(true))
+        );
         return Confirm::new()
             .with_prompt(label)
             .default(checked)
@@ -5267,14 +6995,37 @@ fn collect_preset_value(
 }
 
 fn dialoguer_error(error: dialoguer::Error) -> CliError {
-    let error = io::Error::from(error);
-    if matches!(
-        error.kind(),
-        io::ErrorKind::Interrupted | io::ErrorKind::UnexpectedEof
-    ) {
-        CliError::Aborted
-    } else {
-        CliError::Io(error)
+    map_dialoguer_error(error, DialoguerAbort::Operation)
+}
+
+#[cfg(test)]
+mod dialoguer_error_tests {
+    use super::{CliError, add_dialoguer_error, dialoguer_error};
+    use std::io;
+
+    #[test]
+    fn eof_and_interrupt_abort_while_other_dialoguer_io_stays_typed() {
+        for kind in [io::ErrorKind::UnexpectedEof, io::ErrorKind::Interrupted] {
+            assert!(matches!(
+                dialoguer_error(dialoguer::Error::from(io::Error::from(kind))),
+                CliError::Aborted
+            ));
+            assert!(matches!(
+                add_dialoguer_error(dialoguer::Error::from(io::Error::from(kind))),
+                CliError::AddCancelled
+            ));
+        }
+        assert!(matches!(
+            dialoguer_error(dialoguer::Error::from(io::Error::other("test dialoguer failure"))),
+            CliError::Io(error) if error.kind() == io::ErrorKind::Other
+        ));
+        assert!(matches!(
+            add_dialoguer_error(dialoguer::Error::from(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid terminal text",
+            ))),
+            CliError::Io(error) if error.kind() == io::ErrorKind::InvalidData
+        ));
     }
 }
 
@@ -5365,7 +7116,11 @@ fn doctor(
         humanln!("State: {}", state_location.display());
         humanln!("Config: {}", config_location.display());
         if let Some(count) = rebuilt_entries {
-            humanln!("Registry rebuilt: {}", count);
+            if count == 1 {
+                humanln!("Index rebuilt: {} entry", count);
+            } else {
+                humanln!("Index rebuilt: {} entries", count);
+            }
         }
         for name in missing {
             humanln!("WARN {}: the launch target is gone from disk", name);
@@ -5470,16 +7225,19 @@ fn doctor_launch_block_with_store<P: ProgramProbe>(
         // missing-target sweep already covers that here). uv is a run-time concern:
         // a run bootstraps it, so its absence never blocks a launch.
         "python" => None,
-        "shell" => Some(if settings.interpreter.is_empty() {
+        "shell" => {
+            let name = interpreter_name(settings, "bash");
             let configured = config.get("shell.bash_path")?;
-            if configured.is_empty() {
-                "bash".to_owned()
-            } else {
-                configured
+            match resolve_interpreter(
+                &name,
+                InterpreterPlatform::current(),
+                (!configured.is_empty()).then(|| Path::new(&configured)),
+                probe,
+            ) {
+                Ok(_) => None,
+                Err(error) => return Ok(Some(error.message())),
             }
-        } else {
-            settings.interpreter.clone()
-        }),
+        }
         "fish" => Some(interpreter_name(settings, "fish")),
         "powershell" => Some(interpreter_name(settings, "pwsh")),
         "ruby" => Some(interpreter_name(settings, "ruby")),
@@ -5705,6 +7463,7 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
     let kind = entry.meta.kind.as_str();
     let source_owned = source_owned_schema(kind);
     let declared_schema = known_entry_kind(kind) && !source_owned;
+    let settings = EntrySettings::from_meta(&entry.meta);
     let source = source_path(store, entry)
         .and_then(|path| fs::read(path).ok())
         .map(|bytes| {
@@ -5714,9 +7473,21 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
         });
     let text = source.clone().unwrap_or_default();
     let managed = if declared_schema {
-        EntrySettings::from_meta(&entry.meta).parameters
+        if matches!(kind, "command" | "prompt") {
+            let mut effective = form_params(kind, &text, &settings);
+            for explicit in &settings.parameters {
+                if let Some(row) = effective.iter_mut().find(|row| row.name == explicit.name) {
+                    *row = explicit.clone();
+                } else {
+                    effective.push(explicit.clone());
+                }
+            }
+            effective
+        } else {
+            settings.parameters.clone()
+        }
     } else if source_owned {
-        managed_params(kind, &text)
+        settings_managed_params(kind, &text)
     } else {
         Vec::new()
     };
@@ -5725,7 +7496,13 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
     } else {
         0
     };
-    let candidates = if source_owned {
+    let candidates = if kind == "prompt" {
+        placeholder_params("prompt", &text)
+            .into_iter()
+            .map(|candidate| candidate.name)
+            .filter(|name| !managed.iter().any(|current| current.name == *name))
+            .collect()
+    } else if source_owned {
         detect_candidates(kind, &text)
             .into_iter()
             .map(|candidate| candidate.name)
@@ -5742,6 +7519,25 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
         managed,
         candidates,
     }
+}
+
+/// Build the source-managed rows as a read projection.
+///
+/// The block remains the saved schema. Only the default shown in Settings follows the current
+/// source literal, and only when reconciliation publishes a sound, non-secret value. Source row
+/// defaults are not editable controls, so this display clone never becomes an implicit resync.
+fn settings_managed_params(kind: &str, text: &str) -> Vec<ParamDecl> {
+    let mut managed = managed_params(kind, text);
+    let ParseOutcome::Parsed(document) = parse_document(kind, text) else {
+        return managed;
+    };
+    let current_defaults = document.reconcile(&managed).current_defaults;
+    for declaration in &mut managed {
+        if let Some(current) = current_defaults.get(&declaration.name) {
+            declaration.default = Some(current.clone());
+        }
+    }
+    managed
 }
 
 /// Everything the parameter section decision needs, read once.
@@ -5945,16 +7741,64 @@ fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
     let store = service.repository();
     let state_dir = resolve_state_dir()?;
     let config_dir = resolve_config_dir()?;
-    let surface = skit_store::library_surface(store, &state_dir, &config_dir)?;
+    let surface = crate::library_surface(store, &state_dir, &config_dir)?;
     let rerunnable = tui_rerunnable(&surface.scan, &state_dir);
     let mut state = LibraryState::from_library_surface(surface);
     let _ = state.update(UiAction::ReplaceRerunnable(rerunnable));
-    skit_tui::run(
+    skit_tui::run_preflighted_with_path_completion(
         state,
+        |effect| tui_preflight_effect(service, store, effect),
         |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
         active_locale(),
+        path_completion_provider(),
     )
     .map_err(CliError::from)
+}
+
+fn path_completion_provider() -> Arc<dyn PathCompletionProvider> {
+    Arc::new(PathCompletionService::new(SystemDirectoryReader))
+}
+
+fn tui_preflight_effect(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    effect: &UiEffect,
+) -> Result<(), CliError> {
+    tui_preflight_effect_with_probe(service, store, effect, &SystemProbe)
+}
+
+fn tui_preflight_effect_with_probe<P: ProgramProbe>(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    effect: &UiEffect,
+    probe: &P,
+) -> Result<(), CliError> {
+    let selector = match effect {
+        UiEffect::Open {
+            request: HostRequest::Run,
+            selector: Some(selector),
+        }
+        | UiEffect::Rerun { selector } => selector,
+        _ => return Ok(()),
+    };
+    let entry = service.show(selector)?;
+    let settings = EntrySettings::from_meta(&entry.meta);
+    if !matches!(entry.meta.kind.as_str(), "js" | "ts")
+        || entry.meta.mode != StorageMode::Copy
+        || settings.dependencies.is_empty()
+    {
+        return Ok(());
+    }
+    let runtime = resolve_javascript_runtime(&settings, probe).map_err(RunError::from)?;
+    preflight_javascript_dependencies_for_module(
+        &store.entry_dir_path(&entry.slug),
+        &runtime,
+        &settings.dependencies,
+        skit_runtime::javascript_module_type(&entry.meta.source),
+        probe,
+    )
+    .map_err(RunError::from)?;
+    Ok(())
 }
 
 fn tui_effect(
@@ -5969,17 +7813,42 @@ fn tui_effect(
         UiEffect::Reload => {
             // The reload must carry the same complete projection the first load carried. A
             // scan-only reload would drop every detail fact and put the list back in slug order.
-            let surface = skit_store::library_surface(store, state_dir, config_dir)?;
+            let surface = crate::library_surface(store, state_dir, config_dir)?;
             let rerunnable = tui_rerunnable(&surface.scan, state_dir);
             Ok(UiAction::ReplaceSurface {
                 surface,
                 rerunnable,
             })
         }
-        UiEffect::Rerun { selector } => tui_rerun(service, store, state_dir, config_dir, &selector),
-        UiEffect::Open { request, selector } => Ok(UiAction::Present(tui_open(
-            service, store, state_dir, config_dir, request, selector,
-        )?)),
+        UiEffect::Rerun { selector } => tui_rerun(
+            service,
+            store,
+            state_dir,
+            config_dir,
+            &selector,
+            active_locale(),
+        ),
+        UiEffect::Open { request, selector } => {
+            let screen = tui_open(service, store, state_dir, config_dir, request, selector)?;
+            Ok(match screen {
+                Screen::Run(form)
+                    if form
+                        .context()
+                        .is_some_and(|context| context.entry_kind == "prompt")
+                        && !form.has_runner_picker() =>
+                {
+                    UiAction::PromptRunnerRequired {
+                        form,
+                        cancel_status: text(
+                            active_locale(),
+                            "A prompt needs a configured agent to run with.",
+                        )
+                        .into_owned(),
+                    }
+                }
+                screen => UiAction::Present(screen),
+            })
+        }
         UiEffect::Preferences(effect) => tui_preferences_effect(service, config_dir, effect),
         UiEffect::CountRunGlob {
             field,
@@ -6025,12 +7894,9 @@ fn tui_effect(
             tui_save_runner(service, config_dir, request, owner)
         }
         UiEffect::RemoveRunner(request) => tui_remove_runner(service, config_dir, request),
-        UiEffect::RefreshPreferencesAfterRunners => {
-            let Screen::Preferences(preferences) = tui_preferences_screen(config_dir)? else {
-                unreachable!("the preferences builder always returns Preferences")
-            };
-            Ok(UiAction::RunnerManagerClosed { preferences })
-        }
+        UiEffect::RefreshPreferencesAfterRunners => Ok(UiAction::RunnerManagerClosed {
+            preferences: Box::new(tui_preferences_view(config_dir)?),
+        }),
         UiEffect::Add(effects) => tui_add_effect(service, store, state_dir, config_dir, effects),
         UiEffect::Edit { selector } => {
             edit_with_config(service, store, config_dir, &selector, true)?;
@@ -6074,8 +7940,18 @@ fn tui_add_effect(
                     .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::DraftEdited { request, result }));
             }
-            AddEffect::DeleteDraft { request, path } => {
-                let result = remove_owned_draft(store.data_dir(), &path)
+            AddEffect::DeleteDraft { request, draft } => {
+                let result = consume_draft_summary(store.data_dir(), &draft)
+                    .and_then(|outcome| match outcome {
+                        DraftConsumeOutcome::Removed => Ok(DraftDeleteOutcome::Removed),
+                        DraftConsumeOutcome::AlreadyMissing => {
+                            Ok(DraftDeleteOutcome::AlreadyMissing)
+                        }
+                        DraftConsumeOutcome::Changed => {
+                            refreshed_draft(store.data_dir(), &draft.path)
+                                .map(DraftDeleteOutcome::Changed)
+                        }
+                    })
                     .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::DraftDeleted { request, result }));
             }
@@ -6100,9 +7976,15 @@ fn tui_add_effect(
                     .map_err(|error| error.message().localize(locale));
                 return Ok(UiAction::Add(AddAction::CommitFinished { request, result }));
             }
-            AddEffect::ConsumeDraft(path) => {
-                if let Err(error) = remove_owned_draft(store.data_dir(), &path) {
-                    warnings.push(error.message().localize(locale));
+            AddEffect::ConsumeDraft(source) => {
+                match consume_owned_draft(store.data_dir(), &source) {
+                    Ok(DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing) => {}
+                    Ok(DraftConsumeOutcome::Changed) => warnings.push(
+                        Message::new("The kept draft changed before cleanup. skit kept it at {}.")
+                            .with(source.path.display())
+                            .localize(locale),
+                    ),
+                    Err(error) => warnings.push(error.message().localize(locale)),
                 }
             }
             AddEffect::DraftKept(_) => {}
@@ -6115,41 +7997,15 @@ fn tui_add_effect(
                 }
             }
             AddEffect::Complete(raw_slug) => {
-                let mut message = text(locale, "Entry added").into_owned();
-                for warning in &warnings {
-                    message.push('\n');
-                    message.push_str(&format_text(locale, "warning: {}", &[warning]));
-                }
-                let Ok(slug) = Slug::parse(raw_slug) else {
-                    return Ok(UiAction::Complete {
-                        surface: None,
-                        rerunnable: None,
-                        message,
-                    });
-                };
-                let surface = match skit_store::library_surface(store, state_dir, config_dir) {
-                    Ok(surface) => surface,
-                    Err(error) => {
-                        message.push('\n');
-                        message.push_str(&format_text(
-                            locale,
-                            "warning: {}",
-                            &[&error.message().localize(locale)],
-                        ));
-                        return Ok(UiAction::Complete {
-                            surface: None,
-                            rerunnable: None,
-                            message,
-                        });
-                    }
-                };
-                let rerunnable = tui_rerunnable(&surface.scan, state_dir);
-                return Ok(UiAction::AddCompleted {
-                    surface,
-                    rerunnable,
-                    slug,
-                    message,
-                });
+                return complete_add_effect_with(
+                    store,
+                    state_dir,
+                    config_dir,
+                    &raw_slug,
+                    locale,
+                    &warnings,
+                    crate::library_surface,
+                );
             }
             AddEffect::Cancel => return Ok(UiAction::AddCancelled),
         }
@@ -6157,12 +8013,69 @@ fn tui_add_effect(
     Ok(UiAction::ClearStatus)
 }
 
+fn complete_add_effect_with(
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    raw_slug: &str,
+    locale: Locale,
+    warnings: &[String],
+    load_surface: impl FnOnce(
+        &FileStore,
+        &Path,
+        &Path,
+    ) -> Result<
+        skit_application::library_detail::LibrarySurface,
+        RepositoryError,
+    >,
+) -> Result<UiAction, CliError> {
+    let mut message = text(locale, "Entry added").into_owned();
+    for warning in warnings {
+        message.push('\n');
+        message.push_str(&format_text(locale, "warning: {}", &[warning]));
+    }
+    let Ok(slug) = Slug::parse(raw_slug) else {
+        return Ok(UiAction::Complete {
+            surface: None,
+            rerunnable: None,
+            message,
+        });
+    };
+    let surface = match load_surface(store, state_dir, config_dir) {
+        Ok(surface) => surface,
+        Err(error) => {
+            message.push('\n');
+            message.push_str(&format_text(
+                locale,
+                "warning: {}",
+                &[&error.message().localize(locale)],
+            ));
+            return Ok(UiAction::Complete {
+                surface: None,
+                rerunnable: None,
+                message,
+            });
+        }
+    };
+    let rerunnable = tui_rerunnable(&surface.scan, state_dir);
+    Ok(UiAction::AddCompleted {
+        surface,
+        rerunnable,
+        slug,
+        message,
+    })
+}
+
 fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, CliError> {
     let expanded = expand_user_path(input);
-    let path = resolve_add_source(&expanded)?;
+    let resolved = resolve_add_source(&expanded)?;
+    // skit's own kept drafts keep skit's own spelling: skit made the path from the data directory
+    // and told the user about it. Every other source resolves to where the file really is.
+    let is_draft = is_owned_draft(data_dir, &expanded);
+    let path = if is_draft { expanded } else { resolved.clone() };
     let metadata = fs::metadata(&path).map_err(|error| source_error("inspect", &path, error))?;
     let is_directory = metadata.is_dir();
-    let (bytes, permissions, is_regular) = if metadata.is_file() {
+    let (bytes, permissions, is_regular, identity) = if metadata.is_file() {
         let mut file = File::open(&path).map_err(|error| source_error("open", &path, error))?;
         let metadata = file
             .metadata()
@@ -6170,19 +8083,49 @@ fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, Cl
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
             .map_err(|error| source_error("read", &path, error))?;
-        (bytes, source_permissions(&metadata), true)
+        (
+            bytes,
+            source_permissions(&metadata),
+            true,
+            source_identity_from_file(&file, &metadata),
+        )
     } else {
-        (Vec::new(), source_permissions(&metadata), false)
+        (
+            Vec::new(),
+            source_permissions(&metadata),
+            false,
+            source_identity_at(&path, &metadata),
+        )
     };
-    let is_draft = is_owned_draft(data_dir, &path);
+    let executable = source_is_host_executable(&path, is_regular, permissions);
     Ok(AddSourceSnapshot {
-        source_record: path.display().to_string(),
+        source_record: resolved.display().to_string(),
         path,
         bytes,
         permissions,
+        executable: Some(executable),
         is_regular,
         is_directory,
         is_draft,
+        identity,
+    })
+}
+
+fn source_is_host_executable(path: &Path, is_file: bool, permissions: SourcePermissions) -> bool {
+    #[cfg(windows)]
+    let pathext = env::var("PATHEXT").ok();
+    #[cfg(windows)]
+    let dialect = ExecutableDialect::Windows {
+        pathext: pathext.as_deref(),
+    };
+    #[cfg(not(windows))]
+    let dialect = ExecutableDialect::Posix;
+
+    source_is_executable(ExecutableSourceFacts {
+        path,
+        is_file,
+        unix_mode: permissions.unix_mode,
+        dialect,
     })
 }
 
@@ -6202,13 +8145,19 @@ fn tui_author_draft(
     config_dir: &Path,
     kind: DraftKind,
 ) -> Result<Option<AddSourceSnapshot>, CliError> {
+    tui_author_draft_with_failure_hook(data_dir, config_dir, kind, |_| {})
+}
+
+fn tui_author_draft_with_failure_hook(
+    data_dir: &Path,
+    config_dir: &Path,
+    kind: DraftKind,
+    on_editor_failure: impl FnOnce(&AddSourceSnapshot),
+) -> Result<Option<AddSourceSnapshot>, CliError> {
     let drafts_dir = create_owned_drafts_dir(data_dir)?;
     let (suffix, starter) = match kind {
         DraftKind::Script => (".py", b"#!/usr/bin/env python3\n".to_vec()),
-        DraftKind::Prompt => (
-            ".prompt.md",
-            format!("{}\n\n", text(active_locale(), "# New prompt")).into_bytes(),
-        ),
+        DraftKind::Prompt => (".prompt.md", localized_prompt_starter()),
     };
     let mut staged = tempfile::Builder::new()
         .prefix("skit-new-")
@@ -6225,23 +8174,53 @@ fn tui_author_draft(
         .keep()
         .map_err(|error| source_error("keep", &drafts_dir, error.error))?
         .1;
+    let initial = tui_add_source(data_dir, &path)?;
 
     if let Err(error) = open_editor_in(config_dir, &path) {
-        if fs::read(&path).ok().as_deref() == Some(starter.as_slice()) {
-            let _ = fs::remove_file(&path);
-        }
-        return Err(error);
+        on_editor_failure(&initial);
+        return match discard_authored_draft(data_dir, &initial) {
+            Ok(()) => Err(error),
+            Err(cleanup) => Err(CliError::Failure(
+                Message::new("{}; warning: {}")
+                    .nested(error.message())
+                    .nested(cleanup.message()),
+            )),
+        };
     }
-    let edited = fs::read(&path).map_err(|error| source_error("read", &path, error))?;
-    let unchanged = std::str::from_utf8(&edited).is_ok_and(|text| {
+    let current = tui_add_source(data_dir, &path)?;
+    let unchanged = std::str::from_utf8(&current.bytes).is_ok_and(|text| {
         let text = text.trim();
         text.is_empty() || std::str::from_utf8(&starter).is_ok_and(|starter| text == starter.trim())
     });
     if unchanged {
-        fs::remove_file(&path).map_err(|error| source_error("remove", &path, error))?;
+        discard_authored_draft(data_dir, &current)?;
         return Ok(None);
     }
-    tui_add_source(data_dir, &path).map(Some)
+    Ok(Some(current))
+}
+
+fn discard_authored_draft(data_dir: &Path, expected: &AddSourceSnapshot) -> Result<(), CliError> {
+    match consume_owned_draft(data_dir, expected)? {
+        DraftConsumeOutcome::Removed | DraftConsumeOutcome::AlreadyMissing => Ok(()),
+        DraftConsumeOutcome::Changed => Err(CliError::Failure(
+            Message::new("The kept draft changed before cleanup. skit kept it at {}.")
+                .with(expected.path.display()),
+        )),
+    }
+}
+
+/// The two spellings of skit's own drafts directory.
+///
+/// A data directory can sit behind a symlink. macOS does this for every temporary directory: `/var`
+/// is a link to `/private/var`. The two spellings keep one policy for the whole draft seam.
+struct OwnedDraftsDir {
+    /// The directory as the caller spelled it.
+    ///
+    /// Product paths, returned claims, and user-visible text use this spelling. It also keeps
+    /// Windows verbatim `\\?\` prefixes out of the interface.
+    literal: PathBuf,
+    /// The directory with every symlink resolved. Only ownership comparisons use this spelling.
+    canonical: PathBuf,
 }
 
 fn is_owned_draft(data_dir: &Path, path: &Path) -> bool {
@@ -6253,48 +8232,326 @@ fn is_owned_draft(data_dir: &Path, path: &Path) -> bool {
         && path
             .parent()
             .and_then(|parent| fs::canonicalize(parent).ok())
-            .is_some_and(|parent| parent == drafts_dir)
+            .is_some_and(|parent| parent == drafts_dir.canonical)
 }
 
-fn existing_owned_drafts_dir(data_dir: &Path) -> Option<PathBuf> {
-    let raw = data_dir.join("drafts");
-    let metadata = fs::symlink_metadata(&raw).ok()?;
+/// Whether a claimed path names `<data dir>/drafts/skit-*` directly.
+///
+/// This is the structural precondition of a destructive draft operation. Both comparisons stay
+/// literal, because a resolved comparison also accepts `drafts/../drafts/skit-x`, and skit must not
+/// remove a file that a lexical detour names. A claim can spell the data directory the way the
+/// caller gave it or the way the host resolves it. The two spellings differ when a link holds the
+/// data directory, and both name skit's own drafts directory.
+fn has_owned_draft_shape(data_dir: &Path, path: &Path) -> bool {
+    // The resolution doubles as the existence probe. An absent data directory holds no drafts.
+    let Ok(resolved_data_dir) = fs::canonicalize(data_dir) else {
+        return false;
+    };
+    let parent = path.parent();
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with("skit-"))
+        && (parent == Some(data_dir.join("drafts").as_path())
+            || parent == Some(resolved_data_dir.join("drafts").as_path()))
+}
+
+fn existing_owned_drafts_dir(data_dir: &Path) -> Option<OwnedDraftsDir> {
+    let literal = data_dir.join("drafts");
+    let metadata = fs::symlink_metadata(&literal).ok()?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return None;
     }
-    let data_dir = fs::canonicalize(data_dir).ok()?;
-    let drafts_dir = fs::canonicalize(raw).ok()?;
-    (drafts_dir.parent() == Some(data_dir.as_path())).then_some(drafts_dir)
+    let canonical_data_dir = fs::canonicalize(data_dir).ok()?;
+    let canonical = fs::canonicalize(&literal).ok()?;
+    (canonical.parent() == Some(canonical_data_dir.as_path()))
+        .then_some(OwnedDraftsDir { literal, canonical })
 }
 
 fn create_owned_drafts_dir(data_dir: &Path) -> Result<PathBuf, CliError> {
     fs::create_dir_all(data_dir).map_err(|error| source_error("create", data_dir, error))?;
     let raw = data_dir.join("drafts");
-    match fs::symlink_metadata(&raw) {
-        Ok(_) => {}
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            fs::create_dir(&raw).map_err(|error| source_error("create", &raw, error))?;
-        }
-        Err(error) => return Err(source_error("inspect", &raw, error)),
+    // Only absence authorizes creation. Every present or unreadable shape must prove that it is the
+    // owned directory below. This keeps the probe and the final ownership check on one policy.
+    if fs::symlink_metadata(&raw).is_err_and(|error| error.kind() == io::ErrorKind::NotFound) {
+        fs::create_dir(&raw).map_err(|error| source_error("create", &raw, error))?;
     }
-    existing_owned_drafts_dir(data_dir).ok_or_else(|| {
-        CliError::Failure(
-            Message::new("skit's drafts path is not an owned directory: {}").with(raw.display()),
-        )
-    })
+    existing_owned_drafts_dir(data_dir)
+        .map(|drafts_dir| drafts_dir.literal)
+        .ok_or_else(|| {
+            CliError::Failure(
+                Message::new("skit's drafts path is not an owned directory: {}")
+                    .with(raw.display()),
+            )
+        })
 }
 
-fn remove_owned_draft(data_dir: &Path, path: &Path) -> Result<(), CliError> {
-    if !is_owned_draft(data_dir, path) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DraftConsumeOutcome {
+    Removed,
+    AlreadyMissing,
+    Changed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DraftConsumeTestPoint {
+    BeforeQuarantine,
+    Quarantined,
+    Verified,
+    BeforeRestore,
+}
+
+fn consume_owned_draft(
+    data_dir: &Path,
+    expected: &AddSourceSnapshot,
+) -> Result<DraftConsumeOutcome, CliError> {
+    consume_owned_draft_with(data_dir, expected, |_, _| {})
+}
+
+#[cfg(test)]
+fn consume_owned_draft_with_test_hook(
+    data_dir: &Path,
+    expected: &AddSourceSnapshot,
+    hook: impl FnMut(DraftConsumeTestPoint, &Path),
+) -> Result<DraftConsumeOutcome, CliError> {
+    consume_owned_draft_with(data_dir, expected, hook)
+}
+
+fn consume_owned_draft_with(
+    data_dir: &Path,
+    expected: &AddSourceSnapshot,
+    hook: impl FnMut(DraftConsumeTestPoint, &Path),
+) -> Result<DraftConsumeOutcome, CliError> {
+    consume_owned_draft_claim(
+        data_dir,
+        DraftConsumeClaim {
+            path: &expected.path,
+            claimed_as_draft: expected.is_draft,
+            identity: expected.identity.as_ref(),
+            modified: None,
+            permissions: None,
+            // The snapshot lane compares the exact bytes below, so it needs no separate witness.
+            content_hash: None,
+            source: Some(expected),
+        },
+        hook,
+    )
+}
+
+fn consume_draft_summary(
+    data_dir: &Path,
+    expected: &DraftSummary,
+) -> Result<DraftConsumeOutcome, CliError> {
+    consume_owned_draft_claim(
+        data_dir,
+        DraftConsumeClaim {
+            path: &expected.path,
+            claimed_as_draft: true,
+            identity: expected.identity.as_ref(),
+            modified: Some(expected.modified),
+            permissions: Some(&expected.permissions),
+            content_hash: expected.content_hash.as_deref(),
+            source: None,
+        },
+        |_, _| {},
+    )
+}
+
+struct DraftConsumeClaim<'a> {
+    path: &'a Path,
+    claimed_as_draft: bool,
+    identity: Option<&'a SourceIdentity>,
+    modified: Option<u64>,
+    permissions: Option<&'a SourcePermissions>,
+    /// Content witness the row kept, for a host whose identity cannot see a write in place.
+    content_hash: Option<&'a str>,
+    source: Option<&'a AddSourceSnapshot>,
+}
+
+fn consume_owned_draft_claim(
+    data_dir: &Path,
+    claim: DraftConsumeClaim<'_>,
+    mut hook: impl FnMut(DraftConsumeTestPoint, &Path),
+) -> Result<DraftConsumeOutcome, CliError> {
+    let DraftConsumeClaim {
+        path,
+        claimed_as_draft,
+        identity: expected_identity,
+        modified: expected_modified,
+        permissions: expected_permissions,
+        content_hash: expected_content_hash,
+        source: expected_source,
+    } = claim;
+    if !claimed_as_draft || !has_owned_draft_shape(data_dir, path) {
         return Err(CliError::Failure(Message::new(
             "refusing to remove a file outside skit's drafts directory",
         )));
     }
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(source_error("remove", path, error)),
+    let Some(expected_identity) = expected_identity else {
+        return Err(CliError::Failure(
+            Message::new("the kept draft has no filesystem identity: {}").with(path.display()),
+        ));
+    };
+    let drafts_dir = existing_owned_drafts_dir(data_dir)
+        .map(|drafts_dir| drafts_dir.literal)
+        .ok_or_else(|| {
+            CliError::Failure(
+                Message::new("skit's drafts path is not an owned directory: {}")
+                    .with(data_dir.join("drafts").display()),
+            )
+        })?;
+    let path_metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(DraftConsumeOutcome::AlreadyMissing);
+        }
+        Err(error) => return Err(source_error("inspect", path, error)),
+    };
+
+    let mut opened = (!path_metadata.file_type().is_symlink() && path_metadata.is_file())
+        .then(|| File::open(path))
+        .transpose()
+        .map_err(|error| source_error("open", path, error))?;
+    let opened_identity = opened.as_ref().and_then(|file| {
+        file.metadata()
+            .ok()
+            .and_then(|metadata| source_identity_from_file(file, &metadata))
+    });
+    let claim_matches_before = opened_identity.as_ref() == Some(expected_identity)
+        && expected_modified.is_none_or(|expected| {
+            opened
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .and_then(|metadata| modified_ns(&metadata))
+                == Some(expected)
+        })
+        && expected_permissions.is_none_or(|expected| {
+            opened
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .is_some_and(|metadata| source_permissions(&metadata) == *expected)
+        })
+        && expected_content_hash.is_none_or(|expected| {
+            opened
+                .as_mut()
+                .is_some_and(|file| file_content_matches(file, expected).unwrap_or(false))
+        })
+        && expected_source.is_none_or(|source| {
+            opened
+                .as_mut()
+                .is_some_and(|file| source_file_matches(file, source).unwrap_or(false))
+        });
+
+    let quarantine_dir = tempfile::Builder::new()
+        .prefix(".skit-quarantine-")
+        .tempdir_in(&drafts_dir)
+        .map_err(|error| source_error("create", &drafts_dir, error))?
+        .keep();
+    let quarantine = quarantine_dir.join("draft");
+    hook(DraftConsumeTestPoint::BeforeQuarantine, &quarantine);
+    if let Err(error) = fs::rename(path, &quarantine) {
+        let _ = fs::remove_dir(&quarantine_dir);
+        if error.kind() == io::ErrorKind::NotFound {
+            return Ok(DraftConsumeOutcome::AlreadyMissing);
+        }
+        return Err(source_error("move", path, error));
     }
+    hook(DraftConsumeTestPoint::Quarantined, &quarantine);
+
+    let quarantine_identity = fs::symlink_metadata(&quarantine)
+        .ok()
+        .filter(|metadata| !metadata.file_type().is_symlink() && metadata.is_file())
+        .and_then(|metadata| source_identity_at(&quarantine, &metadata));
+    let same_open_file = opened_identity
+        .as_ref()
+        .zip(quarantine_identity.as_ref())
+        .is_some_and(|(before, after)| before.same_file(after));
+    let verified = claim_matches_before
+        && same_open_file
+        && expected_modified.is_none_or(|expected| {
+            opened
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .and_then(|metadata| modified_ns(&metadata))
+                == Some(expected)
+        })
+        && expected_permissions.is_none_or(|expected| {
+            opened
+                .as_ref()
+                .and_then(|file| file.metadata().ok())
+                .is_some_and(|metadata| source_permissions(&metadata) == *expected)
+        })
+        && expected_content_hash.is_none_or(|expected| {
+            opened
+                .as_mut()
+                .is_some_and(|file| file_content_matches(file, expected).unwrap_or(false))
+        })
+        && expected_source.is_none_or(|source| {
+            opened
+                .as_mut()
+                .is_some_and(|file| source_file_matches(file, source).unwrap_or(false))
+        });
+    if !verified {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(CliError::Failure(
+                    Message::new("could not restore quarantined draft {} to {}: {}")
+                        .with(quarantine.display())
+                        .with(path.display())
+                        .with(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "the destination already exists",
+                        )),
+                ));
+            }
+            Err(error) => {
+                return Err(CliError::Failure(
+                    Message::new("could not restore quarantined draft {} to {}: {}")
+                        .with(quarantine.display())
+                        .with(path.display())
+                        .with(error),
+                ));
+            }
+        }
+        hook(DraftConsumeTestPoint::BeforeRestore, &quarantine);
+        if let Err(error) = fs::hard_link(&quarantine, path) {
+            return Err(CliError::Failure(
+                Message::new("could not restore quarantined draft {} to {}: {}")
+                    .with(quarantine.display())
+                    .with(path.display())
+                    .with(error),
+            ));
+        }
+        fs::remove_file(&quarantine).map_err(|error| source_error("remove", &quarantine, error))?;
+        fs::remove_dir(&quarantine_dir)
+            .map_err(|error| source_error("remove", &quarantine_dir, error))?;
+        return Ok(DraftConsumeOutcome::Changed);
+    }
+    hook(DraftConsumeTestPoint::Verified, &quarantine);
+    fs::remove_file(&quarantine).map_err(|error| source_error("remove", &quarantine, error))?;
+    fs::remove_dir(&quarantine_dir)
+        .map_err(|error| source_error("remove", &quarantine_dir, error))?;
+    Ok(DraftConsumeOutcome::Removed)
+}
+
+/// Whether the open file still holds the content the row recorded.
+///
+/// A read that fails answers no, so an unreadable draft is kept, never removed.
+fn file_content_matches(file: &mut File, expected: &str) -> Result<bool, io::Error> {
+    file.rewind()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(content_hash(&bytes) == expected)
+}
+
+fn source_file_matches(file: &mut File, expected: &AddSourceSnapshot) -> Result<bool, io::Error> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || source_permissions(&metadata) != expected.permissions {
+        return Ok(false);
+    }
+    file.rewind()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes == expected.bytes)
 }
 
 fn tui_preferences_effect(
@@ -6371,6 +8628,14 @@ fn expanded_preference_path_is_file(path: &Path) -> bool {
     expand_user_path(path).is_file()
 }
 
+fn validate_preference_files(settings: &BTreeMap<String, String>) -> Result<(), CliError> {
+    PreferencesChangeSet {
+        settings: settings.clone(),
+    }
+    .validate_files(expanded_preference_path_is_file)
+    .map_err(|error| CliError::Usage(error.message()))
+}
+
 fn tui_rerunnable(scan: &LibraryScan, state_dir: &Path) -> Vec<Slug> {
     let state = FormStateService::new(FileFormStateStore::new(state_dir));
     scan.entries
@@ -6389,6 +8654,7 @@ fn tui_rerun(
     state_dir: &Path,
     config_dir: &Path,
     selector: &str,
+    locale: Locale,
 ) -> Result<UiAction, CliError> {
     let entry = service.show(selector)?;
     let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
@@ -6397,7 +8663,7 @@ fn tui_rerun(
         && saved.last_run.values.is_none()
     {
         return Ok(UiAction::SetStatus(format_text(
-            active_locale(),
+            locale,
             "{} hasn't run yet — press Enter to fill the form first.",
             &[&entry.meta.name],
         )));
@@ -6440,11 +8706,7 @@ fn tui_rerun(
         Ok(exit) => tui_complete(
             service,
             state_dir,
-            &format_text(
-                active_locale(),
-                "Run finished with exit status {}",
-                &[&exit],
-            ),
+            &format_text(locale, "Run finished with exit status {}", &[&exit]),
         ),
         Err(RunError::Inputs(skit_application::run_inputs::RunInputError::Preparation(_))) => {
             Ok(UiAction::Present(tui_open(
@@ -6457,9 +8719,9 @@ fn tui_rerun(
             )?))
         }
         Err(error) => Ok(UiAction::SetStatus(format_text(
-            active_locale(),
+            locale,
             "Error: {}",
-            &[&error.message().localize(active_locale())],
+            &[&error.message().localize(locale)],
         ))),
     }
 }
@@ -6586,7 +8848,7 @@ fn tui_run_context(store: &FileStore, entry: &Entry) -> Result<RunFormContext, C
         entry_dir: store.entry_dir_path(&entry.slug),
         invoke_cwd: invoke_cwd.clone(),
     };
-    let workdir = resolve_launch_workdir(entry, &paths, &SystemProbe)
+    let workdir = project_launch_workdir(entry, &paths, &SystemProbe)
         .map_err(RunError::from)?
         .display()
         .to_string();
@@ -6620,11 +8882,15 @@ fn plain_run_form_view(
             } else {
                 saved.get(&parameter.name).cloned().unwrap_or_default()
             };
-            if parameter.secret {
+            let mut field = if parameter.secret {
                 FormField::secret_raw(format!("value:{}", parameter.name), label, value)
             } else {
                 FormField::text_raw(format!("value:{}", parameter.name), label, value)
-            }
+            };
+            field.help = parameter.help.clone();
+            field.degraded = parameter.degraded;
+            field.input_binding = parameter.binding == ParameterBinding::Input;
+            field
         })
         .collect::<Vec<_>>();
     if !runners.is_empty() {
@@ -6683,9 +8949,26 @@ fn tui_add_workflow(
 }
 
 fn tui_drafts(data_dir: &Path) -> Vec<DraftSummary> {
+    tui_drafts_after(data_dir, |_| {})
+}
+
+#[cfg(test)]
+fn tui_drafts_with_test_hook(
+    data_dir: &Path,
+    after_directory_check: impl FnOnce(&Path),
+) -> Vec<DraftSummary> {
+    tui_drafts_after(data_dir, after_directory_check)
+}
+
+fn tui_drafts_after(
+    data_dir: &Path,
+    after_directory_check: impl FnOnce(&Path),
+) -> Vec<DraftSummary> {
     let Some(drafts_dir) = existing_owned_drafts_dir(data_dir) else {
         return Vec::new();
     };
+    let drafts_dir = drafts_dir.literal;
+    after_directory_check(&drafts_dir);
     let Ok(items) = fs::read_dir(&drafts_dir) else {
         return Vec::new();
     };
@@ -6693,24 +8976,69 @@ fn tui_drafts(data_dir: &Path) -> Vec<DraftSummary> {
         .filter_map(Result::ok)
         .filter(|item| item.file_name().to_string_lossy().starts_with("skit-"))
         .filter_map(|item| {
-            let metadata = item.metadata().ok()?;
-            if !metadata.is_file() {
+            let metadata = fs::symlink_metadata(item.path()).ok()?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
                 return None;
             }
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map_or(0, |value| value.as_nanos().min(u128::from(u64::MAX)) as u64);
+            let modified = modified_ns(&metadata).unwrap_or(0);
             Some(DraftSummary {
                 path: item.path(),
                 modified,
+                identity: source_identity_at(&item.path(), &metadata),
+                permissions: source_permissions(&metadata),
+                content_hash: draft_content_witness(&item.path()),
             })
         })
         .collect()
 }
 
+/// Read the content witness a listed draft needs on this host.
+///
+/// A Unix identity carries the change time, which every write in place moves, so the identity alone
+/// already reports an edit and the rows need no witness and no extra read.
+#[cfg(not(windows))]
+fn draft_content_witness(_path: &Path) -> Option<String> {
+    None
+}
+
+/// Read the content witness a listed draft needs on this host.
+///
+/// A Windows identity is a volume number, a file number, and a creation time. A write in place
+/// moves none of them, and the modified time can repeat when two writes share one clock tick. The
+/// row therefore keeps the content itself, so deletion can see an edit the rest cannot. An
+/// unreadable draft returns `None`, which leaves deletion with the checks it had before.
+#[cfg(windows)]
+fn draft_content_witness(path: &Path) -> Option<String> {
+    fs::read(path).ok().map(|bytes| content_hash(&bytes))
+}
+
+fn modified_ns(metadata: &Metadata) -> Option<u64> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_nanos().min(u128::from(u64::MAX)) as u64)
+}
+
+fn refreshed_draft(data_dir: &Path, path: &Path) -> Result<DraftSummary, CliError> {
+    tui_drafts(data_dir)
+        .into_iter()
+        .find(|draft| draft.path == path)
+        .ok_or_else(|| {
+            CliError::Failure(
+                Message::new("the kept draft changed and could not be inspected at {}")
+                    .with(path.display()),
+            )
+        })
+}
+
 fn tui_preferences_screen(config_dir: &Path) -> Result<Screen, CliError> {
+    Ok(Screen::Preferences(Box::new(tui_preferences_view(
+        config_dir,
+    )?)))
+}
+
+fn tui_preferences_view(config_dir: &Path) -> Result<PreferencesView, CliError> {
     let config = FileConfigStore::new(config_dir);
     let settings = config.settings()?;
     let setting = |key: &str| settings.get(key).cloned().unwrap_or_default();
@@ -6755,9 +9083,9 @@ fn tui_preferences_screen(config_dir: &Path) -> Result<Screen, CliError> {
             npm: mirror.npm,
         },
     };
-    Ok(Screen::Preferences(Box::new(PreferencesView::new(
-        PreferencesDraft::from_snapshot(snapshot),
-    ))))
+    Ok(PreferencesView::new(PreferencesDraft::from_snapshot(
+        snapshot,
+    )))
 }
 
 fn tui_health_screen(
@@ -6803,10 +9131,8 @@ impl<'a> CliHealthInspector<'a> {
         let scan = self.service.list()?;
         let mut entries = Vec::with_capacity(scan.entries.len());
         for summary in &scan.entries {
-            match self.service.show(summary.slug.as_str()) {
-                Ok(entry) => entries.push(entry),
-                Err(RepositoryError::NotFound { .. }) => {}
-                Err(error) => return Err(error.into()),
+            if let Ok(entry) = self.service.show(summary.slug.as_str()) {
+                entries.push(entry);
             }
         }
         let probe = SystemProbe;
@@ -6946,13 +9272,13 @@ fn health_size_text(size: u64) -> String {
         return format!("{size} B");
     }
     let mut value = size as f64 / 1024.0;
-    for unit in ["KB", "MB", "GB"] {
-        if value < 1024.0 || unit == "GB" {
+    for unit in ["KB", "MB"] {
+        if value < 1024.0 {
             return format!("{value:.1} {unit}");
         }
         value /= 1024.0;
     }
-    unreachable!("the final size unit always returns")
+    format!("{value:.1} GB")
 }
 
 fn tui_runners_screen(
@@ -6978,14 +9304,11 @@ fn tui_runner_rows(
         .into_iter()
         .filter(|summary| summary.kind.as_str() == "prompt")
     {
-        let entry = match service.show(summary.slug.as_str()) {
-            Ok(entry) => entry,
-            Err(RepositoryError::NotFound { .. }) => continue,
-            Err(error) => return Err(error.into()),
-        };
-        let runner = EntrySettings::from_meta(&entry.meta).runner;
-        if !runner.is_empty() {
-            *pinned.entry(runner).or_default() += 1;
+        if let Ok(entry) = service.show(summary.slug.as_str()) {
+            let runner = EntrySettings::from_meta(&entry.meta).runner;
+            if !runner.is_empty() {
+                *pinned.entry(runner).or_default() += 1;
+            }
         }
     }
     let identities = rows
@@ -7072,24 +9395,8 @@ fn tui_save_runner(
             config.replace_runner_row_if_unchanged(runner, expected)
         }
     };
-    let saved = match result {
-        Ok(saved) => saved,
-        Err(error) => {
-            return Ok(tui_runner_save_failure(
-                owner,
-                error.message().localize(active_locale()),
-            ));
-        }
-    };
-    if !saved {
-        return Ok(tui_runner_save_failure(
-            owner,
-            text(
-                active_locale(),
-                "The runner row changed before it could be saved; inspect again.",
-            )
-            .into_owned(),
-        ));
+    if let Some(failure) = project_runner_save_result(result, owner.clone(), active_locale()) {
+        return Ok(failure);
     }
     let template = if updated {
         "Runner {} updated: {}"
@@ -7122,6 +9429,70 @@ fn tui_runner_save_failure(owner: RunnerSaveOwner, message: String) -> UiAction 
     }
 }
 
+fn project_runner_save_result(
+    result: Result<bool, ConfigError>,
+    owner: RunnerSaveOwner,
+    locale: Locale,
+) -> Option<UiAction> {
+    match result {
+        Ok(true) => None,
+        Ok(false) => Some(tui_runner_save_failure(
+            owner,
+            text(
+                locale,
+                "The runner row changed before it could be saved; inspect again.",
+            )
+            .into_owned(),
+        )),
+        Err(error) => Some(tui_runner_save_failure(
+            owner,
+            error.message().localize(locale),
+        )),
+    }
+}
+
+fn project_named_runner_removal(
+    result: Result<RunnerRemovalCas, RunnerManagementStoreError>,
+    locale: Locale,
+) -> Option<UiAction> {
+    let message = match result {
+        Ok(RunnerRemovalCas::Removed) => return None,
+        Ok(RunnerRemovalCas::RowsChanged) => text(
+            locale,
+            "The runner row changed before it could be removed; inspect again.",
+        )
+        .into_owned(),
+        Ok(RunnerRemovalCas::PinsChanged { .. }) => text(
+            locale,
+            "The prompt pins changed before the runner could be removed; inspect again.",
+        )
+        .into_owned(),
+        Err(RunnerManagementStoreError::Library(error)) => error.message().localize(locale),
+        Err(RunnerManagementStoreError::Config(error)) => error.message().localize(locale),
+    };
+    Some(UiAction::Runners(RunnerManagerAction::MutationFailed(
+        message,
+    )))
+}
+
+fn project_raw_runner_removal(
+    result: Result<bool, ConfigError>,
+    locale: Locale,
+) -> Option<UiAction> {
+    let message = match result {
+        Ok(true) => return None,
+        Ok(false) => text(
+            locale,
+            "The runner row changed before it could be removed; inspect again.",
+        )
+        .into_owned(),
+        Err(error) => error.message().localize(locale),
+    };
+    Some(UiAction::Runners(RunnerManagerAction::MutationFailed(
+        message,
+    )))
+}
+
 fn tui_remove_runner(
     service: &LibraryService<FileStore>,
     config_dir: &Path,
@@ -7146,47 +9517,16 @@ fn tui_remove_runner(
             };
             let management =
                 FileRunnerManagementStore::new(service.repository().data_dir(), config_dir);
-            match management.remove_named_if_unchanged(
-                name,
-                &expected,
-                *expected_pinned_count,
-            ) {
-                Ok(RunnerRemovalCas::Removed) => {
-                    Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-                        rows: tui_runner_rows(service, config_dir)?,
-                        selected_name: None,
-                        message: format_text(active_locale(), "Runner {} removed.", &[name]),
-                    }))
-                }
-                Ok(RunnerRemovalCas::RowsChanged) => Ok(UiAction::Runners(
-                    RunnerManagerAction::MutationFailed(
-                        text(
-                            active_locale(),
-                            "The runner row changed before it could be removed; inspect again.",
-                        )
-                        .into_owned(),
-                    ),
-                )),
-                Ok(RunnerRemovalCas::PinsChanged { .. }) => Ok(UiAction::Runners(
-                    RunnerManagerAction::MutationFailed(
-                        text(
-                            active_locale(),
-                            "The prompt pins changed before the runner could be removed; inspect again.",
-                        )
-                        .into_owned(),
-                    ),
-                )),
-                Err(error) => Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
-                    match error {
-                        RunnerManagementStoreError::Library(error) => {
-                            error.message().localize(active_locale())
-                        }
-                        RunnerManagementStoreError::Config(error) => {
-                            error.message().localize(active_locale())
-                        }
-                    },
-                ))),
+            let result =
+                management.remove_named_if_unchanged(name, &expected, *expected_pinned_count);
+            if let Some(failure) = project_named_runner_removal(result, active_locale()) {
+                return Ok(failure);
             }
+            Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+                rows: tui_runner_rows(service, config_dir)?,
+                selected_name: None,
+                message: format_text(active_locale(), "Runner {} removed.", &[name]),
+            }))
         }
         RunnerRemoveRequest::RawRow { expected } => {
             let Some(row) = resolve_runner_row(&current, expected) else {
@@ -7214,23 +9554,17 @@ fn tui_remove_runner(
                     )
                 },
             );
-            match config.remove_runner_row_if_unchanged(row) {
-                Ok(true) => Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
-                    rows: tui_runner_rows(service, config_dir)?,
-                    selected_name: None,
-                    message,
-                })),
-                Ok(false) => Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
-                    text(
-                        active_locale(),
-                        "The runner row changed before it could be removed; inspect again.",
-                    )
-                    .into_owned(),
-                ))),
-                Err(error) => Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
-                    error.message().localize(active_locale()),
-                ))),
-            }
+            let result = config.remove_runner_row_if_unchanged(row);
+            project_raw_runner_removal(result, active_locale()).map_or_else(
+                || {
+                    Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+                        rows: tui_runner_rows(service, config_dir)?,
+                        selected_name: None,
+                        message,
+                    }))
+                },
+                Ok,
+            )
         }
     }
 }
@@ -7330,6 +9664,14 @@ fn tui_apply_parameter_edits(
     }
     *declarations = merged;
     Ok(())
+}
+
+fn tui_touched_parameter_names(values: &SubmittedValues) -> BTreeSet<String> {
+    values
+        .keys()
+        .filter_map(|key| key.strip_prefix("parameter:"))
+        .filter_map(|suffix| suffix.split_once(':').map(|(name, _)| name.to_owned()))
+        .collect()
 }
 
 /// Apply one row's edits, or report that the row was unticked.
@@ -7450,17 +9792,22 @@ fn tui_submit(
             tui_complete(service, state_dir, "Entry added")
         }
         FormPurpose::Settings => {
-            tui_submit_settings(service, store, state_dir, tui_selector(&selector)?, values)?;
-            tui_complete(service, state_dir, "Settings saved")
+            let outcome =
+                tui_submit_settings(service, store, state_dir, tui_selector(&selector)?, values)?;
+            tui_complete(
+                service,
+                state_dir,
+                &settings_saved_message(&outcome, active_locale()),
+            )
         }
         FormPurpose::Preferences => {
             let config = FileConfigStore::new(config_dir);
-            config.set_many(
-                &values
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.as_text()))
-                    .collect(),
-            )?;
+            let settings = values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.as_text()))
+                .collect();
+            validate_preference_files(&settings)?;
+            config.set_many(&settings)?;
             tui_complete(service, state_dir, "Preferences saved")
         }
         FormPurpose::Runners => {
@@ -7519,7 +9866,9 @@ fn tui_submit_run(
     let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
     let run_values = changed_form_values(values, &saved.values);
     let extra_args = split_editable_arguments(&tui_value(values, "_skit_args"))?;
-    let exit = crate::run::run_with_roots(
+    let runner = tui_nonempty_owned(values, "_skit_runner");
+    let runner_was_picked = tui_flag(values, "_skit_runner_picked")?;
+    let result = crate::run::run_with_roots(
         service,
         store,
         state_dir,
@@ -7529,8 +9878,8 @@ fn tui_submit_run(
             values: run_values,
             preset: tui_nonempty_owned(values, "_skit_preset"),
             save_preset: tui_nonempty_owned(values, "_skit_save_preset"),
-            runner: tui_nonempty_owned(values, "_skit_runner"),
-            runner_was_picked: tui_flag(values, "_skit_runner_picked")?,
+            runner: runner.clone(),
+            runner_was_picked,
             dry_run: tui_flag(values, "_skit_dry_run")?,
             no_input: true,
             plain: true,
@@ -7538,7 +9887,21 @@ fn tui_submit_run(
             forget_args: false,
             extra_args,
         },
-    )?;
+    );
+    let exit = match result {
+        Ok(exit) => exit,
+        Err(error) => {
+            if let Some(message) = selected_prompt_runner_preflight_message(
+                &entry,
+                runner.as_deref(),
+                &error,
+                active_locale(),
+            ) {
+                return tui_complete(service, state_dir, &message);
+            }
+            return Err(error.into());
+        }
+    };
     if FileConfigStore::new(config_dir).get("after_run")? == "exit" {
         Ok(UiAction::Quit)
     } else {
@@ -7550,13 +9913,36 @@ fn tui_submit_run(
     }
 }
 
+fn selected_prompt_runner_preflight_message(
+    entry: &Entry,
+    runner: Option<&str>,
+    error: &RunError,
+    locale: Locale,
+) -> Option<String> {
+    if entry.meta.kind.as_str() != "prompt"
+        || runner.is_none()
+        || !matches!(error, RunError::Launch(LaunchError::ProgramNotFound { .. }))
+    {
+        return None;
+    }
+    let detail = error.message().localize(locale);
+    Some(format_text(locale, "Error: {}", &[&detail]))
+}
+
+#[derive(Debug, Default, Eq, PartialEq)]
+struct SettingsSaveOutcome {
+    warnings: Vec<SourceEditWarning>,
+    normalization_refusals: Vec<SourceNormalizationRefusal>,
+    purged_secrets: BTreeSet<String>,
+}
+
 fn tui_submit_settings(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     state_dir: &Path,
     selector: &str,
     values: &SubmittedValues,
-) -> Result<(), CliError> {
+) -> Result<SettingsSaveOutcome, CliError> {
     let entry = service.show(selector)?;
     // Only an axis a person moved travels. Every read below therefore asks whether the key is
     // present before it changes anything: an absent key means "nobody touched this", and reading it
@@ -7620,6 +10006,8 @@ fn tui_submit_settings(
         .then_some(submitted_dependencies.clone());
     let python_edit =
         (submitted_python != baseline_settings.requires_python).then_some(submitted_python.clone());
+    let clear_javascript = matches!(entry.meta.kind.as_str(), "js" | "ts")
+        && dependencies_edit.as_ref().is_some_and(Vec::is_empty);
     if entry.meta.kind.as_str() == "python" {
         for requirement in dependencies_edit.as_deref().unwrap_or_default() {
             validate_pep508_requirement(requirement)
@@ -7652,25 +10040,80 @@ fn tui_submit_settings(
     if values.contains_key("interpolate") {
         settings.interpolate = tui_flag(values, "interpolate")?;
     }
+    let original_source = source_path(store, &entry).and_then(|path| fs::read(path).ok());
+    let source_text = original_source
+        .as_deref()
+        .map(LosslessSource::from_bytes)
+        .map(|source| source.normalized_text().to_owned())
+        .unwrap_or_default();
+    let placeholder_order = match entry.meta.kind.as_str() {
+        "command" => placeholder_params("command", &settings.template)
+            .into_iter()
+            .map(|item| item.name)
+            .collect::<Vec<_>>(),
+        "prompt" => placeholder_params("prompt", &source_text)
+            .into_iter()
+            .map(|item| item.name)
+            .collect(),
+        _ => Vec::new(),
+    };
+    let placeholder_truth = placeholder_order.iter().cloned().collect::<BTreeSet<_>>();
     // The stored declarations are the set a save keeps, and the form carries only the axes a person
     // moved. A screen with no parameter section carries none, so nothing here changes — reading the
     // absent rows as an empty set would delete every one of them.
-    let mut declarations = stored_settings.parameters.clone();
+    let placeholder_kind = matches!(entry.meta.kind.as_str(), "command" | "prompt");
+    let mut explicit_names = stored_settings
+        .parameters
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut declarations = if placeholder_kind {
+        entry_parameters(store, &entry)
+    } else {
+        stored_settings.parameters.clone()
+    };
+    let original_declarations = declarations.clone();
+    let touched_names = tui_touched_parameter_names(values);
     tui_apply_parameter_edits(values, &mut declarations)?;
+    explicit_names.extend(
+        touched_names
+            .into_iter()
+            .filter(|name| declarations.iter().any(|item| item.name == *name)),
+    );
     let removed = tui_list(values, "parameter:remove");
     declarations.retain(|parameter| !removed.contains(&parameter.name));
-    for name in tui_list(values, "parameter:add") {
+    explicit_names.retain(|name| !removed.contains(name));
+    let selected_detected = if settings.interpolate {
+        tui_list(values, PROMPT_CANDIDATES_KEY)
+    } else {
+        Vec::new()
+    };
+    let mut additions = placeholder_order
+        .iter()
+        .filter(|name| selected_detected.contains(name))
+        .cloned()
+        .collect::<Vec<_>>();
+    additions.extend(tui_list(values, "parameter:add"));
+    for name in additions {
         if declarations.iter().any(|parameter| parameter.name == name) {
             return Err(CliError::Usage(
                 Message::new("parameter already exists: {}").with(name),
             ));
         }
-        declarations.push(ParamDecl::new(name));
+        let mut declaration = if placeholder_truth.contains(&name) {
+            synthesized_placeholder(&name)
+        } else {
+            ParamDecl::new(name.clone())
+        };
+        if placeholder_kind && !placeholder_truth.contains(&name) {
+            declaration.delivery = ParameterDelivery::Env;
+        }
+        declarations.push(declaration);
+        explicit_names.insert(name);
     }
     if entry.meta.kind.as_str() == "command" && settings.template != previous_template {
         declarations = reconcile_template_parameters(&settings.template, &declarations);
     }
-    let original_source = source_path(store, &entry).and_then(|path| fs::read(path).ok());
     // No submit-time filter. A source-owned row is never offered as an editable declaration, so
     // there is nothing here to take back out — and with it go both races the filter carried: a
     // concurrent source edit changing which rows survive, and an unreadable source silently
@@ -7678,15 +10121,34 @@ fn tui_submit_settings(
     settings.parameters = if source_owned_schema(entry.meta.kind.as_str()) {
         Vec::new()
     } else {
-        declarations.clone()
+        declarations
+            .iter()
+            .filter(|item| explicit_names.contains(&item.name))
+            .cloned()
+            .collect()
     };
-    if matches!(entry.meta.kind.as_str(), "command" | "prompt") {
-        settings.params = settings
-            .parameters
+    if placeholder_kind {
+        let placeholder_names = declarations
             .iter()
             .filter(|parameter| parameter.delivery == ParameterDelivery::Placeholder)
             .map(|parameter| parameter.name.clone())
+            .collect::<BTreeSet<_>>();
+        // placeholder_kind is derived from the same command/prompt match that produced this
+        // updated template/body order.
+        let current_order = placeholder_order;
+        settings.params = current_order
+            .into_iter()
+            .filter(|name| placeholder_names.contains(name))
             .collect();
+        let remaining = declarations
+            .iter()
+            .filter(|item| {
+                item.delivery == ParameterDelivery::Placeholder
+                    && !settings.params.contains(&item.name)
+            })
+            .map(|item| item.name.clone())
+            .collect::<Vec<_>>();
+        settings.params.extend(remaining);
     }
     let mut rewritten_source = None;
     if entry.meta.kind.as_str() == "python" && entry.meta.mode == StorageMode::Copy {
@@ -7717,25 +10179,43 @@ fn tui_submit_settings(
         settings.dependencies = plan.stored.dependencies;
         settings.requires_python = plan.stored.requires_python;
     }
-    let source_requested = tui_flag(values, "source:resync")?
-        || !tui_value(values, "source:manage").is_empty()
-        || !tui_value(values, "source:unmanage").is_empty()
-        || !tui_value(values, "source:normalize").is_empty();
+    let source_request = SourceEditRequest {
+        resync: tui_flag(values, "source:resync")?,
+        add: tui_list(values, "source:manage"),
+        remove: tui_list(values, "source:unmanage"),
+        ..SourceEditRequest::default()
+    };
+    let source_requested =
+        !source_request.is_empty() || !tui_value(values, "source:normalize").is_empty();
+    let mut source_edit_warnings = Vec::new();
+    let mut normalization_refusals = Vec::new();
+    let mut source_state_purge = None;
     if let Some(original_bytes) = original_source.as_deref() {
         let mut working = rewritten_source
             .take()
             .unwrap_or_else(|| original_bytes.to_vec());
         let view = LosslessSource::from_bytes(&working);
         let original_text = view.normalized_text().to_owned();
-        let (rewritten, mut managed) = prepare_source_management(
+        let prepared = prepare_source_management(
+            &entry.meta.name,
             entry.meta.kind.as_str(),
             entry.meta.mode,
             original_text.clone(),
-            tui_flag(values, "source:resync")?,
-            &tui_list(values, "source:manage"),
-            &tui_list(values, "source:unmanage"),
+            &source_request,
             &tui_list(values, "source:normalize"),
         )?;
+        let rewritten = prepared.source;
+        let mut managed = prepared.managed;
+        source_edit_warnings = prepared.warnings;
+        normalization_refusals = prepared.normalization_refusals;
+        if prepared.normalized.is_empty()
+            && let Some(refusal) = normalization_refusals.first()
+        {
+            return Err(CliError::Failure(source_normalization_refusal_message(
+                refusal,
+            )));
+        }
+        let source_edit_applied = prepared.applied;
         // The block's own rows are edited on the block's own set. Unticking one here is the
         // unmanage: version 0.4 rewrites the block from the rows that survived
         // (`src/skit/tui_settings.py:1061`, `:1074`).
@@ -7759,6 +10239,7 @@ fn tui_submit_settings(
             working = view.restore_bytes(&rewritten);
         }
         let before_managed = managed_params(entry.meta.kind.as_str(), &rewritten);
+        let managed_changed = managed != before_managed;
         if source_requested || source_text_changed || managed != before_managed {
             working = write_managed_params_bytes(entry.meta.kind.as_str(), &working, &managed)
                 .map_err(|error| CliError::Usage(error.message()))?;
@@ -7766,29 +10247,74 @@ fn tui_submit_settings(
         if working != original_bytes {
             rewritten_source = Some(working);
         }
+        source_state_purge = Some((managed, source_edit_applied || managed_changed));
     } else if source_requested {
         return Err(CliError::Usage(Message::new(
             "the stored source is not valid UTF-8",
         )));
     }
-    let claimed = service.claim_identity(&entry)?;
-    let entry = service.update_entry(
-        &claimed,
-        UpdateEntry {
-            name: name.clone(),
-            description: description.to_owned(),
-            settings: settings.clone(),
-            workdir: if values.contains_key("workdir") {
-                tui_value(values, "workdir").into_owned()
-            } else {
-                entry.meta.workdir.clone()
-            },
-            source: rewritten_source,
-            expected_source_hash: entry.meta.source_hash.clone(),
-        },
-    )?;
-    let state = FormStateService::new(FileFormStateStore::new(state_dir));
-    state.purge_secrets(&entry.slug, &declarations)?;
+    let workdir = if values.contains_key("workdir") {
+        tui_value(values, "workdir").into_owned()
+    } else {
+        entry.meta.workdir.clone()
+    };
+    let update = UpdateEntry {
+        name: name.clone(),
+        description: description.to_owned(),
+        settings: settings.clone(),
+        workdir: workdir.clone(),
+        source: rewritten_source,
+        expected_source_hash: entry.meta.source_hash.clone(),
+    };
+    let entry_changed = update.name != entry.meta.name
+        || update.description != entry.meta.description
+        || update.settings != stored_settings
+        || update.workdir != entry.meta.workdir
+        || update.source.is_some();
+    let purge_declarations = match source_state_purge {
+        Some((managed, true)) => Some(managed),
+        Some((_, false)) if declarations == original_declarations => None,
+        Some((_, false)) | None if declarations != original_declarations => {
+            Some(declarations.clone())
+        }
+        None | Some((_, false)) => None,
+    }
+    .filter(|declarations| declarations.iter().any(|declaration| declaration.secret));
+    let state_store = FileFormStateStore::new(state_dir);
+    let (entry, purged_secrets) = if entry_changed && purge_declarations.is_some() {
+        let purge_declarations = purge_declarations.as_deref().unwrap_or_default();
+        let (committed, purged_secrets) = state_store
+            .update_after_external_commit_and_finalize(
+                &entry.slug,
+                || {
+                    commit_entry_with_javascript_cleanup(
+                        service,
+                        store,
+                        &entry,
+                        update,
+                        clear_javascript,
+                    )
+                },
+                |state| scrub_secrets(purge_declarations, state),
+                CommittedEntryUpdate::finalize_cleanup,
+                |committed| rollback_committed_entry_update(committed, service),
+            )
+            .map_err(coordinated_state_error)?;
+        (committed.entry, purged_secrets)
+    } else {
+        let entry = if entry_changed {
+            update_entry_with_javascript_cleanup(service, store, &entry, update, clear_javascript)?
+        } else {
+            entry
+        };
+        let purged = if let Some(declarations) = purge_declarations.as_deref() {
+            FormStateService::new(state_store.clone()).purge_secrets(&entry.slug, declarations)?
+        } else {
+            BTreeSet::new()
+        };
+        (entry, purged)
+    };
+    let state = FormStateService::new(state_store);
     // An unticked preset is deleted, and only an unticked one travels. Version 0.4 deletes at the
     // end of the save, from the names the user actually saw (`src/skit/tui_settings.py:1114-1120`).
     // The name is in the key, so a preset added or removed while the screen was open cannot shift
@@ -7801,7 +10327,31 @@ fn tui_submit_settings(
             state.delete_preset(&entry.slug, preset)?;
         }
     }
-    Ok(())
+    Ok(SettingsSaveOutcome {
+        warnings: source_edit_warnings,
+        normalization_refusals,
+        purged_secrets,
+    })
+}
+
+fn settings_saved_message(outcome: &SettingsSaveOutcome, locale: Locale) -> String {
+    let mut lines = vec![text(locale, "Settings saved").into_owned()];
+    lines.extend(
+        outcome
+            .warnings
+            .iter()
+            .map(|warning| source_edit_warning_message(warning).localize(locale)),
+    );
+    lines.extend(
+        outcome
+            .normalization_refusals
+            .iter()
+            .map(|refusal| source_normalization_refusal_message(refusal).localize(locale)),
+    );
+    if !outcome.purged_secrets.is_empty() {
+        lines.push(purged_secrets_message(&outcome.purged_secrets).localize(locale));
+    }
+    lines.join(" — ")
 }
 
 fn tui_complete(
@@ -7813,7 +10363,7 @@ fn tui_complete(
     // detail pane with no facts for anything a mutation touched — a freshly added entry showed its
     // name, kind and description and nothing else.
     let config_dir = resolve_config_dir()?;
-    let surface = skit_store::library_surface(service.repository(), state_dir, &config_dir)?;
+    let surface = crate::library_surface(service.repository(), state_dir, &config_dir)?;
     let rerunnable = tui_rerunnable(&surface.scan, state_dir);
     Ok(UiAction::Complete {
         surface: Some(surface),
@@ -7892,6 +10442,7 @@ struct SourceSnapshot {
     bytes: Vec<u8>,
     permissions: SourcePermissions,
     is_regular: bool,
+    identity: Option<SourceIdentity>,
 }
 
 fn read_source(
@@ -7910,6 +10461,7 @@ fn read_source(
             bytes: Vec::new(),
             permissions: source_permissions(&metadata),
             is_regular: false,
+            identity: source_identity_at(path, &metadata),
         });
     }
     let mut file = File::open(path).map_err(|error| source_read_error(path, error))?;
@@ -7923,6 +10475,7 @@ fn read_source(
         bytes,
         permissions: source_permissions(&metadata),
         is_regular: metadata.is_file(),
+        identity: source_identity_from_file(&file, &metadata),
     })
 }
 
@@ -7949,11 +10502,17 @@ fn source_error(operation: &'static str, path: &Path, source: io::Error) -> CliE
 }
 
 fn source_read_error(path: &Path, error: io::Error) -> CliError {
-    CliError::Failure(
-        Message::new("Can't read {}: {}")
-            .with(path.display())
-            .with(error),
-    )
+    CliError::SourceRead {
+        path: path.display().to_string(),
+        source: error,
+    }
+}
+
+fn finalize_external_edit_error(error: FinalizeExternalCopyEditError) -> CliError {
+    match error {
+        FinalizeExternalCopyEditError::Repository(error) => error.into(),
+        FinalizeExternalCopyEditError::Read { path, source } => source_read_error(&path, source),
+    }
 }
 
 fn resolve_add_source(path: &Path) -> Result<PathBuf, CliError> {
@@ -7972,8 +10531,64 @@ fn source_permissions(metadata: &Metadata) -> SourcePermissions {
 
     SourcePermissions {
         readonly: metadata.permissions().readonly(),
-        unix_mode: Some(metadata.permissions().mode() & 0o777),
+        unix_mode: Some(metadata.permissions().mode() & 0o7777),
     }
+}
+
+#[cfg(unix)]
+fn source_identity_from_file(_file: &File, metadata: &Metadata) -> Option<SourceIdentity> {
+    source_identity_from_metadata(metadata)
+}
+
+#[cfg(unix)]
+fn source_identity_at(_path: &Path, metadata: &Metadata) -> Option<SourceIdentity> {
+    source_identity_from_metadata(metadata)
+}
+
+#[cfg(unix)]
+fn source_identity_from_metadata(metadata: &Metadata) -> Option<SourceIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    Some(SourceIdentity::unix(
+        metadata.dev(),
+        metadata.ino(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    ))
+}
+
+#[cfg(windows)]
+fn source_identity_from_file(file: &File, metadata: &Metadata) -> Option<SourceIdentity> {
+    use std::os::windows::fs::MetadataExt as _;
+
+    let id = fs_id::FileID::new(file).ok()?;
+    Some(SourceIdentity::windows(
+        id.storage_id(),
+        id.internal_file_id(),
+        metadata.creation_time(),
+    ))
+}
+
+#[cfg(windows)]
+fn source_identity_at(path: &Path, metadata: &Metadata) -> Option<SourceIdentity> {
+    use std::os::windows::fs::MetadataExt as _;
+
+    let id = fs_id::FileID::new(path).ok()?;
+    Some(SourceIdentity::windows(
+        id.storage_id(),
+        id.internal_file_id(),
+        metadata.creation_time(),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn source_identity_from_file(_file: &File, _metadata: &Metadata) -> Option<SourceIdentity> {
+    None
+}
+
+#[cfg(not(any(unix, windows)))]
+fn source_identity_at(_path: &Path, _metadata: &Metadata) -> Option<SourceIdentity> {
+    None
 }
 
 #[cfg(not(unix))]
@@ -8120,6 +10735,21 @@ enum CliError {
     Config(#[from] ConfigError),
     #[error(transparent)]
     State(#[from] StateWriteError),
+    #[error("State commit failed: {state}. Rollback also failed: {rollback}.")]
+    StateRollback {
+        state: StateWriteError,
+        rollback: Box<CliError>,
+    },
+    #[error("Operation failed: {primary}. Rollback also failed: {rollback}.")]
+    Rollback {
+        primary: Box<CliError>,
+        rollback: Box<CliError>,
+    },
+    #[error("Operation failed: {primary}. State rollback also failed: {state}.")]
+    StateRestoreRollback {
+        primary: Box<CliError>,
+        state: StateWriteError,
+    },
     #[error("{0}")]
     Usage(Message),
     #[error("{0}")]
@@ -8133,6 +10763,12 @@ enum CliError {
     #[error("could not {operation} {path}: {source}")]
     Source {
         operation: &'static str,
+        path: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("Can't read {path}: {source}")]
+    SourceRead {
         path: String,
         #[source]
         source: io::Error,
@@ -8154,6 +10790,21 @@ impl Localize for CliError {
             Self::Tui(error) => error.message(),
             Self::Config(error) => error.message(),
             Self::State(error) => error.message(),
+            Self::StateRollback { state, rollback } => {
+                Message::new("State commit failed: {}. Rollback also failed: {}.")
+                    .nested(state.message())
+                    .nested(rollback.message())
+            }
+            Self::Rollback { primary, rollback } => {
+                Message::new("Operation failed: {}. Rollback also failed: {}.")
+                    .nested(primary.message())
+                    .nested(rollback.message())
+            }
+            Self::StateRestoreRollback { primary, state } => {
+                Message::new("Operation failed: {}. State rollback also failed: {}.")
+                    .nested(primary.message())
+                    .nested(state.message())
+            }
             Self::Usage(message) => message.clone(),
             Self::Failure(message) => message.clone(),
             Self::ConfirmationRequired => {
@@ -8167,6 +10818,9 @@ impl Localize for CliError {
                 source,
             } => Message::new("could not {} {}: {}")
                 .nested(Message::term(operation))
+                .with(path)
+                .with(source),
+            Self::SourceRead { path, source } => Message::new("Can't read {}: {}")
                 .with(path)
                 .with(source),
             Self::DataDirectoryUnavailable => Message::new(
@@ -8195,9 +10849,12 @@ impl CliError {
             | Self::Io(_)
             | Self::Tui(_)
             | Self::State(_)
+            | Self::StateRollback { .. }
+            | Self::Rollback { .. }
+            | Self::StateRestoreRollback { .. }
             | Self::DataDirectoryUnavailable
             | Self::DirectoryUnavailable(_) => ExitClass::Skit.code() as i32,
-            Self::Source { .. } => ExitClass::Failure.code() as i32,
+            Self::Source { .. } | Self::SourceRead { .. } => ExitClass::Failure.code() as i32,
         }
     }
 }

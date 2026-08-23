@@ -113,7 +113,7 @@ fn test_env_token_missing_raises_with_names() {
     );
     // Pin the whole sentence, not just the substrings: both interpolated fields (the bare name
     // and the full token) *and* the exact prose/casing, so a corrupted or down-cased message
-    // string can't slip through.
+    // string cannot slip through.
     assert_eq!(
         error.to_string(),
         "The environment variable MISSING_VAR isn't set (needed by {env:MISSING_VAR})."

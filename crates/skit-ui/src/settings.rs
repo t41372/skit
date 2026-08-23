@@ -20,8 +20,12 @@ use skit_form::{
         ParameterRow, ParameterSection, ParameterSectionContext, SourceFollowup, parameter_section,
     },
 };
+use skit_language::split_pep508_requirements;
 
-use crate::SubmittedValues;
+use crate::{
+    SubmittedValues,
+    picker::{ChoicePicker, PickerItem, PickerMode},
+};
 
 /// Stable key of the entry name field.
 pub const NAME_KEY: &str = "name";
@@ -53,6 +57,8 @@ pub const MANAGE_KEY: &str = "source:manage";
 pub const NORMALIZE_KEY: &str = "source:normalize";
 /// Stable key of the add-a-parameter box.
 pub const ADD_PARAMETER_KEY: &str = "parameter:add";
+/// Stable key of detected prompt placeholders selected for management.
+pub const PROMPT_CANDIDATES_KEY: &str = "parameter:add-detected";
 /// Stable key prefix of one preset's keep toggle. The preset's own name completes it.
 pub const PRESET_PREFIX: &str = "preset:";
 
@@ -132,6 +138,8 @@ pub enum SettingsItem {
     Note(SettingsNote),
     /// One control.
     Field(Box<Field>),
+    /// Open the full detected-placeholder picker beside the inline preview.
+    PromptCandidatePicker,
 }
 
 /// One rendered section: a heading and its interleaved text and controls.
@@ -154,7 +162,7 @@ impl SettingsSection {
     pub fn fields(&self) -> impl Iterator<Item = &Field> {
         self.items.iter().filter_map(|item| match item {
             SettingsItem::Field(field) => Some(field.as_ref()),
-            SettingsItem::Note(_) => None,
+            SettingsItem::Note(_) | SettingsItem::PromptCandidatePicker => None,
         })
     }
 
@@ -162,7 +170,7 @@ impl SettingsSection {
     pub fn fields_mut(&mut self) -> impl Iterator<Item = &mut Field> {
         self.items.iter_mut().filter_map(|item| match item {
             SettingsItem::Field(field) => Some(field.as_mut()),
-            SettingsItem::Note(_) => None,
+            SettingsItem::Note(_) | SettingsItem::PromptCandidatePicker => None,
         })
     }
 }
@@ -295,6 +303,9 @@ pub struct SettingsView {
     /// (`src/skit/tui_settings.py:408-415`). The chord reaches [`RESYNC_KEY`], which exists only
     /// under the same condition, so the guard and the control cannot drift apart.
     pub resync_available: bool,
+    /// Complete body-order list of detected prompt placeholders that are not managed yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    prompt_candidates: Vec<String>,
     /// Key of the control that owns the keyboard.
     ///
     /// Keyed by field rather than by index, for the reason the runner dropdown is: the focusable
@@ -339,6 +350,8 @@ pub enum SettingsAction {
     FocusPrevious,
     /// Ask the script for its parameter definitions again when the save runs.
     Resync,
+    /// Replace the settings-local detected-placeholder selection in body order.
+    SetPromptCandidates(Vec<String>),
     /// Save every axis, after validation.
     Save,
     /// Leave the screen, through the discard guard when anything moved.
@@ -420,6 +433,11 @@ impl SettingsView {
             sections,
             dependency_flavor: inputs.dependency_flavor,
             resync_available,
+            prompt_candidates: if inputs.kind == "prompt" {
+                inputs.candidates.clone()
+            } else {
+                Vec::new()
+            },
             revealed,
         };
         // The keyboard lands in the section the deep link named, so the first key press acts on
@@ -559,9 +577,7 @@ impl SettingsView {
         // its own specifier, and the PEP 508 splitter would merge a scoped npm package into its
         // neighbour (`src/skit/tui_settings.py:988-993`).
         Some(match self.dependency_flavor {
-            Some(DependencyFlavor::Uv) => {
-                crate::add::split_pep508_requirements(&field.value().as_text())
-            }
+            Some(DependencyFlavor::Uv) => split_pep508_requirements(&field.value().as_text()),
             _ => split_list(&field.value().as_text()),
         })
     }
@@ -683,6 +699,53 @@ impl SettingsView {
         field.set_value(FieldValue::Explicit(TypedValue::Choice(runner)));
     }
 
+    /// Return every detected, unmanaged prompt placeholder in body order.
+    #[must_use]
+    pub fn prompt_candidates(&self) -> &[String] {
+        &self.prompt_candidates
+    }
+
+    /// Report whether the full searchable picker adds reach beyond the inline preview.
+    #[must_use]
+    pub fn prompt_picker_available(&self) -> bool {
+        self.insertion_on() && self.prompt_candidates.len() > crate::PROMPT_LIST_PREVIEW_LIMIT
+    }
+
+    /// Build an isolated full-list picker from this screen's current local selection.
+    #[must_use]
+    pub fn prompt_picker(&self) -> ChoicePicker<String> {
+        let selected = self
+            .field(PROMPT_CANDIDATES_KEY)
+            .and_then(|field| field.value().explicit())
+            .and_then(|value| match value {
+                TypedValue::Choices(names) => Some(names.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        ChoicePicker::new(
+            PickerMode::Multiple,
+            self.prompt_candidates
+                .iter()
+                .map(|name| PickerItem::new(name.clone(), name.clone()))
+                .collect(),
+            selected,
+        )
+    }
+
+    /// Apply an accepted picker set locally. The outer Save remains the only persistence action.
+    pub fn set_prompt_candidates(&mut self, selected: &[String]) {
+        let selected = self
+            .prompt_candidates
+            .iter()
+            .filter(|name| selected.contains(name))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.set_value(
+            PROMPT_CANDIDATES_KEY,
+            FieldValue::Explicit(TypedValue::Choices(selected)),
+        );
+    }
+
     /// Apply one typed edit and report what the host must do.
     ///
     /// `Close` routes through the discard guard whenever anything moved, so leaving never drops
@@ -720,6 +783,10 @@ impl SettingsView {
                 let next = field.value().as_text() != "true";
                 self.set_value(RESYNC_KEY, FieldValue::boolean(next));
                 self.focus(RESYNC_KEY);
+                SettingsEffect::None
+            }
+            SettingsAction::SetPromptCandidates(selected) => {
+                self.set_prompt_candidates(&selected);
                 SettingsEffect::None
             }
             // Version 0.4 completes its validation pass before any write and returns having
@@ -1160,6 +1227,29 @@ fn declared_items(inputs: &SettingsInputs, rows: Vec<ParameterRow>) -> Vec<Setti
         ));
     }
     items.extend(row_items(rows));
+    if inputs.kind == "prompt" && !inputs.candidates.is_empty() {
+        items.push(SettingsItem::field(Field::new(
+            PROMPT_CANDIDATES_KEY,
+            "Detected but not yet managed — tick to manage:",
+            FieldKind::MultiChoice {
+                options: inputs
+                    .candidates
+                    .iter()
+                    .take(crate::PROMPT_LIST_PREVIEW_LIMIT)
+                    .map(ChoiceOption::plain)
+                    .collect(),
+            },
+            FieldOwner::Template,
+            FieldValue::Explicit(TypedValue::Choices(Vec::new())),
+        )));
+        if inputs.candidates.len() > crate::PROMPT_LIST_PREVIEW_LIMIT {
+            items.push(SettingsItem::note_with(
+                "…and {} more",
+                (inputs.candidates.len() - crate::PROMPT_LIST_PREVIEW_LIMIT).to_string(),
+            ));
+            items.push(SettingsItem::PromptCandidatePicker);
+        }
+    }
     items.push(SettingsItem::field(
         Field::new(
             ADD_PARAMETER_KEY,
@@ -1294,6 +1384,60 @@ mod tests {
         }
     }
 
+    #[test]
+    fn empty_serializable_state_refuses_unknown_focus_without_mutation() {
+        let mut view = SettingsView {
+            selector: "empty".to_owned(),
+            title: "Empty".to_owned(),
+            sections: Vec::new(),
+            dependency_flavor: None,
+            resync_available: false,
+            prompt_candidates: Vec::new(),
+            focused: String::new(),
+            revealed: None,
+            stored_workdir: String::new(),
+        };
+        let before = serde_json::to_value(&view).unwrap();
+
+        assert_eq!(view.resolved_workdir("stored").unwrap(), "");
+        assert!(view.needs_edit().is_empty());
+        assert!(!view.focus("missing"));
+        view.move_focus(true);
+        view.move_focus(false);
+        assert_eq!(
+            view.update(SettingsAction::Focus {
+                key: "missing".to_owned()
+            }),
+            SettingsEffect::None
+        );
+        assert_eq!(view.update(SettingsAction::FocusNext), SettingsEffect::None);
+        assert_eq!(
+            view.update(SettingsAction::FocusPrevious),
+            SettingsEffect::None
+        );
+        assert_eq!(view.update(SettingsAction::Close), SettingsEffect::Close);
+        assert_eq!(serde_json::to_value(&view).unwrap(), before);
+
+        for (section, title) in [
+            (SettingsSectionId::Basics, "Basics"),
+            (SettingsSectionId::Storage, "Storage"),
+            (SettingsSectionId::Launch, "Run in (working directory)"),
+            (
+                SettingsSectionId::Runner,
+                "Runner (the agent this prompt runs with)",
+            ),
+            (
+                SettingsSectionId::Parameters,
+                "Parameters (the run form's fields)",
+            ),
+            (SettingsSectionId::Presets, "Presets"),
+            (SettingsSectionId::Dependencies, "Dependencies"),
+            (SettingsSectionId::Needs, "Needs (external commands)"),
+        ] {
+            assert_eq!(section.title(), title);
+        }
+    }
+
     /// A section that does not apply is absent, not empty.
     ///
     /// Version 0.4 returns early rather than rendering a heading with nothing under it
@@ -1334,14 +1478,12 @@ mod tests {
     #[test]
     fn the_working_directory_offers_only_the_places_this_kind_has() {
         let view = SettingsView::from_inputs(&python_inputs());
-        let FieldKind::SingleChoice { options } = &view.field(WORKDIR_KEY).unwrap().kind else {
-            panic!("the working directory needs a closed option set");
-        };
-        let values = options
-            .iter()
-            .map(|option| option.value.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(values, ["origin", "store", "invoke", WORKDIR_CUSTOM]);
+        assert!(matches!(
+            &view.field(WORKDIR_KEY).unwrap().kind,
+            FieldKind::SingleChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["origin", "store", "invoke", WORKDIR_CUSTOM]
+        ));
 
         // A command template has no folder of its own and no stored copy.
         let command = SettingsInputs {
@@ -1351,14 +1493,12 @@ mod tests {
             ..python_inputs()
         };
         let view = SettingsView::from_inputs(&command);
-        let FieldKind::SingleChoice { options } = &view.field(WORKDIR_KEY).unwrap().kind else {
-            panic!("the working directory needs a closed option set");
-        };
-        let values = options
-            .iter()
-            .map(|option| option.value.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(values, ["invoke", WORKDIR_CUSTOM]);
+        assert!(matches!(
+            &view.field(WORKDIR_KEY).unwrap().kind,
+            FieldKind::SingleChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["invoke", WORKDIR_CUSTOM]
+        ));
     }
 
     /// A stored working directory that is none of the known policies preselects custom.
@@ -1560,17 +1700,15 @@ mod tests {
         });
         let field = view.field(RUNNER_KEY).unwrap();
         assert_eq!(field.value().as_text(), "retired");
-        let FieldKind::SingleChoice { options } = &field.kind else {
-            panic!("the runner needs a closed option set");
-        };
         // Value-keyed: the pin is present as its own option, so no index can shift it.
-        let stale = options
-            .iter()
-            .find(|option| option.value == "retired")
-            .expect("the stale pin lost its option");
-        assert_eq!(stale.label, "{} (no longer configured)");
-        assert_eq!(stale.detail, "retired");
-        assert_eq!(options[0].value, "", "the opt-out option comes first");
+        assert!(matches!(
+            &field.kind,
+            FieldKind::SingleChoice { options }
+                if options.first().is_some_and(|option| option.value.is_empty())
+                    && options.iter().any(|option| option.value == "retired"
+                        && option.label == "{} (no longer configured)"
+                        && option.detail == "retired")
+        ));
         // Nothing moved, so an unrelated save writes no runner change.
         assert!(!view.is_dirty());
 
@@ -1598,23 +1736,19 @@ mod tests {
         view.add_and_select_runner(&inputs.selector, "local".to_owned());
         let field = view.field(RUNNER_KEY).unwrap();
         assert_eq!(field.value().as_text(), "local");
-        let FieldKind::SingleChoice { options } = &field.kind else {
-            panic!("the runner needs a closed option set");
-        };
-        assert_eq!(
-            options
-                .iter()
-                .map(|option| option.value.as_str())
-                .collect::<Vec<_>>(),
-            ["", "claude", "local"]
-        );
+        assert!(matches!(
+            &field.kind,
+            FieldKind::SingleChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["", "claude", "local"]
+        ));
 
         // Selecting one the picker already lists adds no duplicate row.
         view.add_and_select_runner(&inputs.selector, "claude".to_owned());
-        let FieldKind::SingleChoice { options } = &view.field(RUNNER_KEY).unwrap().kind else {
-            panic!("the runner needs a closed option set");
-        };
-        assert_eq!(options.len(), 3);
+        assert!(matches!(
+            &view.field(RUNNER_KEY).unwrap().kind,
+            FieldKind::SingleChoice { options } if options.len() == 3
+        ));
         assert_eq!(view.field(RUNNER_KEY).unwrap().value().as_text(), "claude");
 
         // A response that names another entry is refused, so a screen that moved on keeps its pin.
@@ -1648,6 +1782,13 @@ mod tests {
             view.dependencies_edit(),
             Some(vec!["requests>=2,<3".to_owned(), "rich".to_owned()])
         );
+        assert_eq!(
+            view.submitted_values().get(DEPENDENCIES_KEY),
+            Some(&FieldValue::Explicit(TypedValue::Arguments(vec![
+                "requests>=2,<3".to_owned(),
+                "rich".to_owned(),
+            ])))
+        );
         // The constraint stayed untouched even though the other axis moved.
         assert_eq!(view.requires_python_edit(), None);
 
@@ -1656,6 +1797,9 @@ mod tests {
             .unwrap()
             .set_value(FieldValue::text("none"));
         assert_eq!(view.requires_python_edit(), Some(String::new()));
+
+        view.set_value(NEEDS_KEY, FieldValue::text("ffmpeg, jq"));
+        assert_eq!(view.needs_edit(), ["ffmpeg", "jq"]);
     }
 
     /// An npm entry that runs from its own project is offered no dependency field.
@@ -1828,7 +1972,7 @@ mod tests {
             .flat_map(|section| section.items.iter())
             .filter_map(|item| match item {
                 SettingsItem::Note(note) => Some(note.text.clone()),
-                SettingsItem::Field(_) => None,
+                SettingsItem::Field(_) | SettingsItem::PromptCandidatePicker => None,
             })
             .collect()
     }
@@ -1938,16 +2082,12 @@ mod tests {
             field.label,
             "Detected but not yet managed — tick to manage:"
         );
-        let FieldKind::MultiChoice { options } = &field.kind else {
-            panic!("the offer needs an open option set");
-        };
-        assert_eq!(
-            options
-                .iter()
-                .map(|option| option.value.as_str())
-                .collect::<Vec<_>>(),
-            ["WIDTH", "HEIGHT"]
-        );
+        assert!(matches!(
+            &field.kind,
+            FieldKind::MultiChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["WIDTH", "HEIGHT"]
+        ));
 
         // The host splits one comma-separated list, so the ticked set travels in that shape and no
         // translation layer sits between the model and the save.
@@ -2008,6 +2148,31 @@ mod tests {
                 .iter()
                 .any(|note| note.starts_with("Every input()"))
         );
+    }
+
+    #[test]
+    fn prompt_picker_treats_a_non_list_local_value_as_no_selection() {
+        let candidates = (0..=crate::PROMPT_LIST_PREVIEW_LIMIT)
+            .map(|index| format!("VALUE_{index}"))
+            .collect::<Vec<_>>();
+        let mut view = SettingsView::from_inputs(&SettingsInputs {
+            kind: "prompt".to_owned(),
+            name: "Prompt".to_owned(),
+            supports_modes: true,
+            declared_schema: true,
+            interpolate: true,
+            candidates,
+            ..SettingsInputs::default()
+        });
+        assert!(view.prompt_picker_available());
+        assert!(view.set_value(
+            PROMPT_CANDIDATES_KEY,
+            FieldValue::Explicit(TypedValue::Text("legacy scalar".to_owned())),
+        ));
+
+        let picker = view.prompt_picker();
+
+        assert!(!picker.is_selected(&"VALUE_0".to_owned()));
     }
 
     /// A command entry edits its own command line here, and a prompt edits its insertion switch.
@@ -2150,17 +2315,13 @@ mod tests {
             ..python_inputs()
         });
         let field = shell.field(NORMALIZE_KEY).expect("no normalize offer");
-        let FieldKind::MultiChoice { options } = &field.kind else {
-            panic!("the offer needs an open option set");
-        };
         // Both a managed constant and an unmanaged one can be rewritten.
-        assert_eq!(
-            options
-                .iter()
-                .map(|option| option.value.as_str())
-                .collect::<Vec<_>>(),
-            ["NAME", "WIDTH"]
-        );
+        assert!(matches!(
+            &field.kind,
+            FieldKind::MultiChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["NAME", "WIDTH"]
+        ));
 
         // One already rewritten is not offered again: the rewrite is what produced it, so the only
         // outcome would be a refusal.
@@ -2172,16 +2333,12 @@ mod tests {
             candidates: vec!["WIDTH".to_owned()],
             ..python_inputs()
         });
-        let FieldKind::MultiChoice { options } = &shell.field(NORMALIZE_KEY).unwrap().kind else {
-            panic!("the offer needs an open option set");
-        };
-        assert_eq!(
-            options
-                .iter()
-                .map(|option| option.value.as_str())
-                .collect::<Vec<_>>(),
-            ["WIDTH"]
-        );
+        assert!(matches!(
+            &shell.field(NORMALIZE_KEY).unwrap().kind,
+            FieldKind::MultiChoice { options }
+                if options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>()
+                    == ["WIDTH"]
+        ));
 
         // With nothing left to rewrite there is no control at all, not an empty one.
         let mut rewritten = declaration("NAME");

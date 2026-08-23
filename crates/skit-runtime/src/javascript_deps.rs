@@ -78,8 +78,22 @@ pub struct DependencyCommand {
 
 /// Start one package-manager command.
 pub trait DependencyCommandRunner: std::fmt::Debug {
-    /// Return true only when the child exits successfully.
-    fn run(&self, command: &DependencyCommand) -> io::Result<bool>;
+    /// Report that one installer process is about to start.
+    fn installation_started(&self, _installer: &str) {}
+
+    /// Return the child's status and captured diagnostic stream.
+    fn run(&self, command: &DependencyCommand) -> io::Result<DependencyCommandOutput>;
+}
+
+/// Captured result of one package-manager process.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DependencyCommandOutput {
+    /// Whether the process exited successfully.
+    pub success: bool,
+    /// Numeric exit code, or `None` when a signal or platform event ended the process.
+    pub exit_code: Option<i32>,
+    /// Exact stderr bytes. Decoding belongs to the failure presenter.
+    pub stderr: Vec<u8>,
 }
 
 /// Start dependency commands on the local machine.
@@ -87,13 +101,72 @@ pub trait DependencyCommandRunner: std::fmt::Debug {
 pub struct SystemDependencyCommandRunner;
 
 impl DependencyCommandRunner for SystemDependencyCommandRunner {
-    fn run(&self, command: &DependencyCommand) -> io::Result<bool> {
+    fn run(&self, command: &DependencyCommand) -> io::Result<DependencyCommandOutput> {
         Command::new(&command.program)
             .args(&command.args)
             .current_dir(&command.cwd)
             .envs(&command.environment)
-            .status()
-            .map(|status| status.success())
+            .output()
+            .map(|output| DependencyCommandOutput {
+                success: output.status.success(),
+                exit_code: output.status.code(),
+                stderr: output.stderr,
+            })
+    }
+}
+
+/// One reversible cleanup of a private JavaScript dependency environment.
+///
+/// The guard holds the persistent per-entry dependency lock. Call [`Self::finalize`] after every
+/// dependent commit succeeds, or call [`Self::rollback`] when one fails. Dropping an unresolved
+/// guard attempts disaster recovery, but normal callers must handle the typed result explicitly.
+#[derive(Debug)]
+#[must_use = "finalize or roll back the prepared JavaScript dependency cleanup"]
+pub struct PreparedJavaScriptDependencyCleanup {
+    entry_dir: PathBuf,
+    backup_started: bool,
+    resolved: bool,
+    _lock: Option<DependencyLock>,
+}
+
+impl PreparedJavaScriptDependencyCleanup {
+    /// Commit the cleanup and remove the quarantined old environment.
+    pub fn finalize(&mut self) -> Result<(), DependencyError> {
+        let result = if self.backup_started {
+            finish_dependency_backup(&self.entry_dir)
+        } else {
+            Ok(())
+        };
+        if result.is_ok() || !path_exists(&self.entry_dir.join(BACKUP_NAME)) {
+            self.resolved = true;
+            self._lock.take();
+        }
+        result
+    }
+
+    /// Restore the quarantined old environment while the dependency lock remains held.
+    pub fn rollback(&mut self) -> Result<(), DependencyError> {
+        if self.resolved {
+            return Ok(());
+        }
+        let result = if self.backup_started {
+            recover_dependency_backup(&self.entry_dir)
+        } else {
+            Ok(())
+        };
+        if result.is_ok() {
+            self.resolved = true;
+            self._lock.take();
+        }
+        result
+    }
+}
+
+impl Drop for PreparedJavaScriptDependencyCleanup {
+    fn drop(&mut self) {
+        if !self.resolved && self.backup_started {
+            let _ = recover_dependency_backup(&self.entry_dir);
+        }
     }
 }
 
@@ -110,7 +183,7 @@ pub enum DependencyError {
     #[error("runtime {runtime:?} cannot manage JavaScript dependencies")]
     UnsupportedRuntime { runtime: String },
     /// The selected runtime's package manager is not available.
-    #[error("required package manager was not found: {name}")]
+    #[error("{name} is needed to install this script's dependencies, but it isn't on your PATH.")]
     InstallerNotFound { name: String },
     /// A private support file could not be updated.
     #[error("could not {operation} JavaScript dependencies at {path}: {reason}")]
@@ -119,6 +192,14 @@ pub enum DependencyError {
         operation: &'static str,
         /// Affected path.
         path: String,
+        /// Operating-system detail.
+        reason: String,
+    },
+    /// An old dependency artifact could not be removed.
+    #[error("Couldn't clear the old dependency environment: {item}: {reason}")]
+    ClearFailed {
+        /// Entry-relative artifact name.
+        item: String,
         /// Operating-system detail.
         reason: String,
     },
@@ -132,9 +213,24 @@ pub enum DependencyError {
         /// Failure from the recovery attempt.
         rollback: Box<Self>,
     },
+    /// The package manager could not start.
+    #[error("Couldn't run {installer}: {reason}")]
+    InstallerStartFailed {
+        /// Package-manager name implied by the selected runtime.
+        installer: String,
+        /// Operating-system detail.
+        reason: String,
+    },
     /// The package manager returned a failure status.
-    #[error("JavaScript package installation failed with {program}")]
-    InstallFailed { program: String },
+    #[error("Installing dependencies failed ({installer}): {detail}")]
+    InstallFailed {
+        /// Package-manager name implied by the selected runtime.
+        installer: String,
+        /// Numeric status when the platform supplied one.
+        exit_code: Option<i32>,
+        /// Most useful trusted line from the package manager's stderr.
+        detail: String,
+    },
 }
 
 impl Localize for DependencyError {
@@ -149,9 +245,10 @@ impl Localize for DependencyError {
             Self::UnsupportedRuntime { runtime } => {
                 Message::new("runtime {} cannot manage JavaScript dependencies").quoted(runtime)
             }
-            Self::InstallerNotFound { name } => {
-                Message::new("required package manager was not found: {}").with(name)
-            }
+            Self::InstallerNotFound { name } => Message::new(
+                "{} is needed to install this script's dependencies, but it isn't on your PATH.",
+            )
+            .with(name),
             Self::Io {
                 operation,
                 path,
@@ -160,6 +257,10 @@ impl Localize for DependencyError {
                 .nested(Message::term(operation))
                 .with(path)
                 .with(reason),
+            Self::ClearFailed { item, reason } => {
+                Message::new("Couldn't clear the old dependency environment: {}")
+                    .with(format!("{item}: {reason}"))
+            }
             Self::Rollback {
                 path,
                 primary,
@@ -168,11 +269,22 @@ impl Localize for DependencyError {
                 .with(path)
                 .nested(primary.message())
                 .nested(rollback.message()),
-            Self::InstallFailed { program } => {
-                Message::new("JavaScript package installation failed with {}").with(program)
-            }
+            Self::InstallerStartFailed { installer, reason } => Message::new("Couldn't run {}: {}")
+                .with(installer)
+                .with(reason),
+            Self::InstallFailed {
+                installer, detail, ..
+            } => Message::new("Installing dependencies failed ({}): {}")
+                .with(installer)
+                .with(detail),
         }
     }
+}
+
+/// Present the one receipt emitted immediately before a package manager starts.
+#[must_use]
+pub fn javascript_dependency_install_announcement(installer: &str) -> Message {
+    Message::new("Installing dependencies ({})…").with(installer)
 }
 
 /// Build the deterministic private package.json document.
@@ -180,7 +292,8 @@ pub fn javascript_dependency_manifest(dependencies: &[String]) -> Result<String,
     javascript_dependency_manifest_for_module(dependencies, None)
 }
 
-fn javascript_dependency_manifest_for_module(
+/// Build the deterministic private package.json with an explicit module type.
+pub fn javascript_dependency_manifest_for_module(
     dependencies: &[String],
     module_type: Option<JavaScriptModuleType>,
 ) -> Result<String, DependencyError> {
@@ -189,7 +302,7 @@ fn javascript_dependency_manifest_for_module(
         if dependency.trim().is_empty() {
             continue;
         }
-        let (name, version) = split_package_spec(dependency)?;
+        let (name, version) = split_javascript_requirement(dependency.trim());
         if let Some((_, old_version)) = rows.iter_mut().find(|(old_name, _)| old_name == &name) {
             *old_version = version;
         } else {
@@ -219,6 +332,35 @@ fn javascript_dependency_manifest_for_module(
     }
     output.push_str("  }\n}\n");
     Ok(output)
+}
+
+/// Split a comma-separated JavaScript package requirement list.
+#[must_use]
+pub fn split_javascript_requirements(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|requirement| !requirement.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Split one JavaScript package requirement into its package name and version range.
+#[must_use]
+pub fn split_javascript_requirement(requirement: &str) -> (String, String) {
+    let (name, version) =
+        requirement
+            .rfind('@')
+            .filter(|index| *index > 0)
+            .map_or((requirement, "*"), |index| {
+                let name = &requirement[..index];
+                if name.ends_with('/') {
+                    (requirement, "*")
+                } else {
+                    let version = &requirement[index + 1..];
+                    (name, if version.is_empty() { "*" } else { version })
+                }
+            });
+    (name.to_owned(), version.to_owned())
 }
 
 fn javascript_module_manifest(module_type: JavaScriptModuleType) -> String {
@@ -275,6 +417,56 @@ where
     )
 }
 
+/// Report whether the private dependency tree is stale without locking or changing it.
+pub fn javascript_dependencies_need_install(
+    entry_dir: &Path,
+    runtime: &str,
+    dependencies: &[String],
+) -> Result<bool, DependencyError> {
+    javascript_dependencies_need_install_for_module(entry_dir, runtime, dependencies, None)
+}
+
+/// Report dependency staleness while preserving an explicit source module type.
+pub fn javascript_dependencies_need_install_for_module(
+    entry_dir: &Path,
+    runtime: &str,
+    dependencies: &[String],
+    module_type: Option<JavaScriptModuleType>,
+) -> Result<bool, DependencyError> {
+    let state = resolve_dependency_state(runtime, dependencies, module_type)?;
+    let marker_path = entry_dir.join("node_modules").join(MARKER_NAME);
+    Ok(fs::read(marker_path).ok().as_deref() != Some(state.stamp.as_bytes()))
+}
+
+/// Check only the local package-manager requirement for a pending dependency install.
+pub fn preflight_javascript_dependencies<P: ProgramProbe>(
+    entry_dir: &Path,
+    runtime: &str,
+    dependencies: &[String],
+    probe: &P,
+) -> Result<(), DependencyError> {
+    preflight_javascript_dependencies_for_module(entry_dir, runtime, dependencies, None, probe)
+}
+
+/// Check a pending install while preserving an explicit source module type.
+pub fn preflight_javascript_dependencies_for_module<P: ProgramProbe>(
+    entry_dir: &Path,
+    runtime: &str,
+    dependencies: &[String],
+    module_type: Option<JavaScriptModuleType>,
+    probe: &P,
+) -> Result<(), DependencyError> {
+    if dependencies.is_empty() {
+        return Ok(());
+    }
+    let state = resolve_dependency_state(runtime, dependencies, module_type)?;
+    let marker_path = entry_dir.join("node_modules").join(MARKER_NAME);
+    if fs::read(marker_path).ok().as_deref() == Some(state.stamp.as_bytes()) {
+        return Ok(());
+    }
+    resolve_javascript_dependency_installer(runtime, probe).map(|_| ())
+}
+
 /// Make a private dependency tree and preserve an explicit source module type.
 pub fn ensure_javascript_dependencies_for_module<P, R>(
     entry_dir: &Path,
@@ -299,11 +491,9 @@ where
             |module_type| ensure_module_manifest_unlocked(entry_dir, module_type),
         );
     }
-    let manifest = javascript_dependency_manifest_for_module(dependencies, module_type)?;
-    let installer = installer_for_runtime(runtime);
-    let stamp = dependency_stamp(installer, &manifest);
+    let state = resolve_dependency_state(runtime, dependencies, module_type)?;
     let marker_path = entry_dir.join("node_modules").join(MARKER_NAME);
-    if fs::read(&marker_path).ok().as_deref() == Some(stamp.as_bytes()) {
+    if fs::read(&marker_path).ok().as_deref() == Some(state.stamp.as_bytes()) {
         return Ok(());
     }
 
@@ -311,17 +501,24 @@ where
     let command = dependency_command(entry_dir, runtime, environment, probe)?;
     begin_dependency_backup(entry_dir)?;
     let install = (|| {
-        atomic_write(&entry_dir.join("package.json"), manifest.as_bytes())?;
-        let success = runner
-            .run(&command)
-            .map_err(|error| io_error("start package manager in", entry_dir, error))?;
-        if !success {
+        atomic_write(&entry_dir.join("package.json"), state.manifest.as_bytes())?;
+        runner.installation_started(state.installer);
+        let output =
+            runner
+                .run(&command)
+                .map_err(|error| DependencyError::InstallerStartFailed {
+                    installer: state.installer.to_owned(),
+                    reason: error.to_string(),
+                })?;
+        if !output.success {
             return Err(DependencyError::InstallFailed {
-                program: command.program.display().to_string(),
+                installer: state.installer.to_owned(),
+                exit_code: output.exit_code,
+                detail: javascript_dependency_failure_detail(&output.stderr),
             });
         }
         ensure_real_node_modules(entry_dir)?;
-        atomic_write(&marker_path, stamp.as_bytes())
+        atomic_write(&marker_path, state.stamp.as_bytes())
     })();
     match install {
         Ok(()) => finish_dependency_backup(entry_dir),
@@ -330,6 +527,28 @@ where
             Err(combine_rollback_error(primary, rollback, entry_dir))
         }
     }
+}
+
+#[derive(Debug)]
+struct DependencyState {
+    installer: &'static str,
+    manifest: String,
+    stamp: String,
+}
+
+fn resolve_dependency_state(
+    runtime: &str,
+    dependencies: &[String],
+    module_type: Option<JavaScriptModuleType>,
+) -> Result<DependencyState, DependencyError> {
+    let manifest = javascript_dependency_manifest_for_module(dependencies, module_type)?;
+    let (installer, _) = installer_for_runtime(runtime);
+    let stamp = dependency_stamp(installer, &manifest);
+    Ok(DependencyState {
+        installer,
+        manifest,
+        stamp,
+    })
 }
 
 fn ensure_module_manifest_unlocked(
@@ -348,25 +567,90 @@ fn ensure_module_manifest_unlocked(
 
 /// Remove JavaScript dependency artifacts from one private entry directory.
 pub fn clear_javascript_dependencies(entry_dir: &Path) -> Result<(), DependencyError> {
-    let _lock = dependency_lock(entry_dir)?;
+    let mut cleanup = prepare_javascript_dependency_cleanup(entry_dir)?;
+    cleanup.finalize()
+}
+
+/// Quarantine every owned JavaScript dependency artifact under one persistent lock.
+///
+/// The entry directory is already in the requested cleared shape when this returns. The old tree
+/// remains recoverable until the caller finalizes the guard.
+pub fn prepare_javascript_dependency_cleanup(
+    entry_dir: &Path,
+) -> Result<PreparedJavaScriptDependencyCleanup, DependencyError> {
+    let lock = dependency_lock(entry_dir)?;
     require_entry_directory(entry_dir)?;
     recover_dependency_backup(entry_dir)?;
     remove_staging_leftovers(entry_dir)?;
-    clear_javascript_dependencies_unlocked(entry_dir)
+    sweep_stale_injected_sources(entry_dir);
+    validate_dependency_item_shapes(entry_dir)?;
+    let backup_started = dependency_items().any(|name| path_exists(&entry_dir.join(name)));
+    if backup_started {
+        begin_dependency_backup(entry_dir)?;
+    }
+    Ok(PreparedJavaScriptDependencyCleanup {
+        entry_dir: entry_dir.to_owned(),
+        backup_started,
+        resolved: false,
+        _lock: Some(lock),
+    })
 }
 
 fn clear_javascript_dependencies_unlocked(entry_dir: &Path) -> Result<(), DependencyError> {
-    sweep_stale_injected_at(entry_dir, SystemTime::now());
+    clear_javascript_dependencies_unlocked_with(
+        entry_dir,
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
+}
+
+fn clear_javascript_dependencies_unlocked_with<F, D>(
+    entry_dir: &Path,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> Result<(), DependencyError>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    sweep_stale_injected_sources(entry_dir);
     validate_dependency_item_shapes(entry_dir)?;
     if dependency_items().any(|name| path_exists(&entry_dir.join(name))) {
         let staged = TemporaryDependencyDirectory::new(entry_dir)?;
-        commit_dependency_stage(entry_dir, &staged.path)?;
+        commit_dependency_stage_with_remover(
+            entry_dir,
+            &staged.path,
+            |entry_dir| Ok(unused_temporary_path(entry_dir)),
+            remove_file,
+            remove_dir_all,
+        )?;
     }
     Ok(())
 }
 
+/// Remove secret-bearing injected source copies that are too old to belong to a live launch.
+///
+/// This hygiene operation is best-effort. It never blocks a launch or dependency cleanup.
+pub fn sweep_stale_injected_sources(entry_dir: &Path) {
+    sweep_stale_injected_at(entry_dir, SystemTime::now());
+}
+
 fn sweep_stale_injected_at(entry_dir: &Path, now: SystemTime) {
-    let Some(cutoff) = now.checked_sub(STALE_INJECTED_AGE) else {
+    sweep_stale_injected_before(entry_dir, now.checked_sub(STALE_INJECTED_AGE));
+}
+
+fn sweep_stale_injected_before(entry_dir: &Path, cutoff: Option<SystemTime>) {
+    sweep_stale_injected_before_with(entry_dir, cutoff, &mut |path| fs::remove_file(path));
+}
+
+fn sweep_stale_injected_before_with<F>(
+    entry_dir: &Path,
+    cutoff: Option<SystemTime>,
+    remove_file: &mut F,
+) where
+    F: FnMut(&Path) -> io::Result<()>,
+{
+    let Some(cutoff) = cutoff else {
         return;
     };
     let Ok(items) = fs::read_dir(entry_dir) else {
@@ -382,7 +666,7 @@ fn sweep_stale_injected_at(entry_dir: &Path, now: SystemTime) {
             .and_then(|metadata| metadata.modified())
             .is_ok_and(|modified| modified < cutoff);
         if is_injected && is_stale {
-            let _ = fs::remove_file(path);
+            let _ = remove_file(&path);
         }
     }
 }
@@ -445,19 +729,8 @@ fn dependency_command<P: ProgramProbe>(
     environment: &BTreeMap<String, String>,
     probe: &P,
 ) -> Result<DependencyCommand, DependencyError> {
-    let installer = installer_for_runtime(runtime);
-    let args = match installer {
-        "npm" => ["install", "--no-audit", "--no-fund", "--ignore-scripts"].as_slice(),
-        "bun" => ["install", "--ignore-scripts"].as_slice(),
-        "deno" => ["install"].as_slice(),
-        _ => unreachable!("installer_for_runtime returns a known installer"),
-    };
-    let program =
-        probe
-            .find_program(installer)
-            .ok_or_else(|| DependencyError::InstallerNotFound {
-                name: installer.to_owned(),
-            })?;
+    let (_, args) = installer_for_runtime(runtime);
+    let program = resolve_javascript_dependency_installer(runtime, probe)?;
     Ok(DependencyCommand {
         program,
         args: args.iter().map(|value| (*value).to_owned()).collect(),
@@ -466,12 +739,122 @@ fn dependency_command<P: ProgramProbe>(
     })
 }
 
-fn installer_for_runtime(runtime: &str) -> &'static str {
+/// Resolve the package manager implied by a JavaScript runtime.
+pub fn resolve_javascript_dependency_installer<P: ProgramProbe>(
+    runtime: &str,
+    probe: &P,
+) -> Result<PathBuf, DependencyError> {
+    let (installer, _) = installer_for_runtime(runtime);
+    probe
+        .find_program(installer)
+        .ok_or_else(|| DependencyError::InstallerNotFound {
+            name: installer.to_owned(),
+        })
+}
+
+fn installer_for_runtime(runtime: &str) -> (&'static str, &'static [&'static str]) {
     match runtime {
-        "bun" => "bun",
-        "deno" => "deno",
-        _ => "npm",
+        "bun" => ("bun", &["install", "--ignore-scripts"]),
+        "deno" => ("deno", &["install"]),
+        _ => (
+            "npm",
+            &["install", "--no-audit", "--no-fund", "--ignore-scripts"],
+        ),
     }
+}
+
+const INSTALLER_NOISE: &[&str] = &[
+    "A complete log of this run",
+    "Note that you can also install",
+    "tarball, folder, http url",
+    "For a full report see",
+    "If you are behind a proxy",
+];
+
+/// Select one stable user-facing cause from captured package-manager stderr.
+#[must_use]
+pub fn javascript_dependency_failure_detail(stderr: &[u8]) -> String {
+    let text = strip_ansi(&String::from_utf8_lossy(stderr));
+    let informative = text
+        .lines()
+        .filter(|raw| !npm_line_is_noise(raw))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| !INSTALLER_NOISE.iter().any(|marker| line.contains(marker)))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    informative
+        .iter()
+        .rev()
+        .find(|line| is_cause_line(line))
+        .or_else(|| informative.last())
+        .cloned()
+        .unwrap_or_else(|| "?".to_owned())
+}
+
+fn npm_line_is_noise(line: &str) -> bool {
+    let Some(mut remainder) = ["npm error", "npm warn", "npm ERR!"]
+        .into_iter()
+        .find_map(|prefix| line.strip_prefix(prefix))
+    else {
+        return false;
+    };
+    if let Some(after_space) = remainder.strip_prefix(' ') {
+        remainder = after_space;
+    }
+    remainder = remainder.trim_end();
+    if !remainder.is_empty() && remainder.bytes().all(|byte| byte.is_ascii_digit()) {
+        return true;
+    }
+    if let Some((token, rest)) = remainder.split_once(' ')
+        && !token.is_empty()
+        && token.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        remainder = rest;
+    }
+    remainder.is_empty()
+        || remainder.starts_with([' ', '/', '{', '}'])
+        || remainder.starts_with("at ")
+        || is_windows_path(remainder)
+}
+
+fn is_windows_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+}
+
+fn is_cause_line(line: &str) -> bool {
+    let folded = line.to_ascii_lowercase();
+    [
+        "not found",
+        "does not exist",
+        "could not be found",
+        "failed",
+        "unable to",
+        "refused",
+        "denied",
+        "conflict",
+    ]
+    .iter()
+    .any(|marker| folded.contains(marker))
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for escaped in chars.by_ref() {
+                if escaped.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            output.push(character);
+        }
+    }
+    output
 }
 
 fn dependency_stamp(installer: &str, manifest: &str) -> String {
@@ -507,6 +890,13 @@ impl Drop for TemporaryDependencyDirectory {
 }
 
 fn begin_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
+    begin_dependency_backup_with(entry_dir, |source, target| fs::rename(source, target))
+}
+
+fn begin_dependency_backup_with<F>(entry_dir: &Path, mut rename: F) -> Result<(), DependencyError>
+where
+    F: FnMut(&Path, &Path) -> io::Result<()>,
+{
     let backup = entry_dir.join(BACKUP_NAME);
     fs::create_dir(&backup).map_err(|error| io_error("create backup", &backup, error))?;
     let old_names = dependency_items()
@@ -521,7 +911,7 @@ fn begin_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
     for name in dependency_items() {
         let current = entry_dir.join(name);
         if path_exists(&current)
-            && let Err(error) = fs::rename(&current, backup.join(name))
+            && let Err(error) = rename(&current, &backup.join(name))
         {
             let primary = io_error("backup", &current, error);
             let rollback = recover_dependency_backup(entry_dir);
@@ -534,16 +924,27 @@ fn begin_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
 }
 
 fn finish_dependency_backup(entry_dir: &Path) -> Result<(), DependencyError> {
+    finish_dependency_backup_with(entry_dir, |source, target| fs::rename(source, target))
+}
+
+fn finish_dependency_backup_with<F>(entry_dir: &Path, rename: F) -> Result<(), DependencyError>
+where
+    F: FnOnce(&Path, &Path) -> io::Result<()>,
+{
     let backup = entry_dir.join(BACKUP_NAME);
     let cleanup = unused_temporary_path(entry_dir);
-    if let Err(error) = fs::rename(&backup, &cleanup) {
+    if let Err(error) = rename(&backup, &cleanup) {
         let primary = io_error("commit dependency backup", &backup, error);
         let rollback = recover_dependency_backup(entry_dir);
         return Err(combine_rollback_error(primary, rollback, entry_dir));
     }
     let _ = sync_directory(entry_dir);
-    let _ = remove_path(&cleanup);
-    Ok(())
+    finish_dependency_cleanup(
+        entry_dir,
+        &cleanup,
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
 }
 
 fn ensure_real_node_modules(entry_dir: &Path) -> Result<(), DependencyError> {
@@ -562,11 +963,16 @@ fn ensure_real_node_modules(entry_dir: &Path) -> Result<(), DependencyError> {
 }
 
 fn commit_dependency_stage(entry_dir: &Path, stage: &Path) -> Result<(), DependencyError> {
-    commit_dependency_stage_with(entry_dir, stage, |entry_dir| {
-        Ok(unused_temporary_path(entry_dir))
-    })
+    commit_dependency_stage_with_remover(
+        entry_dir,
+        stage,
+        |entry_dir| Ok(unused_temporary_path(entry_dir)),
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
 }
 
+#[cfg(test)]
 fn commit_dependency_stage_with<F>(
     entry_dir: &Path,
     stage: &Path,
@@ -574,6 +980,27 @@ fn commit_dependency_stage_with<F>(
 ) -> Result<(), DependencyError>
 where
     F: FnOnce(&Path) -> Result<PathBuf, DependencyError>,
+{
+    commit_dependency_stage_with_remover(
+        entry_dir,
+        stage,
+        cleanup_path,
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
+}
+
+fn commit_dependency_stage_with_remover<F, R, D>(
+    entry_dir: &Path,
+    stage: &Path,
+    cleanup_path: F,
+    remove_file: &mut R,
+    remove_dir_all: &mut D,
+) -> Result<(), DependencyError>
+where
+    F: FnOnce(&Path) -> Result<PathBuf, DependencyError>,
+    R: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
 {
     let backup = entry_dir.join(BACKUP_NAME);
     fs::create_dir(&backup).map_err(|error| io_error("create backup", &backup, error))?;
@@ -625,8 +1052,108 @@ where
         return Err(combine_rollback_error(primary, rollback, entry_dir));
     }
     let _ = sync_directory(entry_dir);
-    let _ = remove_path(&cleanup);
-    Ok(())
+    finish_dependency_cleanup(entry_dir, &cleanup, remove_file, remove_dir_all)
+}
+
+fn finish_dependency_cleanup<F, D>(
+    entry_dir: &Path,
+    cleanup: &Path,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> Result<(), DependencyError>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    let removal = remove_dependency_cleanup(cleanup, remove_file, remove_dir_all);
+    match removal {
+        Ok(()) => {
+            let _ = sync_directory(entry_dir);
+            Ok(())
+        }
+        Err(failure) if !failure.removed_any => {
+            let rollback = recover_dependency_cleanup(entry_dir, cleanup);
+            Err(combine_rollback_error(failure.error, rollback, entry_dir))
+        }
+        Err(failure) => {
+            // A deletion cannot be rolled back after an earlier artifact is gone. Keep the
+            // remaining backup quarantined. The next dependency operation removes that staging
+            // directory before it trusts a freshness marker or changes metadata.
+            let _ = sync_directory(entry_dir);
+            Err(failure.error)
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DependencyCleanupFailure {
+    error: DependencyError,
+    removed_any: bool,
+}
+
+fn remove_dependency_cleanup<F, D>(
+    cleanup: &Path,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> Result<(), DependencyCleanupFailure>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    let mut removed_any = false;
+    for name in dependency_items() {
+        match remove_cleanup_item(&cleanup.join(name), name, remove_file, remove_dir_all) {
+            Ok(removed) => removed_any |= removed,
+            Err(error) => return Err(DependencyCleanupFailure { error, removed_any }),
+        }
+    }
+    match remove_cleanup_item(
+        &cleanup.join(BACKUP_INDEX),
+        BACKUP_INDEX,
+        remove_file,
+        remove_dir_all,
+    ) {
+        Ok(removed) => removed_any |= removed,
+        Err(error) => return Err(DependencyCleanupFailure { error, removed_any }),
+    }
+    match fs::remove_dir(cleanup) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(DependencyCleanupFailure {
+            error: clear_error(BACKUP_NAME, error),
+            removed_any,
+        }),
+    }
+}
+
+fn remove_cleanup_item<F, D>(
+    path: &Path,
+    name: &str,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> Result<bool, DependencyError>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    let existed = fs::symlink_metadata(path).is_ok();
+    remove_path_with(path, remove_file, remove_dir_all)
+        .map(|()| existed)
+        .map_err(|error| clear_error(name, error))
+}
+
+fn clear_error(item: &str, error: io::Error) -> DependencyError {
+    DependencyError::ClearFailed {
+        item: item.to_owned(),
+        reason: error.to_string(),
+    }
+}
+
+fn recover_dependency_cleanup(entry_dir: &Path, cleanup: &Path) -> Result<(), DependencyError> {
+    let backup = entry_dir.join(BACKUP_NAME);
+    fs::rename(cleanup, &backup)
+        .map_err(|error| io_error("restore dependency backup", &backup, error))?;
+    recover_dependency_backup(entry_dir)
 }
 
 fn dependency_items() -> impl Iterator<Item = &'static str> {
@@ -764,10 +1291,59 @@ fn remove_path(path: &Path) -> Result<(), DependencyError> {
     let Some(metadata) = optional_symlink_metadata(path)? else {
         return Ok(());
     };
-    if metadata.is_dir() && !metadata.file_type().is_symlink() {
-        fs::remove_dir_all(path).map_err(|error| io_error("remove", path, error))
+    remove_existing_path_with(
+        path,
+        &metadata,
+        &mut system_remove_file,
+        &mut system_remove_dir_all,
+    )
+    .map_err(|error| io_error("remove", path, error))
+}
+
+fn system_remove_file(path: &Path) -> io::Result<()> {
+    fs::remove_file(path)
+}
+
+fn system_remove_dir_all(path: &Path) -> io::Result<()> {
+    fs::remove_dir_all(path)
+}
+
+fn remove_path_with<F, D>(
+    path: &Path,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> io::Result<()>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    remove_existing_path_with(path, &metadata, remove_file, remove_dir_all)
+}
+
+fn remove_existing_path_with<F, D>(
+    path: &Path,
+    metadata: &fs::Metadata,
+    remove_file: &mut F,
+    remove_dir_all: &mut D,
+) -> io::Result<()>
+where
+    F: FnMut(&Path) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
+{
+    let removal = if metadata.is_dir() && !metadata.file_type().is_symlink() {
+        remove_dir_all(path)
     } else {
-        fs::remove_file(path).map_err(|error| io_error("remove", path, error))
+        remove_file(path)
+    };
+    match removal {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -837,24 +1413,6 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn split_package_spec(value: &str) -> Result<(String, String), DependencyError> {
-    let value = value.trim();
-    let (name, version) =
-        value
-            .rfind('@')
-            .filter(|index| *index > 0)
-            .map_or((value, "*"), |index| {
-                let name = &value[..index];
-                if name.ends_with('/') {
-                    (value, "*")
-                } else {
-                    let version = &value[index + 1..];
-                    (name, if version.is_empty() { "*" } else { version })
-                }
-            });
-    Ok((name.to_owned(), version.to_owned()))
-}
-
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, DependencyError> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
@@ -864,25 +1422,45 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, DependencyError> {
 }
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), DependencyError> {
-    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|error| io_error("write", &temporary, error))?;
-    file.write_all(bytes)
-        .map_err(|error| io_error("write", &temporary, error))?;
-    file.sync_all()
-        .map_err(|error| io_error("sync", &temporary, error))?;
-    drop(file);
-    #[cfg(windows)]
-    if path.exists() {
-        fs::remove_file(path).map_err(|error| io_error("replace", path, error))?;
+    atomic_write_with(path, bytes, File::sync_all, atomicwrites::replace_atomic)
+}
+
+fn atomic_write_with(
+    path: &Path,
+    bytes: &[u8],
+    sync_file: impl FnOnce(&File) -> io::Result<()>,
+    replace: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<(), DependencyError> {
+    let parent = path.parent().ok_or_else(|| {
+        io_error(
+            "write",
+            path,
+            io::Error::new(io::ErrorKind::InvalidInput, "write path has no parent"),
+        )
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("dependency");
+    let id = TEMPORARY_ID.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(".{name}.{}-{id}.tmp", std::process::id()));
+    let outcome = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| io_error("write", &temporary, error))?;
+        file.write_all(bytes)
+            .map_err(|error| io_error("write", &temporary, error))?;
+        sync_file(&file).map_err(|error| io_error("sync", &temporary, error))?;
+        drop(file);
+        replace(&temporary, path).map_err(|error| io_error("replace", path, error))
+    })();
+    if outcome.is_err() {
+        let _ = fs::remove_file(&temporary);
+        return outcome;
     }
-    fs::rename(&temporary, path).map_err(|error| io_error("replace", path, error))?;
-    if let Some(parent) = path.parent() {
-        let _ = sync_directory(parent);
-    }
+    let _ = sync_directory(parent);
     Ok(())
 }
 
@@ -901,6 +1479,625 @@ mod transaction_tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    fn dependency_temporary_paths(entry_dir: &Path) -> Vec<PathBuf> {
+        fs::read_dir(entry_dir)
+            .unwrap()
+            .map(|item| item.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(STAGE_PREFIX))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn prepared_cleanup_rollback_and_drop_recover_real_bytes() {
+        let empty = TempDir::new().unwrap();
+        let mut cleanup = prepare_javascript_dependency_cleanup(empty.path()).unwrap();
+        cleanup.rollback().unwrap();
+        cleanup.rollback().unwrap();
+
+        let rolled_back = TempDir::new().unwrap();
+        let package = rolled_back.path().join("package.json");
+        fs::write(&package, b"rollback manifest\n").unwrap();
+        let mut cleanup = prepare_javascript_dependency_cleanup(rolled_back.path()).unwrap();
+        assert!(!package.exists());
+        cleanup.rollback().unwrap();
+        assert_eq!(fs::read(package).unwrap(), b"rollback manifest\n");
+
+        let populated = TempDir::new().unwrap();
+        let package = populated.path().join("package.json");
+        fs::write(&package, b"authoritative manifest\n").unwrap();
+        let cleanup = prepare_javascript_dependency_cleanup(populated.path()).unwrap();
+        assert!(!package.exists());
+        drop(cleanup);
+        assert_eq!(fs::read(package).unwrap(), b"authoritative manifest\n");
+        assert!(!populated.path().join(BACKUP_NAME).exists());
+    }
+
+    #[test]
+    fn cleanup_index_remover_failure_keeps_the_index_and_typed_error() {
+        let root = TempDir::new().unwrap();
+        let cleanup = root.path().join("cleanup");
+        fs::create_dir(&cleanup).unwrap();
+        let index = cleanup.join(BACKUP_INDEX);
+        fs::write(&index, b"package.json\n").unwrap();
+
+        let failure = remove_dependency_cleanup(
+            &cleanup,
+            &mut |path| {
+                assert_eq!(path, index);
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "index held",
+                ))
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(!failure.removed_any);
+        assert!(matches!(
+            failure.error,
+            DependencyError::ClearFailed { ref item, ref reason }
+                if item == BACKUP_INDEX && reason == "index held"
+        ));
+        assert_eq!(fs::read(index).unwrap(), b"package.json\n");
+    }
+
+    #[test]
+    fn existing_path_removal_treats_not_found_as_success_and_keeps_other_errors_typed() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("artifact");
+        fs::write(&path, b"authoritative\n").unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+
+        remove_existing_path_with(
+            &path,
+            &metadata,
+            &mut |_| Err(io::Error::new(io::ErrorKind::NotFound, "vanished")),
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
+        let error = remove_existing_path_with(
+            &path,
+            &metadata,
+            &mut |_| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "artifact locked",
+                ))
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read(path).unwrap(), b"authoritative\n");
+    }
+
+    #[test]
+    fn parentless_atomic_write_is_typed_and_creates_no_artifact() {
+        let error = atomic_write_with(
+            Path::new(""),
+            b"must not be written",
+            File::sync_all,
+            atomicwrites::replace_atomic,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DependencyError::Io {
+                operation: "write",
+                ref reason,
+                ..
+            } if reason == "write path has no parent"
+        ));
+    }
+
+    #[test]
+    fn test_clean_failure_is_loud_not_silent() {
+        let root = TempDir::new().unwrap();
+        let package = root.path().join("package.json");
+        fs::write(&package, b"authoritative manifest\n").unwrap();
+        fs::write(root.path().join("meta.toml"), b"name = \"Demo\"\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_file = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "package.json")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "held by another process",
+                ))
+            } else {
+                fs::remove_file(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::write(successful.path().join("package.json"), b"disposable\n").unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut remove_file,
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut remove_file,
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("package.json"), "{error}");
+        assert_eq!(fs::read(package).unwrap(), b"authoritative manifest\n");
+        assert_eq!(
+            fs::read(root.path().join("meta.toml")).unwrap(),
+            b"name = \"Demo\"\n"
+        );
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn test_clean_rmtree_failure_is_loud() {
+        let root = TempDir::new().unwrap();
+        let module = root.path().join("node_modules/chalk/index.js");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, b"module.exports = 1;\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_dir_all = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "tree is locked",
+                ))
+            } else {
+                fs::remove_dir_all(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::create_dir(successful.path().join("node_modules")).unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("node_modules"), "{error}");
+        assert_eq!(fs::read(module).unwrap(), b"module.exports = 1;\n");
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_clean_tolerates_a_node_modules_symlink_vanishing() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("shared/chalk");
+        fs::create_dir_all(&target).unwrap();
+        let link = root.path().join("node_modules");
+        symlink(target.parent().unwrap(), &link).unwrap();
+
+        clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut |path| {
+                if path.file_name().is_some_and(|name| name == "node_modules") {
+                    fs::remove_file(path).unwrap();
+                    Err(io::Error::new(io::ErrorKind::NotFound, "the link vanished"))
+                } else {
+                    fs::remove_file(path)
+                }
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
+
+        assert!(!link.exists());
+        assert!(target.is_dir());
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_clean_records_a_stuck_symlinked_node_modules() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("shared/chalk");
+        fs::create_dir_all(&target).unwrap();
+        let link = root.path().join("node_modules");
+        symlink(target.parent().unwrap(), &link).unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_file = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "held by another process",
+                ))
+            } else {
+                fs::remove_file(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::write(successful.path().join("package.json"), b"disposable\n").unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut remove_file,
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut remove_file,
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("node_modules"), "{error}");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(target.is_dir());
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn test_clean_onexc_treats_an_already_gone_tree_as_success() {
+        let root = TempDir::new().unwrap();
+        let module = root.path().join("node_modules/chalk/index.js");
+        fs::create_dir_all(module.parent().unwrap()).unwrap();
+        fs::write(&module, b"module.exports = 1;\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_dir_all = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                fs::remove_dir_all(path).unwrap();
+                Err(io::Error::new(io::ErrorKind::NotFound, "the tree vanished"))
+            } else {
+                fs::remove_dir_all(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::create_dir(successful.path().join("node_modules")).unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap();
+
+        clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap();
+
+        assert!(!root.path().join("node_modules").exists());
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn test_clean_failure_message_verbatim() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("package.json"), b"{}\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_file = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "package.json")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "held by another process",
+                ))
+            } else {
+                fs::remove_file(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::write(successful.path().join("package.json"), b"disposable\n").unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut remove_file,
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut remove_file,
+            &mut system_remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Couldn't clear the old dependency environment: package.json: held by another process"
+        );
+    }
+
+    #[test]
+    fn a_partial_cleanup_failure_stays_quarantined_and_the_next_retry_repairs_it() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("package.json"), b"generated manifest\n").unwrap();
+        fs::create_dir_all(root.path().join("node_modules/chalk")).unwrap();
+        fs::write(
+            root.path().join("node_modules/chalk/index.js"),
+            b"module.exports = 1;\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("meta.toml"), b"name = \"Demo\"\n").unwrap();
+        fs::write(root.path().join("script.js"), b"console.log(1);\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_dir_all = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "tree is locked",
+                ))
+            } else {
+                fs::remove_dir_all(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::create_dir(successful.path().join("node_modules")).unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap();
+
+        let error = clear_javascript_dependencies_unlocked_with(
+            root.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, DependencyError::ClearFailed { .. }));
+        assert!(!root.path().join("package.json").exists());
+        assert!(!root.path().join("node_modules").exists());
+        assert_eq!(dependency_temporary_paths(root.path()).len(), 1);
+        assert_eq!(
+            fs::read(root.path().join("meta.toml")).unwrap(),
+            b"name = \"Demo\"\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join("script.js")).unwrap(),
+            b"console.log(1);\n"
+        );
+
+        clear_javascript_dependencies(root.path()).unwrap();
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+    }
+
+    #[test]
+    fn a_partial_old_environment_cleanup_keeps_the_committed_new_environment() {
+        let root = TempDir::new().unwrap();
+        entry_with_previous_environment(root.path());
+        let stage = staged_replacement(root.path());
+        fs::create_dir(stage.join("node_modules")).unwrap();
+        fs::write(stage.join("node_modules/new"), b"new module\n").unwrap();
+        let failing_root = root.path().to_owned();
+        let mut remove_dir_all = |path: &Path| {
+            if path.starts_with(&failing_root)
+                && path.file_name().is_some_and(|name| name == "node_modules")
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "old tree is locked",
+                ))
+            } else {
+                fs::remove_dir_all(path)
+            }
+        };
+        let successful = TempDir::new().unwrap();
+        fs::create_dir(successful.path().join("node_modules")).unwrap();
+        clear_javascript_dependencies_unlocked_with(
+            successful.path(),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap();
+
+        let error = commit_dependency_stage_with_remover(
+            root.path(),
+            &stage,
+            |entry_dir| Ok(unused_temporary_path(entry_dir)),
+            &mut system_remove_file,
+            &mut remove_dir_all,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, DependencyError::ClearFailed { .. }));
+        assert_eq!(
+            fs::read(root.path().join("package.json")).unwrap(),
+            b"new manifest\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join(STAMP_NAME)).unwrap(),
+            b"new stamp\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join("node_modules/new")).unwrap(),
+            b"new module\n"
+        );
+        assert!(!root.path().join("node_modules/old").exists());
+        assert!(!root.path().join(BACKUP_NAME).exists());
+        let quarantines = dependency_temporary_paths(root.path());
+        assert_eq!(quarantines.len(), 1);
+        assert_eq!(
+            fs::read(quarantines[0].join("node_modules/old")).unwrap(),
+            b"old module\n"
+        );
+
+        remove_staging_leftovers(root.path()).unwrap();
+        assert!(dependency_temporary_paths(root.path()).is_empty());
+        assert_eq!(
+            fs::read(root.path().join("package.json")).unwrap(),
+            b"new manifest\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join("node_modules/new")).unwrap(),
+            b"new module\n"
+        );
+    }
+
+    #[test]
+    fn a_cleanup_root_that_vanishes_after_its_index_is_already_clean() {
+        let root = TempDir::new().unwrap();
+        let cleanup = root.path().join("cleanup");
+        fs::create_dir(&cleanup).unwrap();
+        fs::write(cleanup.join(BACKUP_INDEX), b"").unwrap();
+
+        remove_dependency_cleanup(
+            &cleanup,
+            &mut |path| {
+                fs::remove_file(path)?;
+                fs::remove_dir(path.parent().unwrap())
+            },
+            &mut system_remove_dir_all,
+        )
+        .unwrap();
+        assert!(!cleanup.exists());
+    }
+
+    #[test]
+    fn a_nonempty_cleanup_root_is_a_typed_failure() {
+        let root = TempDir::new().unwrap();
+        let cleanup = root.path().join("cleanup");
+        fs::create_dir(&cleanup).unwrap();
+        fs::write(cleanup.join(BACKUP_INDEX), b"").unwrap();
+
+        let failure =
+            remove_dependency_cleanup(&cleanup, &mut |_| Ok(()), &mut system_remove_dir_all)
+                .unwrap_err();
+        assert!(failure.removed_any);
+        assert!(matches!(
+            failure.error,
+            DependencyError::ClearFailed { ref item, .. } if item == BACKUP_NAME
+        ));
+    }
+
+    #[test]
+    fn a_missing_cleanup_backup_cannot_claim_that_rollback_succeeded() {
+        let root = TempDir::new().unwrap();
+        let error =
+            recover_dependency_cleanup(root.path(), &root.path().join("missing")).unwrap_err();
+        assert!(matches!(
+            error,
+            DependencyError::Io {
+                operation: "restore dependency backup",
+                ..
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_uninspectable_cleanup_item_is_an_io_refusal() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = TempDir::new().unwrap();
+        let blocked = root.path().join("blocked");
+        fs::create_dir(&blocked).unwrap();
+        let item = blocked.join("item");
+        fs::write(&item, b"value\n").unwrap();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000)).unwrap();
+        let error = remove_path_with(&item, &mut system_remove_file, &mut system_remove_dir_all)
+            .unwrap_err();
+        fs::set_permissions(&blocked, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn installer_failure_detail_keeps_the_last_cause_and_drops_noise() {
+        let stderr = concat!(
+            "npm error code E404\n",
+            "npm error     at ignored stack frame\n",
+            "npm error 404 \u{1b}[31mNot Found\u{1b}[0m - GET /missing\n",
+            "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+        );
+        assert_eq!(
+            javascript_dependency_failure_detail(stderr.as_bytes()),
+            "npm error 404 Not Found - GET /missing"
+        );
+        assert_eq!(javascript_dependency_failure_detail(&[]), "?");
+        assert_eq!(
+            javascript_dependency_failure_detail(b"detail \xff failed\n"),
+            "detail \u{fffd} failed"
+        );
+    }
+
+    #[test]
+    fn atomic_dependency_writes_preserve_the_old_file_and_remove_failed_temps() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("package.json");
+        fs::write(&target, b"old\n").unwrap();
+
+        let sync_error = atomic_write_with(
+            &target,
+            b"new\n",
+            |_| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "sync refused",
+                ))
+            },
+            atomicwrites::replace_atomic,
+        )
+        .unwrap_err();
+        assert!(sync_error.to_string().contains("sync refused"));
+        assert_eq!(fs::read(&target).unwrap(), b"old\n");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+
+        let replace_error = atomic_write_with(&target, b"new\n", File::sync_all, |_, _| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "replace refused",
+            ))
+        })
+        .unwrap_err();
+        assert!(replace_error.to_string().contains("replace refused"));
+        assert_eq!(fs::read(&target).unwrap(), b"old\n");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+
+        atomic_write_with(
+            &target,
+            b"new\n",
+            File::sync_all,
+            atomicwrites::replace_atomic,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new\n");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn injected_sweep_uses_a_strict_one_hour_cutoff() {
@@ -932,6 +2129,149 @@ mod transaction_tests {
         assert!(edge.exists());
         assert!(fresh.exists());
         assert!(unrelated.exists());
+    }
+
+    #[test]
+    fn test_sweep_keeps_a_file_exactly_at_the_cutoff() {
+        let root = TempDir::new().unwrap();
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(2 * 60 * 60))
+            .unwrap();
+        let cutoff = now.checked_sub(STALE_INJECTED_AGE).unwrap();
+        let edge = root.path().join(".injected-edge.js");
+        fs::write(&edge, b"value\n").unwrap();
+        File::options()
+            .write(true)
+            .open(&edge)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(cutoff))
+            .unwrap();
+
+        sweep_stale_injected_at(root.path(), now);
+
+        assert!(edge.exists());
+    }
+
+    #[test]
+    fn test_sweep_survives_one_failed_unlink_and_still_sweeps_the_rest() {
+        let root = TempDir::new().unwrap();
+        let cutoff = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(60))
+            .unwrap();
+        for name in [".injected-a.js", ".injected-b.js"] {
+            let path = root.path().join(name);
+            fs::write(&path, b"value\n").unwrap();
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+                .unwrap();
+        }
+        let mut calls = 0;
+
+        sweep_stale_injected_before_with(root.path(), Some(cutoff), &mut |path| {
+            calls += 1;
+            if calls == 1 {
+                Err(io::Error::new(io::ErrorKind::PermissionDenied, "held"))
+            } else {
+                fs::remove_file(path)
+            }
+        });
+
+        let survivors = fs::read_dir(root.path())
+            .unwrap()
+            .flatten()
+            .filter(|item| {
+                item.file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(".injected-"))
+            })
+            .count();
+        assert_eq!(calls, 2);
+        assert_eq!(survivors, 1);
+    }
+
+    #[test]
+    fn injected_sweep_is_inert_before_the_cutoff_exists_and_when_the_directory_is_gone() {
+        let missing = TempDir::new().unwrap().path().join("gone");
+        sweep_stale_injected_before(&missing, None);
+        sweep_stale_injected_at(&missing, SystemTime::UNIX_EPOCH);
+
+        let root = TempDir::new().unwrap();
+        let candidate = root.path().join(".injected-young.js");
+        fs::write(&candidate, b"keep\n").unwrap();
+        sweep_stale_injected_at(root.path(), SystemTime::UNIX_EPOCH);
+        assert_eq!(fs::read(candidate).unwrap(), b"keep\n");
+    }
+
+    #[test]
+    fn backup_move_failure_uses_real_recovery_before_it_returns() {
+        let root = TempDir::new().unwrap();
+        entry_with_previous_environment(root.path());
+        let mut moves = 0;
+
+        let error = begin_dependency_backup_with(root.path(), |source, target| {
+            moves += 1;
+            if moves == 2 {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected rename refusal",
+                ))
+            } else {
+                fs::rename(source, target)
+            }
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DependencyError::Io {
+                operation: "backup",
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(root.path().join("package.json")).unwrap(),
+            b"old manifest\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join(STAMP_NAME)).unwrap(),
+            b"old stamp\n"
+        );
+        assert!(!root.path().join(BACKUP_NAME).exists());
+    }
+
+    #[test]
+    fn backup_commit_failure_uses_real_recovery_before_it_returns() {
+        let root = TempDir::new().unwrap();
+        entry_with_previous_environment(root.path());
+        begin_dependency_backup(root.path()).unwrap();
+
+        let error = finish_dependency_backup_with(root.path(), |_, _| {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected rename refusal",
+            ))
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            DependencyError::Io {
+                operation: "commit dependency backup",
+                ..
+            }
+        ));
+        assert_eq!(
+            fs::read(root.path().join("package.json")).unwrap(),
+            b"old manifest\n"
+        );
+        assert_eq!(
+            fs::read(root.path().join(STAMP_NAME)).unwrap(),
+            b"old stamp\n"
+        );
+        assert!(!root.path().join(BACKUP_NAME).exists());
     }
 
     #[cfg(unix)]

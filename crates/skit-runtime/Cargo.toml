@@ -9,6 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+atomicwrites.workspace = true
 skit-i18n.workspace = true
 shlex.workspace = true
 serde_json.workspace = true
@@ -18,6 +19,7 @@ sha2.workspace = true
 tar.workspace = true
 ureq.workspace = true
 uuid.workspace = true
+wait-timeout.workspace = true
 zip.workspace = true
 skit-application.workspace = true
 skit-domain.workspace = true

@@ -26,45 +26,32 @@
 //!   no `skit` binary is spawned and no store/filesystem is touched.
 //!
 //! Buckets:
-//! - REAL (1): `test_run_form_boots_typeable_and_arrows_walk_the_fields`. Boot focus, the `↓`/`↑`
-//!   arrow twins, the footer `FocusNext`/`FocusPrevious` chips, and `Tab`/`Shift+Tab` all move
-//!   `focused_form_field` exactly as the oracle walks. Driven through the composition root.
-//! - DIVERGENCE (4, full asserting body kept, `#[ignore]`d): the four other surfaces each diverge
-//!   from the oracle at one named leg. Fix the impl -> delete the `#[ignore]` line -> green.
-//!     * add source + add review: the Rust add screen maps only `Tab`/`BackTab` to field nav;
-//!       `↓`/`↑` fall through to the body scroll (`screens/add.rs:386-478`), so the oracle's arrow
-//!       twins do not walk the fields. The add footer also carries only a forward nav chip
-//!       (`AddControlId::NextField`), no back pill.
-//!     * preferences: the arrow behavior MATCHES (boot on the language picker; `↓` off the editor
-//!       input steps into the form-style radio; a second `↓` stays inside the radio's options;
-//!       `Shift+Tab`/`Tab` walk out and back). Only the two chip legs diverge: `CommandContext::
-//!       Preferences` declares no `FocusNext`/`FocusPrevious` footer specs (`skit-ui/src/lib.rs`
-//!       ~844-870) and the preferences branch has no `map_event` fallback (`session.rs:366-374`),
-//!       so the nav pill is both absent and unroutable.
-//!     * settings: `↓` off the name field reaches the description, but the description is a
-//!       Multiline box and `edit_body` hands `↑` to the textarea, which consumes it unconditionally
-//!       (`session.rs` `textarea_accepts` includes `Up`/`Down`), so `↑` cannot return focus to the
-//!       name. The oracle's single-line description releases `↑` (`test_tui_nav.py:161-162`).
+//! - REAL (5): the run form, add-source, add-review, Preferences, and Settings tests drive boot focus, the `↓`/`↑`
+//!   arrow twins, both footer direction chips, and `Tab`/`Shift+Tab` exactly as the oracle walks.
+//!   Add Source keeps its visible Browse button outside the field-navigation ring and gives it a
+//!   separate advertised keyboard path, so the oracle's path-to-template walk loses no capability.
+//! - DIVERGENCE: none.
 //! - CROSS-CRATE / ABSENT: none.
 
 use std::collections::BTreeMap;
 
-use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+use ratatui_core::{backend::TestBackend, buffer::Buffer, layout::Rect, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use skit_application::SourcePermissions;
+use skit_application::{SourcePermissions, preferences::InteractiveFormChoice};
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
 use skit_i18n::Locale;
 use skit_tui::{
-    AddControlId, AddScreenGeometry, AddScreenSession, AddTextField, EventHandling, HitTarget,
-    TuiSession, ViewGeometry, render_add, render_with_session,
+    AddControlId, AddScreenEvent, AddScreenGeometry, AddScreenSession, AddTextField, EventHandling,
+    HitTarget, TuiSession, ViewGeometry, render_add, render_with_session,
 };
 use skit_ui::{
-    Action, AddWorkflowState, KnownEntryKind, LibraryState, PreferencesControlId, ReviewDefaults,
-    ReviewState, RunFormView, Screen, SettingsInputs, SettingsView, SourceSnapshot, UiCommand,
+    Action, AddAction, AddEffect, AddStage, AddWorkflowState, KnownEntryKind, LibraryState,
+    PreferencesAction, PreferencesControlId, ReviewDefaults, ReviewState, RunFormView, Screen,
+    SettingsInputs, SettingsView, SourceSnapshot, UiCommand,
 };
 
 // The oracle drives every form at size (130, 40); the render size is load-bearing for the footer
@@ -83,9 +70,20 @@ fn shift_back_tab() -> Event {
     Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
 }
 
+fn control_key(character: char) -> Event {
+    Event::Key(KeyEvent::new(
+        KeyCode::Char(character),
+        KeyModifiers::CONTROL,
+    ))
+}
+
 fn left_click(column: u16, row: u16) -> Event {
+    mouse(MouseEventKind::Down(MouseButton::Left), column, row)
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
+        kind,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -232,69 +230,160 @@ fn test_run_form_boots_typeable_and_arrows_walk_the_fields() {
 }
 
 // ==========================================================================
-// 2. Add source — DIVERGENCE: the Rust add screen has no ↓/↑ field-walk
+// 2. Add source — REAL: field navigation skips the independently reachable Browse button
 // ==========================================================================
 
 /// The add screen's focus lives in the session, not in `LibraryState`, so the add surfaces are
 /// driven one tier down through the re-exported `AddScreenSession`/`render_add` — the same session
 /// `TuiSession` owns and delegates to. Returns its geometry for the boot render + chip lookups.
-fn draw_add(session: &mut AddScreenSession, state: &AddWorkflowState) -> AddScreenGeometry {
+fn draw_add(
+    session: &mut AddScreenSession,
+    state: &AddWorkflowState,
+) -> (Buffer, AddScreenGeometry) {
     let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).unwrap();
     let mut geometry = AddScreenGeometry::default();
     terminal
         .draw(|frame| geometry = render_add(frame, frame.area(), state, session, Locale::En))
         .unwrap();
-    geometry
+    (terminal.backend().buffer().clone(), geometry)
+}
+
+fn region_text(buffer: &Buffer, area: Rect) -> String {
+    let mut text = String::new();
+    for row in area.y..area.bottom().min(buffer.area.height) {
+        for column in area.x..area.right().min(buffer.area.width) {
+            text.push_str(buffer[(column, row)].symbol());
+        }
+    }
+    text
 }
 
 const ADD_PATH: AddControlId = AddControlId::Text(AddTextField::SourcePath);
 const ADD_TEMPLATE: AddControlId = AddControlId::Text(AddTextField::CommandTemplate);
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's ↓/↑ are Tab/Shift+Tab's arrow twins on the \
-add source screen (test_tui_nav.py:84-101), but the Rust add screen maps only Tab/BackTab to field \
-nav — ↓/↑ fall through to the body scroll (crates/skit-tui/src/screens/add.rs:386-478), so the \
-first ↓ never walks add-path -> add-template. The add footer also carries only a forward nav chip \
-(AddControlId::NextField), no back pill. Fix the add screen's arrow handling -> delete this \
-#[ignore]."]
 fn test_add_source_arrows_walk_path_template_name() {
     // The add source screen boots with the path box focused (not the body scroll container); ↓/↑
-    // walk path<->template, the footer chips do the same, and Tab/Shift+Tab agree.
+    // walk path<->template, the footer chips do the same, and Tab/Shift+Tab agree. The visible
+    // Browse button stays outside that field walk and has its own advertised key and mouse path.
     let state = AddWorkflowState::new(Vec::new());
     let mut session = AddScreenSession::default();
-    let geometry = draw_add(&mut session, &state);
+    let (buffer, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&ADD_PATH)); // add-path, not the body scroll
+    let screen = buffer_text(&buffer);
+    assert!(screen.contains("Tab/↓"), "{screen}");
+    assert!(screen.contains("Shift+Tab/↑"), "{screen}");
+    assert!(screen.contains("[Ctrl+O] Select"), "{screen}");
 
-    // ↓ moves on (this is where Rust diverges: the arrow does not walk the fields).
-    let _ = session.handle_event(key(KeyCode::Down), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
-    assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
-    let _ = session.handle_event(key(KeyCode::Up), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
+    // The independent key and the visible button both open the same typed picker contract without
+    // moving the form keyboard away from the path field. Hover and release are inert.
+    assert!(matches!(
+        session.handle_event(control_key('o'), &state, &geometry),
+        Some(AddScreenEvent::OpenPathPicker(_))
+    ));
+    assert_eq!(session.focused(), Some(&ADD_PATH));
+    let browse = geometry
+        .hits
+        .iter()
+        .find(|hit| {
+            hit.target == AddControlId::BrowseSource
+                && region_text(&buffer, hit.area).contains("[Ctrl+O] Select")
+        })
+        .expect("the advertised Browse button is a typed mouse hit");
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(mouse(kind, browse.area.x, browse.area.y), &state, &geometry),
+            None
+        );
+        assert_eq!(session.focused(), Some(&ADD_PATH));
+    }
+    assert!(matches!(
+        session.handle_event(left_click(browse.area.x, browse.area.y), &state, &geometry),
+        Some(AddScreenEvent::OpenPathPicker(_))
+    ));
     assert_eq!(session.focused(), Some(&ADD_PATH));
 
-    // The forward footer chip is the same action, clickable.
-    let next_rect = geometry
+    // ↓ moves on and ↑ comes back. Both paths report their real ephemeral-state change.
+    assert_eq!(
+        session.handle_event(key(KeyCode::Down), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (_, geometry) = draw_add(&mut session, &state);
+    assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
+    assert_eq!(
+        session.handle_event(key(KeyCode::Up), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (buffer, geometry) = draw_add(&mut session, &state);
+    assert_eq!(session.focused(), Some(&ADD_PATH));
+
+    // The forward footer hit ignores pointer motion/release and fires only on a real left down.
+    let next = geometry
         .hits
         .iter()
         .find(|hit| hit.target == AddControlId::NextField)
-        .expect("the add footer advertises a next-field chip")
-        .area;
-    let _ = session.handle_event(left_click(next_rect.x, next_rect.y), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
+        .expect("the add footer advertises a typed next-field hit");
+    assert!(region_text(&buffer, next.area).contains("Tab/↓"));
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(mouse(kind, next.area.x, next.area.y), &state, &geometry),
+            None
+        );
+        assert_eq!(session.focused(), Some(&ADD_PATH));
+    }
+    assert_eq!(
+        session.handle_event(left_click(next.area.x, next.area.y), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (buffer, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
 
-    // Tab/Shift+Tab themselves walk the same way.
-    let _ = session.handle_event(shift_back_tab(), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
+    // The backward footer chip has the same event discipline and returns to the path field.
+    let previous = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == AddControlId::PreviousField)
+        .expect("the add footer advertises a typed previous-field hit");
+    assert!(region_text(&buffer, previous.area).contains("Shift+Tab/↑"));
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(
+                mouse(kind, previous.area.x, previous.area.y),
+                &state,
+                &geometry,
+            ),
+            None
+        );
+        assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
+    }
+    assert_eq!(
+        session.handle_event(
+            left_click(previous.area.x, previous.area.y),
+            &state,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
+    let (_, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&ADD_PATH));
-    let _ = session.handle_event(key(KeyCode::Tab), &state, &geometry);
-    let _ = draw_add(&mut session, &state);
+
+    // The advertised keys themselves, not only their mouse twins.
+    assert_eq!(
+        session.handle_event(key(KeyCode::Tab), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (_, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&ADD_TEMPLATE));
+    assert_eq!(
+        session.handle_event(shift_back_tab(), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let _ = draw_add(&mut session, &state);
+    assert_eq!(session.focused(), Some(&ADD_PATH));
 }
 
 // ==========================================================================
-// 3. Add review — DIVERGENCE: same missing ↓/↑ field-walk on the review panel
+// 3. Add review — REAL: arrows, both footer hits, and Tab walk the review fields
 // ==========================================================================
 
 const RV_NAME: AddControlId = AddControlId::Text(AddTextField::ReviewName);
@@ -311,18 +400,15 @@ fn snapshot(path: &str, bytes: &[u8]) -> SourceSnapshot {
             readonly: false,
             unix_mode: Some(0o644),
         },
+        executable: None,
         is_regular: true,
         is_directory: false,
         is_draft: false,
+        identity: None,
     }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's AddReviewScreen boots on #rv-name and ↓/↑ \
-walk rv-name <-> rv-desc (test_tui_nav.py:104-122), but the Rust add/review screen maps only \
-Tab/BackTab to field nav — ↓/↑ fall through to the body scroll \
-(crates/skit-tui/src/screens/add.rs:386-478), so the first ↓ never walks rv-name -> rv-desc. Fix \
-the add screen's arrow handling -> delete this #[ignore]."]
 fn test_add_review_boots_on_name_and_arrows_move() {
     // The review panel boots on its name field (not the body scroll container); ↓/↑ walk
     // name<->description, the footer chip does the same, and Tab/Shift+Tab agree.
@@ -333,39 +419,172 @@ fn test_add_review_boots_on_name_and_arrows_move() {
     );
     let state = AddWorkflowState::from_review(review);
     let mut session = AddScreenSession::default();
-    let geometry = draw_add(&mut session, &state);
+    let (buffer, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&RV_NAME)); // rv-name, not the body scroll
+    let screen = buffer_text(&buffer);
+    assert!(
+        screen.contains("Tab/↓"),
+        "missing forward navigation chip:\n{screen}"
+    );
+    assert!(
+        screen.contains("Shift+Tab/↑"),
+        "missing backward navigation chip:\n{screen}"
+    );
 
-    // ↓ moves on (this is where Rust diverges: the arrow does not walk the fields).
-    let _ = session.handle_event(key(KeyCode::Down), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
+    // ↓ moves on and ↑ comes back.
+    assert_eq!(
+        session.handle_event(key(KeyCode::Down), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (_, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&RV_DESC));
-    let _ = session.handle_event(key(KeyCode::Up), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
+    assert_eq!(
+        session.handle_event(key(KeyCode::Up), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (buffer, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&RV_NAME));
 
-    // The forward footer chip is the same action, clickable.
-    let next_rect = geometry
+    // The rendered forward hit ignores pointer motion/release and fires only on a real left down.
+    let next = geometry
         .hits
         .iter()
         .find(|hit| hit.target == AddControlId::NextField)
-        .expect("the review footer advertises a next-field chip")
-        .area;
-    let _ = session.handle_event(left_click(next_rect.x, next_rect.y), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
+        .expect("the review footer advertises a typed next-field hit");
+    assert!(region_text(&buffer, next.area).contains("Tab/↓"));
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(mouse(kind, next.area.x, next.area.y), &state, &geometry),
+            None
+        );
+        assert_eq!(session.focused(), Some(&RV_NAME));
+    }
+    assert_eq!(
+        session.handle_event(left_click(next.area.x, next.area.y), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (buffer, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&RV_DESC));
 
-    // Tab/Shift+Tab themselves walk the same way.
-    let _ = session.handle_event(shift_back_tab(), &state, &geometry);
-    let geometry = draw_add(&mut session, &state);
+    // The backward chip is a separate typed hit and has the same pointer-event discipline.
+    let previous = geometry
+        .hits
+        .iter()
+        .find(|hit| region_text(&buffer, hit.area).contains("Shift+Tab/↑"))
+        .expect("the review footer advertises a typed previous-field hit");
+    assert_eq!(previous.target, AddControlId::PreviousField);
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(
+                mouse(kind, previous.area.x, previous.area.y),
+                &state,
+                &geometry,
+            ),
+            None
+        );
+        assert_eq!(session.focused(), Some(&RV_DESC));
+    }
+    assert_eq!(
+        session.handle_event(
+            left_click(previous.area.x, previous.area.y),
+            &state,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
+    let (_, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&RV_NAME));
-    let _ = session.handle_event(key(KeyCode::Tab), &state, &geometry);
-    let _ = draw_add(&mut session, &state);
+
+    // Tab/Shift+Tab themselves walk the same way.
+    assert_eq!(
+        session.handle_event(key(KeyCode::Tab), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let (_, geometry) = draw_add(&mut session, &state);
     assert_eq!(session.focused(), Some(&RV_DESC));
+    assert_eq!(
+        session.handle_event(shift_back_tab(), &state, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let _ = draw_add(&mut session, &state);
+    assert_eq!(session.focused(), Some(&RV_NAME));
+}
+
+#[test]
+fn add_kind_and_open_select_keep_their_arrow_ownership() {
+    let mut kind = AddWorkflowState::new(Vec::new());
+    let _ = kind.reduce(AddAction::SetSourcePath("mystery".to_owned()));
+    let effects = kind.reduce(AddAction::Continue);
+    let request = effects
+        .iter()
+        .find_map(|effect| match effect {
+            AddEffect::InspectSource { request, .. } => Some(*request),
+            _ => None,
+        })
+        .expect("the source lane requests inspection");
+    let _ = kind.reduce(AddAction::SourceInspected {
+        request,
+        result: Ok(snapshot("mystery", b"opaque\n")),
+    });
+    assert_eq!(kind.stage(), AddStage::Kind);
+
+    let mut kind_session = AddScreenSession::default();
+    let (_, geometry) = draw_add(&mut kind_session, &kind);
+    let first = kind_session.focused().cloned().expect("focused kind row");
+    assert_eq!(
+        kind_session.handle_event(key(KeyCode::Down), &kind, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    let second = kind_session.focused().cloned().expect("next kind row");
+    assert!(matches!(second, AddControlId::Kind(_)));
+    assert_ne!(second, first);
+    let (_, geometry) = draw_add(&mut kind_session, &kind);
+    assert_eq!(
+        kind_session.handle_event(key(KeyCode::Up), &kind, &geometry),
+        Some(AddScreenEvent::Changed)
+    );
+    assert_eq!(kind_session.focused(), Some(&first));
+
+    let review = ReviewState::from_source(
+        snapshot("job.py", b"print('ok')\n"),
+        KnownEntryKind::Python,
+        ReviewDefaults::default(),
+    );
+    let review = AddWorkflowState::from_review(review);
+    let mut select_session = AddScreenSession::default();
+    let (_, geometry) = draw_add(&mut select_session, &review);
+    let storage = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.target == AddControlId::Storage)
+        .expect("the non-fresh review renders its storage select");
+    assert_eq!(
+        select_session.handle_event(
+            left_click(storage.area.x, storage.area.y),
+            &review,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
+    assert_eq!(select_session.focused(), Some(&AddControlId::Storage));
+    let (_, geometry) = draw_add(&mut select_session, &review);
+    assert!(
+        select_session
+            .handle_event(key(KeyCode::Down), &review, &geometry)
+            .is_some()
+    );
+    assert_eq!(select_session.focused(), Some(&AddControlId::Storage));
+    let (_, geometry) = draw_add(&mut select_session, &review);
+    assert!(
+        select_session
+            .handle_event(key(KeyCode::Up), &review, &geometry)
+            .is_some()
+    );
+    assert_eq!(select_session.focused(), Some(&AddControlId::Storage));
 }
 
 // ==========================================================================
-// 4. Preferences — DIVERGENCE: the arrows match, but the nav chip is absent + unroutable
+// 4. Preferences — REAL: widget-owned keys and both shared footer hits agree
 // ==========================================================================
 
 fn prefs_focus(state: &LibraryState) -> PreferencesControlId {
@@ -379,8 +598,8 @@ fn prefs_focus(state: &LibraryState) -> PreferencesControlId {
 /// choice section a ↓ steps into.
 fn preferences_view() -> skit_ui::PreferencesView {
     use skit_application::preferences::{
-        AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
-        PreferencesDraft, PreferencesSnapshot,
+        AfterRunChoice, JavascriptChoice, MirrorConfiguration, PreferencesDraft,
+        PreferencesSnapshot,
     };
     skit_ui::PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
         language: String::new(),
@@ -398,47 +617,179 @@ fn preferences_view() -> skit_ui::PreferencesView {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the arrow legs MATCH the oracle (boot on the language \
-picker; ↓ off the editor steps into the form-style radio; a second ↓ stays inside the radio's \
-options; Shift+Tab/Tab walk out and back — test_tui_nav.py:125-147). Only the two footer-chip legs \
-diverge: CommandContext::Preferences declares no FocusNext/FocusPrevious specs (crates/skit-ui/\
-src/lib.rs ~844-870), and the preferences branch has no map_event fallback \
-(crates/skit-tui/src/session.rs:366-374), so the '#pf-keys' nav pill is both absent and \
-unroutable. Add the preferences nav chips + routing -> delete this #[ignore]."]
 fn test_prefs_boots_on_language_and_arrows_move() {
     // Boots on the language dropdown (not the scroll); moving into the RadioSet, the arrows belong
     // to its OPTIONS — leaving it is Tab's (or the chip's) job, and the shared bindings must not
     // steal them; the chip walks on and the back chip returns.
     let mut state = present(Screen::Preferences(Box::new(preferences_view())));
     let mut session = TuiSession::default();
-    let (_, _) = draw(&mut session, &state);
+    let (screen, geometry) = draw(&mut session, &state);
     assert_eq!(prefs_focus(&state), PreferencesControlId::Language); // the language dropdown
+    assert!(
+        screen.contains("Tab/↓"),
+        "missing forward navigation chip:\n{screen}"
+    );
+    assert!(
+        screen.contains("Shift+Tab/↑"),
+        "missing backward navigation chip:\n{screen}"
+    );
+    for command in [UiCommand::FocusNext, UiCommand::FocusPrevious] {
+        assert_eq!(
+            geometry
+                .hits
+                .iter()
+                .filter(|hit| hit.action == HitTarget::Command(command))
+                .count(),
+            1,
+            "the rendered Preferences footer needs one typed {command:?} hit"
+        );
+    }
 
     // Focus the editor input (the oracle's `query_one("#pf-editor").focus()`): one Tab, since
     // Language and Editor are adjacent stops.
-    press(&mut session, &mut state, KeyCode::Tab);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Tab)),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(
+            PreferencesControlId::Editor,
+        )))
+    );
     assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
 
     // ↓ off the input moves into the form-style radio section.
-    press(&mut session, &mut state, KeyCode::Down);
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Down)),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(
+            PreferencesControlId::InteractiveForm,
+        )))
+    );
     let radio = prefs_focus(&state);
     assert_eq!(radio, PreferencesControlId::InteractiveForm);
     // Inside the RadioSet the arrows belong to the OPTIONS: another ↓ stays on the same widget.
-    press(&mut session, &mut state, KeyCode::Down);
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Down)),
+        EventHandling::Action(Action::Preferences(PreferencesAction::SetInteractiveForm(
+            InteractiveFormChoice::Plain
+        ),))
+    );
     assert_eq!(prefs_focus(&state), radio); // still the same widget…
 
-    // …and the chip moves on to the next section, then the back chip returns to the radio.
-    click_chip(&mut session, &mut state, UiCommand::FocusNext);
-    assert_ne!(prefs_focus(&state), radio);
-    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
+    // …and only a real left down on the typed footer hit moves to the next section.
+    let (_, geometry) = draw(&mut session, &state);
+    let next = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::FocusNext))
+        .expect("the Preferences footer exposes FocusNext")
+        .rect;
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            drive(
+                &mut session,
+                &mut state,
+                &geometry,
+                mouse(kind, next.x, next.y),
+            ),
+            EventHandling::Ignored
+        );
+        assert_eq!(prefs_focus(&state), radio);
+    }
+    assert_eq!(
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            left_click(next.x, next.y),
+        ),
+        EventHandling::Action(Action::FocusNext)
+    );
+    assert_eq!(prefs_focus(&state), PreferencesControlId::AfterRun);
+
+    // The backward chip has the same pointer-event discipline and returns to the radio.
+    let (_, geometry) = draw(&mut session, &state);
+    let previous = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::FocusPrevious))
+        .expect("the Preferences footer exposes FocusPrevious")
+        .rect;
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            drive(
+                &mut session,
+                &mut state,
+                &geometry,
+                mouse(kind, previous.x, previous.y),
+            ),
+            EventHandling::Ignored
+        );
+        assert_eq!(prefs_focus(&state), PreferencesControlId::AfterRun);
+    }
+    assert_eq!(
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            left_click(previous.x, previous.y),
+        ),
+        EventHandling::Action(Action::FocusPrevious)
+    );
     assert_eq!(prefs_focus(&state), radio);
 
     // The advertised keys themselves, not just the chips.
     let (_, geometry) = draw(&mut session, &state);
-    drive(&mut session, &mut state, &geometry, shift_back_tab());
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, shift_back_tab()),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(
+            PreferencesControlId::Editor,
+        )))
+    );
     assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
-    press(&mut session, &mut state, KeyCode::Tab);
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Tab)),
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(radio)))
+    );
     assert_eq!(prefs_focus(&state), radio);
+}
+
+#[test]
+fn preferences_widgets_claim_their_own_keys_before_shared_navigation() {
+    let mut state = present(Screen::Preferences(Box::new(preferences_view())));
+    let mut session = TuiSession::default();
+
+    // Down opens the focused language picker instead of moving to the next Preferences control.
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Down)),
+        EventHandling::Consumed
+    );
+    assert_eq!(prefs_focus(&state), PreferencesControlId::Language);
+    let (_, geometry) = draw(&mut session, &state);
+    let _ = drive(&mut session, &mut state, &geometry, key(KeyCode::Up));
+    assert_eq!(prefs_focus(&state), PreferencesControlId::Language);
+
+    // A fresh input keeps printable and horizontal cursor keys; only its unused vertical arrows
+    // move through the form.
+    state = present(Screen::Preferences(Box::new(preferences_view())));
+    session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state);
+    let _ = drive(&mut session, &mut state, &geometry, key(KeyCode::Tab));
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Char('x')),),
+        EventHandling::Action(Action::Preferences(PreferencesAction::SetEditor(
+            "x".to_owned(),
+        )))
+    );
+    assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Left)),
+        EventHandling::Consumed
+    );
+    assert_eq!(prefs_focus(&state), PreferencesControlId::Editor);
 }
 
 // ==========================================================================
@@ -473,39 +824,119 @@ fn settings_view() -> SettingsView {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle's settings screen boots on #st-name and ↓/↑ \
-walk name <-> the next field (test_tui_nav.py:150-170). In Rust ↓ off the name reaches the \
-description, but the description is a Multiline box and edit_body hands ↑ to the textarea, which \
-consumes it unconditionally (crates/skit-tui/src/session.rs textarea_accepts includes Up), so ↑ \
-cannot return focus to the name — the oracle's single-line description releases ↑ \
-(test_tui_nav.py:161-162). Make the description release ↑ at the top line (or single-line it) -> \
-delete this #[ignore]."]
 fn test_settings_boots_on_name_and_arrows_move() {
     // The settings screen boots on its name field (not the body scroll container); ↓/↑ walk
     // name<->the next field, the footer chips do the same, and Tab/Shift+Tab agree.
     let mut state = present(Screen::Settings(Box::new(settings_view())));
     let mut session = TuiSession::default();
-    let (_, _) = draw(&mut session, &state);
+    let (_, geometry) = draw(&mut session, &state);
     assert_eq!(settings_focus(&state), "name"); // st-name
 
     // ↓ moves on to the next control.
-    press(&mut session, &mut state, KeyCode::Down);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Down)),
+        EventHandling::Action(Action::Settings(skit_ui::SettingsAction::FocusNext))
+    );
     let second = settings_focus(&state);
-    assert_ne!(second, "name");
-    // ↑ comes back (this is where Rust diverges: the Multiline description eats ↑).
-    press(&mut session, &mut state, KeyCode::Up);
+    assert_eq!(second, "description");
+    let description = match state.screen() {
+        Screen::Settings(view) => view
+            .field("description")
+            .unwrap()
+            .value()
+            .as_text()
+            .to_owned(),
+        _ => unreachable!(),
+    };
+    // The one-line description is already at the textarea's top boundary, so ↑ yields navigation.
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Up)),
+        EventHandling::Action(Action::Settings(skit_ui::SettingsAction::FocusPrevious))
+    );
     assert_eq!(settings_focus(&state), "name");
+    match state.screen() {
+        Screen::Settings(view) => assert_eq!(
+            view.field("description").unwrap().value().as_text(),
+            description
+        ),
+        _ => unreachable!(),
+    }
 
-    // The chip is the same action, clickable — forward then back.
-    click_chip(&mut session, &mut state, UiCommand::FocusNext);
+    // The chips are the same actions. Hover and release are inert; Left Down activates each one.
+    let (footer, geometry) = draw(&mut session, &state);
+    assert!(footer.contains("Tab/↓"), "{footer}");
+    assert!(footer.contains("Shift+Tab/↑"), "{footer}");
+    let next = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::FocusNext))
+        .expect("the Settings footer exposes FocusNext")
+        .rect;
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            drive(
+                &mut session,
+                &mut state,
+                &geometry,
+                mouse(kind, next.x, next.y),
+            ),
+            EventHandling::Ignored
+        );
+        assert_eq!(settings_focus(&state), "name");
+    }
+    assert_eq!(
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            left_click(next.x, next.y),
+        ),
+        EventHandling::Action(Action::FocusNext)
+    );
     assert_eq!(settings_focus(&state), second);
-    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
+
+    let (_, geometry) = draw(&mut session, &state);
+    let previous = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::FocusPrevious))
+        .expect("the Settings footer exposes FocusPrevious")
+        .rect;
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            drive(
+                &mut session,
+                &mut state,
+                &geometry,
+                mouse(kind, previous.x, previous.y),
+            ),
+            EventHandling::Ignored
+        );
+        assert_eq!(settings_focus(&state), second);
+    }
+    assert_eq!(
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            left_click(previous.x, previous.y),
+        ),
+        EventHandling::Action(Action::FocusPrevious)
+    );
     assert_eq!(settings_focus(&state), "name");
 
     // The advertised keys themselves, not just the chips.
-    press(&mut session, &mut state, KeyCode::Tab);
+    let (_, geometry) = draw(&mut session, &state);
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, key(KeyCode::Tab)),
+        EventHandling::Action(Action::Settings(skit_ui::SettingsAction::FocusNext))
+    );
     assert_eq!(settings_focus(&state), second);
     let (_, geometry) = draw(&mut session, &state);
-    drive(&mut session, &mut state, &geometry, shift_back_tab());
+    assert_eq!(
+        drive(&mut session, &mut state, &geometry, shift_back_tab()),
+        EventHandling::Action(Action::Settings(skit_ui::SettingsAction::FocusPrevious))
+    );
     assert_eq!(settings_focus(&state), "name");
 }

@@ -11,7 +11,9 @@ use skit_benchmarks::{
         bench_path, build_environment, platform_key, pull_request_number, version_from_output,
     },
     process::{ProcessError, ProcessSpec, run},
-    report::{HEADLINE_METRICS, RunRecord, render_results_markdown, summarize_directory},
+    report::{
+        HEADLINE_METRICS, RunRecord, SummaryError, render_results_markdown, summarize_directory,
+    },
 };
 use tempfile::TempDir;
 
@@ -84,6 +86,22 @@ fn constructed_environment_is_dataset_scoped_absolute_and_not_ambient() {
         "/opt/skit/bin:/opt/node/bin:/usr/bin:/bin"
     );
     assert!(build_environment("skit", None, None, &work, &root.path().join("missing")).is_err());
+
+    let blocked_work = root.path().join("blocked-work");
+    fs::write(&blocked_work, "not a directory").unwrap();
+    let error = build_environment("skit", None, None, &blocked_work, &dataset).unwrap_err();
+    // The product joins the two names, so the host chooses the separator between them.
+    let blocked_home = std::path::Path::new("blocked-work").join("home");
+    assert!(
+        error
+            .to_string()
+            .contains(&blocked_home.display().to_string()),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(&blocked_work).unwrap(),
+        "not a directory"
+    );
 }
 
 #[test]
@@ -101,25 +119,93 @@ fn environment_provenance_normalizes_platform_and_pr_anchor() {
     assert_eq!(version_from_output("\n"), "unknown");
 }
 
+/// The command that prints the environment it received, one name per line.
+///
+/// Both forms name an absolute program, so no search path is needed to start it.
+#[cfg(unix)]
+fn print_environment_argv() -> Vec<String> {
+    vec!["/usr/bin/env".to_owned()]
+}
+
+#[cfg(windows)]
+fn print_environment_argv() -> Vec<String> {
+    vec![
+        std::env::var("COMSPEC").unwrap(),
+        "/C".to_owned(),
+        "set ONLY_THIS".to_owned(),
+    ]
+}
+
+/// The command that stays busy for about a second, so a short deadline must end it.
+///
+/// The Windows form names the program itself instead of a shell, because the environment below
+/// carries no search path that a shell could use to find one.
+#[cfg(unix)]
+fn slow_argv() -> Vec<String> {
+    vec!["/bin/sh".to_owned(), "-c".to_owned(), "sleep 1".to_owned()]
+}
+
+#[cfg(windows)]
+fn slow_argv() -> Vec<String> {
+    vec![
+        format!(
+            "{}\\System32\\PING.EXE",
+            std::env::var("SystemRoot").unwrap()
+        ),
+        "-n".to_owned(),
+        "3".to_owned(),
+        "127.0.0.1".to_owned(),
+    ]
+}
+
+/// The environment the slow command needs to start at all.
+#[cfg(unix)]
+fn slow_env() -> BTreeMap<String, String> {
+    BTreeMap::from([("PATH".to_owned(), "/usr/bin:/bin".to_owned())])
+}
+
+#[cfg(windows)]
+fn slow_env() -> BTreeMap<String, String> {
+    BTreeMap::from([(
+        "SystemRoot".to_owned(),
+        std::env::var("SystemRoot").unwrap(),
+    )])
+}
+
+/// Check what the child received.
+///
+/// A POSIX `env` prints exactly the environment it was given, so the complete output is the one
+/// name the caller set. `cmd.exe` always adds names of its own, so on Windows the test asks for
+/// that one name among the lines.
+#[cfg(unix)]
+fn assert_child_environment(stdout: &str) {
+    assert_eq!(stdout.trim(), "ONLY_THIS=yes");
+}
+
+#[cfg(windows)]
+fn assert_child_environment(stdout: &str) {
+    assert!(
+        stdout.lines().any(|line| line.trim() == "ONLY_THIS=yes"),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn process_runner_builds_a_complete_environment_and_enforces_timeouts() {
     let output = run(&ProcessSpec {
-        argv: vec!["/usr/bin/env".to_owned()],
-        cwd: "/".into(),
+        argv: print_environment_argv(),
+        cwd: std::env::temp_dir(),
         env: BTreeMap::from([("ONLY_THIS".to_owned(), "yes".to_owned())]),
         timeout: Duration::from_secs(2),
         check: true,
     })
     .unwrap();
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap().trim(),
-        "ONLY_THIS=yes"
-    );
+    assert_child_environment(&String::from_utf8(output.stdout).unwrap());
 
     let timeout = run(&ProcessSpec {
-        argv: vec!["/bin/sh".to_owned(), "-c".to_owned(), "sleep 1".to_owned()],
-        cwd: "/".into(),
-        env: BTreeMap::from([("PATH".to_owned(), "/usr/bin:/bin".to_owned())]),
+        argv: slow_argv(),
+        cwd: std::env::temp_dir(),
+        env: slow_env(),
         timeout: Duration::from_millis(20),
         check: true,
     });
@@ -293,6 +379,40 @@ fn summary_names_missing_incomplete_and_legacy_run_directories() {
     assert!(markdown.contains("image image-1"));
     assert!(markdown.contains("No skipped cases."));
     assert!(markdown.contains("| 0 count | 0 | 2 |"));
+}
+
+#[test]
+fn test_summarize_dir_rejects_corrupt_run_json() {
+    let root = TempDir::new().unwrap();
+    let run_path = root.path().join("run.json");
+    let original = b"{truncated";
+    fs::write(&run_path, original).unwrap();
+
+    let error = summarize_directory(root.path(), None).unwrap_err();
+    match &error {
+        SummaryError::RunJson { path, source } => {
+            assert_eq!(path, &run_path);
+            assert_eq!(
+                source.to_string(),
+                "key must be a string at line 1 column 2"
+            );
+        }
+        other => panic!("expected typed run JSON error, got {other:?}"),
+    }
+    assert!(std::error::Error::source(&error).is_some());
+    assert_eq!(
+        error.to_string(),
+        "run.json is not valid JSON (key must be a string at line 1 column 2)"
+    );
+    assert_eq!(fs::read(&run_path).unwrap(), original);
+    assert_eq!(
+        fs::read_dir(root.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        ["run.json"]
+    );
 }
 
 #[cfg(unix)]

@@ -229,8 +229,11 @@ impl LibraryScreenSession {
                 if matches!(
                     mouse.kind,
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                ) && self.detail_area.contains((mouse.column, mouse.row).into()) =>
+                ) =>
             {
+                if !self.detail_area.contains((mouse.column, mouse.row).into()) {
+                    return false;
+                }
                 self.focus.set(LibraryPane::Detail);
                 handle_scrollable_content_mouse(
                     &mut self.detail_scroll,
@@ -257,15 +260,7 @@ impl LibraryScreenSession {
                 if key.kind != KeyEventKind::Release
                     && self.focus.is_focused(&LibraryPane::Detail)
                     && key.modifiers == KeyModifiers::NONE
-                    && matches!(
-                        key.code,
-                        KeyCode::Up
-                            | KeyCode::Down
-                            | KeyCode::PageUp
-                            | KeyCode::PageDown
-                            | KeyCode::Home
-                            | KeyCode::End
-                    ) =>
+                    && is_scroll_key(key.code) =>
             {
                 handle_scrollable_content_key(&mut self.detail_scroll, key, self.detail_height)
                     .is_some()
@@ -278,6 +273,18 @@ impl LibraryScreenSession {
             | Event::Resize(_, _) => false,
         }
     }
+}
+
+fn is_scroll_key(code: KeyCode) -> bool {
+    [
+        KeyCode::Up,
+        KeyCode::Down,
+        KeyCode::PageUp,
+        KeyCode::PageDown,
+        KeyCode::Home,
+        KeyCode::End,
+    ]
+    .contains(&code)
 }
 
 pub(crate) fn detail_lines(state: &LibraryState, locale: Locale) -> Vec<Line<'static>> {
@@ -461,9 +468,9 @@ fn last_run_line(last_run: &LibraryLastRun, locale: Locale) -> Line<'static> {
     };
     let styled_outcome = format!("{glyph} {outcome}");
     let rendered = format_text(locale, "Last run  {} · {}", &[&when, &styled_outcome]);
-    let Some(outcome_at) = rendered.rfind(&styled_outcome) else {
-        return Line::from(rendered);
-    };
+    let outcome_at = rendered
+        .rfind(&styled_outcome)
+        .expect("the formatted last-run line must retain its outcome argument");
     let outcome_end = outcome_at.saturating_add(styled_outcome.len());
     Line::from(vec![
         Span::raw(rendered[..outcome_at].to_owned()),

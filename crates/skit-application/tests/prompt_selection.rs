@@ -24,6 +24,7 @@ impl PromptSelectionStore for MemoryPromptSelectionStore {
 #[test]
 fn service_keeps_last_runner_state_separate_from_runner_resolution() {
     let service = PromptSelectionService::new(MemoryPromptSelectionStore::default());
+    assert_eq!(*service.store().runner.lock().unwrap(), "");
     assert_eq!(service.last_runner(), "");
 
     service.remember_runner("codex").unwrap();

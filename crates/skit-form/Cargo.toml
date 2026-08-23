@@ -11,6 +11,7 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 skit-domain.workspace = true
+skit-application.workspace = true
 skit-language.workspace = true
 
 [lints]

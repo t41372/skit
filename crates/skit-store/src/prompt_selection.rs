@@ -50,10 +50,8 @@ impl PromptSelectionStore for FilePromptSelectionStore {
         let path = self.path();
         let mut document = load_document(&path).unwrap_or_default();
         document.insert("last_runner".to_owned(), Value::String(name.to_owned()));
-        let encoded =
-            toml::to_string_pretty(&document).map_err(|error| StateWriteError::Encode {
-                reason: error.to_string(),
-            })?;
+        let encoded = toml::to_string_pretty(&document)
+            .expect("a string-keyed TOML value tree must serialize");
         atomic_write_bytes(&path, encoded.as_bytes())
             .map_err(|error| io_error("write", &path, error.to_string()))
     }
