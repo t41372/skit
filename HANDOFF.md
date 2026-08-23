@@ -901,6 +901,14 @@ exposes no change counter (registry.rs:318-323, :371-373, :458-480), so a same-t
 in-place edit is still rejected by hash. Aggregate 4073 / 0 / 525; fresh workspace LCOV
 `complete executable-source line coverage`.
 
+Wave 29 (`a645a75`): the frontier reached skit-tui's integration tests; the picker
+fixture created `beta file*.txt` and `*` is a Windows-forbidden filename character, so the
+file itself failed to create. Host-neutral fix: `beta file[1].txt` — brackets are legal on
+every host and are exactly the metacharacter the picked-path glob contract (`0fd6d85`)
+centers on. The invalid-filename sweep over skit-tui and skit-ui tests found no second
+filesystem member (the skit-ui star strings are reducer data proving the Replace-literal
+contract, never touching the filesystem). Aggregate 4073 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
