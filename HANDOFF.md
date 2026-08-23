@@ -868,6 +868,14 @@ every comparison in the file; the sweep of the whole manifest/census family foun
 member (component-wise PathBuf equality, name-keyed censuses, literal-sourced paths, or
 Windows-proven targets throughout). Aggregate 4073 / 0 / 525.
 
+Wave 26c (`9f0ee8a`): the fifth policy-divergence member hid in FIELD guards, not variant
+names — `limit == 100_000` is the POSIX prompt-argv constant (Windows budgets 60,000
+UTF-16 bytes; `unit` is "bytes" on both arms). Fixed with cfg-matched limits and an honest
+rename (the fixture fires the refusal on both hosts by construction, so gating would
+discard real Windows coverage; the file is not a port module, so the rename is
+ledger-safe). The field-level re-audit of every cleared file found no sixth member.
+Aggregate 4073 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
