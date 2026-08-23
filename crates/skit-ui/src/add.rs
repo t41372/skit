@@ -1570,7 +1570,9 @@ impl AddWorkflowState {
                 self.stage = AddStage::Source;
             }
             AddAction::ConfirmDraftDelete(true) => {
-                let Some(draft) = self.delete_candidate.take() else {
+                // The candidate stays until the stage it describes ends. A frontend can draw the
+                // confirmation while the host performs the delete, and the screen names the draft.
+                let Some(draft) = self.delete_candidate.clone() else {
                     return Vec::new();
                 };
                 let request = self.request();
@@ -1586,6 +1588,7 @@ impl AddWorkflowState {
                     return Vec::new();
                 }
                 self.stage = AddStage::Source;
+                self.delete_candidate = None;
                 match result {
                     Ok(DraftDeleteOutcome::Removed | DraftDeleteOutcome::AlreadyMissing) => {
                         self.problem = None;
@@ -2600,6 +2603,52 @@ mod tests {
             workflow.notice(),
             Some(&AddNotice::DraftDeleted(refreshed.path)),
             "AlreadyMissing is an idempotent successful deletion"
+        );
+    }
+
+    /// The confirmation stage always has the draft it asks about. A frontend can draw while the
+    /// host performs the delete, and the screen names the file in that window too; the candidate
+    /// therefore ends exactly when the stage that describes it ends.
+    #[test]
+    fn the_delete_candidate_lives_exactly_as_long_as_the_stage_that_names_it() {
+        let draft = DraftSummary {
+            path: PathBuf::from("skit-new-inflight.py"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        };
+        let mut workflow = AddWorkflowState::new(vec![draft.clone()]);
+        let _ = workflow.reduce(AddAction::SelectDraft(0));
+        let _ = workflow.reduce(AddAction::DeleteSelectedDraft);
+        assert_eq!(workflow.stage(), AddStage::ConfirmDraftDelete);
+        assert_eq!(workflow.delete_candidate(), Some(&draft));
+
+        let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
+        let (request, _) = effects
+            .iter()
+            .find_map(delete_effect)
+            .expect("confirmed deletion must emit one typed host request");
+        assert_eq!(
+            workflow.stage(),
+            AddStage::ConfirmDraftDelete,
+            "the stage stays open until the host answers"
+        );
+        assert_eq!(
+            workflow.delete_candidate(),
+            Some(&draft),
+            "the confirmation still names its draft while the delete runs"
+        );
+
+        let _ = workflow.reduce(AddAction::DraftDeleted {
+            request,
+            result: Ok(DraftDeleteOutcome::Removed),
+        });
+        assert_eq!(workflow.stage(), AddStage::Source);
+        assert_eq!(
+            workflow.delete_candidate(),
+            None,
+            "the candidate ends with the stage that described it"
         );
     }
 

@@ -867,28 +867,7 @@ fn build_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         AddStage::Source => source_rows(state, locale),
         AddStage::Kind => kind_rows(state, locale),
         AddStage::Review => review_rows(state, locale),
-        AddStage::ConfirmDraftDelete => vec![
-            RenderRow::Note(
-                // A kept draft is a file, not a library entry, and deleting it is not undoable:
-                // version 0.4 names the draft and says so (`src/skit/tui_add.py:176`).
-                state.delete_candidate().map_or_else(
-                    || text(locale, "Remove this entry:").into_owned(),
-                    |draft| {
-                        format_text(
-                            locale,
-                            "Delete the draft \"{}\"? It is the only copy.",
-                            &[&draft_display_name(draft)],
-                        )
-                    },
-                ),
-                Style::default().fg(Color::Red),
-            ),
-            RenderRow::Button(
-                AddControlId::DeleteDraft,
-                text(locale, "Remove").into_owned(),
-            ),
-            RenderRow::Button(AddControlId::Cancel, text(locale, "Cancel").into_owned()),
-        ],
+        AddStage::ConfirmDraftDelete => confirm_draft_delete_rows(state, locale),
         AddStage::Complete | AddStage::Cancelled => Vec::new(),
     };
     if let Some(problem) = state.problem() {
@@ -1019,6 +998,34 @@ fn draft_display_name(draft: &skit_ui::DraftSummary) -> String {
 /// the screen.
 fn hint(body: String) -> RenderRow {
     RenderRow::Note(body, Style::default().add_modifier(Modifier::DIM))
+}
+
+/// Rows for the kept-draft delete confirmation.
+///
+/// The reducer keeps the candidate for the whole stage, so the confirmation always names its
+/// draft. A kept draft is a file, not a library entry, and deleting it is not undoable: version
+/// 0.4 says both (`src/skit/tui_add.py:176`).
+fn confirm_draft_delete_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
+    let mut rows = Vec::new();
+    if let Some(draft) = state.delete_candidate() {
+        rows.push(RenderRow::Note(
+            format_text(
+                locale,
+                "Delete the draft \"{}\"? It is the only copy.",
+                &[&draft_display_name(draft)],
+            ),
+            Style::default().fg(Color::Red),
+        ));
+        rows.push(RenderRow::Button(
+            AddControlId::DeleteDraft,
+            text(locale, "Remove").into_owned(),
+        ));
+        rows.push(RenderRow::Button(
+            AddControlId::Cancel,
+            text(locale, "Cancel").into_owned(),
+        ));
+    }
+    rows
 }
 
 fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
