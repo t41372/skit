@@ -876,6 +876,19 @@ discard real Windows coverage; the file is not a port module, so the rename is
 ledger-safe). The field-level re-audit of every cleared file found no sixth member.
 Aggregate 4073 / 0 / 525.
 
+Wave 28 (`d4914fa`): the skit-store lib batch — six failures, all platform-semantic
+test expectations aligned to documented product policy: the atomic-write op sequence
+cfg-matches the Windows directory-sync omission; the mandatory-lock owner observes the held
+phase through metadata (Windows locks are mandatory); a blind-authored readonly-replace
+expectation was OVERTURNED with CPython parity evidence (os.replace raises PermissionError
+on a readonly target, so v0.4 refuses too — the owner now asserts the refusal and the
+preserved original); the pre-epoch timestamp probe respects FILETIME's 100 ns tick. One
+latent tests/-target member (keep-mode on a readonly target) was pre-fixed with the
+oracle's own comment as evidence (test_atomic.py:445-460). Supervisor decision recorded:
+the readonly temp file a failed Windows replace leaves behind is CPython-parity litter and
+stays (a product hardening would add an unix-unobservable mutation arm); revisit only with
+a native-Windows mutation story. Aggregate 4073 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
