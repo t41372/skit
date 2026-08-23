@@ -31,6 +31,15 @@ pub(crate) enum Shim {
     MakeDirectory(&'static str),
     /// Make the empty file the named environment variable points to, then exit zero.
     TouchFromEnvironment(&'static str),
+    /// Write every argument it was given, one to a line, then exit zero.
+    EchoArguments,
+    /// Write `label=value` for the named environment variable, then exit zero.
+    EchoEnvironment {
+        /// The name written before the equals sign.
+        label: &'static str,
+        /// The environment variable read for the value.
+        variable: &'static str,
+    },
 }
 
 /// The suffix the host needs on a program name.
@@ -77,6 +86,10 @@ fn body(shim: Shim) -> String {
         Shim::TouchFromEnvironment(variable) => {
             format!("#!/bin/sh\n: > \"${variable}\"\nexit 0\n")
         }
+        Shim::EchoArguments => "#!/bin/sh\nprintf '%s\\n' \"$@\"\n".to_owned(),
+        Shim::EchoEnvironment { label, variable } => {
+            format!("#!/bin/sh\necho \"{label}=${variable}\"\n")
+        }
     }
 }
 
@@ -90,6 +103,20 @@ fn body(shim: Shim) -> String {
         }
         Shim::TouchFromEnvironment(variable) => {
             format!("@echo off\r\ntype nul > \"%{variable}%\"\r\nexit /b 0\r\n")
+        }
+        // Walk the arguments one at a time. The `for %%A in (%*)` form splits on its own
+        // punctuation and would not return the arguments it was given.
+        Shim::EchoArguments => concat!(
+            "@echo off\r\n",
+            ":next\r\n",
+            "if \"%~1\"==\"\" exit /b 0\r\n",
+            "echo %~1\r\n",
+            "shift\r\n",
+            "goto next\r\n",
+        )
+        .to_owned(),
+        Shim::EchoEnvironment { label, variable } => {
+            format!("@echo off\r\necho {label}=%{variable}%\r\nexit /b 0\r\n")
         }
     }
 }

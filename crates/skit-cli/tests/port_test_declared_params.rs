@@ -46,8 +46,9 @@
 //!   `EntryMeta::extra` and projects typed rows through `EntrySettings`; both executable legs live
 //!   in the active `skit-domain` and `skit-store` owners.
 //!
-//! Windows note: the oracle's `sys.platform == "win32"` fixture arms are dropped; these tests
-//! run the Unix `#!/bin/sh` fixtures only.
+//! Windows note: the oracle's `sys.platform == "win32"` fixture arms are dropped. A fixture this
+//! file launches is now written in the dialect the host runs, so the executable and command lanes
+//! are proven on both hosts; a fixture that is only registered or read stays `#!/bin/sh` text.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -67,6 +68,9 @@ use skit_form::{FormPlan, FormSource, form_plan};
 use skit_language::write_managed_params;
 use skit_store::FileStore;
 use tempfile::TempDir;
+
+#[path = "support/shim.rs"]
+mod shim;
 
 // ---- shared helpers (self-contained; this file edits no shared module) --------------------------
 
@@ -190,9 +194,11 @@ impl Lib {
         path
     }
 
-    /// Add the oracle's `_exe` fixture: an argv-echoing shell program registered under `name`.
+    /// Add the oracle's `_exe` fixture: an argv-echoing program registered under `name`.
+    ///
+    /// The program is written in the dialect the host runs, because this fixture is launched.
     fn add_exe(&self, name: &str) {
-        let exe = self.write_script("t", "#!/bin/sh\nprintf '%s\\n' \"$@\"\n");
+        let exe = shim::write_shim(self.src.path(), "t", shim::Shim::EchoArguments);
         self.cmd()
             .arg("add")
             .arg(&exe)
@@ -492,7 +498,14 @@ fn test_run_entry_env_overlay_wins_last() {
     // and reads the child env; here a real `#!/bin/sh` child prints $WIDTH, the ambient value
     // is set on the invocation, and the declared env parameter overlays it.
     let workspace = lib();
-    let child = workspace.write_script("t", "#!/bin/sh\necho \"W=$WIDTH\"\n");
+    let child = shim::write_shim(
+        workspace.src.path(),
+        "t",
+        shim::Shim::EchoEnvironment {
+            label: "W",
+            variable: "WIDTH",
+        },
+    );
     workspace
         .cmd()
         .arg("add")
@@ -721,8 +734,12 @@ fn test_cli_add_flag_param_on_exe_then_run_set() {
     // run --set assembles the real flag
     let run = workspace.run(&["run", "prog", "--set", "width=1024", "--no-input"]);
     assert!(run.status.success(), "{}", combined(&run));
+    // The child writes one argument to a line, and the two hosts end a line differently. The
+    // assertion is about the order of the two arguments, so the line ending is made one form here.
     assert!(
-        combined(&run).contains("--width\n1024"),
+        combined(&run)
+            .replace("\r\n", "\n")
+            .contains("--width\n1024"),
         "{}",
         combined(&run)
     );
@@ -1343,6 +1360,17 @@ fn test_cli_secret_declared_env_purges_prior_plaintext() {
     assert!(!workspace.values_file("prog").contains("TOKEN"));
 }
 
+/// A command entry that writes the value of `TOKEN`, in the dialect the host's interpreter reads.
+///
+/// The contract here is that a declared secret reaches the child's environment. Which spelling
+/// reads an environment variable is the host's business, not the contract's.
+#[cfg(not(windows))]
+const ECHO_TOKEN: &str = "echo $TOKEN";
+
+/// A command entry that writes the value of `TOKEN`, in the dialect the host's interpreter reads.
+#[cfg(windows)]
+const ECHO_TOKEN: &str = "echo %TOKEN%";
+
 #[test]
 fn test_cli_declared_secret_env_source_resolves_without_prompting() {
     // A secret env param with an env_source resolves under --no-input with no prompt: the value
@@ -1350,7 +1378,7 @@ fn test_cli_declared_secret_env_source_resolves_without_prompting() {
     let workspace = lib();
     workspace
         .cmd()
-        .args(["add", "--cmd", "echo $TOKEN", "--name", "svc", "--no-input"])
+        .args(["add", "--cmd", ECHO_TOKEN, "--name", "svc", "--no-input"])
         .assert()
         .success();
     workspace.run(&[
