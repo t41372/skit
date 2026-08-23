@@ -909,6 +909,14 @@ centers on. The invalid-filename sweep over skit-tui and skit-ui tests found no 
 filesystem member (the skit-ui star strings are reducer data proving the Replace-literal
 contract, never touching the filesystem). Aggregate 4073 / 0 / 525.
 
+Wave 26d (`e18b5cd`): the policy-divergence class surfaced in skit-ui's in-src dialect
+asserts (single-quote stripping and the unpaired-single-quote rule are POSIX-only
+outcomes). Both fixed with host-neutral respellings — an unpaired DOUBLE quote is
+UnbalancedQuotes in both dialects and double quotes strip in both, with the Windows arm
+empirically proven on this host by the parameterized runner_management owners — so no cfg
+was needed and both rules stay owned everywhere. The extended in-src dialect sweep over
+skit-ui/tui/form/application found no further member. Aggregate 4073 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
