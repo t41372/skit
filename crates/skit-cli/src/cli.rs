@@ -79,8 +79,8 @@ use skit_store::{
     CONFIG_KEYS, ConfigError, CoordinatedStateError, ExternalRollbackOutcome, FileAgentSkillStore,
     FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
     FileRunnerManagementStore, PromptRunner, RunnerManagementStoreError, RunnerRemovalCas,
-    SystemDirectoryReader, expand_user_path, platform_config_dir, platform_data_dir,
-    platform_state_dir,
+    SystemDirectoryReader, expand_user_path, override_directory, platform_config_dir,
+    platform_data_dir, platform_state_dir,
 };
 use skit_store::{FileStore, content_hash, stored_filenames};
 use skit_ui::{
@@ -10604,22 +10604,22 @@ fn resolve_data_dir(override_dir: Option<PathBuf>) -> Result<PathBuf, CliError> 
     if let Some(path) = override_dir {
         return Ok(path);
     }
-    if let Some(path) = env::var_os("SKIT_DATA_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_DATA_DIR")) {
+        return Ok(path);
     }
     platform_data_dir().ok_or(CliError::DataDirectoryUnavailable)
 }
 
 fn resolve_state_dir() -> Result<PathBuf, CliError> {
-    if let Some(path) = env::var_os("SKIT_STATE_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_STATE_DIR")) {
+        return Ok(path);
     }
     platform_state_dir().ok_or(CliError::DirectoryUnavailable("state"))
 }
 
 fn resolve_config_dir() -> Result<PathBuf, CliError> {
-    if let Some(path) = env::var_os("SKIT_CONFIG_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_CONFIG_DIR")) {
+        return Ok(path);
     }
     platform_config_dir().ok_or(CliError::DirectoryUnavailable("configuration"))
 }

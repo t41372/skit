@@ -39,7 +39,7 @@ use skit_runtime::{
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
-    FileStore, content_hash, platform_config_dir, platform_state_dir,
+    FileStore, content_hash, override_directory, platform_config_dir, platform_state_dir,
 };
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
@@ -1329,15 +1329,15 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn resolve_state_dir() -> Result<PathBuf, RunError> {
-    if let Some(path) = env::var_os("SKIT_STATE_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_STATE_DIR")) {
+        return Ok(path);
     }
     platform_state_dir().ok_or(RunError::StateDirectoryUnavailable)
 }
 
 fn resolve_config_dir() -> Result<PathBuf, RunError> {
-    if let Some(path) = env::var_os("SKIT_CONFIG_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_CONFIG_DIR")) {
+        return Ok(path);
     }
     platform_config_dir().ok_or(RunError::ConfigDirectoryUnavailable)
 }

@@ -28,8 +28,8 @@ pub use mutations::{
 pub use path_completion::SystemDirectoryReader;
 pub use path_glob::FileGlobExpander;
 pub use paths::{
-    expand_user_path, platform_config_dir, platform_data_dir, platform_state_dir, stored_filename,
-    stored_filenames,
+    expand_user_path, override_directory, platform_config_dir, platform_data_dir,
+    platform_state_dir, stored_filename, stored_filenames,
 };
 pub use prompt_selection::FilePromptSelectionStore;
 pub use read::FileStore;

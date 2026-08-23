@@ -63,27 +63,56 @@ fn windows_home() -> Option<String> {
 /// The directory name skit appends to every host root.
 const APPLICATION: &str = "skit";
 
+/// Read the root a redirect variable names.
+///
+/// Version 0.4 removes the spaces around the value and treats a blank one as unset, then uses the
+/// value without those spaces (`platformdirs/_xdg.py:16,35,61`). A value that is not Unicode holds
+/// no spaces this rule can remove, and it still names a real directory, so it stays as it is. A
+/// blank value names no directory on any host.
+fn redirect_root(value: Option<OsString>) -> Option<PathBuf> {
+    let value = value?;
+    match value.to_str() {
+        Some(text) => {
+            let named = text.trim();
+            (!named.is_empty()).then(|| PathBuf::from(named))
+        }
+        None => Some(PathBuf::from(value)),
+    }
+}
+
 /// Name one of skit's host directories.
 ///
 /// A redirect variable wins when the host sets one. Otherwise the directory sits below the home
-/// directory at the parts this host uses, and a host that names neither has no directory. The
-/// values arrive as parameters, so an owner can ask for every answer without changing the
-/// environment of the whole process.
+/// directory at the parts this host uses, and a host that names neither has no directory. Every
+/// root then carries the parts this host keeps below it. The values arrive as parameters, so an
+/// owner can ask for every answer without changing the environment of the whole process.
 fn platform_directory(
     redirect: Option<OsString>,
     home: Option<OsString>,
     home_parts: &[&str],
+    application_parts: &[&str],
 ) -> Option<PathBuf> {
-    redirect
-        .map(|redirect| PathBuf::from(redirect).join(APPLICATION))
-        .or_else(|| {
-            home.map(|home| {
-                let mut path = PathBuf::from(home);
-                path.extend(home_parts);
-                path.push(APPLICATION);
-                path
-            })
-        })
+    let mut path = match redirect_root(redirect) {
+        Some(root) => root,
+        None => {
+            let mut path = PathBuf::from(home.filter(|home| !home.is_empty())?);
+            path.extend(home_parts);
+            path
+        }
+    };
+    path.extend(application_parts);
+    Some(path)
+}
+
+/// Read the directory an override variable names.
+///
+/// Version 0.4 reads `SKIT_DATA_DIR`, `SKIT_STATE_DIR`, and `SKIT_CONFIG_DIR` as plain text, and it
+/// keeps a value that holds anything (`skit-oracle/src/skit/paths.py:16-29`). An empty value names
+/// no directory, so the host directory answers instead. Version 0.4 keeps the spaces inside a value
+/// that holds them, so this rule leaves them there.
+#[must_use]
+pub fn override_directory(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 /// Name skit's data directory: `$XDG_DATA_HOME`, or `~/.local/share`.
@@ -94,6 +123,7 @@ pub fn platform_data_dir() -> Option<PathBuf> {
         env::var_os("XDG_DATA_HOME"),
         env::var_os("HOME"),
         &[".local", "share"],
+        &[APPLICATION],
     )
 }
 
@@ -105,6 +135,7 @@ pub fn platform_state_dir() -> Option<PathBuf> {
         env::var_os("XDG_STATE_HOME"),
         env::var_os("HOME"),
         &[".local", "state"],
+        &[APPLICATION],
     )
 }
 
@@ -116,6 +147,7 @@ pub fn platform_config_dir() -> Option<PathBuf> {
         env::var_os("XDG_CONFIG_HOME"),
         env::var_os("HOME"),
         &[".config"],
+        &[APPLICATION],
     )
 }
 
@@ -127,6 +159,7 @@ pub fn platform_data_dir() -> Option<PathBuf> {
         None,
         env::var_os("HOME"),
         &["Library", "Application Support"],
+        &[APPLICATION],
     )
 }
 
@@ -145,6 +178,13 @@ pub fn platform_config_dir() -> Option<PathBuf> {
 }
 
 /// Name skit's data directory below `%LOCALAPPDATA%`, or below `%APPDATA%`.
+///
+/// Version 0.4 reads the local root, and it names `skit` twice below that root. Its directory
+/// adapter puts an author folder before the application folder, and the author defaults to the
+/// application name (`platformdirs/windows.py:29-33,36-44`), so a version 0.4 library on Windows
+/// sits at `%LOCALAPPDATA%\skit\skit`. That is where the data of a user who upgrades already is.
+/// Version 0.4 stops when the local root is absent; skit reads the roaming root then, which keeps
+/// a host that names only one root usable.
 #[cfg(windows)]
 #[must_use]
 pub fn platform_data_dir() -> Option<PathBuf> {
@@ -152,6 +192,7 @@ pub fn platform_data_dir() -> Option<PathBuf> {
         env::var_os("LOCALAPPDATA").or_else(|| env::var_os("APPDATA")),
         None,
         &[],
+        &[APPLICATION, APPLICATION],
     )
 }
 
@@ -162,11 +203,14 @@ pub fn platform_state_dir() -> Option<PathBuf> {
     platform_data_dir()
 }
 
-/// Name skit's configuration directory below `%APPDATA%`.
+/// Name skit's configuration directory. Windows keeps the configuration with the data.
+///
+/// Version 0.4 asks its directory adapter for a configuration directory, and the Windows form of
+/// that adapter answers with the data directory (`platformdirs/windows.py:59-61`).
 #[cfg(windows)]
 #[must_use]
 pub fn platform_config_dir() -> Option<PathBuf> {
-    platform_directory(env::var_os("APPDATA"), None, &[])
+    platform_data_dir()
 }
 
 /// Name skit's data directory. A host that is neither Unix nor Windows names none.
@@ -307,29 +351,126 @@ mod tests {
     fn a_platform_directory_prefers_a_redirect_then_the_home_directory() {
         let redirect = Some(OsString::from("/redirect"));
         let home = Some(OsString::from("/home/user"));
+        let application = &[APPLICATION];
 
         assert_eq!(
-            platform_directory(redirect.clone(), home.clone(), &[".local", "share"]),
+            platform_directory(
+                redirect.clone(),
+                home.clone(),
+                &[".local", "share"],
+                application
+            ),
             Some(PathBuf::from("/redirect/skit"))
         );
         assert_eq!(
-            platform_directory(None, home.clone(), &[".local", "share"]),
+            platform_directory(None, home.clone(), &[".local", "share"], application),
             Some(PathBuf::from("/home/user/.local/share/skit"))
         );
         assert_eq!(
-            platform_directory(None, home.clone(), &[".config"]),
+            platform_directory(None, home.clone(), &[".config"], application),
             Some(PathBuf::from("/home/user/.config/skit"))
         );
         assert_eq!(
-            platform_directory(None, home, &["Library", "Application Support"]),
+            platform_directory(None, home, &["Library", "Application Support"], application),
             Some(PathBuf::from("/home/user/Library/Application Support/skit"))
         );
         // A root that needs no home directory keeps the root, and holds no parts.
         assert_eq!(
-            platform_directory(redirect, None, &[]),
+            platform_directory(redirect, None, &[], application),
             Some(PathBuf::from("/redirect/skit"))
         );
-        assert_eq!(platform_directory(None, None, &[".local", "share"]), None);
+        assert_eq!(
+            platform_directory(None, None, &[".local", "share"], application),
+            None
+        );
+        // Version 0.4 names the application twice below a Windows root
+        // (`platformdirs/windows.py:36-44`).
+        assert_eq!(
+            platform_directory(
+                Some(OsString::from(r"C:\Users\u\AppData\Local")),
+                None,
+                &[],
+                &[APPLICATION, APPLICATION]
+            ),
+            Some(
+                PathBuf::from(r"C:\Users\u\AppData\Local")
+                    .join("skit")
+                    .join("skit")
+            )
+        );
+    }
+
+    /// A blank value names no directory, and a value with spaces around it names the same
+    /// directory as the value without them.
+    ///
+    /// Version 0.4 removes those spaces and treats what remains as the answer, so a variable that
+    /// holds only spaces leaves the home directory to answer (`platformdirs/_xdg.py:16,35,61`).
+    #[test]
+    fn a_blank_redirect_leaves_the_home_directory_to_answer() {
+        let home = Some(OsString::from("/home/user"));
+        let application = &[APPLICATION];
+
+        for blank in ["", "   ", "\t"] {
+            assert_eq!(
+                platform_directory(
+                    Some(OsString::from(blank)),
+                    home.clone(),
+                    &[".config"],
+                    application
+                ),
+                Some(PathBuf::from("/home/user/.config/skit")),
+                "{blank:?}"
+            );
+        }
+        assert_eq!(
+            platform_directory(
+                Some(OsString::from("  /redirect  ")),
+                home,
+                &[".config"],
+                application
+            ),
+            Some(PathBuf::from("/redirect/skit"))
+        );
+        // A blank home directory names nothing either, so no relative path can escape.
+        assert_eq!(
+            platform_directory(None, Some(OsString::new()), &[".config"], application),
+            None
+        );
+    }
+
+    /// A value that is not Unicode still names a directory.
+    ///
+    /// Version 0.4 removes the spaces around a redirect value. Bytes that are not Unicode hold no
+    /// spaces this rule can read, and they name a real directory on this host, so they stay whole.
+    #[test]
+    #[cfg(unix)]
+    fn a_redirect_that_is_not_unicode_still_names_a_directory() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let value = OsString::from_vec(b"/redirect/\xff".to_vec());
+
+        assert_eq!(
+            platform_directory(Some(value.clone()), None, &[], &[APPLICATION]),
+            Some(PathBuf::from(value).join(APPLICATION))
+        );
+    }
+
+    /// An override names a directory when it holds anything, and an empty one names none.
+    ///
+    /// Version 0.4 keeps the value whenever it is truthy (`skit-oracle/src/skit/paths.py:16-29`),
+    /// so an empty variable leaves the host directory to answer, and spaces inside a value stay.
+    #[test]
+    fn an_override_directory_answers_unless_the_value_is_empty() {
+        assert_eq!(
+            override_directory(Some(OsString::from("/library"))),
+            Some(PathBuf::from("/library"))
+        );
+        assert_eq!(
+            override_directory(Some(OsString::from(" /spaced "))),
+            Some(PathBuf::from(" /spaced "))
+        );
+        assert_eq!(override_directory(Some(OsString::new())), None);
+        assert_eq!(override_directory(None), None);
     }
 
     /// Each directory reads the variables its own host names, and falls back where it should.
@@ -346,7 +487,8 @@ mod tests {
             platform_directory(
                 env::var_os("XDG_DATA_HOME"),
                 home.clone(),
-                &[".local", "share"]
+                &[".local", "share"],
+                &[APPLICATION]
             )
         );
         assert_eq!(
@@ -354,12 +496,18 @@ mod tests {
             platform_directory(
                 env::var_os("XDG_STATE_HOME"),
                 home.clone(),
-                &[".local", "state"]
+                &[".local", "state"],
+                &[APPLICATION]
             )
         );
         assert_eq!(
             platform_config_dir(),
-            platform_directory(env::var_os("XDG_CONFIG_HOME"), home, &[".config"])
+            platform_directory(
+                env::var_os("XDG_CONFIG_HOME"),
+                home,
+                &[".config"],
+                &[APPLICATION]
+            )
         );
     }
 
@@ -371,6 +519,7 @@ mod tests {
             None,
             env::var_os("HOME"),
             &["Library", "Application Support"],
+            &[APPLICATION],
         );
 
         assert_eq!(platform_data_dir(), expected);
@@ -378,8 +527,8 @@ mod tests {
         assert_eq!(platform_config_dir(), expected);
     }
 
-    /// Windows keeps state with the data below the local root, and the configuration below the
-    /// roaming root.
+    /// Windows keeps the state and the configuration with the data, below the local root, and it
+    /// names the application twice there (`platformdirs/windows.py:29-33,36-44,59-61`).
     #[test]
     #[cfg(windows)]
     fn each_platform_directory_reads_the_variables_this_host_names() {
@@ -387,13 +536,11 @@ mod tests {
             env::var_os("LOCALAPPDATA").or_else(|| env::var_os("APPDATA")),
             None,
             &[],
+            &[APPLICATION, APPLICATION],
         );
 
         assert_eq!(platform_data_dir(), data);
         assert_eq!(platform_state_dir(), data);
-        assert_eq!(
-            platform_config_dir(),
-            platform_directory(env::var_os("APPDATA"), None, &[])
-        );
+        assert_eq!(platform_config_dir(), data);
     }
 }
