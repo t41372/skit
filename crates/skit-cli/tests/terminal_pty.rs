@@ -32,7 +32,7 @@ use unicode_width::UnicodeWidthStr as _;
 #[path = "support/pty.rs"]
 mod pty;
 
-use pty::{AnswerQueries, PtyChild};
+use pty::{AnswerQueries, PtyChild, strip_terminal_control};
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
     let directory = data.join("scripts/demo");
@@ -640,53 +640,6 @@ fn test_resume_bash_shebang_draft_lands_as_shell() {
     let quit = tui.checkpoint();
     tui.send(b"q");
     let _ = tui.wait_for_exit_after(quit);
-}
-
-fn strip_terminal_control(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != 0x1b {
-            if bytes[index] != b'\r' {
-                output.push(bytes[index]);
-            }
-            index += 1;
-            continue;
-        }
-        index += 1;
-        if index >= bytes.len() {
-            break;
-        }
-        match bytes[index] {
-            b'[' => {
-                index += 1;
-                while index < bytes.len() {
-                    let byte = bytes[index];
-                    index += 1;
-                    if (0x40..=0x7e).contains(&byte) {
-                        break;
-                    }
-                }
-            }
-            b']' => {
-                index += 1;
-                while index < bytes.len() {
-                    if bytes[index] == 0x07 {
-                        index += 1;
-                        break;
-                    }
-                    if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
-                        index += 2;
-                        break;
-                    }
-                    index += 1;
-                }
-            }
-            _ => index += 1,
-        }
-    }
-    String::from_utf8_lossy(&output).into_owned()
 }
 
 fn compact_terminal_text(input: &str) -> String {
@@ -2893,9 +2846,11 @@ fn a_listed_table_fits_the_width_of_the_terminal_it_prints_into() {
             AnswerQueries::On,
         );
         let (_, output) = pty.finish();
-        output
+        // The terminal writes its own sequences into the same stream (invariant 6); a raw line
+        // would carry that chrome into both the filter and the width.
+        strip_terminal_control(&output)
             .lines()
-            .map(|line| line.trim_end_matches('\r').to_owned())
+            .map(str::to_owned)
             .filter(|line| line.starts_with(['┏', '│', '┡', '└']))
             .collect::<Vec<_>>()
     };
@@ -2970,9 +2925,12 @@ fn a_printed_sentence_fits_the_width_of_the_terminal_it_prints_into() {
             AnswerQueries::On,
         );
         let (_, output) = pty.finish();
-        output
+        // The terminal opens a session with its own sequences, and on Windows one of them is a
+        // window title holding the whole binary path. Measuring the raw line measures that chrome
+        // instead of the sentence the product printed (invariant 6).
+        strip_terminal_control(&output)
             .lines()
-            .map(|line| line.trim_end_matches('\r').to_owned())
+            .map(str::to_owned)
             .collect::<Vec<_>>()
     };
 

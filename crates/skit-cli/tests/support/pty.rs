@@ -31,6 +31,12 @@
 //!    then reports an end of input the child never sent.
 //! 5. **The reader thread fills a channel and is never joined on end-of-input.** The drain is
 //!    detached; nothing downstream depends on it finishing.
+//! 6. **Read the visible text, never the control stream.** A pseudo-console writes its own
+//!    sequences into the same stream as the child's output: Windows opens a session with a
+//!    cursor question, mode switches, and a window title carrying the whole binary path
+//!    (`\x1b]0;D:\a\...\skit.exe\x07`). An assertion that measures or matches raw bytes reads
+//!    that chrome as if the product had printed it. [`strip_terminal_control`] gives the text a
+//!    person sees (wave 4 fold owners).
 //!
 //! Two harness families share these rules. [`PtyChild`] is the full channel-driven harness.
 //! The free functions ([`keystrokes`], [`settle_buffer`], [`wait_for_exit`]) serve the bespoke
@@ -471,4 +477,57 @@ pub(crate) fn wait_for_exit(child: &mut Box<dyn portable_pty::Child + Send + Syn
         assert!(Instant::now() < deadline, "the terminal child never exited");
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// The text a person sees, with the terminal's own sequences removed (invariant 6).
+///
+/// Drops CSI sequences (`ESC [` up to a final byte), OSC sequences (`ESC ]` up to `BEL` or
+/// `ESC \`), any other single escape, and the carriage returns a terminal uses to return to the
+/// left margin. What remains is the child's printable output, which an assertion can measure or
+/// match.
+pub(crate) fn strip_terminal_control(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != 0x1b {
+            if bytes[index] != b'\r' {
+                output.push(bytes[index]);
+            }
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if index >= bytes.len() {
+            break;
+        }
+        match bytes[index] {
+            b'[' => {
+                index += 1;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    index += 1;
+                    if (0x40..=0x7e).contains(&byte) {
+                        break;
+                    }
+                }
+            }
+            b']' => {
+                index += 1;
+                while index < bytes.len() {
+                    if bytes[index] == 0x07 {
+                        index += 1;
+                        break;
+                    }
+                    if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
+                        index += 2;
+                        break;
+                    }
+                    index += 1;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    String::from_utf8_lossy(&output).into_owned()
 }
