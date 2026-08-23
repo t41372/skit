@@ -1084,3 +1084,35 @@ DROPPED instead of measured. Both owners now strip first; the RED probe (width d
 forced off) fails both, and the failure text is the product's own line with no chrome —
 itself proof the stripping works. Aggregate 4091 / 0 / 525.
 
+Round 5 found the SIXTH instance of the ecosystem-default class and the most visible one:
+the CLI emitted no colour at all, while v0.4 colours nearly every line (105 explicit
+markup sites across 253 prints, plus Rich's auto-highlighting). Fixed in `a9abb4a` /
+`2266833` at the same two-macro seam as the fold, gated on `is_terminal`: 31 sites now
+carry the oracle's sense (green receipts, dim hints, yellow warnings, red refusals, and
+doctor's OK/ERROR/WARN rows mapping 1:1 onto its checkmark rows). The mapping was DERIVED
+by extracting all 173 oracle print-with-markup pairs and matching our literals, not
+guessed. `NO_COLOR` and `TERM=dumb` suppress exactly as Rich does, and the piped invariant
+still holds (six commands, zero ESC bytes). Rich's auto-highlighting is RECORDED AS NOT
+IMPLEMENTED rather than approximated — matching it means reproducing its whole regex
+battery and precedence rules, and a subset would look right while diverging untested. The
+work uncovered two defects of our own: the catalog scanner broke on the new style argument,
+and a test's ANSI stripper dropped the escape byte but kept its parameters.
+
+Two supervisor premises were DISPROVEN by the fixing fork, and it was right to refuse them:
+`failed (code None)` is byte-identical to the oracle (which renders that Python-ism itself,
+and neither implementation reaches it from a launch failure — the `couldn't launch` wording
+lives on the status-line surface instead, now recorded), and the "48 absent TUI strings"
+count is really 42 with false positives from escaped quotes defeating a substring search,
+so blind translation was refused. The densest cluster (the parameter editor) was
+adjudicated by reading both implementations: two hints were bare and now carry the v0.4
+sentence with .po rows, and `Type` is deliberately left to our choice picker. The remaining
+40 are packaged for per-string adjudication.
+
+Two deviations were recorded in the matrix: the Windows system language (v0.4's
+`locale.getlocale()` name normalises to no supported tag, so a Chinese Windows desktop
+gets English there and Chinese here — more, not less, and overridable) and the post-run
+status line. The Linux-untestable locale gap is closed honestly by making the negotiation
+a seam that takes the host's preferences as a parameter.
+
+Aggregate 4093 / 0 / 525 with complete executable-source line coverage.
+
