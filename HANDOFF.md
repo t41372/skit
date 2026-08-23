@@ -947,6 +947,30 @@ over-strict treatment in `wait_cursor_query_after` and a busy-spin in `wait_exit
 are fixed with it; a deterministic regression owner pins the wait's semantics (RED
 reproduced the CI message byte-identically). Aggregate 4074 / 0 / 525.
 
+Cleanup P2 (`cce8f92`) unified the duplicated platform-directory suites into
+`skit-store/src/paths.rs` (the filesystem-adapter layer AGENTS.md names; skit-application
+cannot depend on a concrete filesystem). The audit confirmed the two copies had ZERO
+behavioral divergence — pure copy-paste — so unification changed nothing, and one
+parameterized rule that compiles on every host now replaces the ambient-luck coverage with
+hermetic per-branch owners. The audit's micro item #6 was REJECTED with evidence:
+`has_owned_draft_shape` and `existing_owned_drafts_dir` answer different questions and
+produce different refusals (three tests pin the "not an owned directory" message), so
+collapsing them to save one canonicalize would couple two independent guards on a
+destructive path.
+
+P2 then surfaced a REAL v0.4 compatibility defect, fixed in `c298f1b`: v0.4 resolves all
+three roots through platformdirs, whose Windows arm aliases config and state to data AND
+appends the appname twice (appauthor defaults to None), so the oracle's roots are
+`%LOCALAPPDATA%\skit\skit`. Our Rust used `%LOCALAPPDATA%\skit` for data and state and
+the ROAMING `%APPDATA%\skit` for config — a Windows user upgrading from v0.4 would have
+found none of their library, state, or configuration, and no test pinned it. The oracle
+spellings are now implemented and owned with citations (verified by EXECUTING the vendored
+platformdirs, not by reading it). No read-time fallback was added: v0.5 has not shipped, so
+no installed base exists at the roaming path. The same seam also fixed a third fidelity
+divergence — v0.4 falls through to the platform default for a blank `SKIT_*_DIR` override
+and trims XDG values, while `env::var_os` accepted `Some("")` and returned a RELATIVE root.
+Aggregate 4077 / 0 / 525 with complete executable-source line coverage.
+
 MILESTONE (2026-08-23, head `ea286b7`): THE COMPLETE CI ROLLUP IS GREEN — all three
 platform test jobs, the 100% coverage gate, lint/docs, both audits, PyPI/uv, benchmark,
 A/B compare, CodSpeed, CodeQL, CodeRabbit, codecov; mutation correctly label-skipped and
