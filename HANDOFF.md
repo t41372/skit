@@ -928,6 +928,25 @@ own reply. Stage-2 ruling recorded: NO `skit-test-pty` workspace crate — the s
 lines; the remaining skit-cli files adopt by `#[path]`, and skit-tui's already-compliant
 local harness keeps a cross-reference comment as the one documented exception.
 
+Cleanup P1 stage 2 (`692b35f`) adopted the shared module in add_no_source, editor,
+prompt_cli, and plain_add_pty (net -344 lines; the third-generation one-shot cursor
+answerer and the `answer_cursor` parameter are retired across 34 call sites). Two
+deliberate non-adopters keep cross-reference comments with their reasons: the `cli/tests.rs`
+mirror (a `#[path]` include would compile a 450-line harness into the library build where
+the coverage checker counts every line) and skit-tui's harness (the sdist census ruling).
+Duplicate census: keystrokes 6 -> 2 documented survivors, settle 2 -> 0.
+
+Stage 1 also caused — and stage 2's follow-up `ec93c84` fixed — a REAL Windows regression
+that proves the consolidation's value: the shared spawn dropped `pair.master` immediately,
+but portable-pty's cloned reader/writer hold NO reference to the pty `Inner`
+(win/conpty.rs:130-146), so dropping master ran `ClosePseudoConsole` while the child was
+still starting; the wait then panicked on the resulting `Disconnected` instead of asking
+the child. Every pre-existing harness drops the master AFTER the child exits — the module
+doc's invariant 4 had it backwards and is corrected with source citations. The same
+over-strict treatment in `wait_cursor_query_after` and a busy-spin in `wait_exit_within`
+are fixed with it; a deterministic regression owner pins the wait's semantics (RED
+reproduced the CI message byte-identically). Aggregate 4074 / 0 / 525.
+
 MILESTONE (2026-08-23, head `ea286b7`): THE COMPLETE CI ROLLUP IS GREEN — all three
 platform test jobs, the 100% coverage gate, lint/docs, both audits, PyPI/uv, benchmark,
 A/B compare, CodSpeed, CodeQL, CodeRabbit, codecov; mutation correctly label-skipped and
