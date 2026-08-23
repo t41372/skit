@@ -835,6 +835,17 @@ every remaining unproven crate's `#[cfg(test)]` modules found ZERO further membe
 reasoned clearances (component-wise Path equality for the `/`-literal suspects, cfg-gated
 PermissionsExt, parser-input shebangs). Aggregate 4072 / 0 / 525.
 
+Wave 25 (`18266e3`): the two coverage lines and the last known Windows member. The
+multi-line runtime-`cfg!` shell tuple in launch.rs private_tests became compile-time arms
+(the checker counts every compiled src line; single-line runtime forms stay, per-site
+judgment recorded); session.rs:303 had been covered only by scheduling luck that wave-20's
+calmer waits removed — it now has a deterministic drop-the-receiver owner (0 -> 1 hit);
+the js-deps real-spawn site wave-21's blanket "inert" clearance missed now uses the
+host-interpreter pattern with Windows-validated flat cmd idioms and host-correct CRLF
+expectations. Every other real-spawn clearance in skit-runtime tests/ was re-verified
+individually. Aggregate 4073 / 0 / 525 (+1 worker owner); fresh workspace LCOV
+`complete executable-source line coverage`.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
