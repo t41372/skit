@@ -101,13 +101,25 @@ use crate::run::{RunArgs, RunError, apply_sets};
 
 macro_rules! humanln {
     ($message:literal $(, $value:expr)* $(,)?) => {
-        println!("{}", format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]))
+        println!(
+            "{}",
+            fold_for_output(
+                &format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]),
+                human_output_width(),
+            )
+        )
     };
 }
 
 macro_rules! humanerrln {
     ($message:literal $(, $value:expr)* $(,)?) => {
-        eprintln!("{}", format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]))
+        eprintln!(
+            "{}",
+            fold_for_output(
+                &format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]),
+                human_error_width(),
+            )
+        )
     };
 }
 
@@ -2624,6 +2636,133 @@ fn human_output_width() -> Option<usize> {
         .map(|(columns, _)| usize::from(columns))
 }
 
+/// The width a printed sentence may occupy on the error stream.
+///
+/// Version 0.4 prints its errors through a second console built for the error stream
+/// (`skit-oracle/src/skit/cli.py:63`), so the two streams answer for themselves: a piped stdout
+/// leaves a terminal stderr wrapping, and the reverse.
+fn human_error_width() -> Option<usize> {
+    if !io::stderr().is_terminal() {
+        return None;
+    }
+    ratatui_crossterm::crossterm::terminal::size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+}
+
+/// A printed sentence, folded to the terminal that shows it.
+///
+/// Version 0.4 prints every sentence through a Rich console, which folds to the console width. The
+/// text keeps its own line breaks, a word moves whole to the next line, and a word too long for one
+/// line is cut at the exact cell it fills, so a long path continues on the line below instead of
+/// running past the edge. A word's trailing spaces stay with it while they fit and go when they do
+/// not, which is what leaves a folded line ending in a space. A wide glyph counts two cells.
+fn fold_for_output(text: &str, width: Option<usize>) -> String {
+    let Some(width) = width.filter(|width| *width > 0) else {
+        return text.to_owned();
+    };
+    display_lines(text)
+        .map(|line| fold_line(line, width).join("\n"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One printed line, folded into the lines a console of this width shows.
+///
+/// The console decides where a line breaks and never drops a character there, so a space that ends
+/// a full line stays and a space that follows a folded word opens the next one. A line longer than
+/// the width then gives up the spaces at its end, which is the only place text is removed.
+fn fold_line(line: &str, width: usize) -> Vec<String> {
+    let characters: Vec<char> = line.chars().collect();
+    let mut breaks: Vec<usize> = Vec::new();
+    let mut cell_offset = 0usize;
+    let mut index = 0usize;
+    while index < characters.len() {
+        let start = index;
+        while index < characters.len() && characters[index] == ' ' {
+            index += 1;
+        }
+        while index < characters.len() && characters[index] != ' ' {
+            index += 1;
+        }
+        let word_end = index;
+        while index < characters.len() && characters[index] == ' ' {
+            index += 1;
+        }
+        let word_cells = cells_of(&characters[start..word_end]);
+        let chunk_cells = cells_of(&characters[start..index]);
+        if width.saturating_sub(cell_offset) >= word_cells {
+            cell_offset += chunk_cells;
+        } else if word_cells > width {
+            let mut piece_start = start;
+            let pieces = chop_cells(&characters[start..index], width);
+            for (position, piece) in pieces.iter().enumerate() {
+                if piece_start > 0 {
+                    breaks.push(piece_start);
+                }
+                if position + 1 == pieces.len() {
+                    cell_offset = cells_of(&characters[piece_start..piece_start + piece]);
+                } else {
+                    piece_start += piece;
+                }
+            }
+        } else if cell_offset > 0 && start > 0 {
+            breaks.push(start);
+            cell_offset = chunk_cells;
+        }
+    }
+    let mut lines = Vec::new();
+    let mut previous = 0usize;
+    for stop in breaks.into_iter().chain(std::iter::once(characters.len())) {
+        lines.push(rstrip_end(&characters[previous..stop], width));
+        previous = stop;
+    }
+    lines
+}
+
+/// The cells a run of characters fills.
+fn cells_of(characters: &[char]) -> usize {
+    characters
+        .iter()
+        .map(|character| character.width().unwrap_or(0))
+        .sum()
+}
+
+/// The character counts of each piece a run of characters breaks into at this width.
+fn chop_cells(characters: &[char], width: usize) -> Vec<usize> {
+    let mut pieces = Vec::new();
+    let mut taken = 0usize;
+    let mut used = 0usize;
+    for character in characters {
+        let cells = character.width().unwrap_or(0);
+        if used + cells > width && taken > 0 {
+            pieces.push(taken);
+            taken = 0;
+            used = 0;
+        }
+        taken += 1;
+        used += cells;
+    }
+    if taken > 0 {
+        pieces.push(taken);
+    }
+    pieces
+}
+
+/// A line with the spaces that reach past the width removed from its end.
+fn rstrip_end(characters: &[char], width: usize) -> String {
+    let mut kept = characters.len();
+    let filled = cells_of(characters);
+    if filled > width {
+        let mut excess = filled - width;
+        while excess > 0 && kept > 0 && characters[kept - 1] == ' ' {
+            kept -= 1;
+            excess -= 1;
+        }
+    }
+    characters[..kept].iter().collect()
+}
+
 /// The width of each column, shrinking the widest ones until the table fits.
 ///
 /// Version 0.4 lets Rich fit the table to the console: a table that already fits keeps its natural
@@ -2875,8 +3014,11 @@ fn show(
         serde_json::to_writer(&mut output, &record)?;
         writeln!(output)?;
     } else {
+        // The report is folded as one block: its sentences reach the console the way every other
+        // printed sentence does, and its table rows already fit, so folding leaves them alone.
+        let mut report = Vec::new();
         write_human_show(
-            &mut output,
+            &mut report,
             store,
             &entry,
             &settings,
@@ -2884,6 +3026,8 @@ fn show(
             &state,
             active_locale(),
         )?;
+        let report = String::from_utf8(report).expect("the show report is text");
+        write!(output, "{}", fold_for_output(&report, human_output_width()))?;
     }
     Ok(())
 }

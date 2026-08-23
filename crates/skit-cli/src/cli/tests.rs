@@ -7929,10 +7929,13 @@ impl MirrorPromptPty {
 
         let root = TempDir::new().unwrap();
         let result_path = root.path().join("result");
+        // Wide enough that the longest question and refusal reach the terminal on one line: this
+        // harness reads whole sentences, and folding them is owned separately by
+        // `a_printed_sentence_folds_where_the_console_folds_it` and its real-terminal sibling.
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 20,
-                cols: 120,
+                cols: 200,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -11690,6 +11693,52 @@ fn keystrokes(answer: &[u8]) -> Vec<u8> {
         .iter()
         .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
         .collect()
+}
+
+/// A printed sentence folds the way the console folds it.
+///
+/// Version 0.4 prints through Rich, which breaks a line at its spaces, moves a whole word to the
+/// next line, and cuts a word too long for one line at the exact cell it fills. A space that ends a
+/// line survives while the line still fits, and goes when the line reaches past the width. These
+/// answers were taken from Rich itself over four hundred generated sentences.
+#[test]
+fn a_printed_sentence_folds_where_the_console_folds_it() {
+    let fold = |text: &str, width: usize| fold_for_output(text, Some(width));
+
+    // A width the sentence already fits leaves it whole, and no terminal leaves it whole as well.
+    assert_eq!(fold("abcde fghij", 11), "abcde fghij");
+    assert_eq!(fold_for_output("abcde fghij", None), "abcde fghij");
+
+    // One cell short: the word moves down, and the space it left behind still fits above.
+    assert_eq!(fold("abcde fghij", 10), "abcde \nfghij");
+
+    // The space goes when keeping it would reach past the width.
+    assert_eq!(fold("aaaaaa bb", 7), "aaaaaa \nbb");
+    assert_eq!(fold("aaaaaaa bb", 7), "aaaaaaa\nbb");
+
+    // A word no line can hold is cut at the cell it fills, and what follows joins the remainder.
+    assert_eq!(fold("aaaaaaaa bb", 7), "aaaaaaa\na bb");
+    assert_eq!(
+        fold("abcdefghijklmnopqrstuvwxy", 10),
+        "abcdefghij\nklmnopqrst\nuvwxy"
+    );
+
+    // A wide glyph fills two cells, so five of them fill a ten-cell line.
+    assert_eq!(
+        fold("条目 中文描述文字很长很长", 10),
+        "条目 \n中文描述文\n字很长很长"
+    );
+    assert_eq!(fold("中文中文中文中文", 7), "中文中\n文中文\n中文");
+
+    // An indented report keeps its indent on the line that carries it, which is the shape the
+    // show report prints.
+    assert_eq!(
+        fold("  indented text here we go", 20),
+        "  indented text here\nwe go"
+    );
+
+    // The text keeps the line breaks it arrived with.
+    assert_eq!(fold("aaaa bbbb\ncc", 4), "aaaa\nbbbb\ncc");
 }
 
 /// A table that already fits keeps its natural columns, and one that does not gives back width

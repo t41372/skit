@@ -2921,3 +2921,81 @@ fn a_listed_table_fits_the_width_of_the_terminal_it_prints_into() {
         "a name too long for the terminal is cut: {narrow:?}"
     );
 }
+
+/// A printed sentence fits the terminal it is printed into.
+///
+/// Version 0.4 prints every sentence through a Rich console, which folds it to the console width,
+/// so a report about a long name or a long path continues on the next line instead of running past
+/// the edge (`skit-oracle/src/skit/cli.py:62`). The table fix reached only the tables; this reaches
+/// the sentences around them. This needs no cursor handshake, so it runs on every host.
+#[test]
+fn a_printed_sentence_fits_the_width_of_the_terminal_it_prints_into() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("folded.py");
+    fs::write(&source, "print(1)\n").unwrap();
+
+    let add = std::process::Command::new(env!("CARGO_BIN_EXE_skit"))
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--name",
+            "an entry whose name alone is longer than a narrow terminal",
+            "--no-input",
+        ])
+        .env("SKIT_DATA_DIR", data.path())
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_CONFIG_DIR", config.path())
+        .env("SKIT_LANG", "en")
+        .output()
+        .unwrap();
+    assert!(add.status.success(), "{add:?}");
+
+    let printed = |arguments: &[&str], columns: u16| {
+        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.args(arguments);
+        command.env("SKIT_DATA_DIR", data.path());
+        command.env("SKIT_STATE_DIR", state.path());
+        command.env("SKIT_CONFIG_DIR", config.path());
+        command.env("SKIT_LANG", "en");
+        let pty = PtyChild::spawn(
+            command,
+            PtySize {
+                rows: 24,
+                cols: columns,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            AnswerQueries::On,
+        );
+        let (_, output) = pty.finish();
+        output
+            .lines()
+            .map(|line| line.trim_end_matches('\r').to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    let slug = "an-entry-whose-name-alone-is-longer-than-a-narrow-terminal";
+    for arguments in [
+        vec!["params", slug],
+        vec!["doctor"],
+        vec!["show", slug],
+        vec!["runner", "list"],
+    ] {
+        let narrow = printed(&arguments, 60);
+        assert!(!narrow.is_empty(), "{arguments:?} must reach the terminal");
+        for line in &narrow {
+            assert!(
+                line.width() <= 60,
+                "{arguments:?} ran past the edge: {line:?}"
+            );
+        }
+    }
+
+    // The sentence really is folded rather than merely short: the same report is one line on a wide
+    // terminal and more than one on a narrow terminal.
+    let wide = printed(&["params", slug], 200);
+    let narrow = printed(&["params", slug], 60);
+    assert!(narrow.len() > wide.len(), "wide {wide:?} narrow {narrow:?}");
+}
