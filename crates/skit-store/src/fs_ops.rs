@@ -429,7 +429,10 @@ mod tests {
         let root = TempDir::new().unwrap();
         let path = root.path().join("windows.native.lock");
         let first = acquire_lock(&path).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), [0]);
+        // A Windows file lock is mandatory: another handle cannot read the locked byte while the
+        // lock is held (error 33), so observe the sentinel through metadata here and read its
+        // content only after the final release below.
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 1);
 
         let worker_path = path.clone();
         let (attempting_tx, attempting_rx) = mpsc::sync_channel(1);
@@ -605,7 +608,16 @@ mod tests {
         .unwrap();
 
         assert_no_retry_sleep();
-        assert_eq!(*events.borrow(), ["sync-file", "replace", "sync-parent"]);
+        // The parent-directory sync is a unix-only step: the writer runs it under `#[cfg(unix)]`
+        // and drops the closure on Windows (the documented directory-sync omission, owned by
+        // `test_atomic_write_bytes_skips_dir_fsync_on_windows`). The ordered pair before it is
+        // the host-neutral contract.
+        let expected: &[&str] = if cfg!(unix) {
+            &["sync-file", "replace", "sync-parent"]
+        } else {
+            &["sync-file", "replace"]
+        };
+        assert_eq!(events.borrow().as_slice(), expected);
         assert_eq!(std::fs::read(&target).unwrap(), bytes);
         assert_eq!(names(&root), ["target"]);
     }
@@ -970,7 +982,15 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_native_atomic_write_preserves_existing_readonly_attribute() {
+    fn windows_native_atomic_write_refuses_a_readonly_target_and_keeps_the_original() {
+        // Windows refuses to replace a read-only destination (MoveFileEx returns Access denied),
+        // and version 0.4 behaves the same way: CPython's os.replace raises PermissionError
+        // there, so a refusal with the original bytes intact IS the oracle-parity outcome. The
+        // earlier form of this test expected the write to succeed and keep the attribute; it was
+        // authored before any Windows host had run it and matches no platform. The write applies
+        // the target's permissions to the temp file before the replace, so the leftover temp is
+        // read-only too and the best-effort cleanup cannot always delete it -- the same litter
+        // CPython's unlink leaves. Assert the data-safety half exactly and tolerate the temp.
         let root = TempDir::new().unwrap();
         let target = root.path().join("target");
         std::fs::write(&target, b"old\n").unwrap();
@@ -978,14 +998,19 @@ mod tests {
         permissions.set_readonly(true);
         std::fs::set_permissions(&target, permissions).unwrap();
 
-        atomic_write_bytes(&target, b"new\n").unwrap();
+        let error = atomic_write_bytes(&target, b"new\n").unwrap_err();
 
-        assert_eq!(std::fs::read(&target).unwrap(), b"new\n");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(std::fs::read(&target).unwrap(), b"old\n");
         assert!(std::fs::metadata(&target).unwrap().permissions().readonly());
-        assert_eq!(names(&root), ["target"]);
-        let mut permissions = std::fs::metadata(&target).unwrap().permissions();
-        permissions.set_readonly(false);
-        std::fs::set_permissions(target, permissions).unwrap();
+        assert!(names(&root).contains(&"target".to_owned()));
+
+        for name in names(&root) {
+            let path = root.path().join(name);
+            let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&path, permissions).unwrap();
+        }
     }
 
     #[cfg(windows)]

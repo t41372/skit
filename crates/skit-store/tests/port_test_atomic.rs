@@ -289,8 +289,15 @@ fn test_atomic_write_text_keep_mode_preserves_existing_mode() {
             state.values.insert("before".to_owned(), "1".to_owned());
         })
         .unwrap();
+    // The oracle probes preservation with chmod(0o755) and notes that Windows maps POSIX modes
+    // to nothing (test_atomic.py:445-460): its replace always lands on a WRITABLE file there,
+    // and CPython's os.replace requires that -- a read-only destination is refused with
+    // PermissionError on Windows. Probe with a read-only file only where the platform can
+    // replace one, and assert preservation of whatever the platform reports, exactly as the
+    // oracle does.
+    let probe_readonly = cfg!(unix);
     let state_path = state_root.join("values/permission-state.toml");
-    set_readonly(&state_path, true);
+    set_readonly(&state_path, probe_readonly);
 
     state_store
         .update(&state_slug, |state| {
@@ -298,7 +305,10 @@ fn test_atomic_write_text_keep_mode_preserves_existing_mode() {
         })
         .unwrap();
 
-    assert!(fs::metadata(&state_path).unwrap().permissions().readonly());
+    assert_eq!(
+        fs::metadata(&state_path).unwrap().permissions().readonly(),
+        probe_readonly
+    );
     assert_eq!(
         state_store
             .load(&state_slug)
@@ -310,14 +320,17 @@ fn test_atomic_write_text_keep_mode_preserves_existing_mode() {
 
     let (store, entry) = create_entry(&root, "Script", b"old\n", 0o644);
     let script = root.path().join("scripts/script/script.py");
-    set_readonly(&script, true);
+    set_readonly(&script, probe_readonly);
 
     store
         .commit_copy_edit(&entry, b"new content\n", &entry.meta.source_hash)
         .unwrap();
 
     assert_eq!(fs::read(&script).unwrap(), b"new content\n");
-    assert!(fs::metadata(&script).unwrap().permissions().readonly());
+    assert_eq!(
+        fs::metadata(&script).unwrap().permissions().readonly(),
+        probe_readonly
+    );
 
     // Windows does not remove readonly files during recursive cleanup. Restore only after the
     // assertions so this temporary fixture cannot leak.

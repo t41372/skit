@@ -814,7 +814,9 @@ mod tests {
 
     #[test]
     fn registry_timestamps_refuse_pre_epoch_and_oversized_values() {
-        assert!(timestamp_ns(UNIX_EPOCH - Duration::from_nanos(1)).is_err());
+        // Probe one full second before the epoch: a Windows SystemTime counts 100 ns ticks, so a
+        // sub-tick offset truncates back to the epoch itself and the refusal never fires.
+        assert!(timestamp_ns(UNIX_EPOCH - Duration::from_secs(1)).is_err());
         let oversized = SystemTime::UNIX_EPOCH
             + Duration::from_secs(u64::try_from(i64::MAX).unwrap() / 1_000_000_000 + 1);
         assert!(timestamp_ns(oversized).is_err());
