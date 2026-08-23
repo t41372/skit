@@ -10,6 +10,8 @@ use skit_domain::{Entry, EntrySettings, StorageMode};
 use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
+use crate::{JavaScriptRuntimeKind, ResolvedJavaScriptRuntime};
+
 /// Hold file paths that are resolved before launch planning.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchPaths {
@@ -81,6 +83,63 @@ impl ProgramProbe for SystemProbe {
     }
 }
 
+/// Platform branch used by interpreter resolution.
+///
+/// Keeping this value explicit lets all hosts test the Windows policy without pretending that
+/// their local filesystem has Windows semantics.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InterpreterPlatform {
+    /// Resolve with the Git for Windows fallback policy.
+    Windows,
+    /// Resolve only through `PATH`.
+    Other,
+}
+
+impl InterpreterPlatform {
+    /// Return the platform of this build.
+    #[must_use]
+    pub const fn current() -> Self {
+        #[cfg(windows)]
+        {
+            Self::Windows
+        }
+        #[cfg(not(windows))]
+        {
+            Self::Other
+        }
+    }
+}
+
+/// Interpreter resolution inputs supplied by a frontend composition root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InterpreterPolicy {
+    platform: InterpreterPlatform,
+    windows_bash_path: Option<PathBuf>,
+}
+
+impl InterpreterPolicy {
+    /// Construct a policy for an explicit platform and configured fallback.
+    #[must_use]
+    pub fn new(platform: InterpreterPlatform, windows_bash_path: Option<PathBuf>) -> Self {
+        Self {
+            platform,
+            windows_bash_path,
+        }
+    }
+
+    /// Construct the host policy from the configured Windows bash path.
+    #[must_use]
+    pub fn for_current_host(windows_bash_path: Option<PathBuf>) -> Self {
+        Self::new(InterpreterPlatform::current(), windows_bash_path)
+    }
+}
+
+impl Default for InterpreterPolicy {
+    fn default() -> Self {
+        Self::for_current_host(None)
+    }
+}
+
 /// Hold an immutable process plan.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaunchPlan {
@@ -106,6 +165,12 @@ struct PromptProcessPlan {
     warning: Option<LaunchWarning>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PromptBodies<'a> {
+    actual: Option<&'a str>,
+    display: Option<&'a str>,
+}
+
 /// Report a launch refusal or process failure.
 #[derive(Debug, Error)]
 pub enum LaunchError {
@@ -121,6 +186,11 @@ pub enum LaunchError {
     /// A required runtime or command is not on PATH.
     #[error("required program was not found: {name}")]
     ProgramNotFound { name: String },
+    /// A Windows shell is neither on PATH nor at the configured fallback path.
+    #[error(
+        "{name} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>"
+    )]
+    WindowsShellMissing { name: String },
     /// No JavaScript runtime candidate resolved on PATH.
     #[error(
         "No JavaScript runtime found (looked for: {names}). Install deno, bun, or node — or pick one with: skit config js.runner <name>"
@@ -193,6 +263,10 @@ impl Localize for LaunchError {
             Self::ProgramNotFound { name } => {
                 Message::new("required program was not found: {}").with(name)
             }
+            Self::WindowsShellMissing { name } => Message::new(
+                "{} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>",
+            )
+            .with(name),
             Self::JsRuntimeMissing { names } => Message::new(
                 "No JavaScript runtime found (looked for: {}). Install deno, bun, or node — or pick one with: skit config js.runner <name>",
             )
@@ -243,6 +317,7 @@ impl LaunchError {
             Self::TargetMissing { .. } => 127,
             Self::TargetNotExecutable { .. }
             | Self::ProgramNotFound { .. }
+            | Self::WindowsShellMissing { .. }
             | Self::JsRuntimeMissing { .. }
             | Self::MissingNeed { .. }
             | Self::PromptRunnerRequired
@@ -269,13 +344,37 @@ pub fn build_launch_plan<P: ProgramProbe>(
     prompt_runner: Option<&PromptRunner>,
     probe: &P,
 ) -> Result<LaunchPlan, LaunchError> {
-    build_launch_plan_inner(
+    build_launch_plan_with_interpreter_policy(
         entry,
         paths,
         assembly,
         prompt_body,
-        None,
         prompt_runner,
+        &InterpreterPolicy::default(),
+        probe,
+    )
+}
+
+/// Build one immutable process plan with frontend-supplied interpreter configuration.
+pub fn build_launch_plan_with_interpreter_policy<P: ProgramProbe>(
+    entry: &Entry,
+    paths: &LaunchPaths,
+    assembly: &Assembly,
+    prompt_body: Option<&str>,
+    prompt_runner: Option<&PromptRunner>,
+    interpreter_policy: &InterpreterPolicy,
+    probe: &P,
+) -> Result<LaunchPlan, LaunchError> {
+    build_launch_plan_inner(
+        entry,
+        paths,
+        assembly,
+        PromptBodies {
+            actual: prompt_body,
+            display: None,
+        },
+        prompt_runner,
+        interpreter_policy,
         probe,
     )
 }
@@ -301,9 +400,12 @@ pub fn build_launch_preview<P: ProgramProbe>(
         entry,
         paths,
         assembly,
-        prompt_body,
-        prompt_display_body,
+        PromptBodies {
+            actual: prompt_body,
+            display: prompt_display_body,
+        },
         prompt_runner,
+        &InterpreterPolicy::default(),
         &PreviewProbe { local: probe },
     )
 }
@@ -382,9 +484,9 @@ fn build_launch_plan_inner<P: ProgramProbe>(
     entry: &Entry,
     paths: &LaunchPaths,
     assembly: &Assembly,
-    prompt_body: Option<&str>,
-    prompt_display_body: Option<&str>,
+    prompt_bodies: PromptBodies<'_>,
     prompt_runner: Option<&PromptRunner>,
+    interpreter_policy: &InterpreterPolicy,
     probe: &P,
 ) -> Result<LaunchPlan, LaunchError> {
     let settings = EntrySettings::from_meta(&entry.meta);
@@ -399,20 +501,55 @@ fn build_launch_plan_inner<P: ProgramProbe>(
     let mut warnings = Vec::new();
     let (program, args, display_args) = match kind {
         "python" => python_plan(paths, assembly, &settings, probe)?,
-        "shell" => interpreted_plan(paths, assembly, interpreter(&settings, "bash"), &[], probe)?,
-        "fish" => interpreted_plan(paths, assembly, interpreter(&settings, "fish"), &[], probe)?,
-        "powershell" => powershell_plan(paths, assembly, &settings, probe)?,
-        "ruby" => interpreted_plan(paths, assembly, interpreter(&settings, "ruby"), &[], probe)?,
-        "perl" => interpreted_plan(paths, assembly, interpreter(&settings, "perl"), &[], probe)?,
-        "lua" => interpreted_plan(paths, assembly, interpreter(&settings, "lua"), &[], probe)?,
-        "r" => r_plan(paths, assembly, &settings, probe)?,
+        "shell" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "bash"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "fish" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "fish"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "powershell" => powershell_plan(paths, assembly, &settings, interpreter_policy, probe)?,
+        "ruby" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "ruby"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "perl" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "perl"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "lua" => interpreted_plan(
+            paths,
+            assembly,
+            interpreter(&settings, "lua"),
+            &[],
+            interpreter_policy,
+            probe,
+        )?,
+        "r" => r_plan(paths, assembly, &settings, interpreter_policy, probe)?,
         "js" | "ts" => javascript_plan(paths, assembly, &settings, probe)?,
         "exe" => direct_plan(entry, assembly, probe)?,
         "command" => command_plan(assembly, &settings, probe)?,
         "prompt" => {
             let plan = prompt_plan(
-                prompt_body,
-                prompt_display_body,
+                prompt_bodies.actual,
+                prompt_bodies.display,
                 prompt_runner,
                 assembly,
                 probe,
@@ -477,10 +614,16 @@ fn interpreted_plan<P: ProgramProbe>(
     assembly: &Assembly,
     interpreter: &str,
     interpreter_args: &[&str],
+    interpreter_policy: &InterpreterPolicy,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     require_file(&paths.script, probe)?;
-    let program = require_program(interpreter, probe)?;
+    let program = resolve_interpreter(
+        interpreter,
+        interpreter_policy.platform,
+        interpreter_policy.windows_bash_path.as_deref(),
+        probe,
+    )?;
     let mut prefix = interpreter_args
         .iter()
         .map(|value| (*value).to_owned())
@@ -497,6 +640,7 @@ fn powershell_plan<P: ProgramProbe>(
     paths: &LaunchPaths,
     assembly: &Assembly,
     settings: &EntrySettings,
+    interpreter_policy: &InterpreterPolicy,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     interpreted_plan(
@@ -504,6 +648,7 @@ fn powershell_plan<P: ProgramProbe>(
         assembly,
         interpreter(settings, "pwsh"),
         &["-File"],
+        interpreter_policy,
         probe,
     )
 }
@@ -512,6 +657,7 @@ fn r_plan<P: ProgramProbe>(
     paths: &LaunchPaths,
     assembly: &Assembly,
     settings: &EntrySettings,
+    interpreter_policy: &InterpreterPolicy,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     interpreted_plan(
@@ -519,6 +665,7 @@ fn r_plan<P: ProgramProbe>(
         assembly,
         interpreter(settings, "Rscript"),
         &[],
+        interpreter_policy,
         probe,
     )
 }
@@ -530,15 +677,15 @@ fn javascript_plan<P: ProgramProbe>(
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     require_file(&paths.script, probe)?;
-    let runtime = resolve_javascript_runtime(settings, probe)?;
-    let program = require_program(&runtime, probe)?;
+    let runtime = resolve_javascript_runtime_program(settings, probe)?;
+    let program = runtime.program.clone();
     // The same script must behave the same under all three runtimes — node and bun
     // have no sandbox, and deno's would otherwise deny env/fs probes (auto-deny when
     // stdin is not a TTY: exactly the agent/CI path). skit is a launcher, not a
     // sandbox. An unknown pinned runtime name takes no subcommand.
-    let mut prefix = match runtime.as_str() {
-        "deno" => vec!["run".to_owned(), "--allow-all".to_owned()],
-        "bun" => vec!["run".to_owned()],
+    let mut prefix = match runtime.kind {
+        JavaScriptRuntimeKind::Deno => vec!["run".to_owned(), "--allow-all".to_owned()],
+        JavaScriptRuntimeKind::Bun => vec!["run".to_owned()],
         _ => Vec::new(),
     };
     prefix.push(paths.script.display().to_string());
@@ -554,6 +701,15 @@ pub fn resolve_javascript_runtime<P: ProgramProbe>(
     settings: &EntrySettings,
     probe: &P,
 ) -> Result<String, LaunchError> {
+    resolve_javascript_runtime_program(settings, probe)
+        .map(|runtime| runtime.kind.name().to_owned())
+}
+
+/// Select one JavaScript runtime and keep its normalized identity and exact program path.
+pub fn resolve_javascript_runtime_program<P: ProgramProbe>(
+    settings: &EntrySettings,
+    probe: &P,
+) -> Result<ResolvedJavaScriptRuntime, LaunchError> {
     let candidates: &[&str] = if settings.interpreter.is_empty() {
         &["deno", "bun", "node"]
     } else {
@@ -561,8 +717,14 @@ pub fn resolve_javascript_runtime<P: ProgramProbe>(
     };
     candidates
         .iter()
-        .find(|name| probe.find_program(name).is_some())
-        .map(|name| (*name).to_owned())
+        .find_map(|name| {
+            probe
+                .find_program(name)
+                .map(|program| ResolvedJavaScriptRuntime {
+                    kind: JavaScriptRuntimeKind::from_candidate(name),
+                    program,
+                })
+        })
         .ok_or_else(|| LaunchError::JsRuntimeMissing {
             names: candidates.join(", "),
         })
@@ -609,7 +771,8 @@ fn command_plan<P: ProgramProbe>(
     );
     #[cfg(windows)]
     {
-        let shell = require_program("cmd.exe", probe)?;
+        let shell =
+            windows_command_shell(env::var_os("COMSPEC"), env::var_os("SystemRoot"), probe)?;
         return Ok((
             shell,
             vec!["/C".to_owned(), command],
@@ -888,21 +1051,13 @@ fn render_windows_command_template(
 #[derive(Clone, Debug, Default)]
 struct PosixQuoteState {
     frames: Vec<char>,
-    escape_pending: bool,
 }
 
 #[cfg(not(windows))]
 impl PosixQuoteState {
-    fn advance(&mut self, text: &str) {
+    fn advance(&mut self, text: &str) -> bool {
         let chars = text.chars().collect::<Vec<_>>();
         let mut index = 0;
-        if self.escape_pending {
-            if chars.is_empty() {
-                return;
-            }
-            self.escape_pending = false;
-            index = 1;
-        }
         while index < chars.len() {
             let character = chars[index];
             let top = self.frames.last().copied();
@@ -912,8 +1067,7 @@ impl PosixQuoteState {
                 }
             } else if character == '\\' {
                 if index.saturating_add(1) >= chars.len() {
-                    self.escape_pending = true;
-                    return;
+                    return true;
                 }
                 index = index.saturating_add(1);
             } else if character == '$' && chars.get(index.saturating_add(1)) == Some(&'(') {
@@ -932,10 +1086,7 @@ impl PosixQuoteState {
             }
             index = index.saturating_add(1);
         }
-    }
-
-    fn take_pending_escape(&mut self) -> bool {
-        std::mem::take(&mut self.escape_pending)
+        false
     }
 
     fn quote_value(&self, name: &str, value: &str) -> Result<String, LaunchError> {
@@ -966,8 +1117,7 @@ fn render_posix_command_template(
     while let Some(span) = next_template_token(template, position) {
         let chunk = &template[position..span.start];
         output.push_str(chunk);
-        state.advance(chunk);
-        let pending_escape = state.take_pending_escape();
+        let pending_escape = state.advance(chunk);
         match span.token {
             TemplateToken::OpenBrace => output.push('{'),
             TemplateToken::CloseBrace => output.push('}'),
@@ -1014,6 +1164,36 @@ fn require_file<P: ProgramProbe>(path: &Path, probe: &P) -> Result<(), LaunchErr
     }
 }
 
+/// Resolve the shell that runs a command entry, the way version 0.4 reaches it on Windows.
+///
+/// Version 0.4 runs a command entry through `subprocess.run(..., shell=True)`
+/// (launcher.py:293-298). On Windows, CPython reads COMSPEC and falls back to the bare name
+/// `cmd.exe`, which CreateProcess finds in the system directory before any PATH entry. A plain
+/// PATH probe therefore diverges: a child environment with a reduced PATH still runs command
+/// entries under version 0.4. Read what version 0.4 reads: COMSPEC verbatim (no existence
+/// check, exactly as CPython passes it), then the system directory's cmd.exe, then PATH.
+///
+/// The environment values arrive as parameters, so a test can drive every arm on every host.
+// The production caller sits in the cfg(windows) arm of command_plan; the function itself
+// compiles on every host so its owner runs — and its mutants die — on the Linux gates.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_command_shell<P: ProgramProbe>(
+    comspec: Option<std::ffi::OsString>,
+    system_root: Option<std::ffi::OsString>,
+    probe: &P,
+) -> Result<PathBuf, LaunchError> {
+    if let Some(value) = comspec.filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(value));
+    }
+    if let Some(root) = system_root.filter(|value| !value.is_empty()) {
+        let fallback = PathBuf::from(root).join("System32").join("cmd.exe");
+        if probe.is_file(&fallback) {
+            return Ok(fallback);
+        }
+    }
+    require_program("cmd.exe", probe)
+}
+
 fn require_program<P: ProgramProbe>(name: &str, probe: &P) -> Result<PathBuf, LaunchError> {
     probe
         .find_program(name)
@@ -1022,11 +1202,55 @@ fn require_program<P: ProgramProbe>(name: &str, probe: &P) -> Result<PathBuf, La
         })
 }
 
+/// Resolve one interpreted program with the version 0.4 Windows shell fallback policy.
+///
+/// `PATH` always wins. Only bash-compatible shell names use `windows_bash_path`, and only on
+/// Windows. A hand-edited configured fallback is accepted when that filesystem object exists;
+/// config authoring applies its stricter regular-file validation before this resolver.
+pub fn resolve_interpreter<P: ProgramProbe>(
+    name: &str,
+    platform: InterpreterPlatform,
+    windows_bash_path: Option<&Path>,
+    probe: &P,
+) -> Result<PathBuf, LaunchError> {
+    if let Some(program) = probe.find_program(name) {
+        return Ok(program);
+    }
+    if platform == InterpreterPlatform::Windows && matches!(name, "bash" | "sh" | "zsh") {
+        if let Some(configured) = windows_bash_path.filter(|path| probe.exists(path)) {
+            return Ok(configured.to_path_buf());
+        }
+        return Err(LaunchError::WindowsShellMissing {
+            name: name.to_owned(),
+        });
+    }
+    Err(LaunchError::ProgramNotFound {
+        name: name.to_owned(),
+    })
+}
+
 /// Resolve the child working directory with the same rules used by launch planning.
 ///
 /// Frontends use this projection for path completion. Keeping the resolver public prevents a
 /// form adapter from approximating `origin`, copy fallback, or custom-path validation.
 pub fn resolve_launch_workdir<P: ProgramProbe>(
+    entry: &Entry,
+    paths: &LaunchPaths,
+    probe: &P,
+) -> Result<PathBuf, LaunchError> {
+    let cwd = project_launch_workdir(entry, paths, probe)?;
+    if probe.is_dir(&cwd) {
+        Ok(cwd)
+    } else {
+        Err(LaunchError::WorkdirMissing { path: cwd })
+    }
+}
+
+/// Project the semantic child working directory without requiring it to exist yet.
+///
+/// Run forms use this path to silence completion and offer an ancestor picker when a directory
+/// vanishes. Launch planning applies the existence check through [`resolve_launch_workdir`].
+pub fn project_launch_workdir<P: ProgramProbe>(
     entry: &Entry,
     paths: &LaunchPaths,
     probe: &P,
@@ -1058,11 +1282,7 @@ pub fn resolve_launch_workdir<P: ProgramProbe>(
             path
         }
     };
-    if probe.is_dir(&cwd) {
-        Ok(cwd)
-    } else {
-        Err(LaunchError::WorkdirMissing { path: cwd })
-    }
+    Ok(cwd)
 }
 
 /// Start a child and wait for its process status.
@@ -1251,6 +1471,10 @@ mod private_tests {
         }
     }
 
+    // Command templates lower through `sh -c` only under cfg(not(windows)); on Windows the
+    // same builder takes the render_windows_command_template arm, so asserting the sh program
+    // or its POSIX-rendered argv states a unix contract.
+    #[cfg(unix)]
     #[test]
     fn command_and_workdir_plans_cover_literal_and_refusal_paths() {
         let mut command = entry("command");
@@ -1285,6 +1509,52 @@ mod private_tests {
         assert!(matches!(
             build_launch_plan(&command, &paths(), &assembly, None, None, &probe),
             Err(LaunchError::WorkdirMissing { .. })
+        ));
+    }
+
+    /// The command shell resolves the way version 0.4's `shell=True` reaches it: COMSPEC
+    /// verbatim, then the system directory's cmd.exe, then PATH, then a typed refusal. The
+    /// pure function runs on every host, so each arm stays owned and mutation-killable here.
+    #[test]
+    fn windows_command_shell_reads_comspec_before_the_system_directory_and_path() {
+        use std::ffi::OsString;
+
+        let empty = Probe::default();
+        assert_eq!(
+            windows_command_shell(Some(OsString::from("C:\\shell\\cmd.exe")), None, &empty)
+                .unwrap(),
+            PathBuf::from("C:\\shell\\cmd.exe")
+        );
+
+        let fallback = PathBuf::from("C:\\Windows")
+            .join("System32")
+            .join("cmd.exe");
+        let system = Probe {
+            files: vec![fallback.clone()],
+            ..Probe::default()
+        };
+        assert_eq!(
+            windows_command_shell(
+                Some(OsString::new()),
+                Some(OsString::from("C:\\Windows")),
+                &system
+            )
+            .unwrap(),
+            fallback
+        );
+
+        let path_only = Probe {
+            programs: BTreeMap::from([("cmd.exe".to_owned(), PathBuf::from("D:\\tools\\cmd.exe"))]),
+            ..Probe::default()
+        };
+        assert_eq!(
+            windows_command_shell(None, None, &path_only).unwrap(),
+            PathBuf::from("D:\\tools\\cmd.exe")
+        );
+
+        assert!(matches!(
+            windows_command_shell(None, Some(OsString::from("C:\\Windows")), &empty),
+            Err(LaunchError::ProgramNotFound { name }) if name == "cmd.exe"
         ));
     }
 
@@ -1393,7 +1663,11 @@ mod private_tests {
             probe.find_program(executable.to_str().unwrap()),
             Some(executable)
         );
-        assert!(probe.find_program("sh").is_some());
+        assert!(
+            probe
+                .find_program(if cfg!(windows) { "cmd" } else { "sh" })
+                .is_some()
+        );
         assert!(
             probe
                 .find_program("skit-program-that-does-not-exist")
@@ -1401,9 +1675,17 @@ mod private_tests {
         );
         assert!(!probe.is_executable(root.path()));
 
+        // The contract is real operating-system exit status, not one shell: spawn the host's own
+        // command interpreter. A bare `cmd.exe` resolves through the system directory before any
+        // PATH entry, so a controlled PATH cannot hide it. Compile-time arms keep the other
+        // host's tuple out of this host's executable lines, which the coverage gate counts.
+        #[cfg(windows)]
+        let (shell, flag) = ("cmd.exe", "/C");
+        #[cfg(not(windows))]
+        let (shell, flag) = ("/bin/sh", "-c");
         let plan = LaunchPlan {
-            program: PathBuf::from("/bin/sh"),
-            args: vec!["-c".to_owned(), "exit 7".to_owned()],
+            program: PathBuf::from(shell),
+            args: vec![flag.to_owned(), "exit 7".to_owned()],
             env: BTreeMap::new(),
             cwd: root.path().to_owned(),
             display: String::new(),

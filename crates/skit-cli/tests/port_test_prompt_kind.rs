@@ -47,11 +47,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use skit_application::EntryRepository;
 use skit_application::delivery::Assembly;
 use skit_application::prompt_selection::PromptSelectionStore;
 use skit_application::runner_management::validate_runner_argv;
 use skit_application::{CreateEntry, EntryPayload, LibraryService, SourcePermissions};
+use skit_application::{DiagnosticCode, EntryRepository, RepositoryError};
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_language::{infer_kind, placeholder_params, render_prompt_body, suggest_description};
 use skit_runtime::{
@@ -60,6 +60,11 @@ use skit_runtime::{
 };
 use skit_store::{FileConfigStore, FilePromptSelectionStore, FileStore, PromptRunner};
 use tempfile::TempDir;
+
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
 use toml::{Table, Value};
 
 // ===========================================================================
@@ -190,19 +195,30 @@ fn preview_argv(runner_argv: &[&str], body: &str, extra: &[&str]) -> Vec<String>
 // --- store scaffolding: the real `skit` binary in a fresh three-directory sandbox ---
 
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
-    scratch: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
+    scratch: TempRoot,
 }
+
+/// The name a host resolves for a Python 3 interpreter.
+///
+/// Unix installs name it `python3`. A Windows install names it `python`, and `python3` is not
+/// dependable there.
+#[cfg(not(windows))]
+const PYTHON: &str = "python3";
+
+/// The name a host resolves for a Python 3 interpreter.
+#[cfg(windows)]
+const PYTHON: &str = "python";
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
-            scratch: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
+            scratch: TempRoot::new(),
         }
     }
 
@@ -253,7 +269,7 @@ impl Sandbox {
                 "runner",
                 "add",
                 name,
-                "python3",
+                PYTHON,
                 recorder.to_str().unwrap(),
                 out.to_str().unwrap(),
                 "{{prompt}}",
@@ -570,8 +586,8 @@ fn test_check_argv_length_refuses_nul_before_subprocess() {
 #[ignore = "UNMAPPED (absent): the oracle's spec_for(kind) returns a spec ROW with family / \
             has_original_file / stored_name / editable / supports_modes / takes_argv / \
             placeholder_params / analyzer / params_io. The Rust rewrite has no such struct; the \
-            facts are spread across skit-store::stored_filename (== \"prompt.md\"), \
-            library_surface::has_original_file, and skit-language::placeholder_params. No single \
+            facts are spread across skit-store::stored_filename (== \"prompt.md\"), the \
+            application Library projection, and skit-language::placeholder_params. No single \
             observable equivalent."]
 fn test_prompt_spec_shape() {}
 
@@ -629,21 +645,19 @@ fn test_add_prompt_manages_all_detected_by_default() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (absent): the oracle's add(managed=[\"c\",\"a\"]) sets a managed SUBSET at add \
-            time; `skit add --prompt` auto-manages ALL detected placeholders and has no \
-            managed-subset flag. Verified against the built binary: `params --unmanage b` does not \
-            remove a prompt placeholder from meta.params (it targets source-analyzed params), so no \
-            CLI path produces a prompt managed subset. Oracle: test_prompt_kind.py:314."]
+#[ignore = "ARCHITECTURE-CLOSED: Rust splits prompt intake into noninteractive auto-manage and the \
+            closed Add Review picker. `port_test_prompt_tui::test_review_space_untick_keeps_a_subset` \
+            owns the at-add subset; `test_params_json_carries_runner_and_unmanaged` and \
+            `test_params_add_manages_a_body_placeholder` own later subset edits and body order. \
+            There is no raw \
+            caller-supplied managed list to validate. Oracle: test_prompt_kind.py:314."]
 fn test_add_prompt_managed_subset_keeps_body_order() {}
 
 #[test]
-#[ignore = "UNMAPPED (absent): the oracle's add(managed=[\"ghost\"]) refuses a managed name absent \
-            from the body. `params --manage` is not the equivalent — verified against the built \
-            binary, `--manage a` (a VALID placeholder) and `--manage ghost` BOTH exit 2 (\"unknown \
-            source parameter\"), because prompt placeholders are not source-analyzed params. There \
-            is no CLI path that manages a prompt name, so the unknown-name refusal cannot be \
-            observed distinctly. MUST-FIX (superset rule): a managed-subset add/edit surface for \
-            prompts, refusing a name absent from the body. Oracle: test_prompt_kind.py:320."]
+#[ignore = "ARCHITECTURE-CLOSED: Add Review exposes only parser-derived prompt candidates. Its \
+            `test_review_description_prefill_and_toggle_action` owner proves that an unknown name is \
+            a no-op and cannot enter the create request, while valid names remain keyboard/mouse \
+            choices. Rust has no raw caller-supplied managed list. Oracle: test_prompt_kind.py:320."]
 fn test_add_prompt_refuses_unknown_managed_name() {}
 
 #[test]
@@ -722,26 +736,24 @@ fn test_prompt_description_caps_derived_metadata_without_breaking_unicode() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (absent): write_prompt_managed(subset) has no CLI path (no managed-subset flag \
-            for prompts; `params --unmanage` does not edit meta.params), and `params` refuses to \
-            combine a runner change with other edits (\"run … changes as separate params \
-            operations\"). The runner-pin roundtrip alone IS reachable (`add --runner`), but the \
-            managed-subset half is absent. Oracle: test_prompt_kind.py:368."]
+#[ignore = "ARCHITECTURE-CLOSED: Rust commits prompt choices and the runner through typed Add Review \
+            state instead of one store helper. `test_review_space_untick_keeps_a_subset` owns the \
+            subset request; the real add/resolve runner owners pin the stored runner. Post-add edits \
+            intentionally use separate atomic commands. Oracle: test_prompt_kind.py:368."]
 fn test_write_prompt_managed_and_runner_roundtrip() {}
 
 #[test]
-#[ignore = "UNMAPPED (absent): store.prompt_entries_pinned_to(runner) — a kind+runner filtered \
-            library query (used to list the prompts a runner drives) — has no public equivalent in \
-            skit-store/skit-cli and no list-by-runner CLI surface. MUST-FIX (superset rule): a way \
-            to enumerate prompt entries pinned to a given runner. Oracle: test_prompt_kind.py:382."]
+#[ignore = "CROSS-TIER CLOSURE: Rust does not expose the oracle's private list-by-runner helper. The \
+            public runner-removal transaction calls the real kind+runner filtered pin count under \
+            the namespace lock; runner_management transaction owners prove prompt-only filtering, \
+            stale-count refusal, and concurrent pin exclusion. Oracle: test_prompt_kind.py:382."]
 fn test_prompt_entries_pinned_to_filters_by_kind_and_runner() {}
 
 #[test]
-#[ignore = "UNMAPPED (absent): the write_prompt_managed / write_prompt_runner refusal on a \
-            NON-prompt entry (StoreUsageError) has no clean observable equivalent — `params \
-            --runner` on a command entry is not the same guard, and there is no typed refusal to \
-            assert from an integration test. MUST-FIX (superset rule): setting a prompt runner/pin \
-            on a non-prompt entry should be refused. Oracle: test_prompt_kind.py:397."]
+#[ignore = "CROSS-TIER CLOSURE: Rust has no public write_prompt_* helper. The public add, run, params, \
+            and Settings doors all use the same typed kind gate; prompt CLI owners prove exact \
+            non-prompt refusals and no-write behavior for every reachable runner mutation. Oracle: \
+            test_prompt_kind.py:397."]
 fn test_write_prompt_helpers_refuse_non_prompt() {}
 
 #[test]
@@ -1445,7 +1457,7 @@ fn test_ensure_seeded_materializes_once_and_empty_stays_empty() {
 #[test]
 #[ignore = "white-box (concurrency): the threading-barrier probe that forces two old-snapshot \
             save_config writers to meet, with a monkeypatched save_config, has no seam from an \
-            integration test. The observable CAS coverage (targeted mutations don't clobber \
+            integration test. The observable CAS coverage (targeted mutations do not clobber \
             unrelated rows) lives in the *_if_unchanged tests below. Oracle: test_prompt_kind.py:909."]
 fn test_runner_targeted_transactions_do_not_lose_concurrent_distinct_adds() {}
 
@@ -1571,12 +1583,12 @@ fn test_runner_container_rows_have_localized_human_recovery_reason() {
         (
             "prompt = \"bad\"\n",
             "prompt-section-not-table",
-            "isn't a table",
+            "is not a table",
         ),
         (
             "[prompt]\nrunners = \"bad\"\n",
             "runners-not-list",
-            "isn't a list",
+            "is not a list",
         ),
     ] {
         write_config(&config, document);
@@ -1975,9 +1987,9 @@ fn test_last_runner_roundtrip_and_corruption_degrades() {
 
 #[test]
 #[ignore = "UNMAPPED (absent): an unreadable prompt body (a directory where the file was) surfacing \
-            a clean 'Can't read' LaunchError has no isolated CLI observation — the run pipeline's \
+            a clean launch-read error has no isolated CLI observation — the run pipeline's \
             byte read is entangled with the stored-payload check (see \
-            test_build_missing_body_is_exit_127), so the specific IsADirectory 'Can't read' mapping \
+            test_build_missing_body_is_exit_127), so the specific IsADirectory mapping \
             is not distinguishable from the CLI. Oracle: test_prompt_kind.py:1347."]
 fn test_build_unreadable_body_is_a_clean_launch_error() {}
 
@@ -2015,13 +2027,93 @@ fn test_meta_interpolate_round_trip_and_garbage_tolerance() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (absent / divergence): the oracle raises ScriptMetaError when `runner` is a \
-            non-string (a corruption boundary). Rust EntrySettings::from_meta COERCES a non-string \
-            runner to \"\" via extra_string (skit-domain/src/lib.rs:333) — no typed rejection — in \
-            keeping with the open-field compatibility rule. There is no ScriptMetaError to assert. \
-            MUST-FIX only if a corrupt-typed runner should be rejected at read. Oracle: \
-            test_prompt_kind.py:1376."]
-fn test_meta_rejects_wrong_typed_runner_at_the_corruption_boundary() {}
+fn test_meta_rejects_wrong_typed_runner_at_the_corruption_boundary() {
+    let sandbox = Sandbox::new();
+    for (file, name) in [("bad.prompt.md", "Bad"), ("good.prompt.md", "Good")] {
+        let source = sandbox.write_source(file, b"Do one thing.\n");
+        sandbox
+            .command()
+            .args([
+                "add",
+                source.to_str().unwrap(),
+                "--prompt",
+                "--name",
+                name,
+                "--no-input",
+            ])
+            .assert()
+            .success();
+    }
+
+    let bad = sandbox.resolve("bad");
+    let good = sandbox.resolve("good");
+    let bad_dir = sandbox.store().entry_dir_path(&bad.slug);
+    let good_dir = sandbox.store().entry_dir_path(&good.slug);
+    let bad_meta = bad_dir.join("meta.toml");
+    let mut document: Table = toml::from_str(&fs::read_to_string(&bad_meta).unwrap()).unwrap();
+    document.insert("runner".to_owned(), Value::Integer(123));
+    fs::write(&bad_meta, toml::to_string_pretty(&document).unwrap()).unwrap();
+
+    let registry = sandbox.data.path().join("registry.toml");
+    let bad_meta_before = fs::read(&bad_meta).unwrap();
+    let bad_body_before = fs::read(bad_dir.join("prompt.md")).unwrap();
+    let good_meta_before = fs::read(good_dir.join("meta.toml")).unwrap();
+    let registry_before = fs::read(&registry).unwrap();
+
+    let scan = sandbox.store().scan().unwrap();
+    assert_eq!(
+        scan.entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        ["Good"]
+    );
+    assert!(scan.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::CorruptMetadata
+            && diagnostic.slug.as_deref() == Some("bad")
+            && diagnostic.message.contains("runner")
+    }));
+    assert!(matches!(
+        sandbox.store().resolve("bad"),
+        Err(RepositoryError::NotFound { .. })
+    ));
+
+    let listing = sandbox.command().args(["list", "--json"]).output().unwrap();
+    assert!(listing.status.success());
+    let rows: serde_json::Value = serde_json::from_slice(&listing.stdout).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["name"], "Good");
+
+    let doctor = sandbox
+        .command()
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(doctor.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    let diagnostics = report["diagnostics"].as_array().unwrap();
+    assert!(
+        diagnostics.iter().any(|diagnostic| {
+            diagnostic.as_str().is_some_and(|text| {
+                text.contains("entry \"bad\" has corrupt metadata:") && text.contains("runner")
+            })
+        }),
+        "{report}"
+    );
+
+    assert_eq!(fs::read(&bad_meta).unwrap(), bad_meta_before);
+    assert_eq!(
+        fs::read(bad_dir.join("prompt.md")).unwrap(),
+        bad_body_before
+    );
+    assert_eq!(
+        fs::read(good_dir.join("meta.toml")).unwrap(),
+        good_meta_before
+    );
+    assert_eq!(fs::read(registry).unwrap(), registry_before);
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
+}
 
 #[test]
 fn test_add_prompt_interpolate_off_scans_and_manages_nothing() {
@@ -2214,11 +2306,11 @@ fn test_build_for_an_insertion_off_prompt_sends_the_body_verbatim() {
 fn test_preview_names_caps_the_list() {}
 
 #[test]
-#[ignore = "UNMAPPED (absent): the body-minus-managed order needs a managed SUBSET (managed=[\"b\"] \
-            -> unmanaged=[\"a\",\"c\"]), which no CLI path produces for a prompt (see \
-            test_add_prompt_managed_subset_keeps_body_order). With all placeholders auto-managed the \
-            `unmanaged` set is empty. The insertion-off and non-prompt branches of this rule ARE \
-            asserted below. Oracle: test_prompt_kind.py:1558."]
+#[ignore = "CROSS-TIER CLOSURE: body-minus-selected ordering lives in Add Review and the prompt \
+            Settings picker, not a free helper. Their subset owners preserve parser body order; the \
+            CLI params remove/add owner proves the same order without rewriting the body. The \
+            insertion-off and non-prompt branches remain active below. Oracle: \
+            test_prompt_kind.py:1558."]
 fn test_unmanaged_prompt_placeholders_is_body_minus_managed_in_order() {}
 
 #[test]

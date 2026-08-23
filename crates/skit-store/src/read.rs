@@ -39,6 +39,13 @@ impl FileStore {
     }
 
     pub(crate) fn read_entry(&self, slug: Slug) -> Result<Entry, RepositoryError> {
+        self.read_entry_snapshot(slug).map(|(entry, _)| entry)
+    }
+
+    pub(crate) fn read_entry_snapshot(
+        &self,
+        slug: Slug,
+    ) -> Result<(Entry, Vec<u8>), RepositoryError> {
         let meta_path = self.scripts_dir().join(slug.as_str()).join("meta.toml");
         let text = fs::read_to_string(&meta_path).map_err(|error| RepositoryError::Io {
             operation: "read",
@@ -55,7 +62,8 @@ impl FileStore {
                 slug: slug.as_str().to_owned(),
                 reason,
             })?;
-        Ok(Entry { slug, meta })
+        let bytes = text.into_bytes();
+        Ok((Entry { slug, meta }, bytes))
     }
 
     /// Read every readable entry with its complete metadata in one directory pass.
@@ -137,26 +145,31 @@ impl FileStore {
     /// failing the read; a slug removed, or whose meta vanished or broke, since the listing is
     /// skipped; and nothing is saved unless a row actually changed. It contends on the same
     /// `registry.native.lock` writers take, so a repair never races a committing writer.
-    fn repair_rows(&self, stale: &[Slug]) {
-        let Some(_lock) = try_acquire_lock(&self.data_dir().join("registry.native.lock")) else {
-            return; // busy: a read stays a read, the next listing tries again
+    pub(crate) fn repair_rows(&self, stale: &[Slug]) {
+        let repair = match try_acquire_lock(&self.data_dir().join("registry.native.lock")) {
+            Some(lock) => Registry::read(self.data_dir()).map(|registry| (lock, registry)),
+            None => None,
         };
-        let Some(mut registry) = Registry::read(self.data_dir()) else {
-            return; // the index vanished or went corrupt since the listing read it; doctor owns that
+        let Some((_lock, mut registry)) = repair else {
+            return; // busy, missing, or corrupt: the next listing tries again
         };
         let mut changed = false;
-        for slug in stale {
-            if !registry.contains(slug) {
-                continue; // removed since the listing read the index
-            }
+        let current = stale
+            .iter()
+            .filter(|slug| registry.contains(slug))
+            .filter_map(|slug| {
+                self.read_entry((*slug).clone())
+                    .ok()
+                    .map(|entry| (slug, entry))
+            })
+            .collect::<Vec<_>>();
+        for (slug, entry) in current {
             let entry_dir = self.scripts_dir().join(slug.as_str());
-            let Ok(entry) = self.read_entry(slug.clone()) else {
-                continue; // meta corrupted or vanished meanwhile: leave it for doctor
-            };
-            match registry.reproject_if_changed(&entry, &entry_dir) {
-                Ok(true) => changed = true,
-                Ok(false) => {}
-                Err(_) => continue, // meta vanished between the read and its stat
+            if registry
+                .reproject_if_changed(&entry, &entry_dir)
+                .unwrap_or(false)
+            {
+                changed = true;
             }
         }
         if changed {
@@ -320,7 +333,7 @@ fn entry_with_name(entry: Entry, query: &str) -> Result<Entry, RepositoryError> 
     }
 }
 
-fn summary_from(entry: &Entry) -> EntrySummary {
+pub(crate) fn summary_from(entry: &Entry) -> EntrySummary {
     EntrySummary {
         slug: entry.slug.clone(),
         name: entry.meta.name.clone(),
@@ -335,7 +348,7 @@ fn summary_from(entry: &Entry) -> EntrySummary {
     }
 }
 
-fn diagnostic_from(error: RepositoryError, slug: &Slug) -> Diagnostic {
+pub(crate) fn diagnostic_from(error: RepositoryError, slug: &Slug) -> Diagnostic {
     let code = match &error {
         RepositoryError::Io { .. }
         | RepositoryError::Rollback { .. }
@@ -372,12 +385,22 @@ struct RawMeta {
     workdir: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
+    runner: Option<String>,
+    #[serde(default)]
+    dependencies: Option<Vec<String>>,
+    #[serde(default)]
+    needs: Option<Vec<String>>,
+    #[serde(default)]
+    params: Option<Vec<String>>,
+    #[serde(default)]
+    parameters: Option<Vec<toml::Value>>,
     #[serde(flatten)]
     extra: BTreeMap<String, toml::Value>,
 }
 
 impl RawMeta {
-    fn into_domain(self) -> Result<EntryMeta, String> {
+    fn into_domain(mut self) -> Result<EntryMeta, String> {
         let kind = EntryKind::parse(self.kind).map_err(|error| error.to_string())?;
         let id = self
             .id
@@ -385,6 +408,16 @@ impl RawMeta {
             .map(EntryId::parse)
             .transpose()
             .map_err(|error| error.to_string())?;
+        let runner = self.runner.take();
+        let dependencies = self.dependencies.take();
+        let needs = self.needs.take();
+        let params = self.params.take();
+        let parameters = self.parameters.take();
+        restore_string(&mut self.extra, "runner", runner);
+        restore_string_list(&mut self.extra, "dependencies", dependencies);
+        restore_string_list(&mut self.extra, "needs", needs);
+        restore_string_list(&mut self.extra, "params", params);
+        restore_value_list(&mut self.extra, "parameters", parameters);
         let extra = self
             .extra
             .into_iter()
@@ -410,6 +443,35 @@ impl RawMeta {
     }
 }
 
+fn restore_string(extra: &mut BTreeMap<String, toml::Value>, key: &str, value: Option<String>) {
+    if let Some(value) = value {
+        extra.insert(key.to_owned(), toml::Value::String(value));
+    }
+}
+
+fn restore_string_list(
+    extra: &mut BTreeMap<String, toml::Value>,
+    key: &str,
+    values: Option<Vec<String>>,
+) {
+    if let Some(values) = values {
+        extra.insert(
+            key.to_owned(),
+            toml::Value::Array(values.into_iter().map(toml::Value::String).collect()),
+        );
+    }
+}
+
+fn restore_value_list(
+    extra: &mut BTreeMap<String, toml::Value>,
+    key: &str,
+    values: Option<Vec<toml::Value>>,
+) {
+    if let Some(values) = values {
+        extra.insert(key.to_owned(), toml::Value::Array(values));
+    }
+}
+
 const fn schema_one() -> u32 {
     1
 }
@@ -422,11 +484,95 @@ fn origin() -> String {
 mod tests {
     use std::{cell::Cell, io};
 
-    use skit_application::{CreateEntry, EntryMutationRepository};
+    use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
     use skit_domain::EntrySettings;
     use tempfile::TempDir;
+    use toml::{Table, Value};
 
     use super::*;
+
+    fn request(name: &str, kind: &str, description: &str) -> CreateEntry {
+        CreateEntry {
+            name: name.to_owned(),
+            kind: EntryKind::parse(kind).unwrap(),
+            mode: StorageMode::Copy,
+            source: format!("/original/{name}"),
+            workdir: "invoke".to_owned(),
+            description: description.to_owned(),
+            payload: Some(EntryPayload {
+                bytes: format!("payload for {name}\n").into_bytes(),
+                stored_name: Some(if kind == "shell" {
+                    "script.sh".to_owned()
+                } else {
+                    "payload".to_owned()
+                }),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        }
+    }
+
+    fn registry_document(root: &TempDir) -> Table {
+        toml::from_str(&fs::read_to_string(root.path().join("registry.toml")).unwrap()).unwrap()
+    }
+
+    fn write_registry_document(root: &TempDir, document: &Table) {
+        fs::write(
+            root.path().join("registry.toml"),
+            toml::to_string_pretty(document).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn entries_mut(document: &mut Table) -> &mut Table {
+        document
+            .get_mut("entries")
+            .and_then(Value::as_table_mut)
+            .unwrap()
+    }
+
+    fn row(document: &Table, slug: &Slug) -> Value {
+        document
+            .get("entries")
+            .and_then(Value::as_table)
+            .and_then(|entries| entries.get(slug.as_str()))
+            .cloned()
+            .unwrap()
+    }
+
+    fn replace_with_legacy_row(root: &TempDir, entry: &Entry) {
+        let mut document = registry_document(root);
+        entries_mut(&mut document).insert(
+            entry.slug.as_str().to_owned(),
+            Value::Table(Table::from_iter([
+                ("name".to_owned(), Value::String(entry.meta.name.clone())),
+                (
+                    "kind".to_owned(),
+                    Value::String(entry.meta.kind.as_str().to_owned()),
+                ),
+                (
+                    "description".to_owned(),
+                    Value::String(entry.meta.description.clone()),
+                ),
+            ])),
+        );
+        write_registry_document(root, &document);
+    }
+
+    fn meta_path(root: &TempDir, slug: &Slug) -> PathBuf {
+        root.path()
+            .join("scripts")
+            .join(slug.as_str())
+            .join("meta.toml")
+    }
+
+    fn stage_one(store: &FileStore, expected: &Entry) -> Vec<Slug> {
+        let (scan, stale) = store.scan_inner().unwrap();
+        assert!(scan.diagnostics.is_empty());
+        assert!(scan.entries.iter().any(|entry| entry.slug == expected.slug));
+        assert_eq!(stale.as_slice(), std::slice::from_ref(&expected.slug));
+        stale
+    }
 
     #[test]
     #[cfg(any(unix, windows))]
@@ -449,20 +595,302 @@ mod tests {
         let slug = Slug::parse("fast").unwrap();
         let reads = Cell::new(0_u32);
 
-        let (summary, source) = cached_or_authoritative_summary(
+        for use_cache in [true, false] {
+            let before = reads.get();
+            let (summary, source) = cached_or_authoritative_summary(
+                use_cache.then_some(&registry),
+                &slug,
+                &root.path().join("scripts/fast/meta.toml"),
+                || {
+                    reads.set(reads.get() + 1);
+                    store.read_entry(slug.clone())
+                },
+            )
+            .unwrap();
+
+            assert_eq!(summary.description, "from the cache");
+            if use_cache {
+                assert!(matches!(source, SummarySource::Cache));
+                assert_eq!(reads.get(), before, "the fast path parsed meta.toml");
+            } else {
+                assert!(matches!(source, SummarySource::Authoritative));
+                assert_eq!(
+                    reads.get(),
+                    before + 1,
+                    "the fallback did not parse meta.toml"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_repair_never_drops_an_entry_added_meanwhile() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let legacy = store
+            .create(request("Legacy", "future-kind", "old row"))
+            .unwrap();
+        let sibling = store
+            .create(request("Sibling", "future-kind", "unchanged"))
+            .unwrap();
+        replace_with_legacy_row(&root, &legacy);
+        let sibling_meta = fs::read(meta_path(&root, &sibling.slug)).unwrap();
+        let sibling_row = row(&registry_document(&root), &sibling.slug);
+        let stale = stage_one(&store, &legacy);
+
+        let raced = store
+            .create(request("Raced", "future-kind", "newest"))
+            .unwrap();
+        let raced_meta = fs::read(meta_path(&root, &raced.slug)).unwrap();
+        let raced_row = row(&registry_document(&root), &raced.slug);
+        store.repair_rows(&stale);
+
+        let repaired = registry_document(&root);
+        let entries = repaired.get("entries").and_then(Value::as_table).unwrap();
+        assert_eq!(
+            entries.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["legacy", "raced", "sibling"]
+        );
+        assert_eq!(row(&repaired, &raced.slug), raced_row);
+        assert_eq!(row(&repaired, &sibling.slug), sibling_row);
+        assert_eq!(fs::read(meta_path(&root, &raced.slug)).unwrap(), raced_meta);
+        assert_eq!(
+            fs::read(meta_path(&root, &sibling.slug)).unwrap(),
+            sibling_meta
+        );
+        let legacy_row = row(&repaired, &legacy.slug);
+        let legacy_row = legacy_row.as_table().unwrap();
+        assert_eq!(
+            legacy_row.get("name").and_then(Value::as_str),
+            Some("Legacy")
+        );
+        assert_eq!(legacy_row.get("mode").and_then(Value::as_str), Some("copy"));
+    }
+
+    #[test]
+    fn test_repair_skips_an_entry_removed_meanwhile() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let doomed = store
+            .create(request("Doomed", "future-kind", "old row"))
+            .unwrap();
+        let sibling = store
+            .create(request("Sibling", "future-kind", "unchanged"))
+            .unwrap();
+        replace_with_legacy_row(&root, &doomed);
+        let sibling_meta = fs::read(meta_path(&root, &sibling.slug)).unwrap();
+        let sibling_row = row(&registry_document(&root), &sibling.slug);
+        let stale = stage_one(&store, &doomed);
+
+        assert_eq!(store.remove(&doomed).unwrap(), "Doomed");
+        let after_remove = fs::read(root.path().join("registry.toml")).unwrap();
+        store.repair_rows(&stale);
+
+        assert_eq!(
+            fs::read(root.path().join("registry.toml")).unwrap(),
+            after_remove
+        );
+        let repaired = registry_document(&root);
+        let entries = repaired.get("entries").and_then(Value::as_table).unwrap();
+        assert_eq!(
+            entries.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["sibling"]
+        );
+        assert_eq!(row(&repaired, &sibling.slug), sibling_row);
+        assert_eq!(
+            fs::read(meta_path(&root, &sibling.slug)).unwrap(),
+            sibling_meta
+        );
+        assert!(!root.path().join("scripts/doomed").exists());
+    }
+
+    #[test]
+    fn test_repair_keeps_a_rename_that_landed_meanwhile() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let before = store
+            .create(request("Before", "future-kind", "old row"))
+            .unwrap();
+        let sibling = store
+            .create(request("Sibling", "future-kind", "unchanged"))
+            .unwrap();
+        replace_with_legacy_row(&root, &before);
+        let sibling_meta = fs::read(meta_path(&root, &sibling.slug)).unwrap();
+        let sibling_row = row(&registry_document(&root), &sibling.slug);
+        let stale = stage_one(&store, &before);
+
+        let after = store.rename(&before, "After").unwrap();
+        let newest_meta = fs::read(meta_path(&root, &after.slug)).unwrap();
+        let newest_registry = fs::read(root.path().join("registry.toml")).unwrap();
+        store.repair_rows(&stale);
+
+        assert_eq!(
+            fs::read(root.path().join("registry.toml")).unwrap(),
+            newest_registry
+        );
+        assert_eq!(
+            fs::read(meta_path(&root, &after.slug)).unwrap(),
+            newest_meta
+        );
+        assert_eq!(
+            fs::read(meta_path(&root, &sibling.slug)).unwrap(),
+            sibling_meta
+        );
+        let repaired = registry_document(&root);
+        assert_eq!(row(&repaired, &sibling.slug), sibling_row);
+        assert_eq!(
+            row(&repaired, &after.slug)
+                .as_table()
+                .and_then(|row| row.get("name"))
+                .and_then(Value::as_str),
+            Some("After")
+        );
+        assert_eq!(store.resolve("After").unwrap().slug, after.slug);
+    }
+
+    #[test]
+    fn test_repair_adopts_a_slug_reused_by_an_older_skit_meanwhile() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let old = store
+            .create(request("Deploy", "future-kind", "old entry"))
+            .unwrap();
+        let sibling = store
+            .create(request("Sibling", "future-kind", "unchanged"))
+            .unwrap();
+        replace_with_legacy_row(&root, &old);
+        let sibling_meta = fs::read(meta_path(&root, &sibling.slug)).unwrap();
+        let sibling_row = row(&registry_document(&root), &sibling.slug);
+        let stale = stage_one(&store, &old);
+
+        store.remove(&old).unwrap();
+        let new = store
+            .create(request("Deploy", "shell", "new entry"))
+            .unwrap();
+        assert_eq!(new.slug, old.slug);
+        assert_ne!(new.meta.id, old.meta.id);
+        replace_with_legacy_row(&root, &new);
+        let newest_meta = fs::read(meta_path(&root, &new.slug)).unwrap();
+        store.repair_rows(&stale);
+
+        let repaired = registry_document(&root);
+        let new_row = row(&repaired, &new.slug);
+        let new_row = new_row.as_table().unwrap();
+        assert_eq!(new_row.get("kind").and_then(Value::as_str), Some("shell"));
+        assert_eq!(new_row.get("mode").and_then(Value::as_str), Some("copy"));
+        assert_eq!(
+            new_row.get("description").and_then(Value::as_str),
+            Some("new entry")
+        );
+        assert_eq!(row(&repaired, &sibling.slug), sibling_row);
+        assert_eq!(fs::read(meta_path(&root, &new.slug)).unwrap(), newest_meta);
+        assert_eq!(
+            fs::read(meta_path(&root, &sibling.slug)).unwrap(),
+            sibling_meta
+        );
+        assert_eq!(store.resolve("Deploy").unwrap().meta.id, new.meta.id);
+    }
+
+    #[test]
+    fn test_repair_skips_a_meta_that_broke_or_went_unrepresentable_meanwhile() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let corrupt = store
+            .create(request("Corrupt", "future-kind", "old row"))
+            .unwrap();
+        let sideways = store
+            .create(request("Sideways", "future-kind", "old row"))
+            .unwrap();
+        let sibling = store
+            .create(request("Sibling", "future-kind", "unchanged"))
+            .unwrap();
+        replace_with_legacy_row(&root, &corrupt);
+        replace_with_legacy_row(&root, &sideways);
+        let (scan, stale) = store.scan_inner().unwrap();
+        assert!(scan.diagnostics.is_empty());
+        assert_eq!(stale, [corrupt.slug.clone(), sideways.slug.clone()]);
+        let sibling_meta = fs::read(meta_path(&root, &sibling.slug)).unwrap();
+        let sibling_row = row(&registry_document(&root), &sibling.slug);
+
+        let corrupt_bytes = b"not [ toml";
+        fs::write(meta_path(&root, &corrupt.slug), corrupt_bytes).unwrap();
+        let sideways_path = meta_path(&root, &sideways.slug);
+        let mut sideways_meta =
+            toml::from_str::<Table>(&fs::read_to_string(&sideways_path).unwrap()).unwrap();
+        sideways_meta.insert("mode".to_owned(), Value::String("sideways".to_owned()));
+        let sideways_bytes = toml::to_string_pretty(&sideways_meta).unwrap().into_bytes();
+        fs::write(&sideways_path, &sideways_bytes).unwrap();
+        let before_repair = fs::read(root.path().join("registry.toml")).unwrap();
+        store.repair_rows(&stale);
+
+        assert_eq!(
+            fs::read(root.path().join("registry.toml")).unwrap(),
+            before_repair
+        );
+        assert_eq!(
+            fs::read(meta_path(&root, &corrupt.slug)).unwrap(),
+            corrupt_bytes
+        );
+        assert_eq!(fs::read(&sideways_path).unwrap(), sideways_bytes);
+        assert_eq!(
+            fs::read(meta_path(&root, &sibling.slug)).unwrap(),
+            sibling_meta
+        );
+        assert_eq!(row(&registry_document(&root), &sibling.slug), sibling_row);
+        let (after, staged_again) = store.scan_inner().unwrap();
+        assert_eq!(after.entries.len(), 1);
+        assert_eq!(after.entries[0].slug, sibling.slug);
+        assert_eq!(after.diagnostics.len(), 2);
+        assert!(staged_again.is_empty());
+    }
+
+    #[test]
+    fn test_a_listing_survives_an_entry_removed_while_it_was_mid_fallback() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let doomed = store
+            .create(request("Doomed", "future-kind", "snapshot"))
+            .unwrap();
+        let kept = store
+            .create(request("Kept", "future-kind", "unchanged"))
+            .unwrap();
+        replace_with_legacy_row(&root, &doomed);
+        let registry = Registry::read(root.path()).unwrap();
+        let registry_before = fs::read(root.path().join("registry.toml")).unwrap();
+        let kept_meta = fs::read(meta_path(&root, &kept.slug)).unwrap();
+        let kept_row = row(&registry_document(&root), &kept.slug);
+
+        let (doomed_summary, doomed_source) = cached_or_authoritative_summary(
             Some(&registry),
-            &slug,
-            &root.path().join("scripts/fast/meta.toml"),
+            &doomed.slug,
+            &meta_path(&root, &doomed.slug),
             || {
-                reads.set(reads.get() + 1);
-                store.read_entry(slug.clone())
+                let entry = store.read_entry(doomed.slug.clone())?;
+                fs::remove_dir_all(root.path().join("scripts").join(doomed.slug.as_str())).unwrap();
+                Ok(entry)
             },
         )
         .unwrap();
+        let kept_summary = registry
+            .summary(&kept.slug, &meta_path(&root, &kept.slug))
+            .expect("the unchanged sibling must remain index-served");
 
-        assert_eq!(summary.description, "from the cache");
-        assert!(matches!(source, SummarySource::Cache));
-        assert_eq!(reads.get(), 0, "the fast path parsed meta.toml");
+        assert!(matches!(doomed_source, SummarySource::Authoritative));
+        let mut first_listing = [doomed_summary.name, kept_summary.name];
+        first_listing.sort();
+        assert_eq!(first_listing, ["Doomed", "Kept"]);
+        assert_eq!(
+            fs::read(root.path().join("registry.toml")).unwrap(),
+            registry_before
+        );
+        let next = store.scan().unwrap();
+        assert_eq!(next.entries.len(), 1);
+        assert_eq!(next.entries[0].slug, kept.slug);
+        assert_eq!(next.diagnostics.len(), 1);
+        assert_eq!(next.diagnostics[0].slug.as_deref(), Some("doomed"));
+        assert_eq!(fs::read(meta_path(&root, &kept.slug)).unwrap(), kept_meta);
+        assert_eq!(row(&registry_document(&root), &kept.slug), kept_row);
+        assert!(Registry::read(root.path()).unwrap().contains(&doomed.slug));
     }
 
     #[test]

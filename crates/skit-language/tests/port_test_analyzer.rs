@@ -464,7 +464,7 @@ fn test_match_inputs_prompt_survives_position_shift() {
 
 #[test]
 fn test_match_inputs_falls_back_to_position_when_no_prompt_recorded() {
-    // Legacy/dynamic-prompt entries (prompt="") have no stronger signal than position, and that's
+    // Legacy/dynamic-prompt entries (prompt="") have no stronger signal than position, and that is
     // not a newly introduced risk, so it resolves silently (ambiguous=False), matching the
     // previous positional behavior.
     let stored = [stored_input(0, "")];
@@ -484,7 +484,7 @@ fn test_match_inputs_flags_ambiguous_when_prompt_renamed_but_position_still_exis
 
 #[test]
 fn test_match_inputs_flags_ambiguous_when_two_call_sites_share_a_prompt() {
-    // Two distinct call sites with the identical literal prompt text can't be told apart by prompt
+    // Two distinct call sites with the identical literal prompt text cannot be told apart by prompt
     // alone; falling back to position is still flagged as ambiguous rather than silently trusted.
     let stored = [stored_input(0, "Value: ")];
     let bindings = match_bindings(&stored, &current_source(&["Value: ", "Value: "]));
@@ -524,7 +524,7 @@ fn test_match_inputs_duplicate_stored_prompts_never_double_bind_on_delete() {
 #[test]
 fn test_match_inputs_duplicate_stored_prompts_edit_one_flags_rebind_for_loser() {
     // Same duplicate-prompt setup, but this time the call at position 1 still exists -- its prompt
-    // was just edited to something else. The losing stored entry can't get an exact match (its
+    // was just edited to something else. The losing stored entry cannot get an exact match (its
     // prompt's one candidate was already claimed by the winner), so it falls back to bare position
     // 1, which now holds a *different* question -- that must be flagged ambiguous (rebind), never
     // silently trusted and never double-bound onto position 0.
@@ -544,7 +544,7 @@ fn test_match_inputs_duplicate_stored_prompts_edit_one_flags_rebind_for_loser() 
 #[test]
 fn test_match_inputs_triple_duplicate_stored_prompts_only_one_winner() {
     // Three stored specs share one prompt; only one current call site remains. Exactly one stored
-    // entry may claim it; the other two must come back missing (their bare positions 1 and 2 don't
+    // entry may claim it; the other two must come back missing (their bare positions 1 and 2 do not
     // exist in the current source either) -- never sharing the winner's current order.
     let stored = [
         stored_input(0, "Go? "),

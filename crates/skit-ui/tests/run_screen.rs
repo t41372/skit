@@ -3,13 +3,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use skit_application::{LibraryScan, form_feedback::GlobCountRequest, tokens::TokenContext};
 use skit_domain::{
     EntryKind, EntrySummary, Slug, StorageMode,
-    parameters::{ParamDecl, ParameterType, ParameterValue},
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
 };
 use skit_ui::{
     Action, CommandContext, Effect, FormControl, FormInputKind, FormPurpose, LibraryState,
-    ModalState, RunFieldRole, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
-    RunPathInsertMode, RunTokenOption, RunValidationError, RunnerEditorOwner, Screen, UiCommand,
-    UiKey, command_specs,
+    ModalState, RunDegradationNotice, RunFieldRole, RunFormContext, RunFormOptions, RunFormView,
+    RunPathContext, RunPathInsertMode, RunTokenOption, RunValidationError, RunnerEditorOwner,
+    Screen, UiCommand, UiKey, command_specs,
 };
 use skit_ui::{FieldValue, TypedValue};
 
@@ -21,6 +21,108 @@ fn entry(slug: &str, name: &str, description: &str) -> EntrySummary {
         mode: StorageMode::Copy,
         description: description.to_owned(),
         target: None,
+    }
+}
+
+fn run_view_for(declaration: &ParamDecl) -> RunFormView {
+    RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        std::slice::from_ref(declaration),
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+}
+
+#[test]
+fn test_field_from_spec_maps_every_field() {
+    let mut declaration = ParamDecl::new("API");
+    declaration.binding = ParameterBinding::Const;
+    declaration.delivery = ParameterDelivery::Inject;
+    declaration.parameter_type = ParameterType::Int;
+    declaration.default = Some(ParameterValue::Integer(7));
+    declaration.prompt = "How many?".to_owned();
+    declaration.secret = true;
+    declaration.env_source = "API_N".to_owned();
+
+    let form = run_view_for(&declaration);
+    let field = &form.fields()[0];
+
+    assert_eq!(field.key, "value:API");
+    assert_eq!(field.label, "How many?");
+    assert_eq!(field.binding, ParameterBinding::Const);
+    assert_eq!(field.delivery, ParameterDelivery::Inject);
+    assert_eq!(field.parameter_type, ParameterType::Int);
+    assert_eq!(field.default.as_deref(), Some("7"));
+    assert!(matches!(
+        &field.control,
+        FormControl::Text(text)
+            if text.kind == FormInputKind::Integer && text.value.is_empty() && text.secret
+    ));
+    assert!(field.secret());
+    assert_eq!(field.environment_source(), Some("API_N"));
+}
+
+#[test]
+fn test_field_from_spec_unknown_type_falls_back_to_text() {
+    let mut declaration = ParamDecl::new("X");
+    declaration.binding = ParameterBinding::Const;
+    declaration.delivery = ParameterDelivery::Inject;
+    declaration.parameter_type = ParameterType::Choice;
+
+    assert!(declaration.choices.is_empty());
+    let form = run_view_for(&declaration);
+    let field = &form.fields()[0];
+    let FormControl::Text(text) = &field.control else {
+        panic!("an inject choice without options must use a text control: {field:?}");
+    };
+
+    assert_eq!(field.binding, ParameterBinding::Const);
+    assert_eq!(field.delivery, ParameterDelivery::Inject);
+    assert_eq!(field.parameter_type, ParameterType::Choice);
+    assert_eq!(text.kind, FormInputKind::Text);
+    assert_eq!(text.value, "");
+    assert_eq!(field.default, None);
+}
+
+#[test]
+fn test_field_from_spec_maps_numeric_and_bool_kinds() {
+    for (name, parameter_type) in [
+        ("R", ParameterType::Float),
+        ("B", ParameterType::Bool),
+        ("I", ParameterType::Int),
+    ] {
+        let mut declaration = ParamDecl::new(name);
+        declaration.binding = ParameterBinding::Const;
+        declaration.delivery = ParameterDelivery::Inject;
+        declaration.parameter_type = parameter_type;
+
+        let form = run_view_for(&declaration);
+        let field = &form.fields()[0];
+        assert_eq!(field.binding, ParameterBinding::Const);
+        assert_eq!(field.delivery, ParameterDelivery::Inject);
+        assert_eq!(field.parameter_type, parameter_type);
+        assert_eq!(field.default, None);
+        match parameter_type {
+            ParameterType::Float => assert!(matches!(
+                &field.control,
+                FormControl::Text(text)
+                    if text.kind == FormInputKind::Float && text.value.is_empty()
+            )),
+            ParameterType::Bool => assert!(matches!(
+                &field.control,
+                FormControl::Checkbox { checked: false }
+            )),
+            ParameterType::Int => assert!(matches!(
+                &field.control,
+                FormControl::Text(text)
+                    if text.kind == FormInputKind::Integer && text.value.is_empty()
+            )),
+            ParameterType::Str | ParameterType::Choice | ParameterType::Path => unreachable!(),
+        }
     }
 }
 
@@ -605,6 +707,286 @@ fn reset_restores_only_defaults_that_the_main_form_can_represent() {
 }
 
 #[test]
+fn run_edge_actions_keep_typed_values_and_refuse_corrupt_choice_state() {
+    for (option, insertion) in [
+        (RunTokenOption::FileOrFolder, None),
+        (RunTokenOption::Environment, None),
+        (RunTokenOption::RuntimeDirectory, Some("{cwd}")),
+        (
+            RunTokenOption::FixedDirectory {
+                path: "/invoke".to_owned(),
+            },
+            Some("/invoke"),
+        ),
+        (RunTokenOption::Today, Some("{today}")),
+        (RunTokenOption::Now, Some("{now}")),
+        (RunTokenOption::Home, Some("~")),
+    ] {
+        assert_eq!(option.insertion(), insertion);
+    }
+
+    let mut amount = ParamDecl::new("amount");
+    amount.parameter_type = ParameterType::Float;
+    amount.default = Some(ParameterValue::Float(1.5));
+    let mut mode = ParamDecl::new("mode");
+    mode.parameter_type = ParameterType::Choice;
+    mode.choices = vec!["safe".to_owned(), "fast".to_owned()];
+    let presets = BTreeMap::from([(
+        "bad".to_owned(),
+        BTreeMap::from([("mode".to_owned(), "missing".to_owned())]),
+    )]);
+    let mut form = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[amount, mode],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &presets,
+        "",
+    )
+    .with_options(RunFormOptions {
+        fixed_values: BTreeMap::from([("fixed".to_owned(), "kept".to_owned())]),
+        ..RunFormOptions::default()
+    });
+    form.degraded_reason = Some("dynamic parser".to_owned());
+    assert_eq!(
+        form.degradation_notice(),
+        Some(RunDegradationNotice::DynamicArguments)
+    );
+    form.degraded_reason = Some("subcommands".to_owned());
+    assert_eq!(
+        form.degradation_notice(),
+        Some(RunDegradationNotice::Subcommands)
+    );
+    assert_eq!(form.fields()[1].default.as_deref(), Some("1.5"));
+    assert!(form.focused_token_options().is_none());
+
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Run(Box::new(form))));
+    state.update(Action::FocusField(1));
+    state.update(Action::Input('x'));
+    state.update(Action::Backspace);
+    assert_eq!(state.run_form().unwrap().fields()[1].control.value(), "1.5");
+    let before_choice = state.run_form().unwrap().fields()[2].control.clone();
+    state.update(Action::FocusField(2));
+    state.update(Action::SelectFieldOption {
+        field: 2,
+        value: "missing".to_owned(),
+    });
+    assert_eq!(state.run_form().unwrap().fields()[2].control, before_choice);
+    state.update(Action::SelectFieldOption {
+        field: 0,
+        value: "bad".to_owned(),
+    });
+    assert_eq!(state.run_form().unwrap().fields()[2].control, before_choice);
+    state.update(Action::ResetRunField(2));
+    state.update(Action::ResetRunField(99));
+    state.update(Action::SetRunGlobCount {
+        field: 99,
+        value: "missing".to_owned(),
+        count: 1,
+    });
+    state.update(Action::SetRunPickedPathAndCloseModal {
+        field: 99,
+        path: "missing".to_owned(),
+    });
+    assert_eq!(state.run_form().unwrap().fields()[2].control, before_choice);
+
+    state.update(Action::OpenRunPresetSave);
+    state.update(Action::SetModalInput("fresh".to_owned()));
+    assert!(matches!(
+        state.update(Action::Submit),
+        Effect::SaveRunPreset { values, .. }
+            if values.get("fixed").is_some_and(|value| value == "kept")
+    ));
+    state.update(Action::RunPresetSaved {
+        name: "fresh".to_owned(),
+        presets: BTreeMap::from([(
+            "fresh".to_owned(),
+            BTreeMap::from([("amount".to_owned(), "2.5".to_owned())]),
+        )]),
+        message: "saved".to_owned(),
+    });
+    assert!(
+        state
+            .run_form()
+            .unwrap()
+            .preset_names()
+            .any(|name| name == "fresh")
+    );
+
+    let mut encoded = serde_json::to_value(state.run_form().unwrap()).unwrap();
+    encoded["fields"][2]["control"]["choice"]["selected"] =
+        serde_json::Value::String("corrupt".to_owned());
+    let corrupt: RunFormView = serde_json::from_value(encoded).unwrap();
+    let mut corrupt_state = LibraryState::default();
+    corrupt_state.update(Action::Present(Screen::Run(Box::new(corrupt))));
+    assert_eq!(corrupt_state.update(Action::Submit), Effect::None);
+    assert_eq!(
+        corrupt_state.run_form().unwrap().fields()[2].validation_error,
+        Some(RunValidationError::InvalidChoice)
+    );
+
+    let environment_form = RunFormView::from_declarations(
+        "env-demo",
+        "Env Demo",
+        &[ParamDecl::new("value")],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: None,
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: None,
+            env: BTreeMap::from([
+                ("HOME_PATH".to_owned(), "/home/demo".to_owned()),
+                ("PATH".to_owned(), "/bin".to_owned()),
+            ]),
+            today: "2026-08-08".to_owned(),
+            now: "10-11-12".to_owned(),
+        },
+    });
+    let mut environment_state = LibraryState::default();
+    environment_state.update(Action::Present(Screen::Run(Box::new(environment_form))));
+    environment_state.update(Action::OpenRunTokenMenuFor(0));
+    environment_state.update(Action::OpenRunEnvironmentPicker(0));
+    environment_state.update(Action::SetRunEnvironmentQuery(String::new()));
+    assert!(matches!(
+        environment_state.modal(),
+        Some(ModalState::RunEnvironmentPicker { visible, .. })
+            if visible == &["HOME_PATH", "PATH"]
+    ));
+    environment_state.update(Action::SetRunEnvironmentQuery("path".to_owned()));
+    assert!(matches!(
+        environment_state.modal(),
+        Some(ModalState::RunEnvironmentPicker { visible, .. })
+            if visible == &["PATH", "HOME_PATH"]
+    ));
+}
+
+#[test]
+fn serialized_async_run_edges_reject_stale_and_corrupt_targets() {
+    let form = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[ParamDecl::new("path")],
+        &BTreeMap::new(),
+        &["agent".to_owned()],
+        "agent",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: None,
+            env: BTreeMap::new(),
+            today: "2026-08-08".to_owned(),
+            now: "10-11-12".to_owned(),
+        },
+    });
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Run(Box::new(form))));
+    state.update(Action::OpenRunRunnerEditor);
+
+    let mut stale_json = serde_json::to_value(&state).unwrap();
+    stale_json["workflow"]["active"]["run"]["selector"] =
+        serde_json::Value::String("other".to_owned());
+    let mut stale: LibraryState = serde_json::from_value(stale_json).unwrap();
+    assert_eq!(
+        stale.update(Action::RunnerEditorSaved {
+            owner: RunnerEditorOwner::Run {
+                selector: "demo".to_owned(),
+            },
+            name: "new-agent".to_owned(),
+            message: "saved".to_owned(),
+        }),
+        Effect::None
+    );
+    assert!(matches!(
+        &stale.run_form().unwrap().fields()[0].control,
+        FormControl::Choice(choice) if !choice.options.contains(&"new-agent".to_owned())
+    ));
+    assert_eq!(stale.status(), Some("saved"));
+
+    let mut corrupt_json = serde_json::to_value(&state).unwrap();
+    corrupt_json["workflow"]["active"]["run"]["fields"][0]["control"] = serde_json::json!({
+        "text": {
+            "value": "corrupt",
+            "kind": "text",
+            "secret": false,
+            "multiline": false
+        }
+    });
+    let mut corrupt: LibraryState = serde_json::from_value(corrupt_json).unwrap();
+    corrupt.update(Action::RunnerEditorSaved {
+        owner: RunnerEditorOwner::Run {
+            selector: "demo".to_owned(),
+        },
+        name: "new-agent".to_owned(),
+        message: "saved".to_owned(),
+    });
+    assert!(matches!(
+        &corrupt.run_form().unwrap().fields()[0].control,
+        FormControl::Text(text) if text.value == "corrupt"
+    ));
+
+    let mut secret_json = serde_json::to_value(corrupt.run_form().unwrap()).unwrap();
+    let extra = secret_json["fields"].as_array().unwrap().len() - 1;
+    secret_json["fields"][extra]["control"]["text"]["secret"] = serde_json::Value::Bool(true);
+    let secret: RunFormView = serde_json::from_value(secret_json).unwrap();
+    assert_eq!(
+        secret.secret_names().collect::<Vec<_>>(),
+        Vec::<&str>::new()
+    );
+
+    let mut picker = LibraryState::default();
+    picker.update(Action::Present(Screen::Run(Box::new(
+        state.run_form().unwrap().clone(),
+    ))));
+    assert!(picker.command_enabled(UiCommand::BrowsePath));
+    picker.update(Action::FocusField(1));
+    picker.update(Action::Paste("x".to_owned()));
+    picker.update(Action::Backspace);
+    picker.update(Action::OpenRunTokenMenuFor(1));
+    assert!(matches!(
+        picker.update(Action::SetRunFieldValueAndCloseModal {
+            field: 1,
+            value: "*.rs".to_owned(),
+        }),
+        Effect::CountRunGlob { field: 1, .. }
+    ));
+    picker.update(Action::OpenRunTokenMenuFor(1));
+    picker.update(Action::OpenRunFilePicker(1));
+    let before = picker.run_form().unwrap().fields()[1].control.value();
+    let mut picker_json = serde_json::to_value(&picker).unwrap();
+    picker_json["modal"]["run_file_picker"]["field"] = serde_json::Value::from(99);
+    let mut picker: LibraryState = serde_json::from_value(picker_json).unwrap();
+    assert_eq!(
+        picker.update(Action::SetRunPickedPathAndCloseModal {
+            field: 99,
+            path: "missing".to_owned(),
+        }),
+        Effect::None
+    );
+    assert_eq!(
+        picker.run_form().unwrap().fields()[1].control.value(),
+        before
+    );
+}
+
+#[test]
 fn live_feedback_expands_tokens_and_requests_glob_counts_through_a_typed_port() {
     let mut paths = ParamDecl::new("paths");
     paths.multiple = true;
@@ -816,4 +1198,37 @@ fn picked_paths_use_the_field_shape_and_never_share_one_quoting_shortcut() {
             ..
         })
     ));
+}
+
+#[test]
+fn path_completion_refuses_a_non_text_control_before_it_reads_context() {
+    let mut enabled = ParamDecl::new("enabled");
+    enabled.parameter_type = ParameterType::Bool;
+    let form = run_view_for(&enabled).with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work/project".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: None,
+            env: BTreeMap::new(),
+            today: "2026-08-21".to_owned(),
+            now: "12-00-00".to_owned(),
+        },
+    });
+
+    assert!(matches!(
+        form.fields()[0].control,
+        FormControl::Checkbox { .. }
+    ));
+    assert_eq!(
+        form.path_completion_request(
+            0,
+            "ignored",
+            skit_application::path_completion::PathInputDialect::Posix,
+        ),
+        None
+    );
 }

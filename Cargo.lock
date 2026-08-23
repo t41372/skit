@@ -130,6 +130,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomicwrites"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ef1bb8d1b645fe38d51dfc331d720fb5fc2c94b440c76cc79c80ff265ca33e3"
+dependencies = [
+ "rustix 0.38.44",
+ "tempfile",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -558,7 +569,7 @@ dependencies = [
  "document-features",
  "mio",
  "parking_lot",
- "rustix",
+ "rustix 1.1.4",
  "signal-hook",
  "signal-hook-mio",
  "winapi",
@@ -922,6 +933,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs-id"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1648c1b89e98d042d61b5c1ed0fbcd9dbd7815163864d20f8e7976a9b3af938"
+dependencies = [
+ "libc",
+ "wasi",
+ "winapi",
 ]
 
 [[package]]
@@ -1343,6 +1365,12 @@ checksum = "e752191d037c44ad111a8caa762921926658402f01cc1253f7bef2020ece4f5e"
 dependencies = [
  "bitflags 2.13.1",
 ]
+
+[[package]]
+name = "linux-raw-sys"
+version = "0.4.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d26c52dbd32dccf2d10cac7725f8eae5296885fb5703b261f7d0a0739ec807ab"
 
 [[package]]
 name = "linux-raw-sys"
@@ -2363,6 +2391,19 @@ dependencies = [
 
 [[package]]
 name = "rustix"
+version = "0.38.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fdb5bc1ae2baa591800df16c9ca78619bf65c0488b41b96ccec5d11220d8c154"
+dependencies = [
+ "bitflags 2.13.1",
+ "errno",
+ "libc",
+ "linux-raw-sys 0.4.15",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "rustix"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
@@ -2370,7 +2411,7 @@ dependencies = [
  "bitflags 2.13.1",
  "errno",
  "libc",
- "linux-raw-sys",
+ "linux-raw-sys 0.12.1",
  "windows-sys 0.61.2",
 ]
 
@@ -2625,6 +2666,7 @@ dependencies = [
  "skit-domain",
  "skit-i18n",
  "thiserror 2.0.20",
+ "time",
  "uuid",
  "windows-args",
 ]
@@ -2650,6 +2692,7 @@ dependencies = [
  "shlex",
  "skit-application",
  "skit-domain",
+ "skit-form",
  "skit-i18n",
  "skit-language",
  "skit-runtime",
@@ -2675,6 +2718,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "dialoguer",
+ "fs-id",
  "portable-pty",
  "predicates",
  "rpassword",
@@ -2717,6 +2761,7 @@ version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
+ "skit-application",
  "skit-domain",
  "skit-language",
 ]
@@ -2756,6 +2801,7 @@ dependencies = [
 name = "skit-runtime"
 version = "0.5.0"
 dependencies = [
+ "atomicwrites",
  "flate2",
  "serde_json",
  "sha2 0.11.0",
@@ -2768,6 +2814,7 @@ dependencies = [
  "thiserror 2.0.20",
  "ureq",
  "uuid",
+ "wait-timeout",
  "zip",
 ]
 
@@ -2775,6 +2822,8 @@ dependencies = [
 name = "skit-store"
 version = "0.5.0"
 dependencies = [
+ "atomicwrites",
+ "fs-id",
  "glob",
  "hex",
  "serde",
@@ -2783,9 +2832,8 @@ dependencies = [
  "shellexpand",
  "skit-application",
  "skit-domain",
- "skit-form",
  "skit-i18n",
- "skit-language",
+ "syn 2.0.119",
  "tempfile",
  "thiserror 2.0.20",
  "time",
@@ -2797,15 +2845,18 @@ dependencies = [
 name = "skit-tui"
 version = "0.5.0"
 dependencies = [
+ "portable-pty",
  "ratatui-core",
  "ratatui-crossterm",
  "ratatui-interact",
  "ratatui-textarea",
  "ratatui-widgets",
+ "serde_json",
  "skit-application",
  "skit-domain",
  "skit-form",
  "skit-i18n",
+ "skit-store",
  "skit-ui",
  "tempfile",
  "thiserror 2.0.20",
@@ -2996,7 +3047,7 @@ dependencies = [
  "fastrand",
  "getrandom 0.4.3",
  "once_cell",
- "rustix",
+ "rustix 1.1.4",
  "windows-sys 0.61.2",
 ]
 
@@ -3008,7 +3059,7 @@ checksum = "9048a889effe34a5cddee0af7f53285198b16dca3be510858d38dfdb3e62a04e"
 dependencies = [
  "bitflags 2.13.1",
  "parking_lot",
- "rustix",
+ "rustix 1.1.4",
  "signal-hook",
  "windows-sys 0.61.2",
 ]
@@ -3999,7 +4050,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
 dependencies = [
  "libc",
- "rustix",
+ "rustix 1.1.4",
 ]
 
 [[package]]

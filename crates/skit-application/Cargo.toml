@@ -15,6 +15,7 @@ serde.workspace = true
 shlex.workspace = true
 windows-args.workspace = true
 thiserror.workspace = true
+time.workspace = true
 skit-domain.workspace = true
 
 [dev-dependencies]

@@ -17,18 +17,18 @@
 //! - Python `store.resolve("x").meta` sanity checks -> read the stored `scripts/<slug>/meta.toml`
 //!   and `scripts/<slug>/script.py` bytes; a block-only entry's meta carries neither axis and its
 //!   block carries both.
-//! - Python `store.effective_uv_metadata(entry)` -> `effective_uv_metadata_bytes`, wired through
-//!   `effective_settings` (cli.rs:2482) for `show` and through `library_surface`'s own
-//!   `effective_settings` (library_surface.rs) for the detail pane's `LibraryEntryDetail.dependencies`.
+//! - Python `store.effective_uv_metadata(entry)` -> the shared `effective_entry_settings` helper
+//!   for both `show` and the application-owned Library projection that fills
+//!   `LibraryEntryDetail.dependencies`.
 //! - Python `tui.MenuApp()` detail pane -> the `library_surface(store, state, config)` projection
 //!   fills `LibraryEntryDetail.dependencies` with the effective deps; the skit-tui render turns a
 //!   nonempty list into the "Depends on  {}" line (`skit-tui/src/screens/library.rs:406`).
 //!
 //! Buckets:
 //! - show-human effective (tests 1-3): REAL — the composition-root observable is `skit show`.
-//! - detail-pane effective (tests 4-5): REAL at the facts level — `library_surface` is public and
-//!   `skit-store` is a dependency, so the load-bearing chain the Python bug lived in
-//!   (store -> effective facts) is asserted directly on `LibraryEntryDetail.dependencies`. The
+//! - detail-pane effective (tests 4-5): REAL at the facts level — the composition-root
+//!   `library_surface` is public, so the load-bearing effective-facts chain is asserted directly on
+//!   `LibraryEntryDetail.dependencies`. The
 //!   literal "Depends on" string is a thin skit-tui render conditional named in each WHY comment.
 //! - compose-time save baseline (test 6): CROSS-CRATE `#[ignore]` stub. The Python mechanism
 //!   (monkeypatch `store.effective_uv_metadata` after mount, then assert `update_dependencies` is
@@ -42,8 +42,9 @@ use std::fs;
 
 use tempfile::TempDir;
 
+use skit_cli::library_surface;
 use skit_domain::Slug;
-use skit_store::{FileStore, library_surface};
+use skit_store::FileStore;
 
 /// A local SKIT_* fixture: three temporary directories, never the real user dirs, never a chdir.
 struct Sandbox {

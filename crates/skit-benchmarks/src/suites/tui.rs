@@ -191,6 +191,62 @@ fn insert_stat(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn test_tui_keeps_import_and_rss_samples() {
+        use crate::{
+            SuiteKind, SuiteOutput,
+            suites::tests::{Fixture, plan},
+        };
+
+        let fixture = Fixture::new();
+        let mut plan = plan(SuiteKind::Tui, &[0]);
+        plan.samples = 3;
+        let output = super::run_with_status(&fixture.context, &plan, true).unwrap();
+        let output = SuiteOutput::from_json(&output.to_json().unwrap()).unwrap();
+
+        assert_eq!(
+            output.raw["n0"],
+            serde_json::json!({
+                "first_idle_ms": [1.5, 1.5, 1.5],
+                "select_ms": [],
+                "search_ms": [0.75, 0.75, 0.75],
+                "rss_kib": [1234.0, 1234.0, 1234.0],
+                "import_ms": [0.0, 0.0, 0.0],
+            })
+        );
+        assert!(!output.metrics.contains_key("tui.select.n0.median_ms"));
+        let rss = &output.metrics["tui.rss.n0.peak_kib"];
+        assert_eq!(rss.n, 3);
+        assert_eq!(rss.p95, Some(1234.0));
+        assert_eq!(rss.stddev, Some(0.0));
+        assert_eq!(output.metrics["tui.import.median_ms"].n, 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_tui_records_the_selection_span_when_the_probe_measured_one() {
+        use crate::{
+            SuiteKind, SuiteOutput,
+            suites::tests::{Fixture, plan},
+        };
+
+        let fixture = Fixture::new();
+        let mut plan = plan(SuiteKind::Tui, &[100]);
+        plan.samples = 3;
+        let output = super::run_with_status(&fixture.context, &plan, false).unwrap();
+        let output = SuiteOutput::from_json(&output.to_json().unwrap()).unwrap();
+
+        assert_eq!(
+            output.raw["n100"]["select_ms"],
+            serde_json::json!([0.25, 0.25, 0.25])
+        );
+        let selection = &output.metrics["tui.select.n100.median_ms"];
+        assert_eq!(selection.value, 0.25);
+        assert_eq!(selection.n, 3);
+        assert_eq!(selection.p95, Some(0.25));
+    }
+
     #[test]
     fn raw_case_omits_import_samples_outside_the_zero_entry_probe() {
         let without_import = super::raw_case(&[1.0], &[], &[2.0], &[3.0], None);

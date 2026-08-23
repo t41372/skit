@@ -25,10 +25,9 @@
 //!     AGENTS.md guards against; the try-only lock keeps a read from ever blocking. `resolve` shares
 //!     only the pure projection half (`scan_inner`) and never repairs, matching the oracle where
 //!     `resolve` loads the index but never calls `_repair_rows` (`registry_resolve.rs` guards that no
-//!     repair rides the resolve path). The `store._repair_rows` tests that drive the private window
-//!     between staging and repair still have no public seam and stay `#[ignore]`d; the OBSERVABLE
-//!     self-heal (a legacy/broken/hand-edited row is served from the meta and then the row is repaired
-//!     once, converging on the next listing) IS ported and must pass.
+//!     repair rides the resolve path). Exact private-window owners live in `src/read.rs` unit tests:
+//!     they stage with `scan_inner`, commit the raced mutation, and call the real `repair_rows`.
+//!     Observable self-heal owners remain in this integration test and `registry_fast_read.rs`.
 //!   * THE CACHE IS CONTENT-HASHED. A registry row's fast-path proof (`skit_cache`) covers the
 //!     metadata file's id, size, mtime, ctime, and a content hash — not mtime alone. So the v0.4
 //!     "forge the mtime while corrupting the bytes and the listing still serves it" probe cannot
@@ -187,16 +186,6 @@ fn legacy_row(name: &str, kind: &str, description: &str) -> Value {
 // add_python / basic store behavior (add-orchestration lives in skit-ui/cli; the store slices port)
 // ===========================================================================
 
-#[ignore = "UNMAPPED -> higher layer. `store.add_python` is add orchestration in skit-ui::add / \
-            skit-cli: it opens the file, hashes it, extracts the docstring description \
-            (skit-language::description), resolves the source path, and chooses the stored name. \
-            skit-store only takes a prepared CreateEntry. Its store-level guarantees (byte-exact \
-            stored copy + source_hash) are covered by mutations.rs::\
-            create_is_atomic_mints_identity_and_preserves_payload_bytes and port_test_atomic.rs; \
-            the docstring-description assertion has no store analog."]
-#[test]
-fn test_add_copy_preserves_original_verbatim() {}
-
 #[test]
 fn test_add_reference_points_to_origin() {
     // WHY (store slice): a reference add copies NO payload into the store and launches the origin
@@ -288,18 +277,6 @@ fn test_remove_copy_does_not_touch_original() {
     assert!(original.exists());
 }
 
-#[ignore = "UNMAPPED -> higher layer. add_command's defaults (workdir=invoke via \
-            skit-application::add_workdir, template placement) are add orchestration; skit-store \
-            create only round-trips whatever settings/workdir it is given."]
-#[test]
-fn test_add_command_entry() {}
-
-#[ignore = "UNMAPPED -> higher layer. The non-empty-template rule is enforced by the add-command \
-            use case (skit-ui/cli); skit-store create accepts any settings and does not validate \
-            the template."]
-#[test]
-fn test_command_requires_nonempty_template() {}
-
 #[test]
 fn test_doctor_rebuild_from_meta() {
     // WHY: with the index gone, a listing (registry-backed) is empty; `rebuild` reprojects every
@@ -350,27 +327,6 @@ fn test_doctor_reports_missing_reference() {
     )));
 }
 
-#[ignore = "UNMAPPED -> higher layer. Leaving the description empty on a syntax error is \
-            skit-language::description / skit-ui add resilience; skit-store stores whatever \
-            description it is handed."]
-#[test]
-fn test_syntax_error_script_still_addable() {}
-
-#[ignore = "UNMAPPED -> higher layer. Missing-source detection lives in the add use case that reads \
-            the file (skit-ui/cli); skit-store create takes bytes and never opens the source path."]
-#[test]
-fn test_add_python_missing_file_raises() {}
-
-#[ignore = "UNMAPPED -> higher layer. add_exe's forced reference mode and description passthrough \
-            are add orchestration; skit-store create round-trips a prepared exe CreateEntry."]
-#[test]
-fn test_add_exe_roundtrip() {}
-
-#[ignore = "UNMAPPED -> higher layer. The missing-source check is in the add use case, not a store \
-            responsibility."]
-#[test]
-fn test_add_exe_missing_file_raises() {}
-
 #[test]
 fn test_list_entries_skips_corrupt_meta() {
     // WHY: the whole-entry directory scan silently skips a directory whose meta.toml is corrupt and
@@ -415,13 +371,6 @@ fn test_doctor_rebuild_corrupt_meta() {
     assert!(slugs.contains(&"corrupt"));
 }
 
-#[ignore = "UNMAPPED -> higher layer. Rewriting the copy's script body with a PEP 723 block is \
-            skit-language injection orchestrated by skit-ui/cli; skit-store persists dependency \
-            metadata in meta.toml (update_settings/update_entry) but never edits the script source. \
-            Confirmed: no pep723/inject write path exists in skit-store/src."]
-#[test]
-fn test_update_dependencies_copy_mode() {}
-
 #[test]
 fn test_resolve_not_found_raises() {
     // WHY: a selector that matches nothing is a typed NotFound, not a crash.
@@ -435,44 +384,6 @@ fn test_resolve_not_found_raises() {
 }
 
 // ===========================================================================
-// disk-usage helpers — not skit-store symbols.
-// ===========================================================================
-
-#[ignore = "UNMAPPED. `store.dir_size` is not a skit-store function (no such symbol in \
-            skit-store/src). The disk-usage helpers for doctor/health are not a FileStore \
-            responsibility in the rewrite."]
-#[test]
-fn test_dir_size_sums_only_files_recursively() {}
-
-#[ignore = "UNMAPPED. `store.dir_size` is not a skit-store function."]
-#[test]
-fn test_dir_size_missing_dir_is_zero() {}
-
-#[ignore = "UNMAPPED. `store.dir_size` is not a skit-store function."]
-#[test]
-fn test_dir_size_on_a_file_is_zero() {}
-
-#[ignore = "UNMAPPED. `store.human_size` is not a skit-store function."]
-#[test]
-fn test_human_size_units_and_thresholds() {}
-
-// ===========================================================================
-// infer_kind — skit-language, not the store.
-// ===========================================================================
-
-#[ignore = "UNMAPPED -> skit-language. infer_kind is skit-language, not a store function."]
-#[test]
-fn test_infer_kind_windows_uses_pathext_not_execute_bit() {}
-
-#[ignore = "UNMAPPED -> skit-language. infer_kind is skit-language, not a store function."]
-#[test]
-fn test_infer_kind_windows_reads_pathext_env() {}
-
-#[ignore = "UNMAPPED -> skit-language. infer_kind is skit-language, not a store function."]
-#[test]
-fn test_infer_kind_windows_falls_back_to_default_pathext() {}
-
-// ===========================================================================
 // extract_comment_description — skit-language::description, not the store.
 // ===========================================================================
 
@@ -480,54 +391,20 @@ fn test_infer_kind_windows_falls_back_to_default_pathext() {}
 // add_script — the generic Tier-0 add orchestration (skit-ui/cli + skit-language).
 // ===========================================================================
 
-#[ignore = "UNMAPPED -> higher layer. add_script is add orchestration: comment-extracted \
-            description (skit-language), workdir defaults (skit-application::add_workdir), and the \
-            stored filename. The store-level byte-exact copy + source_hash are covered by \
-            port_test_atomic.rs and mutations.rs."]
-#[test]
-fn test_add_script_copy_is_byte_identical_and_records_hash() {}
-
-#[ignore = "UNMAPPED -> higher layer. add_script's reference workdir default (origin) and no-copy \
-            are add orchestration; the store no-copy-on-reference slice is ported in \
-            test_add_reference_points_to_origin."]
-#[test]
-fn test_add_script_reference_points_to_origin() {}
-
 #[ignore = "UNMAPPED -> higher layer. The explicit-workdir override is an add-orchestration input; \
             skit-store round-trips whatever workdir it is given."]
 #[test]
 fn test_add_script_explicit_workdir_override() {}
-
-#[ignore = "UNMAPPED -> higher layer. 'explicit description wins over comment extraction' is an \
-            add-orchestration precedence rule; the store stores what it is handed."]
-#[test]
-fn test_add_script_explicit_name_and_description() {}
 
 #[ignore = "UNMAPPED -> higher layer. Recording a passed interpreter is add orchestration; the \
             store round-trips settings.interpreter (mutations.rs create test)."]
 #[test]
 fn test_add_script_records_interpreter() {}
 
-#[ignore = "UNMAPPED -> higher layer. The interpreted/copyable-kind allowlist is an add-use-case \
-            rule (skit-ui/cli). skit-store keeps kinds OPEN-ENDED for v0.4 compatibility \
-            (EntryKind::parse accepts any non-blank kind), so create does NOT reject 'martian'."]
-#[test]
-fn test_add_script_unknown_kind_raises() {}
-
 #[ignore = "UNMAPPED -> higher layer. Same add-use-case allowlist; the store accepts 'exe' as an \
             open kind, so create does not reject it here."]
 #[test]
 fn test_add_script_non_interpreted_kind_raises() {}
-
-#[ignore = "UNMAPPED -> higher layer. The missing-source check is in the add use case that reads \
-            the file; not a store responsibility."]
-#[test]
-fn test_add_script_missing_file_raises() {}
-
-#[ignore = "UNMAPPED -> higher layer. The '--' comment description and the stored filename are add \
-            orchestration (skit-language + skit-ui/cli)."]
-#[test]
-fn test_add_script_lua_uses_double_dash_description() {}
 
 // ===========================================================================
 // list_summaries — the listing view, served from the index (the pure store contract).
@@ -599,15 +476,6 @@ fn test_summaries_match_full_entries_field_for_field() {
             is strictly stronger than v0.4's mtime cache, not a regression."]
 #[test]
 fn test_summaries_serve_from_the_index_without_parsing_metas() {}
-
-#[ignore = "UNMAPPED -> white-box. Asserts the internal store._registry_row projection and reads \
-            summary.script_path (a launcher/library_surface projection with no EntrySummary field). \
-            The Rust read DOES repair the legacy row (FileStore::repair_rows), and that observable \
-            self-heal is ported in test_an_older_registry_is_widened_the_first_time_it_is_listed; \
-            the legacy-row fallback is ported in test_a_renamed_legacy_row_is_upgraded_not_patched \
-            and test_a_hand_broken_row_falls_back_instead_of_inventing_a_summary."]
-#[test]
-fn test_a_row_an_older_skit_wrote_falls_back_to_its_meta() {}
 
 #[test]
 fn test_a_hand_broken_row_falls_back_instead_of_inventing_a_summary() {
@@ -744,22 +612,6 @@ fn test_an_older_registry_is_widened_the_first_time_it_is_listed() {
     assert_eq!(fs::read(registry_path(&root)).unwrap(), converged);
 }
 
-#[ignore = "UNMAPPED -> white-box. Drives the exact staging/repair window: stage a slug, commit a \
-            concurrent add, then run _repair_rows and assert the raced row survived. The Rust \
-            self-heal EXISTS (FileStore::repair_rows) but re-reads the index under the lock and \
-            touches only the staged slugs, so the raced row is never in its working set; the public \
-            `list` cannot reproduce that precise interleaving. The lock-and-re-derive discipline is \
-            proven by test_an_older_registry_is_widened_the_first_time_it_is_listed and \
-            test_a_reference_row_that_lost_its_target_is_repaired_once."]
-#[test]
-fn test_repair_never_drops_an_entry_added_meanwhile() {}
-
-#[ignore = "UNMAPPED -> white-box. Same private staging/repair window as above: a slug removed after \
-            staging is skipped (never resurrected) because repair_rows re-checks membership under the \
-            lock; the public `list` has no seam to force that exact interleaving."]
-#[test]
-fn test_repair_skips_an_entry_removed_meanwhile() {}
-
 #[cfg(unix)]
 #[test]
 fn test_a_store_that_cannot_be_written_still_lists() {
@@ -844,12 +696,6 @@ fn test_a_corrupt_index_lists_nothing_and_preserves_the_bad_bytes() {
         .collect();
     assert_eq!(names, ["doomed".to_owned()]);
 }
-
-#[ignore = "UNMAPPED -> higher layer. add_exe's forced reference mode plus DirectLaunch \
-            target(spec_for('exe')) is add orchestration + the launcher; the store-level launch \
-            target is projected by library_surface::launch_target and tested there."]
-#[test]
-fn test_exe_is_always_reference_mode() {}
 
 #[test]
 fn test_an_entry_whose_meta_is_gone_is_not_listed() {
@@ -943,22 +789,6 @@ fn test_a_non_mapping_row_falls_back_instead_of_crashing() {
             test_a_reference_row_that_lost_its_target_is_repaired_once."]
 #[test]
 fn test_widening_gives_up_on_a_row_it_would_reject_again() {}
-
-#[ignore = "UNMAPPED -> white-box. Drives the private staging/repair window: a rename lands after \
-            staging, and _repair_rows must re-derive from the meta AS IT IS NOW (keeping the rename) \
-            rather than writing the listing's snapshot. FileStore::repair_rows does exactly that \
-            (re-reads each meta under the lock), but the public `list` cannot force that exact \
-            interleaving; the re-derive-under-the-lock discipline is proven by \
-            test_a_reference_row_that_lost_its_target_is_repaired_once."]
-#[test]
-fn test_repair_keeps_a_rename_that_landed_meanwhile() {}
-
-#[ignore = "UNMAPPED -> white-box. Same private window with the nastiest interleaving: an older skit \
-            reuses the slug for a new meta before the repair runs. repair_rows re-derives from the \
-            slug's meta as it is NOW, so the new entry gets a correct row -- but the public `list` \
-            has no seam to stage the old entry's slug then swap the meta underneath it."]
-#[test]
-fn test_repair_adopts_a_slug_reused_by_an_older_skit_meanwhile() {}
 
 #[test]
 fn test_a_renamed_legacy_row_is_upgraded_not_patched() {
@@ -1320,13 +1150,6 @@ fn test_an_index_whose_entries_key_is_not_a_table_reads_empty() {
     assert_eq!(store.rebuild_registry_report().unwrap().entry_count, 1);
 }
 
-#[ignore = "UNMAPPED -> white-box. FileStore::repair_rows IS best-effort -- it skips a slug whose \
-            meta corrupted since staging (`read_entry` Err -> continue) and does not write a row a \
-            re-read cannot produce -- but driving the exact stage-then-corrupt window needs the \
-            private _repair_rows seam the public `list` has no way to reproduce."]
-#[test]
-fn test_repair_skips_a_meta_that_broke_or_went_unrepresentable_meanwhile() {}
-
 // ===========================================================================
 // Every meta write keeps its own index row fresh (the pure store contract).
 // ===========================================================================
@@ -1594,11 +1417,3 @@ fn test_a_mutator_whose_row_vanished_mid_write_persists_the_meta_without_resurre
     // The row is doctor's to rebuild, not this write's.
     assert!(store.scan().unwrap().entries.is_empty());
 }
-
-#[ignore = "UNMAPPED -> white-box. Monkeypatches store._read_meta to rmtree the entry mid-read to \
-            force one exact interleaving; no public seam exists. Rust isolates a per-row read \
-            failure as a diagnostic (file_store.rs::\
-            a_missing_metadata_file_is_an_io_diagnostic_during_best_effort_scan), never crashing the \
-            scan."]
-#[test]
-fn test_a_listing_survives_an_entry_removed_while_it_was_mid_fallback() {}

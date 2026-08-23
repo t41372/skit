@@ -17,12 +17,16 @@ pub enum EditableArgvDialect {
 impl EditableArgvDialect {
     /// Return the host platform's editable argument convention.
     #[must_use]
+    #[cfg(windows)]
     pub const fn host() -> Self {
-        if cfg!(windows) {
-            Self::Windows
-        } else {
-            Self::Posix
-        }
+        Self::Windows
+    }
+
+    /// Return the host platform's editable argument convention.
+    #[must_use]
+    #[cfg(not(windows))]
+    pub const fn host() -> Self {
+        Self::Posix
     }
 }
 

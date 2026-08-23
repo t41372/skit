@@ -16,8 +16,8 @@ use skit_ui::{
     KnownEntryKind, LibraryState, MirrorHealth, ModalState, NAME_KEY, PreferencesAction,
     PreferencesView, RESYNC_KEY, RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState,
     RunFormView, RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction, RunnerManagerView,
-    RunnerSaveOwner, Screen, SettingsAction, SettingsInputs, SettingsView, SourceSnapshot,
-    UiCommand, UvHealth, command_specs,
+    RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, Screen, SettingsAction,
+    SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UvHealth, command_specs,
 };
 
 fn entry_with_kind(slug: &str, name: &str, kind: &str, description: &str) -> EntrySummary {
@@ -64,6 +64,215 @@ fn preferences_view_with_runners(runner_names: Vec<String>) -> PreferencesView {
         runner_names,
         mirror: MirrorConfiguration::default(),
     }))
+}
+
+#[test]
+fn command_mapping_and_screen_accessors_cover_every_typed_surface() {
+    for command in [
+        UiCommand::Backspace,
+        UiCommand::ClearSearch,
+        UiCommand::InsertValue,
+        UiCommand::BrowsePath,
+        UiCommand::ResetDefault,
+        UiCommand::SavePreset,
+        UiCommand::SavePreferences,
+        UiCommand::ClosePreferences,
+        UiCommand::ManageAgents,
+        UiCommand::InstallAgentSkill,
+    ] {
+        assert!(command.direct_action().is_some(), "command={command:?}");
+    }
+
+    let mut state = state();
+    assert!(matches!(state.workflow().active(), Screen::Library));
+    assert!(state.preferences().is_none());
+    assert!(state.settings_view().is_none());
+    assert!(state.selected_detail().is_none());
+
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view(),
+    ))));
+    assert!(state.preferences().is_some());
+    assert_eq!(state.command_context(), CommandContext::Preferences);
+
+    state.update(Action::Present(Screen::Health(Box::new(HealthView::new(
+        HealthSnapshot {
+            uv: UvHealth::Missing,
+            entry_count: 0,
+            issues: Vec::new(),
+            invalid_runner_rows: Vec::new(),
+            mirror: MirrorHealth::Off,
+            library_path: "/data/scripts".to_owned(),
+            library_size: "0 B".to_owned(),
+            diagnostics: Vec::new(),
+        },
+    )))));
+    assert_eq!(state.command_context(), CommandContext::Health);
+    assert_eq!(
+        state.update(Action::Health(HealthAction::Jump)),
+        Effect::None
+    );
+
+    state.update(Action::Present(Screen::Runners(Box::new(
+        RunnerManagerView::new(Vec::new()),
+    ))));
+    assert_eq!(state.command_context(), CommandContext::Runners);
+    assert_eq!(
+        state.update(Action::Runners(RunnerManagerAction::ConfirmRemove)),
+        Effect::None
+    );
+
+    state.update(Action::Present(Screen::Report(ReportView {
+        title: "Report".to_owned(),
+        items: Vec::new(),
+    })));
+    let before = serde_json::to_value(&state).unwrap();
+    for action in [
+        Action::Paste("ignored".to_owned()),
+        Action::FocusField(0),
+        Action::SetFieldValue {
+            field: 0,
+            value: "ignored".to_owned(),
+        },
+        Action::Health(HealthAction::Next),
+        Action::Runners(RunnerManagerAction::Next),
+    ] {
+        assert_eq!(state.update(action), Effect::None);
+    }
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+    assert!(state.form().is_none());
+    assert!(state.run_form().is_none());
+    assert!(state.preferences().is_none());
+    assert!(state.add_workflow().is_none());
+    assert_eq!(state.focused_form_field(), None);
+
+    let mut stale = serde_json::to_value(&state).unwrap();
+    stale["input_mode"] = serde_json::json!("form");
+    let mut stale: LibraryState = serde_json::from_value(stale).unwrap();
+    let before = serde_json::to_value(&stale).unwrap();
+    for action in [Action::Paste("ignored".to_owned()), Action::Backspace] {
+        assert_eq!(stale.update(action), Effect::None);
+    }
+    assert_eq!(serde_json::to_value(&stale).unwrap(), before);
+}
+
+#[test]
+fn preset_modal_refusals_keep_the_typed_owner_and_never_submit_stale_values() {
+    let mut state = state();
+    let run = RunFormView::from_declarations(
+        "alpha",
+        "Alpha",
+        &[ParamDecl::new("value")],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    );
+    state.update(Action::Present(Screen::Run(Box::new(run))));
+    assert_eq!(state.update(Action::OpenRunPresetSave), Effect::None);
+    assert_eq!(state.command_context(), CommandContext::RunPresetName);
+    let before = serde_json::to_value(&state).unwrap();
+    assert_eq!(state.update(Action::Submit), Effect::None);
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+
+    state.update(Action::SetModalInput("named".to_owned()));
+    let mut report = LibraryState::default();
+    report.update(Action::Present(Screen::Report(ReportView {
+        title: "Report".to_owned(),
+        items: Vec::new(),
+    })));
+    let report = serde_json::to_value(report).unwrap();
+    let mut stale = serde_json::to_value(state).unwrap();
+    stale["workflow"]["active"] = report["workflow"]["active"].clone();
+    let mut state: LibraryState = serde_json::from_value(stale).unwrap();
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunPresetName { .. })
+    ));
+    assert!(matches!(state.screen(), Screen::Report(_)));
+    let before = serde_json::to_value(&state).unwrap();
+    assert_eq!(state.update(Action::Submit), Effect::None);
+    assert_eq!(serde_json::to_value(&state).unwrap(), before);
+}
+
+#[test]
+fn async_management_preferences_and_form_actions_keep_effect_ordering() {
+    let identity = RunnerRowIdentity {
+        index: Some(0),
+        snapshot_token: "row".to_owned(),
+    };
+    let row = RunnerRow {
+        identity: identity.clone(),
+        name: Some("agent".to_owned()),
+        argv: Some(vec!["agent".to_owned(), "{{prompt}}".to_owned()]),
+        reason: None,
+        descriptor: "agent".to_owned(),
+        key_identities: vec![identity.clone()],
+        pinned_count: 2,
+    };
+    let mut state = state();
+    state.update(Action::Present(Screen::Runners(Box::new(
+        RunnerManagerView::new(vec![row]),
+    ))));
+    state.update(Action::Runners(RunnerManagerAction::ActivateSelected));
+    state.update(Action::Runners(RunnerManagerAction::RemoveSelected));
+    assert_eq!(
+        state.update(Action::Runners(RunnerManagerAction::ConfirmRemove)),
+        Effect::RemoveRunner(RunnerRemoveRequest::Named {
+            name: "agent".to_owned(),
+            expected: vec![identity],
+            expected_pinned_count: 2,
+        })
+    );
+    state.update(Action::Runners(RunnerManagerAction::CancelRemove));
+    assert_eq!(
+        state.update(Action::Runners(RunnerManagerAction::Back)),
+        Effect::None
+    );
+    assert_eq!(state.screen(), &Screen::Library);
+
+    assert_eq!(
+        state.update(Action::RunnerEditor(RunnerEditorAction::Cancel)),
+        Effect::None
+    );
+    assert_eq!(
+        state.update(Action::Settings(SettingsAction::Save)),
+        Effect::None
+    );
+
+    state.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view(),
+    ))));
+    assert_eq!(
+        state.update(Action::Preferences(
+            PreferencesAction::AgentSkillInstalled {
+                message: "Installed".to_owned(),
+            }
+        )),
+        Effect::None
+    );
+    assert_eq!(state.status(), Some("Installed"));
+    assert_eq!(
+        state.update(Action::Preferences(PreferencesAction::ManageAgents)),
+        Effect::Preferences(skit_ui::PreferencesEffect::ManageAgents)
+    );
+
+    let form = FormView {
+        purpose: FormPurpose::Rename,
+        title: "Rename".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
+        selector: Some("alpha".to_owned()),
+        fields: vec![FormField::text("name", "Name", "Alpha")],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    };
+    state.update(Action::Present(Screen::Form(form)));
+    assert_eq!(state.focused_form_field(), Some(0));
+    state.update(Action::Paste(" X".to_owned()));
+    state.update(Action::Backspace);
+    assert_eq!(state.form().unwrap().fields[0].value, "Alpha ");
 }
 
 #[test]
@@ -701,6 +910,9 @@ fn typed_add_workflow_round_trips_and_preserves_ordered_host_effects() {
     let add = AddWorkflowState::new(vec![DraftSummary {
         path: "/tmp/draft.py".into(),
         modified: 42,
+        identity: None,
+        permissions: SourcePermissions::default(),
+        content_hash: None,
     }]);
     let screen = Screen::Add(Box::new(add));
     let encoded = serde_json::to_string(&screen).unwrap();
@@ -714,9 +926,11 @@ fn typed_add_workflow_round_trips_and_preserves_ordered_host_effects() {
                 source_record: "typed.py".to_owned(),
                 bytes: b"COUNT = 3\n".to_vec(),
                 permissions: SourcePermissions::default(),
+                executable: None,
                 is_regular: true,
                 is_directory: false,
                 is_draft: false,
+                identity: None,
             },
             KnownEntryKind::Python,
             ReviewDefaults::default(),
@@ -881,6 +1095,7 @@ fn shared_runner_editor_returns_to_run_and_add_owners_without_losing_typed_state
             ..
         }) if selector == "demo"
     ));
+    assert_eq!(state.command_context(), CommandContext::RunnerEditor);
     state.update(Action::RunnerEditor(RunnerEditorAction::SetName(
         "local".to_owned(),
     )));
@@ -914,9 +1129,11 @@ fn shared_runner_editor_returns_to_run_and_add_owners_without_losing_typed_state
             source_record: "task.prompt.md".to_owned(),
             bytes: b"Summarize {{topic}}".to_vec(),
             permissions: SourcePermissions::default(),
+            executable: None,
             is_regular: true,
             is_directory: false,
             is_draft: false,
+            identity: None,
         },
         KnownEntryKind::Prompt,
         ReviewDefaults {
@@ -943,6 +1160,149 @@ fn shared_runner_editor_returns_to_run_and_add_owners_without_losing_typed_state
     let review = state.add_workflow().unwrap().review().unwrap();
     assert_eq!(review.runner(), "local");
     assert_eq!(review.runner_names(), ["codex", "local"]);
+}
+
+#[test]
+fn a_required_prompt_runner_cancel_returns_to_library_but_normal_cancel_keeps_the_form() {
+    let required = Action::PromptRunnerRequired {
+        form: Box::new(RunFormView::from_declarations(
+            "demo",
+            "Demo",
+            &[ParamDecl::new("a")],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        )),
+        cancel_status: "A prompt needs a configured agent to run with.".to_owned(),
+    };
+    let encoded = serde_json::to_string(&required).unwrap();
+    assert_eq!(serde_json::from_str::<Action>(&encoded).unwrap(), required);
+
+    let mut state = LibraryState::default();
+    state.update(required);
+    assert!(matches!(state.screen(), Screen::Run(_)));
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            owner: RunnerEditorOwner::Run { selector },
+            cancel_status: Some(message),
+            ..
+        }) if selector == "demo" && message == "A prompt needs a configured agent to run with."
+    ));
+    let encoded = serde_json::to_string(&state).unwrap();
+    assert_eq!(
+        serde_json::from_str::<LibraryState>(&encoded).unwrap(),
+        state
+    );
+    state.update(Action::RunnerEditor(RunnerEditorAction::Cancel));
+    assert_eq!(state.screen(), &Screen::Library);
+    assert_eq!(
+        state.status(),
+        Some("A prompt needs a configured agent to run with.")
+    );
+
+    let normal = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[ParamDecl::new("a")],
+        &BTreeMap::new(),
+        &["codex".to_owned()],
+        "codex",
+        &BTreeMap::new(),
+        "",
+    );
+    state.update(Action::Present(Screen::Run(Box::new(normal))));
+    state.update(Action::OpenRunRunnerEditor);
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            cancel_status: None,
+            ..
+        })
+    ));
+    let encoded = serde_json::to_string(&state).unwrap();
+    assert!(!encoded.contains("cancel_status"));
+    assert_eq!(
+        serde_json::from_str::<LibraryState>(&encoded).unwrap(),
+        state
+    );
+    state.update(Action::RunnerEditor(RunnerEditorAction::Cancel));
+    assert!(matches!(state.screen(), Screen::Run(_)));
+    assert_eq!(state.modal(), None);
+}
+
+#[test]
+fn a_required_prompt_runner_save_inserts_one_picker_and_a_failure_keeps_the_editor() {
+    let required = || Action::PromptRunnerRequired {
+        form: Box::new(RunFormView::from_declarations(
+            "demo",
+            "Demo",
+            &[ParamDecl::new("a")],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        )),
+        cancel_status: "runner required".to_owned(),
+    };
+    let owner = RunnerEditorOwner::Run {
+        selector: "demo".to_owned(),
+    };
+    let mut state = LibraryState::default();
+    state.update(required());
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetName(
+        "mycli".to_owned(),
+    )));
+    state.update(Action::RunnerEditor(RunnerEditorAction::SetCommand(
+        "mycli {{prompt}}".to_owned(),
+    )));
+    assert!(matches!(
+        state.update(Action::RunnerEditor(RunnerEditorAction::Submit)),
+        Effect::SaveRunner {
+            owner: RunnerSaveOwner::Editor(ref actual),
+            ref request,
+        } if actual == &owner && request.name == "mycli"
+    ));
+    state.update(Action::RunnerEditorSaveFailed {
+        owner: owner.clone(),
+        message: "config changed".to_owned(),
+    });
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor { view, .. })
+            if view.name() == "mycli"
+                && view.command() == "mycli {{prompt}}"
+                && view.host_error() == Some("config changed")
+    ));
+    assert!(matches!(state.screen(), Screen::Run(_)));
+
+    state = LibraryState::default();
+    state.update(required());
+    state.update(Action::RunnerEditorSaved {
+        owner,
+        name: "mycli".to_owned(),
+        message: "saved".to_owned(),
+    });
+    let form = state.run_form().unwrap();
+    assert!(form.has_runner_picker());
+    assert_eq!(state.focused_form_field(), Some(1));
+    assert!(matches!(
+        &form.fields()[0].control,
+        FormControl::Choice(choice)
+            if choice.options == ["mycli"] && choice.selected == "mycli"
+    ));
+    state.update(Action::SetFieldValue {
+        field: 1,
+        value: "x".to_owned(),
+    });
+    let Effect::Submit { values, .. } = state.update(Action::Submit) else {
+        panic!("the required-runner form did not submit after a runner was saved")
+    };
+    assert_eq!(values["_skit_runner"].as_text(), "mycli");
+    assert_eq!(values["value:a"].as_text(), "x");
 }
 
 /// The settings screen owns its runner editor, and the new agent lands in its picker.
@@ -1058,6 +1418,16 @@ fn every_advertised_settings_key_reaches_the_reducer() {
     // Version 0.4 refuses to advertise a key that would silently do nothing
     // (`src/skit/tui_settings.py:408-415`).
     assert!(!state.command_enabled(UiCommand::ResyncSettings));
+    assert!(!state.command_enabled(UiCommand::ChooseSettingsVariables));
+    let chooser = specs
+        .iter()
+        .find(|spec| spec.command == UiCommand::ChooseSettingsVariables)
+        .unwrap();
+    assert!(
+        !chooser.footer,
+        "the chooser is an inline settings affordance"
+    );
+    assert_eq!(UiCommand::ChooseSettingsVariables.direct_action(), None);
 
     // The nav pair walks the same stops the model defines.
     let first = state.settings_view().unwrap().focused().to_owned();

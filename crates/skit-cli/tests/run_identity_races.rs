@@ -12,7 +12,11 @@ use std::{
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
 };
-use skit_domain::{EntryKind, EntrySettings, StorageMode};
+use skit_domain::{
+    EntryKind, EntrySettings, StorageMode,
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery},
+};
+use skit_language::write_managed_params;
 use skit_store::FileStore;
 use tempfile::TempDir;
 
@@ -198,4 +202,55 @@ fn remove_and_readd_wait_until_post_run_state_is_committed_and_forgotten() {
         !state.path().join("values/demo.toml").exists(),
         "the old run state was grafted onto the replacement entry"
     );
+}
+
+#[test]
+fn a_run_that_started_public_cannot_restore_plaintext_after_the_field_becomes_secret() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let signals = TempDir::new().unwrap();
+    let ready = signals.path().join("ready");
+    let release = signals.path().join("release");
+    let interpreter = delayed_interpreter(signals.path());
+    let store = FileStore::new(data.path());
+    let mut token = ParamDecl::new("TOKEN");
+    token.binding = ParameterBinding::Const;
+    token.delivery = ParameterDelivery::Inject;
+    let source =
+        write_managed_params("shell", "TOKEN=default\nprintf '%s' \"$TOKEN\"\n", &[token]).unwrap();
+    create_shell(&store, &interpreter, source.as_bytes());
+
+    let child = run_command(data.path(), state.path(), config.path())
+        .args([
+            "run",
+            "demo",
+            "--no-input",
+            "--set",
+            "TOKEN=plaintext-race-value",
+        ])
+        .env("SKIT_TEST_READY", &ready)
+        .env("SKIT_TEST_RELEASE", &release)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    assert!(
+        wait_until_ready(&ready),
+        "delayed interpreter did not start"
+    );
+
+    let edit = run_command(data.path(), state.path(), config.path())
+        .args(["params", "demo", "--secret", "TOKEN"])
+        .output()
+        .unwrap();
+    assert!(edit.status.success(), "{edit:?}");
+    fs::write(&release, []).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{output:?}");
+
+    let state_path = state.path().join("values/demo.toml");
+    let state = fs::read_to_string(&state_path).unwrap();
+    assert!(!state.contains("TOKEN"), "{state}");
+    assert!(!state.contains("plaintext-race-value"), "{state}");
 }

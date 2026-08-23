@@ -2,7 +2,52 @@
 
 use std::path::Path;
 
-use skit_language::{infer_kind, suggest_description};
+use skit_language::{infer_draft_kind, infer_kind, suggest_description};
+
+#[test]
+fn test_kind_for_draft_shebang_first() {
+    // Python registry.kind_for_draft is the shared owner for every CLI and TUI draft lane. Prompt
+    // suffixes describe placeholder-bodied input and therefore keep priority. For script-shaped
+    // drafts, the shebang has priority over skit's synthetic `.py` suffix. An unknown shebang must
+    // stay unknown, while a source with no shebang falls back to ordinary inference.
+    let rows = [
+        (
+            "skit-new-a.py",
+            Some("#!/usr/bin/env bash"),
+            false,
+            Some("shell"),
+        ),
+        ("skit-new-b.py", Some("#!/usr/bin/awk -f"), false, None),
+        ("skit-new-c.py", None, false, Some("python")),
+        (
+            "skit-new-d.prompt",
+            Some("#!/usr/bin/env bash"),
+            false,
+            Some("prompt"),
+        ),
+        (
+            "skit-new-e.prompt.md",
+            Some("#!/usr/bin/env bash"),
+            false,
+            Some("prompt"),
+        ),
+        (
+            "skit-new-f",
+            Some("#!/usr/bin/env python3.12"),
+            false,
+            Some("python"),
+        ),
+        ("skit-new-g", None, true, Some("exe")),
+        ("skit-new-h.xyz", None, false, None),
+    ];
+    for (path, shebang, executable, expected) in rows {
+        assert_eq!(
+            infer_draft_kind(Path::new(path), shebang, executable),
+            expected,
+            "path={path:?}, shebang={shebang:?}, executable={executable}"
+        );
+    }
+}
 
 #[test]
 fn test_extract_comment_description_first_comment_line_wins() {

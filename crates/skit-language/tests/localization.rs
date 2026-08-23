@@ -2,8 +2,8 @@
 
 use skit_i18n::{Locale, Localize, Message};
 use skit_language::{
-    LanguageError, PythonMetadataError, ShellInputError, decode_prompt, validate_pep440_specifiers,
-    validate_pep508_requirement,
+    InjectedSourceKind, LanguageError, PythonMetadataError, ShellInputError, decode_prompt,
+    validate_pep440_specifiers, validate_pep508_requirement,
 };
 
 /// Check that English text does not drift and that each locale keeps the values.
@@ -63,6 +63,18 @@ fn every_language_error_localizes_and_keeps_its_values() {
             kind: "python".to_owned(),
         },
         &["python"],
+    );
+    assert_localized(
+        &LanguageError::InjectedSourceInvalid {
+            kind: InjectedSourceKind::JavaScript,
+        },
+        &[],
+    );
+    assert_localized(
+        &LanguageError::InjectedSourceInvalid {
+            kind: InjectedSourceKind::Shell,
+        },
+        &[],
     );
     assert_localized(&LanguageError::SourceChanged, &[]);
     assert_localized(

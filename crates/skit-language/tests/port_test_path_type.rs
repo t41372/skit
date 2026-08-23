@@ -33,11 +33,10 @@
 //! path-over-str and path-over-int cases, on which Rust and Python agree exactly.
 //!
 //! Buckets:
-//! - REAL asserting `#[test]` (API exists in skit-domain / skit-language): the type axis and the
-//!   two reconcile tests — 7 total.
-//! - CROSS-CRATE (`#[ignore]`, compiling stub, WHY + owning symbol): the remaining 7 tests drive
-//!   tiers skit-language cannot reach without a forbidden Cargo.toml edit — the CLI declared-schema
-//!   edit pipeline (`edit_declared`, private in `skit-cli/src/cli.rs`), the resync use case
+//! - REAL asserting `#[test]` (API exists in skit-domain / skit-language): the type axis, declared
+//!   edit, and the two reconcile tests — 8 total.
+//! - CROSS-CRATE (`#[ignore]`, compiling stub, WHY + owning symbol): the remaining 6 tests drive
+//!   tiers skit-language cannot reach without a forbidden Cargo.toml edit — the resync use case
 //!   (`edit_specs`, skit-cli tier, same as the `port_test_reconcile.rs` precedent), the run-form
 //!   projection (`skit_form::PreparedField::from_declaration`, private; no collapsed "kind" exists
 //!   — `parameter_type` stays typed) plus its degraded free-text collapse (skit-tui), the
@@ -49,7 +48,8 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterType, ParameterValue, coerce_default,
+    DeclaredEditContext, DeclaredEditRequest, NamedEdit, ParamDecl, ParameterBinding,
+    ParameterDelivery, ParameterType, ParameterValue, coerce_default, edit_declared,
 };
 use skit_language::{ParseOutcome, ReconcileReport, parse_document};
 
@@ -152,15 +152,21 @@ fn test_coerce_default_path_keeps_raw_string() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-cli): the declared-schema edit pipeline `params.edit_declared` is \
-private in crates/skit-cli/src/cli.rs and observable only via `skit params --type src=path`; \
-skit-language cannot depend on skit-cli. Ported by test_params_edit.py -> skit-cli."]
 fn test_edit_declared_accepts_path_type() {
-    // A `--type src=path` edit on a declared flag row is accepted: the row's type becomes "path"
-    // and no warning is emitted (path is a member of the closed type set).
-    //   decls = [ParamDecl(name="src", delivery="flag")]
-    //   res = params.edit_declared(decls, types={"src": "path"})
-    //   assert res.decls[0].type == "path" and res.warnings == []
+    let result = edit_declared(
+        &[ParamDecl::new("src")],
+        &DeclaredEditRequest {
+            parameter_types: vec![NamedEdit::new("src", "path")],
+            ..DeclaredEditRequest::default()
+        },
+        &DeclaredEditContext::new(
+            ParameterDelivery::Flag,
+            [ParameterDelivery::Env],
+            Vec::<String>::new(),
+        ),
+    );
+    assert!(result.warnings.is_empty());
+    assert_eq!(result.declarations[0].parameter_type, ParameterType::Path);
 }
 
 // ---------- reconcile: refinement, not drift ----------

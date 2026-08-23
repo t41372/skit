@@ -668,9 +668,3 @@ fn test_corpus_expected_detections() {
         string_set(["問候", "EMOJI", "CITY"])
     );
 }
-
-// ---------------------------------------------------------------- env-default e2e
-
-#[test]
-#[ignore = "UNMAPPED: spawns the real `fish` on the stored copy and asserts the env overlay beats the script's default on stdout (skipif fish is not installed) -> Tier 3/4 (skit run / process spawn). skit-language produces no run; the env-default detection is covered by test_oneline_idiom_int."]
-fn test_env_overlay_overrides_default_in_real_fish() {}

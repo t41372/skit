@@ -82,10 +82,10 @@ fn test_env_override_wins() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let expected = text(
         Locale::ZhTw,
-        "A script, prompt, program, and command library",
+        "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
     );
     assert!(stdout.contains(expected.as_ref()), "{stdout}");
-    assert!(!stdout.contains("A script, prompt, program, and command library"));
+    assert!(!stdout.contains("scripts, prompts, programs, and commands"));
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn test_lang_env() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let expected = text(
         Locale::ZhCn,
-        "A script, prompt, program, and command library",
+        "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
     );
     assert!(stdout.contains(expected.as_ref()), "{stdout}");
 }
@@ -114,6 +114,33 @@ fn test_lang_env() {
 fn test_c_locale_ignored() {
     assert_eq!(requested_locale(Some("C")), None);
     let _ = system_locale();
+
+    let sandbox = Sandbox::new();
+    let output = sandbox
+        .command()
+        .env_remove("SKIT_LANG")
+        .env_remove("LC_ALL")
+        .env_remove("LC_MESSAGES")
+        .env_remove("LANG")
+        .env_remove("LANGUAGE")
+        .env("NO_COLOR", "1")
+        .arg("--help")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{}", combined(&output));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let source = "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu";
+    assert!(
+        [Locale::En, Locale::ZhCn, Locale::ZhTw]
+            .into_iter()
+            .map(|locale| text(locale, source))
+            .any(|description| stdout.contains(description.as_ref())),
+        "{stdout}"
+    );
+    assert_eq!(fs::read_dir(&sandbox.data).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(&sandbox.state).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(&sandbox.config).unwrap().count(), 0);
 }
 
 #[test]

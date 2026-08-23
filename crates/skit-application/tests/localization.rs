@@ -101,6 +101,13 @@ fn every_repository_error_localizes_and_keeps_its_values() {
         },
         &["/library/demo", "device is busy", "permission denied"],
     );
+    assert_localized(
+        &RepositoryError::RemovalIncomplete {
+            name: "Report".to_owned(),
+            path: "/library/report".to_owned(),
+        },
+        &["Report", "/library/report"],
+    );
 }
 
 #[test]
@@ -254,4 +261,28 @@ fn typed_value_errors_use_the_form_voice_in_every_locale() {
         message.localize(Locale::ZhTw),
         "count 需要一個整數——你輸入的是 'many'。"
     );
+}
+
+#[test]
+fn every_parameter_type_has_a_stable_human_type_label() {
+    for (parameter_type, label) in [
+        (ParameterType::Int, "a whole number"),
+        (ParameterType::Float, "a number"),
+        (ParameterType::Bool, "on or off"),
+        (ParameterType::Str, "text"),
+        (ParameterType::Choice, "text"),
+        (ParameterType::Path, "text"),
+    ] {
+        let message = ValuePreparationError::InvalidType {
+            name: "value".to_owned(),
+            value: "invalid".to_owned(),
+            parameter_type,
+        }
+        .message()
+        .localize(Locale::En);
+        assert_eq!(
+            message,
+            format!("value needs {label} — you typed 'invalid'.")
+        );
+    }
 }

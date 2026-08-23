@@ -42,10 +42,12 @@ use std::collections::BTreeMap;
 
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    SourceNormalizationRefusalKind,
 };
 use skit_language::{
     LanguageError, ParseOutcome, ParsedDocument, SemanticCandidate, ShellInputError,
-    SourceEditPlan, normalize_shell_default, parse_document, source_is_valid,
+    SourceEditPlan, normalize_shell_default, normalize_shell_defaults, parse_document,
+    source_is_valid,
 };
 
 // ---------------------------------------------------------------- helpers
@@ -327,18 +329,6 @@ fn test_read_rewrite_keeps_every_flag_and_varname() {
 }
 
 #[test]
-#[ignore = "MUST-VERIFY (secret masking): runtime masked echo `Password: ***` + real `len=7`, delivered by the shim's `_ss=1` branch and heredoc -> Tier 3/4 (skit run --set). Byte-observable half: the third _skit_read arg (secret flag) is `1`; the MASKING itself is runtime shim behavior."]
-fn test_secret_read_masks_the_echo_but_delivers_the_value() {
-    // Python runs the copy: masked echo, real length, "hunter2" never in stdout.
-}
-
-#[test]
-#[ignore = "MUST-VERIFY (risk #2 runtime): second loop iteration reads REAL stdin. The shim's per-site `_skit_used_$_sk` flag gates value-once-then-passthrough at RUNTIME -> Tier 3/4 (skit run --set)."]
-fn test_read_in_a_loop_takes_the_value_once_then_reads_real_stdin() {
-    // Python feeds stdin "second\nthird\n" and asserts the loop takes `first` once, then real stdin.
-}
-
-#[test]
 fn test_function_read_defined_above_invoked_after_keeps_its_value() {
     // Risk #2, the one that makes call-site binding non-negotiable: the function's read is FIRST in
     // source order but runs LAST. A runtime counter would swap the two values (and hand the secret
@@ -589,18 +579,6 @@ fn test_unmanaged_read_still_reads_real_stdin() {
     assert!(out.contains("read -p \"Two: \" b")); // second read left untouched
 }
 
-#[test]
-#[ignore = "UNMAPPED: runs the wrapper under bash/sh/zsh/dash and asserts child stdout -> Tier 3/4 (skit run). The dialect-selected fall-through keyword IS byte-covered by test_fallthrough_keyword_is_dialect_selected."]
-fn test_the_preamble_runs_on_every_supported_dialect() {
-    // Python spawns each installed shell on the injected copy and asserts stdout is identical.
-}
-
-#[test]
-#[ignore = "UNMAPPED: runs the injected copy under `set -euo pipefail` and asserts exit 0 + stdout -> Tier 3/4 (skit run)."]
-fn test_set_u_and_set_e_survive_the_preamble() {
-    // Python runs the copy and asserts the preamble does not trip nounset/errexit.
-}
-
 // ---------------------------------------------------------------- risk #3: quoting injection
 
 #[test]
@@ -653,8 +631,8 @@ fn test_read_payload_is_inert() {
 fn test_quote_in_a_read_prompt_survives() {
     // The PROMPT is re-emitted as an argument, so it goes through the same escaper: an apostrophe in
     // the script's own prompt text must not break out of the single-quoted argument.
-    // PORTED AS BYTE ASSERTION: the prompt is emitted single-quoted with `'` escaped; Python's run
-    // (`It's here: x`) confirms it echoes intact.
+    // PORTED AS BYTE ASSERTION: the prompt is emitted single-quoted with `'` escaped. The Python
+    // runtime owner confirms that the exact prompt text echoes intact.
     let src = "#!/usr/bin/env bash\nread -p \"It's here: \" who\necho \"[$who]\"\n";
     let out = inject(src, &[("input-1", "x")]).unwrap();
     let call = format!(
@@ -663,13 +641,6 @@ fn test_quote_in_a_read_prompt_survives() {
     );
     assert!(out.contains(&call), "expected {call:?} in\n{out}");
     assert!(source_is_valid("shell", &out));
-}
-
-#[test]
-#[ignore = "MUST-VERIFY (secret handling): the injected copy's 0600 mode + short-lived-ness are store/runtime properties (the temp copy is written by the CLI tier). skit-language only produces the bytes -> Tier 3/4. The const single-quoting is covered by test_const_str_is_single_quoted_and_int_is_bare."]
-fn test_secret_value_never_reaches_stdout() {
-    // Python asserts the copy is 0600 and running it prints only `done` (the script never echoes
-    // the key). Both are file-permission / runtime facts, not injector bytes.
 }
 
 // ---------------------------------------------------------------- risk #4: multibyte / CRLF
@@ -830,37 +801,7 @@ fn test_offline_gate_refuses_a_corrupted_injection() {
     // Python monkeypatches `inject.quote` to emit an unterminated quote and expects InjectSyntaxError.
 }
 
-#[test]
-#[ignore = "UNMAPPED: gate 2 is the interpreter's own `bash -n` re-check, which spawns bash -> Tier 3/4 (skit-runtime); Python also monkeypatches `_gate_reparse` and `quote`. skit-language performs no interpreter spawn."]
-fn test_interpreter_gate_refuses_what_the_offline_gate_missed() {
-    // Python pretends the offline re-parse passed and proves `bash -n` still stops the launch.
-}
-
-#[test]
-#[ignore = "UNMAPPED: the `bash -n` interpreter gate (and skipping it when the shell is not installed) is a runtime spawn concern -> Tier 3/4. skit-language's plan_injection_for_interpreter uses the interpreter only to pick the preamble keyword; it never runs the shell, so there is no gate to skip."]
-fn test_interpreter_gate_is_skipped_when_the_shell_is_not_installed() {
-    // Python injects with interpreter="skit-no-such-shell" and asserts result.path is not None.
-}
-
-#[test]
-#[ignore = "UNMAPPED: Python monkeypatches subprocess.run to raise and asserts the run continues (gate 1 already passed). The subprocess spawn is the runtime tier -> Tier 3/4."]
-fn test_interpreter_gate_survives_a_spawn_failure() {
-    // Python: the `bash -n` spawn raising OSError must not fail the injection.
-}
-
-#[test]
-#[ignore = "UNMAPPED: Python monkeypatches subprocess.run to return returncode 1 with empty stderr and asserts InjectSyntaxError without crashing. Runtime spawn -> Tier 3/4."]
-fn test_interpreter_gate_reports_an_empty_stderr_without_crashing() {
-    // Python drives the `bash -n` gate's empty-stderr branch.
-}
-
 // ---------------------------------------------------------------- $0 warning
-
-#[test]
-#[ignore = "UNMAPPED: the `$0` warning STRING (the `NAME=\"${NAME:-value}\"` advice, \"on a stored copy\") is rendered in the CLI/UI tier -> Tier 4. skit-language's observable half is analysis().uses_self_location, covered by port_test_shell_analyzer.rs (test_uses_self_location_*)."]
-fn test_self_location_warns_when_a_temp_copy_is_written() {
-    // Python asserts result.warnings carries the $0 advice string.
-}
 
 #[test]
 fn test_self_location_does_not_warn_for_env_delivery() {
@@ -946,7 +887,7 @@ fn test_normalize_refuses_and_leaves_the_source_untouched() {
 
 #[test]
 fn test_normalize_ignores_array_and_valueless_assignments() {
-    // Same agreement as the injector: a subscript target isn't a const, so it can't be normalized
+    // Same agreement as the injector: a subscript target is not a const, so it cannot be normalized
     // (`--normalize ARR` reports it rather than rewriting an array element). Python normalizes the
     // batch ["WIDTH", "ARR"]; here each name is a single call (batch aggregation is Tier 3/4).
     let src = "#!/usr/bin/env bash\nARR[0]=1\nWIDTH=800\n";
@@ -969,15 +910,45 @@ fn test_normalize_on_an_unparseable_script_changes_nothing() {
 }
 
 #[test]
-fn test_normalize_mixed_batch_reports_each_name() {
-    // Python normalizes ["WIDTH", "MAX", "NOPE"] in one batch: WIDTH normalized, MAX refused
-    // (readonly), NOPE refused (not-a-const). Ported as three single-name calls (batch is Tier 3/4).
+fn rust_additive_single_normalize_api_keeps_legacy_typed_errors() {
+    assert_eq!(
+        normalize_shell_default("WIDTH=800\n", "WIDTH").unwrap(),
+        "WIDTH=\"${WIDTH:-800}\"\n"
+    );
+    assert!(matches!(
+        normalize_shell_default("HEIGHT=600\n", "WIDTH"),
+        Err(LanguageError::BindingNotFound { name }) if name == "WIDTH"
+    ));
+    assert!(matches!(
+        normalize_shell_default("if {\n", "WIDTH"),
+        Err(LanguageError::InvalidSource { kind }) if kind == "shell"
+    ));
+}
+
+#[test]
+fn rust_additive_normalize_batch_has_typed_per_item_results() {
     let src = "#!/usr/bin/env bash\nWIDTH=800\nreadonly MAX=100\n";
-    let out = normalize_shell_default(src, "WIDTH").unwrap();
-    assert!(out.contains("WIDTH=\"${WIDTH:-800}\""));
-    assert!(out.contains("readonly MAX=100")); // untouched
-    assert!(normalize_shell_default(src, "MAX").is_err()); // readonly:MAX
-    assert!(normalize_shell_default(src, "NOPE").is_err()); // not-a-const:NOPE
+    let result = normalize_shell_defaults(
+        src,
+        &["WIDTH".to_owned(), "MAX".to_owned(), "NOPE".to_owned()],
+    )
+    .unwrap();
+    assert_eq!(result.normalized, ["WIDTH"]);
+    assert_eq!(
+        result
+            .refused
+            .iter()
+            .map(|refusal| (refusal.kind, refusal.name.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (SourceNormalizationRefusalKind::Readonly, "MAX"),
+            (SourceNormalizationRefusalKind::NotAConst, "NOPE"),
+        ]
+    );
+    assert_eq!(
+        result.source,
+        "#!/usr/bin/env bash\nWIDTH=\"${WIDTH:-800}\"\nreadonly MAX=100\n"
+    );
 }
 
 // ---------------------------------------------------------------- flows.execute integration
@@ -985,10 +956,6 @@ fn test_normalize_mixed_batch_reports_each_name() {
 #[test]
 #[ignore = "UNMAPPED: `skit params --manage` + `skit run --set` end to end (CliRunner + store.add_script), asserts the script's own stdout on the real fd -> Tier 4 (skit-cli). Byte injection covered by test_const_injection_runs_with_the_new_value."]
 fn test_execute_runs_a_shell_entry_with_injected_values() {}
-
-#[test]
-#[ignore = "MUST-VERIFY (secret masking) + UNMAPPED: proves the [tool.skit] block writer and the read preamble COMPOSE (both land between shebang and code) and the secret read still masks at runtime -> Tier 4 (skit-cli params + run). The two writers live above skit-language."]
-fn test_execute_runs_a_managed_read_with_the_block_in_place() {}
 
 #[test]
 #[ignore = "UNMAPPED: flows.execute + launcher spy proving env delivery passes no script_override (no injected copy) -> Tier 4 (skit-cli/flows). The no-rewrite fact is covered by test_env_delivery_writes_no_temp_file."]
@@ -1007,14 +974,6 @@ fn test_execute_maps_a_drifted_shell_definition_to_drift() {}
 fn test_execute_reports_a_positional_gap_as_a_bad_value() {}
 
 #[test]
-#[ignore = "UNMAPPED: flows.execute surfaces the $0 warning through its `emit` callback -> Tier 4 (skit-cli/flows/UI). uses_self_location is the skit-language half (port_test_shell_analyzer.rs)."]
-fn test_execute_surfaces_the_self_location_warning() {}
-
-#[test]
-#[ignore = "UNMAPPED: a syntax-gate failure must map to FAIL_DRIFT WITHOUT a `--resync` hint and never launch -> Tier 4 (skit-cli/flows); Python also monkeypatches inject.quote to force the corruption."]
-fn test_execute_syntax_gate_failure_never_launches() {}
-
-#[test]
 #[ignore = "UNMAPPED: an entry whose kind grew an analyzer but no injector must degrade, not crash (store.add_script fish + flows.execute) -> Tier 4 (skit-cli/flows). skit-language returns UnsupportedKind for kinds without an injector, but the graceful-degradation path is in flows."]
 fn test_execute_without_an_injector_does_not_crash() {}
 
@@ -1023,34 +982,6 @@ fn test_execute_without_an_injector_does_not_crash() {}
 #[test]
 #[ignore = "UNMAPPED: `skit run --dry-run` transparency line shows the ORIGINAL script path (no temp copy) -> Tier 4 (skit-cli)."]
 fn test_cli_dry_run_shows_the_command() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize` writes the envdefault back to the stored copy + updates the [tool.skit] block + `skit show --json` -> Tier 4 (skit-cli). The normalize bytes are covered by test_normalize_makes_the_param_an_envdefault."]
-fn test_cli_normalize_turns_a_const_into_an_env_param() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit run` after `--normalize` delivers through the environment (env prefix + ORIGINAL path in the transparency line) -> Tier 4 (skit-cli)."]
-fn test_cli_normalized_param_runs_through_the_environment() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize MAX` reports the readonly refusal + leaves the file untouched -> Tier 4 (skit-cli). The refusal is covered by test_normalize_refuses_and_leaves_the_source_untouched."]
-fn test_cli_normalize_reports_refusals() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize` on a non-shell (python) kind exits 1 -> Tier 4 (skit-cli). skit-language's plan_shell_normalization returns UnsupportedKind for non-shell, but the CLI gate is above it."]
-fn test_cli_normalize_refuses_a_non_shell_kind() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize` refuses reference mode (no stored copy to edit) exits 1 -> Tier 4 (skit-cli/store)."]
-fn test_cli_normalize_refuses_reference_mode() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params --normalize` with the stored copy deleted exits 1 with `no stored copy` -> Tier 4 (skit-cli/store)."]
-fn test_cli_normalize_without_a_stored_copy() {}
-
-#[test]
-#[ignore = "UNMAPPED: cli._render_normalize_warning renders every refusal code -> Tier 4 (skit-cli). The refusal codes themselves are the CLI's string rendering of what skit-language returns as one error."]
-fn test_cli_normalize_warning_renderer_covers_every_code() {}
 
 // ---------------------------------------------------------------- remaining pure-logic
 
@@ -1079,14 +1010,6 @@ fn test_split_guard_refuses_only_what_the_shell_would_actually_mangle() {
         );
     }
 }
-
-#[test]
-#[ignore = "UNMAPPED: `skit params <name>` prints the self-locating-const advice string (`--normalize NAME` … `on the stored copy`, the `NAME=\"${NAME:-value}\"` idiom) -> Tier 4 (skit-cli). uses_self_location + the injectable consts are the skit-language half."]
-fn test_params_warns_when_a_self_locating_script_has_injectable_consts() {}
-
-#[test]
-#[ignore = "UNMAPPED: `skit params <name>` omits the `locates itself` advice when the script never self-locates -> Tier 4 (skit-cli)."]
-fn test_params_does_not_warn_when_the_script_never_self_locates() {}
 
 #[test]
 fn test_normalize_refuses_shell_metacharacters() {

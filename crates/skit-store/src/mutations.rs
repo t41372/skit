@@ -12,10 +12,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::fs_ops::sync_directory;
 pub use agent_skill::FileAgentSkillStore;
 use atomic::{
     FileLock, StagedDirectory, acquire_lock, acquire_shared_lock, atomic_write_bytes,
-    create_dir_all, invalid, io_error, sync_directory, write_new_file, write_new_metadata,
+    create_dir_all, invalid, io_error, write_new_file, write_new_metadata,
 };
 pub use hash::content_hash;
 use registry::Registry;
@@ -23,7 +24,8 @@ pub use runner_management::{
     FileRunnerManagementStore, RunnerManagementStoreError, RunnerRemovalCas,
 };
 use skit_application::{
-    CreateEntry, EntryMutationRepository, EntryPayload, RepositoryError, UpdateEntry,
+    CreateEntry, EntryMutationRepository, EntryPayload, ExternalCopyEdit,
+    FinalizeExternalCopyEditError, FinalizedExternalCopyEdit, RepositoryError, UpdateEntry,
 };
 use skit_domain::{Entry, EntryId, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_i18n::{Localize as _, Message};
@@ -102,6 +104,30 @@ pub struct PreparedLaunch {
     _lease: FileLock,
 }
 
+/// One FileStore-owned claim for an in-place external copy edit.
+#[derive(Clone, Debug)]
+pub struct PreparedExternalCopyEdit {
+    entry: Entry,
+    path: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RemoveLockPoint {
+    Dependency,
+    Entry,
+    Namespace,
+}
+
+impl ExternalCopyEdit for PreparedExternalCopyEdit {
+    fn entry(&self) -> &Entry {
+        &self.entry
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 impl PreparedLaunch {
     /// Return the freshly claimed entry incarnation.
     #[must_use]
@@ -125,6 +151,8 @@ impl Drop for PreparedLaunch {
 }
 
 impl EntryMutationRepository for FileStore {
+    type ExternalEdit = PreparedExternalCopyEdit;
+
     fn create(&self, request: CreateEntry) -> Result<Entry, RepositoryError> {
         let _namespace = self.namespace_lock()?;
         let mut registry = Registry::load(self.data_dir())?;
@@ -140,6 +168,16 @@ impl EntryMutationRepository for FileStore {
         let _namespace = self.namespace_lock()?;
         let mut registry = Registry::load(self.data_dir())?;
         self.stamp_identity_locked(fresh, &mut registry)
+    }
+
+    fn preflight_update_entry(&self, entry: &Entry, name: &str) -> Result<Entry, RepositoryError> {
+        let name = validated_name(name)?;
+        let _entry = self.entry_lock(&entry.slug)?;
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        self.ensure_name_available(&name, Some(&fresh.slug), &registry)?;
+        Ok(fresh)
     }
 
     fn describe(&self, entry: &Entry, description: &str) -> Result<Entry, RepositoryError> {
@@ -234,53 +272,7 @@ impl EntryMutationRepository for FileStore {
     }
 
     fn remove(&self, entry: &Entry) -> Result<String, RepositoryError> {
-        let _launch = self.launch_lock(&entry.slug)?;
-        let _entry = self.entry_lock(&entry.slug)?;
-        let _namespace = self.namespace_lock()?;
-        let _dependencies = self.dependency_lock(&entry.slug)?;
-        let mut registry = Registry::load(self.data_dir())?;
-        let fresh = self.claim_for_mutation(entry, &mut registry)?;
-        let name = fresh.meta.name.clone();
-        let source = self.entry_dir(&fresh.slug);
-        let trash_root = self.data_dir().join(".trash");
-        create_dir_all(&trash_root, "create")?;
-        let trash = trash_root.join(format!("{}-{}", fresh.slug, EntryId::generate().as_str()));
-        fs::rename(&source, &trash).map_err(|error| io_error("remove", &source, error))?;
-        let _ = sync_directory(&self.scripts_dir());
-        let _ = sync_directory(&trash_root);
-
-        registry.remove(&fresh.slug);
-        if let Err(error) = registry.save() {
-            let rollback = fs::rename(&trash, &source)
-                .map_err(|rollback| io_error("rollback remove", &trash, rollback));
-            let _ = sync_directory(&self.scripts_dir());
-            let _ = sync_directory(&trash_root);
-            return Err(rollback_error(error, rollback, &source));
-        }
-        match fs::remove_dir_all(&trash) {
-            Ok(()) => {
-                let _ = sync_directory(&trash_root);
-                Ok(name)
-            }
-            Err(_) => {
-                let incomplete = RepositoryError::RemovalIncomplete {
-                    name,
-                    path: source.display().to_string(),
-                };
-                let restored = fs::rename(&trash, &source)
-                    .map_err(|error| io_error("restore incomplete removal", &trash, error));
-                let _ = sync_directory(&self.scripts_dir());
-                let _ = sync_directory(&trash_root);
-                match restored {
-                    Ok(()) => Err(incomplete),
-                    Err(rollback) => Err(RepositoryError::Rollback {
-                        path: source.display().to_string(),
-                        primary: Box::new(incomplete),
-                        rollback: Box::new(rollback),
-                    }),
-                }
-            }
-        }
+        self.remove_with_lock_hook(entry, |_| {})
     }
 
     fn commit_copy_edit(
@@ -325,9 +317,142 @@ impl EntryMutationRepository for FileStore {
         }
         Ok(after)
     }
+
+    fn prepare_external_copy_edit(
+        &self,
+        entry: &Entry,
+    ) -> Result<Self::ExternalEdit, RepositoryError> {
+        let _entry = self.entry_lock(&entry.slug)?;
+        let fresh = self.verify_claim_locked(entry)?;
+        if fresh.meta.mode != StorageMode::Copy {
+            return Err(invalid(Message::new(
+                "reference entries are edited at their original path",
+            )));
+        }
+        let path = self.stored_path(&fresh)?;
+        let fresh = if fresh.meta.id.is_some() {
+            fresh
+        } else {
+            let _namespace = self.namespace_lock()?;
+            let mut registry = Registry::load(self.data_dir())?;
+            self.stamp_identity_locked(fresh, &mut registry)?
+        };
+        Ok(PreparedExternalCopyEdit { entry: fresh, path })
+    }
+
+    fn finalize_external_copy_edit(
+        &self,
+        edit: &Self::ExternalEdit,
+    ) -> Result<FinalizedExternalCopyEdit, FinalizeExternalCopyEditError> {
+        let entry = edit.entry();
+        let _entry = self.entry_lock(&entry.slug)?;
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        if fresh.meta != entry.meta {
+            return Err(stale(&entry.slug).into());
+        }
+        if fresh.meta.mode != StorageMode::Copy {
+            return Err(invalid(Message::new(
+                "reference entries are edited at their original path",
+            ))
+            .into());
+        }
+
+        let target = edit.path();
+        if target.parent() != Some(self.entry_dir(&fresh.slug).as_path())
+            || target.file_name().is_none()
+        {
+            return Err(invalid(Message::new(
+                "external edit source is outside its entry directory",
+            ))
+            .into());
+        }
+        let authoritative = match self.stored_path(&fresh) {
+            Ok(path) => path,
+            Err(RepositoryError::InvalidMutation { reason })
+                if reason.template() == "copy entry has no stored payload"
+                    && stored_filenames(fresh.meta.kind.as_str()).len() == 1 =>
+            {
+                self.entry_dir(&fresh.slug)
+                    .join(stored_filenames(fresh.meta.kind.as_str())[0])
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if target != authoritative {
+            return Err(invalid(Message::new(
+                "external edit source is not the entry's stored payload",
+            ))
+            .into());
+        }
+        let bytes = fs::read(target).map_err(|source| FinalizeExternalCopyEditError::Read {
+            path: target.to_owned(),
+            source,
+        })?;
+        let next_hash = content_hash(&bytes);
+        if next_hash == fresh.meta.source_hash {
+            return Ok(FinalizedExternalCopyEdit::new(fresh, bytes));
+        }
+
+        let before = fresh.clone();
+        let mut after = fresh;
+        after.meta.source_hash = next_hash;
+        self.commit_meta_projection(&before, &after, &mut registry)?;
+        Ok(FinalizedExternalCopyEdit::new(after, bytes))
+    }
 }
 
 impl FileStore {
+    fn remove_with_lock_hook(
+        &self,
+        entry: &Entry,
+        mut before_lock: impl FnMut(RemoveLockPoint),
+    ) -> Result<String, RepositoryError> {
+        let _launch = self.launch_lock(&entry.slug)?;
+        before_lock(RemoveLockPoint::Dependency);
+        let _dependencies = self.dependency_lock(&entry.slug)?;
+        before_lock(RemoveLockPoint::Entry);
+        let _entry = self.entry_lock(&entry.slug)?;
+        before_lock(RemoveLockPoint::Namespace);
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        let name = fresh.meta.name.clone();
+        let source = self.entry_dir(&fresh.slug);
+        let trash_root = self.data_dir().join(".trash");
+        create_dir_all(&trash_root, "create")?;
+        let trash = trash_root.join(format!("{}-{}", fresh.slug, EntryId::generate().as_str()));
+        fs::rename(&source, &trash).map_err(|error| io_error("remove", &source, error))?;
+        let _ = sync_directory(&self.scripts_dir());
+        let _ = sync_directory(&trash_root);
+
+        registry.remove(&fresh.slug);
+        if let Err(error) = registry.save() {
+            let rollback = fs::rename(&trash, &source)
+                .map_err(|rollback| io_error("rollback remove", &trash, rollback));
+            let _ = sync_directory(&self.scripts_dir());
+            let _ = sync_directory(&trash_root);
+            return Err(rollback_error(error, rollback, &source));
+        }
+        match fs::remove_dir_all(&trash) {
+            Ok(()) => {
+                let _ = sync_directory(&trash_root);
+                Ok(name)
+            }
+            Err(_) => {
+                let incomplete = RepositoryError::RemovalIncomplete {
+                    name,
+                    path: source.display().to_string(),
+                };
+                let restored = fs::rename(&trash, &source)
+                    .map_err(|error| io_error("restore incomplete removal", &trash, error));
+                let _ = sync_directory(&self.scripts_dir());
+                let _ = sync_directory(&trash_root);
+                Err(rollback_error(incomplete, restored, &source))
+            }
+        }
+    }
+
     /// Recheck identity and source bytes, then pin a copy-mode payload for one launch.
     ///
     /// `expected_source_hash` is the hash observed while the launch form was assembled. Passing it
@@ -474,6 +599,8 @@ impl FileStore {
                     });
             }
             // One entry skit cannot stamp must not cost the whole projection.
+            #[cfg(test)]
+            run_rebuild_before_project_hook(&metadata);
             if let Err(error) = registry.project(&entry, &item.path()) {
                 report
                     .problems
@@ -797,6 +924,24 @@ fn rebuild_error_reason(error: RepositoryError) -> String {
     }
 }
 
+#[cfg(test)]
+type RebuildBeforeProjectHook = Box<dyn FnOnce(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static REBUILD_BEFORE_PROJECT_HOOK: std::cell::RefCell<Option<RebuildBeforeProjectHook>> =
+        std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_rebuild_before_project_hook(path: &Path) {
+    REBUILD_BEFORE_PROJECT_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook(path);
+        }
+    });
+}
+
 fn write_launch_snapshot(
     source: &Path,
     snapshot: &Path,
@@ -1026,10 +1171,355 @@ fn rollback_error(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{Arc, Barrier, mpsc},
+        thread,
+    };
+
+    use skit_domain::EntryKind;
     use tempfile::TempDir;
     use time::{Date, Month};
 
     use super::*;
+
+    fn copy_request(name: &str, kind: &str, stored_name: &str) -> CreateEntry {
+        CreateEntry {
+            name: name.to_owned(),
+            kind: EntryKind::parse(kind).unwrap(),
+            mode: StorageMode::Copy,
+            source: format!("/original/{stored_name}"),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"stored\n".to_vec(),
+                stored_name: Some(stored_name.to_owned()),
+                permissions: skit_application::SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        }
+    }
+
+    #[test]
+    fn external_edit_prepare_rejects_references_and_stamps_legacy_copy_identity() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let reference = store
+            .create(CreateEntry {
+                name: "Reference".to_owned(),
+                kind: EntryKind::parse("python").unwrap(),
+                mode: StorageMode::Reference,
+                source: "/original/reference.py".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        assert!(matches!(
+            store.prepare_external_copy_edit(&reference),
+            Err(RepositoryError::InvalidMutation { .. })
+        ));
+
+        let copy = store
+            .create(copy_request("Legacy identity", "python", "script.py"))
+            .unwrap();
+        let meta_path = store.entry_dir(&copy.slug).join("meta.toml");
+        let mut document =
+            toml::from_str::<toml::Table>(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+        document.remove("id");
+        fs::write(&meta_path, toml::to_string_pretty(&document).unwrap()).unwrap();
+        let legacy = store.read_entry(copy.slug.clone()).unwrap();
+        assert!(legacy.meta.id.is_none());
+
+        let edit = store.prepare_external_copy_edit(&legacy).unwrap();
+
+        assert!(edit.entry().meta.id.is_some());
+        assert_eq!(edit.path(), store.entry_dir(&copy.slug).join("script.py"));
+    }
+
+    #[test]
+    fn external_finalize_rejects_reference_outside_and_missing_multi_name_payloads() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let reference = store
+            .create(CreateEntry {
+                name: "Reference finalize".to_owned(),
+                kind: EntryKind::parse("python").unwrap(),
+                mode: StorageMode::Reference,
+                source: "/original/reference.py".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let reference_edit = PreparedExternalCopyEdit {
+            path: store.entry_dir(&reference.slug).join("script.py"),
+            entry: reference,
+        };
+        assert!(matches!(
+            store.finalize_external_copy_edit(&reference_edit),
+            Err(FinalizeExternalCopyEditError::Repository(
+                RepositoryError::InvalidMutation { .. }
+            ))
+        ));
+
+        let copy = store
+            .create(copy_request("Outside", "python", "script.py"))
+            .unwrap();
+        let mut outside = store.prepare_external_copy_edit(&copy).unwrap();
+        outside.path = root.path().join("outside.py");
+        assert!(matches!(
+            store.finalize_external_copy_edit(&outside),
+            Err(FinalizeExternalCopyEditError::Repository(
+                RepositoryError::InvalidMutation { .. }
+            ))
+        ));
+
+        let javascript = store
+            .create(copy_request("Missing module", "js", "script.js"))
+            .unwrap();
+        let missing = store.prepare_external_copy_edit(&javascript).unwrap();
+        fs::remove_file(missing.path()).unwrap();
+        assert!(matches!(
+            store.finalize_external_copy_edit(&missing),
+            Err(FinalizeExternalCopyEditError::Repository(
+                RepositoryError::InvalidMutation { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn test_add_python_injected_write_failure_rolls_back_entire_entry() {
+        let data = TempDir::new().unwrap();
+        let origin = TempDir::new().unwrap();
+        let original = origin.path().join("boom.py");
+        let original_bytes = b"print('original')\n";
+        fs::write(&original, original_bytes).unwrap();
+        let request = || CreateEntry {
+            name: "boom".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: original.display().to_string(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: original_bytes.to_vec(),
+                stored_name: Some("script.py".to_owned()),
+                permissions: skit_application::SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        };
+        let store = FileStore::new(data.path());
+        atomic::fail_next_new_file_write();
+
+        let error = store.create(request()).unwrap_err();
+
+        assert!(matches!(
+            error,
+            RepositoryError::Io {
+                operation: "write",
+                ref path,
+                ref reason,
+            } if path.ends_with("script.py") && reason.contains("injected payload write failure")
+        ));
+        assert_eq!(fs::read(&original).unwrap(), original_bytes);
+        assert!(!data.path().join("registry.toml").exists());
+        assert!(!data.path().join("scripts").exists());
+        let staging = data.path().join(".staging");
+        assert!(staging.is_dir());
+        assert!(fs::read_dir(&staging).unwrap().next().is_none());
+        let private_names = fs::read_dir(data.path())
+            .unwrap()
+            .map(|item| item.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            private_names,
+            [".staging", "registry.native.lock"]
+                .into_iter()
+                .map(std::ffi::OsString::from)
+                .collect()
+        );
+
+        let retried = store.create(request()).unwrap();
+        assert_eq!(retried.slug.as_str(), "boom");
+        assert_eq!(
+            fs::read(data.path().join("scripts/boom/script.py")).unwrap(),
+            original_bytes
+        );
+        assert!(data.path().join("registry.toml").is_file());
+        assert!(fs::read_dir(staging).unwrap().next().is_none());
+        assert_eq!(fs::read(original).unwrap(), original_bytes);
+    }
+
+    #[test]
+    fn remove_attempts_the_dependency_lock_before_the_entry_lock() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "Removal lock order".to_owned(),
+                kind: EntryKind::parse("js").unwrap(),
+                mode: StorageMode::Copy,
+                source: "/original.js".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: Some(EntryPayload {
+                    bytes: b"console.log('keep');\n".to_vec(),
+                    stored_name: Some("script.js".to_owned()),
+                    permissions: skit_application::SourcePermissions::default(),
+                }),
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let dependency = store.dependency_lock(&entry.slug).unwrap();
+        let release = Arc::new(Barrier::new(2));
+        let worker_release = Arc::clone(&release);
+        let worker_store = store.clone();
+        let worker_entry = entry.clone();
+        let (point_tx, point_rx) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let mut first = true;
+            worker_store.remove_with_lock_hook(&worker_entry, |point| {
+                if first {
+                    first = false;
+                    point_tx.send(point).unwrap();
+                    worker_release.wait();
+                }
+            })
+        });
+        let first = point_rx.recv().unwrap();
+
+        if first == RemoveLockPoint::Dependency {
+            let entry_lock = store.entry_lock(&entry.slug).unwrap();
+            drop(entry_lock);
+        }
+        release.wait();
+        drop(dependency);
+
+        assert_eq!(first, RemoveLockPoint::Dependency);
+        assert_eq!(worker.join().unwrap().unwrap(), "Removal lock order");
+    }
+
+    #[test]
+    fn external_finalize_rejects_a_different_existing_file_in_the_same_entry_directory() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "Exact external source".to_owned(),
+                kind: EntryKind::parse("python").unwrap(),
+                mode: StorageMode::Copy,
+                source: "/original.py".to_owned(),
+                workdir: "origin".to_owned(),
+                description: String::new(),
+                payload: Some(EntryPayload {
+                    bytes: b"base".to_vec(),
+                    stored_name: Some("script.py".to_owned()),
+                    permissions: skit_application::SourcePermissions::default(),
+                }),
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let mut edit = store.prepare_external_copy_edit(&entry).unwrap();
+        let source = edit.path.clone();
+        let source_before = fs::read(&source).unwrap();
+        let meta = store.entry_dir(&entry.slug).join("meta.toml");
+        let meta_before = fs::read(&meta).unwrap();
+        edit.path.clone_from(&meta);
+
+        let error = store.finalize_external_copy_edit(&edit).unwrap_err();
+
+        assert!(matches!(
+            error,
+            FinalizeExternalCopyEditError::Repository(RepositoryError::InvalidMutation { .. })
+        ));
+        assert_eq!(fs::read(source).unwrap(), source_before);
+        assert_eq!(fs::read(meta).unwrap(), meta_before);
+    }
+
+    #[test]
+    fn external_finalize_returns_the_locked_replacement_or_revert_bytes() {
+        for (name, final_bytes) in [
+            ("Locked replacement", b"replacement".as_slice()),
+            ("Locked revert", b"base".as_slice()),
+        ] {
+            let root = TempDir::new().unwrap();
+            let store = FileStore::new(root.path());
+            let entry = store
+                .create(CreateEntry {
+                    name: name.to_owned(),
+                    kind: EntryKind::parse("python").unwrap(),
+                    mode: StorageMode::Copy,
+                    source: "/original.py".to_owned(),
+                    workdir: "origin".to_owned(),
+                    description: String::new(),
+                    payload: Some(EntryPayload {
+                        bytes: b"base".to_vec(),
+                        stored_name: Some("script.py".to_owned()),
+                        permissions: skit_application::SourcePermissions::default(),
+                    }),
+                    settings: EntrySettings::default(),
+                })
+                .unwrap();
+            let edit = store.prepare_external_copy_edit(&entry).unwrap();
+            fs::write(edit.path(), b"first editor snapshot").unwrap();
+            let held = store.entry_lock(&entry.slug).unwrap();
+            let barrier = Arc::new(Barrier::new(2));
+            let worker_barrier = Arc::clone(&barrier);
+            let worker_store = store.clone();
+            let worker_edit = edit.clone();
+            let worker = thread::spawn(move || {
+                worker_barrier.wait();
+                worker_store.finalize_external_copy_edit(&worker_edit)
+            });
+            barrier.wait();
+
+            // The finalize read cannot pass the held entry lock until this replacement completes.
+            fs::write(edit.path(), final_bytes).unwrap();
+            drop(held);
+            let finalized = worker.join().unwrap().unwrap();
+
+            assert_eq!(finalized.bytes(), final_bytes);
+            assert_eq!(fs::read(edit.path()).unwrap(), final_bytes);
+            assert_eq!(
+                finalized.entry().meta.source_hash,
+                content_hash(final_bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn rebuild_isolates_a_metadata_file_removed_after_its_authoritative_read() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        store
+            .create(CreateEntry {
+                name: "Raced".to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Copy,
+                source: String::new(),
+                workdir: "invoke".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        REBUILD_BEFORE_PROJECT_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(|path| fs::remove_file(path).unwrap()));
+        });
+
+        let report = store.rebuild_registry_report().unwrap();
+
+        assert_eq!(report.entry_count, 0);
+        assert_eq!(report.problems.len(), 1);
+        assert_eq!(
+            rebuild_error_reason(RepositoryError::NotFound {
+                query: "missing".to_owned(),
+            }),
+            "entry not found: missing"
+        );
+    }
 
     #[test]
     fn timestamp_and_metadata_encoding_report_their_boundary_failures() {

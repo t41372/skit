@@ -11,8 +11,9 @@
 //!   the `ProgramProbe` trait; tests inject a `FakeProbe` whose `programs` map IS the
 //!   `_which_map`. `SystemProbe` is the real `shutil.which` seam.
 //! - Python `launch.resolve_interpreter(name)` -> `require_program`, reached by building
-//!   an interpreted plan; a missing interpreter is `LaunchError::ProgramNotFound` (exit
-//!   126, the `NotExecutableError` twin).
+//!   an interpreted plan; a missing interpreter is a typed refusal (exit 126, the
+//!   `NotExecutableError` twin): `LaunchError::ProgramNotFound` on unix, and for
+//!   bash-compatible names on Windows the fallback-policy `WindowsShellMissing`.
 //! - Python `launch.InterpreterLaunch(default, prefix).build(...)` -> `build_launch_plan`
 //!   for an interpreted kind; `.describe(...)` -> `build_launch_preview` (no PATH lookup);
 //!   `.preflight(...)` -> `build_launch_plan` (a superset of the existence/resolve checks).
@@ -22,16 +23,13 @@
 //!   `MissingNeed` (both are pre-spawn).
 //!
 //! Bucket disposition:
-//! - REAL (asserting, pass): the resolve/InterpreterLaunch/RunnerLaunch/needs cases that
-//!   the skit-runtime launch surface actually owns.
-//! - DIVERGENCE (`#[ignore]`, full body kept): two oracle contracts the Rust code breaks —
-//!   `RunnerLaunch` gives bun a `run` subcommand (Rust omits it), and the "no JS runtime"
-//!   refusal names the `skit config js.runner` escape hatch (Rust drops it).
-//! - CROSS-CRATE (`#[ignore]` stub): behavior owned by another tier this integration test
-//!   cannot reach without a forbidden dependency edit — shebang/kind inference
-//!   (`skit-language`), the launch `target()` projection and TOML round-trip / store
-//!   mutations (`skit-store`), the `js.runner` / Windows `shell.bash_path` config
-//!   resolution and every `CliRunner` surface (`skit-cli-rs` / `skit-store`).
+//! - REAL (18 asserting, pass): the resolve/InterpreterLaunch/RunnerLaunch/needs cases that
+//!   the skit-runtime launch surface owns.
+//! - ARCHITECTURE CLOSURE (1 `#[ignore]`): the path-reading unreadable-source wrapper is split
+//!   between caller-owned I/O and skit-language's text parser.
+//! - REHOMED (55): detection, config composition, store projections, and CLI E2E contracts run at
+//!   their executable owners. This file keeps no cross-crate stub or known divergence. The port
+//!   ledger records every stronger owner and exact rehome.
 
 use std::{
     collections::BTreeMap,
@@ -161,33 +159,17 @@ fn test_resolve_interpreter_missing_posix_names_the_interpreter() {
         &probe,
     )
     .unwrap_err();
+    // The refusal is typed on every host and the variant follows each host's adjudicated
+    // policy (`resolve_interpreter`): unix resolves interpreters from PATH only, so the
+    // refusal is ProgramNotFound; Windows falls from PATH to the configured bash path for
+    // bash-compatible names and refuses as WindowsShellMissing. The Windows arm itself is
+    // owned host-neutrally by the parameterized owners in `port_test_launcher.rs`.
+    #[cfg(not(windows))]
     assert!(matches!(&error, LaunchError::ProgramNotFound { name } if name == "zsh"));
+    #[cfg(windows)]
+    assert!(matches!(&error, LaunchError::WindowsShellMissing { name } if name == "zsh"));
     assert!(error.to_string().contains("zsh"));
 }
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs / skit-store): the Windows bash escape hatch resolves \
-bash from the `shell.bash_path` config; the skit-runtime launch surface takes an already-resolved \
-interpreter name and has no config fallback. Config lives in skit-store::config and is read at the \
-skit-cli tier (cli.rs `shell.bash_path`). Platform is a compile-time cfg here, not runtime-patchable."]
-fn test_resolve_bash_on_win32_uses_config_path_when_it_exists() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs / skit-store): Windows bash resolution + its \"configured but \
-missing\" fall-through live at the config/CLI tier, not the skit-runtime launch surface."]
-fn test_resolve_bash_on_win32_configured_but_missing_falls_through() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs / skit-store): the win32 refusal that names both escape hatches \
-(\"Git for Windows\" + \"skit config shell.bash_path\") belongs to the config/CLI tier. Verify that \
-exact wording there; the skit-runtime ProgramNotFound message carries neither."]
-fn test_resolve_bash_on_win32_unset_names_both_escape_hatches() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs / skit-store): the win32-only distinction (only bash/sh/zsh get \
-the escape hatch, ruby gets the generic message) does not exist in the runtime tier, which has no \
-per-platform escape hatch for any interpreter."]
-fn test_resolve_nonbash_on_win32_gets_generic_message() {}
 
 #[test]
 fn test_which_seam_is_the_real_shutil_which() {
@@ -306,12 +288,6 @@ fn test_interpreter_launch_describe_is_side_effect_free() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-store): the strategy `target()` projection (script path an entry \
-launches, used by `skit list` to mark a gone file) is `launch_target` in \
-crates/skit-store/src/library_surface.rs, not reachable from skit-runtime."]
-fn test_interpreter_launch_target_is_script_path() {}
-
-#[test]
 fn test_interpreter_launch_preflight_missing_interpreter() {
     // Preflight refuses when the interpreter cannot be resolved.
     let script = "/data/scripts/demo/script.sh";
@@ -325,7 +301,12 @@ fn test_interpreter_launch_preflight_missing_interpreter() {
         &probe,
     )
     .unwrap_err();
+    // Typed on every host; the variant follows the host policy (see
+    // `test_resolve_interpreter_missing_posix_names_the_interpreter`).
+    #[cfg(not(windows))]
     assert!(matches!(error, LaunchError::ProgramNotFound { .. }));
+    #[cfg(windows)]
+    assert!(matches!(error, LaunchError::WindowsShellMissing { .. }));
 }
 
 #[test]
@@ -467,13 +448,6 @@ fn test_runner_meta_interpreter_override() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (skit-store / skit-cli-rs): the `js.runner` config override (used when the \
-entry has no pin) is read from skit-store::config and resolved at the skit-cli run tier \
-(run/command.rs `js.runner`); skit-runtime `resolve_javascript_runtime` consults only the entry pin, \
-so the config layer cannot be injected through this surface."]
-fn test_runner_config_override() {}
-
-#[test]
 fn test_runner_none_installed_names_candidates_and_config_key() {
     let script = "/data/scripts/demo/script.js";
     let probe = probe_for(script); // no runtimes resolve
@@ -532,107 +506,16 @@ fn test_runner_preflight_checks_script_and_runner() {
     assert_eq!(error.exit_code(), 126);
 }
 
-#[test]
-#[ignore = "CROSS-CRATE (skit-store): the runner `target()` projection is `launch_target` in \
-crates/skit-store/src/library_surface.rs, not reachable from skit-runtime."]
-fn test_runner_target_is_script_path() {}
-
 // ==========================================================================
 // shebang_program + infer_kind  (owned by skit-language)
 // ==========================================================================
 //
 // skit-runtime does not depend on skit-language, so every shebang/kind-inference case is a
-// CROSS-CRATE stub. The Rust equivalents live in crates/skit-language/src/lib.rs:
-// `shebang_program(line: &str)` (takes a line, not a path — the file read is the caller's),
-// `infer_kind(path, shebang, executable)`, the private `shebang_kind`, and
-// `python_version_pin`. Their contract is exercised by skit-language's own tests
-// (language_contract.rs, edge_contract.rs).
-
 #[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program on a plain `#!/bin/bash` line -> \"bash\"."]
-fn test_shebang_plain() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program on `#!/usr/bin/env python3` -> \"python3\"."]
-fn test_shebang_env_form() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program skips env `-S` flags so \
-`#!/usr/bin/env -S deno run --allow-net` -> \"deno\"."]
-fn test_shebang_env_dash_s_with_flags() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program returns None when there is no `#!` line."]
-fn test_shebang_none_when_no_shebang() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): the oracle reads the file (OSError -> None); the Rust \
-`shebang_program(line)` takes an already-read line, so the unreadable-path branch belongs to the \
-caller (skit-store add lane / skit-language)."]
+#[ignore = "ARCHITECTURE CLOSURE (skit-language): Python's shebang_program reads a Path and maps \
+OSError to None. Rust's public shebang_program deliberately parses one already-read line; source \
+I/O belongs to the caller. There is no public combined path-reading seam to drive faithfully."]
 fn test_shebang_none_when_unreadable() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program returns None for a bare `#!` line (no \
-tokens after it)."]
-fn test_shebang_none_when_empty_hashbang_line() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): shebang_program returns None for `#!/usr/bin/env -S` \
-(env then only a flag)."]
-fn test_shebang_env_with_only_flags_is_none() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): the shebang->kind map (bash->shell, node->js, \
-python3->python, unmapped/absent->None) is `shebang_kind` in skit-language."]
-fn test_kind_for_shebang_maps_the_program_or_none() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a versioned python name (python3.12) maps to \"python\", \
-pythonw stays unmapped — `python_version_pin` / `shebang_kind` in skit-language."]
-fn test_kind_for_shebang_versioned_python_is_python() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): the text twin (stdin lane) routes through the same \
-versioned-python rule in skit-language."]
-fn test_kind_for_shebang_text_versioned_python_and_non_matches() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): infer_kind's shebang branch routes a python3.12 #! to \
-\"python\" — `infer_kind` in skit-language."]
-fn test_infer_kind_versioned_python_shebang() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): infer_kind lets a .py extension outrank a bash shebang \
-(the extension is authoritative)."]
-fn test_infer_extension_beats_shebang() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): infer_kind lets a bash shebang outrank the +x bit."]
-fn test_infer_shebang_beats_exec_bit() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): an unmapped #! program falls through to the executability \
-check (exe on POSIX +x, unknown on Windows) — `infer_kind` in skit-language."]
-fn test_infer_unknown_shebang_program_falls_to_exec_bit() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a +x-only file is exe on POSIX — `infer_kind` in \
-skit-language."]
-fn test_infer_exec_bit_only_is_exe() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a plain file (no ext, no #!, no +x) is unknown \
-(Rust infer_kind returns None) — skit-language."]
-fn test_infer_plain_file_is_unknown() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a .zsh extension is shell — `infer_kind` in skit-language."]
-fn test_infer_zsh_extension_is_shell() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-language): a .R extension lowercases to .r and is r — `infer_kind` \
-in skit-language."]
-fn test_infer_r_extension_is_case_insensitive() {}
 
 // ==========================================================================
 // needs — preflight / run / missing_needs
@@ -696,187 +579,6 @@ fn test_run_entry_needs_raises_before_spawn() {
     assert!(error.to_string().contains("ffmpeg"));
 }
 
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `launcher.missing_needs` (the doctor/health report of \
-declared needs not on PATH) is the doctor sweep in crates/skit-cli/src/cli.rs (`needs_missing`); \
-skit-runtime turns the same gap into a launch refusal (`MissingNeed`), not a returned list."]
-fn test_missing_needs_returns_the_gap() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the empty-gap twin of missing_needs is the doctor sweep in \
-crates/skit-cli/src/cli.rs."]
-fn test_missing_needs_empty_when_all_present() {}
-
-// ==========================================================================
-// models — interpreter / needs / parameters round-trip  (owned by skit-store)
-// ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-store): the ScriptMeta `to_toml_dict`/`from_toml_dict` round-trip is \
-EntryMeta TOML (de)serialization in skit-store; skit-runtime holds the value type but not the TOML \
-adapter."]
-fn test_meta_round_trip_carries_interpreter_needs_parameters() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-store): \"omit empty needs from the serialized meta\" is a TOML \
-serialization contract owned by skit-store."]
-fn test_meta_omits_empty_needs() {}
-
-// ==========================================================================
-// store.update_needs  (owned by skit-store)
-// ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-store): `store.update_needs` (set/clear needs, empty clears to None) \
-is a store mutation adapter in skit-store."]
-fn test_update_needs_sets_and_clears() {}
-
-// ==========================================================================
-// CLI: add --kind  (owned by skit-cli-rs)
-// ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit add` shebang/interpreter capture is a CliRunner \
-surface owned by skit-cli-rs."]
-fn test_cli_add_shell_script_records_interpreter() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit add --kind shell` forcing an extensionless file is a \
-CliRunner surface owned by skit-cli-rs."]
-fn test_cli_add_kind_forces_extensionless_file() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit add --kind exe` is a CliRunner surface owned by \
-skit-cli-rs."]
-fn test_cli_add_kind_exe() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit add --kind cobol` usage error (exit 2, lists valid \
-kinds) is a Clap surface owned by skit-cli-rs."]
-fn test_cli_add_kind_unknown_is_usage_error() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the `--kind` + `--exe` conflict (exit 2) is a Clap surface \
-owned by skit-cli-rs."]
-fn test_cli_add_kind_and_exe_conflict() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `--kind command` rejection is a Clap surface owned by \
-skit-cli-rs."]
-fn test_cli_add_command_kind_rejected() {}
-
-// ==========================================================================
-// CLI: deps --need / --clear-needs / read view  (owned by skit-cli-rs)
-// ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit deps --need` is a CliRunner surface owned by \
-skit-cli-rs."]
-fn test_deps_need_sets_the_list() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit deps --need` replacing the whole list is a CliRunner \
-surface owned by skit-cli-rs."]
-fn test_deps_need_replaces_whole_list() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit deps --clear-needs` is a CliRunner surface owned by \
-skit-cli-rs."]
-fn test_deps_clear_needs() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the `--need` + `--clear-needs` conflict (exit 2, \"not \
-both\") is a Clap surface owned by skit-cli-rs."]
-fn test_deps_need_and_clear_needs_conflict() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit deps --need` on a python entry is a CliRunner surface \
-owned by skit-cli-rs."]
-fn test_deps_need_works_on_python_too() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit deps --dep` refusal on shell (exit 2, \"doesn't take \
-package dependencies\") is a CliRunner surface owned by skit-cli-rs."]
-fn test_deps_dep_on_shell_is_refused() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the `skit deps` read view showing needs is a CliRunner \
-surface owned by skit-cli-rs."]
-fn test_deps_read_view_shows_needs_for_shell() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit deps --json` needs field is a CliRunner surface owned \
-by skit-cli-rs."]
-fn test_deps_json_view_includes_needs() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the empty-needs dash in the `skit deps` read view is a \
-CliRunner surface owned by skit-cli-rs."]
-fn test_deps_read_view_needs_dash_when_empty() {}
-
-// ==========================================================================
-// CLI: doctor / show needs surfaces  (owned by skit-cli-rs)
-// ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit doctor` flagging missing needs is a CliRunner surface \
-owned by skit-cli-rs."]
-fn test_doctor_flags_missing_needs() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit doctor --json` `needs_missing` map is a CliRunner \
-surface owned by skit-cli-rs."]
-fn test_doctor_json_needs_missing() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit show` printing the Needs line is a CliRunner surface \
-owned by skit-cli-rs."]
-fn test_show_human_prints_needs_line() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit show --json` needs field is a CliRunner surface owned \
-by skit-cli-rs."]
-fn test_show_json_includes_needs() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the `skit show` interpreted header/Source/run-hint is a \
-CliRunner surface owned by skit-cli-rs."]
-fn test_show_interpreted_header_and_source() {}
-
-// ==========================================================================
-// CLI: edit refusal is kind-neutral  (owned by skit-cli-rs)
-// ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit edit` on an exe (exit 1, \"no editable source\") is a \
-CliRunner surface owned by skit-cli-rs."]
-fn test_edit_program_refusal_is_kind_neutral() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): `skit edit` on a command (exit 1, \"no editable source\") is \
-a CliRunner surface owned by skit-cli-rs."]
-fn test_edit_command_refusal_is_kind_neutral() {}
-
 // ==========================================================================
 // E2E (POSIX): the overlay reaches a real child  (owned by skit-cli-rs)
 // ==========================================================================
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the `skit run` shell E2E is a CliRunner surface owned by \
-skit-cli-rs (skit-runtime's `execute_launch` real-spawn path is covered by its own private tests)."]
-fn test_e2e_run_shell_script() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the env-overlay-reaches-child E2E is a CliRunner surface \
-owned by skit-cli-rs."]
-fn test_e2e_run_shell_env_param_reaches_child() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the `skit run --dry-run` transparency E2E is a CliRunner \
-surface owned by skit-cli-rs."]
-fn test_e2e_dry_run_shows_interpreter_and_script() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli-rs): the reference-mode shell run E2E is a CliRunner surface \
-owned by skit-cli-rs."]
-fn test_e2e_run_reference_mode_shell() {}

@@ -8,17 +8,42 @@ pub mod parameter_section;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use skit_application::library_detail::{LibraryFormFacts, LibraryFormProjector};
 use skit_domain::{
-    EntrySettings,
+    Entry, EntrySettings,
     parameters::{
         ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
         synthesized_placeholder,
     },
 };
 use skit_language::{
-    BindingIdentity, CliSurface, DegradationReason, ParseOutcome, ReconcileReport, SourceSpan,
-    managed_params, parse_document, placeholder_params,
+    BindingIdentity, CliSurface, DegradationReason, LosslessSource, ParseOutcome, ReconcileReport,
+    SourceSpan, managed_params, parse_document, placeholder_params,
 };
+
+/// Parser-backed form adapter for one Library entry snapshot.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FormLibraryProjector;
+
+impl LibraryFormProjector for FormLibraryProjector {
+    fn project(&self, entry: &Entry, source: Option<&[u8]>) -> LibraryFormFacts {
+        let kind = entry.meta.kind.as_str();
+        let source = match source {
+            Some(bytes) if kind == "prompt" => {
+                String::from_utf8(bytes.to_vec()).unwrap_or_default()
+            }
+            Some(bytes) => LosslessSource::from_bytes(bytes)
+                .normalized_text()
+                .to_owned(),
+            None => String::new(),
+        };
+        let plan = form_plan(kind, &source, &EntrySettings::from_meta(&entry.meta));
+        LibraryFormFacts {
+            declarations: plan.declarations(),
+            drifted: !plan.drift.is_empty(),
+        }
+    }
+}
 
 /// The source that owns a prepared form.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -130,6 +155,10 @@ pub struct FormPlan {
     pub drift: Vec<FormDrift>,
     /// Whole-surface degradation when a language CLI cannot be represented statically.
     pub degradation: Option<DegradationReason>,
+    /// Whether the parsed source reads its own location.
+    pub uses_self_location: bool,
+    /// Whether a parsed constant would require a rewritten temporary copy.
+    pub has_injectable_const: bool,
 }
 
 impl FormPlan {
@@ -346,10 +375,24 @@ fn project_cli_surface(surface: CliSurface) -> CliFormProjection {
 /// Project a language CLI surface without collapsing absent, empty, and dynamic states.
 #[must_use]
 pub fn cli_form_projection(kind: &str, text: &str) -> CliFormProjection {
+    cli_form_facts(kind, text).0
+}
+
+fn cli_form_facts(kind: &str, text: &str) -> (CliFormProjection, bool, bool) {
     let ParseOutcome::Parsed(document) = parse_document(kind, text) else {
-        return CliFormProjection::Absent;
+        return (CliFormProjection::Absent, false, false);
     };
-    project_cli_surface(document.cli_surface())
+    let analysis = document.analysis();
+    let uses_self_location = analysis.uses_self_location;
+    let has_injectable_const = analysis.candidates.iter().any(|candidate| {
+        candidate.declaration.binding == ParameterBinding::Const
+            && candidate.declaration.delivery == ParameterDelivery::Inject
+    });
+    (
+        project_cli_surface(document.cli_surface()),
+        uses_self_location,
+        has_injectable_const,
+    )
 }
 
 /// Build the fields that one entry exposes to all frontends.
@@ -396,6 +439,8 @@ pub fn form_plan(kind: &str, text: &str, settings: &EntrySettings) -> FormPlan {
                 vec![FormDrift::PromptMissing { names: gone }]
             },
             degradation: None,
+            uses_self_location: false,
+            has_injectable_const: false,
         };
     }
     if kind == "command" {
@@ -413,27 +458,75 @@ pub fn form_plan(kind: &str, text: &str, settings: &EntrySettings) -> FormPlan {
         return plan;
     }
 
+    // PowerShell is the v0.4 reader-only kind. Its param() block owns the form when present, and
+    // declared flag/environment rows extend that static surface instead of replacing it.
+    if kind == "powershell" {
+        return reader_only_form_plan(kind, text, &settings.parameters);
+    }
+
     let riders = declared_riders(&settings.parameters, &BTreeSet::new());
     if !riders.is_empty() {
+        let (_, uses_self_location, has_injectable_const) = cli_form_facts(kind, text);
         return FormPlan {
             source: FormSource::Declared,
             fields: prepared(riders),
+            uses_self_location,
+            has_injectable_const,
             ..FormPlan::default()
         };
     }
 
-    match cli_form_projection(kind, text) {
+    let (cli_surface, uses_self_location, has_injectable_const) = cli_form_facts(kind, text);
+    match cli_surface {
         CliFormProjection::Static { fields, .. } => FormPlan {
             source: FormSource::Reader,
             fields: prepared(fields),
+            uses_self_location,
+            has_injectable_const,
             ..FormPlan::default()
         },
         CliFormProjection::Dynamic { reason, .. } => FormPlan {
             source: FormSource::Reader,
             degradation: Some(reason),
+            uses_self_location,
+            has_injectable_const,
             ..FormPlan::default()
         },
-        CliFormProjection::Absent => FormPlan::default(),
+        CliFormProjection::Absent => FormPlan {
+            uses_self_location,
+            has_injectable_const,
+            ..FormPlan::default()
+        },
+    }
+}
+
+fn reader_only_form_plan(kind: &str, text: &str, declared: &[ParamDecl]) -> FormPlan {
+    match cli_form_projection(kind, text) {
+        CliFormProjection::Static { fields, .. } => {
+            let mut fields = prepared(fields);
+            append_riders(&mut fields, declared);
+            FormPlan {
+                source: FormSource::Reader,
+                fields,
+                ..FormPlan::default()
+            }
+        }
+        // PowerShell is the only reader-only adapter. Its parser publishes either a complete
+        // static param() surface or no surface; unlike Python's multi-command frameworks, it has
+        // no whole-surface Dynamic state. Keep its non-static fallback exhaustive without an
+        // executable branch no real document can produce.
+        CliFormProjection::Absent | CliFormProjection::Dynamic { .. } => {
+            let riders = declared_riders(declared, &BTreeSet::new());
+            if riders.is_empty() {
+                FormPlan::default()
+            } else {
+                FormPlan {
+                    source: FormSource::Declared,
+                    fields: prepared(riders),
+                    ..FormPlan::default()
+                }
+            }
+        }
     }
 }
 
@@ -496,15 +589,24 @@ fn declared_riders(declared: &[ParamDecl], taken: &BTreeSet<String>) -> Vec<Para
 
 fn managed_form_plan(kind: &str, text: &str, managed: &[ParamDecl]) -> FormPlan {
     let parsed = parse_document(kind, text);
+    let (uses_self_location, has_injectable_const) = match &parsed {
+        ParseOutcome::Parsed(document) => {
+            let analysis = document.analysis();
+            (
+                analysis.uses_self_location,
+                analysis.candidates.iter().any(|candidate| {
+                    candidate.declaration.binding == ParameterBinding::Const
+                        && candidate.declaration.delivery == ParameterDelivery::Inject
+                }),
+            )
+        }
+        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => (false, false),
+    };
     let mut report = match &parsed {
         ParseOutcome::Parsed(document) => reconciliation_from_language(document.reconcile(managed)),
-        ParseOutcome::ParserUnavailable(_) => reconciliation_from_language(ReconcileReport {
-            missing: managed.to_vec(),
-            ..ReconcileReport::default()
-        }),
-        ParseOutcome::SyntaxError(_) => {
-            reconciliation_from_language(ReconcileReport::from_syntax_error(managed))
-        }
+        // Every kind that can carry managed metadata has a bundled parser. A parser-unavailable
+        // result therefore has the same conservative all-missing projection as a syntax error.
+        _ => reconciliation_from_language(ReconcileReport::from_syntax_error(managed)),
     };
     if let ParseOutcome::Parsed(document) = &parsed {
         for declaration in managed {
@@ -554,6 +656,8 @@ fn managed_form_plan(kind: &str, text: &str, managed: &[ParamDecl]) -> FormPlan 
         fields,
         drift,
         degradation: None,
+        uses_self_location,
+        has_injectable_const,
     }
 }
 
@@ -572,7 +676,6 @@ fn refresh_default(declaration: &mut ParamDecl, report: &FormReconciliation) {
     }
 }
 
-#[derive(Default)]
 struct FormReconciliation {
     ok: Vec<DeclarationPair>,
     missing: Vec<ParamDecl>,

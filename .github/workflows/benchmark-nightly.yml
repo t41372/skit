@@ -28,11 +28,16 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Python and uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           version: "0.12.3"
           python-version: "3.13"
-          enable-cache: true
+          activate-environment: true
+          # This job installs no package with uv, so uv never makes its cache directory. The
+          # setup-uv post step then fails on the absent path. Keep the cache off.
+          enable-cache: false
+      - name: Verify benchmark Python 3.13
+        run: python3 -c 'import sys; assert sys.version_info[:2] == (3, 13), sys.version'
       - name: Install Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:

@@ -92,6 +92,68 @@ fn human_list_is_readable_without_json_parsing() {
 }
 
 #[test]
+fn human_list_localizes_a_corrupt_sibling_without_hiding_or_rewriting_the_valid_entry() {
+    for (locale, warning_prefix) in [
+        ("en", "warning: entry \"broken\" has corrupt metadata:"),
+        ("zh-CN", "警告：条目 \"broken\" 的元数据已损坏："),
+        ("zh-TW", "警告：項目 \"broken\" 的中繼資料已損毀："),
+    ] {
+        let root = library();
+        let state = TempDir::new().unwrap();
+        let config = TempDir::new().unwrap();
+
+        // Converge the valid legacy index row before the read-only assertion. The registry repair
+        // is a separate v0.4 contract; this test owns only corrupt-sibling isolation and reporting.
+        let mut warm = assert_cmd::cargo::cargo_bin_cmd!("skit");
+        warm.env("SKIT_DATA_DIR", root.path())
+            .env("SKIT_STATE_DIR", state.path())
+            .env("SKIT_CONFIG_DIR", config.path())
+            .args(["list", "--json"])
+            .assert()
+            .success();
+
+        let broken = root.path().join("scripts/broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("meta.toml"), "[").unwrap();
+        let registry_path = root.path().join("registry.toml");
+        let mut registry = fs::read_to_string(&registry_path).unwrap();
+        registry.push_str("\n[entries.broken]\n");
+        fs::write(&registry_path, registry).unwrap();
+        let registry_before = fs::read(&registry_path).unwrap();
+        let valid_before = fs::read(root.path().join("scripts/hello/meta.toml")).unwrap();
+        let broken_before = fs::read(broken.join("meta.toml")).unwrap();
+
+        let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+        let output = command
+            .env("SKIT_DATA_DIR", root.path())
+            .env("SKIT_STATE_DIR", state.path())
+            .env("SKIT_CONFIG_DIR", config.path())
+            .env("SKIT_LANG", locale)
+            .env("NO_COLOR", "1")
+            .arg("list")
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Hello"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.starts_with(warning_prefix), "{stderr}");
+        assert_eq!(fs::read(&registry_path).unwrap(), registry_before);
+        assert_eq!(
+            fs::read(root.path().join("scripts/hello/meta.toml")).unwrap(),
+            valid_before
+        );
+        assert_eq!(fs::read(broken.join("meta.toml")).unwrap(), broken_before);
+        assert_eq!(fs::read_dir(state.path()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(config.path()).unwrap().count(), 0);
+    }
+}
+
+#[test]
 fn human_show_and_params_expose_the_discovery_context() {
     let root = library();
     let state = TempDir::new().unwrap();

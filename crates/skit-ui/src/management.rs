@@ -730,45 +730,46 @@ impl RunnerManagerView {
     }
 
     fn open_editor(&mut self) {
-        let Some(index) = self.action_row().or(self.selected) else {
-            return;
-        };
-        let Some(row) = self.rows.get(index).filter(|row| row.is_editable()) else {
-            return;
-        };
-        let editor = if row.name.is_some() {
-            RunnerEditorView::edit(row)
-        } else {
-            RunnerEditorView::repair(row)
-        };
-        self.overlay = Some(RunnerManagerOverlay::Editor(Box::new(editor)));
+        if let Some(row) = self
+            .action_row()
+            .or(self.selected)
+            .and_then(|index| self.rows.get(index))
+            .filter(|row| row.is_editable())
+        {
+            let editor = if row.name.is_some() {
+                RunnerEditorView::edit(row)
+            } else {
+                RunnerEditorView::repair(row)
+            };
+            self.overlay = Some(RunnerManagerOverlay::Editor(Box::new(editor)));
+        }
     }
 
     fn open_removal(&mut self) {
-        let Some(index) = self.action_row().or(self.selected) else {
-            return;
-        };
-        let Some(row) = self.rows.get(index) else {
-            return;
-        };
-        let request = if row.is_valid() {
-            RunnerRemoveRequest::Named {
-                name: row.name.clone().unwrap_or_default(),
-                expected: row.key_identities.clone(),
-                expected_pinned_count: row.pinned_count,
-            }
-        } else {
-            RunnerRemoveRequest::RawRow {
-                expected: row.identity.clone(),
-            }
-        };
-        self.overlay = Some(RunnerManagerOverlay::Removal(RunnerRemovalView {
-            name: row.label().to_owned(),
-            pinned_count: if row.is_valid() { row.pinned_count } else { 0 },
-            invalid_row: !row.is_valid(),
-            container: row.identity.index.is_none(),
-            request,
-        }));
+        if let Some(row) = self
+            .action_row()
+            .or(self.selected)
+            .and_then(|index| self.rows.get(index))
+        {
+            let request = if row.is_valid() {
+                RunnerRemoveRequest::Named {
+                    name: row.name.clone().unwrap_or_default(),
+                    expected: row.key_identities.clone(),
+                    expected_pinned_count: row.pinned_count,
+                }
+            } else {
+                RunnerRemoveRequest::RawRow {
+                    expected: row.identity.clone(),
+                }
+            };
+            self.overlay = Some(RunnerManagerOverlay::Removal(RunnerRemovalView {
+                name: row.label().to_owned(),
+                pinned_count: if row.is_valid() { row.pinned_count } else { 0 },
+                invalid_row: !row.is_valid(),
+                container: row.identity.index.is_none(),
+                request,
+            }));
+        }
     }
 }
 
@@ -980,18 +981,220 @@ mod tests {
             "codex --model o3 '{{prompt}}'".to_owned(),
         ));
         let effect = editor.reduce(RunnerEditorAction::Submit);
-        let RunnerEditorEffect::Save(request) = effect else {
-            panic!("a valid editor must request a save: {effect:?}");
-        };
-        assert_eq!(request.name, "codex");
-        assert_eq!(request.argv, ["codex", "--model", "o3", "{{prompt}}"]);
         assert_eq!(
-            request.target,
-            RunnerSaveTarget::Named {
+            effect,
+            RunnerEditorEffect::Save(RunnerSaveRequest {
                 name: "codex".to_owned(),
-                expected: vec![identity(Some(1), "old")],
-            }
+                argv: vec![
+                    "codex".to_owned(),
+                    "--model".to_owned(),
+                    "o3".to_owned(),
+                    "{{prompt}}".to_owned(),
+                ],
+                target: RunnerSaveTarget::Named {
+                    name: "codex".to_owned(),
+                    expected: vec![identity(Some(1), "old")],
+                },
+            })
         );
+    }
+
+    #[test]
+    fn health_navigation_covers_empty_boundaries_pages_and_invalid_mouse_rows() {
+        let mut empty_snapshot = health_snapshot();
+        empty_snapshot.issues.clear();
+        let mut empty = HealthView::new(empty_snapshot);
+        let before = serde_json::to_value(&empty).unwrap();
+        for action in [
+            HealthAction::Previous,
+            HealthAction::Next,
+            HealthAction::PagePrevious(usize::MAX),
+            HealthAction::PageNext(usize::MAX),
+            HealthAction::Home,
+            HealthAction::End,
+            HealthAction::SelectIssue(9),
+            HealthAction::Jump,
+            HealthAction::ActivateIssue(9),
+        ] {
+            assert_eq!(empty.reduce(action), HealthEffect::None);
+        }
+        assert_eq!(serde_json::to_value(&empty).unwrap(), before);
+        assert_eq!(empty.reduce(HealthAction::Back), HealthEffect::Close);
+
+        let mut populated = HealthView::new(health_snapshot());
+        populated.reduce(HealthAction::PageNext(usize::MAX));
+        assert_eq!(populated.selected_issue(), Some(1));
+        populated.reduce(HealthAction::PagePrevious(usize::MAX));
+        assert_eq!(populated.selected_issue(), Some(0));
+        populated.reduce(HealthAction::End);
+        assert_eq!(populated.selected_issue(), Some(1));
+        populated.reduce(HealthAction::Home);
+        assert_eq!(populated.selected_issue(), Some(0));
+        populated.reduce(HealthAction::SelectIssue(1));
+        assert_eq!(populated.selected_issue(), Some(1));
+    }
+
+    #[test]
+    fn runner_editor_and_manager_edges_are_typed_and_preserve_invalid_state() {
+        for error in [
+            RunnerCommandError::EmptyCommand,
+            RunnerCommandError::PromptSlotCount,
+            RunnerCommandError::PromptInProgram,
+            RunnerCommandError::UnsupportedHole,
+        ] {
+            assert!(matches!(
+                RunnerEditorError::from(error),
+                RunnerEditorError::EmptyCommand
+                    | RunnerEditorError::PromptSlotCount
+                    | RunnerEditorError::PromptInProgram
+                    | RunnerEditorError::UnsupportedHole
+            ));
+        }
+        for error in [
+            RunnerArgvError::EmptyCommand,
+            RunnerArgvError::PromptSlotCount,
+            RunnerArgvError::PromptInProgram,
+            RunnerArgvError::UnsupportedHole,
+        ] {
+            assert_eq!(
+                RunnerEditorError::from(error),
+                match error {
+                    RunnerArgvError::EmptyCommand => RunnerEditorError::EmptyCommand,
+                    RunnerArgvError::PromptSlotCount => RunnerEditorError::PromptSlotCount,
+                    RunnerArgvError::PromptInProgram => RunnerEditorError::PromptInProgram,
+                    RunnerArgvError::UnsupportedHole => RunnerEditorError::UnsupportedHole,
+                }
+            );
+        }
+
+        let raw = RunnerRow {
+            identity: identity(Some(2), "raw"),
+            name: None,
+            argv: Some(vec!["agent".to_owned(), "{{prompt}}".to_owned()]),
+            reason: Some("name".to_owned()),
+            descriptor: "raw row".to_owned(),
+            key_identities: Vec::new(),
+            pinned_count: 0,
+        };
+        let mut repair = RunnerEditorView::repair(&raw);
+        assert_eq!(repair.mode(), RunnerEditorMode::Repair);
+        repair.reduce(RunnerEditorAction::Focus(RunnerEditorField::Command));
+        assert_eq!(repair.focused(), RunnerEditorField::Command);
+        repair.reduce(RunnerEditorAction::FocusNext);
+        assert_eq!(repair.focused(), RunnerEditorField::Name);
+        repair.reduce(RunnerEditorAction::FocusPrevious);
+        assert_eq!(repair.focused(), RunnerEditorField::Command);
+
+        let named = RunnerEditorView::edit(&valid_row("named", 0, "named", 0));
+        assert_eq!(named.mode(), RunnerEditorMode::Edit);
+        let mut missing_name = RunnerEditorView::new();
+        missing_name.reduce(RunnerEditorAction::SetCommand(
+            "agent {{prompt}}".to_owned(),
+        ));
+        assert_eq!(
+            missing_name.reduce(RunnerEditorAction::Submit),
+            RunnerEditorEffect::None
+        );
+        assert_eq!(missing_name.error(), Some(&RunnerEditorError::NameRequired));
+        assert_eq!(missing_name.focused(), RunnerEditorField::Name);
+
+        let mut empty = RunnerManagerView::new(Vec::new());
+        let before = serde_json::to_value(&empty).unwrap();
+        for action in [
+            RunnerManagerAction::Previous,
+            RunnerManagerAction::Next,
+            RunnerManagerAction::PagePrevious(usize::MAX),
+            RunnerManagerAction::PageNext(usize::MAX),
+            RunnerManagerAction::Home,
+            RunnerManagerAction::End,
+            RunnerManagerAction::Select(9),
+            RunnerManagerAction::ActivateSelected,
+            RunnerManagerAction::ActivateRow(9),
+            RunnerManagerAction::EditSelected,
+            RunnerManagerAction::RemoveSelected,
+            RunnerManagerAction::CloseActions,
+            RunnerManagerAction::Editor(RunnerEditorAction::Cancel),
+            RunnerManagerAction::ConfirmRemove,
+            RunnerManagerAction::CancelRemove,
+        ] {
+            assert_eq!(empty.reduce(action), RunnerManagerEffect::None);
+        }
+        assert_eq!(serde_json::to_value(&empty).unwrap(), before);
+        assert_eq!(
+            empty.reduce(RunnerManagerAction::Back),
+            RunnerManagerEffect::Close
+        );
+        assert_eq!(
+            empty.reduce(RunnerManagerAction::EditSelected),
+            RunnerManagerEffect::None
+        );
+        assert_eq!(
+            empty.reduce(RunnerManagerAction::RemoveSelected),
+            RunnerManagerEffect::None
+        );
+
+        let rows = vec![valid_row("one", 0, "one", 0), raw.clone()];
+        let mut manager = RunnerManagerView::new(rows.clone());
+        manager.reduce(RunnerManagerAction::PageNext(usize::MAX));
+        assert_eq!(manager.selected(), Some(1));
+        manager.reduce(RunnerManagerAction::PagePrevious(usize::MAX));
+        assert_eq!(manager.selected(), Some(0));
+        manager.reduce(RunnerManagerAction::End);
+        assert_eq!(manager.selected(), Some(1));
+        manager.reduce(RunnerManagerAction::Home);
+        assert_eq!(manager.selected(), Some(0));
+        manager.reduce(RunnerManagerAction::Select(1));
+        manager.reduce(RunnerManagerAction::ActivateRow(1));
+        assert_eq!(manager.action_row(), Some(1));
+        manager.reduce(RunnerManagerAction::EditSelected);
+        assert_eq!(
+            manager.editor().map(RunnerEditorView::mode),
+            Some(RunnerEditorMode::Repair)
+        );
+        manager.reduce(RunnerManagerAction::CancelEditor);
+        manager.reduce(RunnerManagerAction::ActivateRow(1));
+        manager.reduce(RunnerManagerAction::RemoveSelected);
+        assert!(matches!(
+            manager.removal(),
+            Some(removal) if removal.invalid_row
+                && matches!(removal.request, RunnerRemoveRequest::RawRow { .. })
+        ));
+        assert!(matches!(
+            manager.reduce(RunnerManagerAction::ConfirmRemove),
+            RunnerManagerEffect::Remove(RunnerRemoveRequest::RawRow { .. })
+        ));
+        manager.reduce(RunnerManagerAction::CancelRemove);
+        assert!(manager.removal().is_none());
+
+        manager.reduce(RunnerManagerAction::New);
+        assert!(manager.editor().is_some());
+        manager.reduce(RunnerManagerAction::Editor(RunnerEditorAction::Cancel));
+        assert!(manager.editor().is_none());
+        manager.reduce(RunnerManagerAction::New);
+        manager.reduce(RunnerManagerAction::CancelEditor);
+        assert!(manager.editor().is_none());
+        manager.reduce(RunnerManagerAction::MutationFailed("failed".to_owned()));
+        assert_eq!(manager.status(), Some("failed"));
+
+        manager.reduce(RunnerManagerAction::MutationSucceeded {
+            rows: rows.clone(),
+            selected_name: Some("one".to_owned()),
+            message: "saved".to_owned(),
+        });
+        assert_eq!(manager.selected(), Some(0));
+        assert_eq!(manager.status(), Some("saved"));
+        manager.reduce(RunnerManagerAction::MutationSucceeded {
+            rows: vec![raw],
+            selected_name: Some("missing".to_owned()),
+            message: "refreshed".to_owned(),
+        });
+        assert_eq!(manager.selected(), Some(0));
+        manager.reduce(RunnerManagerAction::MutationSucceeded {
+            rows: Vec::new(),
+            selected_name: None,
+            message: "empty".to_owned(),
+        });
+        assert_eq!(manager.selected(), None);
     }
 
     #[test]

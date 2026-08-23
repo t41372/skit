@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, is_secret_name,
+    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    SourceNormalizationRefusalKind, is_secret_name,
 };
 
 use super::{
@@ -150,13 +151,18 @@ fn top_level_assignments(document: &ParsedDocument) -> Vec<(tree_sitter::Node<'_
 
 fn constant_candidates(document: &ParsedDocument) -> Vec<SemanticCandidate> {
     let mut output = Vec::<SemanticCandidate>::new();
-    for (assignment, readonly) in top_level_assignments(document) {
+    for (assignment, readonly, name_node) in
+        top_level_assignments(document)
+            .into_iter()
+            .filter_map(|(assignment, readonly)| {
+                assignment
+                    .child_by_field_name("name")
+                    .map(|name| (assignment, readonly, name))
+            })
+    {
         if readonly || assignment_operator(assignment) != "=" {
             continue;
         }
-        let Some(name_node) = assignment.child_by_field_name("name") else {
-            continue;
-        };
         if name_node.kind() != "variable_name" {
             continue;
         }
@@ -219,12 +225,12 @@ fn env_default_candidates(
         if !DEFAULT_OPERATORS.contains(&operator_text) {
             return;
         }
-        let Some(name_node) = named_children(node).into_iter().next() else {
+        let Some(name_node) = named_children(node)
+            .into_iter()
+            .find(|child| child.kind() == "variable_name")
+        else {
             return;
         };
-        if name_node.kind() != "variable_name" {
-            return;
-        }
         let name = text(document, name_node);
         if clobbered.contains(name) || !seen.insert(name.to_owned()) {
             return;
@@ -717,10 +723,10 @@ fn shell_read_preamble(keyword: &str) -> String {
     )
 }
 
-pub(super) fn normalize(
+pub(super) fn normalize_typed(
     document: &ParsedDocument,
     name: &str,
-) -> Result<SourceEditPlan, LanguageError> {
+) -> Result<SourceEditPlan, SourceNormalizationRefusalKind> {
     let assignments = top_level_assignments(document)
         .into_iter()
         .filter(|(assignment, _)| {
@@ -731,37 +737,29 @@ pub(super) fn normalize(
         })
         .collect::<Vec<_>>();
     let [(assignment, readonly)] = assignments.as_slice() else {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
+        return Err(if assignments.is_empty() {
+            SourceNormalizationRefusalKind::NotAConst
+        } else {
+            SourceNormalizationRefusalKind::MultipleAssignments
         });
     };
     if *readonly {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::Readonly);
     }
     let Some(value) = assignment.child_by_field_name("value") else {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::NotAConst);
     };
     if references(document, value, name) {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::AlreadyEnv);
     }
     let Some(literal) = literal_text(document, value).filter(|value| !value.is_empty()) else {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::NotAConst);
     };
     if literal
         .chars()
         .any(|character| "}\"`$\\\n;|&()<>".contains(character))
     {
-        return Err(LanguageError::BindingNotFound {
-            name: name.to_owned(),
-        });
+        return Err(SourceNormalizationRefusalKind::UnsafeLiteral);
     }
     Ok(SourceEditPlan {
         source: document.source.clone(),
@@ -830,12 +828,12 @@ fn mutated_names(document: &ParsedDocument) -> BTreeSet<String> {
     let mut output = BTreeSet::new();
     walk(document.tree.root_node(), &mut |node| match node.kind() {
         "variable_assignment" => {
-            let Some(name) = node.child_by_field_name("name") else {
+            let Some(name) = node
+                .child_by_field_name("name")
+                .filter(|name| name.kind() == "variable_name")
+            else {
                 return;
             };
-            if name.kind() != "variable_name" {
-                return;
-            }
             let name_text = text(document, name);
             if assignment_operator(node) == "+="
                 || node

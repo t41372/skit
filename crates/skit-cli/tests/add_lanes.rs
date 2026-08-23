@@ -221,6 +221,8 @@ fn edit_and_no_input_are_an_explicit_usage_conflict() {
 #[cfg(unix)]
 #[test]
 fn edit_creates_a_python_draft_and_removes_it_after_copying() {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
     use std::os::unix::fs::PermissionsExt as _;
 
     let sandbox = Sandbox::new();
@@ -236,11 +238,32 @@ fn edit_creates_a_python_draft_and_removes_it_after_copying() {
     )
     .unwrap();
 
-    sandbox
-        .command()
-        .args(["add", "--edit", "--name", "Draft"])
-        .assert()
-        .success();
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(std::path::PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(["add", "--edit", "--name", "Draft"]);
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("SKIT_LANG", "en");
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output).unwrap();
+        output
+    });
+    let status = child.wait().unwrap();
+    drop(pair.master);
+    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    assert_eq!(status.exit_code(), 0, "{output}");
 
     assert_eq!(
         fs::read(sandbox.data.path().join("scripts/draft/script.py")).unwrap(),

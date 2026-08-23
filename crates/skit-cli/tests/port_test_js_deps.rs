@@ -36,8 +36,7 @@
 //!   transaction and contracts in other owning crates).
 //! - ABSENT (compiling `#[ignore]` stub, MUST-FIX + Python ref): library seams the Rust
 //!   surface never exposes — `split_requirement(s)`, `require_installer`, `needs_install`,
-//!   `_failure_detail` (the runner discards stderr), `sweep_stale_injected`, a
-//!   manifest-with-module-type, the install-announce line.
+//!   and a manifest-with-module-type.
 //! - CROSS-CRATE / TOOLING (compiling `#[ignore]` stub naming the owning tier): the TUI
 //!   screens (`skit-tui`/`skit-ui`), the injection temp-file placement (`rewrite`), the
 //!   `RunnerLaunch.build`/`preflight` install wiring (`skit-runtime` launch + `skit-cli`
@@ -52,14 +51,28 @@ use std::sync::Mutex;
 
 use tempfile::TempDir;
 
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
+
+use skit_application::{
+    CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
+    form_state::FormStateRepository as _, payload_stored_name,
+};
+use skit_domain::{EntryKind, EntrySettings, Slug, StorageMode};
 use skit_language::external_dependencies;
 use skit_runtime::{
-    DependencyCommand, DependencyCommandRunner, JavaScriptModuleType, ProgramProbe,
-    clear_javascript_dependencies, ensure_javascript_dependencies_for_module,
-    ensure_javascript_dependencies_with_environment, javascript_dependency_manifest,
-    javascript_module_type,
+    DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
+    JavaScriptModuleType, ProgramProbe, clear_javascript_dependencies,
+    ensure_javascript_dependencies_for_module, ensure_javascript_dependencies_with_environment,
+    javascript_dependencies_need_install, javascript_dependency_failure_detail,
+    javascript_dependency_manifest, javascript_dependency_manifest_for_module,
+    javascript_module_type, preflight_javascript_dependencies,
+    resolve_javascript_dependency_installer, split_javascript_requirement,
+    split_javascript_requirements,
 };
-use skit_store::FileConfigStore;
+use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
 
 // ============================================================================
 // Self-contained fixtures (no shared helper is edited or imported).
@@ -102,6 +115,7 @@ enum Outcome {
 #[derive(Debug)]
 struct RecordingRunner {
     calls: Mutex<Vec<DependencyCommand>>,
+    announcements: Mutex<Vec<String>>,
     outcome: Outcome,
 }
 
@@ -109,6 +123,7 @@ impl RecordingRunner {
     fn new(outcome: Outcome) -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
+            announcements: Mutex::new(Vec::new()),
             outcome,
         }
     }
@@ -120,14 +135,33 @@ impl RecordingRunner {
     fn calls(&self) -> Vec<DependencyCommand> {
         self.calls.lock().unwrap().clone()
     }
+
+    fn announcements(&self) -> Vec<String> {
+        self.announcements.lock().unwrap().clone()
+    }
 }
 
 impl DependencyCommandRunner for RecordingRunner {
-    fn run(&self, command: &DependencyCommand) -> std::io::Result<bool> {
+    fn installation_started(&self, installer: &str) {
+        self.announcements
+            .lock()
+            .unwrap()
+            .push(installer.to_owned());
+    }
+
+    fn run(&self, command: &DependencyCommand) -> std::io::Result<DependencyCommandOutput> {
         self.calls.lock().unwrap().push(command.clone());
         match &self.outcome {
-            Outcome::Success => Ok(true),
-            Outcome::Failure => Ok(false),
+            Outcome::Success => Ok(DependencyCommandOutput {
+                success: true,
+                exit_code: Some(0),
+                stderr: Vec::new(),
+            }),
+            Outcome::Failure => Ok(DependencyCommandOutput {
+                success: false,
+                exit_code: Some(1),
+                stderr: Vec::new(),
+            }),
             Outcome::IoError(message) => Err(std::io::Error::other(message.clone())),
         }
     }
@@ -159,17 +193,17 @@ const PY_MANIFEST_CHALK5: &str =
 // --- Composition root: fresh sandbox + the real `skit` binary ---
 
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
         }
     }
 
@@ -210,6 +244,23 @@ fn combine(output: &std::process::Output) -> String {
     text
 }
 
+fn registry_product_rows(bytes: &[u8]) -> toml::Table {
+    let mut document = toml::from_str::<toml::Table>(&String::from_utf8_lossy(bytes)).unwrap();
+    if let Some(entries) = document
+        .get_mut("entries")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for row in entries
+            .iter_mut()
+            .filter_map(|(_, value)| value.as_table_mut())
+        {
+            row.remove("mtime_ns");
+            row.remove("skit_cache");
+        }
+    }
+    document
+}
+
 /// Write a source file with a fixed name so the copy slug is deterministic.
 fn write_source(dir: &Path, name: &str, body: &str) -> PathBuf {
     let path = dir.join(name);
@@ -222,8 +273,23 @@ fn write_source(dir: &Path, name: &str, body: &str) -> PathBuf {
 // ============================================================================
 
 #[test]
-#[ignore = "ABSENT (library seam): the oracle's public js_deps.split_requirement(req) -> (name, range) has no public Rust equivalent. skit-runtime now uses the same split rules inside its private manifest builder, but does not expose the tuple surface. MUST-FIX: expose a split_requirement surface. Python ref src/skit/langs/javascript/deps.py:97-105 (cases chalk, chalk@^5, chalk@5.6.2, chalk@, @scope/pkg, @scope/pkg@>=1,<2, @scope)."]
-fn test_split_requirement() {}
+fn test_split_requirement() {
+    for (requirement, expected) in [
+        ("chalk", ("chalk", "*")),
+        ("chalk@^5", ("chalk", "^5")),
+        ("chalk@5.6.2", ("chalk", "5.6.2")),
+        ("chalk@", ("chalk", "*")),
+        ("@scope/pkg", ("@scope/pkg", "*")),
+        ("@scope/pkg@>=1,<2", ("@scope/pkg", ">=1,<2")),
+        ("@scope", ("@scope", "*")),
+    ] {
+        assert_eq!(
+            split_javascript_requirement(requirement),
+            (expected.0.to_owned(), expected.1.to_owned()),
+            "{requirement}"
+        );
+    }
+}
 
 #[test]
 fn test_manifest_text_is_deterministic_and_private() {
@@ -288,12 +354,35 @@ fn test_clean_on_an_already_clean_dir_is_a_no_op() {
 // ============================================================================
 
 #[test]
-#[ignore = "ABSENT (library seam): the oracle's public js_deps.require_installer(runner) -> path (node->npm, bun->bun, deno->deno, unknown->npm) has no public Rust equivalent; installer resolution lives in the private dependency_command. MUST-FIX: expose an installer-resolution surface. Python ref deps.py:221-234, 76-77."]
-fn test_require_installer_maps_runner_to_its_own_installer() {}
+fn test_require_installer_maps_runner_to_its_own_installer() {
+    let probe = FakeProbe { present: true };
+    for (runner, installer) in [
+        ("node", "npm"),
+        ("bun", "bun"),
+        ("deno", "deno"),
+        ("weird", "npm"),
+    ] {
+        assert_eq!(
+            resolve_javascript_dependency_installer(runner, &probe).unwrap(),
+            PathBuf::from(format!("/bin/{installer}")),
+            "{runner}"
+        );
+    }
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): js_deps.require_installer raises NotExecutableError naming the missing installer ('npm'); no public Rust require_installer exists. MUST-FIX per above. Python ref deps.py:221-234."]
-fn test_require_installer_missing_raises_126_family() {}
+fn test_require_installer_missing_raises_126_family() {
+    let error =
+        resolve_javascript_dependency_installer("node", &FakeProbe { present: false }).unwrap_err();
+    assert!(matches!(
+        error,
+        DependencyError::InstallerNotFound { ref name } if name == "npm"
+    ));
+    assert_eq!(
+        error.to_string(),
+        "npm is needed to install this script's dependencies, but it isn't on your PATH."
+    );
+}
 
 // ============================================================================
 // ensure_installed
@@ -432,8 +521,109 @@ fn test_ensure_installed_stale_marker_rebuilds_from_scratch() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): the installer's stderr detail ('Not Found - GET …/pkg') is surfaced on failure via _failure_detail; the Rust DependencyCommandRunner returns io::Result<bool> and DISCARDS stderr, so InstallFailed carries only the program path. MUST-FIX: give the runner a stderr channel and port _failure_detail. Python ref deps.py:293-313, 408-412."]
-fn test_ensure_installed_installer_failure_carries_its_stderr() {}
+#[cfg(unix)]
+fn test_ensure_installed_installer_failure_carries_its_stderr() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let bin = TempDir::new().unwrap();
+    for (name, body) in [
+        ("node", "#!/bin/sh\nexit 0\n"),
+        (
+            "npm",
+            concat!(
+                "#!/bin/sh\n",
+                "printf '%s\\n' 'npm error code E404' >&2\n",
+                "printf '%s\\n' 'npm error 404 Not Found - GET https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz - Not found' >&2\n",
+                "printf '%s\\n' 'npm error A complete log of this run can be found in: /tmp/debug.log' >&2\n",
+                "exit 23\n",
+            ),
+        ),
+    ] {
+        let path = bin.path().join(name);
+        fs::write(&path, body).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    let store = FileStore::new(data.path());
+    let kind = EntryKind::parse("js").unwrap();
+    let entry = store
+        .create(CreateEntry {
+            name: "t".to_owned(),
+            kind: kind.clone(),
+            mode: StorageMode::Copy,
+            source: "t.js".to_owned(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"console.log(1);\n".to_vec(),
+                stored_name: Some(payload_stored_name(&kind, Path::new("t.js"))),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                dependencies: vec!["skit-no-such-pkg-e2e-xyz".to_owned()],
+                interpreter: "node".to_owned(),
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    let source_path = store.payload_path(&entry).unwrap();
+    let source_before = fs::read(&source_path).unwrap();
+    let meta_before = fs::read(entry_dir.join("meta.toml")).unwrap();
+    let registry_before = fs::read(data.path().join("registry.toml")).unwrap();
+
+    let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+    let output = command
+        .env("SKIT_DATA_DIR", data.path())
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_CONFIG_DIR", config.path())
+        .env("SKIT_LANG", "en")
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("xdg-config"))
+        .env("XDG_DATA_HOME", home.path().join("xdg-data"))
+        .env("XDG_STATE_HOME", home.path().join("xdg-state"))
+        .env("PATH", bin.path())
+        .current_dir(home.path())
+        .args(["run", "t", "--no-input"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert_eq!(output.status.code(), Some(126), "{stderr}");
+    assert!(
+        output.stdout.is_empty(),
+        "installer output leaked to stdout"
+    );
+    assert!(stderr.contains("Not Found - GET"), "{stderr}");
+    assert!(stderr.contains("skit-no-such-pkg-e2e-xyz"), "{stderr}");
+    assert!(
+        stderr.starts_with("Installing dependencies (npm)…\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Installing dependencies failed (npm): npm error 404 Not Found - GET"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("A complete log"), "{stderr}");
+    assert_eq!(fs::read(&source_path).unwrap(), source_before);
+    assert_eq!(fs::read(entry_dir.join("meta.toml")).unwrap(), meta_before);
+    assert_eq!(
+        fs::read(data.path().join("registry.toml")).unwrap(),
+        registry_before
+    );
+    assert!(fs::read_dir(state.path()).unwrap().next().is_none());
+    assert!(fs::read_dir(config.path()).unwrap().next().is_none());
+    assert!(!entry_dir.join("node_modules/.skit-deps-ok").exists());
+    assert!(!entry_dir.join(".skit-deps").exists());
+    assert!(!entry_dir.join("package.json").exists());
+}
 
 #[test]
 fn test_ensure_installed_failure_without_stderr_still_reports() {
@@ -450,7 +640,9 @@ fn test_ensure_installed_failure_without_stderr_still_reports() {
         &runner,
     )
     .unwrap_err();
-    assert!(error.to_string().contains("npm"));
+    assert_eq!(error.to_string(), "Installing dependencies failed (npm): ?");
+    assert!(!dir.join("package.json").exists());
+    assert!(!dir.join("node_modules/.skit-deps-ok").exists());
     drop(root);
 }
 
@@ -469,7 +661,9 @@ fn test_ensure_installed_spawn_oserror_is_wrapped() {
         &runner,
     )
     .unwrap_err();
-    assert!(error.to_string().contains("exec format error"));
+    assert_eq!(error.to_string(), "Couldn't run npm: exec format error");
+    assert!(!dir.join("package.json").exists());
+    assert!(!dir.join("node_modules/.skit-deps-ok").exists());
     drop(root);
 }
 
@@ -614,16 +808,40 @@ fn test_build_installs_declared_deps_with_the_resolved_runner() {}
 fn test_build_skips_the_engine_without_copy_mode_deps() {}
 
 #[test]
-#[ignore = "ABSENT (library seam): RunnerLaunch.preflight calls require_installer when deps are declared and raises NotExecutableError when npm is missing; the Rust rewrite exposes no preflight/installer-precheck surface. MUST-FIX: port preflight. Python ref langs/launch.py RunnerLaunch.preflight, deps.py:221-234."]
-fn test_preflight_requires_the_installer_when_deps_are_declared() {}
+fn test_preflight_requires_the_installer_when_deps_are_declared() {
+    let (root, dir) = entry_dir();
+    std::fs::create_dir(dir.join(".skit-deps.backup")).unwrap();
+    std::fs::write(dir.join(".skit-deps.backup/sentinel"), b"old").unwrap();
+    std::fs::create_dir(dir.join(".skit-deps.tmp-interrupted")).unwrap();
+    let error = preflight_javascript_dependencies(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &FakeProbe { present: false },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(error, skit_runtime::DependencyError::InstallerNotFound { ref name } if name == "npm"),
+        "{error:?}"
+    );
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(
+        std::fs::read(dir.join(".skit-deps.backup/sentinel")).unwrap(),
+        b"old"
+    );
+    assert!(dir.join(".skit-deps.tmp-interrupted").is_dir());
+    assert!(!dir.join("package.json").exists());
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): preflight must NOT ask for an installer when no deps are declared; no Rust preflight surface exists. MUST-FIX per above. Python ref test_js_deps.py:459-466."]
-fn test_preflight_without_deps_does_not_ask_for_an_installer() {}
-
-#[test]
-#[ignore = "ABSENT (library seam): every RunnerLaunch.build sweeps aged '.injected-*' leftovers (age-gated, keeping fresh ones); there is no sweep_stale_injected nor a build-time sweep on the Rust surface. MUST-FIX: port sweep_stale_injected + wire it into launch. Python ref deps.py:164-179, test_js_deps.py:469-484."]
-fn test_build_sweeps_aged_injected_leftovers_but_not_fresh_ones() {}
+fn test_preflight_without_deps_does_not_ask_for_an_installer() {
+    let (root, dir) = entry_dir();
+    preflight_javascript_dependencies(&dir, "node", &[], &FakeProbe { present: false })
+        .expect("no dependencies must not require npm");
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
 
 // ============================================================================
 // write_injected adjacency (prefer_entry_dir) and the JS injector's use of it
@@ -1039,8 +1257,17 @@ fn test_load_mirror_type_hardens_a_hand_edited_npm_value() {
 // ============================================================================
 
 #[test]
-#[ignore = "ABSENT (library seam): js_deps.split_requirements(text) plain-comma-splits an npm requirement list, keeping ', @scope/pkg' apart. No public Rust equivalent (the comma split lives inside the CLI's flag parsing). MUST-FIX: expose a split_requirements surface. Python ref deps.py:87-94, test_js_deps.py:967-979."]
-fn test_split_requirements_keeps_scoped_packages_apart() {}
+fn test_split_requirements_keeps_scoped_packages_apart() {
+    assert_eq!(
+        split_javascript_requirements("chalk, @aws-sdk/client-s3"),
+        ["chalk", "@aws-sdk/client-s3"]
+    );
+    assert_eq!(
+        split_javascript_requirements(" zod@^3 ,, @trpc/server@10 , "),
+        ["zod@^3", "@trpc/server@10"]
+    );
+    assert!(split_javascript_requirements("").is_empty());
+}
 
 #[test]
 fn test_interactive_accept_of_a_scoped_suggestion_round_trips() {
@@ -1086,8 +1313,20 @@ fn test_module_type_for() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): manifest_text(deps, module_type='module') embeds a '\"type\": \"module\"' key and omits it otherwise. The public javascript_dependency_manifest takes NO module-type argument (the _for_module builder is private), so a manifest-with-type has no public entry point. MUST-FIX: expose a module-typed manifest. Python ref deps.py:117-131, test_js_deps.py:1038-1041."]
-fn test_manifest_text_carries_the_module_type() {}
+fn test_manifest_text_carries_the_module_type() {
+    let dependencies = deps(&["chalk"]);
+    let typed = javascript_dependency_manifest_for_module(
+        &dependencies,
+        Some(JavaScriptModuleType::Module),
+    )
+    .unwrap();
+    assert!(typed.contains("\"type\": \"module\""));
+    assert!(
+        !javascript_dependency_manifest(&dependencies)
+            .unwrap()
+            .contains("\"type\"")
+    );
+}
 
 #[test]
 #[ignore = "CROSS-CRATE (launch + run composition): RunnerLaunch.build passes the original extension's module type into ensure_installed, so a .mjs source stored as script.js keeps '\"type\": \"module\"'. No injectable ensure seam is observable from build. Owner: skit-runtime launch. Python ref test_js_deps.py:1044-1060."]
@@ -1102,28 +1341,81 @@ fn test_install_lock_uses_a_persistent_inode_outside_the_entry() {}
 fn test_install_lock_waits_for_a_live_holder() {}
 
 #[test]
-#[ignore = "CROSS-CRATE (store.remove + install lock): store.remove waits for a live JS install lock before deleting the entry. The lock is private and the store's removal surface is skit-store's typed CAS, not the oracle's store.remove(slug). Owner: skit-store remove + skit-runtime lock. Python ref test_js_deps.py:1100-1124."]
-fn test_store_remove_waits_for_a_live_js_install_lock() {}
-
-#[test]
-#[ignore = "CROSS-CRATE (store.remove + install lock): a JS dependency lock refusal surfaces as a clean store error and leaves the entry intact. Private lock, different store surface. Owner: skit-store remove + skit-runtime lock. Python ref test_js_deps.py:1127-1145."]
-fn test_store_remove_surfaces_install_lock_failure_without_deleting_entry() {}
-
-#[test]
 #[ignore = "PRIVATE HELPER (white-box): ensure_installed runs the installer while the per-entry lock is held. The Rust dependency_lock is private with no observable held-during-run surface. Python ref deps.py:371-414, test_js_deps.py:1148-1161."]
 fn test_ensure_installed_serializes_under_the_entry_lock() {}
 
 #[test]
-#[ignore = "ABSENT (failure-injection seam): clean() fails LOUDLY, raising NotExecutableError naming the first path that would not go. The oracle monkeypatches Path.unlink to raise; the Rust clear has no injectable filesystem seam to force a loud failure. MUST-FIX only if a loud-failure contract is desired for clear. Python ref deps.py:189-218, test_js_deps.py:1164-1173."]
-fn test_clean_failure_is_loud_not_silent() {}
+#[cfg(unix)]
+fn test_update_dependencies_surfaces_clean_failure_as_store_error() {
+    use std::os::unix::fs::PermissionsExt as _;
 
-#[test]
-#[ignore = "ABSENT (failure-injection seam): a half-deleted node_modules must fail loudly (the Windows read-only rmtree case). The oracle monkeypatches shutil.rmtree; the Rust clear has no injectable rmtree seam. Python ref deps.py:196-213, test_js_deps.py:1176-1188."]
-fn test_clean_rmtree_failure_is_loud() {}
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.js", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "chalk", "--no-input"])
+        .assert()
+        .success();
+    let entry_dir = sandbox.entry_dir("t");
+    let stored = entry_dir.join("script.js");
+    let meta = entry_dir.join("meta.toml");
+    let registry = sandbox.data.path().join("registry.toml");
+    let stored_before = std::fs::read(&stored).unwrap();
+    let meta_before = std::fs::read(&meta).unwrap();
+    let registry_before = std::fs::read(&registry).unwrap();
+    std::fs::write(entry_dir.join("package.json"), "{\"private\":true}\n").unwrap();
+    let modules = entry_dir.join("node_modules");
+    std::fs::create_dir_all(modules.join("chalk")).unwrap();
+    std::fs::write(modules.join("chalk/index.js"), "module.exports = 1;\n").unwrap();
+    std::fs::set_permissions(
+        modules.join("chalk"),
+        std::fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
 
-#[test]
-#[ignore = "CROSS-CRATE (store clearing wiring): store.update_dependencies surfaces a clean() failure as a store error and leaves the record untouched (the sweep runs before the meta write). Needs the store's clear-then-write ordering plus a failure-injection seam. Owner: skit-store update. Python ref test_js_deps.py:1191-1206."]
-fn test_update_dependencies_surfaces_clean_failure_as_store_error() {}
+    let output = sandbox
+        .skit()
+        .args(["deps", "t", "--clear"])
+        .output()
+        .unwrap();
+
+    // Restore permissions wherever the failed transaction kept the authoritative tree.
+    for item in std::fs::read_dir(&entry_dir).unwrap().flatten() {
+        let candidate = if item.file_name() == "node_modules" {
+            item.path()
+        } else {
+            item.path().join("node_modules")
+        };
+        let blocked = candidate.join("chalk");
+        if blocked.exists() {
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    let rendered = combine(&output);
+    assert_ne!(output.status.code(), Some(0), "{rendered}");
+    assert!(rendered.contains("node_modules"), "{rendered}");
+    assert_eq!(std::fs::read(stored).unwrap(), stored_before);
+    assert_eq!(std::fs::read(meta).unwrap(), meta_before);
+    assert_eq!(
+        registry_product_rows(&std::fs::read(registry).unwrap()),
+        registry_product_rows(&registry_before),
+        "rollback may refresh only the derived cache proof; product rows stay exact"
+    );
+    let remaining = std::fs::read_dir(&entry_dir)
+        .unwrap()
+        .flatten()
+        .map(|item| item.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        remaining
+            .iter()
+            .any(|name| name.starts_with(".skit-deps.tmp-")),
+        "the remaining old tree must stay quarantined for a later retry: {remaining:?}; {rendered}"
+    );
+}
 
 #[test]
 fn test_clean_sweeps_aged_injected_leftovers() {
@@ -1209,17 +1501,83 @@ fn test_install_lock_path_survives_entry_directory_removal() {}
 // Installer diagnostics, ANSI cleanup, clear locking, and TUI resilience
 // ============================================================================
 
-#[test]
-#[ignore = "ABSENT (library seam): _failure_detail extracts the most informative, ANSI-stripped cause line from real npm/deno/bun stderr, dropping log-pointer and hint boilerplate. The Rust runner discards stderr entirely. MUST-FIX: port _failure_detail. Python ref deps.py:255-313, test_js_deps.py:1350-1377."]
-fn test_failure_detail_against_real_installer_output() {}
+const REAL_NPM_E404: &[u8] = concat!(
+    "npm error code E404\n",
+    "npm error 404 Not Found - GET https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz - Not found\n",
+    "npm error 404\n",
+    "npm error 404  The requested resource 'skit-no-such-pkg-e2e-xyz@*' could not be found or you do not have permission to access it.\n",
+    "npm error 404 Note that you can also install from a\n",
+    "npm error 404 tarball, folder, http url, or git url.\n",
+    "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+)
+.as_bytes();
+
+const REAL_DENO_MISSING: &[u8] = concat!(
+    "\x1b[0m\x1b[32mDownload\x1b[0m https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz\n",
+    "\x1b[0m\x1b[1m\x1b[31merror\x1b[0m: npm package 'skit-no-such-pkg-e2e-xyz' does not exist.\n",
+)
+.as_bytes();
+
+const REAL_BUN_MISSING: &[u8] = concat!(
+    "Resolving dependencies\n",
+    "Resolved, downloaded and extracted [1]\n",
+    "error: GET https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz - 404\n",
+    "error: skit-no-such-pkg-e2e-xyz@* failed to resolve\n",
+)
+.as_bytes();
+
+const REAL_NPM_ERESOLVE: &[u8] = concat!(
+    "npm error code ERESOLVE\n",
+    "npm error ERESOLVE unable to resolve dependency tree\n",
+    "npm error Could not resolve dependency:\n",
+    "npm error Fix the upstream dependency conflict, or retry this command with --force.\n",
+    "npm error For a full report see:\n",
+    "npm error /tmp/eresolve-report.txt\n",
+    "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+)
+.as_bytes();
+
+const REAL_NPM_ECONNREFUSED: &[u8] = concat!(
+    "npm error code ECONNREFUSED\n",
+    "npm error FetchError: request to http://127.0.0.1:9/chalk failed, reason: connect ECONNREFUSED 127.0.0.1:9\n",
+    "npm error     at ClientRequest.emit (node:events:509:20)\n",
+    "npm error If you are behind a proxy, check npm help config\n",
+    "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+)
+.as_bytes();
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail names the missing package from each installer's stderr. No stderr channel on the Rust runner. MUST-FIX per above. Python ref test_js_deps.py:1380-1382."]
-fn test_failure_detail_names_the_missing_package() {}
+fn test_failure_detail_against_real_installer_output() {
+    for (stderr, expected) in [
+        (REAL_NPM_E404, "Not Found - GET"),
+        (REAL_DENO_MISSING, "does not exist"),
+        (REAL_BUN_MISSING, "failed to resolve"),
+        (REAL_NPM_ERESOLVE, "dependency conflict"),
+        (REAL_NPM_ECONNREFUSED, "connect ECONNREFUSED"),
+    ] {
+        let detail = javascript_dependency_failure_detail(stderr);
+        assert!(detail.contains(expected), "{detail:?}");
+        assert!(!detail.contains('\x1b'), "{detail:?}");
+        assert!(!detail.contains("A complete log"), "{detail:?}");
+        assert!(!detail.contains("behind a proxy"), "{detail:?}");
+    }
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail degrades empty/content-free stderr to '?'. No stderr channel on the Rust runner. MUST-FIX per above. Python ref deps.py:311-313, test_js_deps.py:1385-1387."]
-fn test_failure_detail_empty_stderr_degrades() {}
+fn test_failure_detail_names_the_missing_package() {
+    for stderr in [REAL_NPM_E404, REAL_DENO_MISSING, REAL_BUN_MISSING] {
+        assert!(javascript_dependency_failure_detail(stderr).contains("skit-no-such-pkg-e2e-xyz"));
+    }
+}
+
+#[test]
+fn test_failure_detail_empty_stderr_degrades() {
+    assert_eq!(javascript_dependency_failure_detail(b""), "?");
+    assert_eq!(
+        javascript_dependency_failure_detail(b"npm error 404\n\n"),
+        "?"
+    );
+}
 
 #[test]
 #[ignore = "PRIVATE HELPER (white-box): clear() wraps clean() in the same per-entry install lock. The Rust dependency_lock is private with no observable held-during-clear surface. Python ref deps.py:316-322, test_js_deps.py:1390-1407."]
@@ -1381,8 +1739,40 @@ fn test_install_lock_never_unlinks_its_persistent_inode() {}
 fn test_i18n_gate_catches_an_unquoted_continuation_line() {}
 
 #[test]
-#[ignore = "ABSENT (library seam): a captured install announces itself with one stderr line ('Installing dependencies (npm)…'); the short-circuit path prints nothing. The Rust materializer prints no announce line and its runner streams nothing. MUST-FIX: port the announce discipline. Python ref deps.py:389-394, test_js_deps.py:1704-1716."]
-fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {}
+fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        None,
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(runner.announcements(), ["npm"]);
+
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        None,
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(
+        runner.announcements(),
+        ["npm"],
+        "a fresh marker must stay silent"
+    );
+    assert_eq!(runner.calls().len(), 1);
+    drop(root);
+}
 
 #[test]
 fn test_corrupted_marker_triggers_reinstall_not_a_persistent_crash() {
@@ -1415,20 +1805,72 @@ fn test_corrupted_marker_triggers_reinstall_not_a_persistent_crash() {
 fn test_install_lock_reuses_the_same_persistent_inode() {}
 
 #[test]
-#[ignore = "ABSENT (library seam): needs_install(dir, deps, runner) is a cheap, offline, lock-free staleness probe reusing ensure_installed's stamp. No public Rust needs_install exists. MUST-FIX: expose a staleness probe. Python ref deps.py:337-350, test_js_deps.py:1997-1998."]
-fn test_needs_install_true_without_a_marker() {}
+fn test_needs_install_true_without_a_marker() {
+    let (root, dir) = entry_dir();
+    assert!(javascript_dependencies_need_install(&dir, "node", &deps(&["chalk"]),).unwrap());
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): needs_install is False when the marker matches the current (deps, installer). No public Rust needs_install. MUST-FIX per above. Python ref test_js_deps.py:2001-2007."]
-fn test_needs_install_false_when_the_marker_matches() {}
+fn test_needs_install_false_when_the_marker_matches() {
+    let (root, dir) = entry_dir();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &FakeProbe { present: true },
+        &RecordingRunner::success(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
+
+    assert!(!javascript_dependencies_need_install(&dir, "node", &deps(&["chalk"]),).unwrap());
+    assert!(!root.path().join(".locks").exists());
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): needs_install is True when the declared deps change. No public Rust needs_install. MUST-FIX per above. Python ref test_js_deps.py:2010-2016."]
-fn test_needs_install_true_when_the_declared_deps_changed() {}
+fn test_needs_install_true_when_the_declared_deps_changed() {
+    let (root, dir) = entry_dir();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &FakeProbe { present: true },
+        &RecordingRunner::success(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
+
+    assert!(javascript_dependencies_need_install(&dir, "node", &deps(&["chalk", "zod"]),).unwrap());
+    assert!(!root.path().join(".locks").exists());
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): a fresh marker lets preflight skip the installer check so the TUI never blocks a run the CLI completes. Needs both needs_install and preflight, neither on the Rust surface. MUST-FIX per above. Python ref deps.py:325-350, test_js_deps.py:2019-2034."]
-fn test_preflight_skips_the_installer_when_the_marker_is_already_fresh() {}
+fn test_preflight_skips_the_installer_when_the_marker_is_already_fresh() {
+    let (root, dir) = entry_dir();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &FakeProbe { present: true },
+        &RecordingRunner::success(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
+
+    preflight_javascript_dependencies(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &FakeProbe { present: false },
+    )
+    .expect("a fresh marker must not require npm");
+    assert!(!root.path().join(".locks").exists());
+}
 
 #[test]
 fn test_clean_unlinks_a_symlinked_node_modules_but_keeps_the_target() {
@@ -1442,18 +1884,6 @@ fn test_clean_unlinks_a_symlinked_node_modules_but_keeps_the_target() {
     assert!(target.join("chalk").exists());
     drop(root);
 }
-
-#[test]
-#[ignore = "ABSENT (failure-injection seam): clean() tolerates a node_modules symlink vanishing mid-run (FileNotFoundError is success). The oracle monkeypatches Path.unlink; the Rust clear has no injectable seam. Python ref deps.py:203-211, test_js_deps.py:2046-2059."]
-fn test_clean_tolerates_a_node_modules_symlink_vanishing() {}
-
-#[test]
-#[ignore = "ABSENT (failure-injection seam): clean() records a stuck symlinked node_modules loudly (PermissionError). The oracle monkeypatches Path.unlink; the Rust clear has no injectable seam. Python ref deps.py:203-213, test_js_deps.py:2062-2077."]
-fn test_clean_records_a_stuck_symlinked_node_modules() {}
-
-#[test]
-#[ignore = "ABSENT (failure-injection seam): clean()'s rmtree onexc treats an already-gone tree as success. The oracle monkeypatches shutil.rmtree; the Rust clear has no injectable rmtree seam. Python ref deps.py:196-211, test_js_deps.py:2080-2092."]
-fn test_clean_onexc_treats_an_already_gone_tree_as_success() {}
 
 #[test]
 fn test_add_js_empty_dep_records_nothing() {
@@ -1501,6 +1931,40 @@ fn test_deps_command_empty_dep_clears_and_sweeps() {
     assert!(combine(view.get_output()).contains("\"dependencies\":[]"));
     // Oracle: clearing sweeps the materialized env, like --clear.
     assert!(!node_modules.exists());
+
+    // An explicit clear is also a cleanup request when metadata is already empty. A stale
+    // materialization can survive a crash or an older release, and clearing it must not rewrite
+    // unrelated entry or registry bytes.
+    std::fs::create_dir_all(node_modules.join("stale-package")).unwrap();
+    let entry_dir = sandbox.entry_dir("t");
+    let meta_before = std::fs::read(entry_dir.join("meta.toml")).unwrap();
+    let source_before = sandbox.stored_copy("t");
+    let registry = sandbox.data.path().join("registry.toml");
+    let registry_before = std::fs::read(&registry).unwrap();
+    let state_before = std::fs::read_dir(sandbox.state.path()).unwrap().count();
+    let config_before = std::fs::read_dir(sandbox.config.path()).unwrap().count();
+
+    sandbox
+        .skit()
+        .args(["deps", "t", "--clear"])
+        .assert()
+        .success();
+
+    assert!(!node_modules.exists());
+    assert_eq!(
+        std::fs::read(entry_dir.join("meta.toml")).unwrap(),
+        meta_before
+    );
+    assert_eq!(sandbox.stored_copy("t"), source_before);
+    assert_eq!(std::fs::read(registry).unwrap(), registry_before);
+    assert_eq!(
+        std::fs::read_dir(sandbox.state.path()).unwrap().count(),
+        state_before
+    );
+    assert_eq!(
+        std::fs::read_dir(sandbox.config.path()).unwrap().count(),
+        config_before
+    );
 }
 
 #[test]
@@ -1521,7 +1985,16 @@ fn test_deps_command_write_emits_json_when_asked() {
         .assert();
     let output = assert.get_output();
     assert_eq!(output.status.code(), Some(0));
-    assert!(combine(output).contains("\"dependencies\":[\"chalk@^5\"]"));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "dependencies": ["chalk@^5"],
+            "requires_python": "",
+            "needs": [],
+        })
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("updated"));
 }
 
 #[test]
@@ -1541,9 +2014,18 @@ fn test_deps_command_needs_write_emits_json_and_skips_the_human_line() {
         .skit()
         .args(["deps", "t", "--need", "jq", "--json"])
         .assert();
-    let text = combine(assert.get_output());
-    assert!(text.contains("\"needs\":[\"jq\"]"));
-    assert!(!text.contains("updated"));
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "dependencies": [],
+            "requires_python": "",
+            "needs": ["jq"],
+        })
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("updated"));
 }
 
 #[test]
@@ -1558,15 +2040,26 @@ fn test_deps_command_applies_both_deps_and_needs() {
         .arg("--no-input")
         .assert()
         .success();
-    sandbox
+    let output = sandbox
         .skit()
         .args(["deps", "t", "--dep", "chalk", "--need", "jq"])
-        .assert()
-        .success();
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Dependencies of t updated: chalk\nNeeds of t updated: jq\n"
+    );
+    assert!(output.stderr.is_empty());
     let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
-    let text = combine(view.get_output());
-    assert!(text.contains("\"chalk\""));
-    assert!(text.contains("\"jq\""));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&view.get_output().stdout).unwrap(),
+        serde_json::json!({
+            "dependencies": ["chalk"],
+            "requires_python": "",
+            "needs": ["jq"],
+        })
+    );
 }
 
 #[test]
@@ -1655,8 +2148,16 @@ fn test_po_syntax_allows_a_valid_msgctxt_line() {}
 // ============================================================================
 
 #[test]
-#[ignore = "ABSENT (library seam): split_requirement boundary shapes ('a@5'->('a','5'), 'foo/@2'->('foo/@2','*')). No public Rust split_requirement (see the earlier split_requirement stub). Python ref deps.py:97-105, test_js_deps.py:1740-1748."]
-fn test_split_requirement_boundary_shapes() {}
+fn test_split_requirement_boundary_shapes() {
+    assert_eq!(
+        split_javascript_requirement("a@5"),
+        ("a".to_owned(), "5".to_owned())
+    );
+    assert_eq!(
+        split_javascript_requirement("foo/@2"),
+        ("foo/@2".to_owned(), "*".to_owned())
+    );
+}
 
 #[test]
 fn test_module_type_for_multi_dot_sources() {
@@ -1673,12 +2174,16 @@ fn test_module_type_for_multi_dot_sources() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): the exact staleness-hash layout manifest_text(['chalk@^5'], module_type='module') requires a module-typed manifest. The private Rust builder now produces the oracle bytes, but public javascript_dependency_manifest cannot take a module type. MUST-FIX: expose a module-typed manifest. Python ref deps.py:117-131, test_js_deps.py:1762-1769."]
-fn test_manifest_text_exact_layout() {}
-
-#[test]
-#[ignore = "ABSENT (library seam): sweep_stale_injected keeps a '.injected-*' file exactly AT the cutoff (strictly older-than). No public sweep_stale_injected exists. MUST-FIX: port sweep_stale_injected. Python ref deps.py:164-179, test_js_deps.py:1772-1783."]
-fn test_sweep_keeps_a_file_exactly_at_the_cutoff() {}
+fn test_manifest_text_exact_layout() {
+    assert_eq!(
+        javascript_dependency_manifest_for_module(
+            &deps(&["chalk@^5"]),
+            Some(JavaScriptModuleType::Module),
+        )
+        .unwrap(),
+        "{\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"chalk\": \"^5\"\n  }\n}\n"
+    );
+}
 
 #[test]
 fn test_ensure_installed_unknown_runner_falls_back_to_npm_argv() {
@@ -1728,8 +2233,13 @@ fn test_ensure_installed_writes_the_module_type_into_the_manifest() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail drops bare report/log paths even without a cause-keyword line, keeping the last informative line. No stderr channel on the Rust runner. MUST-FIX: port _failure_detail. Python ref deps.py:282-313, test_js_deps.py:1805-1813."]
-fn test_failure_detail_drops_bare_paths_even_without_a_cause_line() {}
+fn test_failure_detail_drops_bare_paths_even_without_a_cause_line() {
+    let stderr = b"npm error something odd happened\nnpm error /var/log/npm/report.txt\nnpm error C:\\Users\\u\\report.txt\n";
+    assert_eq!(
+        javascript_dependency_failure_detail(stderr),
+        "npm error something odd happened"
+    );
+}
 
 #[test]
 fn test_module_type_for_a_bare_dotfile_name() {
@@ -1741,44 +2251,304 @@ fn test_module_type_for_a_bare_dotfile_name() {
 }
 
 #[test]
-#[ignore = "ABSENT (library seam): sweep_stale_injected survives one failed unlink and still sweeps the rest. No public sweep_stale_injected + no injectable unlink seam. MUST-FIX: port sweep_stale_injected. Python ref deps.py:164-179, test_js_deps.py:1822-1846."]
-fn test_sweep_survives_one_failed_unlink_and_still_sweeps_the_rest() {}
+fn test_failure_detail_filters_each_noise_marker() {
+    for marker in [
+        "A complete log of this run",
+        "Note that you can also install",
+        "tarball, folder, http url",
+        "For a full report see",
+        "If you are behind a proxy",
+    ] {
+        let stderr = format!("npm error install failed for pkg\nnpm error failed: {marker}\n");
+        assert_eq!(
+            javascript_dependency_failure_detail(stderr.as_bytes()),
+            "npm error install failed for pkg"
+        );
+    }
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail filters each noise marker so a real cause line still wins. No stderr channel on the Rust runner. MUST-FIX per above. Python ref deps.py:264-313, test_js_deps.py:1849-1863."]
-fn test_failure_detail_filters_each_noise_marker() {}
+fn test_failure_detail_noise_before_the_cause_still_finds_the_cause() {
+    assert_eq!(
+        javascript_dependency_failure_detail(
+            b"npm error A complete log of this run can be found in: /x.log\nnpm error something odd happened\n"
+        ),
+        "npm error something odd happened"
+    );
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail skips (not breaks on) a noise line before the cause. No stderr channel on the Rust runner. MUST-FIX per above. Python ref test_js_deps.py:1866-1872."]
-fn test_failure_detail_noise_before_the_cause_still_finds_the_cause() {}
+fn test_failure_detail_drops_every_npm_prefix_noise_shape() {
+    assert_eq!(
+        javascript_dependency_failure_detail(
+            b"npm error something odd happened\nnpm error at Object.fn (/x.js:1:1)\nnpm error {\nnpm error }\nnpm error c:\\Users\\u\\report.txt\n"
+        ),
+        "npm error something odd happened"
+    );
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail drops every npm prefix noise shape (stack frame, lone brace, lowercase Windows drive). No stderr channel on the Rust runner. MUST-FIX per above. Python ref deps.py:282-290, test_js_deps.py:1875-1885."]
-fn test_failure_detail_drops_every_npm_prefix_noise_shape() {}
+fn test_failure_detail_deno_line_is_reproduced_exactly() {
+    assert_eq!(
+        javascript_dependency_failure_detail(REAL_DENO_MISSING),
+        "error: npm package 'skit-no-such-pkg-e2e-xyz' does not exist."
+    );
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): _failure_detail reproduces the deno cause line exactly (ANSI removed, not substituted). No stderr channel on the Rust runner. MUST-FIX per above. Python ref test_js_deps.py:1888-1894."]
-fn test_failure_detail_deno_line_is_reproduced_exactly() {}
+fn test_dependency_failure_messages_verbatim() {
+    assert_eq!(
+        DependencyError::InstallerNotFound {
+            name: "npm".to_owned()
+        }
+        .to_string(),
+        "npm is needed to install this script's dependencies, but it isn't on your PATH."
+    );
+    assert_eq!(
+        DependencyError::InstallerStartFailed {
+            installer: "npm".to_owned(),
+            reason: "Exec format error".to_owned(),
+        }
+        .to_string(),
+        "Couldn't run npm: Exec format error"
+    );
+    assert_eq!(
+        DependencyError::InstallFailed {
+            installer: "npm".to_owned(),
+            exit_code: Some(1),
+            detail: "npm error it failed".to_owned(),
+        }
+        .to_string(),
+        "Installing dependencies failed (npm): npm error it failed"
+    );
+}
 
 #[test]
-#[ignore = "ABSENT (subprocess-contract seam): the installer subprocess runs captured (capture_output=True, check=False). The marker now lands inside node_modules as required, but SystemDependencyCommandRunner still uses Command::status() and does not capture output. MUST-FIX: return captured stderr for the failure-detail contracts. Python ref deps.py:395-414, test_js_deps.py:1897-1915."]
-fn test_install_subprocess_contract_and_marker_dir_reuse() {}
+#[cfg(unix)]
+fn test_install_announce_line_verbatim() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "announce.js", "console.log('ok');\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "chalk", "--no-input"])
+        .assert()
+        .success();
+    let bin = TempDir::new().unwrap();
+    for (name, body) in [
+        ("node", "#!/bin/sh\nexit 0\n"),
+        ("npm", "#!/bin/sh\n/bin/mkdir -p node_modules\nexit 0\n"),
+    ] {
+        let path = bin.path().join(name);
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let first = sandbox
+        .skit()
+        .env("PATH", bin.path())
+        .args(["run", "announce", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(first.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(first.stderr).unwrap(),
+        "Installing dependencies (npm)…\n"
+    );
+
+    let second = sandbox
+        .skit()
+        .env("PATH", bin.path())
+        .args(["run", "announce", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(second.status.code(), Some(0));
+    assert!(second.stderr.is_empty(), "fresh launch must stay silent");
+}
 
 #[test]
-#[ignore = "ABSENT (library seam + verbatim messages): require_installer's and ensure_installed's exact English sentences ('npm is needed to install…', 'Couldn't run npm: …', 'Installing dependencies failed (npm): …'). require_installer has no public Rust surface and the DependencyError sentences differ verbatim. MUST-FIX: port the verbatim installer messages. Python ref deps.py:227-234, 404-412, test_js_deps.py:1918-1948."]
-fn test_dependency_failure_messages_verbatim() {}
+#[cfg(unix)]
+fn test_install_subprocess_contract_and_marker_dir_reuse() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(
+        source_dir.path(),
+        "subprocess-contract.js",
+        "console.log('script output must come only from node');\n",
+    );
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "chalk", "--no-input"])
+        .assert()
+        .success();
+
+    let mirror = "https://registry.example.test";
+    FileConfigStore::new(sandbox.config.path())
+        .set("mirror.npm", mirror)
+        .unwrap();
+
+    let entry_dir = sandbox.entry_dir("subprocess-contract");
+    let stored = entry_dir.join("script.js");
+    let metadata = entry_dir.join("meta.toml");
+    let registry = sandbox.data.path().join("registry.toml");
+    let source_before = fs::read(&source).unwrap();
+    let stored_before = fs::read(&stored).unwrap();
+    let metadata_before = fs::read(&metadata).unwrap();
+    let registry_before = fs::read(&registry).unwrap();
+    let config_before = fs::read(sandbox.config.path().join("config.toml")).unwrap();
+
+    let bin = TempDir::new().unwrap();
+    let receipt = bin.path().join("npm-receipt");
+    let node = bin.path().join("node");
+    fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+    let npm = bin.path().join("npm");
+    fs::write(
+        &npm,
+        format!(
+            concat!(
+                "#!/bin/sh\n",
+                "{{\n",
+                "  printf 'cwd=%s\\n' \"$PWD\"\n",
+                "  printf 'argc=%s\\n' \"$#\"\n",
+                "  for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\n",
+                "  printf 'registry=%s\\n' \"${{NPM_CONFIG_REGISTRY-unset}}\"\n",
+                "  printf 'lower-registry=%s\\n' \"${{npm_config_registry-unset}}\"\n",
+                "}} >> '{}'\n",
+                "printf '%s\\n' 'INSTALLER-STDOUT-MUST-BE-CAPTURED'\n",
+                "printf '%s\\n' 'INSTALLER-STDERR-MUST-BE-CAPTURED' >&2\n",
+                "/bin/mkdir -p node_modules/chalk\n",
+                "exit 0\n",
+            ),
+            receipt.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let run = || {
+        sandbox
+            .skit()
+            .env("PATH", bin.path())
+            .env_remove("NPM_CONFIG_REGISTRY")
+            .env_remove("npm_config_registry")
+            .args(["run", "subprocess-contract", "--no-input"])
+            .output()
+            .unwrap()
+    };
+
+    let first = run();
+    assert_eq!(first.status.code(), Some(0), "{}", combine(&first));
+    let first_stdout = String::from_utf8(first.stdout).unwrap();
+    let launch_prefix = format!("→ {} {}/.run-", node.display(), entry_dir.display());
+    assert!(first_stdout.starts_with(&launch_prefix), "{first_stdout}");
+    assert!(first_stdout.trim_end().ends_with(".js"), "{first_stdout}");
+    assert_eq!(first_stdout.lines().count(), 1, "{first_stdout}");
+    assert!(!first_stdout.contains("INSTALLER-STDOUT-MUST-BE-CAPTURED"));
+    assert!(!first_stdout.contains("INSTALLER-STDERR-MUST-BE-CAPTURED"));
+    assert_eq!(
+        String::from_utf8(first.stderr).unwrap(),
+        "Installing dependencies (npm)…\n",
+        "successful installer stderr must stay captured"
+    );
+    let expected_receipt = format!(
+        concat!(
+            "cwd={}\n",
+            "argc=4\n",
+            "arg=install\n",
+            "arg=--no-audit\n",
+            "arg=--no-fund\n",
+            "arg=--ignore-scripts\n",
+            "registry={}\n",
+            "lower-registry=unset\n",
+        ),
+        entry_dir.display(),
+        mirror,
+    );
+    assert_eq!(fs::read_to_string(&receipt).unwrap(), expected_receipt);
+
+    let marker = entry_dir.join("node_modules/.skit-deps-ok");
+    assert!(marker.is_file());
+    assert_eq!(fs::read_to_string(&marker).unwrap().len(), 64);
+    assert!(!entry_dir.join(".skit-deps").exists());
+    let mut entry_items = fs::read_dir(&entry_dir)
+        .unwrap()
+        .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    entry_items.sort();
+    assert_eq!(
+        entry_items,
+        ["meta.toml", "node_modules", "package.json", "script.js"]
+    );
+    let mut module_items = fs::read_dir(entry_dir.join("node_modules"))
+        .unwrap()
+        .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    module_items.sort();
+    assert_eq!(module_items, [".skit-deps-ok", "chalk"]);
+    assert_eq!(
+        fs::read_dir(entry_dir.join("node_modules/chalk"))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    let second = run();
+    assert_eq!(second.status.code(), Some(0), "{}", combine(&second));
+    let second_stdout = String::from_utf8(second.stdout).unwrap();
+    assert!(second_stdout.starts_with(&launch_prefix), "{second_stdout}");
+    assert!(second_stdout.trim_end().ends_with(".js"), "{second_stdout}");
+    assert_eq!(second_stdout.lines().count(), 1, "{second_stdout}");
+    assert!(!second_stdout.contains("INSTALLER-STDOUT-MUST-BE-CAPTURED"));
+    assert!(!second_stdout.contains("INSTALLER-STDERR-MUST-BE-CAPTURED"));
+    assert!(second.stderr.is_empty(), "fresh launch must stay silent");
+    assert_eq!(
+        fs::read_to_string(&receipt).unwrap(),
+        expected_receipt,
+        "a fresh launch ran the installer subprocess again"
+    );
+
+    assert_eq!(fs::read(&source).unwrap(), source_before);
+    assert_eq!(fs::read(stored).unwrap(), stored_before);
+    assert_eq!(fs::read(metadata).unwrap(), metadata_before);
+    assert_eq!(fs::read(registry).unwrap(), registry_before);
+    assert_eq!(
+        fs::read(sandbox.config.path().join("config.toml")).unwrap(),
+        config_before
+    );
+    let state = FileFormStateStore::new(sandbox.state.path())
+        .load(&Slug::parse("subprocess-contract").unwrap());
+    assert_eq!(state.values, BTreeMap::new());
+    assert_eq!(state.last_run.exit, Some(0));
+    assert!(
+        state
+            .last_run
+            .at
+            .as_deref()
+            .is_some_and(|at| !at.is_empty())
+    );
+    assert_eq!(state.last_run.values, Some(BTreeMap::new()));
+    let state_files = fs::read_dir(sandbox.state.path().join("values"))
+        .unwrap()
+        .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(state_files, ["subprocess-contract.toml"]);
+}
 
 #[test]
-#[ignore = "ABSENT (library seam): the install-announce line is exactly 'Installing dependencies (npm)…\\n' on stderr. The Rust materializer prints no announce line. MUST-FIX: port the announce discipline. Python ref deps.py:389-394, test_js_deps.py:1951-1957."]
-fn test_install_announce_line_verbatim() {}
-
-#[test]
-#[ignore = "ABSENT (failure-injection seam + verbatim message): clean()'s failure message is exactly \"Couldn't clear the old dependency environment: package.json: …\". The oracle monkeypatches Path.unlink; the Rust clear has no injectable seam and worded its Io error differently. Python ref deps.py:214-218, test_js_deps.py:1960-1971."]
-fn test_clean_failure_message_verbatim() {}
-
-#[test]
-#[ignore = "ABSENT (library seam): _failure_detail survives invalid UTF-8 bytes (replacement char, never a raise). No stderr channel on the Rust runner. MUST-FIX: port _failure_detail. Python ref deps.py:300, test_js_deps.py:1974-1979."]
-fn test_failure_detail_survives_invalid_utf8_bytes() {}
+fn test_failure_detail_survives_invalid_utf8_bytes() {
+    let detail = javascript_dependency_failure_detail(b"npm error caf\xe9 install failed\n");
+    assert!(detail.contains("install failed"), "{detail:?}");
+    assert!(detail.contains('\u{fffd}'), "{detail:?}");
+}
 
 // ============================================================================
 // module-typed entries with NO deps still need their package.json "type"
@@ -1890,7 +2660,7 @@ fn test_ensure_module_manifest_rewrites_only_on_change() {
 }
 
 #[test]
-#[ignore = "CROSS-CRATE (launch + run composition): a deps-free CommonJS (.cjs/.cts) entry gets a minimal '{private, type: commonjs}' package.json from RunnerLaunch.build so deno doesn't run it as ESM. The private Rust builder has the exact manifest, but this integration test cannot intercept the run composition. Owner: skit-runtime launch. Python ref deps.py:134-155, test_js_deps.py:2310-2322."]
+#[ignore = "CROSS-CRATE (launch + run composition): a deps-free CommonJS (.cjs/.cts) entry gets a minimal '{private, type: commonjs}' package.json from RunnerLaunch.build so deno does not run it as ESM. The private Rust builder has the exact manifest, but this integration test cannot intercept the run composition. Owner: skit-runtime launch. Python ref deps.py:134-155, test_js_deps.py:2310-2322."]
 fn test_build_writes_a_module_manifest_for_a_deps_free_module_typed_entry() {}
 
 #[test]

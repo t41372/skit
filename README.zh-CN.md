@@ -30,6 +30,15 @@ skit                 # 打开菜单——选、填、跑
 
 你的 AI agent 也能用 skit：你从菜单操作，agent 走确定性的 CLI 和 skill—— AI 写完脚本存进去，之后也能轻松调用。
 
+### 界面
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh-CN.png" alt="skit 脚本库" width="49%">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh-CN.png" alt="skit 启动表单" width="49%">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh-CN.png" alt="skit 添加流程" width="49%">
+  <img src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh-CN.png" alt="skit 设置" width="49%">
+</p>
+
 ## 它做什么
 
 - **收纳脚本与提示词**。`skit add` 把散落各处的脚本与提示词收进同一个可搜索的库。

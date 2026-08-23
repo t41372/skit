@@ -30,17 +30,14 @@
 //!   the "no shebang -> nothing to pin" rule: the first line is not a `#!`, so the add path's
 //!   `shebang.and_then(shebang_program).and_then(python_version_pin)` yields `None` -> `""`.
 //!
-//! Bucket disposition (16 oracle defs):
-//! - PASS asserting tests: the whole set the built binary already honors (assigned by the run).
-//! - FAILING CONTRACT (divergence): full asserting bodies kept intact behind `#[ignore]`; every
-//!   label was verified against the built binary.
-//! - 3 absent gaps: `cli._resolve_python_metadata`'s INTERACTIVE python-metadata ask
-//!   (deps/python `Prompt.ask` with the pin-aware label switch, src/skit/cli.py:224-261) has no
-//!   equivalent anywhere in the Rust workspace — the add flow resolves deps/python
-//!   non-interactively (`external_dependencies_at`, cli.rs:2920) and never asks. The label
-//!   strings "Enter accepts the #! pin" / "leave empty for automatic" appear in NO crate. These
-//!   three call a function that does not exist, so they are `#[ignore]` stubs with a MUST-FIX.
-//! - 2 cross-crate stubs: `cli._print_add_hints` is the crate-private `print_copy_onboarding_facts`
+//! Bucket disposition (16 oracle defs; 12 active, 4 ignored):
+//! - 12 active asserting contracts include the owned-draft prompt canonical and all three real-PTY
+//!   Python metadata labels.
+//! - One active owned-draft prompt contract. The reference and `.py`/bash twins remain as
+//!   semantic-duplicate closures with their stronger boundary and CLI classifier owners named.
+//! - 2 semantic-duplicate owned-draft closures and 2 cross-crate hint-helper closures.
+//! - The 2 cross-crate stubs call `cli._print_add_hints`, which is the crate-private
+//!   `print_copy_onboarding_facts`
 //!   (cli.rs:2669-2694) in the `skit-cli` binary, unreachable from an integration test. Its
 //!   argv-yields-to-framework gate IS implemented (cli.rs:2677) and IS covered end-to-end by
 //!   `test_dynamic_optstring_with_argv_names_extra_arguments_once` in this same file — a
@@ -55,6 +52,12 @@ use skit_language::{
     external_dependencies_at, python_version_pin, read_uv_metadata, shebang_program,
 };
 use tempfile::TempDir;
+
+#[cfg(unix)]
+#[path = "support/plain_add_pty.rs"]
+mod plain_add_pty;
+#[cfg(unix)]
+use plain_add_pty::PlainAddPty;
 
 struct Sandbox {
     data: TempDir,
@@ -128,6 +131,53 @@ impl Sandbox {
             .join("script.py");
         fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {path:?}: {error}"))
     }
+
+    fn stored_prompt(&self, name: &str) -> Vec<u8> {
+        fs::read(
+            self.data
+                .path()
+                .join("scripts")
+                .join(name.to_lowercase())
+                .join("prompt.md"),
+        )
+        .unwrap()
+    }
+}
+
+#[cfg(unix)]
+fn configure_plain(sandbox: &Sandbox) {
+    fs::write(
+        sandbox.config.path().join("config.toml"),
+        "form = \"plain\"\n",
+    )
+    .unwrap();
+}
+
+#[cfg(unix)]
+fn dependencies_question(locale: &str) -> &'static str {
+    match locale {
+        "zh-CN" => "要安装的依赖(Enter 采用,可自行编辑,或输入 - 表示不需要)",
+        "zh-TW" => "要安裝的依賴(Enter 採用,可自行編輯,或輸入 - 表示不需要)",
+        _ => "Dependencies to install (Enter to accept, edit the list, or '-' for none)",
+    }
+}
+
+#[cfg(unix)]
+fn pinned_python_question(locale: &str) -> &'static str {
+    match locale {
+        "zh-CN" => "Python 版本(Enter 采用 #! 指定的版本,'-' = 自动)",
+        "zh-TW" => "Python 版本(Enter 採用 #! 指定的版本,'-' = 自動)",
+        _ => "Python version (Enter accepts the #! pin, '-' for automatic)",
+    }
+}
+
+#[cfg(unix)]
+fn automatic_python_question(locale: &str) -> &'static str {
+    match locale {
+        "zh-CN" => "Python 版本(留空 = 自动)",
+        "zh-TW" => "Python 版本(留空 = 自動)",
+        _ => "Python version (leave empty for automatic)",
+    }
 }
 
 /// Python `result.output` — the merged streams a CliRunner user would see (stdout then stderr).
@@ -151,7 +201,7 @@ fn flat(output: &Output) -> String {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle refuses --ref against its OWN kept draft (a reference into drafts/ would list a live entry's file as a resumable/deletable draft) with exit 2 '… one of skit's own kept drafts … Drop --ref.' (src/skit/cli.py:1917-1933). Rust's plain path lane has no kept-draft guard — it ADDS the reference ('Added: linky (reference mode)', exit 0) and the draft remains. Ties to pending task #15. Verified against the built binary."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger canonical three-locale, real-PTY guard-before-question, full-tree no-write owner is port_test_add_validation_contracts::test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref. Keep this frozen body for oracle accounting."]
 fn test_ref_on_kept_draft_is_refused_and_keeps_it() {
     // --ref into drafts/ would leave a live entry's file resumable — refuse it: exit 2, the
     // 'kept drafts' message naming Drop --ref, the draft kept, and NO entry created.
@@ -205,28 +255,41 @@ fn test_ref_on_a_normal_file_still_works() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the kind half HOLDS (infer_kind maps `.prompt.md` to prompt, cli.rs → skit-language lib.rs:220, so exit 0 and kind == prompt), but the consume-on-success unlink is MISSING: Rust's plain path lane never calls remove_owned_draft (only the authoring lanes do), so the resumed draft SURVIVES — `!draft.exists()` fails. Ties to pending task #15, same shape as the sibling port_test_add_lane_contracts.rs. Verified against the built binary."]
 fn test_prompt_draft_with_shebang_body_resumes_as_prompt() {
     // A `skit-new-*.prompt.md` draft whose body opens `#!/usr/bin/env bash` resumes as a
     // PROMPT, not shell — the .prompt.md suffix is the user's lane choice, and a prompt body may
     // legitimately quote a shebang line. The consumed draft is unlinked on success.
-    let sandbox = Sandbox::new();
-    let draft = sandbox.draft(
-        "skit-new-summ.prompt.md",
-        "#!/usr/bin/env bash\nSummarize {{text}}.\n",
-    );
-    let output = sandbox
-        .command()
-        .args(["add", draft.to_str().unwrap(), "-n", "summ", "--no-input"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0), "{}", combined(&output));
-    assert_eq!(sandbox.show_json("summ")["kind"], "prompt"); // compound suffix wins over the shebang
-    assert!(!draft.exists()); // consumed on success
+    const BODY: &[u8] = b"#!/usr/bin/env bash\nSummarize {{text}}.\n";
+    for (suffix, name) in [("prompt", "summ-single"), ("prompt.md", "summ-compound")] {
+        let sandbox = Sandbox::new();
+        let draft = sandbox.draft(
+            &format!("skit-new-summ.{suffix}"),
+            std::str::from_utf8(BODY).unwrap(),
+        );
+        let output = sandbox
+            .command()
+            .args(["add", draft.to_str().unwrap(), "-n", name, "--no-input"])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "suffix={suffix}: {}",
+            combined(&output)
+        );
+        let shown = sandbox.show_json(name);
+        assert_eq!(shown["kind"], "prompt", "suffix={suffix}");
+        assert_eq!(shown["mode"], "copy", "suffix={suffix}");
+        assert_eq!(sandbox.stored_prompt(name), BODY, "suffix={suffix}");
+        assert!(
+            !draft.exists(),
+            "suffix={suffix}: consumed only after the copy committed"
+        );
+    }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the oracle classifies a KEPT draft shebang-FIRST — store.infer_kind delegates to registry.kind_for_draft for is_draft paths (src/skit/store.py:308-309, src/skit/langs/registry.py:442-457), so a bash-shebang `.py` draft resumes as shell (the mkstemp suffix is skit's artifact, not a user signal). Rust has no draft-specific classifier: its infer_kind is extension-FIRST (skit-language lib.rs:223 before the shebang branch at 226), so a `.py` file is always python — the add succeeds as kind == 'python', not 'shell'. Ties to pending task #15. Verified against the built binary."]
+#[ignore = "SEMANTIC DUPLICATE (owned-draft root): the stronger real CLI classifier+cleanup owner is port_test_draft_inference_and_reader_cli::test_cli_add_bash_shebang_draft_lands_as_shell_and_unlinks. Keep this frozen body for oracle accounting."]
 fn test_py_draft_with_shebang_body_still_resumes_as_shell() {
     // The complement / regression pin: a SCRIPT-starter `.py` draft is still shebang-first,
     // so a bash body resumes as shell (only the compound prompt suffix outranks the shebang).
@@ -256,37 +319,92 @@ fn test_py_draft_with_shebang_body_still_resumes_as_shell() {
 // ==========================================================================
 
 #[test]
-#[ignore = "ABSENT GAP (kind=absent): the INTERACTIVE python-metadata ask has no equivalent in the Rust workspace. cli._resolve_python_metadata (src/skit/cli.py:224-261) asks Prompt.ask for deps then the python version, switching the label to 'Python version (Enter accepts the #! pin, ...)' when a versioned shebang seeds a pin (cli.py:249-253) and passing the pin as the ask default (cli.py:255). Rust's add flow resolves deps/python NON-interactively (external_dependencies_at, cli.rs:2920) and never asks; the label strings 'Enter accepts the #! pin' / 'leave empty for automatic' appear in NO crate. MUST FIX: add the interactive python-metadata ask with the pin-aware label. No public function to call, so this is a stub."]
+#[cfg(unix)]
 fn test_python_ask_label_names_the_pin_and_enter_records_it() {
-    // With a #! pin as the default, the label reads 'Enter accepts the #! pin' (never the
-    // 'leave empty' lie), and returning the pin (Enter) records it.
-    // Python: deps '-' (none), then Enter=pin ->
-    //   deps, py = cli._resolve_python_metadata(_PIN_TEXT, None, None, no_input=False)
-    //   assert deps == []
-    //   assert "Enter accepts the #! pin" in <the python ask's label>
-    //   assert "leave empty" not in <label>
-    //   assert py == ">=3.12,<3.13"   # Enter recorded the pin (python3.12 shebang)
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        configure_plain(&sandbox);
+        let source = sandbox.scratch.path().join("pinned.py");
+        fs::write(
+            &source,
+            "#!/usr/bin/env python3.12\nimport requests\nprint(requests)\n",
+        )
+        .unwrap();
+        let mut pty = PlainAddPty::spawn(
+            sandbox.data.path(),
+            sandbox.state.path(),
+            sandbox.config.path(),
+            sandbox.scratch.path(),
+            locale,
+            &["add", source.to_str().unwrap(), "-n", "pin-kept"],
+        );
+        pty.wait_for(dependencies_question(locale));
+        pty.send_line("-");
+        pty.wait_for(pinned_python_question(locale));
+        pty.send_line("");
+        let (code, output) = pty.finish();
+        assert_eq!(code, 0, "locale={locale}: {output}");
+        assert!(!output.contains(automatic_python_question(locale)));
+        let metadata = read_uv_metadata(&sandbox.stored("pin-kept")).unwrap();
+        assert_eq!(metadata.requires_python, ">=3.12,<3.13");
+    }
 }
 
 #[test]
-#[ignore = "ABSENT GAP (kind=absent): the INTERACTIVE python-metadata ask has no equivalent in the Rust workspace (see test_python_ask_label_names_the_pin_and_enter_records_it). cli._resolve_python_metadata (src/skit/cli.py:254-257) treats '-'/'none' at the python ask as automatic, returning '' even when a #! pin seeded the default. MUST FIX: add the interactive ask with the '-'-means-automatic escape. No public function to call, so this is a stub."]
+#[cfg(unix)]
 fn test_python_ask_dash_records_automatic_even_with_a_pin() {
-    // '-' at the pin-aware ask really means automatic — an empty requires-python, not the pin.
-    // Python: deps none, python '-' -> automatic
-    //   _deps, py = cli._resolve_python_metadata(_PIN_TEXT, None, None, no_input=False)
-    //   assert py == ""
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        configure_plain(&sandbox);
+        let source = sandbox.scratch.path().join("automatic.py");
+        fs::write(
+            &source,
+            "#!/usr/bin/env python3.12\nimport requests\nprint(requests)\n",
+        )
+        .unwrap();
+        let mut pty = PlainAddPty::spawn(
+            sandbox.data.path(),
+            sandbox.state.path(),
+            sandbox.config.path(),
+            sandbox.scratch.path(),
+            locale,
+            &["add", source.to_str().unwrap(), "-n", "automatic"],
+        );
+        pty.wait_for(dependencies_question(locale));
+        pty.send_line("-");
+        pty.wait_for(pinned_python_question(locale));
+        pty.send_line("-");
+        let (code, output) = pty.finish();
+        assert_eq!(code, 0, "locale={locale}: {output}");
+        assert!(read_uv_metadata(&sandbox.stored("automatic")).is_none());
+    }
 }
 
 #[test]
-#[ignore = "ABSENT GAP (kind=absent): the INTERACTIVE python-metadata ask has no equivalent in the Rust workspace (see test_python_ask_label_names_the_pin_and_enter_records_it). With no #! pin, cli._resolve_python_metadata (src/skit/cli.py:252) keeps the original 'Python version (leave empty for automatic)' label. MUST FIX: add the interactive ask with the no-pin label voice. No public function to call, so this is a stub."]
+#[cfg(unix)]
 fn test_python_ask_label_is_leave_empty_without_a_pin() {
-    // No #! pin: the label keeps the original 'leave empty for automatic' voice, and '-'
-    // there is automatic too.
-    // Python:
-    //   _deps, py = cli._resolve_python_metadata(_NOPIN_TEXT, None, None, no_input=False)
-    //   assert "leave empty for automatic" in <label>
-    //   assert "Enter accepts the #! pin" not in <label>
-    //   assert py == ""
+    for locale in ["en", "zh-CN", "zh-TW"] {
+        let sandbox = Sandbox::new();
+        configure_plain(&sandbox);
+        let source = sandbox.scratch.path().join("no-pin.py");
+        fs::write(&source, "import requests\nprint(requests)\n").unwrap();
+        let mut pty = PlainAddPty::spawn(
+            sandbox.data.path(),
+            sandbox.state.path(),
+            sandbox.config.path(),
+            sandbox.scratch.path(),
+            locale,
+            &["add", source.to_str().unwrap(), "-n", "no-pin"],
+        );
+        pty.wait_for(dependencies_question(locale));
+        pty.send_line("-");
+        pty.wait_for(automatic_python_question(locale));
+        pty.send_line("");
+        let (code, output) = pty.finish();
+        assert_eq!(code, 0, "locale={locale}: {output}");
+        assert!(!output.contains(pinned_python_question(locale)));
+        assert!(read_uv_metadata(&sandbox.stored("no-pin")).is_none());
+    }
 }
 
 // ==========================================================================
@@ -337,7 +455,7 @@ fn test_micro_versioned_shebang_lands_in_stored_pep723() {
 
 #[test]
 fn test_shebangless_unknown_uses_the_isnt_a_script_voice() {
-    // A shebang-LESS unknown file keeps the original 'isn't a script or an executable' message
+    // A shebang-LESS unknown file keeps the original unclassifiable-file message
     // (the registered-shebang complement has its own test).
     let sandbox = Sandbox::new();
     let src = sandbox.scratch.path().join("mystery");

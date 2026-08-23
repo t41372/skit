@@ -30,8 +30,8 @@
 //!   drift lines to stdout where Python writes them to stderr, and `CliRunner` merges both.
 //!
 //! Buckets:
-//! - REAL asserting `#[test]` (API exists): 16 of 17, all ground-truthed against the shipping
-//!   binary.
+//! - REAL asserting `#[test]` (API exists): 18 of 19, including two interpreter-audit rehomes, all
+//!   ground-truthed against the shipping binary.
 //! - DIVERGENCE (full asserting body, `#[ignore]`d): `test_show_json_stable_shape` alone. The
 //!   oracle pins `show --json` to EXACTLY 21 payload keys; the Rust payload additionally
 //!   carries `added_at` / `id` / `schema` / `source_hash`. These read as plausibly-intentional
@@ -54,7 +54,11 @@ use skit_domain::parameters::{
 };
 use skit_language::write_managed_params;
 use skit_store::{FileFormStateStore, FileStore};
-use tempfile::TempDir;
+
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
 
 // --- The oracle's stable-shape contract (module-level constants) --------------------------------
 
@@ -82,6 +86,9 @@ const PAYLOAD_KEYS: &[&str] = &[
     "last_run_at",
     "last_exit",
 ];
+
+/// Stable top-level metadata added by the v0.5 machine contract.
+const V05_PAYLOAD_EXTENSION_KEYS: &[&str] = &["added_at", "id", "schema", "source_hash"];
 
 const FIELD_KEYS: &[&str] = &[
     "key",
@@ -132,18 +139,18 @@ const SUBPARSERS: &str = concat!(
 // --- one isolated skit library (private data/state/config plus a source scratch dir) ------------
 
 struct Lib {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
-    src: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
+    src: TempRoot,
 }
 
 fn lib() -> Lib {
     Lib {
-        data: TempDir::new().unwrap(),
-        state: TempDir::new().unwrap(),
-        config: TempDir::new().unwrap(),
-        src: TempDir::new().unwrap(),
+        data: TempRoot::new(),
+        state: TempRoot::new(),
+        config: TempRoot::new(),
+        src: TempRoot::new(),
     }
 }
 
@@ -201,6 +208,13 @@ impl Lib {
             .success()
             .then_some(())
             .expect("add succeeds");
+    }
+
+    fn add_shell(&self, name: &str) -> PathBuf {
+        let path = self.write_src(&format!("{name}.sh"), "#!/bin/sh\necho hi\n");
+        let output = self.run(&["add", path.to_str().unwrap(), "--name", name, "--no-input"]);
+        assert!(output.status.success(), "{}", combined(&output));
+        path
     }
 
     /// Python `store.show(name, --json)` — parse stdout as exactly one JSON document.
@@ -281,6 +295,43 @@ fn test_show_json_argparse_full_schema() {
     lib.add_python(&path, "resize");
     let entry = lib.entry("resize");
     let payload = lib.show_json("resize");
+    let payload_keys = payload
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let expected_payload_keys = PAYLOAD_KEYS
+        .iter()
+        .chain(V05_PAYLOAD_EXTENSION_KEYS)
+        .copied()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(payload_keys, expected_payload_keys);
+
+    assert_eq!(payload["schema"], json!(entry.meta.schema));
+    assert!(payload["schema"].as_u64().is_some());
+    let entry_id = entry
+        .meta
+        .id
+        .as_ref()
+        .expect("new entries have an id")
+        .as_str();
+    assert_eq!(payload["id"], json!(entry_id));
+    assert_eq!(entry_id.len(), 32);
+    assert!(entry_id.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(
+        payload["source_hash"],
+        json!(entry.meta.source_hash.as_str())
+    );
+    assert!(payload["source_hash"].as_str().is_some());
+    assert_eq!(payload["added_at"], json!(entry.meta.added_at.as_str()));
+    assert!(payload["added_at"].as_str().is_some());
+
+    let repeated = lib.show_json("resize");
+    for key in V05_PAYLOAD_EXTENSION_KEYS {
+        assert_eq!(repeated[*key], payload[*key], "{key} changed across reads");
+    }
+
     assert_eq!(payload["name"], json!("resize"));
     assert_eq!(payload["slug"], json!(entry.slug.as_str()));
     assert_eq!(payload["kind"], json!("python"));
@@ -303,6 +354,16 @@ fn test_show_json_argparse_full_schema() {
         field_keys_in_order(&payload),
         ["src", "width", "fmt", "force"]
     );
+    let expected_field_keys = FIELD_KEYS.iter().copied().collect::<BTreeSet<_>>();
+    for field in payload["fields"].as_array().unwrap() {
+        let actual = field
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected_field_keys);
+    }
     assert_eq!(
         fields["src"],
         json!({
@@ -337,7 +398,7 @@ fn test_show_json_argparse_full_schema() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle pins show --json to exactly 21 payload keys; Rust adds added_at/id/schema/source_hash (plausibly-intentional superset additions per the rewrite rule — adjudicate before removing keys)"]
+#[ignore = "ARCHITECTURE-CLOSED / VERSION-CONTRACT SUPERSET: the frozen v0.4 show --json record has exactly 21 top-level keys. The v0.5 machine contract preserves all 21 and intentionally adds added_at, id, schema, and source_hash; the active full-schema owner pins the exact union, types, identity, snapshot metadata, repeated-read stability, and field shape. Keep this exact v0.4 name/body as a version-contract closure; do not remove the v0.5 keys or count this row as REAL."]
 fn test_show_json_stable_shape() {
     let lib = lib();
     let path = lib.write_src("job.py", ARGPARSE);
@@ -476,6 +537,38 @@ fn test_show_json_deps_and_missing_reference() {
 }
 
 #[test]
+fn test_show_json_includes_needs() {
+    let lib = lib();
+    lib.add_shell("worker");
+    let deps = lib.run(&["deps", "worker", "--need", "jq", "--need", "ffmpeg"]);
+    assert!(deps.status.success(), "{}", combined(&deps));
+    let entry = lib.entry("worker");
+    let paths = [
+        lib.copy_path(&entry),
+        lib.data.path().join("scripts/worker/meta.toml"),
+        lib.data.path().join("registry.toml"),
+    ];
+    let before = paths
+        .iter()
+        .map(|path| fs::read(path).unwrap())
+        .collect::<Vec<_>>();
+
+    let payload = lib.show_json("worker");
+
+    assert_eq!(payload["needs"], json!(["jq", "ffmpeg"]));
+    for (path, before) in paths.iter().zip(before) {
+        assert_eq!(
+            fs::read(path).unwrap(),
+            before,
+            "{} changed",
+            path.display()
+        );
+    }
+    assert_eq!(fs::read_dir(lib.state.path()).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(lib.config.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn test_show_json_degraded_parser() {
     let lib = lib();
     let path = lib.write_src("multi.py", SUBPARSERS);
@@ -585,6 +678,21 @@ fn test_show_human_no_fields_exe() {
 }
 
 #[test]
+fn test_show_interpreted_header_and_source() {
+    let lib = lib();
+    let source = lib.add_shell("worker");
+
+    let output = lib.show_human("worker");
+
+    assert!(output.contains("worker  (Shell · copy)"), "{output}");
+    assert!(
+        output.contains(&format!("Source: {}", source.display())),
+        "{output}"
+    );
+    assert!(output.contains("Run it: skit run worker"), "{output}");
+}
+
+#[test]
 fn test_show_human_description_deps_presets_and_drift() {
     let lib = lib();
     let text = inject("CITY = \"x\"\nprint(CITY)\n", &[const_str("CITY")]);
@@ -599,7 +707,9 @@ fn test_show_human_description_deps_presets_and_drift() {
         "--no-input",
     ]);
     assert!(added.status.success(), "{}", combined(&added));
-    let deps = lib.run(&["deps", "trip", "--dep", "rich>=15", "--python", ">=3.12"]);
+    let deps = lib.run(&[
+        "deps", "trip", "--dep", "rich>=15", "--python", ">=3.12", "--need", "jq",
+    ]);
     assert!(deps.status.success(), "{}", combined(&deps));
     let entry = lib.entry("trip");
     let mut preset_values = BTreeMap::new();
@@ -617,6 +727,7 @@ fn test_show_human_description_deps_presets_and_drift() {
     assert!(output.contains("plan a trip"));
     assert!(output.contains("rich>=15"));
     assert!(output.contains(">=3.12"));
+    assert!(output.contains("Needs: jq"));
     assert!(output.contains("Presets: quick"));
     assert!(output.contains("drifted from the script")); // the drift banner is shown
 }

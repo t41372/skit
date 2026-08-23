@@ -20,8 +20,8 @@
 //!   (skit-cli) — those tests are cross-crate.
 //! - Python `ScriptSettingsScreen` prompt sections -> `SettingsView::from_inputs`, the
 //!   `SettingsAction` reducer, and `submitted_values()` keyed by `RUNNER_KEY` /
-//!   `INTERPOLATE_KEY` / `ADD_PARAMETER_KEY` / `parameter:{name}:keep`. `store.resolve("p")
-//!   .meta.*` -> the axes a save carries.
+//!   `INTERPOLATE_KEY` / `ADD_PARAMETER_KEY` / `PROMPT_CANDIDATES_KEY` /
+//!   `parameter:{name}:keep`. `store.resolve("p").meta.*` -> the axes a save carries.
 //! - Python `PromptReviewScreen` -> `ReviewState` prompt lane: `prompt_candidates`,
 //!   `prompt_preview`, `prompt_is_flooded`, `interpolate`, `runner`, `runner_was_picked`,
 //!   `rescan(bytes)`, and `create_entry().settings.{params,runner,interpolate}` / `.mode`.
@@ -38,11 +38,10 @@
 //!   routing, `preflight`, `PendingRun`, `argstate`, the `store` prompt-read race, the
 //!   Library edit -> offer-picker flow, and the pin-vs-last picker default. Compiling
 //!   `#[ignore]` stubs naming the owning tier.
-//! - ABSENT (gap): the Rust prompt *settings* screen offers `MANAGE`/candidate management
-//!   only through `ADD_PARAMETER_KEY` (type a name); it has no detected-placeholder
-//!   checkboxes (`st-prompt-new-N`) and no searchable Ctrl+O candidate picker on that
-//!   screen — those exist only on the *review* lane here. Compiling `#[ignore]` stubs with
-//!   MUST-FIX notes.
+//! - Prompt Settings detected candidates are REAL: inline choices use the capped body-order
+//!   preview, while Ctrl+O and its inline mouse twin reuse `PromptCandidatePickerSession` over the
+//!   full list. The picker works on an isolated selection; Done changes only Settings-local dirty
+//!   state, and the outer Save carries `PROMPT_CANDIDATES_KEY` to the host.
 //! - DIVERGENCE (Library title — RESOLVED): the zh-CN/zh-TW Library title now localizes to the
 //!   v0.4 term 工具库/工具庫 (the catalog previously rendered 程序库/程式庫). The two title tests
 //!   below read the space-interleaved `TestBackend` buffer, as render.rs does, so they check
@@ -71,12 +70,12 @@ use skit_tui::{
 };
 use skit_ui::{
     ADD_PARAMETER_KEY, Action, AddAction, AddWorkflowState, Effect, FieldKind, FieldValue,
-    INTERPOLATE_KEY, KnownEntryKind, LibraryEntryDetail, LibraryPromptRunner, LibraryState,
-    LibrarySurface, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_LIST_PREVIEW_LIMIT, RUNNER_KEY,
-    ReviewDefaults, ReviewLane, ReviewState, RunFieldRole, RunFormView, RunnerEditorAction,
-    RunnerEditorEffect, RunnerEditorError, RunnerEditorOwner, RunnerEditorView, Screen,
-    SettingsAction, SettingsEffect, SettingsInputs, SettingsSectionId, SettingsView,
-    SourceSnapshot, TypedValue,
+    HostRequest, INTERPOLATE_KEY, KnownEntryKind, LibraryEntryDetail, LibraryPromptRunner,
+    LibraryState, LibrarySurface, PROMPT_AUTO_MANAGE_LIMIT, PROMPT_CANDIDATES_KEY,
+    PROMPT_LIST_PREVIEW_LIMIT, RUNNER_KEY, ReviewDefaults, ReviewLane, ReviewState, RunFieldRole,
+    RunFormView, RunnerEditorAction, RunnerEditorEffect, RunnerEditorError, RunnerEditorOwner,
+    RunnerEditorView, Screen, SettingsAction, SettingsEffect, SettingsInputs, SettingsItem,
+    SettingsSectionId, SettingsView, SourceSnapshot, TypedValue, UiCommand,
 };
 
 // The seeded prompt-runner names the oracle's `config.load_prompt_runners()` returns, in
@@ -104,8 +103,12 @@ fn ctrl(character: char) -> Event {
 }
 
 fn mouse(column: u16, row: u16) -> Event {
+    mouse_with_kind(MouseEventKind::Down(MouseButton::Left), column, row)
+}
+
+fn mouse_with_kind(kind: MouseEventKind, column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
+        kind,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -114,6 +117,12 @@ fn mouse(column: u16, row: u16) -> Event {
 
 fn rendered(buffer: &Buffer) -> String {
     buffer.content().iter().map(|cell| cell.symbol()).collect()
+}
+
+fn compact_cell_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .collect()
 }
 
 fn draw_session(
@@ -154,6 +163,20 @@ fn draw_with_session(
         .draw(|frame| geometry = render_with_session(frame, state, Locale::En, session))
         .unwrap();
     (rendered(terminal.backend().buffer()), geometry)
+}
+
+fn buffer_position(buffer: &Buffer, needle: &str) -> (u16, u16) {
+    for row in 0..buffer.area.height {
+        for column in 0..buffer.area.width {
+            let tail = (column..buffer.area.width)
+                .map(|x| buffer[(x, row)].symbol())
+                .collect::<String>();
+            if tail.starts_with(needle) {
+                return (column, row);
+            }
+        }
+    }
+    panic!("the rendered buffer does not contain {needle:?}");
 }
 
 // --------------------------------------------------------------------------
@@ -306,6 +329,20 @@ fn prompt_settings(
     }
 }
 
+fn prompt_settings_candidates(names: &[String], interpolate: bool) -> SettingsInputs {
+    let mut inputs = prompt_settings(vec![placeholder("a")], "", RUNNERS, interpolate);
+    inputs.candidates = names.to_vec();
+    inputs
+}
+
+fn settings_state(inputs: SettingsInputs) -> LibraryState {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Settings(Box::new(
+        SettingsView::from_inputs(&inputs),
+    ))));
+    state
+}
+
 fn runner_options(view: &SettingsView) -> Vec<String> {
     let FieldKind::SingleChoice { options } = &view.field(RUNNER_KEY).unwrap().kind else {
         panic!("the runner picker needs a closed option set");
@@ -326,9 +363,11 @@ fn snap(name: &str, bytes: &[u8]) -> SourceSnapshot {
             readonly: false,
             unix_mode: Some(0o644),
         },
+        executable: None,
         is_regular: true,
         is_directory: false,
         is_draft: false,
+        identity: None,
     }
 }
 
@@ -383,22 +422,45 @@ fn test_prompt_only_library_uses_entry_taxonomy_everywhere() {
 }
 
 #[test]
-fn test_prompt_only_chinese_library_stays_entry_neutral_zh_cn() {
-    // The Simplified-Chinese library title is the entry-neutral 工具库, never the
-    // script-specific 脚本库, even when it holds only prompts.
-    let state = library_state(vec![entry("p", "p", "prompt", "Review this")]);
-    let screen = draw_localized(&state, 110, 36, Locale::ZhCn);
-    assert!(screen.contains("工 具 库"));
-    assert!(!screen.contains("脚 本 库"));
-}
+fn test_prompt_only_chinese_library_stays_entry_neutral() {
+    for (locale, library, script_library, settings_label) in [
+        (Locale::ZhCn, "工具库", "脚本库", "说明（显示在工具库）"),
+        (Locale::ZhTw, "工具庫", "腳本庫", "說明（顯示在工具庫）"),
+    ] {
+        let mut library_state = library_state(vec![entry("p", "p", "prompt", "Review this")]);
+        let library_screen = compact_cell_text(&draw_localized(&library_state, 110, 36, locale));
+        assert!(
+            library_screen.contains(library),
+            "{locale:?}: {library_screen}"
+        );
+        assert!(
+            !library_screen.contains(script_library),
+            "{locale:?}: {library_screen}"
+        );
 
-#[test]
-fn test_prompt_only_chinese_library_stays_entry_neutral_zh_tw() {
-    // The Traditional-Chinese library title is the entry-neutral 工具庫, never 腳本庫.
-    let state = library_state(vec![entry("p", "p", "prompt", "Review this")]);
-    let screen = draw_localized(&state, 110, 36, Locale::ZhTw);
-    assert!(screen.contains("工 具 庫"));
-    assert!(!screen.contains("腳 本 庫"));
+        assert_eq!(
+            library_state.update(Action::OpenSettings),
+            Effect::Open {
+                request: HostRequest::Settings,
+                selector: Some("p".to_owned()),
+            },
+            "the selected prompt must route the visible Settings action through the reducer"
+        );
+
+        // The host supplies SettingsInputs after the reducer requests this screen. Present that
+        // typed host result through the real reducer and render the actual Settings screen. This
+        // does not pretend that constructing the typed input is a host end-to-end test.
+        let settings_state = settings_state(prompt_settings(Vec::new(), "", RUNNERS, true));
+        let settings_screen = compact_cell_text(&draw_localized(&settings_state, 120, 36, locale));
+        assert!(
+            settings_screen.contains(settings_label),
+            "{locale:?}: {settings_screen}"
+        );
+        assert!(
+            !settings_screen.contains(script_library),
+            "{locale:?}: {settings_screen}"
+        );
+    }
 }
 
 // ==========================================================================
@@ -438,14 +500,57 @@ fn test_form_picker_keyboard_pick_runs_and_remembers() {
 
 #[test]
 fn test_form_picker_mouse_click_picks_a_runner() {
-    // A mouse pick lands on the clicked runner and that is what the launch delivers.
+    // Mouse movement and button release do not open the picker. Two left-button presses open it
+    // and select one runner, and the typed submission delivers that selection.
     let mut state = run_state(prompt_form(&[], &[], &runners(), ""));
     let field = runner_index(&state);
-    state.update(Action::SelectFieldOption {
-        field,
-        value: RUNNERS[1].to_owned(),
-    });
-    assert_eq!(runner_value(&state), RUNNERS[1]); // the mouse pick landed
+    let original = runner_value(&state);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw_with_session(&mut session, &state, 90, 24);
+    let runner = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == skit_tui::HitTarget::FocusField(field))
+        .expect("the runner picker must expose its mouse hit area")
+        .rect;
+
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_eq!(
+            session.handle_event(mouse_with_kind(kind, runner.x, runner.y), &state, &geometry,),
+            EventHandling::Ignored,
+        );
+        assert_eq!(runner_value(&state), original);
+    }
+
+    let handling = session.handle_event(mouse(runner.x, runner.y), &state, &geometry);
+    let EventHandling::Action(action) = handling else {
+        panic!("clicking the closed runner picker must focus and open it: {handling:?}");
+    };
+    assert_eq!(action, Action::FocusField(field));
+    let _ = state.update(action);
+
+    let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &state, Locale::En, &mut session);
+        })
+        .unwrap();
+    let (column, row) = buffer_position(terminal.backend().buffer(), RUNNERS[1]);
+    let handling = session.handle_event(mouse(column, row), &state, &geometry);
+    let EventHandling::Action(action) = handling else {
+        panic!("clicking a rendered runner option must select it: {handling:?}");
+    };
+    assert_eq!(
+        action,
+        Action::SelectFieldOption {
+            field,
+            value: RUNNERS[1].to_owned(),
+        }
+    );
+    let _ = state.update(action);
+
+    assert_eq!(runner_value(&state), RUNNERS[1]);
     let values = submit_values(&mut state);
     assert_eq!(submitted_runner(&values), RUNNERS[1]);
 }
@@ -507,37 +612,6 @@ fn test_missing_pinned_binary_cannot_block_a_different_pick() {
     });
     let values = submit_values(&mut state);
     assert_eq!(submitted_runner(&values), "working");
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli): preflight of the resolved prompt runner and the return-to-library-with-error path live in launcher/flows. tests/test_prompt_tui.py:415."]
-fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
-    // A selected-but-unavailable agent returns to the library with the actionable error and
-    // never hands the terminal to a child process.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli): action_run's zero-runners branch opens the RunnerAddModal instead of the form; that routing is in the composition root. tests/test_prompt_tui.py:446."]
-fn test_run_with_zero_runners_offers_the_new_agent_modal() {
-    // An emptied runner list opens the New agent modal rather than dead-ending on a CLI hint.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli): the define-agent-then-re-enter-the-form flow is host run routing. tests/test_prompt_tui.py:465."]
-fn test_run_with_zero_runners_define_agent_then_run() {
-    // Defining the agent re-enters the run straight into the form with it configured.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli): action_rerun's 'no pin -> never answer the runner question silently -> fall back to the form' is host routing. tests/test_prompt_tui.py:490."]
-fn test_rerun_unpinned_prompt_falls_back_to_the_form() {
-    // An unpinned rerun must open the form, never resolve the runner silently.
-}
-
-#[test]
-#[ignore = "CROSS-CRATE (skit-cli): action_rerun's 'pinned -> skip the form, resolve inside PromptLaunch.build' is host routing. tests/test_prompt_tui.py:503."]
-fn test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin() {
-    // A pinned rerun skips the form and the pin resolves inside the launch build.
 }
 
 #[test]
@@ -754,9 +828,89 @@ fn test_settings_pin_change_saves_even_with_insertion_off() {
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the Rust prompt settings screen (declared_items) offers no detected-placeholder checkboxes (st-prompt-new-N) to tick an unmanaged {{b}} into management — only ADD_PARAMETER_KEY (type a name). MUST-FIX: offer detected-but-unmanaged prompt placeholders on the settings screen. tests/test_prompt_tui.py:813."]
 fn test_settings_tick_to_manage_a_detected_placeholder() {
     // managed=[a], body {{a}} {{b}}: a checkbox for b appears; ticking + save manages a,b.
+    let mut view = SettingsView::from_inputs(&prompt_settings_candidates(&["b".to_owned()], true));
+    let field = view
+        .field(PROMPT_CANDIDATES_KEY)
+        .expect("the detected placeholder must be offered");
+    let FieldKind::MultiChoice { options } = &field.kind else {
+        panic!("detected placeholders need checkboxes");
+    };
+    assert_eq!(options[0].value, "b");
+    view.update(SettingsAction::SetPromptCandidates(vec!["b".to_owned()]));
+    assert_eq!(view.update(SettingsAction::Save), SettingsEffect::Save);
+    assert_eq!(
+        view.submitted_values().get(PROMPT_CANDIDATES_KEY),
+        Some(&FieldValue::Explicit(TypedValue::Choices(vec![
+            "b".to_owned()
+        ])))
+    );
+}
+
+#[test]
+fn settings_short_candidate_cursor_and_mouse_can_pick_a_non_first_name() {
+    let mut state = settings_state(prompt_settings_candidates(
+        &["b".to_owned(), "c".to_owned()],
+        true,
+    ));
+    state.update(Action::Settings(SettingsAction::Focus {
+        key: PROMPT_CANDIDATES_KEY.to_owned(),
+    }));
+    let mut session = TuiSession::default();
+    let geometry = draw_with_session(&mut session, &state, 100, 60).1;
+    assert_eq!(
+        session.handle_event(key(KeyCode::Down, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed,
+        "Down moves the option cursor instead of leaving the field"
+    );
+    let EventHandling::Action(action) = session.handle_event(text_key(' '), &state, &geometry)
+    else {
+        panic!("Space must tick the option under the terminal cursor");
+    };
+    state.update(action);
+    assert_eq!(
+        state
+            .settings_view()
+            .unwrap()
+            .field(PROMPT_CANDIDATES_KEY)
+            .unwrap()
+            .value(),
+        &FieldValue::Explicit(TypedValue::Choices(vec!["c".to_owned()]))
+    );
+
+    let mut mouse_state = settings_state(prompt_settings_candidates(
+        &["b".to_owned(), "c".to_owned()],
+        true,
+    ));
+    mouse_state.update(Action::Settings(SettingsAction::Focus {
+        key: PROMPT_CANDIDATES_KEY.to_owned(),
+    }));
+    let mut mouse_session = TuiSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 60)).unwrap();
+    let mut mouse_geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            mouse_geometry =
+                render_with_session(frame, &mouse_state, Locale::En, &mut mouse_session)
+        })
+        .unwrap();
+    let (column, row) = buffer_position(terminal.backend().buffer(), "☐ c");
+    let EventHandling::Action(action) =
+        mouse_session.handle_event(mouse(column, row), &mouse_state, &mouse_geometry)
+    else {
+        panic!("the non-first option must keep its mouse twin");
+    };
+    mouse_state.update(action);
+    assert_eq!(
+        mouse_state
+            .settings_view()
+            .unwrap()
+            .field(PROMPT_CANDIDATES_KEY)
+            .unwrap()
+            .value(),
+        &FieldValue::Explicit(TypedValue::Choices(vec!["c".to_owned()]))
+    );
 }
 
 #[test]
@@ -877,45 +1031,269 @@ fn test_settings_interpolate_toggle_off_and_back_on() {
 }
 
 #[test]
-#[ignore = "ABSENT (gap): choosing first parameters in the same off->on save needs the detected-placeholder checkboxes (st-prompt-new-1) the Rust prompt settings screen does not offer. MUST-FIX: offer detected placeholders on the settings screen. tests/test_prompt_tui.py:967."]
 fn test_settings_off_to_on_can_choose_first_parameters_in_the_same_save() {
     // Turning insertion on and ticking st-prompt-new-1 in one save stores params [b].
+    let mut inputs = prompt_settings_candidates(&["a".to_owned(), "b".to_owned()], false);
+    inputs.managed.clear();
+    let mut view = SettingsView::from_inputs(&inputs);
+    assert!(!view.focusable_keys().contains(&PROMPT_CANDIDATES_KEY));
+    view.update(SettingsAction::SetField {
+        key: INTERPOLATE_KEY.to_owned(),
+        value: FieldValue::boolean(true),
+    });
+    assert!(view.focusable_keys().contains(&PROMPT_CANDIDATES_KEY));
+    view.update(SettingsAction::SetPromptCandidates(vec!["b".to_owned()]));
+    assert_eq!(view.update(SettingsAction::Save), SettingsEffect::Save);
+    let values = view.submitted_values();
+    assert_eq!(
+        values.get(INTERPOLATE_KEY),
+        Some(&FieldValue::boolean(true))
+    );
+    assert_eq!(
+        values.get(PROMPT_CANDIDATES_KEY),
+        Some(&FieldValue::Explicit(TypedValue::Choices(vec![
+            "b".to_owned()
+        ])))
+    );
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the Rust prompt settings screen shows no capped preview of detected placeholders (st-prompt-new-* checkboxes) — that inline candidate list exists only on the review lane. MUST-FIX: cap the settings detected-placeholder preview at PROMPT_LIST_PREVIEW_LIMIT. tests/test_prompt_tui.py:989."]
 fn test_settings_candidate_checkboxes_are_flood_capped() {
     // The settings detected-placeholder preview caps at LIST_PREVIEW_LIMIT checkboxes.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 9)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let view = SettingsView::from_inputs(&prompt_settings_candidates(&names, true));
+    let FieldKind::MultiChoice { options } = &view.field(PROMPT_CANDIDATES_KEY).unwrap().kind
+    else {
+        panic!("detected placeholders need checkboxes");
+    };
+    assert_eq!(options.len(), PROMPT_LIST_PREVIEW_LIMIT);
+    assert_eq!(view.prompt_candidates(), names);
+    assert!(view.prompt_picker_available());
+    let section = view
+        .sections
+        .iter()
+        .find(|section| section.id == SettingsSectionId::Parameters)
+        .unwrap();
+    let candidate = section
+        .items
+        .iter()
+        .position(
+            |item| matches!(item, SettingsItem::Field(field) if field.key == PROMPT_CANDIDATES_KEY),
+        )
+        .unwrap();
+    let managed = section
+        .items
+        .iter()
+        .rposition(|item| matches!(item, SettingsItem::Field(field) if field.key.starts_with("parameter:a:")))
+        .unwrap();
+    assert!(managed < candidate, "managed rows must precede candidates");
+    assert!(matches!(
+        &section.items[candidate + 1],
+        SettingsItem::Note(note)
+            if note.text == "…and {} more" && note.arguments == ["9"]
+    ));
+    assert_eq!(
+        section.items[candidate + 2],
+        SettingsItem::PromptCandidatePicker
+    );
+    assert!(matches!(
+        &section.items[candidate + 3],
+        SettingsItem::Field(field) if field.key == ADD_PARAMETER_KEY
+    ));
+    for (locale, expected) in [
+        (Locale::En, "…and 9 more"),
+        (Locale::ZhCn, "…以及另外 9 个"),
+        (Locale::ZhTw, "…以及另外 9 個"),
+    ] {
+        assert_eq!(
+            skit_i18n::format_text(locale, "…and {} more", &[&9]),
+            expected
+        );
+    }
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings screen has no searchable Ctrl+O candidate picker (PromptCandidatePickerModal) — it exists only on the review lane. MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1003."]
 fn test_settings_candidate_picker_reaches_a_hidden_name_and_waits_for_outer_save() {
     // Ctrl+O opens the picker, filters to a flooded hidden name, and its Done waits for Save.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 9)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let hidden = names.last().unwrap().clone();
+    let mut state = settings_state(prompt_settings_candidates(&names, true));
+    let mut session = TuiSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(110, 90)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| geometry = render_with_session(frame, &state, Locale::En, &mut session))
+        .unwrap();
+    let point = buffer_position(terminal.backend().buffer(), "Choose variables");
+    for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
+        assert_ne!(
+            session.handle_event(mouse_with_kind(kind, point.0, point.1), &state, &geometry),
+            EventHandling::Consumed
+        );
+        assert!(
+            !draw_with_session(&mut session, &state, 110, 90)
+                .0
+                .contains("Choose prompt variables")
+        );
+    }
+    assert_eq!(
+        session.handle_event(mouse(point.0, point.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert!(
+        draw_with_session(&mut session, &state, 110, 40)
+            .0
+            .contains("Choose prompt variables")
+    );
+    assert_eq!(
+        session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed
+    );
+
+    let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+    assert_eq!(
+        session.handle_event(ctrl('o'), &state, &geometry),
+        EventHandling::Consumed
+    );
+    for character in hidden.chars() {
+        assert_eq!(
+            session.handle_event(text_key(character), &state, &geometry),
+            EventHandling::Consumed
+        );
+    }
+    assert_eq!(
+        session.handle_event(text_key(' '), &state, &geometry),
+        EventHandling::Consumed
+    );
+    let EventHandling::Action(action) = session.handle_event(ctrl('s'), &state, &geometry) else {
+        panic!("Done must publish a settings-local selection");
+    };
+    assert_eq!(state.update(action), Effect::None);
+    assert!(matches!(state.screen(), Screen::Settings(_)));
+    let view = state.settings_view().unwrap();
+    assert_eq!(
+        view.field(PROMPT_CANDIDATES_KEY).unwrap().value(),
+        &FieldValue::Explicit(TypedValue::Choices(vec![hidden.clone()]))
+    );
+    let Effect::Submit { values, .. } = state.update(Action::Settings(SettingsAction::Save)) else {
+        panic!("outer Save owns persistence");
+    };
+    assert_eq!(
+        values.get(PROMPT_CANDIDATES_KEY),
+        Some(&FieldValue::Explicit(TypedValue::Choices(vec![hidden])))
+    );
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings screen has no searchable candidate picker whose selection a discard can drop (_pending_prompt_candidates). MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1031."]
 fn test_settings_candidate_picker_selection_is_discardable() {
     // Selecting all in the settings picker then discarding leaves params unchanged.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 2)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let mut state = settings_state(prompt_settings_candidates(&names, true));
+    let mut session = TuiSession::default();
+    let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+    assert_eq!(
+        session.handle_event(ctrl('o'), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(ctrl('a'), &state, &geometry),
+        EventHandling::Consumed
+    );
+    let EventHandling::Action(action) = session.handle_event(ctrl('s'), &state, &geometry) else {
+        panic!("Done must publish the selection");
+    };
+    state.update(action);
+    assert!(state.settings_view().unwrap().is_dirty());
+    state.update(Action::Settings(SettingsAction::Close));
+    assert!(state.modal().is_some());
+    state.update(Action::DiscardChanges);
+    assert!(!matches!(state.screen(), Screen::Settings(_)));
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings screen has no candidate picker whose Cancel/unchanged-Done are no-ops (_pending_prompt_candidates stays empty, _dirty stays false). MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1064."]
 fn test_settings_candidate_picker_cancel_and_unchanged_done_are_noops() {
     // The settings picker's Cancel and an unchanged Done both leave the screen clean.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 2)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let mut state = settings_state(prompt_settings_candidates(&names, true));
+    let mut session = TuiSession::default();
+    let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+    let _ = session.handle_event(ctrl('o'), &state, &geometry);
+    assert_eq!(
+        session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert!(!state.settings_view().unwrap().is_dirty());
+    let _ = session.handle_event(ctrl('o'), &state, &geometry);
+    let EventHandling::Action(action) = session.handle_event(ctrl('s'), &state, &geometry) else {
+        panic!("unchanged Done still closes the picker");
+    };
+    state.update(action);
+    assert!(!state.settings_view().unwrap().is_dirty());
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings screen has no candidate picker that tolerates a preview recompose behind it. MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1090."]
 fn test_settings_candidate_picker_tolerates_preview_recompose() {
     // A queued settings Ctrl+O/Done straddles a responsive recompose and still survives.
+    let names = (0..PROMPT_LIST_PREVIEW_LIMIT + 2)
+        .map(|index| format!("u{index}"))
+        .collect::<Vec<_>>();
+    let mut state = settings_state(prompt_settings_candidates(&names, true));
+    let mut session = TuiSession::default();
+    let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+    let _ = session.handle_event(ctrl('o'), &state, &geometry);
+    let small = draw_with_session(&mut session, &state, 48, 9).1;
+    let _ = session.handle_event(ctrl('a'), &state, &small);
+    let wide = draw_with_session(&mut session, &state, 120, 32).1;
+    let EventHandling::Action(action) = session.handle_event(ctrl('s'), &state, &wide) else {
+        panic!("Done must survive recompose");
+    };
+    state.update(action);
+    assert_eq!(
+        state
+            .settings_view()
+            .unwrap()
+            .field(PROMPT_CANDIDATES_KEY)
+            .unwrap()
+            .value(),
+        &FieldValue::Explicit(TypedValue::Choices(names))
+    );
+    let json = serde_json::to_string(state.settings_view().unwrap()).unwrap();
+    let restored: SettingsView = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored, *state.settings_view().unwrap());
+    assert!(restored.prompt_picker_available());
 }
 
 #[test]
-#[ignore = "ABSENT (gap): the settings Ctrl+O 'Choose variables' key has no counterpart — the searchable candidate picker exists only on the review lane. MUST-FIX: offer the searchable candidate picker on the settings screen. tests/test_prompt_tui.py:1116."]
 fn test_settings_choose_variables_key_is_harmless_when_off_or_short() {
     // Ctrl+O is a harmless no-op on the settings screen when insertion is off or short.
+    for inputs in [
+        prompt_settings_candidates(
+            &(0..PROMPT_LIST_PREVIEW_LIMIT + 1)
+                .map(|index| format!("u{index}"))
+                .collect::<Vec<_>>(),
+            false,
+        ),
+        prompt_settings_candidates(&["b".to_owned()], true),
+    ] {
+        let state = settings_state(inputs);
+        assert!(!state.command_enabled(UiCommand::ChooseSettingsVariables));
+        let mut session = TuiSession::default();
+        let geometry = draw_with_session(&mut session, &state, 110, 40).1;
+        let _ = session.handle_event(ctrl('o'), &state, &geometry);
+        assert!(
+            !draw_with_session(&mut session, &state, 110, 40)
+                .0
+                .contains("Choose prompt variables")
+        );
+    }
 }
 
 #[test]

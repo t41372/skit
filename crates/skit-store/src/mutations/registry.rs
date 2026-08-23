@@ -110,6 +110,22 @@ impl Registry {
         projection.verify(meta_path).then_some(projection.summary)
     }
 
+    /// Check whether one row represents an already-read authoritative metadata snapshot.
+    pub(crate) fn matches_entry_snapshot(
+        &self,
+        entry: &Entry,
+        meta_path: &Path,
+        metadata_bytes: &[u8],
+    ) -> bool {
+        self.entries()
+            .get(entry.slug.as_str())
+            .and_then(Value::as_table)
+            .and_then(|row| CachedProjection::parse(&entry.slug, row))
+            .is_some_and(|projection| {
+                projection.matches_entry_snapshot(entry, meta_path, metadata_bytes)
+            })
+    }
+
     /// Return the registry row keys that define library membership.
     pub(crate) fn row_keys(&self) -> Vec<String> {
         let mut keys = self.entries().keys().cloned().collect::<Vec<_>>();
@@ -304,7 +320,8 @@ fn merge_row(mut existing: Table, replacement: Table) -> Table {
 ///
 /// The file ID rejects replacements. The change time rejects in-place edits that restore the
 /// modification time and file size. The registry modification time keeps the Python row stamp
-/// coherent. Unix and Windows provide all three values. Other targets do not use the shortcut.
+/// coherent. Unix uses change time. Windows verifies the stored content hash because stable Rust
+/// does not expose the change counter. Other targets do not use the shortcut.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MetadataFingerprint {
     platform: &'static str,
@@ -338,22 +355,23 @@ impl MetadataFingerprint {
     fn read(path: &Path) -> Option<Self> {
         use std::os::windows::fs::MetadataExt as _;
 
-        let metadata = fs::metadata(path).ok()?;
+        let file = fs::File::open(path).ok()?;
+        let metadata = file.metadata().ok()?;
         if !metadata.is_file() {
             return None;
         }
+        let id = fs_id::FileID::new(&file).ok()?;
         Some(Self {
             platform: "windows",
-            file_id: format!(
-                "{}:{}",
-                metadata.volume_serial_number()?,
-                metadata.file_index()?
-            ),
-            file_size: metadata.file_size(),
+            file_id: format!("{}:{}", id.storage_id(), id.internal_file_id()),
+            file_size: metadata.len(),
             registry_mtime_ns: timestamp_ns(metadata.modified().ok()?).ok()?,
             // Windows file times count 100-nanosecond intervals.
             modified_ns: i128::from(metadata.last_write_time()) * 100,
-            changed_ns: i128::from(metadata.change_time()) * 100,
+            // Stable Rust does not expose the Windows change counter. Cache verification also
+            // compares the authoritative content hash on Windows, so creation time is sufficient
+            // here to reject file-ID reuse without weakening edit detection.
+            changed_ns: i128::from(metadata.creation_time()) * 100,
         })
     }
 
@@ -367,13 +385,9 @@ impl MetadataFingerprint {
     #[cfg(any(unix, windows))]
     fn from_table(table: &Table, registry_mtime_ns: i64) -> Option<Self> {
         let platform = table.get("platform")?.as_str()?;
-        if platform != current_cache_platform() {
-            return None;
-        }
+        (platform == current_cache_platform()).then_some(())?;
         let file_id = table.get("file_id")?.as_str()?.to_owned();
-        if file_id.is_empty() {
-            return None;
-        }
+        (!file_id.is_empty()).then_some(())?;
         let file_size = parse_canonical(table.get("file_size")?.as_str()?)?;
         let modified_ns = parse_canonical(table.get("modified_ns")?.as_str()?)?;
         let changed_ns = parse_canonical(table.get("changed_ns")?.as_str()?)?;
@@ -452,12 +466,10 @@ impl CacheProof {
         let before = MetadataFingerprint::read(meta_path)?;
         let bytes = fs::read(meta_path).ok()?;
         let after = MetadataFingerprint::read(meta_path)?;
-        if before != after
-            || before.registry_mtime_ns != mtime_ns
-            || !ProjectedMetadata::matches_entry(&bytes, entry)
-        {
-            return None;
-        }
+        (before == after
+            && before.registry_mtime_ns == mtime_ns
+            && ProjectedMetadata::matches_entry(&bytes, entry))
+        .then_some(())?;
         let metadata_hash = content_hash(&bytes);
         let summary = summary_from_entry(entry);
         let projection_hash =
@@ -470,15 +482,11 @@ impl CacheProof {
     }
 
     fn parse(table: &Table, mtime_ns: i64) -> Option<Self> {
-        if table.get("schema")?.as_integer()? != CACHE_SCHEMA {
-            return None;
-        }
+        (table.get("schema")?.as_integer()? == CACHE_SCHEMA).then_some(())?;
         let fingerprint = MetadataFingerprint::from_table(table, mtime_ns)?;
         let metadata_hash = table.get("metadata_hash")?.as_str()?.to_owned();
         let projection_hash = table.get("projection_hash")?.as_str()?.to_owned();
-        if !is_sha256(&metadata_hash) || !is_sha256(&projection_hash) {
-            return None;
-        }
+        (is_sha256(&metadata_hash) && is_sha256(&projection_hash)).then_some(())?;
         Some(Self {
             fingerprint,
             metadata_hash,
@@ -523,9 +531,7 @@ impl CachedProjection {
         };
         let target = match mode {
             StorageMode::Copy => {
-                if row.get("target").is_some_and(|value| !value.is_str()) {
-                    return None;
-                }
+                (!row.get("target").is_some_and(|value| !value.is_str())).then_some(())?;
                 None
             }
             StorageMode::Reference => {
@@ -569,7 +575,47 @@ impl CachedProjection {
         );
         expected == proof.projection_hash
             && MetadataFingerprint::read(meta_path).as_ref() == Some(&proof.fingerprint)
+            && metadata_hash_matches(meta_path, &proof.metadata_hash)
     }
+
+    fn matches_entry_snapshot(
+        &self,
+        entry: &Entry,
+        meta_path: &Path,
+        metadata_bytes: &[u8],
+    ) -> bool {
+        if self.summary != summary_from_entry(entry) {
+            return false;
+        }
+        let Some(proof) = &self.proof else {
+            return legacy_metadata_mtime_ns(meta_path) == Some(self.mtime_ns);
+        };
+        let expected = projection_hash(
+            &self.slug,
+            &self.summary,
+            self.mtime_ns,
+            &proof.fingerprint,
+            &proof.metadata_hash,
+        );
+        expected == proof.projection_hash
+            && MetadataFingerprint::read(meta_path).as_ref() == Some(&proof.fingerprint)
+            && content_hash(metadata_bytes) == proof.metadata_hash
+    }
+}
+
+#[cfg(unix)]
+fn metadata_hash_matches(_path: &Path, _expected: &str) -> bool {
+    true
+}
+
+#[cfg(windows)]
+fn metadata_hash_matches(path: &Path, expected: &str) -> bool {
+    fs::read(path).is_ok_and(|bytes| content_hash(&bytes) == expected)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn metadata_hash_matches(_path: &Path, _expected: &str) -> bool {
+    false
 }
 
 fn legacy_metadata_mtime_ns(path: &Path) -> Option<i64> {
@@ -591,17 +637,16 @@ struct ProjectedMetadata {
 
 impl ProjectedMetadata {
     fn matches_entry(bytes: &[u8], entry: &Entry) -> bool {
-        let Ok(text) = std::str::from_utf8(bytes) else {
-            return false;
-        };
-        let Ok(meta) = toml::from_str::<Self>(text) else {
-            return false;
-        };
-        meta.name == entry.meta.name
-            && meta.kind == entry.meta.kind.as_str()
-            && meta.mode == entry.meta.mode
-            && meta.description == entry.meta.description
-            && (meta.mode == StorageMode::Copy || meta.source == entry.meta.source)
+        std::str::from_utf8(bytes)
+            .ok()
+            .and_then(|text| toml::from_str::<Self>(text).ok())
+            .is_some_and(|meta| {
+                meta.name == entry.meta.name
+                    && meta.kind == entry.meta.kind.as_str()
+                    && meta.mode == entry.meta.mode
+                    && meta.description == entry.meta.description
+                    && (meta.mode == StorageMode::Copy || meta.source == entry.meta.source)
+            })
     }
 }
 
@@ -727,17 +772,61 @@ fn backup_corrupt(path: &Path) -> Result<(), RepositoryError> {
 mod tests {
     use std::time::{Duration, SystemTime};
 
+    use skit_application::{
+        CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
+    };
+    use skit_domain::EntrySettings;
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
+    fn legacy_projection_matches_an_already_read_authoritative_snapshot_by_mtime() {
+        let root = TempDir::new().unwrap();
+        let store = crate::FileStore::new(root.path());
+        let entry = store
+            .create(CreateEntry {
+                name: "Legacy".to_owned(),
+                kind: EntryKind::parse("shell").unwrap(),
+                mode: StorageMode::Copy,
+                source: "/original/legacy.sh".to_owned(),
+                workdir: "invoke".to_owned(),
+                description: "legacy row".to_owned(),
+                payload: Some(EntryPayload {
+                    bytes: b"printf legacy\n".to_vec(),
+                    stored_name: Some("script.sh".to_owned()),
+                    permissions: SourcePermissions::default(),
+                }),
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let meta_path = root
+            .path()
+            .join("scripts")
+            .join(entry.slug.as_str())
+            .join("meta.toml");
+        let metadata_bytes = fs::read(&meta_path).unwrap();
+        let mut registry = Registry::fresh(root.path());
+        registry.project_with_proof(&entry, metadata_mtime_ns(&meta_path).unwrap(), None);
+
+        assert!(registry.matches_entry_snapshot(&entry, &meta_path, &metadata_bytes));
+    }
+
+    #[test]
     fn registry_timestamps_refuse_pre_epoch_and_oversized_values() {
-        assert!(timestamp_ns(UNIX_EPOCH - Duration::from_nanos(1)).is_err());
+        // Every probe in this test sits on a 100 ns boundary: a Windows SystemTime counts
+        // FILETIME ticks, so a sub-tick value truncates -- a sub-tick pre-epoch offset lands
+        // back on the epoch and never refuses, and a sub-tick positive offset converts to 0.
+        // Tick-aligned probes exercise the same conversion exactly on every host; sub-tick
+        // freshness never reaches the product, whose Windows fingerprint verifies the content
+        // hash instead of trusting mtime fidelity.
+        assert!(timestamp_ns(UNIX_EPOCH - Duration::from_secs(1)).is_err());
         let oversized = SystemTime::UNIX_EPOCH
             + Duration::from_secs(u64::try_from(i64::MAX).unwrap() / 1_000_000_000 + 1);
         assert!(timestamp_ns(oversized).is_err());
         assert_eq!(
-            timestamp_ns(UNIX_EPOCH + Duration::from_nanos(7)).unwrap(),
-            7
+            timestamp_ns(UNIX_EPOCH + Duration::from_nanos(700)).unwrap(),
+            700
         );
     }
 }

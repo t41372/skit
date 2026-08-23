@@ -84,19 +84,19 @@ macro_rules! composable {
 
 const CATALOG: &[Translation] = &[
     row!(
-        "A script, prompt, program, and command library",
-        "脚本、提示词、程序与命令库",
-        "程式、提示詞、執行檔與命令程式庫",
+        "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. Run it without a subcommand to open the main menu",
+        "skit——用于脚本、提示词、程序和命令的启动器与参数管理器。不带子命令运行即可打开主菜单",
+        "skit——用於腳本、提示詞、程式和命令的啟動器與參數管理器。不帶子命令執行即可開啟主選單",
     ),
     row!(
-        "List entries in the library",
-        "列出工具库中的条目",
-        "列出工具庫中的項目",
+        "List every registered entry",
+        "列出所有已登记的条目",
+        "列出所有已登記的條目",
     ),
     row!(
-        "Show one entry by exact slug or exact display name",
-        "按准确短名或准确显示名称显示一个条目",
-        "依完整短名或完整顯示名稱顯示一個項目",
+        "Show everything about one entry: metadata, dependencies, parameters, presets",
+        "显示一个条目的全部信息：元数据、依赖、参数和参数组合",
+        "顯示一個條目的全部資訊：中繼資料、依賴、參數和參數組合",
     ),
     row!(
         "Add one file as a copied or referenced entry",
@@ -109,25 +109,29 @@ const CATALOG: &[Translation] = &[
         "執行一個工具庫項目",
     ),
     row!(
-        "Replace one entry description",
-        "替换一个条目的说明",
-        "取代一個項目的說明",
+        "Set an entry's description (shown in the Library and skit list)",
+        "设置条目的说明（显示在工具库和 skit list 中）",
+        "設定條目的說明（顯示在工具庫和 skit list 中）",
     ),
     row!(
-        "Rename one entry without changing its slug",
-        "重命名一个条目，但不更改其短名",
-        "重新命名一個項目，但不變更其短名",
+        "Rename an entry (presets, remembered values and history survive)",
+        "重命名条目（参数组合、记住的值与历史都会保留）",
+        "重新命名條目（參數組合、記住的值與歷史都會保留）",
     ),
-    row!("Remove one entry", "删除一个条目", "移除一個項目"),
+    row!(
+        "Remove a registered entry (an original source file is left untouched)",
+        "移除一个已登记的条目（原始来源文件不受影响）",
+        "移除一個已登記的條目（原始來源檔案不受影響）",
+    ),
     row!(
         "Open an entry source in the configured editor",
         "在配置的编辑器中打开条目源文件",
         "在設定的編輯器中開啟項目原始檔",
     ),
     row!(
-        "Read or edit managed and declared parameters",
-        "读取或编辑受管和声明的参数",
-        "讀取或編輯受管與宣告的參數",
+        "Show or edit an entry's managed or declared parameters",
+        "查看或编辑条目的管理参数或声明参数",
+        "檢視或編輯條目的管理參數或宣告參數",
     ),
     row!(
         "Set source binding as NAME=BINDING",
@@ -176,14 +180,14 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Show version", "显示版本", "顯示版本"),
     row!(
-        "Read or update dependencies and required commands",
-        "读取或更新依赖项和所需命令",
-        "讀取或更新相依套件與必要命令",
+        "View or update an entry's package dependencies, Python constraint, and needed commands",
+        "查看或更新条目的包依赖、Python 版本约束和所需命令",
+        "檢視或更新條目的套件依賴、Python 版本限制和所需命令",
     ),
     row!(
-        "Check runtime and library health",
-        "检查运行环境与工具库健康状态",
-        "檢查執行環境與工具庫健康狀態",
+        "Check that uv is available and the entry library is intact",
+        "检查 uv 是否可用以及工具库是否完好",
+        "檢查 uv 是否可用以及工具庫是否完好",
     ),
     row!(
         "Read or set skit configuration",
@@ -221,6 +225,7 @@ const CATALOG: &[Translation] = &[
         "沒有相符的項目。按 [q] 結束。",
     ),
     row!("No matching entries", "没有匹配的条目", "沒有相符的項目"),
+    row!("(use this directory)", "(使用此目录)", "(使用此目錄)"),
     row!("valid", "有效", "有效"),
     row!(
         "could not read a parameter row: {}",
@@ -279,6 +284,7 @@ const CATALOG: &[Translation] = &[
     row!("inspect", "检查", "檢查"),
     row!("scan", "扫描", "掃描"),
     row!("lock", "锁定", "鎖定"),
+    row!("move", "移动", "移動"),
     row!("remove", "删除", "移除"),
     row!(
         "{}'s stored copy isn't valid UTF-8, so skit can't rewrite the script's own dependency block — and that block is what uv reads. Edit it in the script itself: skit edit {}",
@@ -433,13 +439,13 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "Index rebuilt: {} entry",
-        "索引已重建：{} 个条目",
-        "索引已重建：{} 個項目"
+        "索引已重建:{} 条",
+        "索引已重建:{} 筆"
     ),
     row!(
         "Index rebuilt: {} entries",
-        "索引已重建：{} 个条目",
-        "索引已重建：{} 個項目",
+        "索引已重建:{} 条",
+        "索引已重建:{} 筆",
     ),
     row!("Jump to entry", "跳转到条目", "跳至項目"),
     row!("Rebuild index", "重建索引", "重建索引"),
@@ -447,6 +453,11 @@ const CATALOG: &[Translation] = &[
         "New agent (runner)",
         "新建代理（运行器）",
         "新增代理（執行器）"
+    ),
+    row!(
+        "A prompt needs a configured agent to run with.",
+        "提示词需要一个已配置的 agent 才能运行。",
+        "提示詞需要一個已設定的 agent 才能執行。",
     ),
     row!(
         "Edit agent (runner)",
@@ -516,12 +527,12 @@ const CATALOG: &[Translation] = &[
         "執行將被拒絕啟動——{}",
     ),
     row!(
-        "the prompt value isn't a table; repair it before runner management",
+        "the prompt value is not a table; repair it before runner management",
         "prompt 值不是表；请先修复再管理运行器",
         "prompt 值不是表格；請先修復再管理執行器",
     ),
     row!(
-        "the prompt.runners value isn't a list; repair it before runner management",
+        "the prompt.runners value is not a list; repair it before runner management",
         "prompt.runners 值不是列表；请先修复再管理运行器",
         "prompt.runners 值不是清單；請先修復再管理執行器",
     ),
@@ -742,6 +753,21 @@ const CATALOG: &[Translation] = &[
     row!("Added: {}", "已添加：{}", "已新增：{}"),
     row!("Description: {}", "说明：{}", "說明：{}"),
     row!("Managed parameters: {}", "受管参数：{}", "受管參數：{}",),
+    row!(
+        "Updated {}. Managed parameters: {}",
+        "已更新 {}。受管理的参数:{}",
+        "已更新 {}。受管理的參數:{}",
+    ),
+    row!(
+        "Updated {}. Declared parameters: {}",
+        "已更新 {}。已声明的参数:{}",
+        "已更新 {}。已宣告的參數:{}",
+    ),
+    row!(
+        "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).",
+        "运行表单现在会询问这些管理的参数——脚本自己的命令行表单（{}）会先搁置，直到它们被移除（--unmanage）为止。",
+        "執行表單現在會詢問這些管理的參數——腳本自己的命令列表單（{}）會先擱置，直到它們被移除（--unmanage）為止。",
+    ),
     row!(
         "Variable insertion is off for {} — turn it on first with: skit params {} --interpolate",
         "{} 的变量插入已关闭——请先开启:skit params {} --interpolate",
@@ -1084,7 +1110,8 @@ const CATALOG: &[Translation] = &[
         "命令模板（例如 ffmpeg -i {input}）",
         "指令範本（例如 ffmpeg -i {input}）",
     ),
-    row!("Which one?", "选择哪一个？", "選擇哪一個？"),
+    row!("Which one?", "选哪个？", "選哪個？"),
+    row!("- = cancel", "- = 取消", "- = 取消"),
     row!(
         "Choose a number from 1 to 4.",
         "请选择 1 到 4 之间的数字。",
@@ -1123,17 +1150,72 @@ const CATALOG: &[Translation] = &[
         "skit 的草稿路徑不是其自有目錄：{}",
     ),
     row!(
+        "the kept draft has no filesystem identity: {}",
+        "保留的草稿没有文件系统标识：{}",
+        "保留的草稿沒有檔案系統識別：{}",
+    ),
+    row!(
+        "The kept draft changed before cleanup. skit kept it at {}.",
+        "保留的草稿在清理前发生了更改。skit 将它保留在 {}。",
+        "保留的草稿在清理前發生了變更。skit 將它保留在 {}。",
+    ),
+    row!(
+        "could not restore quarantined draft {} to {}: {}",
+        "无法将隔离的草稿 {} 恢复到 {}：{}",
+        "無法將隔離的草稿 {} 還原到 {}：{}",
+    ),
+    row!(
+        "the kept draft changed and could not be inspected at {}",
+        "保留的草稿已更改，无法在 {} 检查它",
+        "保留的草稿已變更，無法在 {} 檢查它",
+    ),
+    row!(
+        "{} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {}.",
+        "{} 是 skit 自己保留的草稿——恢复草稿一律以副本加入(成功后即消耗),而 reference 或程序项目做不到这点。请去掉 {}。",
+        "{} 是 skit 自己保留的草稿——恢復草稿一律以副本加入(成功後即消耗),而 reference 或程式項目做不到這點。請拿掉 {}。",
+    ),
+    row!(
+        "{} is one of skit's own kept drafts, and a draft is always added as a script or prompt copy — pass --kind <language> to name its language.",
+        "{} 是 skit 自己保留的草稿,而草稿一律以脚本或提示词副本加入——请用 --kind <语言> 指定它的语言。",
+        "{} 是 skit 自己保留的草稿,而草稿一律以腳本或提示詞副本加入——請用 --kind <語言> 指定它的語言。",
+    ),
+    row!(
+        "The #! in {} names no interpreter skit knows — pass --kind <language> to choose one.",
+        "{} 的 #! 指定了 skit 不认识的解释器——请用 --kind <语言> 指定一个。",
+        "{} 的 #! 指定了 skit 不認識的直譯器——請用 --kind <語言> 指定一個。",
+    ),
+    row!(
+        "{} is a kept draft skit can't classify — pass --kind <language> to add it as a script, or --prompt for an AI-agent prompt.",
+        "{} 是 skit 无法分类的保留草稿——请用 --kind <语言> 将它加入为脚本,或用 --prompt 加入为 AI agent 提示词。",
+        "{} 是 skit 無法分類的保留草稿——請用 --kind <語言> 將它加入為腳本,或用 --prompt 加入為 AI agent 提示詞。",
+    ),
+    row!(
         "source changed while the add review was open; review it again",
         "源文件在添加审核期间发生了变化；请重新审核",
         "來源檔案在新增檢查期間已變更；請重新檢查",
     ),
     row!("Dependencies: {}", "依赖:{}", "依賴:{}"),
     row!(
+        "Dependencies of {} updated: {}",
+        "{} 的依赖已更新:{}",
+        "{} 的依賴已更新:{}",
+    ),
+    row!(
+        "Python constraint of {} updated: {}",
+        "{} 的 Python 版本约束已更新:{}",
+        "{} 的 Python 版本約束已更新:{}",
+    ),
+    row!(
         "Python constraint: {}",
         "Python 版本约束:{}",
         "Python 版本約束:{}",
     ),
     row!("Required commands: {}", "所需命令：{}", "必要命令：{}"),
+    row!(
+        "Needs of {} updated: {}",
+        "{} 所需的命令已更新：{}",
+        "{} 所需的命令已更新：{}",
+    ),
     row!(
         "First run — downloading uv {}…",
         "首次运行:正在下载 uv {}…",
@@ -1166,7 +1248,6 @@ const CATALOG: &[Translation] = &[
     ),
     row!("State: {}", "状态数据：{}", "狀態資料：{}"),
     row!("Config: {}", "配置：{}", "組態：{}"),
-    row!("Registry rebuilt: {}", "索引已重建：{}", "索引已重建：{}"),
     row!(
         "WARN {}: the launch target is gone from disk",
         "警告 {}：启动目标已不在磁盘上",
@@ -1296,6 +1377,7 @@ const CATALOG: &[Translation] = &[
     ),
     row!("→ {}", "→ {}", "→ {}"),
     row!("warning: {}", "警告：{}", "警告：{}"),
+    row!("{}; warning: {}", "{}；警告：{}", "{}；警告：{}",),
     row!(
         "No entries yet. Add one with: skit add <path>",
         "还没有任何条目。用 skit add <path> 添加一个。",
@@ -1427,6 +1509,29 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Prompt runner: {}", "提示词运行器：{}", "提示詞執行器：{}"),
     row!("Interpolation: {}", "插值：{}", "插值：{}"),
+    row!(
+        "Prompt placeholders (the run form asks for them):",
+        "提示词的占位符(运行表单会询问):",
+        "提示詞的佔位符(執行表單會詢問):",
+    ),
+    row!(
+        "Command template placeholders (the run form asks for them):",
+        "命令模板的占位符（运行表单会询问）：",
+        "命令樣板的佔位符（執行表單會詢問）：",
+    ),
+    row!(
+        "Declared environment variables (set on the run):",
+        "声明的环境变量（运行时设置）：",
+        "宣告的環境變數（執行時設定）：",
+    ),
+    row!("default {}", "默认 {}", "預設 {}"),
+    row!("optional", "选填", "選填"),
+    row!("secret", "机密", "機密"),
+    row!(
+        "No longer in the prompt (the value would be ignored): {} — remove with --rm, or edit the body.",
+        "提示词中已不存在(其值会被忽略):{}——用 --rm 移除,或编辑正文。",
+        "提示詞中已不存在(其值會被忽略):{}——用 --rm 移除,或編輯內文。",
+    ),
     row!("Parameters:", "参数：", "參數："),
     row!("  {} ({}, {})", "  {}（{}，{}）", "  {}（{}，{}）"),
     row!("Presets: {}", "参数组合:{}", "參數組合:{}"),
@@ -1453,6 +1558,21 @@ const CATALOG: &[Translation] = &[
         "偵測到但尚未管理：{}（用 --manage 管理）",
     ),
     row!(
+        "Detected but not yet managed: {} (use --add to manage them)",
+        "检测到但尚未管理:{}(用 --add 管理)",
+        "偵測到但尚未管理:{}(用 --add 管理)",
+    ),
+    row!(
+        "Detected but not yet managed: {} … and {} more candidate (use --add to manage them)",
+        "检测到但尚未管理：{}……另有 {} 个（用 --add 管理）",
+        "偵測到但尚未管理：{}……另有 {} 個（用 --add 管理）",
+    ),
+    row!(
+        "Detected but not yet managed: {} … and {} more candidates (use --add to manage them)",
+        "检测到但尚未管理：{}……另有 {} 个（用 --add 管理）",
+        "偵測到但尚未管理：{}……另有 {} 個（用 --add 管理）",
+    ),
+    row!(
         "Reference mode: skit never writes the original file — manage parameters by editing its [tool.skit] block in the source directly.",
         "参照模式：skit 绝不写入原始文件——请直接编辑源码中的 [tool.skit] 区块来管理参数。",
         "參照模式：skit 絕不寫入原始檔案——請直接編輯原始碼中的 [tool.skit] 區塊來管理參數。",
@@ -1470,15 +1590,100 @@ const CATALOG: &[Translation] = &[
         "環境變數來源：{}",
     ),
     row!(
+        "{} isn't a declared parameter; skipped.",
+        "{} 不是已声明的参数，已跳过。",
+        "{} 不是已宣告的參數，已跳過。",
+    ),
+    row!(
+        "{} is already declared; skipped.",
+        "{} 已经声明过，已跳过。",
+        "{} 已經宣告過，已跳過。",
+    ),
+    row!(
+        "{} is already managed; skipped.",
+        "{} 已在管理中;已跳过。",
+        "{} 已在管理中;已略過。",
+    ),
+    row!(
+        "{} isn't a detectable parameter in the current script; skipped.",
+        "{} 在当前脚本中检测不到;已跳过。",
+        "{} 在當前腳本中偵測不到;已略過。",
+    ),
+    row!(
+        "Could not parse the script (syntax error); resync skipped. Parameter definitions are unchanged.",
+        "无法解析脚本（语法错误）；已跳过重新同步。参数定义未更改。",
+        "無法剖析指令稿（語法錯誤）；已略過重新同步。參數定義未變更。",
+    ),
+    row!(
+        "Dropped {}: it no longer exists in the script.",
+        "已移除 {}：它已不存在于脚本中。",
+        "已移除 {}：它已不存在於指令稿中。",
+    ),
+    row!(
+        "{}: re-anchored to its current position after its prompt stopped matching uniquely; double-check the prompt/secret assignment is still correct.",
+        "{}：提示不再唯一匹配后，已重新绑定到当前位置；请再次检查提示和秘密设置是否仍然正确。",
+        "{}：提示不再唯一相符後，已重新繫結到目前位置；請再次檢查提示和秘密設定是否仍然正確。",
+    ),
+    row!(
+        "{} isn't a managed parameter; skipped.",
+        "{} 不是受管理的参数；已跳过。",
+        "{} 不是受管理的參數；已略過。",
+    ),
+    row!(
+        "{} isn't a managed parameter; --env-source skipped.",
+        "{} 不是受管理的参数；已跳过 --env-source。",
+        "{} 不是受管理的參數；已略過 --env-source。",
+    ),
+    row!(
+        "{}: that delivery isn't available for this kind; skipped.",
+        "{}：该传递方式不适用于此类型，已跳过。",
+        "{}：該傳遞方式不適用於此類型，已跳過。",
+    ),
+    row!(
+        "{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",
+        "{} 不是模板占位符，无法使用 placeholder 传递方式，已跳过。",
+        "{} 不是模板佔位符，無法使用 placeholder 傳遞方式，已跳過。",
+    ),
+    row!(
+        "{}: unknown type; skipped (use str, int, float, bool, choice, or path).",
+        "{}：未知类型，已跳过(可用 str、int、float、bool、choice 或 path)。",
+        "{}：未知類型，已跳過(可用 str、int、float、bool、choice 或 path)。",
+    ),
+    row!(
+        "{}: the default doesn't fit its type; skipped.",
+        "{}：默认值与其类型不符，已跳过。",
+        "{}：預設值與其類型不符，已跳過。",
+    ),
+    row!(
         "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
         "{} 不是机密参数；--env-source 只适用于机密参数（先用 --secret 标记）。",
         "{} 不是機密參數；--env-source 只適用於機密參數（先用 --secret 標記）。",
+    ),
+    row!(
+        "{}: a choice parameter needs choices; set --choices {}=a,b,c.",
+        "{}：choice 参数需要可选值，请设置 --choices {}=a,b,c。",
+        "{}：choice 參數需要可選值，請設定 --choices {}=a,b,c。",
     ),
     row!("Secret: yes", "敏感值：是", "敏感值：是"),
     row!(
         "Removed previously stored plaintext value(s) for now-secret parameter(s): {}",
         "已移除下列刚设为机密的参数先前以明文存储的值:{}",
         "已移除下列剛設為機密的參數先前以明文儲存的值:{}",
+    ),
+    row!(
+        "State commit failed: {}. Rollback also failed: {}.",
+        "状态提交失败：{}。回滚也失败：{}。",
+        "狀態提交失敗：{}。復原也失敗：{}。",
+    ),
+    row!(
+        "Operation failed: {}. Rollback also failed: {}.",
+        "操作失败：{}。回滚也失败：{}。",
+        "操作失敗：{}。復原也失敗：{}。",
+    ),
+    row!(
+        "Operation failed: {}. State rollback also failed: {}.",
+        "操作失败：{}。状态回滚也失败：{}。",
+        "操作失敗：{}。狀態復原也失敗：{}。",
     ),
     row!("yes", "是", "是"),
     row!("no", "否", "否"),
@@ -1549,6 +1754,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Run", "运行", "執行"),
     row!("Run {}", "运行 {}", "執行 {}"),
+    row!("Insert value", "插入值", "插入值"),
+    row!("Reset to default", "恢复默认值", "恢復預設值"),
     row!("Add", "添加", "新增"),
     row!("Edit", "编辑", "編輯"),
     row!("Settings", "设置", "設定"),
@@ -2035,9 +2242,9 @@ const CATALOG: &[Translation] = &[
         "將一個 shell 常數正規化為環境變數預設值",
     ),
     row!(
-        "Open entry-kind registry key",
-        "开放的条目类型注册键",
-        "開放式項目類型登錄鍵",
+        "Force an interpreted kind or exe. With stdin, prompt is also valid",
+        "强制指定解释型类型或 exe。使用标准输入时也可指定 prompt",
+        "強制指定直譯型類型或 exe。使用標準輸入時也可指定 prompt",
     ),
     row!(
         "Override the skit data directory",
@@ -2243,6 +2450,11 @@ const CATALOG: &[Translation] = &[
         "--edit 會開啟你的編輯器，而 --no-input 禁止這麼做——請改用管道把腳本傳進來：skit add - -n NAME",
     ),
     row!(
+        "Writing a new script in an editor needs an interactive terminal.",
+        "用编辑器新建脚本需要交互式终端。",
+        "用編輯器新建腳本需要互動式終端機。",
+    ),
+    row!(
         "--interpolate only applies to prompt entries",
         "--interpolate 仅适用于提示词条目",
         "--interpolate 僅適用於提示詞項目",
@@ -2261,6 +2473,61 @@ const CATALOG: &[Translation] = &[
         "--normalize must be a separate params operation",
         "--normalize 必须作为单独的 params 操作运行",
         "--normalize 必須作為單獨的 params 操作執行",
+    ),
+    row!(
+        "{} has no --normalize: it is a shell idiom (VAR=value -> VAR=\"${VAR:-value}\").",
+        "{} 没有 --normalize:那是 shell 的写法(VAR=value -> VAR=\"${VAR:-value}\")。",
+        "{} 沒有 --normalize:那是 shell 的寫法(VAR=value -> VAR=\"${VAR:-value}\")。",
+    ),
+    row!(
+        "{} is in reference mode, and skit never writes the original file. Change the line to VAR=\"${VAR:-value}\" in the source directly.",
+        "{} 是 reference 模式;skit 绝不写原文件。请直接把原文件里那行改成 VAR=\"${VAR:-value}\"。",
+        "{} 是 reference 模式;skit 絕不寫原檔案。請直接把原檔案裡那行改成 VAR=\"${VAR:-value}\"。",
+    ),
+    row!(
+        "{} isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy.",
+        "{} 不是有效的 UTF-8，--normalize 无法安全改写；什么都没改——它的常量会继续用临时副本注入。",
+        "{} 不是有效的 UTF-8，--normalize 無法安全改寫；什麼都沒改——它的常數會繼續用臨時副本注入。",
+    ),
+    row!(
+        "{} isn't a plain constant with a literal value, so there's nothing to normalize; skipped.",
+        "{} 不是带字面值的普通常量,没有可以规范化的东西;已跳过。",
+        "{} 不是帶字面值的普通常數,沒有可以正規化的東西;已略過。",
+    ),
+    row!(
+        "{} is assigned more than once at the top level; normalizing it would change which value wins. Skipped.",
+        "{} 在顶层被赋值多次;规范化会改变最终生效的值。已跳过。",
+        "{} 在頂層被賦值多次;正規化會改變最終生效的值。已略過。",
+    ),
+    row!(
+        "{} is readonly, so the script could never take a value from the environment; skipped.",
+        "{} 是 readonly,脚本永远不可能从环境变量取值;已跳过。",
+        "{} 是 readonly,腳本永遠不可能從環境變數取值;已略過。",
+    ),
+    row!(
+        "{} already reads from the environment; nothing to do.",
+        "{} 已经从环境变量读取了;无需处理。",
+        "{} 已經從環境變數讀取了;無需處理。",
+    ),
+    row!(
+        "{}'s value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.",
+        "{} 的值里有无法安全放进 ${...:-...} 的字符(} \" ` $ \\ 或换行);已跳过——它会继续用临时副本注入。",
+        "{} 的值裡有無法安全放進 ${...:-...} 的字元(} \" ` $ \\ 或換行);已略過——它會繼續用臨時副本注入。",
+    ),
+    row!(
+        "Could not parse the script (syntax error); nothing was normalized.",
+        "无法解析脚本(语法错误);没有做任何规范化。",
+        "無法解析腳本(語法錯誤);沒有做任何正規化。",
+    ),
+    row!(
+        "Normalized {} in {}: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).",
+        "已规范化 {name} 中的 {names}:今后用环境变量传值(不再写临时副本,$0 也仍指向你的真实文件)。",
+        "已正規化 {name} 中的 {names}:今後用環境變數傳值(不再寫臨時副本,$0 也仍指向你的真實檔案)。",
+    ),
+    row!(
+        "This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME=\"${NAME:-value}\" delivers the value through the environment with no copy at all — `skit params {} --normalize NAME` does the rewrite for you on the stored copy.",
+        "这个脚本会读取自己的位置($0 / BASH_SOURCE)。注入常量时它会从临时副本运行,因此看到的是那个副本的路径。把常量改写成 NAME=\"${NAME:-value}\",值就会改由环境变量传递,完全不产生副本——`skit params {} --normalize NAME` 会在存储的副本上帮你完成改写。",
+        "這個腳本會讀取自己的位置($0 / BASH_SOURCE)。注入常數時它會從臨時副本執行,因此看到的是那個副本的路徑。把常數改寫成 NAME=\"${NAME:-value}\",值就會改由環境變數傳遞,完全不產生副本——`skit params {} --normalize NAME` 會在儲存的副本上幫你完成改寫。",
     ),
     row!(
         "--raw runs the script as-is; --set, --preset, and --save-preset do not apply.",
@@ -2300,9 +2567,21 @@ const CATALOG: &[Translation] = &[
         "--template 僅適用於命令項目",
     ),
     row!(
-        "JavaScript package installation failed with {}",
-        "JavaScript 软件包安装失败，使用的是 {}",
-        "JavaScript 套件安裝失敗，使用的是 {}",
+        "Installing dependencies ({})…",
+        "正在安装依赖({})…",
+        "正在安裝依賴({})…",
+    ),
+    row!("Couldn't run {}: {}", "无法运行 {}:{}", "無法執行 {}:{}",),
+    row!(
+        "Installing dependencies failed ({}): {}",
+        "依赖安装失败({}):{}",
+        "依賴安裝失敗({}):{}",
+    ),
+    // Version 0.4 ships this exact cleanup refusal and punctuation.
+    row!(
+        "Couldn't clear the old dependency environment: {}",
+        "无法清除旧的依赖环境:{}",
+        "無法清除舊的依賴環境:{}",
     ),
     row!(
         "The environment variable {} isn't set (needed by {}).",
@@ -2335,9 +2614,9 @@ const CATALOG: &[Translation] = &[
         "組態值需要一個鍵",
     ),
     row!(
-        "a prompt body is required; pipe it to `skit add - --prompt --name NAME`",
-        "需要提示词正文；请通过管道传入 `skit add - --prompt --name NAME`",
-        "需要提示詞內容；請透過管道傳入 `skit add - --prompt --name NAME`",
+        "--prompt with no path opens your editor, which --no-input forbids — pipe the body in instead: skit add - --prompt -n NAME",
+        "--prompt 未带路径时会打开你的编辑器，而 --no-input 禁止这么做——请改用管道把正文传进来：skit add - --prompt -n NAME",
+        "--prompt 未帶路徑時會開啟你的編輯器，而 --no-input 禁止這麼做——請改用管道把內文傳進來：skit add - --prompt -n NAME",
     ),
     row!(
         "a prompt runner command needs {{prompt}} exactly once after the program",
@@ -2589,6 +2868,16 @@ const CATALOG: &[Translation] = &[
     row!("Can't read {}: {}", "无法读取 {}：{}", "無法讀取 {}：{}",),
     row!("Not a file: {}", "不是文件：{}", "不是檔案：{}",),
     row!(
+        "{} is a directory. Add it as a program that runs directly?",
+        "{} 是一个目录。要作为直接运行的程序添加吗?",
+        "{} 是一個目錄。要當作直接執行的程式加入嗎?",
+    ),
+    row!(
+        "{} is a directory — pass --exe to add it as a program that runs directly.",
+        "{} 是一个目录——加 --exe 可把它作为直接运行的程序加入。",
+        "{} 是一個目錄——加 --exe 可把它作為直接執行的程式加入。",
+    ),
+    row!(
         "custom working directory must be absolute: {}",
         "自定义工作目录必须是绝对路径：{}",
         "自訂工作目錄必須是絕對路徑：{}",
@@ -2698,6 +2987,16 @@ const CATALOG: &[Translation] = &[
         "Unknown JS runner: {}. Choose from: {}",
         "未知的 JS 运行时：{}。可选：{}",
         "未知的 JS 執行環境：{}。可選：{}",
+    ),
+    row!(
+        "Unknown kind: {}. Choose from: {}",
+        "未知类型：{}。可选：{}",
+        "未知類型：{}。可選：{}",
+    ),
+    row!(
+        "Use --kind or --exe, not both.",
+        "--kind 与 --exe 只能择一。",
+        "--kind 與 --exe 只能擇一。",
     ),
     row!(
         "Unknown mirror value: {}. \"mirror\" is the master switch (on / off); mirrors are picked per ecosystem: mirror.pypi ({}), mirror.github ({}), mirror.npm ({}) — each also takes a URL or \"off\".",
@@ -2836,7 +3135,7 @@ const CATALOG: &[Translation] = &[
         "需要提示詞內容",
     ),
     row!(
-        "prompt body doesn't exist: {}",
+        "prompt body does not exist: {}",
         "提示词正文不存在：{}",
         "提示詞內容不存在：{}",
     ),
@@ -2871,6 +3170,16 @@ const CATALOG: &[Translation] = &[
         "參照項目在其原始路徑上編輯",
     ),
     row!(
+        "external edit source is outside its entry directory",
+        "外部编辑源文件不在其条目目录中",
+        "外部編輯來源不在其項目目錄中",
+    ),
+    row!(
+        "external edit source is not the entry's stored payload",
+        "外部编辑源文件不是该条目的存储内容",
+        "外部編輯來源不是該項目的儲存內容",
+    ),
+    row!(
         "Reference-mode entries take no managed dependencies — they run from their own project. Add it as a copy, or drop --dep.",
         "reference 模式条目不受理依赖管理——它从自己的项目运行。以复制模式加入，或去掉 --dep。",
         "reference 模式條目不受理依賴管理——它從自己的專案執行。以複製模式加入，或拿掉 --dep。",
@@ -2886,14 +3195,19 @@ const CATALOG: &[Translation] = &[
         "找不到必要命令：{}",
     ),
     row!(
-        "required package manager was not found: {}",
-        "找不到所需的软件包管理器：{}",
-        "找不到必要的套件管理程式：{}",
+        "{} is needed to install this script's dependencies, but it isn't on your PATH.",
+        "安装这个脚本的依赖需要 {}，但它不在你的 PATH 上。",
+        "安裝這支腳本的依賴需要 {}，但它不在你的 PATH 上。",
     ),
     row!(
         "required program was not found: {}",
         "找不到所需程序：{}",
         "找不到必要程式：{}",
+    ),
+    row!(
+        "{} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>",
+        "此系统上没有 {}。请安装 Git for Windows（自带的 bash 即可）或 WSL，或用 skit config shell.bash_path <path> 指定一个。",
+        "此系統上沒有 {}。請安裝 Git for Windows（內附的 bash 即可）或 WSL，或用 skit config shell.bash_path <path> 指定一個。",
     ),
     row!(
         "No JavaScript runtime found (looked for: {}). Install deno, bun, or node — or pick one with: skit config js.runner <name>",
@@ -2941,6 +3255,41 @@ const CATALOG: &[Translation] = &[
         "來源不是有效的 {} 語法",
     ),
     row!(
+        "the injected copy no longer parses as a JavaScript/TypeScript script (nothing was run)",
+        "注入副本不再是可解析的 JavaScript/TypeScript 脚本（未运行任何内容）",
+        "注入副本不再是可剖析的 JavaScript/TypeScript 指令碼（未執行任何內容）",
+    ),
+    row!(
+        "the injected copy no longer parses as a shell script (nothing was run)",
+        "注入副本不再是可解析的 shell 脚本（未运行任何内容）",
+        "注入副本不再是可剖析的 shell 指令碼（未執行任何內容）",
+    ),
+    row!(
+        "node rejected the injected copy: {}",
+        "node 拒绝了注入副本：{}",
+        "node 拒絕了注入副本：{}",
+    ),
+    row!(
+        "{} rejected the injected copy: {}",
+        "{} 拒绝了注入后的副本:{}",
+        "{} 拒絕了注入後的副本:{}",
+    ),
+    row!(
+        "skit refused to run its own injected copy: {}",
+        "skit 拒绝运行自己注入出来的副本:{}",
+        "skit 拒絕執行自己注入出來的副本:{}",
+    ),
+    row!(
+        "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values run from a temporary copy — so it sees the copy's path, not the original's. Rewriting a constant as NAME=\"${NAME:-value}\" delivers the value through the environment instead, with no copy at all (`skit params <script> --normalize NAME` does the rewrite for you on a stored copy).",
+        "⚠ 这个脚本会读自己的位置($0 / $BASH_SOURCE),而注入后的值是从临时副本运行的——所以它看到的是副本的路径,不是原文件的。把常量改写成 NAME=\"${NAME:-value}\" 就能改用环境变量传值,完全不写副本(`skit params <script> --normalize NAME` 会在已保存的副本上帮你完成这个改写)。",
+        "⚠ 這個腳本會讀自己的位置($0 / $BASH_SOURCE),而注入後的值是從臨時副本執行的——所以它看到的是副本的路徑,不是原檔案的。把常數改寫成 NAME=\"${NAME:-value}\" 就能改用環境變數傳值,完全不寫副本(`skit params <script> --normalize NAME` 會在儲存的副本上幫你做這個改寫)。",
+    ),
+    row!(
+        "The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",
+        "脚本内容和表单定义对不上了：{}。运行 `skit params {} --resync` 即可修复。",
+        "腳本內容和表單定義對不上了：{}。執行 `skit params {} --resync` 即可修復。",
+    ),
+    row!(
         "source management applies only to a stored copy",
         "来源管理仅适用于存储的副本",
         "來源管理僅適用於儲存的副本",
@@ -2949,6 +3298,53 @@ const CATALOG: &[Translation] = &[
         "source operation is not supported for entry kind {}",
         "条目类型 {} 不支持来源操作",
         "項目類型 {} 不支援來源操作",
+    ),
+    row!(
+        "--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.",
+        "--prompt 已直接指定类型——请去掉 --edit/--exe/--kind/--cmd。",
+        "--prompt 已直接指定類型——請去掉 --edit/--exe/--kind/--cmd。",
+    ),
+    row!("stdin ('-')", "stdin（'-'）", "stdin（'-'）"),
+    row!("a file path", "文件路径", "檔案路徑"),
+    row!(
+        "{} each pick a different way to add — use exactly one (nothing was added).",
+        "{} 各自代表一种不同的添加方式——请只用其中一种（未添加任何内容）。",
+        "{} 各自代表一種不同的加入方式——請只用其中一種（未加入任何內容）。",
+    ),
+    row!(
+        "a --cmd template takes only --name/--description",
+        "--cmd 模板只接受 --name/--description",
+        "--cmd 樣板只接受 --name/--description",
+    ),
+    row!(
+        "stdin authors a brand-new copy, and --ref/--exe need an existing file",
+        "stdin 会撰写一份全新副本，而 --ref/--exe 需要现成的文件",
+        "stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案",
+    ),
+    row!(
+        "--edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt",
+        "--edit 会起草一个全新脚本：它的类型取自你写的 shebang（例如 #!/usr/bin/env bash），--ref/--exe 需要现成的文件，而提示词要用 skit add --prompt 起草",
+        "--edit 會草擬一支全新腳本：它的類型取自你寫的 shebang（例如 #!/usr/bin/env bash），--ref/--exe 需要現成的檔案，而提示詞要用 skit add --prompt 草擬",
+    ),
+    row!(
+        "a drafted prompt takes only --name/--description/--runner/--no-interpolate",
+        "草稿提示词只接受 --name/--description/--runner/--no-interpolate",
+        "草稿提示詞只接受 --name/--description/--runner/--no-interpolate",
+    ),
+    row!(
+        "{} can't apply here — {} (nothing was added).",
+        "{} 在这里无法应用——{}(未添加任何内容)。",
+        "{} 在這裡無法套用——{}(未加入任何內容)。",
+    ),
+    row!(
+        "--no-interpolate only applies to prompt entries — add one with --prompt.",
+        "--no-interpolate 只适用于提示词条目——用 --prompt 添加一个。",
+        "--no-interpolate 只適用於提示詞項目——用 --prompt 加入一個。",
+    ),
+    row!(
+        "--runner only applies to prompt entries — add one with --prompt.",
+        "--runner 只适用于提示词条目——用 --prompt 添加一个。",
+        "--runner 只適用於提示詞項目——用 --prompt 加入一個。",
     ),
     row!(
         "--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",
@@ -3129,7 +3525,7 @@ const CATALOG: &[Translation] = &[
         "寫入路徑沒有父目錄",
     ),
     row!(
-        "{} does not take package dependencies; only --need applies",
+        "{} doesn't take package dependencies; only --need applies",
         "{} 不接受软件包依赖项；只有 --need 适用",
         "{} 不接受套件相依性；只有 --need 適用",
     ),
@@ -3176,8 +3572,8 @@ const CATALOG: &[Translation] = &[
     row!("{} is required.", "{} 为必填项。", "{} 為必填欄位。",),
     row!(
         "{} is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-{} and the like), with default false.",
-        "{} 默认已开启，因此它的选项只能再次开启它。请改为声明关闭它的选项（例如 --no-{}），并将默认值设为 false。",
-        "{} 預設已開啟，因此它的選項只能再次開啟它。請改為宣告關閉它的選項（例如 --no-{}），並將預設值設為 false。",
+        "{} 默认就是开的，它的标志只会再开一次。请改成声明用来关掉它的那个标志(--no-{} 之类)，默认 false。",
+        "{} 預設就是開的，它的旗標只會再開一次。請改成宣告用來關掉它的那個旗標(--no-{} 之類)，預設 false。",
     ),
     row!(
         "{} manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block.",
@@ -3408,6 +3804,16 @@ const CATALOG: &[Translation] = &[
         "{}需要 NAME=VALUE",
     ),
     row!(
+        "Ignored a malformed value: {} (expected NAME=text).",
+        "已忽略格式错误的值：{}（应为 NAME=text）。",
+        "已忽略格式錯誤的值：{}（應為 NAME=text）。",
+    ),
+    row!(
+        "Ignored a malformed value: {} (expected NAME=VALUE).",
+        "已忽略格式错误的值：{}（应为 NAME=VALUE）。",
+        "已忽略格式錯誤的值：{}（應為 NAME=VALUE）。",
+    ),
+    row!(
         "{} reads from the environment variable {}, but it isn't set.",
         "{} 从环境变量 {} 读取，但该变量未设置。",
         "{} 從環境變數 {} 讀取，但該變數未設定。",
@@ -3472,6 +3878,21 @@ const CATALOG: &[Translation] = &[
     row!("Name for the command", "命令名称", "指令名稱"),
     row!("Description (optional)", "说明（可选）", "說明（選填）"),
     row!(
+        "Dependencies to install (Enter to accept, edit the list, or '-' for none)",
+        "要安装的依赖(Enter 采用,可自行编辑,或输入 - 表示不需要)",
+        "要安裝的依賴(Enter 採用,可自行編輯,或輸入 - 表示不需要)",
+    ),
+    row!(
+        "Python version (Enter accepts the #! pin, '-' for automatic)",
+        "Python 版本(Enter 采用 #! 指定的版本,'-' = 自动)",
+        "Python 版本(Enter 採用 #! 指定的版本,'-' = 自動)",
+    ),
+    row!(
+        "Python version (leave empty for automatic)",
+        "Python 版本(留空 = 自动)",
+        "Python 版本(留空 = 自動)",
+    ),
+    row!(
         "…or resume a kept draft:",
         "…或继续保留的草稿：",
         "…或繼續保留的草稿：",
@@ -3484,8 +3905,8 @@ const CATALOG: &[Translation] = &[
     row!("…and {} more", "…以及另外 {} 个", "…以及另外 {} 個"),
     row!(
         "The #! in {} names no interpreter skit knows. What is it?",
-        "{} 中的 #! 指定了 skit 不认识的解释器。它是什么？",
-        "{} 中的 #! 指定了 skit 不認識的直譯器。它是什麼？",
+        "{} 的 #! 指定了 skit 不认识的解释器。这是什么?",
+        "{} 的 #! 指定了 skit 不認識的直譯器。這是什麼?",
     ),
     row!(
         "What is {}? skit can't tell from the name.",
@@ -3625,7 +4046,14 @@ pub const fn catalog() -> &'static [Translation] {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Message {
     template: &'static str,
-    values: Vec<Value>,
+    values: Vec<MessageValue>,
+}
+
+/// One positional or named message value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MessageValue {
+    name: Option<&'static str>,
+    value: Value,
 }
 
 /// One value in a message.
@@ -3665,7 +4093,20 @@ impl Message {
     /// Add one value for the next `{}` hole.
     #[must_use]
     pub fn with(mut self, value: impl Display) -> Self {
-        self.values.push(Value::Text(value.to_string()));
+        self.values.push(MessageValue {
+            name: None,
+            value: Value::Text(value.to_string()),
+        });
+        self
+    }
+
+    /// Add one named value that a translation can place in a different order.
+    #[must_use]
+    pub fn named(mut self, name: &'static str, value: impl Display) -> Self {
+        self.values.push(MessageValue {
+            name: Some(name),
+            value: Value::Text(value.to_string()),
+        });
         self
     }
 
@@ -3683,7 +4124,10 @@ impl Message {
     /// Use this when one typed error contains another.
     #[must_use]
     pub fn nested(mut self, value: Self) -> Self {
-        self.values.push(Value::Nested(value));
+        self.values.push(MessageValue {
+            name: None,
+            value: Value::Nested(value),
+        });
         self
     }
 
@@ -3699,16 +4143,26 @@ impl Message {
         let values = self
             .values
             .iter()
-            .map(|value| match value {
+            .map(|argument| match &argument.value {
                 Value::Text(text) => text.clone(),
                 Value::Nested(message) => message.localize(locale),
             })
             .collect::<Vec<_>>();
-        let values = values
+        let positional = values
             .iter()
             .map(|value| value as &dyn Display)
             .collect::<Vec<_>>();
-        format_text(locale, self.template, &values)
+        if self.values.iter().all(|value| value.name.is_some()) {
+            let named = self
+                .values
+                .iter()
+                .zip(&values)
+                .map(|(argument, value)| (argument.name.unwrap_or_default(), value as &dyn Display))
+                .collect::<Vec<_>>();
+            format_named_text(locale, self.template, &named)
+        } else {
+            format_text(locale, self.template, &positional)
+        }
     }
 }
 
@@ -3852,6 +4306,38 @@ pub fn format_text(locale: Locale, english: &str, values: &[&dyn Display]) -> St
         output.push_str("{}");
         output.push_str(part);
     }
+    output
+}
+
+/// Translate one template and replace named holes without inspecting inserted values.
+#[must_use]
+pub fn format_named_text(locale: Locale, english: &str, values: &[(&str, &dyn Display)]) -> String {
+    let template = text(locale, english);
+    let has_named_hole = values
+        .iter()
+        .any(|(name, _)| template.contains(&format!("{{{name}}}")));
+    if !has_named_hole {
+        let positional = values.iter().map(|(_, value)| *value).collect::<Vec<_>>();
+        return format_text(locale, english, &positional);
+    }
+    let mut output = String::with_capacity(template.len());
+    let mut rest = template.as_ref();
+    while let Some(open) = rest.find('{') {
+        output.push_str(&rest[..open]);
+        let after_open = &rest[open + 1..];
+        let Some(close) = after_open.find('}') else {
+            output.push_str(&rest[open..]);
+            return output;
+        };
+        let name = &after_open[..close];
+        if let Some((_, value)) = values.iter().find(|(candidate, _)| *candidate == name) {
+            let _ = write!(output, "{value}");
+        } else {
+            output.push_str(&rest[open..open + close + 2]);
+        }
+        rest = &after_open[close + 1..];
+    }
+    output.push_str(rest);
     output
 }
 

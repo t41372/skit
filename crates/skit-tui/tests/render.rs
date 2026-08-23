@@ -7,16 +7,27 @@ use ratatui_core::{
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use skit_application::{Diagnostic, DiagnosticCode, LibraryScan};
-use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
+use skit_application::{
+    Diagnostic, DiagnosticCode, LibraryScan,
+    preferences::{
+        AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
+        PreferencesDraft, PreferencesSnapshot,
+    },
+    tokens::TokenContext,
+};
+use skit_domain::{
+    EntryKind, EntrySummary, Slug, StorageMode,
+    parameters::{ParamDecl, ParameterValue},
+};
 use skit_i18n::Locale;
 use skit_tui::{
     EventHandling, HitRegion, HitTarget, TuiSession, ViewGeometry, map_event, render,
     render_localized, render_with_session,
 };
 use skit_ui::{
-    Action, FormField, FormPurpose, FormView, LibraryState, ReportItem, ReportView, Screen,
-    UiCommand,
+    Action, FormField, FormPurpose, FormView, LibraryState, PreferencesAction, PreferencesView,
+    ReportItem, ReportView, RunFormContext, RunFormView, RunPathContext, Screen, SettingsInputs,
+    SettingsView, UiBinding, UiCommand, UiKey, command_specs,
 };
 
 fn state() -> LibraryState {
@@ -37,6 +48,146 @@ fn state() -> LibraryState {
     state
 }
 
+fn preferences_view() -> PreferencesView {
+    PreferencesView::new(PreferencesDraft::from_snapshot(PreferencesSnapshot {
+        language: String::new(),
+        available_languages: vec!["en".into(), "zh-CN".into(), "zh-TW".into()],
+        effective_language: "en".into(),
+        editor: String::new(),
+        editor_fallback: Some("vi".into()),
+        form: InteractiveFormChoice::Tui,
+        after_run: AfterRunChoice::Exit,
+        javascript: JavascriptChoice::Automatic,
+        bash_path: None,
+        runner_names: vec!["codex".into()],
+        mirror: MirrorConfiguration::default(),
+    }))
+}
+
+fn registry_states() -> Vec<(&'static str, LibraryState)> {
+    let browse = state();
+    let mut search = browse.clone();
+    search.update(Action::BeginSearch);
+
+    let mut form = LibraryState::default();
+    form.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Rename,
+        title: "Rename".into(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: Some("hello".into()),
+        fields: vec![FormField::text_raw("name", "Name", "Hello")],
+        focused: 0,
+        submit_label: "Save".into(),
+    })));
+
+    let mut declaration = ParamDecl::new("NAME");
+    declaration.default = Some(ParameterValue::String("World".into()));
+    let run_view = RunFormView::from_declarations(
+        "hello",
+        "Hello",
+        &[declaration.clone()],
+        &std::collections::BTreeMap::new(),
+        &["codex".into()],
+        "codex",
+        &std::collections::BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "command".into(),
+        path: Some(RunPathContext {
+            workdir: std::env::current_dir().unwrap().display().to_string(),
+            invoke_cwd: std::env::current_dir().unwrap().display().to_string(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".into(),
+            home: Some("/home/demo".into()),
+            env: std::collections::BTreeMap::from([("HOME".into(), "/home/demo".into())]),
+            today: "2026-08-21".into(),
+            now: "12-00-00".into(),
+        },
+    });
+    let mut run = LibraryState::default();
+    run.update(Action::Present(Screen::Run(Box::new(run_view))));
+    let mut preset_name = run.clone();
+    preset_name.update(Action::OpenRunPresetSave);
+    let mut token_menu = run.clone();
+    token_menu.update(Action::OpenRunTokenMenuFor(0));
+    let mut environment_picker = token_menu.clone();
+    environment_picker.update(Action::OpenRunEnvironmentPicker(0));
+    let mut file_picker = token_menu.clone();
+    file_picker.update(Action::OpenRunFilePicker(0));
+
+    let mut preferences = LibraryState::default();
+    preferences.update(Action::Present(Screen::Preferences(Box::new(
+        preferences_view(),
+    ))));
+    let mut discard = preferences.clone();
+    discard.update(Action::Preferences(PreferencesAction::SetEditor(
+        "micro".into(),
+    )));
+    discard.update(Action::Preferences(PreferencesAction::Close));
+
+    let mut script_settings = LibraryState::default();
+    script_settings.update(Action::Present(Screen::Settings(Box::new(
+        SettingsView::from_inputs(&SettingsInputs {
+            selector: "hello".into(),
+            kind: "python".into(),
+            name: "Hello".into(),
+            source: "/work/hello.py".into(),
+            supports_modes: true,
+            has_stored_name: true,
+            has_analyzer: true,
+            managed: vec![declaration],
+            ..SettingsInputs::default()
+        }),
+    ))));
+    let mut prompt_settings = LibraryState::default();
+    prompt_settings.update(Action::Present(Screen::Settings(Box::new(
+        SettingsView::from_inputs(&SettingsInputs {
+            selector: "prompt".into(),
+            kind: "prompt".into(),
+            name: "Prompt".into(),
+            configured_runners: vec!["codex".into()],
+            ..SettingsInputs::default()
+        }),
+    ))));
+
+    let mut report = LibraryState::default();
+    report.update(Action::Present(Screen::Report(ReportView {
+        title: "Report".into(),
+        items: vec![ReportItem {
+            status: "ok".into(),
+            label: "Check".into(),
+            translate_label: false,
+            detail: "Ready".into(),
+            translate_detail: false,
+        }],
+    })));
+    let mut remove = browse.clone();
+    remove.update(Action::AskRemove);
+    let mut help = browse.clone();
+    help.update(Action::OpenHelp);
+
+    vec![
+        ("library browse", browse),
+        ("library search", search),
+        ("generic form", form),
+        ("run form", run),
+        ("run preset name", preset_name),
+        ("run token menu", token_menu),
+        ("run environment picker", environment_picker),
+        ("run file picker", file_picker),
+        ("preferences", preferences),
+        ("script settings", script_settings),
+        ("prompt settings", prompt_settings),
+        ("report", report),
+        ("remove confirmation", remove),
+        ("discard confirmation", discard),
+        ("help", help),
+    ]
+}
+
 fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
     Event::Key(KeyEvent::new(code, modifiers))
 }
@@ -48,6 +199,42 @@ fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
         row,
         modifiers: KeyModifiers::NONE,
     })
+}
+
+fn binding_event(binding: UiBinding) -> Event {
+    let code = match binding.key {
+        UiKey::Character(character) => KeyCode::Char(character),
+        UiKey::Enter => KeyCode::Enter,
+        UiKey::Escape => KeyCode::Esc,
+        UiKey::Delete => KeyCode::Delete,
+        UiKey::Backspace => KeyCode::Backspace,
+        UiKey::Tab => KeyCode::Tab,
+        UiKey::BackTab => KeyCode::BackTab,
+        UiKey::Up => KeyCode::Up,
+        UiKey::Down => KeyCode::Down,
+        UiKey::PageUp => KeyCode::PageUp,
+        UiKey::PageDown => KeyCode::PageDown,
+        UiKey::Home => KeyCode::Home,
+        UiKey::End => KeyCode::End,
+        UiKey::Function(number) => KeyCode::F(number),
+    };
+    let mut modifiers = KeyModifiers::NONE;
+    modifiers.set(KeyModifiers::CONTROL, binding.modifiers.control);
+    modifiers.set(KeyModifiers::ALT, binding.modifiers.alt);
+    modifiers.set(KeyModifiers::SHIFT, binding.modifiers.shift);
+    key(code, modifiers)
+}
+
+fn buffer_position(buffer: &ratatui_core::buffer::Buffer, needle: &str) -> (u16, u16) {
+    for row in 0..buffer.area.height {
+        let line = (0..buffer.area.width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect::<String>();
+        if let Some(column) = line.find(needle) {
+            return (u16::try_from(column).unwrap(), row);
+        }
+    }
+    panic!("expected rendered text: {needle}");
 }
 
 fn scroll_footer_commands(
@@ -1028,6 +1215,105 @@ fn narrow_footer_scroll_reaches_all_actions_in_each_supported_locale() {
 }
 
 #[test]
+fn every_advertised_registry_command_is_keyboard_and_mouse_reachable_at_every_size_tier() {
+    for (surface, view) in registry_states() {
+        for (width, height) in [(120, 30), (46, 12), (24, 6)] {
+            let context = view.command_context();
+            let expected = command_specs(view.command_context())
+                .filter(|spec| spec.footer && view.command_enabled(spec.command))
+                .map(|spec| spec.command)
+                .collect::<Vec<_>>();
+            assert!(
+                !expected.is_empty(),
+                "{surface} ({context:?}) advertised no commands"
+            );
+
+            for spec in command_specs(view.command_context())
+                .filter(|spec| spec.footer && view.command_enabled(spec.command))
+            {
+                let mut session = TuiSession::default();
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let mut geometry = ViewGeometry::default();
+                terminal
+                    .draw(|frame| {
+                        geometry = render_with_session(frame, &view, Locale::En, &mut session);
+                    })
+                    .unwrap();
+                let EventHandling::Action(action) =
+                    session.handle_event(binding_event(spec.bindings[0]), &view, &geometry)
+                else {
+                    panic!(
+                        "advertised key for {surface} {:?} did not produce a typed action at {width}x{height}",
+                        spec.command,
+                    );
+                };
+                let mut reduced = view.clone();
+                let _effect = reduced.update(action);
+            }
+
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut session = TuiSession::default();
+            let mut seen = Vec::new();
+            for _ in 0..64 {
+                let mut geometry = ViewGeometry::default();
+                terminal
+                    .draw(|frame| {
+                        geometry = render_with_session(frame, &view, Locale::En, &mut session);
+                    })
+                    .unwrap();
+                for hit in &geometry.hits {
+                    let HitTarget::Command(command) = hit.action else {
+                        continue;
+                    };
+                    if expected.contains(&command) && !seen.contains(&command) {
+                        seen.push(command);
+                        assert!(
+                            matches!(
+                                session.handle_event(
+                                    mouse(
+                                        MouseEventKind::Down(MouseButton::Left),
+                                        hit.rect.x,
+                                        hit.rect.y,
+                                    ),
+                                    &view,
+                                    &geometry,
+                                ),
+                                EventHandling::Action(_)
+                            ),
+                            "visible {surface} ({context:?}) {:?} chip did not produce a typed action at {width}x{height}",
+                            command,
+                        );
+                    }
+                }
+                if seen.len() == expected.len() && expected.iter().all(|item| seen.contains(item)) {
+                    break;
+                }
+                let anchor = geometry
+                    .hits
+                    .iter()
+                    .find(|hit| matches!(hit.action, HitTarget::Command(_)))
+                    .map_or((1, height.saturating_sub(2)), |hit| {
+                        (hit.rect.x, hit.rect.y)
+                    });
+                assert_eq!(
+                    session.handle_event(
+                        mouse(MouseEventKind::ScrollDown, anchor.0, anchor.1),
+                        &view,
+                        &geometry,
+                    ),
+                    EventHandling::Consumed,
+                    "{surface} footer stopped before every command was reachable at {width}x{height}: {seen:?}"
+                );
+            }
+            assert!(
+                seen.len() == expected.len() && expected.iter().all(|item| seen.contains(item)),
+                "not every {surface} ({context:?}) command became a real mouse target at {width}x{height}: expected={expected:?} seen={seen:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn every_library_footer_action_has_the_expected_mouse_mapping() {
     let view = state();
     let backend = TestBackend::new(120, 30);
@@ -1228,8 +1514,9 @@ fn a_terminal_that_is_too_small_still_renders_without_a_panic() {
 }
 
 #[test]
-fn a_short_footer_area_stops_before_it_overflows_its_rows() {
-    // Every advertised action cannot fit, so the footer stops instead of drawing outside.
+fn a_short_footer_area_exposes_one_scrollable_page_without_overflow() {
+    // The first page contains only visible hit regions. The registry owner above scrolls through
+    // the remaining pages and proves that each command becomes reachable.
     let mut wide = ViewGeometry::default();
     let mut narrow = ViewGeometry::default();
     let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
@@ -1246,6 +1533,105 @@ fn a_short_footer_area_stops_before_it_overflows_its_rows() {
         .unwrap();
     assert!(
         narrow.hits.len() < wide.hits.len(),
-        "a short footer must drop chips it cannot draw"
+        "a short footer must expose only the chips in its current page"
     );
+}
+
+#[test]
+fn central_session_ctrl_c_search_help_and_confirmation_priority_use_real_events() {
+    let mut session = TuiSession::default();
+    let mut base = state();
+    base.update(Action::BeginSearch);
+    base.update(Action::SetSearchQuery("needle".to_owned()));
+    base.update(Action::FinishSearch);
+    let mut terminal = Terminal::new(TestBackend::new(70, 16)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| geometry = render_with_session(frame, &base, Locale::En, &mut session))
+        .unwrap();
+    let ctrl_c = key(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    assert_eq!(
+        session.handle_event(ctrl_c.clone(), &base, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(ctrl_c, &base, &geometry),
+        EventHandling::Action(Action::Quit)
+    );
+
+    let mut searching = state();
+    searching.update(Action::BeginSearch);
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &searching, Locale::En, &mut session);
+        })
+        .unwrap();
+    for event in [
+        key(KeyCode::Char('x'), KeyModifiers::NONE),
+        key(KeyCode::Left, KeyModifiers::NONE),
+        Event::Paste("paste".to_owned()),
+        mouse(MouseEventKind::Moved, 0, 0),
+        Event::FocusGained,
+        Event::Resize(2, 2),
+        Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        )),
+        key(KeyCode::Esc, KeyModifiers::NONE),
+    ] {
+        let _ = session.handle_event(event, &searching, &geometry);
+    }
+    for hit in &geometry.hits {
+        let _ = session.handle_event(
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                hit.rect.x,
+                hit.rect.y,
+            ),
+            &searching,
+            &geometry,
+        );
+    }
+
+    let mut help = state();
+    help.update(Action::OpenHelp);
+    terminal
+        .draw(|frame| geometry = render_with_session(frame, &help, Locale::ZhTw, &mut session))
+        .unwrap();
+    for event in [
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        key(KeyCode::Down, KeyModifiers::NONE),
+        mouse(MouseEventKind::Moved, 0, 0),
+    ] {
+        let _ = session.handle_event(event, &help, &geometry);
+    }
+
+    let mut confirm = state();
+    confirm.update(Action::AskRemove);
+    terminal
+        .draw(|frame| geometry = render_with_session(frame, &confirm, Locale::En, &mut session))
+        .unwrap();
+    assert_eq!(
+        session.handle_event(key(KeyCode::Tab, KeyModifiers::NONE), &confirm, &geometry),
+        EventHandling::Consumed
+    );
+    let (keep_x, keep_y) = buffer_position(terminal.backend().buffer(), "Keep");
+    assert_eq!(
+        session.handle_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), keep_x, keep_y),
+            &confirm,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Back)
+    );
+    for event in [
+        key(KeyCode::Char('y'), KeyModifiers::NONE),
+        key(KeyCode::Char('n'), KeyModifiers::NONE),
+        key(KeyCode::Esc, KeyModifiers::NONE),
+        key(KeyCode::Null, KeyModifiers::NONE),
+        mouse(MouseEventKind::Moved, 0, 0),
+    ] {
+        let _ = session.handle_event(event, &confirm, &geometry);
+    }
 }

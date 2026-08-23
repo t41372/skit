@@ -143,6 +143,19 @@ fn main() {
 }
 
 fn dispatch(cli: Cli) -> Result<i32> {
+    dispatch_with(cli, execute, std::env::current_exe)
+}
+
+fn dispatch_with(
+    cli: Cli,
+    execute_profile: impl FnOnce(
+        ExecutionRequest<'_>,
+    ) -> std::result::Result<
+        Results,
+        skit_benchmarks::pipeline::ExecutionError,
+    >,
+    current_exe: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> Result<i32> {
     match cli.command {
         Command::Datasets {
             n,
@@ -173,8 +186,8 @@ fn dispatch(cli: Cli) -> Result<i32> {
         } => {
             let profile = BenchmarkProfile::from_str(&profile)?;
             let budgets = read_budgets(&budgets)?;
-            let harness = std::env::current_exe().context("could not resolve benchmark harness")?;
-            let results = execute(ExecutionRequest {
+            let harness = current_exe().context("could not resolve benchmark harness")?;
+            let results = execute_profile(ExecutionRequest {
                 profile,
                 bench_dir: &out,
                 repo_root: &repo,
@@ -267,3 +280,7 @@ fn read_results(path: &Path) -> Result<Results> {
         .with_context(|| format!("could not read result artifact {}", path.display()))?;
     Results::from_json(&text).map_err(Into::into)
 }
+
+#[cfg(test)]
+#[path = "skit_bench/tests.rs"]
+mod tests;

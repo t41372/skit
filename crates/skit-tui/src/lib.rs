@@ -33,8 +33,13 @@ pub use screens::settings::{
     SettingsControlId, SettingsHitRegion, SettingsScreenEvent, SettingsScreenGeometry,
     SettingsScreenSession, render_settings,
 };
+use session::HeaderKind;
 pub use session::{EventHandling, TuiSession};
-pub use terminal::{TuiError, collect_form, collect_run_form, run, run_add_workflow};
+pub use terminal::{
+    TuiError, collect_form, collect_run_form, collect_run_form_with_path_completion, run,
+    run_add_workflow, run_preflighted, run_preflighted_with_path_completion,
+    run_with_path_completion,
+};
 
 /// One clickable target produced by a view.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -96,16 +101,21 @@ pub fn render_with_session(
     session: &mut TuiSession,
 ) -> ViewGeometry {
     session.begin_render(state);
-    let footer_height =
-        footer::required_height(frame.area().width, frame.area().height, state, locale);
-    let areas = layout::split_with_header(
-        frame.area(),
-        footer_height,
-        header_height(state, frame.area().height),
+    let header_height = header_height(state, frame.area().height);
+    let footer_height = footer::required_height(
+        frame.area().width,
+        frame.area().height,
+        header_height,
+        state,
+        locale,
     );
+    let areas = layout::split_with_header(frame.area(), footer_height, header_height);
 
-    if areas.header.height > 0 {
-        session.render_header(frame, areas.header, state, locale);
+    let header = header_kind(state);
+    if areas.header.height > 0
+        && let Some(kind) = header
+    {
+        session.render_header(frame, areas.header, kind, locale);
     }
     let mut geometry = match state.modal() {
         Some(ModalState::Help) => session.render_help(frame, areas.body, locale),
@@ -140,6 +150,31 @@ pub fn render_with_session(
     geometry
 }
 
+fn header_kind(state: &LibraryState) -> Option<HeaderKind<'_>> {
+    match state.modal() {
+        Some(ModalState::Help) => Some(HeaderKind::Help),
+        Some(ModalState::ConfirmRemove { .. }) => Some(HeaderKind::ConfirmRemove),
+        Some(ModalState::ConfirmDiscardChanges) => Some(HeaderKind::ConfirmDiscardChanges),
+        Some(ModalState::RunPresetName { .. }) => Some(HeaderKind::RunPresetName),
+        Some(ModalState::RunTokenMenu { .. }) => Some(HeaderKind::RunTokenMenu),
+        Some(ModalState::RunEnvironmentPicker { .. }) => Some(HeaderKind::RunEnvironmentPicker),
+        Some(ModalState::RunFilePicker { .. }) => Some(HeaderKind::RunFilePicker),
+        Some(ModalState::RunnerEditor { view, .. }) => Some(HeaderKind::RunnerEditor(view.mode())),
+        None => match state.screen() {
+            Screen::Library => Some(HeaderKind::Library {
+                query: state.query(),
+                search: state.input_mode() == InputMode::Search,
+            }),
+            Screen::Preferences(_) => Some(HeaderKind::Preferences),
+            Screen::Add(_) => Some(HeaderKind::Add),
+            Screen::Health(_) => Some(HeaderKind::Health),
+            Screen::Runners(_) => Some(HeaderKind::Runners),
+            Screen::Report(report) => Some(HeaderKind::Report(&report.title)),
+            Screen::Run(_) | Screen::Form(_) | Screen::Settings(_) => None,
+        },
+    }
+}
+
 /// Return the rows the shared header takes on one screen.
 ///
 /// A screen that titles its own panel gets the whole body (`src/skit/tui_form.py:606-611`,
@@ -153,6 +188,18 @@ fn header_height(state: &LibraryState, terminal_height: u16) -> u16 {
     // Cancel chip both fit. This matches the short-tier modal chrome budget.
     if terminal_height < 16
         && matches!(state.modal(), Some(ModalState::RunEnvironmentPicker { .. }))
+    {
+        return 0;
+    }
+    if terminal_height <= 6
+        && matches!(
+            state.modal(),
+            Some(
+                ModalState::RunPresetName { .. }
+                    | ModalState::RunTokenMenu { .. }
+                    | ModalState::RunFilePicker { .. }
+            )
+        )
     {
         return 0;
     }
@@ -250,6 +297,11 @@ fn map_key(key: KeyEvent, state: &LibraryState, geometry: &ViewGeometry) -> Opti
             .iter()
             .any(|binding| binding.key == chord.key && binding.modifiers == chord.modifiers)
     }) {
+        // The settings body owns this contextual chord beside its inline picker item. It has no
+        // reducer action because another frontend hosts the typed item with its own picker.
+        if spec.command == UiCommand::ChooseSettingsVariables {
+            return None;
+        }
         if matches!(
             (context, spec.command),
             (

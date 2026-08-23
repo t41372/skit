@@ -3,7 +3,10 @@
 use std::{io, path::PathBuf};
 
 use skit_i18n::{Locale, Localize};
-use skit_runtime::{DependencyError, LaunchError, UvBootstrapError};
+use skit_runtime::{
+    DependencyError, JavaScriptSyntaxError, LaunchError, UvBootstrapError,
+    javascript_dependency_install_announcement,
+};
 
 /// Check that English text does not drift and that each locale keeps the values.
 fn assert_localized(error: &(impl Localize + std::fmt::Display), values: &[&str]) {
@@ -22,6 +25,14 @@ fn assert_localized(error: &(impl Localize + std::fmt::Display), values: &[&str]
 
 fn io_failure() -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, "permission denied")
+}
+
+#[test]
+fn javascript_syntax_error_localizes_and_keeps_its_detail() {
+    assert_localized(
+        &JavaScriptSyntaxError::new("SyntaxError: boom"),
+        &["SyntaxError: boom"],
+    );
 }
 
 #[test]
@@ -54,10 +65,26 @@ fn every_dependency_error_localizes_and_keeps_its_values() {
         &["/entries/demo", "permission denied"],
     );
     assert_localized(
-        &DependencyError::InstallFailed {
-            program: "npm".to_owned(),
+        &DependencyError::ClearFailed {
+            item: "package.json".to_owned(),
+            reason: "permission denied".to_owned(),
         },
-        &["npm"],
+        &["package.json", "permission denied"],
+    );
+    assert_localized(
+        &DependencyError::InstallFailed {
+            installer: "npm".to_owned(),
+            exit_code: Some(23),
+            detail: "package missing".to_owned(),
+        },
+        &["npm", "package missing"],
+    );
+    assert_localized(
+        &DependencyError::InstallerStartFailed {
+            installer: "npm".to_owned(),
+            reason: "permission denied".to_owned(),
+        },
+        &["npm", "permission denied"],
     );
     assert_localized(
         &DependencyError::Rollback {
@@ -74,6 +101,65 @@ fn every_dependency_error_localizes_and_keeps_its_values() {
             }),
         },
         &["/entries/demo", "device is busy", "permission denied"],
+    );
+}
+
+#[test]
+fn dependency_install_receipts_match_v040_in_every_locale() {
+    let announcement = javascript_dependency_install_announcement("npm");
+    let start = DependencyError::InstallerStartFailed {
+        installer: "npm".to_owned(),
+        reason: "Exec format error".to_owned(),
+    };
+    let failed = DependencyError::InstallFailed {
+        installer: "npm".to_owned(),
+        exit_code: Some(1),
+        detail: "npm error it failed".to_owned(),
+    };
+    for (locale, expected_announcement, expected_start, expected_failed) in [
+        (
+            Locale::En,
+            "Installing dependencies (npm)…",
+            "Couldn't run npm: Exec format error",
+            "Installing dependencies failed (npm): npm error it failed",
+        ),
+        (
+            Locale::ZhCn,
+            "正在安装依赖(npm)…",
+            "无法运行 npm:Exec format error",
+            "依赖安装失败(npm):npm error it failed",
+        ),
+        (
+            Locale::ZhTw,
+            "正在安裝依賴(npm)…",
+            "無法執行 npm:Exec format error",
+            "依賴安裝失敗(npm):npm error it failed",
+        ),
+    ] {
+        assert_eq!(announcement.localize(locale), expected_announcement);
+        assert_eq!(start.message().localize(locale), expected_start);
+        assert_eq!(failed.message().localize(locale), expected_failed);
+    }
+}
+
+#[test]
+fn dependency_cleanup_refusal_matches_v040_in_every_locale() {
+    let error = DependencyError::ClearFailed {
+        item: "package.json".to_owned(),
+        reason: "held by another process".to_owned(),
+    };
+    let message = error.message();
+    assert_eq!(
+        message.localize(Locale::En),
+        "Couldn't clear the old dependency environment: package.json: held by another process"
+    );
+    assert_eq!(
+        message.localize(Locale::ZhCn),
+        "无法清除旧的依赖环境:package.json: held by another process"
+    );
+    assert_eq!(
+        message.localize(Locale::ZhTw),
+        "無法清除舊的依賴環境:package.json: held by another process"
     );
 }
 

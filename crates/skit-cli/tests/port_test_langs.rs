@@ -27,7 +27,7 @@
 //! - Python `spec.editable`   -> `canonical_stored_filename(kind).is_some()`.
 //! - Python `launcher.build_command` -> `skit_runtime::build_launch_plan`.
 //! - Python `launcher.describe_command` -> `skit_runtime::build_launch_preview` (`.display`).
-//! - Python `launcher.target_missing`/`missing_marker` -> `skit_store::library_surface`
+//! - Python `launcher.target_missing`/`missing_marker` -> `skit_cli::library_surface`
 //!   detail `missing_target`.
 //! - Python `entry.script_path` -> `FileStore::entry_dir_path(slug).join(stored name)`.
 //! - Python `store.add_exe` / CLI `params` / `doctor` -> the real `skit` binary via assert_cmd.
@@ -41,7 +41,7 @@
 //! - DIVERGENCE (full asserting body, `#[ignore]`d): 17 — the assertion is
 //!   faithful to the oracle and compiles; it fails because Rust diverges. Fixing the impl
 //!   and deleting the `#[ignore]` line turns it green.
-//! - UNMAPPABLE / ABSENT SEAM (compiling `#[ignore]` stub): 4, 5, 6, 7, 16, 21 — Python
+//! - FRAMEWORK-INJECTION CLOSURE (compiling `#[ignore]` stub): 4, 5, 6, 7, 16, 21 — Python
 //!   runtime mechanisms (lazy grammar import, `LazyCapabilities`, `without()`, dataclass
 //!   `compare=False`, module-namespace monkeypatch) with no Rust equivalent by design.
 
@@ -52,6 +52,7 @@ use tempfile::TempDir;
 
 use skit_application::delivery::Assembly;
 use skit_application::{canonical_stored_filename, payload_stored_name, supports_storage_modes};
+use skit_cli::library_surface;
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
@@ -60,7 +61,7 @@ use skit_language::{cli_params, detect_candidates, managed_params, write_managed
 use skit_runtime::{
     LaunchError, LaunchPaths, ProgramProbe, build_launch_plan, build_launch_preview,
 };
-use skit_store::{FileStore, library_surface};
+use skit_store::FileStore;
 
 /// The oracle's `registry.KNOWN_KINDS` frozenset, in oracle order.
 const KNOWN_KINDS: [&str; 13] = [
@@ -340,7 +341,7 @@ fn test_unknown_kind_run_entry_raises_before_spawning() {
 #[test]
 fn test_unknown_kind_describe_returns_template_and_never_raises() {
     // describe_command is contracted side-effect-free and total: for a kind this skit
-    // version doesn't know, the template is the only launch material meta carries.
+    // version does not know, the template is the only launch material meta carries.
     let mut with_template = entry("martian");
     with_template.meta.workdir = "invoke".to_owned();
     EntrySettings {
@@ -394,12 +395,27 @@ fn test_unknown_kind_never_reports_missing() {
     .unwrap();
 
     let store = FileStore::new(data.path());
+    store.rebuild_registry().unwrap();
     let surface = library_surface(&store, state.path(), config.path()).unwrap();
     let detail = surface
         .details
         .get(&Slug::parse("thing").unwrap())
         .expect("the martian entry is projected, not hidden");
     assert_eq!(detail.missing_target, None);
+}
+
+/// A custom-workdir literal that is absolute on the running host.
+///
+/// The probe filesystem is fiction, but the custom-workdir arm applies the host's real
+/// `Path::is_absolute` BEFORE any probe check (launch.rs:1246), and a `/workdir/ok` spelling is
+/// not absolute on Windows, where an absolute path needs a drive. Prefix one there so the same
+/// fiction satisfies the real check; the probe stores the identical spelling, so equality holds.
+fn virtual_workdir(tail: &str) -> String {
+    if cfg!(windows) {
+        format!("C:\\{}", tail.replace('/', "\\"))
+    } else {
+        format!("/{tail}")
+    }
 }
 
 #[test]
@@ -409,9 +425,11 @@ fn test_unknown_kind_preflight_still_checks_workdir() {
     // UnknownKind refusal) and a missing workdir is still caught first — exactly the oracle's
     // "no strategy checks, workdir fine" / "raises on missing workdir".
     let mut ok = entry("martian");
-    ok.meta.workdir = "/workdir/ok".to_owned();
+    ok.meta.workdir = virtual_workdir("workdir/ok");
     let mut probe = probe_for("/copy/script");
-    probe.dirs.push(PathBuf::from("/workdir/ok"));
+    probe
+        .dirs
+        .push(PathBuf::from(virtual_workdir("workdir/ok")));
     let error = build_launch_plan(
         &ok,
         &paths("/copy/script"),
@@ -428,7 +446,7 @@ fn test_unknown_kind_preflight_still_checks_workdir() {
     );
 
     let mut gone = entry("martian");
-    gone.meta.workdir = "/workdir/gone".to_owned();
+    gone.meta.workdir = virtual_workdir("workdir/gone");
     let error = build_launch_plan(
         &gone,
         &paths("/copy/script"),
@@ -622,7 +640,7 @@ fn test_doctor_json_missing_uv_pure_exe_library_exits_zero() {
 // ---- plan_for_entry: capability degradation ----------------------------------------------------
 
 #[test]
-#[ignore = "ABSENT SEAM: the oracle strips a spec's cli_reader (spec.without(\"cli_reader\")) and monkeypatches flows.spec_for to prove plan_for_entry falls through to source \"none\" instead of crashing (tests/test_langs.py:307). Rust cannot construct a python spec without its statically linked CLI reader — the LazyCapabilities/without() injection seam does not exist — so the degradation path is unreachable. Not a MUST-FIX feature; it tests a Python monkeypatch mechanism."]
+#[ignore = "FRAMEWORK-INJECTION CLOSURE: the oracle strips a spec's cli_reader (spec.without(\"cli_reader\")) and monkeypatches flows.spec_for to prove plan_for_entry falls through to source \"none\" instead of crashing (tests/test_langs.py:307). Rust cannot construct a python spec without its statically linked CLI reader — the LazyCapabilities/without() injection seam does not exist — so the degradation path is unreachable. This tests a Python monkeypatch mechanism, not a missing product capability."]
 fn test_plan_without_cli_reader_degrades_to_none_plan() {
     // Python: a future kind can carry params_io+analyzer but no static CLI reader; the plan
     // must fall through to "none", not crash. No Rust capability-stripping seam exists.

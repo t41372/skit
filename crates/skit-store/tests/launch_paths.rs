@@ -77,6 +77,7 @@ fn payload_fallback_is_deterministic_and_reports_missing_or_ambiguous_copies() {
         "deno.lock",
         ".skit-deps",
         ".skit-deps.tmp-one",
+        ".injected-crash-leftover.js",
     ] {
         fs::write(directory.join(support), "support").unwrap();
     }
@@ -212,6 +213,7 @@ fn skit_private_files_never_look_like_a_second_payload() {
     // Each of these is a private file skit writes next to the payload.
     for name in [
         ".run-0123456789abcdef0123456789abcdef.zig",
+        ".injected-0123456789abcdef0123456789abcdef.zig",
         ".thing.zig.0123456789abcdef0123456789abcdef.tmp",
         ".skit-deps",
         ".skit-deps.tmp-1-2",

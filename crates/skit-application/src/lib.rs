@@ -11,6 +11,7 @@ pub mod health;
 pub mod library_detail;
 mod mutations;
 pub mod parameter_edit;
+pub mod path_completion;
 pub mod path_insertion;
 mod payload_policy;
 pub mod preferences;
@@ -28,15 +29,139 @@ pub use agent_skill::{
     detect_agent_targets, plan_agent_install,
 };
 pub use mutations::{
-    CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions, UpdateEntry,
+    CreateEntry, EntryMutationRepository, EntryPayload, ExternalCopyEdit,
+    FinalizeExternalCopyEditError, FinalizedExternalCopyEdit, PreparedEntryUpdateError,
+    SourcePermissions, UpdateEntry,
 };
 pub use payload_policy::{
-    add_workdir, canonical_stored_filename, payload_stored_name, supports_storage_modes,
+    ExecutableDialect, ExecutableSourceFacts, ForcedAddKind, add_workdir,
+    canonical_stored_filename, payload_stored_name, source_is_executable, supports_storage_modes,
 };
 use serde::{Deserialize, Serialize};
 use skit_domain::{Entry, EntrySummary};
 use skit_i18n::{Locale, Localize, Message};
 use thiserror::Error;
+
+/// Stable identity of one filesystem object captured by a host adapter.
+///
+/// Source bytes and permissions remain separate transaction facts. This value identifies the file
+/// incarnation so a same-bytes replacement cannot inherit an earlier destructive claim.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceIdentity(SourceIdentityKind);
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "platform")]
+enum SourceIdentityKind {
+    Unix {
+        device: u64,
+        inode: u64,
+        change_time_seconds: i64,
+        change_time_nanoseconds: i64,
+    },
+    Windows {
+        volume_serial_number: u64,
+        #[serde(with = "u128_decimal")]
+        file_index: u128,
+        creation_time: u64,
+    },
+}
+
+mod u128_decimal {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Encoded {
+        Legacy(u64),
+        Decimal(String),
+    }
+
+    pub(super) fn serialize<S>(value: &u128, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&value.to_string())
+    }
+
+    pub(super) fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Encoded::deserialize(deserializer)? {
+            Encoded::Legacy(value) => Ok(u128::from(value)),
+            Encoded::Decimal(value) => value.parse().map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+impl SourceIdentity {
+    /// Construct an identity from Unix `stat` values captured from an open file.
+    #[must_use]
+    pub const fn unix(
+        device: u64,
+        inode: u64,
+        change_time_seconds: i64,
+        change_time_nanoseconds: i64,
+    ) -> Self {
+        Self(SourceIdentityKind::Unix {
+            device,
+            inode,
+            change_time_seconds,
+            change_time_nanoseconds,
+        })
+    }
+
+    /// Construct an identity from Windows file metadata captured from an open file.
+    #[must_use]
+    pub const fn windows(volume_serial_number: u64, file_index: u128, creation_time: u64) -> Self {
+        Self(SourceIdentityKind::Windows {
+            volume_serial_number,
+            file_index,
+            creation_time,
+        })
+    }
+
+    /// Report whether two observations name the same filesystem object.
+    ///
+    /// A rename can update Unix change time. Cleanup uses this narrower comparison only after it
+    /// has atomically moved a fully verified claim into skit's private quarantine.
+    #[must_use]
+    pub fn same_file(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (
+                SourceIdentityKind::Unix {
+                    device: left_device,
+                    inode: left_inode,
+                    ..
+                },
+                SourceIdentityKind::Unix {
+                    device: right_device,
+                    inode: right_inode,
+                    ..
+                },
+            ) => left_device == right_device && left_inode == right_inode,
+            (
+                SourceIdentityKind::Windows {
+                    volume_serial_number: left_volume,
+                    file_index: left_index,
+                    creation_time: left_creation,
+                    ..
+                },
+                SourceIdentityKind::Windows {
+                    volume_serial_number: right_volume,
+                    file_index: right_index,
+                    creation_time: right_creation,
+                    ..
+                },
+            ) => {
+                left_volume == right_volume
+                    && left_index == right_index
+                    && left_creation == right_creation
+            }
+            _ => false,
+        }
+    }
+}
 
 /// Stable non-child exit classifications used by every frontend.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -224,7 +349,7 @@ pub enum RepositoryError {
     },
     /// Membership was removed, but some entry files remain for an explicit recovery.
     #[error(
-        "{name} was removed from the library, but its files could not be fully deleted: {path}"
+        "{name} was removed from the library, but its files couldn't be fully deleted: {path} — close any program using them, then delete the folder (or run `skit doctor --rebuild` to restore the entry and retry)."
     )]
     RemovalIncomplete {
         /// Display name of the removed entry.
@@ -370,5 +495,112 @@ where
     #[must_use]
     pub const fn repository(&self) -> &R {
         &self.repository
+    }
+}
+
+#[cfg(test)]
+mod source_identity_tests {
+    use super::{SourceIdentity, SourceIdentityKind};
+
+    #[test]
+    fn source_identity_is_typed_by_platform_and_roundtrips() {
+        let unix = SourceIdentity(SourceIdentityKind::Unix {
+            device: 7,
+            inode: 11,
+            change_time_seconds: 13,
+            change_time_nanoseconds: 17,
+        });
+        let windows = SourceIdentity(SourceIdentityKind::Windows {
+            volume_serial_number: 19,
+            file_index: 23,
+            creation_time: 29,
+        });
+        assert_ne!(unix, windows);
+
+        for identity in [unix, windows] {
+            let bytes = serde_json::to_vec(&identity).unwrap();
+            assert_eq!(
+                serde_json::from_slice::<SourceIdentity>(&bytes).unwrap(),
+                identity
+            );
+        }
+    }
+
+    #[test]
+    fn every_identity_component_participates_in_equality() {
+        let baseline = SourceIdentity(SourceIdentityKind::Unix {
+            device: 1,
+            inode: 2,
+            change_time_seconds: 3,
+            change_time_nanoseconds: 4,
+        });
+        for different in [
+            SourceIdentity(SourceIdentityKind::Unix {
+                device: 9,
+                inode: 2,
+                change_time_seconds: 3,
+                change_time_nanoseconds: 4,
+            }),
+            SourceIdentity(SourceIdentityKind::Unix {
+                device: 1,
+                inode: 9,
+                change_time_seconds: 3,
+                change_time_nanoseconds: 4,
+            }),
+            SourceIdentity(SourceIdentityKind::Unix {
+                device: 1,
+                inode: 2,
+                change_time_seconds: 9,
+                change_time_nanoseconds: 4,
+            }),
+            SourceIdentity(SourceIdentityKind::Unix {
+                device: 1,
+                inode: 2,
+                change_time_seconds: 3,
+                change_time_nanoseconds: 9,
+            }),
+        ] {
+            assert_ne!(baseline, different);
+        }
+    }
+
+    #[test]
+    fn same_file_ignores_rename_time_but_not_platform_file_id() {
+        let before = SourceIdentity::unix(1, 2, 3, 4);
+        let renamed = SourceIdentity::unix(1, 2, 30, 40);
+        let replacement = SourceIdentity::unix(1, 9, 30, 40);
+        assert!(before.same_file(&renamed));
+        assert!(!before.same_file(&replacement));
+        assert!(!before.same_file(&SourceIdentity::windows(1, 2, 3)));
+        assert!(!SourceIdentity::windows(1, 2, 3).same_file(&SourceIdentity::windows(1, 2, 4)));
+    }
+
+    #[test]
+    fn windows_identity_keeps_the_complete_stable_file_id() {
+        let high_bit = 1_u128 << 96;
+        let identity = SourceIdentity::windows(7, high_bit + 11, 13);
+
+        assert_eq!(
+            serde_json::to_value(&identity).unwrap(),
+            serde_json::json!({
+                "platform": "windows",
+                "volume_serial_number": 7,
+                "file_index": (high_bit + 11).to_string(),
+                "creation_time": 13,
+            })
+        );
+        assert!(identity.same_file(&SourceIdentity::windows(7, high_bit + 11, 13)));
+        assert!(!identity.same_file(&SourceIdentity::windows(7, 11, 13)));
+
+        let legacy = serde_json::json!({
+            "platform": "windows",
+            "volume_serial_number": 7,
+            "file_index": 11,
+            "creation_time": 13,
+        });
+        assert_eq!(
+            serde_json::from_value::<SourceIdentity>(legacy).unwrap(),
+            SourceIdentity::windows(7, 11, 13)
+        );
     }
 }

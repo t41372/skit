@@ -150,7 +150,7 @@ fn test_const_last_write_wins_keeps_first_slot() {
 
 #[test]
 fn test_const_plus_equals_is_not_a_literal_const() {
-    // A bare += with no prior literal assignment yields no const candidate (it's an accumulator).
+    // A bare += with no prior literal assignment yields no const candidate (it is an accumulator).
     assert!(names("N+=1\n").is_empty());
 }
 
@@ -287,7 +287,7 @@ fn test_suppression_bare_literal_assignment_wins() {
 
 #[test]
 fn test_suppression_cmdsub_assignment_shadows_envdefault() {
-    // A non-literal clobbering assignment isn't a const candidate, but still suppresses the env.
+    // A non-literal clobbering assignment is not a const candidate, but still suppresses the env.
     assert!(cands("HOST=$(hostname)\necho \"${HOST:-local}\"\n").is_empty());
 }
 
@@ -401,7 +401,7 @@ fn test_read_attached_value_flag_not_consumed() {
 fn test_reframing_reads_are_excluded_from_candidacy() {
     // -n/-N/-d make the read stop early or on another delimiter, so the single line skit feeds it is
     // not the value the script would end up with (`read -n 3 X` on "abcdefgh" yields "abc"). Such a
-    // read cannot be delivered faithfully, so it is never offered — as `read -a` already isn't.
+    // read cannot be delivered faithfully, so it is never offered — as `read -a` already is not.
     for src in [
         "read -n 3 X\n",
         "read -N 5 X\n",
@@ -442,7 +442,7 @@ fn test_read_single_dash_is_a_varname() {
 
 #[test]
 fn test_read_non_word_argument_skipped() {
-    // A string arg between flags/varnames isn't a plain word varname.
+    // A string arg between flags/varnames is not a plain word varname.
     let rs = reads("read \"$dyn\" REAL\n");
     assert_eq!(
         rs.iter()

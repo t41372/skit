@@ -211,7 +211,7 @@ fn test_stitch_custom_type_degrades_field() {
     let fields = static_fields(STITCH);
     let bg = &fields[4];
     assert!(bg.degraded);
-    assert_eq!(bg.help, "bg color"); // help survives degradation -- it's the user's hint
+    assert_eq!(bg.help, "bg color"); // help survives degradation -- it is the user's hint
 }
 
 #[test]
@@ -389,7 +389,7 @@ fn test_required_false_literal_is_not_required() {
 #[test]
 fn test_partly_non_literal_name_list_skips_that_field_only() {
     // A first literal name but a *second*, non-literal positional (len(names) != len(args)):
-    // we can't trust the declaration, so the whole call is skipped -- this is the `len != len`
+    // we cannot trust the declaration, so the whole call is skipped -- this is the `len != len`
     // half of the guard, distinct from the empty-names half already covered above.
     let fields = static_fields(concat!(
         "import argparse\nap = argparse.ArgumentParser()\n",
@@ -410,7 +410,7 @@ fn test_flag_dest_only_strips_dashes_not_letters() {
 
 #[test]
 fn test_computed_default_degrades_field() {
-    // A non-literal default (here a tuple) can't be modeled: the field shows but degrades so it
+    // A non-literal default (here a tuple) cannot be modeled: the field shows but degrades so it
     // is omitted when left empty and the script's own default applies. `is True` also pins that
     // it degrades rather than silently staying modelled.
     let fields = static_fields(

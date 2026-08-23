@@ -235,7 +235,7 @@ fn test_preset_preserved_across_save_last() {
 }
 
 // --------------------------------------------------------------------------
-// purge_secret + save_last stale-key dropping ("secrets aren't fully secret" gap)
+// purge_secret + save_last stale-key dropping ("secrets are not fully secret" gap)
 // --------------------------------------------------------------------------
 
 #[test]
@@ -366,7 +366,7 @@ fn test_purge_secret_reports_only_names_actually_stored() {
             &[spec("API_KEY", None, true), spec("CITY", None, true)],
         )
         .unwrap();
-    assert_eq!(removed, BTreeSet::from(["CITY".to_owned()])); // API_KEY was never stored, so it can't have been removed
+    assert_eq!(removed, BTreeSet::from(["CITY".to_owned()])); // API_KEY was never stored, so it cannot have been removed
 }
 
 #[test]

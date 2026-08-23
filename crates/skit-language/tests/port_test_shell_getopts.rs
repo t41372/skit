@@ -113,7 +113,7 @@ fn test_repeated_letter_keeps_first() {
 fn test_dynamic_optstring_degrades_to_dynamic() {
     // A dynamic optstring is DETECTED but unmodelable: the reader degrades honestly to
     // ok=False 'dynamic' (the python/JS distinction), not None — None would claim the
-    // script has no CLI at all, and the run form must instead say it couldn't model
+    // script has no CLI at all, and the run form must instead say it could not model
     // this one.
     let spec = read_cli("getopts \"$OPTS\" opt\n").expect("dynamic surface is not None");
     let CliSurface::Dynamic(surface) = spec else {

@@ -56,9 +56,10 @@ pub fn run(context: &RunContext, plan: &SuitePlan) -> Result<SuiteOutput, SuiteE
 pub(crate) mod tests {
     use std::{
         collections::BTreeMap,
-        fs,
+        fs, io,
         os::unix::fs::PermissionsExt as _,
         path::{Path, PathBuf},
+        time::Duration,
     };
 
     use tempfile::TempDir;
@@ -67,11 +68,49 @@ pub(crate) mod tests {
         SuiteKind, SuitePlan,
         dataset::{DEFAULT_SEED, DEFAULT_STATE_FRACTION, generate},
         runner::RunContext,
+        test_support::initialized_git_repository,
     };
 
+    /// The one argument a warm probe passes.
+    ///
+    /// No suite invocation can pass it. Every real call names a subcommand, a flag, or a path, and
+    /// the product spells none of those with leading and trailing underscores.
+    pub(crate) const PROBE_ARGUMENT: &str = "__skit_probe__";
+
+    /// Put the probe guard directly under the shebang, above everything the shim records.
+    ///
+    /// A probe must leave no trace, because tests count what these programs write.
+    pub(crate) fn probe_guarded(body: &str) -> String {
+        let (shebang, rest) = body
+            .split_once('\n')
+            .expect("every shim body starts with its #! line");
+        format!("{shebang}\n[ \"$1\" = {PROBE_ARGUMENT} ] && exit 0\n{rest}")
+    }
+
+    /// Start the new program once, so the suite under test never meets the fork window.
+    ///
+    /// Another test in this binary can fork for its own child while the write handle above is still
+    /// open, and the fork gives that child a copy of the handle. Every start of this program then
+    /// fails with "Text file busy" until that child reaches its own start. One successful start
+    /// proves the window is closed, and nothing writes this file again.
+    pub(crate) fn wait_past_the_fork_window(path: &Path) {
+        for _ in 0..49 {
+            match std::process::Command::new(path)
+                .arg(PROBE_ARGUMENT)
+                .output()
+            {
+                Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => return,
+            }
+        }
+    }
+
     pub(crate) fn executable(path: &Path, body: &str) -> PathBuf {
-        fs::write(path, body).unwrap();
+        fs::write(path, probe_guarded(body)).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        wait_past_the_fork_window(path);
         path.to_path_buf()
     }
 
@@ -101,9 +140,11 @@ pub(crate) mod tests {
             let workdir = root.path().join("work");
             let out_dir = root.path().join("out");
             let tools = root.path().join("tools");
+            let repo_root = root.path().join("repo");
             fs::create_dir_all(&workdir).unwrap();
             fs::create_dir_all(&out_dir).unwrap();
             fs::create_dir_all(&tools).unwrap();
+            initialized_git_repository(&repo_root);
 
             let dataset0 = generate(
                 &root.path().join("dataset-0"),
@@ -205,10 +246,6 @@ done
 printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
 "#,
             );
-            let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .canonicalize()
-                .unwrap();
             Self {
                 context: RunContext {
                     repo_root,
@@ -229,6 +266,30 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
                 _root: root,
             }
         }
+    }
+
+    #[test]
+    fn the_fork_window_wait_returns_once_the_writer_lets_go() {
+        use std::{fs::OpenOptions, thread, time::Instant};
+
+        // A program that any process holds open for writing cannot start: the host answers "Text
+        // file busy". Holding the handle here asks for that answer on purpose, which is the answer
+        // a forked child produces by accident.
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("held-shim");
+        fs::write(&path, probe_guarded("#!/bin/sh\nexit 0\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let hold = OpenOptions::new().append(true).open(&path).unwrap();
+
+        let probed = path.clone();
+        let started = Instant::now();
+        let waiter = thread::spawn(move || wait_past_the_fork_window(&probed));
+        thread::sleep(Duration::from_millis(80));
+        drop(hold);
+
+        // The wait ends, and only after the writer let go, so it paused at least once.
+        waiter.join().unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(20));
     }
 
     #[test]
@@ -295,8 +356,13 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         );
 
         let syscalls = super::run(context, &plan(SuiteKind::Syscalls, &[100])).unwrap();
-        assert_eq!(syscalls.metrics["syscalls.list_json.file_ops"].value, 9.0);
-        assert_eq!(syscalls.metrics["syscalls.list_json.network"].value, 1.0);
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(syscalls.metrics["syscalls.list_json.file_ops"].value, 9.0);
+            assert_eq!(syscalls.metrics["syscalls.list_json.network"].value, 1.0);
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(syscalls.skipped[0].reason, "not Linux");
     }
 
     #[test]
@@ -327,7 +393,10 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         fixture.context.strace = None;
         let syscalls =
             super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[100])).unwrap();
+        #[cfg(target_os = "linux")]
         assert_eq!(syscalls.skipped[0].reason, "strace not found");
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(syscalls.skipped[0].reason, "not Linux");
     }
 
     #[test]
@@ -378,8 +447,78 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         assert!(super::imports::run(&fixture.context, &plan(SuiteKind::Imports, &[])).is_err());
         assert!(super::footprint::run(&fixture.context, &plan(SuiteKind::Footprint, &[])).is_err());
         assert!(super::startup::run(&fixture.context, &plan(SuiteKind::Startup, &[])).is_err());
-        assert!(
-            super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[0, 100])).is_err()
+        let syscalls =
+            super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[0, 100]));
+        #[cfg(target_os = "linux")]
+        assert!(syscalls.is_err());
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(syscalls.unwrap().skipped[0].reason, "not Linux");
+    }
+
+    #[test]
+    fn suite_artifact_failures_keep_the_target_path_and_do_not_fake_success() {
+        let mut fixture = Fixture::new();
+        let blocked_out = fixture.context.workdir.join("blocked-out");
+        fs::write(&blocked_out, "unchanged").unwrap();
+        fixture.context.out_dir = blocked_out.clone();
+        let create_error =
+            super::imports::run(&fixture.context, &plan(SuiteKind::Imports, &[0])).unwrap_err();
+        assert!(create_error.to_string().contains("blocked-out/artifacts"));
+        assert_eq!(fs::read_to_string(&blocked_out).unwrap(), "unchanged");
+
+        let fixture = Fixture::new();
+        let artifact = fixture.context.out_dir.join("artifacts/importtime.txt");
+        fs::create_dir_all(&artifact).unwrap();
+        let write_error =
+            super::imports::run(&fixture.context, &plan(SuiteKind::Imports, &[0])).unwrap_err();
+        assert!(write_error.to_string().contains("artifacts/importtime.txt"));
+        assert!(artifact.is_dir());
+
+        let mut fixture = Fixture::new();
+        let blocked_work = fixture.context.out_dir.join("blocked-work");
+        fs::write(&blocked_work, "unchanged").unwrap();
+        fixture.context.workdir = blocked_work.clone();
+        let source_error =
+            super::micro::run(&fixture.context, &plan(SuiteKind::Micro, &[0])).unwrap_err();
+        assert!(source_error.to_string().contains("blocked-work/sources"));
+        assert_eq!(fs::read_to_string(&blocked_work).unwrap(), "unchanged");
+    }
+
+    #[test]
+    fn scale_metric_merge_refuses_a_duplicate_without_replacing_it() {
+        let mut output = crate::SuiteOutput {
+            suite: SuiteKind::Scale,
+            duration_seconds: 0.0,
+            metrics: BTreeMap::from([(
+                "scale.list.n0.median_ms".to_owned(),
+                crate::Metric::single(1.0, "ms"),
+            )]),
+            skipped: Vec::new(),
+            raw: BTreeMap::new(),
+        };
+        let error = super::scale::merge_metrics(
+            &mut output,
+            BTreeMap::from([(
+                "scale.list.n0.median_ms".to_owned(),
+                crate::Metric::single(2.0, "ms"),
+            )]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("duplicate scale metric"));
+        assert_eq!(output.metrics["scale.list.n0.median_ms"].value, 1.0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn syscalls_requires_the_successful_probe_to_write_its_table() {
+        let mut fixture = Fixture::new();
+        let strace = executable(
+            &fixture.context.workdir.join("strace-no-output"),
+            "#!/bin/sh\nexit 0\n",
         );
+        fixture.context.strace = Some(strace);
+        let error =
+            super::syscalls::run(&fixture.context, &plan(SuiteKind::Syscalls, &[100])).unwrap_err();
+        assert!(error.to_string().contains("strace_n100.txt"));
     }
 }

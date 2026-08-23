@@ -11,26 +11,18 @@ use super::{
 
 pub(super) fn recoverable_error(source: &str, node: tree_sitter::Node<'_>) -> bool {
     let children = named_children(node);
-    let [name] = children.as_slice() else {
+    let Some(name) = children
+        .first()
+        .filter(|name| children.len() == 1 && name.kind() == "simple_name")
+    else {
         return false;
     };
-    if name.kind() != "simple_name" {
-        return false;
-    }
-    let Some(error) = source.get(node.start_byte()..node.end_byte()) else {
-        return false;
-    };
-    let recovered = if let Some(value) = error.trim().strip_prefix('=') {
-        value.trim()
-    } else if source
-        .get(..node.start_byte())
-        .is_some_and(|prefix| prefix.trim_end().ends_with('='))
-    {
-        error.trim()
-    } else {
-        return false;
-    };
-    recovered == text_from_source(source, *name)
+    let error = &source[node.byte_range()];
+    error
+        .trim()
+        .strip_prefix('=')
+        .map(str::trim)
+        .is_some_and(|recovered| recovered == text_from_source(source, *name))
 }
 
 fn text_from_source<'source>(source: &'source str, node: tree_sitter::Node<'_>) -> &'source str {
@@ -63,21 +55,17 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
     parameters.sort_by_key(tree_sitter::Node::start_byte);
     let parameter_help = comment_help(document);
     let mut fields = Vec::new();
-    for parameter in parameters {
-        let Some(variable) = named_children(parameter)
+    for (parameter, variable) in parameters.into_iter().filter_map(|parameter| {
+        named_children(parameter)
             .into_iter()
             .find(|node| node.kind() == "variable")
-        else {
-            continue;
-        };
+            .map(|variable| (parameter, variable))
+    }) {
         let name = text(document, variable)
             .trim_start_matches('$')
             .trim_start_matches('{')
             .trim_end_matches('}')
             .to_owned();
-        if name.is_empty() {
-            continue;
-        }
         let mut declaration = ParamDecl::new(&name);
         declaration.flag = format!("-{name}");
         declaration.secret = is_secret_name(&name);
@@ -110,15 +98,12 @@ pub(super) fn cli_surface(document: &ParsedDocument) -> CliSurface {
                 declaration.degraded = true;
                 degradation = Some(DegradationReason::DynamicDefault);
             }
-        } else if let Some(default) = recovered_default(document, variable) {
+        } else if let Some(value) = recovered_default(document, variable)
+            .and_then(|default| recovered_scalar_default(&default))
+        {
             // An error-recovered bare default has no expression node to classify; keep the
             // established text-based scalar read and its degrade-on-failure fallback.
-            if let Some(value) = recovered_scalar_default(&default) {
-                declaration.default = Some(value);
-            } else {
-                declaration.degraded = true;
-                degradation = Some(DegradationReason::DynamicDefault);
-            }
+            declaration.default = Some(value);
         }
         fields.push(SemanticField {
             identity: BindingIdentity {
@@ -154,10 +139,9 @@ fn apply_attributes(
             static_type = descendant_text(document, type_literal, "type_identifier");
             continue;
         }
-        let Some(attribute_name) = descendant_text(document, attribute, "type_identifier") else {
-            continue;
-        };
-        if attribute_name.eq_ignore_ascii_case("parameter") {
+        if let Some(attribute_name) = descendant_text(document, attribute, "type_identifier")
+            && attribute_name.eq_ignore_ascii_case("parameter")
+        {
             walk(attribute, &mut |argument| {
                 if argument.kind() != "attribute_argument" {
                     return;
@@ -174,7 +158,9 @@ fn apply_attributes(
                     declaration.required = true;
                 }
             });
-        } else if attribute_name.eq_ignore_ascii_case("validateset") {
+        } else if descendant_text(document, attribute, "type_identifier")
+            .is_some_and(|name| name.eq_ignore_ascii_case("validateset"))
+        {
             walk(attribute, &mut |node| {
                 if node.kind() == "string_literal"
                     && let Some(value) = powershell_string(text(document, node))
@@ -282,14 +268,13 @@ fn recovered_scalar_default(raw: &str) -> Option<ParameterValue> {
         .strip_prefix('=')
         .unwrap_or_else(|| raw.trim())
         .trim();
-    if let Some(value) = scalar_literal_text(raw) {
-        return Some(value);
-    }
-    raw.chars()
-        .all(|character| {
-            character.is_alphanumeric() || matches!(character, '_' | '-' | '.' | '/' | '\\')
-        })
-        .then(|| ParameterValue::String(raw.to_owned()))
+    scalar_literal_text(raw).or_else(|| {
+        raw.chars()
+            .all(|character| {
+                character.is_alphanumeric() || matches!(character, '_' | '-' | '.' | '/' | '\\')
+            })
+            .then(|| ParameterValue::String(raw.to_owned()))
+    })
 }
 
 fn recovered_default(document: &ParsedDocument, variable: tree_sitter::Node<'_>) -> Option<String> {

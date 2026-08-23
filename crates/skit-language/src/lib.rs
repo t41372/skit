@@ -17,7 +17,7 @@ pub use semantic::{
     BindingIdentity, CliSurface, DegradationReason, DynamicCliSurface, ParseFailure, ParseOutcome,
     ParsedDocument, ReconcilePair, ReconcileReport, SemanticAnalysis, SemanticCandidate,
     SemanticField, SourceEdit, SourceEditPlan, SourceParameterSemantics, SourceSpan,
-    StaticCliSurface, parse_document, source_parameter_semantics,
+    StaticCliSurface, edit_source_declarations, parse_document, source_parameter_semantics,
 };
 pub use source_text::{
     LosslessSource, NewlineStyle, has_uv_metadata_block_bytes, write_managed_params_bytes,
@@ -38,7 +38,13 @@ use pep508_rs::{Requirement, VerbatimUrl};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use skit_domain::parameters::{ParamDecl, ParameterType, ParameterValue, synthesized_placeholder};
+use skit_domain::{
+    Entry, EntrySettings, StorageMode,
+    parameters::{ParamDecl, ParameterType, ParameterValue, synthesized_placeholder},
+    parameters::{
+        SourceNormalizationRefusal, SourceNormalizationRefusalKind, SourceNormalizationResult,
+    },
+};
 use skit_i18n::{Localize, Message};
 use thiserror::Error;
 use toml::Value as TomlValue;
@@ -97,6 +103,12 @@ pub enum LanguageError {
     /// A parser-backed source has syntax errors.
     #[error("source is not valid {kind} syntax")]
     InvalidSource { kind: String },
+    /// An injected source no longer parses after skit applies its edit plan.
+    #[error("the injected copy no longer parses as a {kind} script (nothing was run)")]
+    InjectedSourceInvalid {
+        /// Language family used by the mandatory reparse gate.
+        kind: InjectedSourceKind,
+    },
     /// The source no longer matches the version used for semantic planning.
     #[error("source changed after semantic edit planning")]
     SourceChanged,
@@ -116,6 +128,24 @@ pub enum LanguageError {
     /// A shell `read` cannot deliver one accepted value byte-for-byte.
     #[error(transparent)]
     ShellInput(#[from] ShellInputError),
+}
+
+/// Identify one language family with a v0.4 injected-source refusal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InjectedSourceKind {
+    /// JavaScript or TypeScript.
+    JavaScript,
+    /// A POSIX-family shell script.
+    Shell,
+}
+
+impl std::fmt::Display for InjectedSourceKind {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::JavaScript => "JavaScript/TypeScript",
+            Self::Shell => "shell",
+        })
+    }
 }
 
 /// Report an invalid Python package or version constraint.
@@ -144,6 +174,16 @@ impl Localize for LanguageError {
             Self::InvalidSource { kind } => {
                 Message::new("source is not valid {} syntax").with(kind)
             }
+            Self::InjectedSourceInvalid {
+                kind: InjectedSourceKind::JavaScript,
+            } => Message::new(
+                "the injected copy no longer parses as a JavaScript/TypeScript script (nothing was run)",
+            ),
+            Self::InjectedSourceInvalid {
+                kind: InjectedSourceKind::Shell,
+            } => Message::new(
+                "the injected copy no longer parses as a shell script (nothing was run)",
+            ),
             Self::SourceChanged => Message::new("source changed after semantic edit planning"),
             Self::InvalidValue {
                 name,
@@ -209,6 +249,27 @@ pub struct UvMetadata {
     pub requires_python: String,
 }
 
+/// Read the effective settings that one launch would use for an entry snapshot.
+///
+/// A Python copy can keep either UV axis in its stored PEP 723 block. Other entry kinds and
+/// reference-mode Python entries use metadata only.
+#[must_use]
+pub fn effective_entry_settings(entry: &Entry, source: Option<&[u8]>) -> EntrySettings {
+    let mut settings = EntrySettings::from_meta(&entry.meta);
+    if entry.meta.kind.as_str() == "python" && entry.meta.mode == StorageMode::Copy {
+        let effective = effective_uv_metadata_bytes(
+            source,
+            &UvMetadata {
+                dependencies: settings.dependencies.clone(),
+                requires_python: settings.requires_python.clone(),
+            },
+        );
+        settings.dependencies = effective.dependencies;
+        settings.requires_python = effective.requires_python;
+    }
+    settings
+}
+
 /// Infer a known kind from a path, optional shebang, and executable status.
 #[must_use]
 pub fn infer_kind(path: &Path, shebang: Option<&str>, executable: bool) -> Option<&'static str> {
@@ -227,6 +288,31 @@ pub fn infer_kind(path: &Path, shebang: Option<&str>, executable: bool) -> Optio
         return Some(kind);
     }
     executable.then_some("exe")
+}
+
+/// Infer one owned draft kind without treating skit's synthetic script suffix as user intent.
+///
+/// Prompt extensions identify placeholder-bodied input and keep priority. For every other draft,
+/// a present shebang is authoritative, including an unknown shebang. A draft without a shebang
+/// falls back to ordinary path and executable inference.
+#[must_use]
+pub fn infer_draft_kind(
+    path: &Path,
+    shebang: Option<&str>,
+    executable: bool,
+) -> Option<&'static str> {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if name.ends_with(".prompt.md") || name.ends_with(".prompt") {
+        return Some("prompt");
+    }
+    if let Some(shebang) = shebang {
+        return shebang_kind(shebang);
+    }
+    infer_kind(path, None, executable)
 }
 
 fn extension_kind(name: &str) -> Option<&'static str> {
@@ -322,6 +408,87 @@ pub fn validate_pep508_requirement(value: &str) -> Result<(), PythonMetadataErro
         .map_err(|_| PythonMetadataError::InvalidRequirement {
             value: value.to_owned(),
         })
+}
+
+/// Split a comma-composed field by using the PEP 508 parser to find valid partitions.
+///
+/// Commas inside version specifiers, extras, and markers remain in their requirement.
+///
+/// Version 0.4 does not support a comma in a direct URL when the text after the comma can parse as
+/// another requirement. This splitter keeps that limitation for compatibility.
+#[must_use]
+pub fn split_pep508_requirements(value: &str) -> Vec<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Vec::new();
+    }
+    if value.contains('@') {
+        return split_requirement_fallback(value);
+    }
+    let comma_offsets = value
+        .char_indices()
+        .filter_map(|(index, character)| (character == ',').then_some(index))
+        .chain(std::iter::once(value.len()))
+        .collect::<Vec<_>>();
+    fn partition(value: &str, offsets: &[usize], start: usize) -> Option<Vec<String>> {
+        for &end in offsets.iter().filter(|&&offset| offset >= start) {
+            let item = value[start..end].trim();
+            if item.is_empty() || validate_pep508_requirement(item).is_err() {
+                continue;
+            }
+            if end == value.len() {
+                return Some(vec![item.to_owned()]);
+            }
+            if let Some(mut tail) = partition(value, offsets, end.saturating_add(1)) {
+                let mut output = vec![item.to_owned()];
+                output.append(&mut tail);
+                return Some(output);
+            }
+        }
+        None
+    }
+    partition(value, &comma_offsets, 0).unwrap_or_else(|| split_requirement_fallback(value))
+}
+
+fn split_requirement_fallback(value: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    let mut item = String::new();
+    let mut depth = 0_i32;
+    let mut quote = None;
+    for (index, character) in value.char_indices() {
+        if let Some(active) = quote {
+            item.push(character);
+            if character == active {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                let next = value[index + character.len_utf8()..]
+                    .chars()
+                    .find(|next| !next.is_whitespace());
+                if next.is_none_or(char::is_alphanumeric) {
+                    let trimmed = item.trim();
+                    if !trimmed.is_empty() {
+                        output.push(trimmed.to_owned());
+                    }
+                    item.clear();
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        item.push(character);
+    }
+    let trimmed = item.trim();
+    if !trimmed.is_empty() {
+        output.push(trimmed.to_owned());
+    }
+    output
 }
 
 /// Validate one PEP 440 version-specifier list.
@@ -586,20 +753,68 @@ fn python_cookie_can_follow(first_line: &str) -> bool {
 
 /// Convert one shell constant to an environment-default expression.
 pub fn normalize_shell_default(text: &str, name: &str) -> Result<String, LanguageError> {
+    let result = normalize_shell_defaults(text, &[name.to_owned()])?;
+    if result.normalized.is_empty() {
+        if result
+            .refused
+            .first()
+            .is_some_and(|refusal| refusal.kind == SourceNormalizationRefusalKind::SyntaxError)
+        {
+            return Err(LanguageError::InvalidSource {
+                kind: "shell".to_owned(),
+            });
+        }
+        return Err(LanguageError::BindingNotFound {
+            name: name.to_owned(),
+        });
+    }
+    Ok(result.source)
+}
+
+/// Plan all requested shell environment-default normalizations against one source identity.
+pub fn normalize_shell_defaults(
+    text: &str,
+    names: &[String],
+) -> Result<SourceNormalizationResult, LanguageError> {
     let ParseOutcome::Parsed(document) = parse_document("shell", text) else {
-        return Err(LanguageError::InvalidSource {
-            kind: "shell".to_owned(),
+        return Ok(SourceNormalizationResult {
+            source: text.to_owned(),
+            normalized: Vec::new(),
+            refused: names
+                .iter()
+                .map(|name| SourceNormalizationRefusal {
+                    name: name.clone(),
+                    kind: SourceNormalizationRefusalKind::SyntaxError,
+                })
+                .collect(),
         });
     };
-    let output = document.plan_shell_normalization(name)?.apply(text)?;
-    match parse_document("shell", &output) {
-        ParseOutcome::Parsed(_) => Ok(output),
-        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => {
-            Err(LanguageError::InvalidSource {
-                kind: "shell".to_owned(),
-            })
+    let mut plans = Vec::new();
+    let mut normalized = Vec::new();
+    let mut refused = Vec::new();
+    for name in names {
+        match document.plan_shell_normalization_typed(name) {
+            Ok(plan) => {
+                plans.push(plan);
+                normalized.push(name.clone());
+            }
+            Err(kind) => refused.push(SourceNormalizationRefusal {
+                name: name.clone(),
+                kind,
+            }),
         }
     }
+    let source = if plans.is_empty() {
+        text.to_owned()
+    } else {
+        let plan = SourceEditPlan::combine(text, plans)?;
+        validate_rewritten_source("shell", plan.apply(text)?)?
+    };
+    Ok(SourceNormalizationResult {
+        source,
+        normalized,
+        refused,
+    })
 }
 
 fn metadata_leader(kind: &str) -> Option<&'static str> {
@@ -1035,13 +1250,33 @@ pub fn inject_values_for_interpreter(
     let output = document
         .plan_injection_for_interpreter(declarations, values, interpreter)?
         .apply(text)?;
-    match parse_document(kind, &output) {
-        ParseOutcome::Parsed(_) => Ok(output),
-        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => {
-            Err(LanguageError::InvalidSource {
-                kind: kind.to_owned(),
-            })
-        }
+    validate_injected_source(kind, output)
+}
+
+fn validate_injected_source(kind: &str, output: String) -> Result<String, LanguageError> {
+    if matches!(parse_document(kind, &output), ParseOutcome::Parsed(_)) {
+        return Ok(output);
+    }
+    match kind {
+        "js" | "ts" | "tsx" => Err(LanguageError::InjectedSourceInvalid {
+            kind: InjectedSourceKind::JavaScript,
+        }),
+        "shell" => Err(LanguageError::InjectedSourceInvalid {
+            kind: InjectedSourceKind::Shell,
+        }),
+        _ => Err(LanguageError::InvalidSource {
+            kind: kind.to_owned(),
+        }),
+    }
+}
+
+fn validate_rewritten_source(kind: &str, output: String) -> Result<String, LanguageError> {
+    if matches!(parse_document(kind, &output), ParseOutcome::Parsed(_)) {
+        Ok(output)
+    } else {
+        Err(LanguageError::InvalidSource {
+            kind: kind.to_owned(),
+        })
     }
 }
 
@@ -1551,6 +1786,38 @@ mod private_tests {
             apply_source_edits("abc", vec![(0, 2, "x".to_owned()), (1, 3, "y".to_owned())]),
             Err(LanguageError::InvalidSource { .. })
         ));
+        assert!(matches!(
+            validate_rewritten_source("python", "def broken(".to_owned()),
+            Err(LanguageError::InvalidSource { kind }) if kind == "python"
+        ));
+        assert!(matches!(
+            validate_injected_source("js", "const broken = '".to_owned()),
+            Err(LanguageError::InjectedSourceInvalid {
+                kind: InjectedSourceKind::JavaScript
+            })
+        ));
+        assert!(matches!(
+            validate_injected_source("shell", "echo '".to_owned()),
+            Err(LanguageError::InjectedSourceInvalid {
+                kind: InjectedSourceKind::Shell
+            })
+        ));
+        assert!(matches!(
+            validate_injected_source("python", "def broken(".to_owned()),
+            Err(LanguageError::InvalidSource { kind }) if kind == "python"
+        ));
+        assert_eq!(
+            validate_rewritten_source("shell", "echo ok\n".to_owned()).unwrap(),
+            "echo ok\n"
+        );
+    }
+
+    #[test]
+    fn requirement_fallback_keeps_commas_inside_both_quote_styles() {
+        assert_eq!(
+            split_pep508_requirements("demo @ https://example.invalid/'a,b'/\"c,d\".whl, rich"),
+            ["demo @ https://example.invalid/'a,b'/\"c,d\".whl", "rich"]
+        );
     }
 
     #[test]

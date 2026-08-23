@@ -1,8 +1,14 @@
-use std::fs;
+use std::{fs, net::TcpListener};
+
+#[path = "support/shim.rs"]
+mod shim;
 
 use assert_cmd::Command;
 use serde_json::Value;
+use skit_store::FileConfigStore;
 use tempfile::TempDir;
+
+const OFFICIAL_UV_BASE: &str = "https://github.com/astral-sh/uv/releases/download";
 
 struct Sandbox {
     data: TempDir,
@@ -29,6 +35,7 @@ impl Sandbox {
             .env("SKIT_CONFIG_DIR", self.config.path())
             .env("SKIT_LANG", "en")
             .env("HOME", self.home.path())
+            .env_remove("PSModulePath")
             .current_dir(self.home.path());
         command
     }
@@ -55,6 +62,16 @@ impl Sandbox {
         );
     }
 
+    fn warn(&self, args: &[&str], needle: &str) {
+        let output = self.command().args(args).output().unwrap();
+        assert!(
+            output.status.success() && String::from_utf8_lossy(&output.stderr).contains(needle),
+            "args={args:?}\nstdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
     fn json(&self, args: &[&str]) -> Value {
         serde_json::from_slice(&self.ok(args)).unwrap()
     }
@@ -63,6 +80,56 @@ impl Sandbox {
         let path = self.data.path().join(name);
         fs::write(&path, text).unwrap();
         path.to_str().unwrap().to_owned()
+    }
+
+    fn install_private_uv_probe(&self) {
+        let bin = self.data.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::copy(
+            env!("CARGO_BIN_EXE_skit"),
+            bin.join(if cfg!(windows) { "uv.exe" } else { "uv" }),
+        )
+        .unwrap();
+    }
+
+    fn editor_pty(
+        &self,
+        args: &[&str],
+        configure: impl FnOnce(&mut portable_pty::CommandBuilder),
+    ) -> (u32, String) {
+        use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+        use std::io::Read as _;
+
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 24,
+                cols: 100,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let mut command = CommandBuilder::new(std::path::PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.args(args);
+        command.env("TERM", "xterm-256color");
+        command.env("SKIT_DATA_DIR", self.data.path());
+        command.env("SKIT_STATE_DIR", self.state.path());
+        command.env("SKIT_CONFIG_DIR", self.config.path());
+        command.env("SKIT_LANG", "en");
+        command.env("HOME", self.home.path());
+        command.cwd(self.home.path());
+        configure(&mut command);
+        let mut child = pair.slave.spawn_command(command).unwrap();
+        drop(pair.slave);
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        let drain = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            reader.read_to_end(&mut output).unwrap();
+            output
+        });
+        let status = child.wait().unwrap();
+        drop(pair.master);
+        let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+        (status.exit_code(), output)
     }
 }
 
@@ -101,6 +168,24 @@ fn configuration_runner_and_completion_edges_are_explicit() {
             .arg("--show-completion")
             .assert()
             .success();
+    }
+    // A machine that ships PowerShell tools keeps PSModulePath in the environment of every other
+    // shell. GitHub's Linux runners do. The shell the host names must still win.
+    for shell in ["bash", "zsh"] {
+        let shown = sandbox
+            .command()
+            .env("SHELL", format!("/bin/{shell}"))
+            .env("PSModulePath", sandbox.home.path())
+            .arg("--show-completion")
+            .output()
+            .unwrap();
+        assert!(shown.status.success(), "{shell}");
+        let script = String::from_utf8(shown.stdout).unwrap();
+        assert!(script.contains("_skit"), "{shell}: {script}");
+        assert!(
+            !script.contains("Register-ArgumentCompleter"),
+            "{shell}: {script}"
+        );
     }
     sandbox
         .command()
@@ -272,9 +357,7 @@ fn locale_fallbacks_use_config_then_environment_without_changing_json() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
-            "程式、提示詞、執行檔與命令程式庫",
-        ));
+        .stdout(predicates::str::contains("腳本、提示詞、程式和命令"));
 
     let empty_config = TempDir::new().unwrap();
     sandbox
@@ -285,7 +368,7 @@ fn locale_fallbacks_use_config_then_environment_without_changing_json() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains("脚本、提示词、程序与命令库"));
+        .stdout(predicates::str::contains("脚本、提示词、程序和命令"));
     sandbox
         .command()
         .env_remove("SKIT_LANG")
@@ -296,14 +379,13 @@ fn locale_fallbacks_use_config_then_environment_without_changing_json() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains(
-            "程式、提示詞、執行檔與命令程式庫",
-        ));
+        .stdout(predicates::str::contains("腳本、提示詞、程式和命令"));
 }
 
 #[test]
 fn doctor_human_report_exposes_each_repair_axis() {
     let sandbox = Sandbox::new();
+    sandbox.install_private_uv_probe();
     let missing = sandbox.source("missing.sh", b"echo ok\n");
     sandbox.ok(&["add", &missing, "--ref", "--name", "Missing"]);
     fs::remove_file(&missing).unwrap();
@@ -356,7 +438,7 @@ fn doctor_human_report_exposes_each_repair_axis() {
     let output = sandbox.ok(&["doctor", "--rebuild"]);
     let output = String::from_utf8(output).unwrap();
     for text in [
-        "Registry rebuilt",
+        "Index rebuilt: 5 entries",
         "launch target is gone",
         "form definitions are out of sync",
         "missing external commands",
@@ -367,6 +449,62 @@ fn doctor_human_report_exposes_each_repair_axis() {
             output.contains(text),
             "missing doctor row: {text}\n{output}"
         );
+    }
+}
+
+#[test]
+fn doctor_rebuild_prints_registered_corruption_warnings_in_every_locale_without_rewriting_data() {
+    for (locale, expected) in [
+        ("en", "WARN entry \"broken\" has corrupt metadata:"),
+        ("zh-CN", "警告 条目 \"broken\" 的元数据已损坏："),
+        ("zh-TW", "警告 項目 \"broken\" 的中繼資料已損毀："),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.install_private_uv_probe();
+        sandbox.ok(&["add", "--cmd", "true", "--name", "Broken", "--no-input"]);
+        sandbox.ok(&["add", "--cmd", "true", "--name", "Good", "--no-input"]);
+        let meta = sandbox.data.path().join("scripts/broken/meta.toml");
+        let mut corrupt = fs::read(&meta).unwrap();
+        corrupt.extend_from_slice(b"dependencies = 5\n");
+        fs::write(&meta, corrupt).unwrap();
+        let meta_before = fs::read(&meta).unwrap();
+        let good_meta = sandbox.data.path().join("scripts/good/meta.toml");
+        let good_meta_before = fs::read(&good_meta).unwrap();
+        let registry_path = sandbox.data.path().join("registry.toml");
+        let registry_before = fs::read(&registry_path).unwrap();
+        assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+
+        let output = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .args(["doctor", "--rebuild"])
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "locale={locale}\nstdout={}\nstderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.contains(expected), "locale={locale}\n{text}");
+        assert!(text.contains("dependencies"), "locale={locale}\n{text}");
+        assert_eq!(fs::read(&meta).unwrap(), meta_before);
+        assert_eq!(fs::read(&good_meta).unwrap(), good_meta_before);
+        assert_ne!(
+            fs::read(&registry_path).unwrap(),
+            registry_before,
+            "the explicit rebuild must replace its derived registry"
+        );
+        let listing = sandbox.json(&["list", "--json"]);
+        let rows = listing.as_array().unwrap();
+        assert_eq!(rows.len(), 1, "locale={locale}: {listing}");
+        assert_eq!(rows[0]["name"], "Good", "locale={locale}: {listing}");
+        assert_eq!(fs::read_dir(sandbox.config.path()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(meta.parent().unwrap()).unwrap().count(), 1);
     }
 }
 
@@ -456,15 +594,28 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     sandbox.ok(&["params", "demo"]);
     sandbox.ok(&["params", "demo", "--json"]);
     sandbox.code(&["params", "demo", "--resync", "--add", "other"], 2);
-    sandbox.code(&["params", "demo", "--add", "name"], 2);
-    sandbox.code(&["params", "demo", "--type", "bad"], 2);
-    sandbox.code(&["params", "demo", "--type", "missing=int"], 2);
-    sandbox.code(&["params", "demo", "--type", "name=future"], 2);
-    sandbox.code(&["params", "demo", "--deliver", "name=future"], 2);
+    sandbox.ok(&["params", "demo", "--add", "name"]); // implicit -> explicit
+    sandbox.warn(&["params", "demo", "--add", "name"], "already declared");
+    sandbox.warn(
+        &["params", "demo", "--type", "bad"],
+        "Ignored a malformed value",
+    );
+    sandbox.warn(
+        &["params", "demo", "--type", "missing=int"],
+        "isn't a declared parameter",
+    );
+    sandbox.warn(&["params", "demo", "--type", "name=future"], "unknown type");
+    sandbox.warn(
+        &["params", "demo", "--deliver", "name=future"],
+        "delivery isn't available",
+    );
     for flag in ["--required", "--optional", "--secret", "--no-secret"] {
-        sandbox.code(&["params", "demo", flag, "missing"], 2);
+        sandbox.warn(
+            &["params", "demo", flag, "missing"],
+            "isn't a declared parameter",
+        );
     }
-    sandbox.code(
+    sandbox.warn(
         &[
             "params",
             "demo",
@@ -473,33 +624,39 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
             "--type",
             "name=int",
         ],
-        2,
+        "default doesn't fit its type",
     );
+    let partially_updated = sandbox.json(&["params", "demo", "--json"]);
+    assert_eq!(partially_updated["declared"][0]["type"], "int");
+    assert!(partially_updated["declared"][0].get("default").is_none());
 
-    sandbox.ok(&[
-        "params",
-        "demo",
-        "--add",
-        "count",
-        "--type",
-        "count=int",
-        "--default",
-        "count=2",
-        "--deliver",
-        "count=flag",
-        "--flag",
-        "count=--count",
-        "--help-text",
-        "count=Count help",
-        "--prompt",
-        "count=Count",
-        "--env-source",
-        "count=COUNT_SOURCE",
-        "--required",
-        "count",
-        "--secret",
-        "count",
-    ]);
+    sandbox.warn(
+        &[
+            "params",
+            "demo",
+            "--add",
+            "count",
+            "--type",
+            "count=int",
+            "--default",
+            "count=2",
+            "--deliver",
+            "count=flag",
+            "--flag",
+            "count=--count",
+            "--help-text",
+            "count=Count help",
+            "--prompt",
+            "count=Count",
+            "--env-source",
+            "count=COUNT_SOURCE",
+            "--required",
+            "count",
+            "--secret",
+            "count",
+        ],
+        "delivery isn't available",
+    );
     let params = sandbox.json(&["params", "demo", "--json"]);
     let count = params["parameters"]
         .as_array()
@@ -509,7 +666,7 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
         .unwrap();
     assert_eq!(count["type"], "int");
     assert_eq!(count["default"], 2);
-    assert_eq!(count["delivery"], "flag");
+    assert_eq!(count["delivery"], "env");
     assert_eq!(count["flag"], "--count");
     assert_eq!(count["help"], "Count help");
     assert_eq!(count["prompt"], "Count");
@@ -592,7 +749,7 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     assert_eq!(python_deps["dependencies"], serde_json::json!([]));
     assert_eq!(python_deps["requires_python"], "");
     sandbox.ok(&["params", "python-deps", "--workdir", "invoke"]);
-    sandbox.code(&["params", "python-deps", "--normalize", "NAME"], 2);
+    sandbox.code(&["params", "python-deps", "--normalize", "NAME"], 1);
 
     let javascript = sandbox.source("deps.js", b"console.log('ok');\n");
     sandbox.ok(&["add", &javascript, "--name", "JavaScript deps"]);
@@ -603,7 +760,7 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
         serde_json::json!([])
     );
 
-    sandbox.ok(&["run", "demo", "--set", "name=value", "--no-input"]);
+    sandbox.ok(&["run", "demo", "--set", "name=5", "--no-input"]);
     sandbox.ok(&["preset", "save", "demo", "current"]);
     sandbox.ok(&["preset", "save", "demo", "last", "--from-last"]);
     sandbox.ok(&["preset", "list", "demo"]);
@@ -629,6 +786,11 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     );
 }
 
+// The editor contract here is POSIX. It configures `true`, `false`, and `sh -c ...` as editors, and
+// it makes a launch fail by emptying PATH. None of that carries to Windows: those programs are not
+// there, and the platform default `notepad` is found outside PATH, so an empty PATH cannot make the
+// launch fail. It opens the real editor instead, which waits for a person and never returns.
+#[cfg(unix)]
 #[test]
 fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
     let sandbox = Sandbox::new();
@@ -686,12 +848,18 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
 
     let managed = sandbox.source("managed.sh", b"NAME=old\necho \"$NAME\"\n");
     sandbox.ok(&["add", &managed, "--name", "Managed"]);
-    sandbox.code(&["params", "managed", "--manage", "missing"], 2);
+    sandbox.warn(
+        &["params", "managed", "--manage", "missing"],
+        "missing isn't a detectable parameter in the current script; skipped.",
+    );
     sandbox.ok(&["params", "managed", "--manage", "NAME"]);
     sandbox.ok(&["params", "managed", "--manage", "NAME"]);
     sandbox.ok(&["params", "managed", "--resync"]);
     sandbox.code(&["params", "reference", "--resync"], 1);
-    sandbox.code(&["params", "managed", "--normalize", "missing"], 2);
+    sandbox.warn(
+        &["params", "managed", "--normalize", "missing"],
+        "missing isn't a plain constant",
+    );
     sandbox.ok(&["params", "managed", "--normalize", "NAME"]);
 
     sandbox.ok(&[
@@ -731,14 +899,21 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
     sandbox.code(&["deps", "js-reference", "--python", ">=3.13"], 2);
 }
 
+// The editor contract here is POSIX. It configures `true`, `false`, and `sh -c ...` as editors, and
+// it makes a launch fail by emptying PATH. None of that carries to Windows: those programs are not
+// there, and the platform default `notepad` is found outside PATH, so an empty PATH cannot make the
+// launch fail. It opens the real editor instead, which waits for a person and never returns.
+#[cfg(unix)]
 #[test]
 fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["config", "editor", "true"]);
-    let untouched = sandbox.ok(&["add", "--edit", "--name", "Empty"]);
+    let (untouched_code, untouched) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Empty"], |_| {});
+    assert_eq!(untouched_code, 0, "{untouched}");
     assert!(
-        String::from_utf8_lossy(&untouched)
-            .contains("Nothing was written, so no script was added.")
+        untouched.contains("Nothing was written, so no script was added."),
+        "{untouched}"
     );
     assert!(
         fs::read_dir(sandbox.data.path().join("drafts"))
@@ -749,11 +924,19 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     );
 
     sandbox.ok(&["config", "editor", "false"]);
-    sandbox.code(&["add", "--edit", "--name", "Failed Editor"], 2);
+    let (failed_code, failed) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Failed Editor"], |_| {});
+    assert_eq!(failed_code, 0, "{failed}");
+    assert!(
+        failed.contains("Nothing was written, so no script was added."),
+        "{failed}"
+    );
+    assert!(!sandbox.data.path().join("scripts/failed-editor").exists());
     // An unbalanced-quote value becomes the program name; the launch failure is a
     // failed operation (exit 1), and the draft is kept like every editor failure.
     sandbox.ok(&["config", "editor", "'"]);
-    sandbox.code(&["add", "--edit", "--name", "Bad Quote"], 1);
+    let (quote_code, quote) = sandbox.editor_pty(&["add", "--edit", "--name", "Bad Quote"], |_| {});
+    assert_eq!(quote_code, 1, "{quote}");
 
     let editor = sandbox.source(
         "draft-editor.sh",
@@ -769,24 +952,24 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
     // Every candidate blank resolves the platform default `vi`; an empty PATH turns
     // the launch into the failed-operation refusal (exit 1) with the config hint.
     let empty_path = TempDir::new().unwrap();
-    sandbox
-        .command()
-        .env_remove("VISUAL")
-        .env("EDITOR", "")
-        .env("PATH", empty_path.path())
-        .args(["add", "--edit", "--name", "Empty command"])
-        .assert()
-        .code(1);
-    sandbox
-        .command()
-        .env("VISUAL", &editor)
-        .env_remove("EDITOR")
-        .args(["add", "--edit", "--name", "Visual draft"])
-        .assert()
-        .success();
+    let (empty_code, empty) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Empty command"], |command| {
+            command.env_remove("VISUAL");
+            command.env("EDITOR", "");
+            command.env("PATH", empty_path.path());
+        });
+    assert_eq!(empty_code, 1, "{empty}");
+    let (visual_code, visual) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Visual draft"], |command| {
+            command.env("VISUAL", &editor);
+            command.env_remove("EDITOR");
+        });
+    assert_eq!(visual_code, 0, "{visual}");
     sandbox.ok(&["config", "editor", &editor]);
     sandbox.ok(&["add", "--cmd", "true", "--name", "Duplicate"]);
-    sandbox.code(&["add", "--edit", "--name", "Duplicate"], 1);
+    let (duplicate_code, duplicate) =
+        sandbox.editor_pty(&["add", "--edit", "--name", "Duplicate"], |_| {});
+    assert_eq!(duplicate_code, 1, "{duplicate}");
     assert!(
         fs::read_dir(sandbox.data.path().join("drafts"))
             .unwrap()
@@ -800,16 +983,14 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
 fn run_pipeline_materializes_javascript_and_preserves_trusted_command_semantics() {
     let sandbox = Sandbox::new();
     let tools = TempDir::new().unwrap();
-    let node = tools.path().join("node");
-    let npm = tools.path().join("npm");
-    fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
-    fs::write(&npm, "#!/bin/sh\n/bin/mkdir -p node_modules\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // The product finds these by bare name on PATH, so each maker names the file the way this host
+    // looks for it. npm makes its directory below the working directory the product chose.
+    let _node = shim::write_shim(tools.path(), "node", shim::Shim::Exit(0));
+    let _npm = shim::write_shim(
+        tools.path(),
+        "npm",
+        shim::Shim::MakeDirectory("node_modules"),
+    );
 
     let javascript = sandbox.source("launch.js", b"console.log('ok');\n");
     sandbox.ok(&["add", &javascript, "--name", "Launch JS"]);
@@ -829,13 +1010,8 @@ fn run_pipeline_materializes_javascript_and_preserves_trusted_command_semantics(
             .join("scripts/launch-js/node_modules")
             .is_dir()
     );
-    let custom_runtime = tools.path().join("custom-js");
-    fs::write(&custom_runtime, "#!/bin/sh\nexit 0\n").unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        fs::set_permissions(&custom_runtime, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // This one is named by path, so the call below uses the path the maker wrote.
+    let custom_runtime = shim::write_shim(tools.path(), "custom-js", shim::Shim::Exit(0));
     let unsupported = sandbox.source("unsupported.js", b"console.log('custom');\n");
     sandbox.ok(&["add", &unsupported, "--name", "Unsupported runtime"]);
     sandbox.ok(&["deps", "unsupported-runtime", "--dep", "chalk"]);
@@ -934,12 +1110,24 @@ fn run_pipeline_materializes_javascript_and_preserves_trusted_command_semantics(
     sandbox.ok(&["run", "unsafe-command", "--set", "value=x", "--no-input"]);
 }
 
-#[test]
-fn first_python_run_announces_private_uv_before_a_local_refused_download() {
+fn dead_proxy() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    format!("http://{address}")
+}
+
+fn bootstrap_fixture() -> (Sandbox, TempDir) {
     let sandbox = Sandbox::new();
     let empty_path = TempDir::new().unwrap();
     let python = sandbox.source("bootstrap.py", b"print('ok')\n");
     sandbox.ok(&["add", &python, "--name", "Bootstrap"]);
+    (sandbox, empty_path)
+}
+
+#[test]
+fn test_consent_non_interactive_auto_yes() {
+    let (sandbox, empty_path) = bootstrap_fixture();
     sandbox.ok(&["config", "mirror.github", "https://127.0.0.1:9"]);
     sandbox.ok(&["config", "mirror", "on"]);
     sandbox
@@ -955,4 +1143,111 @@ fn first_python_run_announces_private_uv_before_a_local_refused_download() {
         .stderr(predicates::prelude::PredicateBooleanExt::not(
             predicates::str::contains("Download uv"),
         ));
+}
+
+#[test]
+fn test_download_url_uses_configured_mirror() {
+    let (sandbox, empty_path) = bootstrap_fixture();
+    sandbox.ok(&["config", "mirror.github", "https://127.0.0.1:9"]);
+    let mirror = FileConfigStore::new(sandbox.config.path())
+        .mirror()
+        .unwrap();
+    assert!(mirror.enabled);
+    assert_eq!(mirror.uv_binary, "https://127.0.0.1:9/astral-sh/uv");
+
+    let output = sandbox
+        .command()
+        .env("PATH", empty_path.path())
+        .env("NO_PROXY", "127.0.0.1,localhost")
+        .env("no_proxy", "127.0.0.1,localhost")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("https_proxy")
+        .env_remove("ALL_PROXY")
+        .env_remove("all_proxy")
+        .args(["run", "bootstrap", "--no-input"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert_eq!(output.status.code(), Some(125), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "https://127.0.0.1:9/astral-sh/uv/{}/uv-",
+            skit_runtime::UV_VERSION
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn test_download_url_defaults_to_github_without_mirror() {
+    let (sandbox, empty_path) = bootstrap_fixture();
+    assert_eq!(
+        FileConfigStore::new(sandbox.config.path())
+            .mirror()
+            .unwrap(),
+        Default::default()
+    );
+    let proxy = dead_proxy();
+    let output = sandbox
+        .command()
+        .env("PATH", empty_path.path())
+        .env("HTTPS_PROXY", &proxy)
+        .env("https_proxy", &proxy)
+        .env("ALL_PROXY", &proxy)
+        .env("all_proxy", &proxy)
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .args(["run", "bootstrap", "--no-input"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert_eq!(output.status.code(), Some(125), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "{OFFICIAL_UV_BASE}/{}/uv-",
+            skit_runtime::UV_VERSION
+        )),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn test_download_url_github_when_uv_binary_blank() {
+    let (sandbox, empty_path) = bootstrap_fixture();
+    fs::write(
+        sandbox.config.path().join("config.toml"),
+        "[mirror]\nenabled = true\nuv_binary = \"\"\n",
+    )
+    .unwrap();
+    let mirror = FileConfigStore::new(sandbox.config.path())
+        .mirror()
+        .unwrap();
+    assert!(mirror.enabled);
+    assert!(mirror.uv_binary.is_empty());
+
+    let proxy = dead_proxy();
+    let output = sandbox
+        .command()
+        .env("PATH", empty_path.path())
+        .env("HTTPS_PROXY", &proxy)
+        .env("https_proxy", &proxy)
+        .env("ALL_PROXY", &proxy)
+        .env("all_proxy", &proxy)
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .args(["run", "bootstrap", "--no-input"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert_eq!(output.status.code(), Some(125), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "{OFFICIAL_UV_BASE}/{}/uv-",
+            skit_runtime::UV_VERSION
+        )),
+        "{stderr}"
+    );
 }

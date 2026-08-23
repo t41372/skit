@@ -1019,10 +1019,10 @@ fn runner_row_label(row: &RunnerRow, locale: Locale) -> String {
 fn runner_reason(code: &str, locale: Locale) -> String {
     let message = match code {
         "prompt-section-not-table" => {
-            "the prompt value isn't a table; repair it before runner management"
+            "the prompt value is not a table; repair it before runner management"
         }
         "runners-not-list" => {
-            "the prompt.runners value isn't a list; repair it before runner management"
+            "the prompt.runners value is not a list; repair it before runner management"
         }
         "empty" => "Type the agent's command, e.g. mycli run {{prompt}}",
         "prompt-slot-count" => {
@@ -1086,7 +1086,7 @@ fn list_style(accent: Color) -> ListPickerStyle {
     }
 }
 
-fn health_footer_items(locale: Locale) -> Vec<ActionFooterItem<HealthAction>> {
+pub(crate) fn health_footer_items(locale: Locale) -> Vec<ActionFooterItem<HealthAction>> {
     vec![
         ActionFooterItem::new("Enter", text(locale, "Jump to entry"), HealthAction::Jump),
         ActionFooterItem::new(
@@ -1098,7 +1098,9 @@ fn health_footer_items(locale: Locale) -> Vec<ActionFooterItem<HealthAction>> {
     ]
 }
 
-fn runner_editor_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerEditorAction>> {
+pub(crate) fn runner_editor_footer_items(
+    locale: Locale,
+) -> Vec<ActionFooterItem<RunnerEditorAction>> {
     vec![
         ActionFooterItem::new(
             "Tab/↓",
@@ -1115,7 +1117,9 @@ fn runner_editor_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerEdit
     ]
 }
 
-fn runner_manager_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerManagerAction>> {
+pub(crate) fn runner_manager_footer_items(
+    locale: Locale,
+) -> Vec<ActionFooterItem<RunnerManagerAction>> {
     vec![
         ActionFooterItem::new(
             "Ctrl+N",
@@ -1126,7 +1130,7 @@ fn runner_manager_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerMan
     ]
 }
 
-fn runner_action_footer_items(
+pub(crate) fn runner_action_footer_items(
     locale: Locale,
     editable: bool,
 ) -> Vec<ActionFooterItem<RunnerManagerAction>> {
@@ -1151,7 +1155,9 @@ fn runner_action_footer_items(
     items
 }
 
-fn runner_removal_footer_items(locale: Locale) -> Vec<ActionFooterItem<RunnerManagerAction>> {
+pub(crate) fn runner_removal_footer_items(
+    locale: Locale,
+) -> Vec<ActionFooterItem<RunnerManagerAction>> {
     vec![
         ActionFooterItem::new(
             "y",
@@ -1172,17 +1178,39 @@ mod tests {
     use ratatui_core::{backend::TestBackend, style::Color, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::{KeyEvent, KeyModifiers, MouseButton, MouseEvent};
     use skit_ui::{
-        HealthIssue, HealthIssueKind, HealthSnapshot, HealthView, MirrorHealth, RunnerRow,
-        RunnerRowIdentity, UvHealth,
+        HealthIssue, HealthIssueKind, HealthRebuildOutcome, HealthSnapshot, HealthView,
+        MirrorHealth, RunnerRow, RunnerRowIdentity, UvHealth,
     };
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
+    fn advertised_key(hint: &str) -> Event {
+        let (code, modifiers) = [
+            ("Enter", KeyCode::Enter, KeyModifiers::NONE),
+            ("Esc", KeyCode::Esc, KeyModifiers::NONE),
+            ("Tab/↓", KeyCode::Tab, KeyModifiers::NONE),
+            ("Shift+Tab/↑", KeyCode::BackTab, KeyModifiers::SHIFT),
+            ("Ctrl+N", KeyCode::Char('n'), KeyModifiers::CONTROL),
+            ("Ctrl+R", KeyCode::Char('r'), KeyModifiers::CONTROL),
+            ("e", KeyCode::Char('e'), KeyModifiers::NONE),
+            ("d", KeyCode::Char('d'), KeyModifiers::NONE),
+            ("y", KeyCode::Char('y'), KeyModifiers::NONE),
+        ]
+        .into_iter()
+        .find_map(|(candidate, code, modifiers)| (candidate == hint).then_some((code, modifiers)))
+        .unwrap();
+        Event::Key(KeyEvent::new(code, modifiers))
+    }
+
     fn mouse(column: u16, row: u16) -> Event {
+        mouse_event(MouseEventKind::Down(MouseButton::Left), column, row)
+    }
+
+    fn mouse_event(kind: MouseEventKind, column: u16, row: u16) -> Event {
         Event::Mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
+            kind,
             column,
             row,
             modifiers: KeyModifiers::NONE,
@@ -1190,17 +1218,16 @@ mod tests {
     }
 
     fn text_position(buffer: &ratatui_core::buffer::Buffer, needle: &str) -> (u16, u16) {
-        for y in 0..buffer.area.height {
-            for x in 0..buffer.area.width {
-                let tail = (x..buffer.area.width)
-                    .map(|tail_x| buffer[(tail_x, y)].symbol())
-                    .collect::<String>();
-                if tail.starts_with(needle) {
-                    return (x, y);
-                }
-            }
-        }
-        panic!("text is not visible: {needle:?}");
+        (0..buffer.area.height)
+            .find_map(|y| {
+                (0..buffer.area.width).find_map(|x| {
+                    let tail = (x..buffer.area.width)
+                        .map(|tail_x| buffer[(tail_x, y)].symbol())
+                        .collect::<String>();
+                    tail.starts_with(needle).then_some((x, y))
+                })
+            })
+            .unwrap()
     }
 
     fn lines(buffer: &ratatui_core::buffer::Buffer) -> String {
@@ -1257,6 +1284,107 @@ mod tests {
                 snapshot_token: format!("row-{index}"),
             }],
             pinned_count,
+        }
+    }
+
+    #[test]
+    fn every_management_footer_key_emits_its_typed_action_at_every_size_tier() {
+        for (width, height) in [(120, 30), (46, 12), (24, 6)] {
+            let health_view = health();
+            let mut health_session = HealthScreenSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| {
+                    health_session.render(frame, frame.area(), &health_view, Locale::En);
+                })
+                .unwrap();
+            for item in health_footer_items(Locale::En) {
+                let hint = item.advertised_key();
+                assert_eq!(
+                    health_session.handle_event(advertised_key(hint), &health_view),
+                    HealthEventHandling::Action(item.typed_action().clone()),
+                    "Health key {hint} at {width}x{height}",
+                );
+            }
+
+            let editor_view = RunnerEditorView::new();
+            let mut editor_session = RunnerEditorSession::default();
+            terminal
+                .draw(|frame| {
+                    editor_session.render(frame, frame.area(), &editor_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_editor_footer_items(Locale::En) {
+                let hint = item.advertised_key();
+                assert_eq!(
+                    editor_session.handle_event(advertised_key(hint), &editor_view),
+                    RunnerEditorEventHandling::Action(item.typed_action().clone()),
+                    "runner editor key {hint} at {width}x{height}",
+                );
+            }
+
+            let manager_view = RunnerManagerView::new(vec![row(0, None, 3)]);
+            let mut manager_session = RunnerManagerSession::default();
+            terminal
+                .draw(|frame| {
+                    manager_session.render(frame, frame.area(), &manager_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_manager_footer_items(Locale::En) {
+                let hint = item.advertised_key();
+                assert_eq!(
+                    manager_session.handle_event(advertised_key(hint), &manager_view,),
+                    RunnerManagerEventHandling::Action(item.typed_action().clone()),
+                    "runner manager key {hint} at {width}x{height}",
+                );
+            }
+
+            let mut action_view = RunnerManagerView::new(vec![row(0, None, 3)]);
+            action_view.reduce(RunnerManagerAction::ActivateSelected);
+            terminal
+                .draw(|frame| {
+                    manager_session.render(frame, frame.area(), &action_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_action_footer_items(Locale::En, true) {
+                let hint = item.advertised_key();
+                assert_eq!(
+                    manager_session.handle_event(advertised_key(hint), &action_view,),
+                    RunnerManagerEventHandling::Action(item.typed_action().clone()),
+                    "runner action key {hint} at {width}x{height}",
+                );
+            }
+
+            action_view.reduce(RunnerManagerAction::RemoveSelected);
+            terminal
+                .draw(|frame| {
+                    manager_session.render(frame, frame.area(), &action_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_removal_footer_items(Locale::En) {
+                let hint = item.advertised_key();
+                assert_eq!(
+                    manager_session.handle_event(advertised_key(hint), &action_view,),
+                    RunnerManagerEventHandling::Action(item.typed_action().clone()),
+                    "runner removal key {hint} at {width}x{height}",
+                );
+            }
+
+            let mut locked_view = RunnerManagerView::new(vec![row(0, Some("broken"), 0)]);
+            locked_view.reduce(RunnerManagerAction::ActivateSelected);
+            terminal
+                .draw(|frame| {
+                    manager_session.render(frame, frame.area(), &locked_view, Locale::En);
+                })
+                .unwrap();
+            for item in runner_action_footer_items(Locale::En, false) {
+                let hint = item.advertised_key();
+                assert_eq!(
+                    manager_session.handle_event(advertised_key(hint), &locked_view,),
+                    RunnerManagerEventHandling::Action(item.typed_action().clone()),
+                    "locked runner action key {hint} at {width}x{height}",
+                );
+            }
         }
     }
 
@@ -1569,5 +1697,522 @@ mod tests {
         terminal
             .draw(|frame| manager_session.render(frame, frame.area(), &manager, Locale::En))
             .unwrap();
+    }
+
+    #[test]
+    fn health_variants_and_full_event_surface_are_rendered_and_dispatched() {
+        for (uv, mirror) in [
+            (UvHealth::Found("/usr/bin/uv".to_owned()), MirrorHealth::Off),
+            (
+                UvHealth::NotRequired,
+                MirrorHealth::On {
+                    axes: "pypi=custom".to_owned(),
+                },
+            ),
+        ] {
+            let mut snapshot = health().snapshot().clone();
+            snapshot.uv = uv;
+            snapshot.mirror = mirror;
+            snapshot.entry_count = 1;
+            snapshot.issues = vec![
+                HealthIssue {
+                    slug: "drift".to_owned(),
+                    name: "Drift".to_owned(),
+                    kind: HealthIssueKind::DriftedForm,
+                },
+                HealthIssue {
+                    slug: "blocked".to_owned(),
+                    name: "Blocked".to_owned(),
+                    kind: HealthIssueKind::LaunchBlocked {
+                        reason: "runner missing".to_owned(),
+                    },
+                },
+            ];
+            let mut view = HealthView::new(snapshot.clone());
+            view.reduce(HealthAction::Rebuilt {
+                snapshot: Box::new(snapshot),
+                outcome: HealthRebuildOutcome {
+                    entry_count: 1,
+                    problems: vec!["one rebuild warning".to_owned()],
+                },
+            });
+            let mut session = HealthScreenSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(66, 14)).unwrap();
+            terminal
+                .draw(|frame| session.render(frame, frame.area(), &view, Locale::ZhCn))
+                .unwrap();
+            let screen = lines(terminal.backend().buffer());
+            assert!(
+                screen.contains("索 引") || screen.contains("Index"),
+                "{screen}"
+            );
+
+            for (code, expected) in [
+                (KeyCode::Esc, HealthAction::Back),
+                (KeyCode::Up, HealthAction::Previous),
+                (
+                    KeyCode::PageUp,
+                    HealthAction::PagePrevious(session.issue_height.max(1)),
+                ),
+                (
+                    KeyCode::PageDown,
+                    HealthAction::PageNext(session.issue_height.max(1)),
+                ),
+                (KeyCode::Home, HealthAction::Home),
+                (KeyCode::End, HealthAction::End),
+            ] {
+                assert_eq!(
+                    session.handle_event(key(code), &view),
+                    HealthEventHandling::Action(expected)
+                );
+            }
+            let area = session.issue_areas[0].1;
+            assert_eq!(
+                session.handle_event(mouse_event(MouseEventKind::ScrollUp, area.x, area.y), &view),
+                HealthEventHandling::Action(HealthAction::Previous)
+            );
+            assert_eq!(
+                session.handle_event(
+                    mouse_event(MouseEventKind::ScrollDown, area.x, area.y),
+                    &view,
+                ),
+                HealthEventHandling::Action(HealthAction::Next)
+            );
+            for event in [
+                mouse_event(MouseEventKind::Moved, 0, 0),
+                mouse_event(MouseEventKind::Up(MouseButton::Left), 0, 0),
+                Event::FocusGained,
+                Event::FocusLost,
+                Event::Paste("ignored".to_owned()),
+                Event::Resize(10, 10),
+            ] {
+                assert_eq!(
+                    session.handle_event(event, &view),
+                    HealthEventHandling::Ignored
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runner_editor_renders_every_mode_error_and_event_class() {
+        let mut views = vec![
+            RunnerEditorView::new(),
+            RunnerEditorView::repair(&row(1, Some("empty"), 0)),
+        ];
+        let mut host_error = RunnerEditorView::new();
+        host_error.reduce(RunnerEditorAction::MutationFailed(
+            "host refused".to_owned(),
+        ));
+        views.push(host_error);
+        for view in &mut views {
+            if view.host_error().is_none() {
+                view.reduce(RunnerEditorAction::Submit);
+            }
+            let mut session = RunnerEditorSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
+            terminal
+                .draw(|frame| session.render(frame, frame.area(), view, Locale::ZhTw))
+                .unwrap();
+            let screen = lines(terminal.backend().buffer());
+            assert!(screen.contains("{{prompt}}"), "{screen}");
+
+            assert!(matches!(
+                session.handle_event(Event::Paste("xy".to_owned()), view),
+                RunnerEditorEventHandling::Action(_)
+            ));
+            assert_eq!(
+                session.handle_event(mouse_event(MouseEventKind::Moved, 0, 0), view),
+                RunnerEditorEventHandling::Ignored
+            );
+            assert_eq!(
+                session.handle_event(
+                    mouse_event(MouseEventKind::Up(MouseButton::Left), 0, 0),
+                    view
+                ),
+                RunnerEditorEventHandling::Ignored
+            );
+            assert_eq!(
+                session.handle_event(Event::Resize(1, 1), view),
+                RunnerEditorEventHandling::Ignored
+            );
+            assert_eq!(
+                session.handle_event(Event::FocusGained, view),
+                RunnerEditorEventHandling::Ignored
+            );
+            assert_eq!(
+                session.handle_event(mouse_event(MouseEventKind::ScrollDown, 0, 0), view),
+                RunnerEditorEventHandling::Ignored
+            );
+        }
+    }
+
+    #[test]
+    fn runner_manager_dispatches_list_action_removal_and_pointer_reverse_matrix() {
+        let mut malformed = row(1, Some("row-not-table"), 0);
+        malformed.argv = None;
+        let mut view = RunnerManagerView::new(vec![row(0, None, 0), malformed]);
+        let mut session = RunnerManagerSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(52, 12)).unwrap();
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+            .unwrap();
+
+        for (code, expected) in [
+            (KeyCode::Esc, RunnerManagerAction::Back),
+            (KeyCode::Enter, RunnerManagerAction::ActivateSelected),
+            (KeyCode::Up, RunnerManagerAction::Previous),
+            (KeyCode::Down, RunnerManagerAction::Next),
+            (
+                KeyCode::PageUp,
+                RunnerManagerAction::PagePrevious(session.row_height.max(1)),
+            ),
+            (
+                KeyCode::PageDown,
+                RunnerManagerAction::PageNext(session.row_height.max(1)),
+            ),
+            (KeyCode::Home, RunnerManagerAction::Home),
+            (KeyCode::End, RunnerManagerAction::End),
+        ] {
+            assert_eq!(
+                session.handle_event(key(code), &view),
+                RunnerManagerEventHandling::Action(expected)
+            );
+        }
+        let row_area = session.row_areas[0].1;
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::ScrollUp, row_area.x, row_area.y),
+                &view,
+            ),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::Previous)
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::ScrollDown, row_area.x, row_area.y),
+                &view,
+            ),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::Next)
+        );
+        for event in [
+            mouse_event(MouseEventKind::Moved, 0, 0),
+            mouse_event(MouseEventKind::Up(MouseButton::Left), 0, 0),
+            Event::FocusLost,
+            Event::Paste("ignored".to_owned()),
+            Event::Resize(1, 1),
+        ] {
+            assert_eq!(
+                session.handle_event(event, &view),
+                RunnerManagerEventHandling::Ignored
+            );
+        }
+
+        view.reduce(RunnerManagerAction::ActivateRow(1));
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+            .unwrap();
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('e')), &view),
+            RunnerManagerEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('d')), &view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::RemoveSelected)
+        );
+        view.reduce(RunnerManagerAction::RemoveSelected);
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+            .unwrap();
+        for (code, expected) in [
+            (KeyCode::Char('n'), RunnerManagerAction::CancelRemove),
+            (KeyCode::Esc, RunnerManagerAction::CancelRemove),
+            (KeyCode::Char('y'), RunnerManagerAction::ConfirmRemove),
+        ] {
+            assert_eq!(
+                session.handle_event(key(code), &view),
+                RunnerManagerEventHandling::Action(expected)
+            );
+        }
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('x')), &view),
+            RunnerManagerEventHandling::Ignored
+        );
+    }
+
+    #[test]
+    fn remaining_management_variants_keep_real_render_and_event_ownership() {
+        let mut snapshot = health().snapshot().clone();
+        snapshot.entry_count = 2;
+        snapshot.issues.clear();
+        snapshot.invalid_runner_rows.clear();
+        snapshot.diagnostics.clear();
+        let mut health_view = HealthView::new(snapshot.clone());
+        health_view.reduce(HealthAction::Rebuilt {
+            snapshot: Box::new(snapshot),
+            outcome: HealthRebuildOutcome {
+                entry_count: 2,
+                problems: vec!["first".to_owned(), "second".to_owned()],
+            },
+        });
+        let mut health_session = HealthScreenSession::default();
+        health_session.summary_scroll.set_scroll_offset(usize::MAX);
+        let mut health_terminal = Terminal::new(TestBackend::new(26, 7)).unwrap();
+        health_terminal
+            .draw(|frame| {
+                health_session.render(frame, frame.area(), &health_view, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(health_session.summary_scroll.scroll_offset(), 0);
+        assert_eq!(
+            health_session.handle_event(
+                mouse_event(MouseEventKind::ScrollDown, u16::MAX, u16::MAX),
+                &health_view,
+            ),
+            HealthEventHandling::Ignored
+        );
+        assert_eq!(
+            health_session.handle_event(key(KeyCode::Char('x')), &health_view),
+            HealthEventHandling::Ignored
+        );
+        assert_eq!(
+            health_session.handle_event(mouse(0, 0), &health_view),
+            HealthEventHandling::Ignored
+        );
+        let _ = health_session
+            .handle_event(mouse_event(MouseEventKind::ScrollDown, 2, 5), &health_view);
+
+        let error_inputs = [
+            ("name", "\"", RunnerEditorError::UnbalancedQuotes),
+            ("name", "", RunnerEditorError::EmptyCommand),
+            ("name", "agent", RunnerEditorError::PromptSlotCount),
+            ("name", "{{prompt}}", RunnerEditorError::PromptInProgram),
+            (
+                "name",
+                "agent {{other}} {{prompt}}",
+                RunnerEditorError::UnsupportedHole,
+            ),
+        ];
+        for (name, command, expected) in error_inputs {
+            let mut view = RunnerEditorView::new();
+            view.reduce(RunnerEditorAction::SetName(name.to_owned()));
+            view.reduce(RunnerEditorAction::SetCommand(command.to_owned()));
+            view.reduce(RunnerEditorAction::Submit);
+            assert_eq!(view.error(), Some(&expected));
+            let mut session = RunnerEditorSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(38, 14)).unwrap();
+            terminal
+                .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+                .unwrap();
+            assert_eq!(
+                session.handle_event(key(KeyCode::Esc), &view),
+                RunnerEditorEventHandling::Action(RunnerEditorAction::Cancel)
+            );
+            assert_eq!(
+                session.handle_event(key(KeyCode::Enter), &view),
+                RunnerEditorEventHandling::Action(RunnerEditorAction::Submit)
+            );
+            assert_eq!(
+                session.handle_event(key(KeyCode::Null), &view),
+                RunnerEditorEventHandling::Ignored
+            );
+            let _ = session.handle_event(mouse_event(MouseEventKind::ScrollDown, 2, 12), &view);
+        }
+
+        let reason_codes = [
+            "prompt-section-not-table",
+            "runners-not-list",
+            "prompt-in-binary",
+            "stray-hole",
+            "name",
+            "argv-type",
+            "duplicate",
+            "future-code",
+        ];
+        let rows = reason_codes
+            .iter()
+            .enumerate()
+            .map(|(index, reason)| row(index, Some(reason), 0))
+            .collect::<Vec<_>>();
+        let mut manager_view = RunnerManagerView::new(rows);
+        manager_view.reduce(RunnerManagerAction::MutationSucceeded {
+            rows: manager_view.rows().to_vec(),
+            selected_name: None,
+            message: "saved".to_owned(),
+        });
+        let mut manager_session = RunnerManagerSession::default();
+        let mut manager_terminal = Terminal::new(TestBackend::new(84, 22)).unwrap();
+        manager_terminal
+            .draw(|frame| {
+                manager_session.render(frame, frame.area(), &manager_view, Locale::ZhCn);
+            })
+            .unwrap();
+        assert!(lines(manager_terminal.backend().buffer()).contains("saved"));
+        assert_eq!(
+            manager_session.handle_event(key(KeyCode::Char('x')), &manager_view),
+            RunnerManagerEventHandling::Ignored
+        );
+        assert_eq!(
+            manager_session.handle_event(mouse(0, 0), &manager_view),
+            RunnerManagerEventHandling::Ignored
+        );
+        assert_eq!(
+            manager_session
+                .handle_event(mouse_event(MouseEventKind::ScrollDown, 0, 0), &manager_view,),
+            RunnerManagerEventHandling::Ignored
+        );
+
+        manager_view.reduce(RunnerManagerAction::ActivateRow(0));
+        assert_eq!(
+            manager_session.handle_event(key(KeyCode::Char('e')), &manager_view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::EditSelected)
+        );
+        assert_eq!(
+            manager_session.handle_event(key(KeyCode::Esc), &manager_view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::CloseActions)
+        );
+        assert_eq!(
+            manager_session.handle_event(Event::FocusLost, &manager_view),
+            RunnerManagerEventHandling::Ignored
+        );
+
+        let narrow_view = RunnerManagerView::new(vec![row(0, None, 0)]);
+        let mut narrow_terminal = Terminal::new(TestBackend::new(18, 7)).unwrap();
+        narrow_terminal
+            .draw(|frame| {
+                manager_session.render(frame, frame.area(), &narrow_view, Locale::En);
+            })
+            .unwrap();
+        let footer_scroll = manager_session
+            .handle_event(mouse_event(MouseEventKind::ScrollDown, 2, 5), &narrow_view);
+        assert!(matches!(
+            footer_scroll,
+            RunnerManagerEventHandling::Consumed | RunnerManagerEventHandling::Ignored
+        ));
+
+        manager_view.reduce(RunnerManagerAction::New);
+        manager_terminal
+            .draw(|frame| {
+                manager_session.render(frame, frame.area(), &manager_view, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            manager_session.handle_event(key(KeyCode::Esc), &manager_view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::CancelEditor)
+        );
+        assert!(matches!(
+            manager_session.handle_event(key(KeyCode::Char('a')), &manager_view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::Editor(_))
+        ));
+    }
+
+    #[test]
+    fn management_scroll_clamp_editor_fields_and_removal_shapes_are_positive() {
+        let mut crowded = health().snapshot().clone();
+        crowded.issues.clear();
+        crowded.diagnostics = (0..20).map(|index| format!("line {index}")).collect();
+        let crowded_view = HealthView::new(crowded);
+        let mut health_session = HealthScreenSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(42, 8)).unwrap();
+        terminal
+            .draw(|frame| health_session.render(frame, frame.area(), &crowded_view, Locale::En))
+            .unwrap();
+        assert_eq!(
+            health_session.handle_event(key(KeyCode::End), &crowded_view),
+            HealthEventHandling::Consumed
+        );
+        assert!(health_session.summary_scroll.scroll_offset() > 0);
+        let summary = health_session.summary_area;
+        assert_eq!(
+            health_session.handle_event(
+                mouse_event(MouseEventKind::ScrollUp, summary.x, summary.y),
+                &crowded_view,
+            ),
+            HealthEventHandling::Consumed
+        );
+        let sparse_view = HealthView::new(HealthSnapshot {
+            uv: UvHealth::NotRequired,
+            entry_count: 0,
+            issues: Vec::new(),
+            invalid_runner_rows: Vec::new(),
+            mirror: MirrorHealth::Off,
+            library_path: "library".to_owned(),
+            library_size: "0 B".to_owned(),
+            diagnostics: Vec::new(),
+        });
+        terminal
+            .draw(|frame| health_session.render(frame, frame.area(), &sparse_view, Locale::En))
+            .unwrap();
+        assert_eq!(health_session.summary_scroll.scroll_offset(), 0);
+
+        let mut editor_view = RunnerEditorView::new();
+        editor_view.reduce(RunnerEditorAction::SetName("a".to_owned()));
+        let mut editor_session = RunnerEditorSession::default();
+        let mut editor_terminal = Terminal::new(TestBackend::new(32, 14)).unwrap();
+        editor_terminal
+            .draw(|frame| editor_session.render(frame, frame.area(), &editor_view, Locale::En))
+            .unwrap();
+        assert_eq!(
+            editor_session.handle_event(key(KeyCode::Left), &editor_view),
+            RunnerEditorEventHandling::Consumed
+        );
+        let name = text_position(editor_terminal.backend().buffer(), "Name, e.g. aider");
+        assert_eq!(
+            editor_session.handle_event(mouse(name.0, name.1), &editor_view),
+            RunnerEditorEventHandling::Action(RunnerEditorAction::Focus(RunnerEditorField::Name))
+        );
+        editor_view.reduce(RunnerEditorAction::Focus(RunnerEditorField::Command));
+        assert!(matches!(
+            editor_session.handle_event(Event::Paste("cmd".to_owned()), &editor_view),
+            RunnerEditorEventHandling::Action(RunnerEditorAction::SetCommand(_))
+        ));
+
+        let mut container = row(0, Some("runners-not-list"), 0);
+        container.identity.index = None;
+        container.name = None;
+        container.argv = None;
+        let mut manager_view = RunnerManagerView::new(vec![container]);
+        manager_view.reduce(RunnerManagerAction::ActivateSelected);
+        manager_view.reduce(RunnerManagerAction::RemoveSelected);
+        let mut manager_session = RunnerManagerSession::default();
+        let mut manager_terminal = Terminal::new(TestBackend::new(50, 12)).unwrap();
+        manager_terminal
+            .draw(|frame| manager_session.render(frame, frame.area(), &manager_view, Locale::En))
+            .unwrap();
+        assert!(
+            lines(manager_terminal.backend().buffer())
+                .contains("malformed prompt runner container")
+        );
+        assert_eq!(
+            manager_session.handle_event(Event::FocusLost, &manager_view),
+            RunnerManagerEventHandling::Ignored
+        );
+
+        let mut pinned = RunnerManagerView::new(vec![row(0, None, 1)]);
+        pinned.reduce(RunnerManagerAction::ActivateSelected);
+        pinned.reduce(RunnerManagerAction::RemoveSelected);
+        manager_terminal
+            .draw(|frame| manager_session.render(frame, frame.area(), &pinned, Locale::En))
+            .unwrap();
+        assert!(lines(manager_terminal.backend().buffer()).contains("1 prompt pins"));
+
+        let mut editor_manager = RunnerManagerView::new(Vec::new());
+        editor_manager.reduce(RunnerManagerAction::New);
+        editor_manager.reduce(RunnerManagerAction::Editor(RunnerEditorAction::SetName(
+            "a".to_owned(),
+        )));
+        manager_terminal
+            .draw(|frame| {
+                manager_session.render(frame, frame.area(), &editor_manager, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            manager_session.handle_event(key(KeyCode::Left), &editor_manager),
+            RunnerManagerEventHandling::Consumed
+        );
+        assert_eq!(
+            manager_session
+                .handle_event(mouse_event(MouseEventKind::Moved, 0, 0), &editor_manager,),
+            RunnerManagerEventHandling::Ignored
+        );
     }
 }

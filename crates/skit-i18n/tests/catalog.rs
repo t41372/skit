@@ -1,7 +1,14 @@
+use std::fmt::Display;
+
 use skit_i18n::{
-    Locale, available_locale_tags, catalog, detect_locale, format_text, kind_label, render,
-    requested_locale, text,
+    Locale, available_locale_tags, catalog, detect_locale, format_named_text, format_text,
+    kind_label, render, requested_locale, text,
 };
+
+fn assert_zh(template: &str, args: &[&dyn Display], simplified: &str, traditional: &str) {
+    assert_eq!(format_text(Locale::ZhCn, template, args), simplified);
+    assert_eq!(format_text(Locale::ZhTw, template, args), traditional);
+}
 
 #[test]
 fn locale_detection_accepts_existing_and_standard_spellings() {
@@ -50,6 +57,10 @@ fn pseudo_locale_stretches_source_text_without_touching_inserted_values() {
     assert_eq!(
         text(Locale::Pseudo, "%(file)s is available"),
         "⟦%(file)s îs àvàîlàblé~~⟧"
+    );
+    assert_eq!(
+        text(Locale::Pseudo, "%s has %d item(s) at 100%%"),
+        "⟦%s hàs %d îtém(s) àt 100%%~~⟧"
     );
     assert_eq!(
         render(Locale::Pseudo, "Usage: skit --help"),
@@ -128,6 +139,131 @@ fn formatted_messages_translate_the_template_without_translating_user_values() {
 }
 
 #[test]
+fn named_message_values_reorder_without_rewriting_user_text() {
+    let template = "Normalized {} in {}: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).";
+    let message = skit_i18n::Message::new(template)
+        .named("names", "WIDTH")
+        .named("name", "Tool");
+    assert_eq!(
+        message.localize(Locale::En),
+        "Normalized WIDTH in Tool: delivered as environment variables from now on (no temporary copy, and $0 stays your real file)."
+    );
+    assert_eq!(
+        message.localize(Locale::ZhCn),
+        "已规范化 Tool 中的 WIDTH:今后用环境变量传值(不再写临时副本,$0 也仍指向你的真实文件)。"
+    );
+    assert_eq!(
+        message.localize(Locale::ZhTw),
+        "已正規化 Tool 中的 WIDTH:今後用環境變數傳值(不再寫臨時副本,$0 也仍指向你的真實檔案)。"
+    );
+
+    let literal_holes = skit_i18n::Message::new(template)
+        .named("names", "WIDTH {name}")
+        .named("name", "Tool {names}");
+    assert!(
+        literal_holes
+            .localize(Locale::ZhTw)
+            .starts_with("已正規化 Tool {names} 中的 WIDTH {name}:")
+    );
+}
+
+#[test]
+fn named_message_formatting_preserves_unknown_and_malformed_holes() {
+    assert_eq!(
+        format_named_text(
+            Locale::En,
+            "{} {}",
+            &[
+                ("first", &"one" as &dyn Display),
+                ("second", &"two" as &dyn Display),
+            ],
+        ),
+        "one two"
+    );
+    assert_eq!(
+        format_named_text(
+            Locale::En,
+            "{known} {future} tail",
+            &[("known", &"value" as &dyn Display)],
+        ),
+        "value {future} tail"
+    );
+    assert_eq!(
+        format_named_text(
+            Locale::En,
+            "{known} tail {",
+            &[("known", &"value" as &dyn Display)],
+        ),
+        "value tail {"
+    );
+}
+
+#[test]
+fn owned_draft_cleanup_warning_is_complete_in_every_locale() {
+    let source = "The kept draft changed before cleanup. skit kept it at {}.";
+    let path = "/data/drafts/skit-new-task.py";
+    assert_eq!(
+        format_text(Locale::En, source, &[&path]),
+        format!("The kept draft changed before cleanup. skit kept it at {path}.")
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, source, &[&path]),
+        format!("保留的草稿在清理前发生了更改。skit 将它保留在 {path}。")
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, source, &[&path]),
+        format!("保留的草稿在清理前發生了變更。skit 將它保留在 {path}。")
+    );
+}
+
+#[test]
+fn index_rebuild_receipt_matches_the_oracle_in_every_locale() {
+    // The oracle carries one ngettext pair (cli.py:5164-5169) and one Chinese plural form, so both
+    // English keys share the Chinese row. The colon is half-width in the shipped .po rows.
+    for (source, count) in [
+        ("Index rebuilt: {} entry", 1),
+        ("Index rebuilt: {} entries", 4),
+    ] {
+        assert_eq!(
+            format_text(Locale::ZhCn, source, &[&count]),
+            format!("索引已重建:{count} 条")
+        );
+        assert_eq!(
+            format_text(Locale::ZhTw, source, &[&count]),
+            format!("索引已重建:{count} 筆")
+        );
+    }
+    assert_eq!(
+        format_text(Locale::En, "Index rebuilt: {} entry", &[&1]),
+        "Index rebuilt: 1 entry"
+    );
+    assert_eq!(
+        format_text(Locale::En, "Index rebuilt: {} entries", &[&4]),
+        "Index rebuilt: 4 entries"
+    );
+}
+
+#[test]
+fn owned_draft_quarantine_restore_error_is_complete_in_every_locale() {
+    let source = "could not restore quarantined draft {} to {}: {}";
+    let quarantine = "/data/drafts/.skit-quarantine-1";
+    let original = "/data/drafts/skit-new-task.py";
+    let reason = "already exists";
+    assert_eq!(
+        format_text(Locale::En, source, &[&quarantine, &original, &reason]),
+        format!("could not restore quarantined draft {quarantine} to {original}: {reason}")
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, source, &[&quarantine, &original, &reason]),
+        format!("无法将隔离的草稿 {quarantine} 恢复到 {original}：{reason}")
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, source, &[&quarantine, &original, &reason]),
+        format!("無法將隔離的草稿 {quarantine} 還原到 {original}：{reason}")
+    );
+}
+
+#[test]
 fn secret_purge_notice_matches_the_oracle_in_every_locale() {
     let template = "Removed previously stored plaintext value(s) for now-secret parameter(s): {}";
     assert_eq!(
@@ -145,6 +281,251 @@ fn secret_purge_notice_matches_the_oracle_in_every_locale() {
 }
 
 #[test]
+fn managed_parameter_receipt_matches_the_oracle_in_every_locale() {
+    let template = "Updated {}. Managed parameters: {}";
+    let name = "[blue]a[/blue]";
+    assert_eq!(
+        format_text(Locale::En, template, &[&name, &"CITY, RETRIES"]),
+        "Updated [blue]a[/blue]. Managed parameters: CITY, RETRIES"
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&name, &"CITY, RETRIES"]),
+        "已更新 [blue]a[/blue]。受管理的参数:CITY, RETRIES"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&name, &"—"]),
+        "已更新 [blue]a[/blue]。受管理的參數:—"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&name, &"CITY"]);
+    assert!(pseudo.contains(name), "{pseudo}");
+}
+
+#[test]
+fn declared_parameter_receipt_matches_the_oracle_in_every_locale() {
+    let template = "Updated {}. Declared parameters: {}";
+    assert_eq!(
+        format_text(Locale::En, template, &[&"prog", &"width"]),
+        "Updated prog. Declared parameters: width"
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&"prog", &"a, b"]),
+        "已更新 prog。已声明的参数:a, b"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&"prog", &"—"]),
+        "已更新 prog。已宣告的參數:—"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&"prog", &"width"]);
+    assert!(pseudo.contains("prog"), "{pseudo}");
+    assert!(pseudo.contains("width"), "{pseudo}");
+}
+
+#[test]
+fn managed_parameter_flip_note_matches_the_oracle_in_every_locale() {
+    let template = "The run form now asks for the managed parameters — the script's own command-line form ({}) is set aside until they are removed (--unmanage).";
+    assert_eq!(
+        format_text(Locale::En, template, &[&"getopts"]),
+        "The run form now asks for the managed parameters — the script's own command-line form (getopts) is set aside until they are removed (--unmanage)."
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&"getopts"]),
+        "运行表单现在会询问这些管理的参数——脚本自己的命令行表单（getopts）会先搁置，直到它们被移除（--unmanage）为止。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&"getopts"]),
+        "執行表單現在會詢問這些管理的參數——腳本自己的命令列表單（getopts）會先擱置，直到它們被移除（--unmanage）為止。"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&"getopts"]);
+    assert!(pseudo.contains("getopts"), "{pseudo}");
+}
+
+#[test]
+fn add_dispatch_messages_match_the_oracle_in_every_locale() {
+    let template = "{} is a directory — pass --exe to add it as a program that runs directly.";
+    assert_eq!(
+        format_text(Locale::En, template, &[&"bundle"]),
+        "bundle is a directory — pass --exe to add it as a program that runs directly."
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&"bundle"]),
+        "bundle 是一个目录——加 --exe 可把它作为直接运行的程序加入。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&"bundle"]),
+        "bundle 是一個目錄——加 --exe 可把它作為直接執行的程式加入。"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&"bundle"]);
+    assert!(pseudo.contains("bundle"), "{pseudo}");
+
+    for (source, zh_cn, zh_tw) in [
+        (
+            "--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.",
+            "--prompt 已直接指定类型——请去掉 --edit/--exe/--kind/--cmd。",
+            "--prompt 已直接指定類型——請去掉 --edit/--exe/--kind/--cmd。",
+        ),
+        ("stdin ('-')", "stdin（'-'）", "stdin（'-'）"),
+        ("a file path", "文件路径", "檔案路徑"),
+        (
+            "{} each pick a different way to add — use exactly one (nothing was added).",
+            "{} 各自代表一种不同的添加方式——请只用其中一种（未添加任何内容）。",
+            "{} 各自代表一種不同的加入方式——請只用其中一種（未加入任何內容）。",
+        ),
+        (
+            "a --cmd template takes only --name/--description",
+            "--cmd 模板只接受 --name/--description",
+            "--cmd 樣板只接受 --name/--description",
+        ),
+        (
+            "stdin authors a brand-new copy, and --ref/--exe need an existing file",
+            "stdin 会撰写一份全新副本，而 --ref/--exe 需要现成的文件",
+            "stdin 會撰寫一份全新副本，而 --ref/--exe 需要現成的檔案",
+        ),
+        (
+            "--edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt",
+            "--edit 会起草一个全新脚本：它的类型取自你写的 shebang（例如 #!/usr/bin/env bash），--ref/--exe 需要现成的文件，而提示词要用 skit add --prompt 起草",
+            "--edit 會草擬一支全新腳本：它的類型取自你寫的 shebang（例如 #!/usr/bin/env bash），--ref/--exe 需要現成的檔案，而提示詞要用 skit add --prompt 草擬",
+        ),
+        (
+            "a drafted prompt takes only --name/--description/--runner/--no-interpolate",
+            "草稿提示词只接受 --name/--description/--runner/--no-interpolate",
+            "草稿提示詞只接受 --name/--description/--runner/--no-interpolate",
+        ),
+        (
+            "{} can't apply here — {} (nothing was added).",
+            "{} 在这里无法应用——{}(未添加任何内容)。",
+            "{} 在這裡無法套用——{}(未加入任何內容)。",
+        ),
+        (
+            "--no-interpolate only applies to prompt entries — add one with --prompt.",
+            "--no-interpolate 只适用于提示词条目——用 --prompt 添加一个。",
+            "--no-interpolate 只適用於提示詞項目——用 --prompt 加入一個。",
+        ),
+        (
+            "--runner only applies to prompt entries — add one with --prompt.",
+            "--runner 只适用于提示词条目——用 --prompt 添加一个。",
+            "--runner 只適用於提示詞項目——用 --prompt 加入一個。",
+        ),
+    ] {
+        assert_eq!(text(Locale::En, source), source);
+        assert_eq!(text(Locale::ZhCn, source), zh_cn);
+        assert_eq!(text(Locale::ZhTw, source), zh_tw);
+    }
+}
+
+#[test]
+fn prompt_editor_no_input_hint_matches_the_oracle_in_every_locale() {
+    let template = "--prompt with no path opens your editor, which --no-input forbids — pipe the body in instead: skit add - --prompt -n NAME";
+    assert_eq!(format_text(Locale::En, template, &[]), template);
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[]),
+        "--prompt 未带路径时会打开你的编辑器，而 --no-input 禁止这么做——请改用管道把正文传进来：skit add - --prompt -n NAME"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[]),
+        "--prompt 未帶路徑時會開啟你的編輯器，而 --no-input 禁止這麼做——請改用管道把內文傳進來：skit add - --prompt -n NAME"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[]);
+    assert!(pseudo.starts_with('⟦'), "{pseudo}");
+}
+
+#[test]
+fn script_editor_terminal_requirement_matches_the_oracle_in_every_locale() {
+    let template = "Writing a new script in an editor needs an interactive terminal.";
+    assert_eq!(format_text(Locale::En, template, &[]), template);
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[]),
+        "用编辑器新建脚本需要交互式终端。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[]),
+        "用編輯器新建腳本需要互動式終端機。"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[]);
+    assert!(pseudo.starts_with('⟦'), "{pseudo}");
+}
+
+#[test]
+fn malformed_prompt_value_warning_matches_the_oracle_in_every_locale() {
+    let template = "Ignored a malformed value: {} (expected NAME=text).";
+    let item = "--prompt: [red]bad[/red]";
+    assert_eq!(
+        format_text(Locale::En, template, &[&item]),
+        "Ignored a malformed value: --prompt: [red]bad[/red] (expected NAME=text)."
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, template, &[&item]),
+        "已忽略格式错误的值：--prompt: [red]bad[/red]（应为 NAME=text）。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, template, &[&item]),
+        "已忽略格式錯誤的值：--prompt: [red]bad[/red]（應為 NAME=text）。"
+    );
+    let pseudo = format_text(Locale::Pseudo, template, &[&item]);
+    assert!(pseudo.contains(item), "{pseudo}");
+
+    assert_zh(
+        "Ignored a malformed value: {} (expected NAME=VALUE).",
+        &[&"--type: bad"],
+        "已忽略格式错误的值：--type: bad（应为 NAME=VALUE）。",
+        "已忽略格式錯誤的值：--type: bad（應為 NAME=VALUE）。",
+    );
+    assert_zh(
+        "{} isn't a declared parameter; skipped.",
+        &[&"x"],
+        "x 不是已声明的参数，已跳过。",
+        "x 不是已宣告的參數，已跳過。",
+    );
+    assert_zh(
+        "{} is already declared; skipped.",
+        &[&"x"],
+        "x 已经声明过，已跳过。",
+        "x 已經宣告過，已跳過。",
+    );
+    assert_zh(
+        "{}: that delivery isn't available for this kind; skipped.",
+        &[&"x"],
+        "x：该传递方式不适用于此类型，已跳过。",
+        "x：該傳遞方式不適用於此類型，已跳過。",
+    );
+    assert_zh(
+        "{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",
+        &[&"x"],
+        "x 不是模板占位符，无法使用 placeholder 传递方式，已跳过。",
+        "x 不是模板佔位符，無法使用 placeholder 傳遞方式，已跳過。",
+    );
+    assert_zh(
+        "{}: unknown type; skipped (use str, int, float, bool, choice, or path).",
+        &[&"x"],
+        "x：未知类型，已跳过(可用 str、int、float、bool、choice 或 path)。",
+        "x：未知類型，已跳過(可用 str、int、float、bool、choice 或 path)。",
+    );
+    assert_zh(
+        "{}: the default doesn't fit its type; skipped.",
+        &[&"x"],
+        "x：默认值与其类型不符，已跳过。",
+        "x：預設值與其類型不符，已跳過。",
+    );
+    assert_zh(
+        "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",
+        &[&"x"],
+        "x 不是机密参数；--env-source 只适用于机密参数（先用 --secret 标记）。",
+        "x 不是機密參數；--env-source 只適用於機密參數（先用 --secret 標記）。",
+    );
+    assert_zh(
+        "{}: a choice parameter needs choices; set --choices {}=a,b,c.",
+        &[&"x", &"x"],
+        "x：choice 参数需要可选值，请设置 --choices x=a,b,c。",
+        "x：choice 參數需要可選值，請設定 --choices x=a,b,c。",
+    );
+    assert_zh(
+        "{} is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-{} and the like), with default false.",
+        &[&"x", &"x"],
+        "x 默认就是开的，它的标志只会再开一次。请改成声明用来关掉它的那个标志(--no-x 之类)，默认 false。",
+        "x 預設就是開的，它的旗標只會再開一次。請改成宣告用來關掉它的那個旗標(--no-x 之類)，預設 false。",
+    );
+}
+
+#[test]
 fn non_secret_environment_source_warning_matches_the_oracle_in_every_locale() {
     let template = "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).";
     assert_eq!(
@@ -158,6 +539,95 @@ fn non_secret_environment_source_warning_matches_the_oracle_in_every_locale() {
     assert_eq!(
         format_text(Locale::ZhTw, template, &[&"WIDTH"]),
         "WIDTH 不是機密參數；--env-source 只適用於機密參數（先用 --secret 標記）。"
+    );
+}
+
+#[test]
+fn prompt_runner_required_status_matches_the_oracle_in_every_locale() {
+    let source = "A prompt needs a configured agent to run with.";
+    assert_eq!(text(Locale::En, source), source);
+    assert_eq!(
+        text(Locale::ZhCn, source),
+        "提示词需要一个已配置的 agent 才能运行。"
+    );
+    assert_eq!(
+        text(Locale::ZhTw, source),
+        "提示詞需要一個已設定的 agent 才能執行。"
+    );
+}
+
+#[test]
+fn prompt_unmanaged_preview_matches_the_oracle_in_every_locale() {
+    let plain = "Detected but not yet managed: {} (use --add to manage them)";
+    assert_eq!(
+        format_text(Locale::En, plain, &[&"a, b"]),
+        "Detected but not yet managed: a, b (use --add to manage them)"
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, plain, &[&"a, b"]),
+        "检测到但尚未管理:a, b(用 --add 管理)"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, plain, &[&"a, b"]),
+        "偵測到但尚未管理:a, b(用 --add 管理)"
+    );
+
+    let singular =
+        "Detected but not yet managed: {} … and {} more candidate (use --add to manage them)";
+    assert_eq!(
+        format_text(Locale::ZhCn, singular, &[&"a, b", &1]),
+        "检测到但尚未管理：a, b……另有 1 个（用 --add 管理）"
+    );
+    let plural =
+        "Detected but not yet managed: {} … and {} more candidates (use --add to manage them)";
+    assert_eq!(
+        format_text(Locale::ZhTw, plural, &[&"a, b", &4]),
+        "偵測到但尚未管理：a, b……另有 4 個（用 --add 管理）"
+    );
+    let pseudo = format_text(Locale::Pseudo, plural, &[&"a, b", &4]);
+    assert!(pseudo.contains("möré"), "{pseudo}");
+
+    let heading = "Prompt placeholders (the run form asks for them):";
+    assert_eq!(
+        text(Locale::ZhCn, heading),
+        "提示词的占位符(运行表单会询问):"
+    );
+    assert_eq!(
+        text(Locale::ZhTw, heading),
+        "提示詞的佔位符(執行表單會詢問):"
+    );
+    let command_heading = "Command template placeholders (the run form asks for them):";
+    assert_eq!(
+        text(Locale::ZhCn, command_heading),
+        "命令模板的占位符（运行表单会询问）："
+    );
+    assert_eq!(
+        text(Locale::ZhTw, command_heading),
+        "命令樣板的佔位符（執行表單會詢問）："
+    );
+    let environment = "Declared environment variables (set on the run):";
+    assert_eq!(
+        text(Locale::ZhCn, environment),
+        "声明的环境变量（运行时设置）："
+    );
+    assert_eq!(
+        text(Locale::ZhTw, environment),
+        "宣告的環境變數（執行時設定）："
+    );
+    assert_eq!(
+        format_text(Locale::ZhCn, "default {}", &[&"•••"]),
+        "默认 •••"
+    );
+    assert_eq!(text(Locale::ZhTw, "optional"), "選填");
+    assert_eq!(text(Locale::ZhCn, "secret"), "机密");
+    let gone = "No longer in the prompt (the value would be ignored): {} — remove with --rm, or edit the body.";
+    assert_eq!(
+        format_text(Locale::ZhCn, gone, &[&"a"]),
+        "提示词中已不存在(其值会被忽略):a——用 --rm 移除,或编辑正文。"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, gone, &[&"a"]),
+        "提示詞中已不存在(其值會被忽略):a——用 --rm 移除,或編輯內文。"
     );
 }
 

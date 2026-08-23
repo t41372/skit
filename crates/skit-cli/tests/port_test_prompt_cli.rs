@@ -33,21 +33,33 @@
 //! - FAILING CONTRACT (divergence): the full asserting body is kept intact and `#[ignore]`d with
 //!   the observed-vs-oracle evidence; deleting the `#[ignore]` after the impl is fixed turns it
 //!   green. Never softened to match Rust output.
-//! - UNMAPPED (cross-crate): the observable itself needs an interactive/internal seam a non-tty
-//!   binary cannot drive or intercept — the `Prompt.ask`/`Confirm.ask` answers, the `$EDITOR`
-//!   *interactive* reconcile, the `tui_add` panels/pickers, `inlineform.collect`, the
-//!   `PromptLaunch._read_body` / `prepare_entry` TOCTOU seams, `config.gettext` wrapping, or a
-//!   store-fault injection. Compiling `#[ignore]` stub naming the seam (`src/cli/tests.rs`) and
-//!   its non-interactive twin when one exists.
+//! - UNMAPPED (cross-crate/private representation): the observable itself needs an
+//!   interactive/internal seam a non-tty binary cannot drive or intercept — the
+//!   `Prompt.ask`/`Confirm.ask` answers, the `$EDITOR` *interactive* reconcile, the `tui_add`
+//!   panels/pickers, `inlineform.collect`, the `PromptLaunch._read_body` / `prepare_entry` TOCTOU
+//!   seams, `config.gettext` wrapping, or a store-fault injection. Python-private storage
+//!   sentinels also stay ignored when Rust has the same internal state but a different stable
+//!   public representation. The active owner keeps each executable public clause.
 
 #![cfg(unix)]
 
 use std::fs;
+use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::Value;
+use skit_store::{FileConfigStore, PromptRunner};
 use tempfile::TempDir;
+
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
 
 // AUTO_MANAGE_LIMIT (langs/prompt/analyzer.py:40) — above this many detections nothing is
 // auto-managed.
@@ -58,17 +70,17 @@ const LIST_PREVIEW_LIMIT: usize = 20;
 const ARGV_LIMIT: usize = 100_000;
 
 struct Sandbox {
-    data: TempDir,
-    state: TempDir,
-    config: TempDir,
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
 }
 
 impl Sandbox {
     fn new() -> Self {
         Self {
-            data: TempDir::new().unwrap(),
-            state: TempDir::new().unwrap(),
-            config: TempDir::new().unwrap(),
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
         }
     }
 
@@ -128,8 +140,32 @@ impl Sandbox {
         fs::write(self.config_path(), toml).unwrap();
     }
 
+    /// Put an executable file at the private uv path the product reads.
+    ///
+    /// `skit_runtime::managed_uv_path` names the file `uv.exe` on Windows and `uv` elsewhere, so
+    /// the probe must use the same name. A probe named `uv` on Windows is invisible to the
+    /// product, and `doctor` then exits 1 for an empty library.
+    fn install_private_uv_probe(&self) {
+        let bin = self.data.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let name = if cfg!(windows) { "uv.exe" } else { "uv" };
+        fs::copy(env!("CARGO_BIN_EXE_skit"), bin.join(name)).unwrap();
+    }
+
     fn read_config(&self) -> String {
         fs::read_to_string(self.config_path()).unwrap_or_default()
+    }
+
+    fn config_store(&self) -> FileConfigStore {
+        FileConfigStore::new(self.config.path())
+    }
+
+    fn runner_exists(&self, name: &str) -> bool {
+        self.config_store()
+            .runners()
+            .unwrap()
+            .iter()
+            .any(|runner| runner.name == name)
     }
 
     /// The oracle's `argstate.save_last_runner` — seed `state/prompt.toml`.
@@ -156,6 +192,19 @@ impl Sandbox {
 
     fn entry_dir(&self, slug: &str) -> PathBuf {
         self.data.path().join("scripts").join(slug)
+    }
+
+    fn entry_exists(&self, slug: &str) -> bool {
+        self.entry_dir(slug).join("meta.toml").is_file()
+    }
+
+    fn draft_files(&self) -> Vec<PathBuf> {
+        fs::read_dir(self.data.path().join("drafts"))
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.is_file())
+            .collect()
     }
 
     fn meta(&self, slug: &str) -> String {
@@ -187,6 +236,204 @@ impl Sandbox {
         self.added(text, name);
         self.ok(&["params", name, "--runner", pin]);
     }
+}
+
+fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    fn visit(root: &Path, directory: &Path, output: &mut Vec<(PathBuf, Vec<u8>)>) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(root, &path, output);
+            } else {
+                output.push((
+                    path.strip_prefix(root).unwrap().to_owned(),
+                    fs::read(path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort_by(|left, right| left.0.cmp(&right.0));
+    output
+}
+
+fn wait_until_pty_output(shared: &Arc<Mutex<Vec<u8>>>, needle: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let text = {
+            let bytes = shared.lock().unwrap();
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        if text.contains(needle) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "PTY did not print {needle:?}; current output: {text}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn run_runner_confirmation(
+    sandbox: &Sandbox,
+    args: &[&str],
+    prompt_needle: &str,
+    before_answer: impl FnOnce(),
+    answer: &[u8],
+) -> (u32, String) {
+    run_runner_confirmation_in_locale(sandbox, args, "en", prompt_needle, before_answer, answer)
+}
+
+fn run_runner_confirmation_in_locale(
+    sandbox: &Sandbox,
+    args: &[&str],
+    locale: &str,
+    prompt_needle: &str,
+    before_answer: impl FnOnce(),
+    answer: &[u8],
+) -> (u32, String) {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.cwd(sandbox.data.path());
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("SKIT_LANG", locale);
+
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let shared = Arc::new(Mutex::new(Vec::new()));
+    let reader_shared = Arc::clone(&shared);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = thread::spawn(move || {
+        let mut chunk = [0_u8; 512];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => reader_shared
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&chunk[..count]),
+                Err(_) => break,
+            }
+        }
+    });
+    let mut writer = pair.master.take_writer().unwrap();
+    wait_until_pty_output(&shared, prompt_needle);
+    before_answer();
+    writer.write_all(&keystrokes(answer)).unwrap();
+    writer.flush().unwrap();
+    let status = child.wait().unwrap();
+    drop(writer);
+    drain.join().unwrap();
+    let output = String::from_utf8_lossy(&shared.lock().unwrap())
+        .replace("\r\n", "\n")
+        .replace('\r', "");
+    (status.exit_code(), output)
+}
+
+struct CapturingPromptEditor {
+    executable: PathBuf,
+    initial: PathBuf,
+    launched: PathBuf,
+}
+
+fn capturing_prompt_editor(root: &Path, tag: &str, appended: &[u8]) -> CapturingPromptEditor {
+    let executable = root.join(format!("{tag}-prompt-editor.sh"));
+    let initial = root.join(format!("{tag}-initial"));
+    let launched = root.join(format!("{tag}-launched"));
+    let appended_path = root.join(format!("{tag}-appended"));
+    fs::write(&appended_path, appended).unwrap();
+    fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\ncp \"$1\" {}\ntouch {}\ncat {} >> \"$1\"\n",
+            shell_single_quote(initial.to_str().unwrap()),
+            shell_single_quote(launched.to_str().unwrap()),
+            shell_single_quote(appended_path.to_str().unwrap()),
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    CapturingPromptEditor {
+        executable,
+        initial,
+        launched,
+    }
+}
+
+fn run_prompt_editor_pty(
+    sandbox: &Sandbox,
+    args: &[&str],
+    lang: &str,
+    editor: &Path,
+    answers: &[(&str, &[u8])],
+) -> (u32, String) {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 30,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.cwd(sandbox.data.path());
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_DATA_DIR", sandbox.data.path());
+    command.env("SKIT_STATE_DIR", sandbox.state.path());
+    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    command.env("SKIT_LANG", lang);
+    command.env("VISUAL", "");
+    command.env("EDITOR", editor);
+
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let shared = Arc::new(Mutex::new(Vec::new()));
+    let reader_shared = Arc::clone(&shared);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = thread::spawn(move || {
+        let mut chunk = [0_u8; 512];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(count) => reader_shared
+                    .lock()
+                    .unwrap()
+                    .extend_from_slice(&chunk[..count]),
+                Err(_) => break,
+            }
+        }
+    });
+    let mut writer = pair.master.take_writer().unwrap();
+    for (prompt, answer) in answers {
+        wait_until_pty_output(&shared, prompt);
+        writer.write_all(&keystrokes(answer)).unwrap();
+        writer.flush().unwrap();
+    }
+    let status = child.wait().unwrap();
+    drop(writer);
+    drain.join().unwrap();
+    let output = String::from_utf8_lossy(&shared.lock().unwrap())
+        .replace("\r\n", "\n")
+        .replace('\r', "");
+    (status.exit_code(), output)
 }
 
 /// A directory of fake agent binaries for every seed's argv[0] (plus a few named extras). Each
@@ -244,11 +491,49 @@ fn shell_single_quote(text: &str) -> String {
 fn test_add_prompt_read_oserror_is_a_clean_store_error() {}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): asserts the cli-internal `cli._starter_prompt()` localized text per locale — a private composition-root helper with no public seam (src/cli.rs); unit-driven by src/cli/tests.rs. The `placeholder_names` half belongs to skit-language's own port."]
-fn test_localized_starter_is_minimal_and_never_creates_its_own_field() {}
+fn test_localized_starter_is_minimal_and_never_creates_its_own_field() {
+    for (locale, expected) in [
+        ("en", b"# New prompt\n\n".as_slice()),
+        ("zh-CN", "# 新提示词\n\n".as_bytes()),
+        ("zh-TW", "# 新提示詞\n\n".as_bytes()),
+    ] {
+        let sandbox = Sandbox::new();
+        let tools = TempDir::new().unwrap();
+        let editor = capturing_prompt_editor(tools.path(), "starter", b"Review text.\n");
+        let (code, output) = run_prompt_editor_pty(
+            &sandbox,
+            &["add", "--prompt", "--name", "starter"],
+            locale,
+            &editor.executable,
+            &[],
+        );
+        assert_eq!(code, 0, "locale={locale}\n{output}");
+        assert!(editor.launched.is_file(), "locale={locale}");
+        assert_eq!(
+            fs::read(&editor.initial).unwrap(),
+            expected,
+            "locale={locale}"
+        );
+        let mut stored = expected.to_vec();
+        stored.extend_from_slice(b"Review text.\n");
+        assert_eq!(
+            sandbox.body_bytes("starter").unwrap(),
+            stored,
+            "locale={locale}"
+        );
+        assert_eq!(
+            sandbox.json(&["show", "starter", "--json"])["fields"],
+            serde_json::json!([])
+        );
+        assert!(
+            sandbox.draft_files().is_empty(),
+            "locale={locale}: {output}"
+        );
+    }
+}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the prompt name, fields, and managed-parameter summary converge, but `show --json` returns null for an unset runner instead of the oracle's empty string."]
+#[ignore = "UNMAPPED (private representation): frozen reads Python's private store-resolved `meta.runner == \"\"`. Rust also keeps an unset runner internally empty, but its stable public `show/params --json` contract is null. Public file/--no-input kind, ordered fields, receipt, and null projection are owned by test_add_prompt_interactive_tick_subset_and_runner_pick; pin/clear and params-null reverses remain active."]
 fn test_add_prompt_file_no_input_manages_everything() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file(
@@ -295,8 +580,9 @@ fn test_add_prompt_interactive_tick_subset_and_runner_pick() {
     // the interactive tick path is covered by the cross-crate stubs below.
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}} {{b}} {{c}}\n");
-    sandbox.ok(&["add", &src, "-n", "picky", "--no-input"]);
+    let combined = sandbox.ok(&["add", &src, "-n", "picky", "--no-input"]);
     let show = sandbox.json(&["show", "picky", "--json"]);
+    assert_eq!(show["kind"], "prompt");
     let keys: Vec<&str> = show["fields"]
         .as_array()
         .unwrap()
@@ -304,6 +590,11 @@ fn test_add_prompt_interactive_tick_subset_and_runner_pick() {
         .map(|field| field["key"].as_str().unwrap())
         .collect();
     assert_eq!(keys, ["a", "b", "c"]);
+    assert_eq!(show["runner"], Value::Null);
+    assert!(
+        combined.contains("Managed parameters: a, b, c"),
+        "{combined}"
+    );
 }
 
 #[test]
@@ -384,22 +675,63 @@ fn test_add_runner_flag_without_prompt_is_refused() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches. Oracle prints 'drop --edit/--exe/--kind/--cmd'; Rust uses a clap conflict ('the argument --prompt cannot be used with --exe')."]
 fn test_add_prompt_conflicts_with_other_kind_flags() {
-    let sandbox = Sandbox::new();
-    let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
     for flags in [
         vec!["--exe"],
         vec!["--kind", "shell"],
         vec!["--edit"],
         vec!["--cmd", "echo {x}"],
     ] {
+        let sandbox = Sandbox::new();
+        let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
+        let tools = TempDir::new().unwrap();
+        let editor = capturing_prompt_editor(tools.path(), "must-not-open", b"");
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
+        let source_before = fs::read(&src).unwrap();
         let mut args = vec!["add", &src, "--prompt"];
         args.extend(flags.iter().copied());
-        let (code, combined) = sandbox.out(&args);
-        assert_eq!(code, 2, "{flags:?}: {combined}");
+        let output = sandbox
+            .command()
+            .env("EDITOR", &editor.executable)
+            .env("VISUAL", &editor.executable)
+            .args(&args)
+            .output()
+            .unwrap();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(2), "{flags:?}: {combined}");
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before, "{flags:?}");
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            state_before,
+            "{flags:?}"
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            config_before,
+            "{flags:?}"
+        );
+        assert_eq!(fs::read(&src).unwrap(), source_before, "{flags:?}");
+        assert!(sandbox.draft_files().is_empty(), "{flags:?}: {combined}");
         assert!(
-            combined.contains("drop --edit/--exe/--kind/--cmd"),
+            !editor.launched.exists(),
+            "editor opened before prompt-kind conflict: {flags:?}: {combined}"
+        );
+        assert!(
+            sandbox
+                .json(&["list", "--json"])
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{flags:?}: {combined}"
+        );
+        assert!(
+            combined.contains("--prompt names the kind outright — drop --edit/--exe/--kind/--cmd."),
             "{flags:?}: {combined}"
         );
     }
@@ -571,27 +903,121 @@ fn test_add_prompt_editor_lane_routes_to_stdin_when_not_interactive() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): drives the interactive prompt-editor lane via monkeypatched cli.editor.open_in_editor + cli.Prompt.ask; a non-tty binary routes --prompt to stdin instead of opening $EDITOR. Seam: src/cli/tests.rs. Non-interactive twin: test_add_prompt_editor_lane_routes_to_stdin_when_not_interactive."]
-fn test_add_prompt_editor_lane_interactive() {}
+fn test_add_prompt_editor_lane_interactive() {
+    let sandbox = Sandbox::new();
+    let tools = TempDir::new().unwrap();
+    let editor = capturing_prompt_editor(tools.path(), "interactive", b"Edited body {{v}}\n");
+    let (code, output) = run_prompt_editor_pty(
+        &sandbox,
+        &["add", "--prompt", "--name", "note"],
+        "en",
+        &editor.executable,
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(fs::read(&editor.initial).unwrap(), b"# New prompt\n\n");
+    assert_eq!(
+        sandbox.body_bytes("note").unwrap(),
+        b"# New prompt\n\nEdited body {{v}}\n"
+    );
+    assert_eq!(
+        sandbox.json(&["show", "note", "--json"])["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field["key"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["v"]
+    );
+    assert!(output.contains("Managed parameters: v"), "{output}");
+    assert!(sandbox.draft_files().is_empty(), "{output}");
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): an untouched $EDITOR starter adds nothing; the interactive editor lane (cli.editor.open_in_editor) is not opened by a non-tty binary. Seam: src/cli/tests.rs."]
-fn test_add_prompt_editor_lane_untouched_starter_adds_nothing() {}
+fn test_add_prompt_editor_lane_untouched_starter_adds_nothing() {
+    let sandbox = Sandbox::new();
+    let tools = TempDir::new().unwrap();
+    let editor = capturing_prompt_editor(tools.path(), "untouched", b"");
+    let (code, output) = run_prompt_editor_pty(
+        &sandbox,
+        &["add", "--prompt", "--name", "empty"],
+        "en",
+        &editor.executable,
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(fs::read(&editor.initial).unwrap(), b"# New prompt\n\n");
+    assert!(
+        output.contains("Nothing was written, so no prompt was added."),
+        "{output}"
+    );
+    assert!(!sandbox.entry_exists("empty"), "{output}");
+    assert!(sandbox.draft_files().is_empty(), "{output}");
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): the interactive editor lane asks for a name via cli.Prompt.ask; a non-tty binary never opens it. Seam: src/cli/tests.rs."]
-fn test_add_prompt_editor_lane_asks_for_a_name() {}
+fn test_add_prompt_editor_lane_asks_for_a_name() {
+    let sandbox = Sandbox::new();
+    let tools = TempDir::new().unwrap();
+    let editor = capturing_prompt_editor(tools.path(), "must-not-open", b"");
+    let (code, output) = run_prompt_editor_pty(
+        &sandbox,
+        &["add", "--prompt"],
+        "en",
+        &editor.executable,
+        &[("Name in skit", b"\r")],
+    );
+    assert_eq!(code, 2, "{output}");
+    assert!(output.contains("A name is required."), "{output}");
+    assert!(
+        !editor.launched.exists(),
+        "editor opened before name validation: {output}"
+    );
+    assert!(sandbox.draft_files().is_empty(), "{output}");
+    assert!(!sandbox.data.path().join("scripts").exists(), "{output}");
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): asserts the name-conflict is caught BEFORE $EDITOR opens in the interactive editor lane (monkeypatched cli.editor.open_in_editor must not run); not reachable from a non-tty binary. Non-interactive twin: test_add_prompt_stdin_lane_reports_store_errors ('already taken')."]
-fn test_add_prompt_editor_lane_name_taken_refuses_before_the_editor() {}
+fn test_add_prompt_editor_lane_name_taken_refuses_before_the_editor() {
+    let sandbox = Sandbox::new();
+    sandbox.ok(&["add", "--cmd", "echo hi", "--name", "taken"]);
+    let config_before = fs::read(sandbox.config_path()).ok();
+    let meta_path = sandbox.entry_dir("taken").join("meta.toml");
+    let meta_before = fs::read(&meta_path).unwrap();
+    let tools = TempDir::new().unwrap();
+    let editor = capturing_prompt_editor(tools.path(), "taken-must-not-open", b"");
+    let (code, output) = run_prompt_editor_pty(
+        &sandbox,
+        &["add", "--prompt", "--name", "taken"],
+        "en",
+        &editor.executable,
+        &[],
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        output.contains("The name taken is already taken — pick another name."),
+        "{output}"
+    );
+    assert!(
+        !editor.launched.exists(),
+        "editor opened before conflict refusal: {output}"
+    );
+    assert!(sandbox.draft_files().is_empty(), "{output}");
+    assert_eq!(fs::read(sandbox.config_path()).ok(), config_before);
+    assert_eq!(fs::read(meta_path).unwrap(), meta_before);
+    let entries = fs::read_dir(sandbox.data.path().join("scripts"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(entries, [std::ffi::OsString::from("taken")]);
+}
 
 #[test]
 #[ignore = "UNMAPPED (cross-crate): a post-edit failure keeps the temp draft; drives the interactive editor lane plus a monkeypatched cli._onboard_prompt fault. Seam: src/cli/tests.rs."]
 fn test_add_prompt_editor_lane_post_edit_failure_keeps_the_draft() {}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): a deleted draft after the interactive edit is a clean 'Can't read' failure; drives the interactive editor lane (cli.editor.open_in_editor) a non-tty binary never opens. Seam: src/cli/tests.rs."]
+#[ignore = "UNMAPPED (cross-crate): a deleted draft after the interactive edit is a clean read failure; drives the interactive editor lane (cli.editor.open_in_editor) a non-tty binary never opens. Seam: src/cli/tests.rs."]
 fn test_add_prompt_editor_lane_deleted_draft_is_a_clean_honest_failure() {}
 
 #[test]
@@ -624,10 +1050,10 @@ fn test_add_prompt_no_path_with_ref_is_refused() {
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the umbrella --help taxonomy wording differs — Rust 'A script, prompt, program, and command library' vs oracle 'scripts, prompts, programs, and commands' — and clap-generated help does not carry the oracle's per-command zh-TW phrasings."]
 fn test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale() {
-    // Parametrized (en, zh-TW): the umbrella help uses the entry taxonomy in the child's locale.
-    let cases: [(&str, [(&str, &str); 9]); 2] = [
+    // The public binary owns all nine help surfaces. Whitespace can wrap differently at each
+    // terminal width, but the entry taxonomy and output stream do not change.
+    let cases: [(&str, [(&str, &str); 9]); 3] = [
         (
             "en",
             [
@@ -640,6 +1066,20 @@ fn test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale() {
                 ("params", "an entry's managed or declared parameters"),
                 ("deps", "an entry's package dependencies"),
                 ("doctor", "entry library"),
+            ],
+        ),
+        (
+            "zh-CN",
+            [
+                ("--help", "脚本、提示词、程序和命令"),
+                ("list", "已登记的条目"),
+                ("show", "一个条目"),
+                ("remove", "已登记的条目"),
+                ("rename", "重命名条目"),
+                ("describe", "条目的说明"),
+                ("params", "条目的管理参数或声明参数"),
+                ("deps", "条目的包依赖"),
+                ("doctor", "工具库"),
             ],
         ),
         (
@@ -671,18 +1111,16 @@ fn test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale() {
                 .args(&args)
                 .output()
                 .unwrap();
-            let combined = format!(
-                "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
             assert_eq!(
                 output.status.code(),
                 Some(0),
-                "{locale} {command}: {combined}"
+                "{locale} {command}: stdout={stdout:?} stderr={stderr:?}"
             );
-            let flat = combined.split_whitespace().collect::<Vec<_>>().join(" ");
-            assert!(flat.contains(phrase), "{locale} {command}: {combined}");
+            assert!(stderr.is_empty(), "{locale} {command}: {stderr}");
+            let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(flat.contains(phrase), "{locale} {command}: {stdout}");
         }
     }
 }
@@ -943,7 +1381,7 @@ fn test_run_prompt_dry_run_missing_body_is_127_before_output() {
     }
     let (code, combined) = sandbox.out(&["run", "p", "--no-input", "--dry-run"]);
     assert_eq!(code, 127, "{combined}");
-    assert!(combined.contains("doesn't exist"), "{combined}");
+    assert!(combined.contains("does not exist"), "{combined}");
     assert!(!combined.contains('→'), "{combined}");
 }
 
@@ -1299,21 +1737,187 @@ fn test_real_run_transparency_and_amp_note_use_the_prepared_runner_row() {}
 // ==========================================================================
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the Rust human `params` read view omits the unmanaged/gone listing entirely (only 'Parameter: a / Type / Delivery / Interpolation'); the oracle's 'Prompt placeholders', 'Detected but not yet managed: b, c', and 'No longer in the prompt' are absent. The --json 'unmanaged' array carries the data."]
 fn test_params_read_view_shows_unmanaged_and_gone() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}} {{b}}\n", "p"); // auto-manages a, b
     sandbox.ok(&["params", "p", "--rm", "b"]); // managed → [a]
+    sandbox.ok(&[
+        "params",
+        "p",
+        "--default",
+        "a=plaintext-default",
+        "--secret",
+        "a",
+    ]);
+    sandbox.ok(&[
+        "params",
+        "p",
+        "--add",
+        "EXTRA",
+        "--default",
+        "EXTRA=visible-default",
+    ]);
+    let values_dir = sandbox.state.path().join("values");
+    fs::create_dir_all(&values_dir).unwrap();
+    fs::write(
+        values_dir.join("p.toml"),
+        "[values]\na = \"plaintext-last\"\n",
+    )
+    .unwrap();
     // The stored body file may have any name; overwrite whatever body file exists.
     overwrite_body(&sandbox, "p", "{{b}} {{c}} only\n");
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
     let combined = sandbox.ok(&["params", "p"]);
+    let payload = sandbox.json(&["params", "p", "--json"]);
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert_eq!(payload["placeholders"], serde_json::json!(["a"]));
+    assert_eq!(payload["unmanaged"], serde_json::json!(["b", "c"]));
+    let stored = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "a")
+        .expect("the stored managed declaration remains visible");
+    assert_eq!(stored["secret"], true);
+    assert_eq!(stored["default"], "plaintext-default");
+    assert_eq!(payload["last_values"]["a"], "plaintext-last");
+    let environment = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "EXTRA")
+        .expect("the declared environment rider remains visible");
+    assert_eq!(environment["delivery"], "env");
+    assert_eq!(environment["default"], "visible-default");
+    assert_eq!(combined.matches("•••").count(), 2, "{combined}");
+    assert!(!combined.contains("plaintext-default"), "{combined}");
+    assert!(!combined.contains("plaintext-last"), "{combined}");
     assert!(combined.contains("Prompt placeholders"), "{combined}");
+    assert!(combined.contains("  a = •••"), "{combined}");
+    assert!(
+        combined.contains("Declared environment variables (set on the run):"),
+        "{combined}"
+    );
+    assert!(
+        combined.contains("  EXTRA = —  str · default visible-default · optional"),
+        "{combined}"
+    );
     assert!(
         combined.contains("Detected but not yet managed: b, c"),
         "{combined}"
     );
-    assert!(combined.contains("No longer in the prompt"), "{combined}");
-    assert!(combined.contains('a'), "{combined}");
+    assert!(
+        combined.contains(
+            "No longer in the prompt (the value would be ignored): a — remove with --rm, or edit the body."
+        ),
+        "{combined}"
+    );
+}
+
+#[test]
+fn prompt_human_params_empty_and_secret_fallback_are_localized_and_read_only() {
+    let sandbox = Sandbox::new();
+    sandbox.added("Review this.\n", "empty");
+    sandbox.added("Keep {{token}} private.\n", "secret");
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+
+    for (locale, empty_line, secret_label) in [
+        (
+            "en",
+            "empty has no managed parameters.",
+            "  token = —  str · secret",
+        ),
+        ("zh-CN", "empty 没有管理的参数。", "  token = —  str · 机密"),
+        ("zh-TW", "empty 沒有管理的參數。", "  token = —  str · 機密"),
+    ] {
+        let empty = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .args(["params", "empty"])
+            .output()
+            .unwrap();
+        assert!(empty.status.success(), "{locale}");
+        assert_eq!(String::from_utf8_lossy(&empty.stdout).trim(), empty_line);
+        assert!(empty.stderr.is_empty(), "{locale}");
+
+        let secret = sandbox
+            .command()
+            .env("SKIT_LANG", locale)
+            .args(["params", "secret"])
+            .output()
+            .unwrap();
+        assert!(secret.status.success(), "{locale}");
+        let shown = String::from_utf8_lossy(&secret.stdout);
+        assert!(shown.contains(secret_label), "{locale}: {shown}");
+        assert!(!shown.contains("•••"), "{locale}: {shown}");
+        assert!(secret.stderr.is_empty(), "{locale}");
+    }
+
+    let empty_json = sandbox.json(&["params", "empty", "--json"]);
+    assert_eq!(empty_json["placeholders"], serde_json::json!([]));
+    assert_eq!(empty_json["parameters"], serde_json::json!([]));
+    assert_eq!(empty_json["last_values"], serde_json::json!({}));
+    let secret_json = sandbox.json(&["params", "secret", "--json"]);
+    assert_eq!(secret_json["placeholders"], serde_json::json!(["token"]));
+    assert_eq!(secret_json["parameters"][0]["name"], "token");
+    assert_eq!(secret_json["parameters"][0]["type"], "str");
+    assert_eq!(secret_json["parameters"][0]["secret"], true);
+    assert_eq!(secret_json["last_values"], serde_json::json!({}));
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+}
+
+#[test]
+fn prompt_declared_edit_removes_a_gone_slot_without_a_stale_tweak_warning() {
+    let sandbox = Sandbox::new();
+    sandbox.added("{{a}} {{b}}\n", "p");
+    overwrite_body(&sandbox, "p", "{{a}} only\n");
+    let body_before = sandbox.body_bytes("p");
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
+
+    let output = sandbox
+        .command()
+        .args([
+            "params",
+            "p",
+            "--rm",
+            "b",
+            "--type",
+            "b=int",
+            "--default",
+            "a=first",
+            "--default",
+            "a=last",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("b isn't a declared parameter"), "{stderr}");
+    let payload: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(payload["placeholders"], serde_json::json!(["a"]));
+    assert_eq!(payload["declared"].as_array().unwrap().len(), 1);
+    assert_eq!(payload["declared"][0]["name"], "a");
+    assert_eq!(payload["declared"][0]["default"], "last");
+    assert_eq!(payload["parameters"][0]["name"], "a");
+    assert_eq!(payload["parameters"][0]["default"], "last");
+    assert_eq!(sandbox.body_bytes("p"), body_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 /// Overwrite the stored body file (whatever its name) under an entry dir.
@@ -1340,14 +1944,62 @@ fn test_params_json_carries_runner_and_unmanaged() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): CLI flag semantics. Oracle `params --add b` MANAGES the body placeholder (placeholders -> [a,b], delivery placeholder). Rust `--add` DECLARES a new param with delivery 'flag' (placeholders stays [a]); managing a placeholder is Rust's separate `--manage`."]
 fn test_params_add_manages_a_body_placeholder() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}} {{b}}\n", "p");
+    let initial = sandbox.json(&["params", "p", "--json"]);
+    assert_eq!(initial["placeholders"], serde_json::json!(["a", "b"]));
+    assert_eq!(initial["declared"], serde_json::json!([]));
+    let initial_effective = initial["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["name"].as_str().unwrap(),
+                row["delivery"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        initial_effective,
+        [("a", "placeholder"), ("b", "placeholder")]
+    );
     sandbox.ok(&["params", "p", "--rm", "b"]); // managed → [a]
+    let after_remove = sandbox.json(&["params", "p", "--json"]);
+    assert_eq!(after_remove["placeholders"], serde_json::json!(["a"]));
+    assert_eq!(after_remove["declared"], serde_json::json!([]));
+    assert_eq!(after_remove["parameters"].as_array().unwrap().len(), 1);
+    assert_eq!(after_remove["parameters"][0]["name"], "a");
+    let body_before = sandbox.body_bytes("p");
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
     sandbox.ok(&["params", "p", "--add", "b"]);
     let payload = sandbox.json(&["params", "p", "--json"]);
     assert_eq!(payload["placeholders"], serde_json::json!(["a", "b"])); // body order
+    let effective = payload["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["name"].as_str().unwrap(),
+                row["delivery"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(effective, [("a", "placeholder"), ("b", "placeholder")]);
+    let declared = payload["declared"].as_array().unwrap();
+    assert_eq!(
+        declared.len(),
+        1,
+        "only b is an explicit schema row: {payload}"
+    );
+    assert_eq!(declared[0]["name"], "b");
+    assert_eq!(declared[0]["delivery"], "placeholder");
+    assert_eq!(sandbox.body_bytes("p"), body_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
 }
 
 #[test]
@@ -1364,20 +2016,26 @@ fn test_params_rm_unmanages_even_without_a_declared_row() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): oracle `params --add EXTRA` declares an env rider (delivery 'env'); Rust `--add` declares delivery 'flag' instead."]
 fn test_params_add_unknown_name_becomes_env_rider() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}}\n", "p");
+    let body_before = sandbox.body_bytes("p");
+    let config_before = fs::read(sandbox.config_path()).ok();
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
     sandbox.ok(&["params", "p", "--add", "EXTRA"]);
     let payload = sandbox.json(&["params", "p", "--json"]);
     assert_eq!(payload["placeholders"], serde_json::json!(["a"])); // not a body hole
-    let deliveries: Vec<&str> = payload["parameters"]
+    let extra = payload["parameters"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|row| row["delivery"].as_str().unwrap())
-        .collect();
-    assert_eq!(deliveries, ["env"]);
+        .find(|row| row["name"] == "EXTRA")
+        .expect("EXTRA is declared");
+    assert_eq!(sandbox.body_bytes("p"), body_before);
+    assert_eq!(payload["last_values"], serde_json::json!({}));
+    assert_eq!(fs::read_dir(sandbox.state.path()).unwrap().count(), 0);
+    assert_eq!(fs::read(sandbox.config_path()).ok(), config_before);
+    assert_eq!(extra["delivery"], "env");
 }
 
 #[test]
@@ -1388,7 +2046,7 @@ fn test_params_deliver_placeholder_is_allowed_on_prompts() {
     // real work to do — otherwise it would pass even if --deliver were a no-op (a placeholder's
     // default delivery is already "placeholder").
     let delivery = |sandbox: &Sandbox| -> String {
-        sandbox.json(&["params", "p", "--json"])["parameters"]
+        sandbox.json(&["params", "p", "--json"])["declared"]
             .as_array()
             .unwrap()
             .iter()
@@ -1786,22 +2444,31 @@ fn test_runner_add_duplicate_name_refused() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 1 matches, config preserved. Oracle says 'isn't a table' / 'isn't a list'; Rust says 'configuration section is not a table: prompt' (and the list variant likewise reworded)."]
 fn test_runner_add_reports_malformed_config_container() {
-    let sandbox = Sandbox::new();
-    // prompt is a scalar, not a table.
-    sandbox.set_config("prompt = \"broken\"\n");
-    let (code, combined) = sandbox.out(&["runner", "add", "new", "new", "{{prompt}}"]);
-    assert_eq!(code, 1, "{combined}");
-    assert!(combined.contains("isn't a table"), "{combined}");
-    assert_eq!(sandbox.read_config().trim(), "prompt = \"broken\"");
+    for (config, message) in [
+        (
+            "prompt = \"broken\"\n",
+            "the prompt value is not a table; repair it before runner management",
+        ),
+        (
+            "[prompt]\nrunners = \"broken\"\n",
+            "the prompt.runners value is not a list; repair it before runner management",
+        ),
+    ] {
+        let sandbox = Sandbox::new();
+        sandbox.set_config(config);
+        let before = sandbox.read_config();
 
-    let sandbox = Sandbox::new();
-    // prompt.runners is a scalar, not a list.
-    sandbox.set_config("[prompt]\nrunners = \"broken\"\n");
-    let (code, combined) = sandbox.out(&["runner", "add", "new", "new", "{{prompt}}"]);
-    assert_eq!(code, 1, "{combined}");
-    assert!(combined.contains("isn't a list"), "{combined}");
+        let (code, combined) = sandbox.out(&["runner", "add", "new", "new", "{{prompt}}"]);
+
+        assert_eq!(code, 1, "{combined}");
+        assert_eq!(
+            sandbox.read_config(),
+            before,
+            "malformed config was modified"
+        );
+        assert!(combined.contains(message), "{combined}");
+    }
 }
 
 #[test]
@@ -1875,12 +2542,91 @@ fn test_removing_every_runner_stays_empty() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): a name remove without -y asks typer.confirm(abort=True) and honors 'y'; the confirmation is an interactive seam a non-tty binary cannot drive (it refuses with 'pass --yes' instead of asking). Seam: src/cli/tests.rs. Non-interactive twin: test_runner_remove_and_unknown (with -y)."]
-fn test_runner_remove_confirms_unless_yes() {}
+fn test_runner_remove_confirms_unless_yes() {
+    let sandbox = Sandbox::new();
+    let (code, output) = run_runner_confirmation(
+        &sandbox,
+        &["runner", "remove", "amp"],
+        "Remove the agent",
+        || {},
+        b"y\n",
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("Remove the agent \"amp\"?"), "{output}");
+    assert!(!sandbox.runner_exists("amp"));
+    assert!(output.contains("Runner amp removed."), "{output}");
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): answering 'n'/EOF to typer.confirm aborts (exit 1, nothing removed); the interactive confirmation seam is not reachable from a non-tty binary. Seam: src/cli/tests.rs."]
-fn test_runner_remove_abort_keeps_the_runner() {}
+fn test_runner_remove_abort_keeps_the_runner() {
+    let sandbox = Sandbox::new();
+    let config_before_answer = Mutex::new(Vec::new());
+    let (code, output) = run_runner_confirmation(
+        &sandbox,
+        &["runner", "remove", "amp"],
+        "Remove the agent",
+        || {
+            *config_before_answer.lock().unwrap() = fs::read(sandbox.config_path()).unwrap();
+        },
+        b"n\n",
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        sandbox.runner_exists("amp"),
+        "negative confirmation still removed amp: {output}"
+    );
+    assert!(!output.contains("Runner amp removed."), "{output}");
+    assert_eq!(
+        fs::read(sandbox.config_path()).unwrap(),
+        *config_before_answer.lock().unwrap(),
+        "negative confirmation changed the config"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_runner_remove_invalid_utf8_confirmation_propagates_io_without_writing() {
+    for (locale, prompt) in [
+        ("en", "Remove the agent \"amp\"? [y/N]:"),
+        ("zh-CN", "删除 Agent“amp”？[y/N]："),
+        ("zh-TW", "移除 Agent「amp」？[y/N]："),
+    ] {
+        let sandbox = Sandbox::new();
+        let data_before = Mutex::new(Vec::new());
+        let state_before = Mutex::new(Vec::new());
+        let config_before = Mutex::new(Vec::new());
+
+        let (code, output) = run_runner_confirmation_in_locale(
+            &sandbox,
+            &["runner", "remove", "amp"],
+            locale,
+            prompt,
+            || {
+                *data_before.lock().unwrap() = snapshot_tree(sandbox.data.path());
+                *state_before.lock().unwrap() = snapshot_tree(sandbox.state.path());
+                *config_before.lock().unwrap() = snapshot_tree(sandbox.config.path());
+            },
+            &[0xff, b'\n'],
+        );
+
+        assert_eq!(code, 125, "{locale}: {output}");
+        assert!(output.contains(prompt), "{locale}: {output}");
+        assert!(output.contains("UTF-8"), "{locale}: {output}");
+        assert!(sandbox.runner_exists("amp"), "{locale}: {output}");
+        assert_eq!(
+            snapshot_tree(sandbox.data.path()),
+            *data_before.lock().unwrap()
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            *state_before.lock().unwrap()
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            *config_before.lock().unwrap()
+        );
+    }
+}
 
 #[test]
 fn test_runner_remove_warns_and_preserves_affected_prompt_pins() {
@@ -1970,12 +2716,89 @@ fn test_runner_remove_raw_valid_row_requires_stable_name_path() {
 }
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): the raw-row remove must refuse if the index SHIFTED during the interactive typer.confirm (a monkeypatched confirm that mutates config mid-prompt). The confirmation seam is not reachable from a non-tty binary. Seam: src/cli/tests.rs."]
-fn test_runner_remove_raw_row_refuses_if_index_shifted_during_confirmation() {}
+fn test_runner_remove_raw_row_refuses_if_index_shifted_during_confirmation() {
+    let sandbox = Sandbox::new();
+    let original = concat!(
+        "[prompt]\n",
+        "runners_seeded = true\n",
+        "runners = [",
+        "{ name = \"good\", argv = [\"good\", \"{{prompt}}\"] }, ",
+        "{ name = \"target\", argv = [\"target\"] }, ",
+        "{ name = \"other\", argv = [\"other\", \"{{prompt}}\"] }",
+        "]\n",
+    );
+    sandbox.set_config(original);
+    let shifted = concat!(
+        "[prompt]\n",
+        "runners_seeded = true\n",
+        "runners = [",
+        "{ name = \"inserted\", argv = [\"inserted\", \"{{prompt}}\"] }, ",
+        "{ name = \"good\", argv = [\"good\", \"{{prompt}}\"] }, ",
+        "{ name = \"target\", argv = [\"target\"] }, ",
+        "{ name = \"other\", argv = [\"other\", \"{{prompt}}\"] }",
+        "]\n",
+    );
+    let (code, output) = run_runner_confirmation(
+        &sandbox,
+        &["runner", "remove", "--row", "1"],
+        "Remove runner row row 1 (\"target\")?",
+        || sandbox.set_config(shifted),
+        b"y\n",
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        output.contains("changed before it could be removed"),
+        "{output}"
+    );
+    assert_eq!(fs::read(sandbox.config_path()).unwrap(), shifted.as_bytes());
+}
 
 #[test]
-#[ignore = "UNMAPPED (cross-crate): the name remove must refuse if the key was replaced during the interactive typer.confirm (a monkeypatched confirm that swaps the row mid-prompt). The confirmation seam is not reachable from a non-tty binary. Seam: src/cli/tests.rs."]
-fn test_runner_remove_name_refuses_if_key_is_replaced_during_confirmation() {}
+fn test_runner_remove_name_refuses_if_key_is_replaced_during_confirmation() {
+    let sandbox = Sandbox::new();
+    sandbox.set_config(concat!(
+        "[prompt]\n",
+        "runners_seeded = true\n",
+        "runners = [{ name = \"victim\", argv = [\"old\", \"{{prompt}}\"] }]\n",
+    ));
+    let replacement = PromptRunner {
+        name: "victim".to_owned(),
+        argv: vec![
+            "new".to_owned(),
+            "--important".to_owned(),
+            "{{prompt}}".to_owned(),
+        ],
+    };
+    let config_after_replacement = Mutex::new(Vec::new());
+    let (code, output) = run_runner_confirmation(
+        &sandbox,
+        &["runner", "remove", "victim"],
+        "Remove the agent",
+        || {
+            sandbox
+                .config_store()
+                .set_runner(replacement.clone(), true)
+                .unwrap();
+            *config_after_replacement.lock().unwrap() = fs::read(sandbox.config_path()).unwrap();
+        },
+        b"y\n",
+    );
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        output.contains("changed before it could be removed"),
+        "{output}"
+    );
+    assert_eq!(
+        fs::read(sandbox.config_path()).unwrap(),
+        *config_after_replacement.lock().unwrap(),
+        "compare-and-swap refusal rewrote the replacement config"
+    );
+    assert_eq!(
+        sandbox.config_store().runners().unwrap(),
+        [replacement],
+        "replacement runner was incorrectly deleted"
+    );
+}
 
 #[test]
 fn test_runner_remove_container_repairs_only_targeted_prompt_value() {
@@ -2046,7 +2869,19 @@ fn test_doctor_reports_prompt_drift_and_bad_runner_rows() {
 fn test_doctor_healthy_prompt_reports_no_drift() {
     let sandbox = Sandbox::new();
     sandbox.added("{{a}}\n", "p");
-    let payload = sandbox.json(&["doctor", "--json"]);
+    let json_output = sandbox
+        .command()
+        .env("PATH", "")
+        .args(["doctor", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        json_output.status.success(),
+        "stdout={}\nstderr={}",
+        String::from_utf8_lossy(&json_output.stdout),
+        String::from_utf8_lossy(&json_output.stderr)
+    );
+    let payload: Value = serde_json::from_slice(&json_output.stdout).unwrap();
     assert_eq!(payload["drift"], serde_json::json!([]));
     assert_eq!(payload["runner_rows_invalid"], serde_json::json!([]));
     let human = sandbox.ok(&["doctor"]);
@@ -2057,6 +2892,7 @@ fn test_doctor_healthy_prompt_reports_no_drift() {
 #[test]
 fn test_doctor_malformed_runner_recovery_localizes_and_preserves_row_order() {
     let sandbox = Sandbox::new();
+    sandbox.install_private_uv_probe();
     sandbox.set_config(
         "[prompt]\nrunners_seeded = true\n[[prompt.runners]]\nname = \"zebra\"\nargv = [\"x\"]\n[[prompt.runners]]\nname = \"alpha\"\nargv = [\"y\"]\n",
     );
@@ -2065,6 +2901,7 @@ fn test_doctor_malformed_runner_recovery_localizes_and_preserves_row_order() {
         payload["runner_rows_invalid"],
         serde_json::json!(["zebra", "alpha"])
     );
+    assert!(payload["uv"].is_string());
 
     for (locale, expected) in [
         (
@@ -2083,6 +2920,7 @@ fn test_doctor_malformed_runner_recovery_localizes_and_preserves_row_order() {
         let output = sandbox
             .command()
             .env("SKIT_LANG", locale)
+            .env("PATH", "")
             .arg("doctor")
             .output()
             .unwrap();
@@ -2147,43 +2985,105 @@ fn test_add_prompt_unreadable_file_is_a_store_error() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches. Oracle prints '--runner only applies to prompt entries' or '--runner can't apply here'; Rust uses a clap conflict ('the argument --cmd cannot be used with --runner')."]
 fn test_add_runner_flag_refused_on_cmd_edit_exe_lanes() {
-    let sandbox = Sandbox::new();
-    let cases: [Vec<&str>; 3] = [
-        vec!["add", "--cmd", "echo {x}", "-n", "c", "--runner", "claude"],
-        vec!["add", "--edit", "--runner", "claude"],
-        vec!["add", "x", "--exe", "--runner", "claude"],
+    let cases: [(Vec<&str>, &str); 3] = [
+        (
+            vec!["add", "--cmd", "echo {x}", "-n", "c", "--runner", "claude"],
+            "--runner can't apply here — a --cmd template takes only --name/--description (nothing was added).",
+        ),
+        (
+            vec!["add", "--edit", "--runner", "claude"],
+            "--runner can't apply here — --edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt (nothing was added).",
+        ),
+        (
+            vec!["add", "x", "--exe", "--runner", "claude"],
+            "--runner only applies to prompt entries — add one with --prompt.",
+        ),
     ];
-    for args in cases {
-        let (code, combined) = sandbox.out(&args);
-        assert_eq!(code, 2, "{args:?}: {combined}");
+    for (args, expected) in cases {
+        let sandbox = Sandbox::new();
+        let tools = TempDir::new().unwrap();
+        let editor = capturing_prompt_editor(tools.path(), "runner-must-not-open", b"");
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
+        let output = sandbox
+            .command()
+            .env("EDITOR", &editor.executable)
+            .env("VISUAL", &editor.executable)
+            .args(&args)
+            .output()
+            .unwrap();
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {combined}");
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before, "{args:?}");
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            state_before,
+            "{args:?}"
+        );
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            config_before,
+            "{args:?}"
+        );
+        assert!(sandbox.draft_files().is_empty(), "{args:?}: {combined}");
         assert!(
-            combined.contains("--runner only applies to prompt entries")
-                || combined.contains("--runner can't apply here"),
+            !editor.launched.exists(),
+            "editor opened before runner/lane refusal: {args:?}: {combined}"
+        );
+        assert!(
+            sandbox
+                .json(&["list", "--json"])
+                .as_array()
+                .unwrap()
+                .is_empty(),
             "{args:?}: {combined}"
         );
+        assert!(combined.contains(expected), "{args:?}: {combined}");
     }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): exit 2 matches. Oracle refuses up front with '--no-interpolate only applies to prompt entries'; Rust routes it through clap conflicts (the argument '--exe' cannot be used with '--no-interpolate') and never emits the prompt-only sentence."]
 fn test_add_no_interpolate_refused_up_front_on_non_prompt_path_lane() {
-    let sandbox = Sandbox::new();
-    let prog = sandbox.write_file("tool", b"#!/bin/sh\necho hi\n");
     for extra in [vec!["--exe"], vec!["--kind", "shell"]] {
+        let sandbox = Sandbox::new();
+        let prog = sandbox.write_file("tool", b"#!/bin/sh\necho hi\n");
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
+        let source_before = fs::read(&prog).unwrap();
         let mut args = vec!["add", &prog];
         args.extend(extra.iter().copied());
         args.extend(["--no-interpolate", "-n", "t", "--no-input"]);
         let (code, combined) = sandbox.out(&args);
         assert_eq!(code, 2, "{extra:?}: {combined}");
-        assert!(
-            combined.contains("--no-interpolate only applies to prompt entries"),
-            "{extra:?}: {combined}"
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before, "{extra:?}");
+        assert_eq!(
+            snapshot_tree(sandbox.state.path()),
+            state_before,
+            "{extra:?}"
         );
+        assert_eq!(
+            snapshot_tree(sandbox.config.path()),
+            config_before,
+            "{extra:?}"
+        );
+        assert_eq!(fs::read(&prog).unwrap(), source_before, "{extra:?}");
+        assert!(sandbox.draft_files().is_empty(), "{extra:?}: {combined}");
         assert_eq!(
             sandbox.json(&["list", "--json"]).as_array().unwrap().len(),
             0
+        );
+        assert!(
+            combined.contains(
+                "--no-interpolate only applies to prompt entries — add one with --prompt."
+            ),
+            "{extra:?}: {combined}"
         );
     }
 }
@@ -2212,15 +3112,21 @@ fn test_add_prompt_stdin_lane_reports_store_errors() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the vanished reference body does not prevent a successful parameter view, but Rust prints `Parameter: a` instead of the oracle's managed-record line `a = ...`."]
 fn test_params_view_survives_an_unreadable_reference_body() {
     let sandbox = Sandbox::new();
     let src = sandbox.write_file("p.prompt.md", b"{{a}}\n");
     sandbox.ok(&["add", &src, "--ref", "--no-input"]);
     fs::remove_file(&src).unwrap(); // the original vanished
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
     let (code, combined) = sandbox.out(&["params", "p"]);
     assert_eq!(code, 0, "{combined}");
-    assert!(combined.contains("a = "), "{combined}"); // the managed record still lists
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+    assert!(!Path::new(&src).exists());
+    assert!(combined.contains("  a = —"), "{combined}"); // the managed record still lists
 }
 
 #[test]
@@ -2371,7 +3277,6 @@ fn test_params_interpolate_refused_on_non_prompt() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the --json 'unmanaged' full-list contract converges, but the human params view omits the capped preview tail ('and N more candidate(s)') — Rust's human read view lists no unmanaged candidates."]
 fn test_params_unmanaged_listing_is_flood_capped_and_localizable() {
     // Parametrized over (extra, tail): 1 → "and 1 more candidate", 7 → "and 7 more candidates".
     for (extra, tail) in [
@@ -2389,24 +3294,23 @@ fn test_params_unmanaged_listing_is_flood_capped_and_localizable() {
             .collect::<Vec<_>>()
             .join(" ");
         overwrite_body(&sandbox, "p", &format!("{{{{a}}}} {many}\n"));
+        let data_before = snapshot_tree(sandbox.data.path());
+        let state_before = snapshot_tree(sandbox.state.path());
+        let config_before = snapshot_tree(sandbox.config.path());
         let combined = sandbox.ok(&["params", "p"]);
+        let payload = sandbox.json(&["params", "p", "--json"]);
+        assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+        assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+        assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
+        assert_eq!(payload["unmanaged"], serde_json::json!(names)); // machine contract is full data
         let flat = combined.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(flat.contains(tail), "extra={extra}: {combined}");
-        assert!(
-            flat.contains(&names[LIST_PREVIEW_LIMIT - 1]),
-            "extra={extra}: {combined}"
-        );
-        assert!(
-            !flat.contains(&names[LIST_PREVIEW_LIMIT]),
-            "extra={extra}: {combined}"
-        );
-        let payload = sandbox.json(&["params", "p", "--json"]);
-        assert_eq!(payload["unmanaged"], serde_json::json!(names)); // machine contract is full data
+        assert!(flat.contains("u19"), "extra={extra}: {combined}");
+        assert!(!flat.contains("u20"), "extra={extra}: {combined}");
     }
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): the x-pseudo locale itself works (output is bracketed), but the human params view carries no unmanaged tail, so the pseudo-transformed 'möré' never appears — same missing-listing root as the read-view divergence."]
 fn test_params_unmanaged_tail_passes_through_the_i18n_boundary() {
     let sandbox = Sandbox::new();
     sandbox.added("Do {{a}}\n", "p");
@@ -2419,6 +3323,9 @@ fn test_params_unmanaged_tail_passes_through_the_i18n_boundary() {
         .collect::<Vec<_>>()
         .join(" ");
     overwrite_body(&sandbox, "p", &format!("{{{{a}}}} {many}"));
+    let data_before = snapshot_tree(sandbox.data.path());
+    let state_before = snapshot_tree(sandbox.state.path());
+    let config_before = snapshot_tree(sandbox.config.path());
     let output = sandbox
         .command()
         .env("SKIT_LANG", "x-pseudo")
@@ -2431,6 +3338,9 @@ fn test_params_unmanaged_tail_passes_through_the_i18n_boundary() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.status.code(), Some(0), "{combined}");
+    assert_eq!(snapshot_tree(sandbox.data.path()), data_before);
+    assert_eq!(snapshot_tree(sandbox.state.path()), state_before);
+    assert_eq!(snapshot_tree(sandbox.config.path()), config_before);
     assert!(combined.contains('⟦'), "{combined}");
     assert!(combined.contains("möré"), "{combined}"); // pseudo-transformed tail
     assert!(!combined.contains("and 3 more"), "{combined}");
@@ -2549,7 +3459,6 @@ fn test_edit_prompt_interactive_numbers_manage_the_named_ones() {}
 fn test_edit_prompt_preserves_existing_managed_and_adds_the_new_one() {}
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust `edit` prints only 'Edited: greet (greet)' and never the oracle's 'Detected but not yet managed: username' — the non-interactive edit reconcile does not surface new placeholders."]
 fn test_edit_prompt_non_interactive_names_the_unmanaged_variable() {
     let sandbox = Sandbox::new();
     sandbox.added("Say hello.\n", "greet");
@@ -2568,6 +3477,10 @@ fn test_edit_prompt_non_interactive_names_the_unmanaged_variable() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.status.code(), Some(0), "{combined}");
+    assert_eq!(
+        sandbox.body_bytes("greet").unwrap(),
+        b"Say hello.\n\nUser is {{username}}\n"
+    );
     assert!(
         sandbox.json(&["show", "greet", "--json"])["fields"]
             .as_array()
@@ -2582,7 +3495,6 @@ fn test_edit_prompt_non_interactive_names_the_unmanaged_variable() {
 }
 
 #[test]
-#[ignore = "FAILING CONTRACT (divergence): Rust `edit` does not surface body-introduced placeholders after an edit — it prints only 'Edited: greet (greet)', never the oracle's flood preview 'and 4 more candidates'. Non-interactive reconcile hint is absent."]
 fn test_edit_prompt_non_interactive_flood_previews_with_a_tail() {
     let sandbox = Sandbox::new();
     sandbox.added("Base.\n", "greet");
@@ -2605,7 +3517,21 @@ fn test_edit_prompt_non_interactive_flood_previews_with_a_tail() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.status.code(), Some(0), "{combined}");
-    assert!(combined.contains("and 4 more candidates"), "{combined}");
+    let flat = combined.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains("and 4 more candidates"), "{combined}");
+    assert!(flat.contains("h19"), "{combined}");
+    assert!(!flat.contains("h20"), "{combined}");
+    assert_eq!(
+        sandbox.body_bytes("greet").unwrap(),
+        format!("Base.\n\n{holes}\n").into_bytes()
+    );
+    assert!(
+        sandbox.json(&["show", "greet", "--json"])["fields"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "non-interactive manages nothing"
+    );
 }
 
 #[test]
@@ -2689,4 +3615,19 @@ fn test_edit_non_prompt_keeps_the_generic_drift_hint() {
         combined.contains("skit reconciles parameter drift at run time"),
         "{combined}"
     );
+}
+
+/// Deliver one canned answer the way a terminal delivers it.
+///
+/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
+/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
+/// character, so the prompt keeps waiting and both sides stop
+/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
+/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
+/// Unix exactly as it was.
+fn keystrokes(answer: &[u8]) -> Vec<u8> {
+    answer
+        .iter()
+        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
+        .collect()
 }

@@ -8,7 +8,6 @@ use ratatui_core::{
 use ratatui_crossterm::crossterm::event::{MouseEvent, MouseEventKind};
 use ratatui_interact::components::{
     Button, ButtonState, ButtonStyle, ButtonVariant, ScrollableContentState,
-    handle_scrollable_content_mouse,
 };
 use ratatui_widgets::{
     block::Block,
@@ -50,6 +49,16 @@ impl<A> ActionFooterItem<A> {
             starts_group: true,
             ..Self::new(key, label, action)
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn advertised_key(&self) -> &str {
+        &self.key
+    }
+
+    #[cfg(test)]
+    pub(crate) fn typed_action(&self) -> &A {
+        &self.action
     }
 }
 
@@ -150,15 +159,10 @@ impl<A: Clone> ActionFooterSession<A> {
             self.clicks.register(region.area, chip.item.action.clone());
         }
 
-        let indicator = match (
-            self.scroll.is_at_top(),
-            self.scroll.is_at_bottom(self.visible_height),
-        ) {
-            (true, true) => "",
-            (true, false) => "↓",
-            (false, true) => "↑",
-            (false, false) => "↕",
-        };
+        let at_top = self.scroll.is_at_top();
+        let at_bottom = self.scroll.is_at_bottom(self.visible_height);
+        let indicator =
+            ["", "↓", "↑", "↕"][usize::from(!at_top).saturating_mul(2) + usize::from(!at_bottom)];
         if !indicator.is_empty() {
             frame.render_widget(
                 Paragraph::new(indicator).style(Style::default().fg(PILL_FOREGROUND)),
@@ -181,17 +185,7 @@ impl<A: Clone> ActionFooterSession<A> {
                 .cloned()
                 .map_or(ActionFooterMouse::Ignored, ActionFooterMouse::Action);
         }
-        if matches!(
-            mouse.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) && handle_scrollable_content_mouse(
-            &mut self.scroll,
-            mouse,
-            self.viewport,
-            self.visible_height,
-        )
-        .is_some()
-        {
+        if handle_footer_scroll(&mut self.scroll, mouse, self.viewport, self.visible_height) {
             return ActionFooterMouse::Scrolled;
         }
         ActionFooterMouse::Ignored
@@ -278,26 +272,36 @@ struct Chip {
 pub(crate) fn required_height(
     width: u16,
     terminal_height: u16,
+    header_height: u16,
     state: &LibraryState,
     locale: Locale,
 ) -> u16 {
     if is_suppressed(state) {
         return 0;
     }
+    let available = terminal_height
+        .saturating_sub(header_height)
+        .saturating_sub(u16::from(terminal_height > header_height));
+    if available == 0 {
+        return 0;
+    }
     let inner_width = width.saturating_sub(2);
     if inner_width == 0 {
-        return 2.min(terminal_height);
+        return 2.min(available);
     }
     let (_, rows) = chips(state, locale, inner_width);
-    let visible_rows = rows.min(row_budget(terminal_height, state.command_context()));
+    let tiny = terminal_height <= 6;
+    let visible_rows = rows.min(if tiny {
+        1
+    } else {
+        row_budget(terminal_height, state.command_context())
+    });
+    let border_rows = if tiny || available <= 2 { 0 } else { 2 };
     let desired = u16::try_from(visible_rows)
         .unwrap_or(u16::MAX)
         .saturating_add(u16::from(has_note(state, inner_width)))
-        .saturating_add(2);
-    let available = terminal_height.saturating_sub(3);
-    desired
-        .min(available.max(terminal_height.min(2)))
-        .max(terminal_height.min(2))
+        .saturating_add(border_rows);
+    desired.min(available).max(1)
 }
 
 pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
@@ -318,17 +322,23 @@ impl FooterSession {
         state: &LibraryState,
         locale: Locale,
     ) -> Vec<HitRegion> {
+        let compact = area.height <= 2;
         let base_block = Block::default()
-            .borders(Borders::ALL)
+            .borders(if compact { Borders::NONE } else { Borders::ALL })
             .border_type(BorderType::Rounded);
         let inner = base_block.inner(area);
-        let (chips, rows) = chips(state, locale, inner.width);
         let note_rows = usize::from(has_note(state, inner.width));
         self.visible_height = usize::from(inner.height).saturating_sub(note_rows);
+        let mut content_width = inner.width;
+        let (mut positioned, mut rows) = chips(state, locale, content_width);
+        if compact && rows > self.visible_height && content_width > 1 {
+            content_width = content_width.saturating_sub(1);
+            (positioned, rows) = chips(state, locale, content_width);
+        }
         self.viewport = Rect::new(
             inner.x,
             inner.y,
-            inner.width,
+            content_width,
             u16::try_from(self.visible_height).unwrap_or(u16::MAX),
         );
         self.scroll.set_lines(vec![String::new(); rows]);
@@ -345,15 +355,25 @@ impl FooterSession {
             (false, true) => Some(" ↑ "),
             (false, false) => Some(" ↑↓ "),
         };
-        frame.render_widget(
-            indicator.map_or(base_block.clone(), |title| base_block.clone().title(title)),
-            area,
-        );
+        if compact {
+            frame.render_widget(base_block, area);
+            if let Some(title) = indicator {
+                frame.render_widget(
+                    Paragraph::new(title.trim()),
+                    Rect::new(inner.right().saturating_sub(1), inner.y, 1, 1),
+                );
+            }
+        } else {
+            frame.render_widget(
+                indicator.map_or(base_block.clone(), |title| base_block.clone().title(title)),
+                area,
+            );
+        }
 
         let offset = self.scroll.scroll_offset();
         let end = offset.saturating_add(self.visible_height);
         let mut hits = Vec::new();
-        for chip in chips
+        for chip in positioned
             .into_iter()
             .filter(|chip| chip.row >= offset && chip.row < end)
         {
@@ -363,7 +383,7 @@ impl FooterSession {
             let chip_area = Rect::new(
                 inner.x.saturating_add(chip.x),
                 y,
-                chip.width.min(inner.width.saturating_sub(chip.x)),
+                chip.width.min(content_width.saturating_sub(chip.x)),
                 1,
             );
             let mut state = ButtonState::enabled();
@@ -408,17 +428,30 @@ impl FooterSession {
     }
 
     pub(crate) fn handle_mouse(&mut self, mouse: &MouseEvent) -> bool {
-        matches!(
-            mouse.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) && handle_scrollable_content_mouse(
-            &mut self.scroll,
-            mouse,
-            self.viewport,
-            self.visible_height,
-        )
-        .is_some()
+        handle_footer_scroll(&mut self.scroll, mouse, self.viewport, self.visible_height)
     }
+}
+
+pub(crate) fn handle_footer_scroll(
+    scroll: &mut ScrollableContentState,
+    mouse: &MouseEvent,
+    viewport: Rect,
+    visible_height: usize,
+) -> bool {
+    if mouse.column < viewport.x
+        || mouse.column >= viewport.right()
+        || mouse.row < viewport.y
+        || mouse.row >= viewport.bottom()
+    {
+        return false;
+    }
+    let page = visible_height.max(1);
+    match mouse.kind {
+        MouseEventKind::ScrollUp => scroll.scroll_up(page),
+        MouseEventKind::ScrollDown => scroll.scroll_down(page, page),
+        _ => return false,
+    }
+    true
 }
 
 fn footer_button_style() -> ButtonStyle {
@@ -552,18 +585,27 @@ fn default_library_status(state: &LibraryState, locale: Locale) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use ratatui_core::{backend::TestBackend, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::{
         KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
+    use skit_domain::parameters::{ParamDecl, ParameterValue};
+    use skit_ui::{Action, RunFormView};
 
     use super::*;
+    use crate::screens::management::{
+        health_footer_items, runner_action_footer_items, runner_editor_footer_items,
+        runner_manager_footer_items, runner_removal_footer_items,
+    };
 
     #[derive(Clone, Debug, Eq, PartialEq)]
     enum TestAction {
         First,
         Second,
         Third,
+        Fourth,
     }
 
     fn click(column: u16, row: u16) -> MouseEvent {
@@ -619,6 +661,7 @@ mod tests {
             ActionFooterItem::new("1", "First action", TestAction::First),
             ActionFooterItem::new("2", "Second action", TestAction::Second),
             ActionFooterItem::new("3", "Third action", TestAction::Third),
+            ActionFooterItem::new("4", "Fourth action", TestAction::Fourth),
         ];
         let backend = TestBackend::new(22, 1);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -632,6 +675,48 @@ mod tests {
             session.handle_mouse(&scroll_down(1, 0)),
             ActionFooterMouse::Scrolled
         );
+        let bottom = session.scroll.scroll_offset();
+        assert_eq!(
+            session.handle_mouse(&MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            ActionFooterMouse::Scrolled
+        );
+        assert!(session.scroll.scroll_offset() < bottom);
+        assert_eq!(
+            session.handle_mouse(&scroll_down(1, 0)),
+            ActionFooterMouse::Scrolled
+        );
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+            })
+            .unwrap();
+        assert_eq!(
+            session.handle_mouse(&scroll_down(1, 0)),
+            ActionFooterMouse::Scrolled
+        );
+        assert_eq!(
+            session.handle_mouse(&MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 1,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            ActionFooterMouse::Ignored
+        );
+        assert_eq!(
+            session.handle_mouse(&click(80, 20)),
+            ActionFooterMouse::Ignored
+        );
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+            })
+            .unwrap();
         assert_eq!(
             session.handle_mouse(&scroll_down(1, 0)),
             ActionFooterMouse::Scrolled
@@ -643,8 +728,15 @@ mod tests {
             .unwrap();
         assert_eq!(
             session.handle_mouse(&click(1, 0)),
-            ActionFooterMouse::Action(TestAction::Third)
+            ActionFooterMouse::Action(TestAction::Fourth)
         );
+
+        let mut tall = Terminal::new(TestBackend::new(22, 5)).unwrap();
+        tall.draw(|frame| {
+            session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+        })
+        .unwrap();
+        assert_eq!(session.scroll.scroll_offset(), 0);
     }
 
     #[test]
@@ -654,5 +746,223 @@ mod tests {
             ActionFooterItem::new_group("2", "Two", TestAction::Second),
         ];
         assert_eq!(action_footer_required_height(80, &items), 2);
+        assert_eq!(action_footer_required_height(0, &items), 0);
+        assert_eq!(action_footer_required_height(1, &items), 2);
+        assert_eq!(action_footer_required_height::<TestAction>(20, &[]), 0);
+        assert_eq!(action_footer_content_width(0), 0);
+        assert_eq!(action_footer_content_width(2), 2);
+    }
+
+    fn assert_local_action_inventory<A>(items: Vec<ActionFooterItem<A>>)
+    where
+        A: Clone + std::fmt::Debug + Eq,
+    {
+        let expected = items
+            .iter()
+            .map(|item| item.action.clone())
+            .collect::<Vec<_>>();
+        for (width, height) in [(120, 3), (46, 2), (24, 1)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut session = ActionFooterSession::default();
+            let mut seen = Vec::new();
+            for _ in 0..32 {
+                terminal
+                    .draw(|frame| {
+                        session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+                    })
+                    .unwrap();
+                for y in 0..height {
+                    for x in 0..width {
+                        if let ActionFooterMouse::Action(action) =
+                            session.handle_mouse(&click(x, y))
+                            && !seen.contains(&action)
+                        {
+                            seen.push(action);
+                        }
+                    }
+                }
+                if seen.len() == expected.len() {
+                    break;
+                }
+                assert_eq!(
+                    session.handle_mouse(&scroll_down(0, 0)),
+                    ActionFooterMouse::Scrolled,
+                    "local footer stopped before every action at {width}x{height}: {seen:?}"
+                );
+            }
+            assert!(
+                seen.len() == expected.len() && expected.iter().all(|item| seen.contains(item)),
+                "local footer dropped an action at {width}x{height}: expected={expected:?} seen={seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_management_local_action_uses_the_scrollable_footer_at_every_size_tier() {
+        assert_local_action_inventory(health_footer_items(Locale::En));
+        assert_local_action_inventory(runner_editor_footer_items(Locale::En));
+        assert_local_action_inventory(runner_manager_footer_items(Locale::En));
+        assert_local_action_inventory(runner_action_footer_items(Locale::En, true));
+        assert_local_action_inventory(runner_action_footer_items(Locale::En, false));
+        assert_local_action_inventory(runner_removal_footer_items(Locale::En));
+    }
+
+    #[test]
+    fn run_form_command_registry_renders_insert_and_reset_in_both_chinese_locales() {
+        let mut declaration = ParamDecl::new("name");
+        declaration.default = Some(ParameterValue::String("World".to_owned()));
+        let form = RunFormView::from_declarations(
+            "greet",
+            "greet",
+            &[declaration],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        );
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Run(Box::new(form))));
+
+        let commands = command_specs(CommandContext::RunForm).collect::<Vec<_>>();
+        let insert = commands
+            .iter()
+            .find(|spec| spec.command == UiCommand::InsertValue)
+            .unwrap();
+        let reset = commands
+            .iter()
+            .find(|spec| spec.command == UiCommand::ResetDefault)
+            .unwrap();
+        assert_eq!(
+            (insert.bindings[0].hint, insert.label),
+            ("Ctrl+T", "Insert value")
+        );
+        assert_eq!(
+            (reset.bindings[0].hint, reset.label),
+            ("Ctrl+O", "Reset to default")
+        );
+
+        for (locale, insert_label, reset_label) in [
+            (Locale::ZhCn, "插入值", "恢复默认值"),
+            (Locale::ZhTw, "插入值", "恢復預設值"),
+        ] {
+            let mut session = FooterSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(100, 4)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = session.render(frame, frame.area(), &state, locale);
+                })
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            let compact = rendered.replace(' ', "");
+            assert!(
+                compact.contains(&format!("Ctrl+T{insert_label}")),
+                "{rendered}"
+            );
+            assert!(
+                compact.contains(&format!("Ctrl+O{reset_label}")),
+                "{rendered}"
+            );
+            assert!(!rendered.contains("Insert value"), "{rendered}");
+            assert!(!rendered.contains("Reset to default"), "{rendered}");
+        }
+    }
+
+    #[test]
+    fn complete_footer_wheel_clamps_when_the_terminal_grows() {
+        use skit_application::LibraryScan;
+        use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
+
+        let state = LibraryState::from_scan(LibraryScan {
+            entries: vec![EntrySummary {
+                slug: Slug::parse("alpha").unwrap(),
+                name: "Alpha".to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Copy,
+                description: String::new(),
+                target: None,
+            }],
+            diagnostics: Vec::new(),
+        });
+        let mut session = FooterSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), &state, Locale::En);
+            })
+            .unwrap();
+        for _ in 0..4 {
+            let _ = session.handle_mouse(&MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: session.viewport.x,
+                row: session.viewport.y,
+                modifiers: KeyModifiers::NONE,
+            });
+        }
+        assert!(session.scroll.scroll_offset() > 0);
+        let mut grown = Terminal::new(TestBackend::new(100, 16)).unwrap();
+        grown
+            .draw(|frame| {
+                let hits = session.render(frame, frame.area(), &state, Locale::ZhCn);
+                assert!(!hits.is_empty());
+            })
+            .unwrap();
+        assert_eq!(session.scroll.scroll_offset(), 0);
+        assert!(!session.handle_mouse(&MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }));
+    }
+
+    #[test]
+    fn one_line_settings_receipts_render_the_warning_in_three_locales() {
+        for (locale, status, warning) in [
+            (
+                Locale::En,
+                "Settings saved — Dropped GONE: it no longer exists in the script.",
+                "Dropped GONE",
+            ),
+            (
+                Locale::ZhCn,
+                "设置已保存 — 已移除 GONE：它已不存在于脚本中。",
+                "已移除 GONE",
+            ),
+            (
+                Locale::ZhTw,
+                "設定已儲存 — 已移除 GONE：它已不存在於指令稿中。",
+                "已移除 GONE",
+            ),
+        ] {
+            let mut state = LibraryState::default();
+            state.update(skit_ui::Action::SetStatus(status.to_owned()));
+            let mut session = FooterSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = session.render(frame, frame.area(), &state, locale);
+                })
+                .unwrap();
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                rendered
+                    .replace(' ', "")
+                    .contains(&warning.replace(' ', "")),
+                "{rendered}"
+            );
+        }
     }
 }

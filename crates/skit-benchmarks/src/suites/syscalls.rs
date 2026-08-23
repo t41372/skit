@@ -12,9 +12,17 @@ use crate::{
 use super::SuiteError;
 
 pub(super) fn run(context: &RunContext, plan: &SuitePlan) -> Result<SuiteOutput, SuiteError> {
-    if !cfg!(target_os = "linux") {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (context, plan);
         return Ok(SuiteOutput::skip_all(SuiteKind::Syscalls, "not Linux"));
     }
+    #[cfg(target_os = "linux")]
+    run_linux(context, plan)
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux(context: &RunContext, plan: &SuitePlan) -> Result<SuiteOutput, SuiteError> {
     let Some(strace) = &context.strace else {
         return Ok(SuiteOutput::skip_all(
             SuiteKind::Syscalls,

@@ -209,11 +209,11 @@ mod tests {
             true,
         ))
         .unwrap_err();
-        let ProcessError::Exit { code, stderr, .. } = checked else {
-            panic!("expected a checked exit error")
-        };
-        assert_eq!(code, "9");
-        assert_eq!(stderr.chars().count(), 2_000);
+        assert!(matches!(checked, ProcessError::Exit { .. }));
+        if let ProcessError::Exit { code, stderr, .. } = checked {
+            assert_eq!(code, "9");
+            assert_eq!(stderr.chars().count(), 2_000);
+        }
     }
 
     #[test]

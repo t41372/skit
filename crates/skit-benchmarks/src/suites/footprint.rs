@@ -145,6 +145,37 @@ fn measure_closure(
     environment: &BTreeMap<String, String>,
     output: &mut SuiteOutput,
 ) -> Result<(), SuiteError> {
+    measure_closure_with_ops(
+        context,
+        uv,
+        wheel,
+        environment,
+        output,
+        |spec| {
+            let output = run_process(spec)?;
+            Ok(ClosureProcessOutput {
+                stderr: output.stderr,
+                success: output.status.success(),
+            })
+        },
+        thread::sleep,
+    )
+}
+
+struct ClosureProcessOutput {
+    stderr: Vec<u8>,
+    success: bool,
+}
+
+fn measure_closure_with_ops(
+    context: &RunContext,
+    uv: &Path,
+    wheel: &Path,
+    environment: &BTreeMap<String, String>,
+    output: &mut SuiteOutput,
+    mut run: impl FnMut(&ProcessSpec) -> Result<ClosureProcessOutput, SuiteError>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<(), SuiteError> {
     let venv = context.workdir.join("footprint-venv");
     let venv_argv = vec![
         path_arg(uv),
@@ -153,7 +184,7 @@ fn measure_closure(
         "--python".to_owned(),
         path_arg(context.python.as_ref().expect("caller checked python")),
     ];
-    run_process(&ProcessSpec {
+    run(&ProcessSpec {
         argv: venv_argv,
         cwd: context.workdir.clone(),
         env: environment.clone(),
@@ -163,7 +194,7 @@ fn measure_closure(
     let python = venv_python(&venv);
     let mut last_error = String::new();
     for attempt in 1..=INSTALL_ATTEMPTS {
-        let install = run_process(&ProcessSpec {
+        let install = run(&ProcessSpec {
             argv: vec![
                 path_arg(uv),
                 "pip".to_owned(),
@@ -177,7 +208,7 @@ fn measure_closure(
             timeout: TOOL_TIMEOUT,
             check: false,
         })?;
-        if install.status.success() {
+        if install.success {
             last_error.clear();
             break;
         }
@@ -190,7 +221,7 @@ fn measure_closure(
             .rev()
             .collect();
         if attempt < INSTALL_ATTEMPTS {
-            thread::sleep(Duration::from_secs((attempt * 2) as u64));
+            sleep(Duration::from_secs((attempt * 2) as u64));
         }
     }
     if !last_error.is_empty() {
@@ -251,12 +282,10 @@ fn distribution_sizes(site: &Path, venv: &Path) -> Result<Vec<(String, u64)>, Su
         let mut total = 0_u64;
         let mut counted = HashSet::new();
         if record.is_file() {
-            let mut rows = csv::ReaderBuilder::new()
+            let reader = csv::ReaderBuilder::new()
                 .has_headers(false)
-                .from_path(&record)
-                .map_err(|error| {
-                    SuiteError::Contract(format!("could not read {}: {error}", record.display()))
-                })?;
+                .from_path(&record);
+            let mut rows = open_record(&record, reader)?;
             for row in rows.records() {
                 let row = row.map_err(|error| {
                     SuiteError::Contract(format!(
@@ -264,9 +293,7 @@ fn distribution_sizes(site: &Path, venv: &Path) -> Result<Vec<(String, u64)>, Su
                         record.display()
                     ))
                 })?;
-                let Some(relative) = row.get(0) else {
-                    continue;
-                };
+                let relative = row.get(0).unwrap_or_default();
                 let installed = site.join(relative);
                 if installed.is_file() {
                     total += file_size_u64(&installed)?;
@@ -290,6 +317,15 @@ fn distribution_sizes(site: &Path, venv: &Path) -> Result<Vec<(String, u64)>, Su
     }
     sizes.sort_by(|left, right| left.0.cmp(&right.0));
     Ok(sizes)
+}
+
+fn open_record(
+    record: &Path,
+    reader: Result<csv::Reader<fs::File>, csv::Error>,
+) -> Result<csv::Reader<fs::File>, SuiteError> {
+    reader.map_err(|error| {
+        SuiteError::Contract(format!("could not read {}: {error}", record.display()))
+    })
 }
 
 fn distribution_name(dist_info: &Path, directory_name: &str) -> Result<String, SuiteError> {
@@ -343,20 +379,24 @@ fn find_site_packages(venv: &Path) -> Result<PathBuf, SuiteError> {
     }
 }
 
+#[cfg(windows)]
 fn venv_python(venv: &Path) -> PathBuf {
-    if cfg!(windows) {
-        venv.join("Scripts/python.exe")
-    } else {
-        venv.join("bin/python")
-    }
+    venv.join("Scripts/python.exe")
 }
 
+#[cfg(not(windows))]
+fn venv_python(venv: &Path) -> PathBuf {
+    venv.join("bin/python")
+}
+
+#[cfg(windows)]
 fn venv_skit(venv: &Path) -> PathBuf {
-    if cfg!(windows) {
-        venv.join("Scripts/skit.exe")
-    } else {
-        venv.join("bin/skit")
-    }
+    venv.join("Scripts/skit.exe")
+}
+
+#[cfg(not(windows))]
+fn venv_skit(venv: &Path) -> PathBuf {
+    venv.join("bin/skit")
 }
 
 fn one_artifact(
@@ -452,9 +492,228 @@ fn contract_io(operation: &str, path: &Path, error: std::io::Error) -> SuiteErro
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt as _;
 
     use tempfile::TempDir;
+
+    fn context(workdir: &Path) -> crate::runner::RunContext {
+        crate::runner::RunContext {
+            repo_root: workdir.to_path_buf(),
+            out_dir: workdir.join("out"),
+            workdir: workdir.to_path_buf(),
+            datasets: BTreeMap::new(),
+            skit: workdir.join("skit"),
+            harness: workdir.join("skit-bench"),
+            python: Some(workdir.join("python")),
+            uv: Some(workdir.join("uv")),
+            bash: None,
+            node: None,
+            hyperfine: None,
+            strace: None,
+            cargo: None,
+            rustc: None,
+        }
+    }
+
+    #[cfg(windows)]
+    fn closure_site_packages(venv: &Path) -> PathBuf {
+        venv.join("Lib/site-packages")
+    }
+
+    #[cfg(not(windows))]
+    fn closure_site_packages(venv: &Path) -> PathBuf {
+        venv.join("lib/python3.13/site-packages")
+    }
+
+    #[test]
+    fn test_footprint_closure_bounds_and_isolates_retries() {
+        use crate::{SuiteKind, SuiteOutput, process::ProcessSpec};
+
+        let root = TempDir::new().unwrap();
+        let workdir = root.path().join("work");
+        fs::create_dir(&workdir).unwrap();
+        let context = context(&workdir);
+        let environment = BTreeMap::from([("PATH".to_owned(), "benchmark-path".to_owned())]);
+        let wheel = context.workdir.join("skit.whl");
+        fs::write(&wheel, "wheel").unwrap();
+        let mut output = SuiteOutput {
+            suite: SuiteKind::Footprint,
+            duration_seconds: 0.0,
+            metrics: BTreeMap::new(),
+            skipped: Vec::new(),
+            raw: BTreeMap::new(),
+        };
+        let mut calls = Vec::new();
+        let mut install_attempts = 0;
+        let venv = context.workdir.join("footprint-venv");
+        let mut sleeps = Vec::new();
+        {
+            let mut run = |spec: &ProcessSpec| {
+                calls.push(spec.clone());
+                let operation = spec.argv.get(1).map(String::as_str);
+                if operation == Some("venv") {
+                    fs::create_dir_all(closure_site_packages(&venv)).unwrap();
+                }
+                let success = if operation == Some("pip") {
+                    install_attempts += 1;
+                    install_attempts == 2
+                } else {
+                    true
+                };
+                Ok(super::ClosureProcessOutput {
+                    stderr: if success {
+                        Vec::new()
+                    } else {
+                        b"temporary network error".to_vec()
+                    },
+                    success,
+                })
+            };
+
+            super::measure_closure_with_ops(
+                &context,
+                context.uv.as_ref().unwrap(),
+                &wheel,
+                &environment,
+                &mut output,
+                &mut run,
+                &mut |duration| sleeps.push(duration),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(install_attempts, 2);
+        assert_eq!(sleeps, [std::time::Duration::from_secs(2)]);
+        assert_eq!(calls.len(), 3, "one venv and two install processes");
+        assert!(calls.iter().all(|spec| spec.cwd == context.workdir));
+        assert!(calls.iter().all(|spec| spec.env == environment));
+        assert!(calls.iter().all(|spec| spec.timeout == super::TOOL_TIMEOUT));
+        assert!(calls[0].check);
+        assert!(calls[1..].iter().all(|spec| !spec.check));
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|spec| spec.argv.get(1).is_some_and(|value| value == "pip"))
+                .count(),
+            2
+        );
+        assert!(output.metrics.contains_key("footprint.closure_bytes"));
+        let serialized = output.to_json().unwrap();
+        assert_eq!(SuiteOutput::from_json(&serialized).unwrap(), output);
+
+        let mut failure_calls = Vec::new();
+        let mut failure_attempts = 0;
+        let mut failure_sleeps = Vec::new();
+        let mut failure_output = SuiteOutput {
+            suite: SuiteKind::Footprint,
+            duration_seconds: 0.0,
+            metrics: BTreeMap::new(),
+            skipped: Vec::new(),
+            raw: BTreeMap::new(),
+        };
+        let error = super::measure_closure_with_ops(
+            &context,
+            context.uv.as_ref().unwrap(),
+            &wheel,
+            &environment,
+            &mut failure_output,
+            |spec| {
+                failure_calls.push(spec.clone());
+                let is_install = spec.argv.get(1).is_some_and(|value| value == "pip");
+                if is_install {
+                    failure_attempts += 1;
+                }
+                Ok(super::ClosureProcessOutput {
+                    stderr: if is_install {
+                        format!("temporary failure {failure_attempts}").into_bytes()
+                    } else {
+                        Vec::new()
+                    },
+                    success: !is_install,
+                })
+            },
+            |duration| failure_sleeps.push(duration),
+        )
+        .unwrap_err();
+
+        assert_eq!(failure_attempts, 3);
+        assert_eq!(
+            failure_sleeps,
+            [
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(4)
+            ]
+        );
+        assert_eq!(
+            failure_calls.len(),
+            4,
+            "one venv and three install processes"
+        );
+        assert!(failure_calls.iter().all(|spec| spec.cwd == context.workdir));
+        assert!(failure_calls.iter().all(|spec| spec.env == environment));
+        assert!(
+            failure_calls
+                .iter()
+                .all(|spec| spec.timeout == super::TOOL_TIMEOUT)
+        );
+        assert!(error.to_string().contains("closure install failed 3 times"));
+        assert!(error.to_string().ends_with("temporary failure 3"));
+        assert!(failure_output.metrics.is_empty());
+    }
+
+    #[test]
+    fn test_the_library_footprint_metrics_divide_into_each_other() {
+        use crate::{
+            SuiteKind, SuiteOutput, SuitePlan,
+            dataset::{DEFAULT_SEED, DEFAULT_STATE_FRACTION, generate},
+        };
+
+        let root = TempDir::new().unwrap();
+        let manifest = generate(
+            &root.path().join("dataset"),
+            3,
+            DEFAULT_SEED,
+            DEFAULT_STATE_FRACTION,
+        )
+        .unwrap();
+        let mut context = context(root.path());
+        context.datasets.insert(3, manifest);
+        let plan = SuitePlan {
+            kind: SuiteKind::Footprint,
+            library_sizes: vec![3],
+            warmup: 1,
+            minimum_runs: 1,
+            samples: 1,
+            fast: true,
+            measure_closure: false,
+            run_javascript_lane: false,
+            run_doctor: false,
+            compare_mode: false,
+        };
+        let mut output = SuiteOutput {
+            suite: SuiteKind::Footprint,
+            duration_seconds: 0.0,
+            metrics: BTreeMap::new(),
+            skipped: Vec::new(),
+            raw: BTreeMap::new(),
+        };
+        super::measure_libraries(&context, &plan, &mut output).unwrap();
+        let output = SuiteOutput::from_json(&output.to_json().unwrap()).unwrap();
+
+        let store = output.metrics["footprint.library_bytes.n3"].value;
+        let state = output.metrics["footprint.library_state_bytes.n3"].value;
+        let total = output.metrics["footprint.library_total_bytes.n3"].value;
+        let per_entry = output.metrics["footprint.library_bytes_per_entry.n3"].value;
+        assert_eq!(total, store + state);
+        assert_eq!(per_entry, total / 3.0);
+    }
 
     #[test]
     fn tree_size_counts_files_once_and_ignores_directories() {
@@ -488,10 +747,15 @@ mod tests {
         let site = venv.join("lib/python3.13/site-packages");
         let dist = site.join("skit_cli-0.5.0.dist-info");
         fs::create_dir_all(&dist).unwrap();
-        fs::create_dir_all(venv.join("bin")).unwrap();
+        // A venv puts the console script in `Scripts\skit.exe` on Windows and in `bin/skit`
+        // elsewhere. Model the layout of the running platform, because that is the only layout
+        // the measurement looks in. The literal names keep this test independent of `venv_skit`.
+        let script_dir = venv.join(if cfg!(windows) { "Scripts" } else { "bin" });
+        let script = script_dir.join(if cfg!(windows) { "skit.exe" } else { "skit" });
+        fs::create_dir_all(&script_dir).unwrap();
         fs::write(site.join("payload"), b"abc").unwrap();
-        fs::write(venv.join("bin/skit"), b"12345").unwrap();
-        fs::write(dist.join("RECORD"), "payload,,\n../../../bin/skit,,\n").unwrap();
+        fs::write(&script, b"12345").unwrap();
+        fs::write(dist.join("RECORD"), "payload,,\n").unwrap();
         fs::write(
             dist.join("METADATA"),
             "Metadata-Version: 2.4\nName: skit-cli\n",
@@ -589,5 +853,119 @@ mod tests {
         fs::create_dir(&broken).unwrap();
         fs::write(broken.join("RECORD"), [0xff, b',', b',', b'\n']).unwrap();
         assert!(super::distribution_sizes(&site, &venv).is_err());
+
+        let unreadable = site.join("unreadable-1.0.dist-info");
+        fs::create_dir(&unreadable).unwrap();
+        fs::create_dir(unreadable.join("RECORD")).unwrap();
+        assert!(super::distribution_sizes(&site, &venv).is_err());
+
+        let vanished = site.join("vanished.RECORD");
+        let error = super::open_record(
+            &vanished,
+            csv::ReaderBuilder::new()
+                .has_headers(false)
+                .from_path(&vanished),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains(&vanished.display().to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn footprint_names_dist_creation_and_retried_install_failures() {
+        use crate::{
+            SuiteKind,
+            suites::tests::{Fixture, plan},
+        };
+
+        let fixture = Fixture::new();
+        let dist = fixture.context.workdir.join("dist");
+        fs::write(&dist, "unchanged").unwrap();
+        let error = super::run(&fixture.context, &plan(SuiteKind::Footprint, &[0])).unwrap_err();
+        assert!(error.to_string().contains(&dist.display().to_string()));
+        assert_eq!(fs::read_to_string(&dist).unwrap(), "unchanged");
+
+        let fixture = Fixture::new();
+        let uv = fixture.context.uv.clone().unwrap();
+        let log = fixture.context.workdir.join("uv-invocations");
+        let script = format!(
+            r#"#!/bin/sh
+printf '%s|%s\n' "$PWD" "$*" >> '{}'
+case "$1" in
+  build)
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --out-dir) out=$2; shift 2 ;; *) shift ;; esac
+    done
+    mkdir -p "$out"
+    printf wheel > "$out/skit_cli-0.5.0-py3-none-any.whl"
+    printf source > "$out/skit_cli-0.5.0.tar.gz"
+    ;;
+  venv)
+    venv=$2
+    mkdir -p "$venv/bin" "$venv/lib/python3.13/site-packages"
+    printf '#!/bin/sh\nexit 0\n' > "$venv/bin/python"
+    chmod +x "$venv/bin/python"
+    ;;
+  pip)
+    i=0
+    while [ "$i" -lt 2100 ]; do printf x >&2; i=$((i + 1)); done
+    printf 'TAIL\n' >&2
+    exit 9
+    ;;
+esac
+"#,
+            log.display()
+        );
+        fs::write(&uv, script).unwrap();
+        fs::set_permissions(&uv, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut closure_plan = plan(SuiteKind::Footprint, &[0]);
+        closure_plan.measure_closure = true;
+        let error = super::run(&fixture.context, &closure_plan).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("closure install failed 3 times"));
+        assert!(message.trim_end().ends_with("TAIL"));
+        assert!(message.len() < 2_100);
+
+        let invocations = fs::read_to_string(&log).unwrap();
+        let lines = invocations.lines().collect::<Vec<_>>();
+        let physical_repo_root = fixture.context.repo_root.canonicalize().unwrap();
+        let physical_workdir = fixture.context.workdir.canonicalize().unwrap();
+        assert_eq!(lines.len(), 5);
+        assert_eq!(
+            lines[0],
+            format!(
+                "{}|build --out-dir {}",
+                physical_repo_root.display(),
+                fixture.context.workdir.join("dist").display()
+            )
+        );
+        assert_eq!(
+            lines[1],
+            format!(
+                "{}|venv {} --python {}",
+                physical_workdir.display(),
+                fixture.context.workdir.join("footprint-venv").display(),
+                fixture.context.python.as_ref().unwrap().display()
+            )
+        );
+        let install = format!(
+            "{}|pip install --python {} {}",
+            physical_workdir.display(),
+            fixture
+                .context
+                .workdir
+                .join("footprint-venv/bin/python")
+                .display(),
+            fixture
+                .context
+                .workdir
+                .join("dist/skit_cli-0.5.0-py3-none-any.whl")
+                .display()
+        );
+        assert_eq!(
+            &lines[2..],
+            [install.as_str(), install.as_str(), install.as_str()]
+        );
     }
 }

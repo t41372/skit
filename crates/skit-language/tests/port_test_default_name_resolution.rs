@@ -93,7 +93,7 @@ fn test_argparse_int_and_bool_constant_defaults_resolve() {
 #[test]
 fn test_argparse_augmented_assigned_name_does_not_resolve() {
     // A name augmented-assigned anywhere is a working variable, not a knowable constant:
-    // its value at parse time isn't a single literal, so the field degrades.
+    // its value at parse time is not a single literal, so the field degrades.
     let fields = static_fields(
         "python",
         "import argparse\nHOST = 'a'\nHOST += 'b'\nap = argparse.ArgumentParser()\nap.add_argument('--host', default=HOST)\n",
@@ -173,7 +173,7 @@ fn test_argparse_star_import_makes_every_constant_default_opaque() {
 
 #[test]
 fn test_argparse_unknown_name_default_degrades() {
-    // A default naming something that isn't a top-level literal const at all: no resolution,
+    // A default naming something that is not a top-level literal const at all: no resolution,
     // so the field degrades (shown, omitted when left empty so the script's own default applies).
     let fields = static_fields(
         "python",
@@ -237,7 +237,7 @@ fn test_argparse_conditional_rebinding_does_not_resolve() {
 #[test]
 fn test_argparse_try_except_rebinding_does_not_resolve() {
     // The same rule inside a try/except: neither rebinding is a top-level statement, so the
-    // harvest can't see them — the module-wide binding count is what catches this.
+    // harvest cannot see them — the module-wide binding count is what catches this.
     let fields = static_fields(
         "python",
         "import argparse\nHOST = 'localhost'\ntry:\n    import prodcfg\n    HOST = 'prod.example.com'\nexcept ImportError:\n    HOST = 'fallback.example.com'\nap = argparse.ArgumentParser()\nap.add_argument('--host', default=HOST)\n",
@@ -275,7 +275,7 @@ fn test_argparse_function_local_assignment_blocks_resolution() {
 #[test]
 fn test_argparse_function_parameter_shadow_blocks_resolution() {
     // A PARAMETER of the same name binds it too (_bound_names counts ast.arg), so the
-    // top-level literal is no longer provably the only binding — degrade, don't guess.
+    // top-level literal is no longer provably the only binding — degrade, do not guess.
     let fields = static_fields(
         "python",
         "import argparse\nHOST = 'localhost'\ndef connect(HOST):\n    return HOST\nap = argparse.ArgumentParser()\nap.add_argument('--host', default=HOST)\n",
@@ -495,7 +495,7 @@ fn test_js_function_local_const_shadow_does_not_resolve() {
     // `_const_candidates` only sees the TOP-LEVEL `const HOST`, so without the file-wide
     // declaration count the field would resolve to the outer "localhost" — overriding the
     // inner value the script would actually have used, on every run. Two declarations of
-    // the name means the harvested literal isn't provably the one in scope: degrade.
+    // the name means the harvested literal is not provably the one in scope: degrade.
     let fields = static_fields(
         "js",
         "const HOST = \"localhost\";\nfunction main() {\n  const HOST = process.env.HOST ?? \"prod.internal\";\n  parseArgs({options:{host:{type:\"string\", default: HOST}}});\n}\nmain();\n",

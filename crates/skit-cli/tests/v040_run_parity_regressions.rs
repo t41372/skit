@@ -129,7 +129,16 @@ fn required_commands_trim_values_and_drop_empty_occurrences() {
 
 #[test]
 fn standard_input_cannot_create_an_executable_reference() {
-    for kind_args in [vec!["--exe"], vec!["--kind", "exe"]] {
+    for (kind_args, refusal) in [
+        (
+            vec!["--exe"],
+            "--exe can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",
+        ),
+        (
+            vec!["--kind", "exe"],
+            "standard input cannot be an executable entry",
+        ),
+    ] {
         let sandbox = Sandbox::new();
         let mut args = vec!["add", "-", "--name", "Pipe executable"];
         args.extend(kind_args);
@@ -139,7 +148,7 @@ fn standard_input_cannot_create_an_executable_reference() {
             .write_stdin("not an executable path\n")
             .assert()
             .code(2)
-            .stderr(predicate::str::contains("standard input"));
+            .stderr(predicate::str::contains(refusal));
         assert!(!sandbox.data.path().join("scripts").exists());
     }
 }
