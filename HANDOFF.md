@@ -1034,8 +1034,42 @@ every file we write, including empty-section pruning), PEP 723 (formatting diffe
 values are equal in every case, and reference entries never touch the user's file), all
 sampled exit codes, and the token surface byte-for-byte (including local-time correctness).
 
-Round 4's remaining scope, recorded: Windows-side verification of rounds 1-3, the other
-tables at narrow widths, TUI surfaces against Textual, and the `skill`/`runner` help text.
+Round 4 found the ROOT that round 3's table fix was a manifestation of, plus a
+discoverability regression; both are fixed (`34d4563`, `52053da`, `456e90f`):
 
-Aggregate 4088 / 0 / 525 with complete executable-source line coverage.
+- CONSOLE PROSE WRAPPING: the oracle's `Console()` folds EVERY printed string to the
+  terminal width (and builds a SECOND console for stderr, so each stream answers for
+  itself). We had fixed only tables. Measured at 60 columns before: params 131, doctor
+  132, show 118, runner list's notice 102. The fold now lives in the two macros all 113
+  prose sites funnel through. Rich's algorithm was characterized by reading `_wrap.py`
+  and then EXECUTING it: a long word folds at the exact cell with no ellipsis (unlike
+  table cells), trailing spaces are trimmed only when the line's CELL width exceeds the
+  console, and the space after a folded word opens the next line. Two self-caught errors
+  later, a 400-sentence x 8-width differential test matches Rich exactly, and `params` at
+  width 40 is byte-identical including its trailing space. Piped output stays unwrapped,
+  which is why one golden owner moved and only honestly: a 120-column PTY owner whose
+  132-character refusal now folds (its terminal was widened to 200; folding is owned
+  separately).
+- INVENTED HELP TEXT: 81 strings (67 option helps + 14 command descriptions) were skit's
+  own inventions rather than translations — their Chinese too. All are now the oracle's
+  wording, with zh-CN and zh-TW copied verbatim from the .po (63 checked, 0 mismatches).
+  The applying fork re-derived the package independently and found what it missed:
+  `preset save --from-last` (an 18th differing flag) and an 8th `--json` site. Two rows
+  were deliberately KEPT rather than replaced — `Confirm removal` serves four skit-tui
+  screens, and `Refuse to prompt` serves `preset delete --no-input`, an option v0.4 does
+  not have. One table-driven owner now pins all 81 strings with three Chinese canaries;
+  the review's diagnosis was exactly that nothing had pinned them.
+
+Round 4 also cleared, by driving the oracle's Textual pilot in-process: the TUI Library
+screen's columns/rows/sort, the detail panel's field set, order, labels and secret
+masking, and the footer command sets (ours adds only an `h` alias and `Backspace`, both
+additive). The Windows-coverage statement is on record: all five earlier fixes have named
+Windows-passing owners; the oracle-interop clearances, Windows locale negotiation, and the
+gated interactive-PTY choreography remain Linux-only or hands-on by design.
+
+Round 5's remaining scope: the TUI form screens (Add/Run/Settings) against the oracle's
+compose(), Windows-side locale negotiation, and confirmation that the prose fold keeps
+piped output byte-identical (verified locally; CI confirms).
+
+Aggregate 4091 / 0 / 525 with complete executable-source line coverage.
 
