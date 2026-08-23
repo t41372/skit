@@ -27,6 +27,7 @@ use skit_language::write_managed_params;
 use skit_store::{FileConfigStore, FileFormStateStore, FileStore, PromptRunner};
 use skit_ui::{KnownEntryKind, ReviewDefaults, ReviewState, SourceSnapshot};
 use tempfile::TempDir;
+use unicode_width::UnicodeWidthStr as _;
 
 #[path = "support/pty.rs"]
 mod pty;
@@ -2840,5 +2841,83 @@ fn terminal_plain_launch_menu_uses_the_same_prefill_and_argument_contract() {
     assert!(
         output.contains("Prompt runner choices: backup, local [local]:"),
         "{output}"
+    );
+}
+
+/// The table fits the terminal it is printed into.
+///
+/// Version 0.4 draws with Rich, whose table takes the console width, so a long name folds or is cut
+/// instead of running past the edge (`skit-oracle/src/skit/cli.py:2291`). Rendering the same entry
+/// at two widths proves the width is read rather than assumed: at 100 columns the natural table is
+/// 67 wide, and at 60 every line is exactly 60. This needs no cursor handshake, so it runs on every
+/// host.
+#[test]
+fn a_listed_table_fits_the_width_of_the_terminal_it_prints_into() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("wide.py");
+    fs::write(&source, "print(1)\n").unwrap();
+
+    let add = std::process::Command::new(env!("CARGO_BIN_EXE_skit"))
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--name",
+            "a-very-long-entry-name-that-does-not-fit",
+            "--no-input",
+        ])
+        .env("SKIT_DATA_DIR", data.path())
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_CONFIG_DIR", config.path())
+        .env("SKIT_LANG", "en")
+        .output()
+        .unwrap();
+    assert!(add.status.success(), "{add:?}");
+
+    let listed = |columns: u16| {
+        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.args(["list"]);
+        command.env("SKIT_DATA_DIR", data.path());
+        command.env("SKIT_STATE_DIR", state.path());
+        command.env("SKIT_CONFIG_DIR", config.path());
+        command.env("SKIT_LANG", "en");
+        let pty = PtyChild::spawn(
+            command,
+            PtySize {
+                rows: 24,
+                cols: columns,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            AnswerQueries::On,
+        );
+        let (_, output) = pty.finish();
+        output
+            .lines()
+            .map(|line| line.trim_end_matches('\r').to_owned())
+            .filter(|line| line.starts_with(['┏', '│', '┡', '└']))
+            .collect::<Vec<_>>()
+    };
+
+    let wide = listed(100);
+    assert!(!wide.is_empty(), "the table must reach the terminal");
+    for line in &wide {
+        assert_eq!(line.width(), 67, "{wide:?}");
+    }
+    assert!(
+        wide.iter()
+            .any(|line| line.contains("a-very-long-entry-name-that-does-not-fit")),
+        "{wide:?}"
+    );
+
+    let narrow = listed(60);
+    assert!(!narrow.is_empty(), "the table must reach the terminal");
+    for line in &narrow {
+        assert_eq!(line.width(), 60, "{narrow:?}");
+    }
+    assert!(
+        narrow.iter().any(|line| line.contains('…')),
+        "a name too long for the terminal is cut: {narrow:?}"
     );
 }

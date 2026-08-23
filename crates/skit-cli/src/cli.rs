@@ -95,7 +95,7 @@ use skit_ui::{
     SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
 };
 use thiserror::Error;
-use unicode_width::UnicodeWidthStr as _;
+use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::run::{RunArgs, RunError, apply_sets};
 
@@ -2600,19 +2600,7 @@ fn write_table<W: io::Write, const COLUMNS: usize>(
     headers: &[String; COLUMNS],
     rows: &[[String; COLUMNS]],
 ) -> io::Result<()> {
-    let mut widths = std::array::from_fn(|column| {
-        display_lines(&headers[column])
-            .map(str::width)
-            .max()
-            .unwrap_or(0)
-    });
-    for row in rows {
-        for (column, cell) in row.iter().enumerate() {
-            widths[column] =
-                widths[column].max(display_lines(cell).map(str::width).max().unwrap_or(0));
-        }
-    }
-
+    let widths = table_widths(headers, rows, human_output_width());
     write_border(output, '┏', '┳', '┓', '━', &widths)?;
     write_table_row(output, headers, &widths)?;
     write_border(output, '┡', '╇', '┩', '━', &widths)?;
@@ -2620,6 +2608,77 @@ fn write_table<W: io::Write, const COLUMNS: usize>(
         write_table_row(output, row, &widths)?;
     }
     write_border(output, '└', '┴', '┘', '─', &widths)
+}
+
+/// The width a table may occupy, or `None` when the output is not a terminal.
+///
+/// Version 0.4 draws with Rich, whose console width is the terminal's when one is attached and a
+/// fixed default otherwise. A redirected run therefore keeps one deterministic width, which is what
+/// every recorded output in this repository holds.
+fn human_output_width() -> Option<usize> {
+    if !io::stdout().is_terminal() {
+        return None;
+    }
+    ratatui_crossterm::crossterm::terminal::size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+}
+
+/// The width of each column, shrinking the widest ones until the table fits.
+///
+/// Version 0.4 lets Rich fit the table to the console: a table that already fits keeps its natural
+/// columns, and a table that does not gives back width from its widest column first, so narrow
+/// columns stay readable (`skit-oracle/src/skit/cli.py:2291` builds a plain `Table`, whose default
+/// width is the console width). Every column keeps at least one cell so a border never collapses.
+fn table_widths<const COLUMNS: usize>(
+    headers: &[String; COLUMNS],
+    rows: &[[String; COLUMNS]],
+    available: Option<usize>,
+) -> [usize; COLUMNS] {
+    let mut widths: [usize; COLUMNS] = std::array::from_fn(|column| {
+        display_lines(&headers[column])
+            .map(str::width)
+            .max()
+            .unwrap_or(0)
+    });
+    for row in rows {
+        for (column, cell) in row.iter().enumerate() {
+            widths[column] = widths[column].max(cell_width(cell));
+        }
+    }
+    let Some(available) = available else {
+        return widths;
+    };
+    // Every column costs its content plus one space on each side, and every column is followed by a
+    // border character; the leading border adds the last one.
+    let furniture = COLUMNS * 3 + 1;
+    let mut total: usize = widths.iter().sum::<usize>() + furniture;
+    while total > available {
+        let Some(widest) = widest_column(&widths) else {
+            break;
+        };
+        widths[widest] -= 1;
+        total -= 1;
+    }
+    widths
+}
+
+/// The width the longest line of a cell needs.
+fn cell_width(cell: &str) -> usize {
+    display_lines(cell).map(str::width).max().unwrap_or(0)
+}
+
+/// The column to take one cell from, or `None` when none can give more.
+///
+/// The widest column pays first, and a tie goes to the rightmost of the tied columns, which is the
+/// order Rich reduces them in: at 25 columns the `Name`/`Kind`/`Help` table keeps 4, 6 and 5 cells.
+fn widest_column<const COLUMNS: usize>(widths: &[usize; COLUMNS]) -> Option<usize> {
+    widths
+        .iter()
+        .enumerate()
+        .filter(|(_, width)| **width > 1)
+        .max_by_key(|(index, width)| (**width, *index))
+        .map(|(index, _)| index)
 }
 
 fn display_lines(value: &str) -> impl Iterator<Item = &str> {
@@ -2657,19 +2716,80 @@ fn write_table_row<W: io::Write, const COLUMNS: usize>(
 ) -> io::Result<()> {
     let lines = cells
         .iter()
-        .map(|cell| display_lines(cell).collect::<Vec<_>>())
+        .enumerate()
+        .map(|(column, cell)| wrap_cell(cell, widths[column]))
         .collect::<Vec<_>>();
     let height = lines.iter().map(Vec::len).max().unwrap_or(1);
     for line in 0..height {
         write!(output, "│")?;
         for (column, width) in widths.iter().enumerate() {
-            let value = lines[column].get(line).copied().unwrap_or("");
+            let empty = String::new();
+            let value = lines[column].get(line).unwrap_or(&empty);
             let padding = width.saturating_sub(value.width());
             write!(output, " {value}{} │", " ".repeat(padding))?;
         }
         writeln!(output)?;
     }
     Ok(())
+}
+
+/// The lines a cell occupies once it fits the width it was given.
+///
+/// Version 0.4 lets Rich fold a cell: it breaks at spaces first, and a word that cannot fit even
+/// alone is cut with an ellipsis. A cell already inside its width keeps its own lines.
+fn wrap_cell(cell: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for line in display_lines(cell) {
+        if line.width() <= width {
+            lines.push(line.to_owned());
+            continue;
+        }
+        let mut current = String::new();
+        for word in line.split(' ') {
+            let candidate = if current.is_empty() {
+                word.width()
+            } else {
+                current.width() + 1 + word.width()
+            };
+            if candidate <= width {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(word);
+                continue;
+            }
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            if word.width() <= width {
+                current.push_str(word);
+            } else {
+                lines.push(truncate_to_width(word, width));
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// A word cut to the width it was given, ending in an ellipsis.
+///
+/// A width of one cell has room for the ellipsis alone, which is what Rich shows there.
+fn truncate_to_width(word: &str, width: usize) -> String {
+    let mut kept = String::new();
+    for character in word.chars() {
+        if kept.width() + character.width().unwrap_or(0) + 1 > width {
+            break;
+        }
+        kept.push(character);
+    }
+    kept.push('…');
+    kept
 }
 
 fn list_description(store: &FileStore, entry: &EntrySummary, locale: Locale) -> String {

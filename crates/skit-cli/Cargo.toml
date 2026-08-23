@@ -24,6 +24,7 @@ path = "src/main.rs"
 clap.workspace = true
 clap_complete.workspace = true
 dialoguer.workspace = true
+ratatui-crossterm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rpassword.workspace = true

@@ -11691,3 +11691,51 @@ fn keystrokes(answer: &[u8]) -> Vec<u8> {
         .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
         .collect()
 }
+
+/// A table that already fits keeps its natural columns, and one that does not gives back width
+/// from its widest column first.
+///
+/// Version 0.4 lets Rich fit the table to the console width (`skit-oracle/src/skit/cli.py:2291`),
+/// so the same input renders at 67 columns on a wide terminal and at exactly 60 on a narrow one.
+/// The furniture is one border character per column plus the leading one, and a space on each side
+/// of every cell.
+#[test]
+fn table_columns_shrink_only_until_the_table_fits() {
+    let headers = ["Name".to_owned(), "Kind".to_owned(), "Help".to_owned()];
+    let rows = [[
+        "abcd".to_owned(),
+        "python".to_owned(),
+        "hello world".to_owned(),
+    ]];
+    // 4 + 6 + 11 cells plus 3 columns * 3 + 1 of furniture = 31.
+    let natural = [4, 6, 11];
+    assert_eq!(table_widths(&headers, &rows, None), natural);
+    assert_eq!(table_widths(&headers, &rows, Some(100)), natural);
+    assert_eq!(table_widths(&headers, &rows, Some(31)), natural);
+    // One column over: only the widest pays.
+    assert_eq!(table_widths(&headers, &rows, Some(30)), [4, 6, 10]);
+    // The widest keeps paying until it ties, and then the tie pays leftmost first.
+    assert_eq!(table_widths(&headers, &rows, Some(25)), [4, 6, 5]);
+    assert_eq!(table_widths(&headers, &rows, Some(22)), [4, 4, 4]);
+    // A terminal too narrow for the furniture leaves one cell in every column.
+    assert_eq!(table_widths(&headers, &rows, Some(1)), [1, 1, 1]);
+}
+
+/// A cell folds at its spaces, and a word that cannot fit alone is cut with an ellipsis.
+#[test]
+fn a_cell_folds_at_its_spaces_before_it_is_cut() {
+    assert_eq!(wrap_cell("hello world", 11), ["hello world"]);
+    assert_eq!(wrap_cell("hello world", 5), ["hello", "world"]);
+    assert_eq!(
+        wrap_cell("a fairly long description", 14),
+        ["a fairly long", "description"]
+    );
+    // An unbreakable word keeps room for the ellipsis, and the ellipsis alone fills one cell.
+    assert_eq!(wrap_cell("a-very-long-name", 8), ["a-very-…"]);
+    assert_eq!(wrap_cell("unbreakable", 1), ["…"]);
+    // A wide glyph costs two cells, so the cut leaves the odd cell empty rather than splitting one.
+    assert_eq!(wrap_cell("工具库示例", 7), ["工具库…"]);
+    // Authored lines survive, and an empty cell still occupies one line.
+    assert_eq!(wrap_cell("one\ntwo", 5), ["one", "two"]);
+    assert_eq!(wrap_cell("", 5), [""]);
+}
