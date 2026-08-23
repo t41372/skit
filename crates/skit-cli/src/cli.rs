@@ -2771,9 +2771,8 @@ fn wrap_cell(cell: &str, width: usize) -> Vec<String> {
             lines.push(current);
         }
     }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
+    // A cell always occupies at least one line: splitting on newlines yields the whole cell when it
+    // holds none, and an empty cell yields one empty line.
     lines
 }
 
