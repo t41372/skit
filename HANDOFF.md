@@ -793,6 +793,23 @@ and hold ~45 POSIX-literal sites with confirmed members (`port_test_launcher.rs:
 WorkdirMissing-vs-InvalidWorkdir, launch.rs private_tests `/custom`//`/missing`/`/bin/sh`,
 no cfg gates) — the pre-fix wave for that crate is dispatched alongside this push.
 
+Waves 21 and 22 (`6270c35` / `a949dc1`) closed the remaining known Windows map in one
+push. Wave 21 inventoried the 162 never-ran-on-Windows targets and treated skit-runtime
+completely: host-absolute virtual workdirs where the contract is neutral, `#[cfg(unix)]`
+with the named compile-time branch where the contract IS the POSIX arm (the `/bin/sh`
+lowering, POSIX render, real signal conventions; template-quoting file-gated), inert sites
+verified as honest negatives; the cross-crate sweep found zero further members of any
+established class. Flag on record: `render_windows_command_template` has no active owner
+anywhere — a native-Windows additive owner is owed. Wave 22 fixed a REAL product
+divergence at its policy seam: the Windows command-entry shell was resolved by the same
+PATH probe as user programs, but v0.4 (CPython `shell=True`, launcher.py:293-298) reads
+COMSPEC and lets CreateProcess find bare cmd.exe in the system directory before PATH. The
+new `windows_command_shell(comspec, system_root, probe)` (COMSPEC verbatim -> System32 via
+probe -> PATH -> typed refusal) compiles on every host with a four-arm parameterized owner.
+Flagged asymmetry for a later ledger judgment: the unix arm PATH-probes `sh` while CPython
+hardcodes `/bin/sh` — pre-existing and test-pinned, deliberately not changed. Aggregate
+4072 / 0 / 525 (+1 owner); fresh workspace LCOV `complete executable-source line coverage`.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
