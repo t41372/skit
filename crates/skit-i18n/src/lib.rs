@@ -1870,6 +1870,26 @@ const CATALOG: &[Translation] = &[
         "新增參數——輸入名稱後儲存：",
     ),
     row!("new parameter name", "新参数名称", "新參數名稱"),
+    row!(
+        "default value (optional)",
+        "默认值（选填）",
+        "預設值（選填）"
+    ),
+    row!(
+        "one-line help shown under the field (optional)",
+        "显示在字段下方的一行帮助(选填)",
+        "顯示在欄位下方的一行說明(選填)",
+    ),
+    row!(
+        "comma separated (for type: choice)",
+        "逗号分隔(用于 type: choice)",
+        "逗號分隔(用於 type: choice)",
+    ),
+    row!(
+        "--flag (empty = positional)",
+        "--flag（留空为位置参数）",
+        "--flag（留空為位置參數）",
+    ),
     // New in 0.5: the settings screen offers the rewrite version 0.4 advised from the command line
     // (`src/skit/cli.py:4014`), and the resync version 0.4 gave only a chord.
     row!(
