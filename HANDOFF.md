@@ -917,6 +917,17 @@ empirically proven on this host by the parameterized runner_management owners �
 was needed and both rules stay owned everywhere. The extended in-src dialect sweep over
 skit-ui/tui/form/application found no further member. Aggregate 4073 / 0 / 525.
 
+Cleanup P1 stage 1 (`34cb4f3` / `ff417b8`): the shared PTY module
+`tests/support/pty.rs` now carries the five platform invariants with their wave evidence
+(CR-is-Enter; prompt-visible-before-write; counted cursor answers; child-exit-keyed
+teardown with the master dropped at spawn; never-joined detached drain). agent_install and
+terminal_pty adopted it — net -286 lines, both suites faster than before (2.3 s vs 3.1 s),
+test names unchanged. `AnswerQueries::Off` preserves the run-family lanes that script their
+own reply. Stage-2 ruling recorded: NO `skit-test-pty` workspace crate — the sdist's
+34-file census and Cargo lock are release-guarded artifacts not worth churning for ~60
+lines; the remaining skit-cli files adopt by `#[path]`, and skit-tui's already-compliant
+local harness keeps a cross-reference comment as the one documented exception.
+
 MILESTONE (2026-08-23, head `ea286b7`): THE COMPLETE CI ROLLUP IS GREEN — all three
 platform test jobs, the 100% coverage gate, lint/docs, both audits, PyPI/uv, benchmark,
 A/B compare, CodSpeed, CodeQL, CodeRabbit, codecov; mutation correctly label-skipped and
