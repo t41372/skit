@@ -1073,3 +1073,14 @@ piped output byte-identical (verified locally; CI confirms).
 
 Aggregate 4091 / 0 / 525 with complete executable-source line coverage.
 
+The round-4 fold owners then failed on Windows for a MEASUREMENT flaw, fixed in `12783c1`:
+they measured raw PTY bytes, but ConPTY prepends a cursor question, mode switches, and an
+OSC window title carrying the full binary path, so a correctly-folded 59-cell line measured
+past 60. The control stripper moved into the shared harness as INVARIANT 6 ("read the
+visible text, never the control stream") with the Windows evidence recorded. The round-3
+table owner was passing by luck in a worse way than suspected: its border-row filter
+`starts_with(['┏','│',...])` never matched the chrome-prefixed row, so the row was silently
+DROPPED instead of measured. Both owners now strip first; the RED probe (width detection
+forced off) fails both, and the failure text is the product's own line with no chrome —
+itself proof the stripping works. Aggregate 4091 / 0 / 525.
+
