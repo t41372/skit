@@ -41,6 +41,37 @@ fn read_terminal_event(wait: TerminalEventWait) -> io::Result<Option<event::Even
     read_terminal_event_with(wait, event::read, event::poll)
 }
 
+/// The refusal a session gets when its standard streams are not a terminal, if any.
+///
+/// The two answers arrive as parameters, so a test can drive every combination without changing
+/// the process's own streams. An interactive session needs both: input reads keys from stdin, and
+/// every frame draws to stdout.
+fn terminal_claim_refusal(stdin_is_terminal: bool, stdout_is_terminal: bool) -> Option<io::Error> {
+    if stdin_is_terminal && stdout_is_terminal {
+        None
+    } else {
+        Some(io::Error::other("stdin and stdout are not a terminal"))
+    }
+}
+
+/// Claim the terminal for a session: refuse a non-terminal, then enter raw mode and the
+/// alternate screen.
+///
+/// The explicit check is the one cross-platform guard. Unix raw mode fails on its own for a
+/// piped process, but Windows crossterm attaches to the process console even when the standard
+/// streams are redirected, and the event loop would then wait on a console no caller can type
+/// into. The CLI enforces the same policy at every prompt door (`is_terminal` on both streams).
+fn claim_terminal() -> io::Result<()> {
+    use std::io::IsTerminal as _;
+    if let Some(refusal) =
+        terminal_claim_refusal(io::stdin().is_terminal(), io::stdout().is_terminal())
+    {
+        return Err(refusal);
+    }
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+}
+
 /// Take the next event, or report that the poll window closed with nothing to take.
 ///
 /// The two terminal calls arrive as parameters, so a test can drive every answer without a live
@@ -240,8 +271,7 @@ where
             }
         }
     }
-    enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    claim_terminal()?;
     let _restore = RestoreTerminal;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -454,8 +484,7 @@ where
 {
     let mut state = LibraryState::default();
     state.update(Action::Present(screen));
-    enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    claim_terminal()?;
     let _restore = RestoreTerminal;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
@@ -557,6 +586,20 @@ impl Drop for RestoreTerminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every stream combination answers the same way on every host: only two real terminals
+    /// proceed, and each refusal names both streams so the caller's report is exact.
+    #[test]
+    fn terminal_claim_refuses_every_stream_shape_that_is_not_two_terminals() {
+        assert!(terminal_claim_refusal(true, true).is_none());
+        for (stdin_is_terminal, stdout_is_terminal) in
+            [(false, true), (true, false), (false, false)]
+        {
+            let refusal = terminal_claim_refusal(stdin_is_terminal, stdout_is_terminal)
+                .expect("a non-terminal stream must refuse");
+            assert_eq!(refusal.to_string(), "stdin and stdout are not a terminal");
+        }
+    }
 
     #[derive(Debug)]
     struct HostError;
