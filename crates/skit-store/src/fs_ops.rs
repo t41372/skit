@@ -612,12 +612,11 @@ mod tests {
         // and drops the closure on Windows (the documented directory-sync omission, owned by
         // `test_atomic_write_bytes_skips_dir_fsync_on_windows`). The ordered pair before it is
         // the host-neutral contract.
-        let expected: &[&str] = if cfg!(unix) {
-            &["sync-file", "replace", "sync-parent"]
-        } else {
-            &["sync-file", "replace"]
-        };
-        assert_eq!(events.borrow().as_slice(), expected);
+        #[cfg(unix)]
+        const EXPECTED: &[&str] = &["sync-file", "replace", "sync-parent"];
+        #[cfg(not(unix))]
+        const EXPECTED: &[&str] = &["sync-file", "replace"];
+        assert_eq!(events.borrow().as_slice(), EXPECTED);
         assert_eq!(std::fs::read(&target).unwrap(), bytes);
         assert_eq!(names(&root), ["target"]);
     }

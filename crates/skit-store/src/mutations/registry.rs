@@ -814,15 +814,19 @@ mod tests {
 
     #[test]
     fn registry_timestamps_refuse_pre_epoch_and_oversized_values() {
-        // Probe one full second before the epoch: a Windows SystemTime counts 100 ns ticks, so a
-        // sub-tick offset truncates back to the epoch itself and the refusal never fires.
+        // Every probe in this test sits on a 100 ns boundary: a Windows SystemTime counts
+        // FILETIME ticks, so a sub-tick value truncates -- a sub-tick pre-epoch offset lands
+        // back on the epoch and never refuses, and a sub-tick positive offset converts to 0.
+        // Tick-aligned probes exercise the same conversion exactly on every host; sub-tick
+        // freshness never reaches the product, whose Windows fingerprint verifies the content
+        // hash instead of trusting mtime fidelity.
         assert!(timestamp_ns(UNIX_EPOCH - Duration::from_secs(1)).is_err());
         let oversized = SystemTime::UNIX_EPOCH
             + Duration::from_secs(u64::try_from(i64::MAX).unwrap() / 1_000_000_000 + 1);
         assert!(timestamp_ns(oversized).is_err());
         assert_eq!(
-            timestamp_ns(UNIX_EPOCH + Duration::from_nanos(7)).unwrap(),
-            7
+            timestamp_ns(UNIX_EPOCH + Duration::from_nanos(700)).unwrap(),
+            700
         );
     }
 }
