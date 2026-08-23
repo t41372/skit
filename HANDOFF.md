@@ -917,6 +917,24 @@ empirically proven on this host by the parameterized runner_management owners �
 was needed and both rules stay owned everywhere. The extended in-src dialect sweep over
 skit-ui/tui/form/application found no further member. Aggregate 4073 / 0 / 525.
 
+MILESTONE (2026-08-23, head `ea286b7`): THE COMPLETE CI ROLLUP IS GREEN — all three
+platform test jobs, the 100% coverage gate, lint/docs, both audits, PyPI/uv, benchmark,
+A/B compare, CodSpeed, CodeQL, CodeRabbit, codecov; mutation correctly label-skipped and
+deploy correctly PR-skipped. The convergence took 29 waves and closed six real product
+defects along the way (Windows draft data loss, macOS symlinked-data-dir refusal, the
+doctor rebuild voice, completion-detection ordering, Windows tilde expansion, the missing
+terminal-claim precondition, the COMSPEC command-shell policy) plus a dozen
+platform-semantic test classes, each recorded above with its root cause.
+
+ENDGAME ORDER (fixed): (1) the audit cleanup rounds FIRST — PTY-harness consolidation,
+platform-directory unification, the flagged micro items — because they churn tests and
+must precede any mutation evidence; each lands with full local gates and a green CI round.
+(2) Tree freeze, then attach the `mutation-requested` label to PR #45 to start the
+48-shard zero-survivor run; kill survivors in waves until zero. (3) The user's hands-on
+terminal QA and the optional demo re-record at the final SHA. (4) Independent final review
+rounds per the original mandate. (5) Matrix row 21 Complete, delete CLAUDE_HANDOFF.md and
+this handoff, then draft-to-ready with explicit user authorization.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
