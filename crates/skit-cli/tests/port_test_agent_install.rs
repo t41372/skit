@@ -35,15 +35,11 @@
 use std::{
     collections::BTreeSet,
     fs,
-    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     process::Output,
-    sync::{Arc, Mutex},
-    thread,
-    time::{Duration, Instant},
 };
 
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, PtySize};
 use skit_application::{
     AgentInstallError, AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope,
     detect_agent_targets, plan_agent_install,
@@ -51,9 +47,12 @@ use skit_application::{
 use skit_store::FileAgentSkillStore;
 use tempfile::TempDir;
 
+#[path = "support/pty.rs"]
+mod pty;
 #[path = "support/temp_root.rs"]
 mod temp_root;
 
+use pty::{AnswerQueries, PtyChild};
 use temp_root::TempRoot;
 
 /// Python `SKILL_MARKER`.
@@ -633,25 +632,16 @@ fn test_agent_pick_target_backing_out_returns_none() {
 // pty harness for the interactive bare-mode lanes
 //
 // Each answer waits for the prompt that owns it. This keeps invalid-input reprompts and EOF
-// behavior deterministic without guessing how long the child takes to start.
+// behavior deterministic without guessing how long the child takes to start. The mechanics —
+// Enter as a carriage return, counted cursor answers, the child-exit-keyed ending — are the
+// shared terminal rules in `support/pty.rs`.
 // --------------------------------------------------------------------------
-
-/// One byte string a terminal program writes when it asks where the cursor is.
-const CURSOR_QUERY: &[u8] = b"\x1b[6n";
 
 fn run_agent_install_pty(
     sandbox: &Sandbox,
     locale: &str,
     input: &[(&str, &[u8])],
 ) -> (u32, String) {
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 100,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
     let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
     command.args(["agent", "install"]);
     command.env("TERM", "xterm-256color");
@@ -662,129 +652,18 @@ fn run_agent_install_pty(
     command.env("HOME", sandbox.home.path());
     command.env("USERPROFILE", sandbox.home.path());
     command.cwd(sandbox.project.path());
-    let mut child = pair.slave.spawn_command(command).unwrap();
-    drop(pair.slave);
-
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let output = Arc::new(Mutex::new(Vec::new()));
-    let reader_output = Arc::clone(&output);
-    let drain = thread::spawn(move || {
-        let mut bytes = [0_u8; 1024];
-        loop {
-            match reader.read(&mut bytes) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => reader_output
-                    .lock()
-                    .unwrap()
-                    .extend_from_slice(&bytes[..read]),
-            }
-        }
-    });
-    let mut writer = pair.master.take_writer().unwrap();
-    let mut checkpoint = 0;
-    let mut answered_queries = 0;
+    let mut pty = PtyChild::spawn(
+        command,
+        PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+        AnswerQueries::On,
+    );
     for (prompt, answer) in input {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let bytes = output.lock().unwrap();
-            let position = bytes[checkpoint..]
-                .windows(prompt.len())
-                .position(|window| window == prompt.as_bytes());
-            let asked = bytes
-                .windows(CURSOR_QUERY.len())
-                .filter(|window| *window == CURSOR_QUERY)
-                .count();
-            let shown = String::from_utf8_lossy(&bytes).into_owned();
-            drop(bytes);
-            // Answer where the cursor is, the way a real terminal does. A program that asks waits
-            // for the answer before it writes anything more, so an unanswered question stops the
-            // child before it ever draws the prompt this loop is waiting to read. Unix does not ask
-            // here: the `console` crate reads the size and the position through an ioctl there, and
-            // only its Windows path sends this escape. The count drives the reply, so the loop
-            // costs nothing on a host that never asks.
-            while answered_queries < asked {
-                writer.write_all(b"\x1b[1;1R").unwrap();
-                writer.flush().unwrap();
-                answered_queries += 1;
-            }
-            if let Some(position) = position {
-                checkpoint += position + prompt.len();
-                break;
-            }
-            assert!(Instant::now() < deadline, "did not see {prompt:?}: {shown}");
-            assert!(
-                child.try_wait().unwrap().is_none(),
-                "child exited before {prompt:?}: {shown}"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
-        if !answer.is_empty() {
-            writer.write_all(&keystrokes(answer)).unwrap();
-            writer.flush().unwrap();
-        }
+        pty.send_after_prompt(prompt, answer);
     }
-    // End on the child, not on the terminal saying its output is over. A Windows pseudo-console
-    // does not reliably say that for a child that exits without interacting, so a wait keyed on it
-    // can never return. Waiting for the child under a deadline, then reading what is still
-    // buffered for a bounded moment, always returns. Releasing the terminal first helps where it
-    // does work.
-    let status = wait_for_exit(&mut child);
-    drop(writer);
-    drop(pair.master);
-    drop(drain);
-    settle(&output);
-    let output = String::from_utf8_lossy(&output.lock().unwrap()).into_owned();
-    (status.exit_code(), output)
-}
-
-/// Deliver one canned answer the way a terminal delivers it.
-///
-/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
-/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
-/// character, so the prompt keeps waiting and both sides stop
-/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
-/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
-/// Unix exactly as it was.
-fn keystrokes(answer: &[u8]) -> Vec<u8> {
-    answer
-        .iter()
-        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
-        .collect()
-}
-
-/// Wait for the terminal child to exit, under a deadline.
-///
-/// The end of a run is the child ending, not the terminal saying its output is over.
-fn wait_for_exit(
-    child: &mut Box<dyn portable_pty::Child + Send + Sync>,
-) -> portable_pty::ExitStatus {
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            return status;
-        }
-        assert!(Instant::now() < deadline, "the terminal child never exited");
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Read whatever the child left behind, for a bounded moment.
-fn settle(captured: &Arc<Mutex<Vec<u8>>>) {
-    const QUIET: Duration = Duration::from_millis(60);
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut seen = captured.lock().unwrap().len();
-    let mut quiet_since = Instant::now();
-    while Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-        let now = captured.lock().unwrap().len();
-        if now == seen {
-            if quiet_since.elapsed() >= QUIET {
-                return;
-            }
-        } else {
-            seen = now;
-            quiet_since = Instant::now();
-        }
-    }
+    pty.finish()
 }
