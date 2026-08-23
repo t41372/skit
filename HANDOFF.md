@@ -810,6 +810,20 @@ Flagged asymmetry for a later ledger judgment: the unix arm PATH-probes `sh` whi
 hardcodes `/bin/sh` — pre-existing and test-pinned, deliberately not changed. Aggregate
 4072 / 0 / 525 (+1 owner); fresh workspace LCOV `complete executable-source line coverage`.
 
+The 2792fa6 run reached the LiveTui lane for the first time; wave 23 (`8948c0a`)
+adjudicated the 6-vs-15 split with a definitive evidence chain: portable-pty 0.9.0 attaches
+the child via PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE (procthreadattr.rs:49-52) with no pipe
+override — the exact mechanism Windows Terminal uses — so children hold REAL console
+handles, `is_terminal` answers yes, and the wave-18 claim guard does NOT refuse under
+ConPTY (real Windows Terminal users are unaffected; the run itself proves full Ratatui
+sessions start, interact, and submit on Windows via the six passing run_in_pty owners).
+The 15 failures are the harness's unix-only sync protocol: LiveTui::spawn gates every
+session on a `\x1b[6n` handshake that Windows crossterm never sends (it reads
+GetConsoleScreenBufferInfo; unix.rs:35 vs windows.rs:38-45). The 15 are gated with
+per-class reasons; the needle-sync conversion is folded into the planned PTY consolidation;
+wave-15's mistaken "green on Windows" note for the VEOF test is corrected. Aggregate
+4072 / 0 / 525.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
