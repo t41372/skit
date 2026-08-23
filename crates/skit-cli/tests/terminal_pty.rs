@@ -1,6 +1,6 @@
 // The plain-lane helpers below are `#[cfg(unix)]` at their call sites, so a Windows build
 // compiles them without a caller. This keeps that build quiet, as fa8464b did.
-#![cfg_attr(not(unix), allow(dead_code))]
+#![cfg_attr(not(unix), allow(dead_code, unused_imports))]
 
 use std::{
     collections::BTreeMap,
@@ -474,6 +474,19 @@ struct LiveTui {
 }
 
 impl LiveTui {
+    /// Start the interactive TUI session and complete the unix startup handshake.
+    ///
+    /// The handshake waits for the child's cursor-position query and answers it. That round trip
+    /// exists only on unix: crossterm reads the cursor there by writing `\x1b[6n` to the terminal
+    /// (crossterm/src/cursor/sys/unix.rs), while on Windows it asks the console directly through
+    /// `GetConsoleScreenBufferInfo` and sends no escape at all (crossterm/src/cursor/sys/windows.rs).
+    /// A wait for that query can therefore never finish on Windows, so every test that
+    /// synchronizes through this harness is `#[cfg(unix)]`. The product itself is healthy under a
+    /// pseudo-console: portable-pty attaches the child with `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE`
+    /// -- the same mechanism Windows Terminal uses -- so the child holds real console handles,
+    /// `is_terminal` answers yes, and the `run_in_pty` owners in this file start, drive, and
+    /// finish real sessions on Windows. Converting this harness to needle-based synchronization
+    /// is part of the planned PTY consolidation.
     fn spawn(data: &Path, state: &Path, config: &Path, home: &Path) -> Self {
         let mut tui = Self::spawn_command(&["tui"], data, state, config, home, "en");
         tui.answer_cursor_query_after(0);
@@ -742,6 +755,9 @@ impl Drop for LiveTui {
     }
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn bare_invocation_runs_the_first_run_gate_and_returns_after_the_library_quits() {
     let data = TempDir::new().unwrap();
@@ -776,6 +792,9 @@ fn bare_invocation_runs_the_first_run_gate_and_returns_after_the_library_quits()
     assert_eq!(tree_snapshot(config.path()), config_before);
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn test_resume_bash_shebang_draft_lands_as_shell() {
     let data = TempDir::new().unwrap();
@@ -1085,6 +1104,9 @@ fn runner_argv(program: &Path, marker_path: &Path) -> Vec<String> {
     ]
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn test_rerun_unpinned_prompt_falls_back_to_the_form() {
     const LAST_RUNNER_CHILD: &str = "CHILD-UNPINNED-LAST";
@@ -1127,6 +1149,9 @@ fn test_rerun_unpinned_prompt_falls_back_to_the_form() {
     let _ = tui.wait_for_exit_after(quit);
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin() {
     const LAST_RUNNER_CHILD: &str = "CHILD-PINNED-LAST";
@@ -1171,6 +1196,9 @@ fn test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin() {
     let _ = tui.wait_for_exit_after(quit);
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
     const MISSING_RUNNER: &str = "skit-definitely-missing-selected-runner";
@@ -1225,6 +1253,9 @@ fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
     let _ = tui.wait_for_exit_after(quit);
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn test_run_with_zero_runners_offers_the_new_agent_modal() {
     const CANCELLED_CHILD: &str = "CHILD-ZERO-RUNNER-CANCELLED";
@@ -1267,6 +1298,9 @@ fn test_run_with_zero_runners_offers_the_new_agent_modal() {
     let _ = tui.wait_for_exit_after(quit);
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn test_run_with_zero_runners_define_agent_then_run() {
     const CHILD: &str = "CHILD-ZERO-RUNNER-DEFINED";
@@ -1334,6 +1368,9 @@ fn test_run_with_zero_runners_define_agent_then_run() {
     let _ = tui.wait_for_exit_after(quit);
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn zero_runner_save_failure_keeps_the_required_editor_and_config() {
     const CHILD: &str = "CHILD-ZERO-RUNNER-RACE";
@@ -1750,6 +1787,10 @@ fn write_python_entry(data: &Path) {
 /// `n`/`no` as a refusal (`src/skit/uvman.py:88`), answers itself at end of input
 /// (`src/skit/uvman.py:85-86`), and reports the self-install guidance when refused
 /// (`src/skit/uvman.py:252-256`).
+// Types into a dialoguer prompt on a settle timer; silence can arrive before the prompt is
+// drawn, and a key typed into that gap never reaches a Windows console read (the fa8464b
+// class, host-confirmed on this test's first real Windows run).
+#[cfg(unix)]
 #[test]
 fn test_declined_raises_with_guidance() {
     let empty_path = TempDir::new().unwrap();
@@ -1817,6 +1858,10 @@ fn test_declined_raises_with_guidance() {
     assert_eq!(code, 125, "{output}");
 }
 
+// Sends the VEOF character; ConPTY runs no line discipline, so no end-of-input can reach the
+// prompt (the ef86cba platform absence). The wave-15 sweep called this test green on Windows,
+// but this binary had never run there; the first real run confirmed the class.
+#[cfg(unix)]
 #[test]
 fn test_consent_eof_is_yes() {
     let data = TempDir::new().unwrap();
@@ -1893,6 +1938,9 @@ fn the_terminal_library_shows_host_projected_detail_facts() {
 
 /// The Settings parameter summary must use the source's live default without changing any stored
 /// data merely because the user inspected it.
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn test_settings_param_row_shows_the_sources_live_default() {
     let data = TempDir::new().unwrap();
@@ -2084,6 +2132,9 @@ fn inline_run_accepts_a_real_path_ghost_with_right_before_launch() {
     assert_eq!(fs::read_to_string(marker).unwrap(), "data.csv");
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn plain_preset_collection_saves_typed_nonsecrets_in_three_locales() {
     for (locale, environment) in [
@@ -2172,6 +2223,9 @@ fn interactive_run_refuses_invalid_presets_before_form_or_storage_work() {
     }
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn analyzer_preset_notices_use_real_sources_in_three_locales() {
     for (locale, default_notice, input_notice) in [
@@ -2332,6 +2386,9 @@ fn test_promptform_prints_input_binding_hint() {
     }
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn runner_container_confirmation_and_refusals_are_localized_and_atomic() {
     for (locale, prompt, removed) in [
@@ -2390,6 +2447,9 @@ fn runner_container_confirmation_and_refusals_are_localized_and_atomic() {
     }
 }
 
+// Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
+// (see the note on LiveTui::spawn).
+#[cfg(unix)]
 #[test]
 fn runner_human_selection_reports_container_unknown_and_pinned_names() {
     for (locale, pinned_voice, question) in [
