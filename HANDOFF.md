@@ -754,6 +754,22 @@ force for later waves: fix subagents run on Fable (forks), and every brief deman
 explicit root-cause-versus-manifestation analysis; the PTY-harness consolidation (the
 structural root of the Windows saga) is scheduled for the post-green review rounds.
 
+The wave-17 run validated every converted fixture on real Windows (889 tests passed;
+declared_params, edit, editor all cleared) and hung on ONE test: the bare `skit` entry lane
+(port_test_entrypoint). Wave 18 (`27f33cc`, the first Fable-fork wave under the root-cause
+directive) found a REAL cross-platform product bug: the TUI terminal claim had NO explicit
+precondition — unix raw-mode failing on pipes was an accidental guard, and Windows crossterm
+attaches to the process console even with redirected stdio, so `skit > file` hangs forever
+for a real Windows user. The fix is the missing precondition at the single seam:
+`terminal_claim_refusal(stdin_is_tty, stdout_is_tty)` + `claim_terminal()` now guard both
+session entries (net -7 duplicated lines), matching the CLI's own both-streams policy at
+every prompt door. The refusal renders through the localized "terminal I/O failed: {}"
+wrapper per the repo's io-cause convention. RED tightened the entrypoint owner to the exact
+refusal sentence (a fallback spelling means the guard is gone — kills guard-deletion
+mutants); a four-combination parameterized owner covers the boolean mutants. Aggregate
+4071 / 0 / 525 (+1 owner, arithmetic exact); fresh workspace LCOV returned
+`complete executable-source line coverage`.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
