@@ -11,8 +11,9 @@
 //!   the `ProgramProbe` trait; tests inject a `FakeProbe` whose `programs` map IS the
 //!   `_which_map`. `SystemProbe` is the real `shutil.which` seam.
 //! - Python `launch.resolve_interpreter(name)` -> `require_program`, reached by building
-//!   an interpreted plan; a missing interpreter is `LaunchError::ProgramNotFound` (exit
-//!   126, the `NotExecutableError` twin).
+//!   an interpreted plan; a missing interpreter is a typed refusal (exit 126, the
+//!   `NotExecutableError` twin): `LaunchError::ProgramNotFound` on unix, and for
+//!   bash-compatible names on Windows the fallback-policy `WindowsShellMissing`.
 //! - Python `launch.InterpreterLaunch(default, prefix).build(...)` -> `build_launch_plan`
 //!   for an interpreted kind; `.describe(...)` -> `build_launch_preview` (no PATH lookup);
 //!   `.preflight(...)` -> `build_launch_plan` (a superset of the existence/resolve checks).
@@ -158,7 +159,15 @@ fn test_resolve_interpreter_missing_posix_names_the_interpreter() {
         &probe,
     )
     .unwrap_err();
+    // The refusal is typed on every host and the variant follows each host's adjudicated
+    // policy (`resolve_interpreter`): unix resolves interpreters from PATH only, so the
+    // refusal is ProgramNotFound; Windows falls from PATH to the configured bash path for
+    // bash-compatible names and refuses as WindowsShellMissing. The Windows arm itself is
+    // owned host-neutrally by the parameterized owners in `port_test_launcher.rs`.
+    #[cfg(not(windows))]
     assert!(matches!(&error, LaunchError::ProgramNotFound { name } if name == "zsh"));
+    #[cfg(windows)]
+    assert!(matches!(&error, LaunchError::WindowsShellMissing { name } if name == "zsh"));
     assert!(error.to_string().contains("zsh"));
 }
 
@@ -292,7 +301,12 @@ fn test_interpreter_launch_preflight_missing_interpreter() {
         &probe,
     )
     .unwrap_err();
+    // Typed on every host; the variant follows the host policy (see
+    // `test_resolve_interpreter_missing_posix_names_the_interpreter`).
+    #[cfg(not(windows))]
     assert!(matches!(error, LaunchError::ProgramNotFound { .. }));
+    #[cfg(windows)]
+    assert!(matches!(error, LaunchError::WindowsShellMissing { .. }));
 }
 
 #[test]
