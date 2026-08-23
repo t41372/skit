@@ -187,7 +187,15 @@ fn occurrences() -> Vec<Occurrence> {
 
     for path in files {
         let source = fs::read_to_string(&path).unwrap();
-        let file = path.strip_prefix(&root).unwrap().display().to_string();
+        // The audited owner files are spelled with forward slashes on every host, so join the
+        // repo-relative components the same way instead of taking the host's separator.
+        let file = path
+            .strip_prefix(&root)
+            .unwrap()
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
         let mut pending_ignore = None;
         let mut pending_windows_cfg = false;
         for line in source.lines() {
