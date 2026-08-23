@@ -971,6 +971,43 @@ divergence — v0.4 falls through to the platform default for a blank `SKIT_*_DI
 and trims XDG values, while `env::var_os` accepted `Some("")` and returned a RELATIVE root.
 Aggregate 4077 / 0 / 525 with complete executable-source line coverage.
 
+INDEPENDENT FINAL REVIEW (2026-08-23, read-only forks at `815305f`, per the original
+mandate's "彻底完成后走几轮独立代码审查"):
+
+Round 1 found ONE real compat break, fixed in `cbd1a08`: v0.4 stamps with
+`datetime.now(UTC).replace(microsecond=0).isoformat()` -> `2026-08-23T09:48:54+00:00`
+(whole seconds, `+00:00`), while the Rust wrote RFC3339 with nanoseconds and `Z` — the
+same root as the platformdirs defect (a library's default rendering instead of a
+translation of the oracle's formatter), in the seam next to it, on the `added_at` key the
+`show --json` contract exposes. One shared `skit-store/src/stamp.rs` now serves all three
+writers (store `added_at`, the completed-run `at`, and the benchmark dataset's real state
+writes); the parse side stays permissive; owners pin the exact shape at the store, in
+`show --json`, and in the run-state file, plus a v0.4-spelled value surviving a read
+byte-for-byte. RED probes killed the offset and fraction mutants. The fix also removed an
+impossible error path and a `1970-01-01T00:00:00Z` fallback v0.4 would never write. Note
+for the record: the divergence survived because the existing owner only asserted that JSON
+echoes whatever the meta held — true under both spellings.
+
+Round 1 also cleared (with evidence): lock discipline (RAII, no unlock/forget anywhere in
+skit-store), the create path's staging+rename being STRONGER than the oracle's build-in-place,
+copy-entry originals, the library activity sort, picker case folding, glob's hidden-dot
+translation, and composition-root reachability for all six newest features (real dispatch
+chains from main(), nothing dead in the binary).
+
+Round 2 found NO new compat break across TOML meta round-trip, locale negotiation,
+update/rename/remove rollback safety, subprocess env/exit mapping, and Rich markup
+escaping — each cleared by EXECUTING both implementations, with the oracle's own reader
+run against our output as the decisive test (it read every field, both unknown-field
+shapes, and both parameter rows correctly). Locale agreed 24/24 including script-subtag
+precedence. Two places where v0.5 is strictly better and stays that way: our writes
+preserve hand-written `meta.toml` comments (v4's tomli_w destroys them) and churn fewer
+parameter keys. Every rollback hazard has an owner (they live in in-src modules, which is
+why a tests/-only grep misses them).
+
+Round 3 (registry/state/config round-trips and the `.bak` recovery interop, PEP 723 byte
+fidelity, the CLI help/error surface beyond wave 2d78043's 27 probes, Rich table layout,
+plus the `{today}`/`{now}` token surface the timestamp fix flagged) is in flight.
+
 MILESTONE (2026-08-23, head `ea286b7`): THE COMPLETE CI ROLLUP IS GREEN — all three
 platform test jobs, the 100% coverage gate, lint/docs, both audits, PyPI/uv, benchmark,
 A/B compare, CodSpeed, CodeQL, CodeRabbit, codecov; mutation correctly label-skipped and
