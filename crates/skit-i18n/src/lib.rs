@@ -1747,6 +1747,14 @@ const CATALOG: &[Translation] = &[
         "脚本已用 PEP 723 语法声明依赖：",
         "腳本已用 PEP 723 語法聲明依賴：",
     ),
+    // Version 0.4 keeps two spellings of this sentence, one per surface: the command line names
+    // the dependencies inline (`src/skit/cli.py:192`), while the add review uses the bare heading
+    // above one line per declared item (`src/skit/tui_add.py:930`).
+    row!(
+        "The script declares its own dependencies (PEP 723): {}",
+        "脚本已用 PEP 723 语法声明依赖：{}",
+        "腳本已用 PEP 723 語法聲明依賴：{}",
+    ),
     row!("needs Python {}", "需要 Python {}", "需要 Python {}"),
     row!("installs {}", "会自动装 {}", "會自動裝 {}"),
     row!(

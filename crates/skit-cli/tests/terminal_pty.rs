@@ -1364,7 +1364,10 @@ fn read_pty_screen(args: &[&str], data: &Path, state: &Path, config: &Path) -> S
 
     let pair = native_pty_system()
         .openpty(PtySize {
-            rows: 24,
+            // Tall enough to draw the whole review at once. The panel scrolls, so a shorter
+            // terminal keeps every control reachable but leaves the last ones below the fold, and
+            // this owner reads one drawn screen rather than scrolling for them.
+            rows: 32,
             cols: 100,
             pixel_width: 0,
             pixel_height: 0,
