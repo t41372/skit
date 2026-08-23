@@ -11,7 +11,7 @@ A	1	crates/skit-application/tests/value_resolution.rs	"api_key reads from the en
 A	1	crates/skit-application/tests/value_tokens.rs	"The environment variable MISSING_VAR isn't set (needed by {env:MISSING_VAR})."	exact owner for frozen user-visible copy
 A	1	crates/skit-cli/src/cli.rs	"--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",	oracle msgid production/catalog copy
 A	1	crates/skit-cli/src/cli.rs	"The runner {} isn't configured (known: {}). Manage runners with: skit runner list",	oracle msgid production/catalog copy
-A	1	crates/skit-cli/src/cli.rs	"This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Dim: "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",	oracle msgid production/catalog copy
 A	1	crates/skit-cli/src/cli.rs	"{} hasn't run yet — press Enter to fill the form first.",	oracle msgid production/catalog copy
 A	1	crates/skit-cli/src/cli.rs	"{} is a kept draft skit can't classify — pass --kind <language> to add it as a script, or --prompt for an AI-agent prompt.",	oracle msgid production/catalog copy
 A	1	crates/skit-cli/src/cli.rs	"{} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {}.",	oracle msgid production/catalog copy

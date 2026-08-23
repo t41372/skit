@@ -100,26 +100,34 @@ use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 use crate::run::{RunArgs, RunError, apply_sets};
 
 macro_rules! humanln {
-    ($message:literal $(, $value:expr)* $(,)?) => {
+    ($style:ident: $message:literal $(, $value:expr)* $(,)?) => {
         println!(
             "{}",
-            fold_for_output(
+            paint_for_output(
                 &format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]),
+                HumanStyle::$style,
                 human_output_width(),
             )
         )
     };
+    ($message:literal $(, $value:expr)* $(,)?) => {
+        humanln!(Plain: $message $(, $value)*)
+    };
 }
 
 macro_rules! humanerrln {
-    ($message:literal $(, $value:expr)* $(,)?) => {
+    ($style:ident: $message:literal $(, $value:expr)* $(,)?) => {
         eprintln!(
             "{}",
-            fold_for_output(
+            paint_for_output(
                 &format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]),
+                HumanStyle::$style,
                 human_error_width(),
             )
         )
+    };
+    ($message:literal $(, $value:expr)* $(,)?) => {
+        humanerrln!(Plain: $message $(, $value)*)
     };
 }
 
@@ -1020,11 +1028,11 @@ impl FirstRunPrompt for TerminalFirstRun {
             }
             if https_only {
                 humanerrln!(
-                    "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: {}).",
+                    Red: "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: {}).",
                     typed
                 );
             } else {
-                humanerrln!("A custom choice needs a URL.");
+                humanerrln!(Red: "A custom choice needs a URL.");
             }
         }
     }
@@ -1624,7 +1632,7 @@ fn ask_plain_kind(selector: &PlainKindSelector) -> Result<KnownEntryKind, CliErr
             kind_choice_label(locale, kind.as_str())
         );
     }
-    humanln!("- = cancel");
+    humanln!(Dim: "- = cancel");
     let theme = PlainKindChoiceTheme {
         choices: selector.choice_bracket(),
     };
@@ -1796,7 +1804,7 @@ fn add_plain_draft(
         },
     );
     if result.is_err() {
-        humanerrln!("Your draft was kept at {}", path.display());
+        humanerrln!(Dim: "Your draft was kept at {}", path.display());
     }
     result
 }
@@ -1998,7 +2006,7 @@ fn add_draft(
         add(service, options)
     };
     if result.is_err() {
-        humanerrln!("Your draft was kept at {}", draft.display());
+        humanerrln!(Dim: "Your draft was kept at {}", draft.display());
     }
     result
 }
@@ -2648,6 +2656,65 @@ fn human_error_width() -> Option<usize> {
     ratatui_crossterm::crossterm::terminal::size()
         .ok()
         .map(|(columns, _)| usize::from(columns))
+}
+
+/// The colour a printed sentence carries.
+///
+/// Version 0.4 marks the sense of a line with Rich markup, and the sense is the same on both
+/// streams: a receipt is green, a hint is dim, a warning is yellow, and a refusal is red
+/// (`skit-oracle/src/skit/cli.py`). A line that states a fact carries no colour.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HumanStyle {
+    /// A line that states a fact.
+    Plain,
+    /// A receipt for work that finished.
+    Green,
+    /// A note beside the line it explains.
+    Dim,
+    /// A warning about work that continued.
+    Yellow,
+    /// A refusal.
+    Red,
+}
+
+impl HumanStyle {
+    /// The escape sequence Rich writes for this sense, if any.
+    ///
+    /// The values come from Rich itself: a console at `force_terminal` writes `\x1b[32m` for
+    /// `[green]`, `\x1b[31m` for `[red]`, `\x1b[33m` for `[yellow]`, and `\x1b[2m` for `[dim]`,
+    /// each closed by `\x1b[0m`.
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::Plain => "",
+            Self::Green => "\x1b[32m",
+            Self::Dim => "\x1b[2m",
+            Self::Yellow => "\x1b[33m",
+            Self::Red => "\x1b[31m",
+        }
+    }
+}
+
+/// Whether a stream that is a terminal may also carry colour.
+///
+/// Rich drops every style when `NO_COLOR` holds a value or the terminal calls itself `dumb`, and
+/// version 0.4 keeps those defaults, so the same two answers decide it here.
+fn colour_is_welcome() -> bool {
+    if env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()) {
+        return false;
+    }
+    !env::var_os("TERM").is_some_and(|value| value == "dumb")
+}
+
+/// A printed sentence, wearing the colour its sense asks for.
+///
+/// A stream that is not a terminal keeps the plain text, which is why every recorded output in
+/// this repository is unchanged: those runs are redirected.
+fn paint_for_output(text: &str, style: HumanStyle, width: Option<usize>) -> String {
+    let folded = fold_for_output(text, width);
+    if width.is_none() || style == HumanStyle::Plain || !colour_is_welcome() {
+        return folded;
+    }
+    format!("{}{folded}\x1b[0m", style.prefix())
 }
 
 /// A printed sentence, folded to the terminal that shows it.
@@ -3458,7 +3525,7 @@ fn onboard_add_source(
     if mode == StorageMode::Reference {
         if !print_modeled_reader_notice(&plan) {
             humanln!(
-                "Reference mode never touches the original file, so parameter setup was skipped."
+                Dim: "Reference mode never touches the original file, so parameter setup was skipped."
             );
         }
         return Ok(source_bytes.to_vec());
@@ -3522,13 +3589,13 @@ fn print_copy_onboarding_facts(plan: &OnboardingPlan, entry_name: &str) {
     let modeled = print_modeled_reader_notice(plan);
     if !modeled && plan.uses_cli_framework() {
         humanln!(
-            "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
+            Dim: "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
             plan.frameworks.join(", ")
         );
     }
     if plan.uses_argv && !plan.uses_cli_framework() {
         humanln!(
-            "This script reads command-line arguments; the run form has an extra-arguments field for them."
+            Dim: "This script reads command-line arguments; the run form has an extra-arguments field for them."
         );
     }
     if !plan.filename_literals.is_empty() {
@@ -4287,7 +4354,7 @@ fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
         };
         humanln!("Added: {} ({} mode)", entry.meta.name, mode);
     } else {
-        humanln!("Added: {}", entry.meta.name);
+        humanln!(Green: "Added: {}", entry.meta.name);
     }
     if !entry.meta.description.is_empty() {
         println!(
@@ -4339,7 +4406,7 @@ fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
     );
     if !secrets.is_empty() {
         humanln!(
-            "Secret parameter values are never saved by skit: {}",
+            Dim: "Secret parameter values are never saved by skit: {}",
             secrets.join(", ")
         );
         if entry.meta.kind.as_str() == "prompt" {
@@ -4413,7 +4480,7 @@ fn remove(
     let slug = claimed.slug.clone();
     let name = service.remove(&claimed)?;
     FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).forget(&slug)?;
-    humanln!("Removed: {}", name);
+    humanln!(Green: "Removed: {}", name);
     Ok(())
 }
 
@@ -4528,10 +4595,10 @@ fn report_unmanaged_prompt_candidates(unmanaged: &[String]) {
 /// A prompt entry reconciles its placeholders instead of printing the generic
 /// drift hint.
 fn report_saved_edit(entry: &Entry, edited: Option<&[u8]>) {
-    humanln!("Saved {}.", entry.meta.name);
+    humanln!(Green: "Saved {}.", entry.meta.name);
     if entry.meta.kind.as_str() != "prompt" {
         humanln!(
-            "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
+            Dim: "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
             entry.meta.name
         );
         return;
@@ -4659,7 +4726,7 @@ fn edit_with_config_with_claim_hook(
             ));
         }
         humanln!(
-            "Editing the original file (reference mode): {}",
+            Dim: "Editing the original file (reference mode): {}",
             source.display()
         );
         launch_editor(&argv, &source)?;
@@ -5106,21 +5173,21 @@ fn write_deps_receipts(
 ) {
     if dependencies {
         humanln!(
-            "Dependencies of {} updated: {}",
+            Green: "Dependencies of {} updated: {}",
             name,
             list_or_dash(&settings.dependencies)
         );
     }
     if python {
         humanln!(
-            "Python constraint of {} updated: {}",
+            Green: "Python constraint of {} updated: {}",
             name,
             value_or_dash(&settings.requires_python)
         );
     }
     if needs {
         humanln!(
-            "Needs of {} updated: {}",
+            Green: "Needs of {} updated: {}",
             name,
             list_or_dash(&settings.needs)
         );
@@ -5580,7 +5647,7 @@ fn params(
         .collect::<BTreeSet<_>>();
     let mut changed = false;
     for item in malformed_source_values {
-        humanerrln!("Ignored a malformed value: {} (expected NAME=text).", item);
+        humanerrln!(Yellow: "Ignored a malformed value: {} (expected NAME=text).", item);
     }
     for warning in &source_edit_warnings {
         eprintln!(
@@ -5718,7 +5785,7 @@ fn params(
             .collect::<Vec<_>>()
             .join(", ");
         humanln!(
-            "Updated {}. Managed parameters: {}",
+            Green: "Updated {}. Managed parameters: {}",
             held.meta.name,
             if names.is_empty() { "—" } else { &names }
         );
@@ -5920,7 +5987,7 @@ fn edit_declared_params(
     }
 
     for item in malformed {
-        humanerrln!("Ignored a malformed value: {} (expected NAME=VALUE).", item);
+        humanerrln!(Yellow: "Ignored a malformed value: {} (expected NAME=VALUE).", item);
     }
     for warning in &result.warnings {
         eprintln!(
@@ -5984,7 +6051,7 @@ fn edit_declared_params(
             .collect::<Vec<_>>()
             .join(", ");
         humanln!(
-            "Updated {}. Declared parameters: {}",
+            Green: "Updated {}. Declared parameters: {}",
             held.meta.name,
             if names.is_empty() { "—" } else { &names }
         );
@@ -6841,7 +6908,7 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                 }
                 if amp_seeded {
                     humanln!(
-                        "The built-in amp preset uses amp -x and runs the prompt once; it does not open an interactive session."
+                        Dim: "The built-in amp preset uses amp -x and runs the prompt once; it does not open an interactive session."
                     );
                 }
             }
@@ -6856,9 +6923,9 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                 force,
             )?;
             if existed {
-                humanln!("Runner {} updated: {}", name, command);
+                humanln!(Green: "Runner {} updated: {}", name, command);
             } else {
-                humanln!("Runner {} added: {}", name, command);
+                humanln!(Green: "Runner {} added: {}", name, command);
             }
         }
         RunnerCommand::Remove {
@@ -7008,10 +7075,12 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                 )));
             }
             match selection {
-                RunnerSelection::Name(name) => humanln!("Runner {} removed.", name),
-                RunnerSelection::Row(row) => humanln!("Malformed runner row {} removed.", row),
+                RunnerSelection::Name(name) => humanln!(Green: "Runner {} removed.", name),
+                RunnerSelection::Row(row) => {
+                    humanln!(Green: "Malformed runner row {} removed.", row)
+                }
                 RunnerSelection::Container => {
-                    humanln!("Malformed prompt runner container removed.")
+                    humanln!(Green: "Malformed prompt runner container removed.")
                 }
             }
         }
@@ -7076,7 +7145,7 @@ fn preset(
                 secret_names.sort();
                 if !secret_names.is_empty() {
                     humanln!(
-                        "Secret values are never stored in presets; skipped: {}",
+                        Dim: "Secret values are never stored in presets; skipped: {}",
                         secret_names.join(", "),
                     );
                 }
@@ -7096,7 +7165,7 @@ fn preset(
                         .with(entry.meta.name),
                 ));
             }
-            humanln!("Preset \"{}\" saved for {}.", name, entry.meta.name);
+            humanln!(Green: "Preset \"{}\" saved for {}.", name, entry.meta.name);
         }
         PresetCommand::List { selector, json } => {
             let entry = service.show(&selector)?;
@@ -7367,9 +7436,9 @@ fn doctor(
         );
     } else {
         match &snapshot.uv {
-            UvHealth::Found(path) => humanln!("OK uv: {}", path),
-            UvHealth::Missing => humanln!("ERROR uv: not found"),
-            UvHealth::NotRequired => humanln!("OK uv: not required"),
+            UvHealth::Found(path) => humanln!(Green: "OK uv: {}", path),
+            UvHealth::Missing => humanln!(Red: "ERROR uv: not found"),
+            UvHealth::NotRequired => humanln!(Green: "OK uv: not required"),
         }
         if snapshot.entry_count == 1 {
             humanln!("{} entry registered", snapshot.entry_count);
@@ -7381,30 +7450,28 @@ fn doctor(
         humanln!("Config: {}", config_location.display());
         if let Some(count) = rebuilt_entries {
             if count == 1 {
-                humanln!("Index rebuilt: {} entry", count);
+                humanln!(Green: "Index rebuilt: {} entry", count);
             } else {
                 humanln!("Index rebuilt: {} entries", count);
             }
         }
         for name in missing {
-            humanln!("WARN {}: the launch target is gone from disk", name);
+            humanln!(Yellow: "WARN {}: the launch target is gone from disk", name);
         }
         for name in drift {
-            humanln!(
-                "WARN {}: form definitions are out of sync; run: skit params {} --resync",
+            humanln!(Yellow:                 "WARN {}: form definitions are out of sync; run: skit params {} --resync",
                 name,
                 name
             );
         }
         for (name, tools) in needs_missing {
-            humanln!(
-                "WARN {}: missing external commands: {}",
+            humanln!(Yellow:                 "WARN {}: missing external commands: {}",
                 name,
                 tools.join(", ")
             );
         }
         for (name, reason) in launch_blocked {
-            humanln!("WARN {}: a run would refuse to start: {}", name, reason);
+            humanln!(Yellow: "WARN {}: a run would refuse to start: {}", name, reason);
         }
         if !bad_runners.is_empty() {
             let rows = bad_runners.join(", ");
@@ -7413,10 +7480,10 @@ fn doctor(
                 "Ignored malformed runner row(s) in config: {}. Inspect and repair with: skit runner list --all",
                 &[&rows],
             );
-            humanln!("WARN {}", recovery);
+            humanln!(Yellow: "WARN {}", recovery);
         }
         for diagnostic in rebuild_diagnostics {
-            humanln!("WARN {}", diagnostic);
+            humanln!(Yellow: "WARN {}", diagnostic);
         }
     }
     Ok(code)
@@ -7636,7 +7703,7 @@ fn agent(command: AgentCommand) -> Result<(), CliError> {
                         Message::new("Could not write the skill there: {}").nested(error.message()),
                     )
                 })?;
-            humanln!("Installed the skit Agent Skill: {}", path.display());
+            humanln!(Green: "Installed the skit Agent Skill: {}", path.display());
         }
     }
     Ok(())

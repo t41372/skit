@@ -2957,3 +2957,128 @@ fn a_printed_sentence_fits_the_width_of_the_terminal_it_prints_into() {
     let narrow = printed(&["params", slug], 60);
     assert!(narrow.len() > wide.len(), "wide {wide:?} narrow {narrow:?}");
 }
+
+/// The colour a line carries reaches the terminal, and only the terminal.
+///
+/// Version 0.4 marks the sense of a line with Rich markup: a receipt is green, a refusal red, a
+/// warning yellow. Rich writes those as `\x1b[32m`, `\x1b[31m` and `\x1b[33m`, drops every style
+/// when `NO_COLOR` holds a value or the terminal calls itself `dumb`, and writes none at all to a
+/// redirected stream. The doctor report carries all three senses at once, so one run proves the
+/// mapping and a second proves the plain stream stays plain.
+#[test]
+fn a_printed_line_wears_the_colour_of_its_sense_only_on_a_terminal() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("tool.py");
+    fs::write(&source, "print(1)\n").unwrap();
+    let add = std::process::Command::new(env!("CARGO_BIN_EXE_skit"))
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--ref",
+            "--name",
+            "Tool",
+            "--no-input",
+        ])
+        .env("SKIT_DATA_DIR", data.path())
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_CONFIG_DIR", config.path())
+        .env("SKIT_LANG", "en")
+        .output()
+        .unwrap();
+    assert!(add.status.success(), "{add:?}");
+    // A reference entry whose target is gone gives the report its yellow sense.
+    fs::remove_file(&source).unwrap();
+
+    let doctor = |extra: &[(&str, &str)]| {
+        let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+        command.arg("doctor");
+        command.env("SKIT_DATA_DIR", data.path());
+        command.env("SKIT_STATE_DIR", state.path());
+        command.env("SKIT_CONFIG_DIR", config.path());
+        command.env("SKIT_LANG", "en");
+        // An empty PATH leaves uv unfound, which is the report's red sense.
+        command.env("PATH", data.path());
+        for (name, value) in extra {
+            command.env(name, value);
+        }
+        let pty = PtyChild::spawn(
+            command,
+            PtySize {
+                rows: 24,
+                cols: 200,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+            AnswerQueries::On,
+        );
+        pty.finish().1
+    };
+
+    // A terminal shows the refusal in red and the warning in yellow, each closed the way Rich
+    // closes it.
+    let coloured = doctor(&[]);
+    assert!(
+        coloured.contains("\u{1b}[31mERROR uv: not found\u{1b}[0m"),
+        "{coloured:?}"
+    );
+    assert!(
+        coloured.contains("\u{1b}[33mWARN "),
+        "the warning keeps its own sense: {coloured:?}"
+    );
+
+    // A receipt carries the green sense, on the same terminal and by the same rule.
+    let mut removal = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    removal.args(["remove", "Tool", "--yes"]);
+    removal.env("SKIT_DATA_DIR", data.path());
+    removal.env("SKIT_STATE_DIR", state.path());
+    removal.env("SKIT_CONFIG_DIR", config.path());
+    removal.env("SKIT_LANG", "en");
+    let removed = PtyChild::spawn(
+        removal,
+        PtySize {
+            rows: 24,
+            cols: 200,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+        AnswerQueries::On,
+    )
+    .finish()
+    .1;
+    assert!(
+        removed.contains("\u{1b}[32mRemoved: Tool\u{1b}[0m"),
+        "{removed:?}"
+    );
+
+    // The same run drops every style once the environment asks it to.
+    for quiet in [("NO_COLOR", "1"), ("TERM", "dumb")] {
+        let plain = doctor(&[quiet]);
+        assert!(
+            plain.contains("ERROR uv: not found"),
+            "{quiet:?}: {plain:?}"
+        );
+        assert!(
+            !plain.contains("\u{1b}[31m") && !plain.contains("\u{1b}[33m"),
+            "{quiet:?} must not colour: {plain:?}"
+        );
+    }
+
+    // A redirected stream carries no style at all, which is why every recorded output is unchanged.
+    let piped = std::process::Command::new(env!("CARGO_BIN_EXE_skit"))
+        .arg("doctor")
+        .env("SKIT_DATA_DIR", data.path())
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_CONFIG_DIR", config.path())
+        .env("SKIT_LANG", "en")
+        .env("PATH", data.path())
+        .output()
+        .unwrap();
+    let printed = String::from_utf8_lossy(&piped.stdout);
+    assert!(printed.contains("ERROR uv: not found"), "{printed:?}");
+    assert!(
+        !printed.contains('\u{1b}'),
+        "a redirected report carries no escape: {printed:?}"
+    );
+}

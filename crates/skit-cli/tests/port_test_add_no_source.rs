@@ -287,7 +287,9 @@ impl Sandbox {
 }
 
 fn terminal_text(raw: &[u8]) -> String {
-    String::from_utf8_lossy(raw)
+    // Whole escape sequences go first (support/pty.rs, invariant 6). Dropping the escape byte
+    // alone would leave its parameters behind as text, so a coloured line would read `[2m…`.
+    pty::strip_terminal_control(&String::from_utf8_lossy(raw))
         .chars()
         .filter(|character| !character.is_control() || *character == '\n')
         .collect()
@@ -1019,6 +1021,8 @@ fn test_cli_ask_kind_plain_full_layout() {
                 "locale={locale}, label={label}: {output}"
             );
         }
+        // The hint carries the dim sense on a terminal, so the comparison reads the visible text
+        // rather than the control stream (support/pty.rs, invariant 6).
         assert!(
             output.lines().any(|line| line.trim() == cancel),
             "locale={locale}: {output}"
