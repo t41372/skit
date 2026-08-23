@@ -221,7 +221,7 @@ fn prompt_runner_environment_is_only_the_assembly_environment() {
 }
 
 #[test]
-fn prompt_argv_refuses_nul_and_an_oversized_posix_command_line() {
+fn prompt_argv_refuses_nul_and_an_oversized_command_line() {
     let runner = PromptRunner {
         name: "agent".to_owned(),
         argv: vec!["agent".to_owned(), "{{prompt}}".to_owned()],
@@ -238,7 +238,16 @@ fn prompt_argv_refuses_nul_and_an_oversized_posix_command_line() {
         Err(LaunchError::PromptContainsNul)
     ));
 
+    // 34,000 BMP characters exceed both hosts' budgets: 102,000+ summed bytes against the
+    // POSIX 100,000 limit, and roughly 68,000 UTF-16 command-line bytes against the Windows
+    // 60,000 limit. The refusal is typed on every host with the host's own limit; both arms
+    // report in bytes, and the parameterized in-src owner drives the Windows arithmetic
+    // (`prompt_argv_size`).
     let oversized = "界".repeat(34_000);
+    #[cfg(not(windows))]
+    let expected_limit = 100_000;
+    #[cfg(windows)]
+    let expected_limit = 60_000;
     assert!(matches!(
         build_launch_plan(
             &prompt(),
@@ -249,7 +258,7 @@ fn prompt_argv_refuses_nul_and_an_oversized_posix_command_line() {
             &Probe,
         ),
         Err(LaunchError::PromptArgvTooLong { size, limit, unit })
-            if size > limit && limit == 100_000 && unit == "bytes"
+            if size > limit && limit == expected_limit && unit == "bytes"
     ));
 }
 
