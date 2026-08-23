@@ -782,6 +782,17 @@ rewritten flat (goto/labels, line-level exits); the family audit table confirms 
 twin was already flat. Asserts reordered into diagnosis order, nothing weakened. Aggregate
 4071 / 0 / 525.
 
+Wave 20 (`6ee08ab` / `0b7deb3`): the instrumented coverage flake was the worker-answer
+budget class (10 s busy-yield poll under an oversubscribed runner; now one 30 s
+WORKER_ANSWER_BUDGET convention over both worker waits, 1 ms sleeps so the waiter stops
+competing, checkpoint-driven success paths unchanged); the Windows langs failure was a
+POSIX-literal fixture hitting the host's real `Path::is_absolute` (launch.rs:1246) — a
+`virtual_workdir` helper now builds the fiction host-absolutely, pre-fixing the test's
+second half too. Forecast recorded: skit-runtime's test targets have NEVER run on Windows
+and hold ~45 POSIX-literal sites with confirmed members (`port_test_launcher.rs:556`
+WorkdirMissing-vs-InvalidWorkdir, launch.rs private_tests `/custom`//`/missing`/`/bin/sh`,
+no cfg gates) — the pre-fix wave for that crate is dispatched alongside this push.
+
 The corrected Windows forecast for the next runs (read-only scan, no fixes yet): nothing
 fails to compile on Windows; the `\?\` verbatim class is neutralized because
 canonicalization applies to both sides of every assertion; the real wall is PATHEXT —
