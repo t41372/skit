@@ -55,7 +55,11 @@ fn dirty_preferences_discard_guard_has_exact_keys_and_clickable_actions() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains("Discard unsaved changes?"));
+    // Version 0.4 shows the question once, inside an untitled border
+    // (`src/skit/tui_settings.py:42-65`). One more copy names the surface in
+    // the screen header, the port's screen-swap convention; the old panel
+    // title made it three.
+    assert_eq!(rendered.matches("Discard unsaved changes?").count(), 2);
     assert!(rendered.contains("Discard"));
     assert!(rendered.contains("Keep editing"));
 

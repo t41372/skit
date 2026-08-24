@@ -809,3 +809,19 @@ fn the_add_receipt_block_is_verbatim_version_0_4() {
         );
     }
 }
+
+/// The discard modal set must carry the version 0.4 strings byte for byte.
+///
+/// Oracle: `skit.po:3366-3375` in both locales. `Discard` is the bare verb,
+/// and the question has no 要…吗 wrapper.
+#[test]
+fn the_discard_modal_strings_are_verbatim_version_0_4() {
+    for (key, zh_cn, zh_tw) in [
+        ("Discard", "放弃", "放棄"),
+        ("Keep editing", "继续编辑", "繼續編輯"),
+        ("Discard unsaved changes?", "放弃未保存的更改？", "放棄未儲存的變更？"),
+    ] {
+        assert_eq!(text(Locale::ZhCn, key), zh_cn, "zh-CN diverges for {key:?}");
+        assert_eq!(text(Locale::ZhTw, key), zh_tw, "zh-TW diverges for {key:?}");
+    }
+}
