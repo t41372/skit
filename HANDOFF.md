@@ -129,6 +129,94 @@ copying Python's reviewed behavior. When in doubt, read `skit-oracle/src/skit/*.
    Then update the ledger row(s) in `docs/design/python-test-port-ledger.md` (`**X FIXED <sha>**`
    convention) as a separate `docs(ledger):` commit.
 
+## 2.9 Mutation matrix verdict and the timeout root cause (2026-08-23)
+
+MUTATION RUN 32655362435 (head `67f2f21`, 48 shards): 48/48 shards FAILED. The aggregate
+counts are 91 missed, 5,719 timeouts, and two infrastructure deaths. The timeouts are ONE
+defect, not thousands.
+
+ROOT CAUSE (primary-source verified): cargo-mutants 27.1.0 with `test_workspace = true` and
+`--shard` calibrates each shard's automatic test timeout from a baseline that tests ONLY the
+shard's mutated package (observed: `cargo test --package=skit-runtime` in shard 29's
+baseline.log, 1 s), while every mutant then runs the FULL workspace suite (observed:
+`cargo test --workspace` in the same shard's mutant logs). The docs promise the opposite
+("all tests from the workspace are run for the baseline and against each mutant" when
+test_workspace is set) — an upstream defect in sharded runs; no fixed release exists
+(27.1.0 is current). The derived budget max(20, 3.0 x ~1 s) = 20 s then times out honest
+full-suite runs, which need ~95 s on these runners (measured from completed MISSED runs:
+80-96 s). Kill latency depends on the mutated crate's position in `cargo test`'s serial
+binary order, which explains the exact block boundary: shards 0-16 (application, benchmarks,
+cli — killing tests run early) mostly caught; shards 17-47 (domain, form, i18n, language,
+runtime, store, tui, ui — killing tests sit after skit-cli's long suite) avalanched with
+156-198 timeouts of 206. Even the "healthy" shards' budgets (90-102 s) sat BELOW the honest
+95 s suite, so most of their timeouts were the same artifact. The local 25-mutant smoke run
+(14/25 timeouts) was the same signature, visible months earlier.
+
+CONSEQUENCE: roughly 65% of the workspace's 9,877 mutants have NEVER been honestly
+adjudicated. The relaunch is not a formality; expect the missed list to grow well past 91,
+concentrated in the eight crates the avalanche covered.
+
+THE FIX (this commit):
+- `--timeout 300` (explicit, ~3x the honest 95 s suite) replaces the automatic calibration.
+  cargo-mutants has no config key for it, so it lives on the command line in mutation.yml
+  and AGENTS.md; the contracts script pins both.
+- `minimum_test_timeout` and `timeout_multiplier` left `.cargo/mutants.toml`: with an
+  explicit `--timeout` they govern nothing, and a knob that does not govern misreads as
+  policy. A new contract rejects their return.
+- The baseline STAYS (no `--baseline=skip`): with the explicit timeout its miscalibration
+  is inert, and it remains the only in-environment check that the suite passes inside the
+  mutants tree copy. Skipping it would convert any environmental breakage into a silent
+  false kill of every mutant in the shard — fake zero survivors the fail-closed aggregate
+  cannot see.
+- 48 -> 64 shards and `timeout-minutes: 300 -> 360`. Shard-17 artifact data: root-crate
+  (domain) mutants pay 136 s mean workspace relink each; at 206 mutants and an honest
+  ~80 s test, the projection is 5.5 h — an 8% margin against the 6 h hard ceiling with a
+  fail-closed aggregate on the line. At 64 shards the worst class projects ~4.1 h (31%
+  margin). The contracts script derives matrix/`--shard`/`SHARD_COUNT` consistency, so the
+  count lives in one place.
+
+VALIDATION (receipts): Before/after pair on three
+avalanche-class mutants (delete match arm "python"/"shell"/"fish" in
+build_launch_plan_inner, skit-runtime/src/launch.rs):
+- BEFORE (old flags, local): auto-set test timeout 20 s from a package-scoped baseline
+  (`cargo test --package=skit-runtime`, 1 s); all three mutants TIMEOUT while the full
+  workspace suite was progressing honestly (receipts: session scratchpad valA/mutants.out,
+  debug.log "Auto-set test timeout to 20s", per-mutant logs killed mid-suite).
+- AFTER (explicit --timeout, local, 900 s to absorb this host's slower suite): all three
+  CAUGHT, 0 timeouts, 18 minutes total (receipts: scratchpad valB/mutants.out, caught.txt=3,
+  debug.log "test: Some(900s)"). The CI budget stays 300 s, calibrated to the measured
+  80-96 s honest suite on the runners.
+
+CLASSIFICATIONS:
+- The 91 MISSED are REAL survivors (46 skit-benchmarks, 45 skit-cli/src/cli.rs). Every
+  spot-checked one shows Build Success + Test Success with the full suite completing in
+  80-95 s: the tests ran, passed, and the mutant lived. Killing owners are the next wave;
+  the full list is in the shard artifacts (missed.txt) and the session scratchpad
+  (missed-91.txt).
+- Shard 8: runner eviction at 1h46m ("The runner has received a shutdown signal") after the
+  same avalanche pattern — rerun noise, no separate defect.
+- Shard 40: the unmutated baseline itself failed — skit-tui `terminal_pty` lifecycle owners
+  panicked instantly ("PTY output closed before the generic form appeared") inside the
+  cargo-mutants tree copy, while shards 41-46 ran the identical baseline green. A
+  nondeterministic environment sensitivity in that owner. It goes on the killing-owner
+  backlog with this note: under mutation, a flaky FAILURE is a false KILL (it catches every
+  mutant in whatever shard it lands on), so this flake is a correctness risk to the gate,
+  not just rerun noise.
+- Genuine-hang mutants (the skit-benchmarks python_random bit-op class) will still be
+  TIMEOUT under any honest budget, and the aggregate fails on non-empty timeout.txt. The
+  resolution is killing tests that fail BEFORE the hang — killing-owner wave work, not a
+  budget question.
+
+RELAUNCH PLAN AND COST: label stays attached; the next push to the PR re-queues the 64-shard
+matrix. Projected ~155 runner-hours per full run (64 shards x ~2.4 h average; worst class
+~4.1 h), matrix wall ~8 h at 20-way concurrency. If margins run tighter than projected, the
+next lever is a dedicated build profile without debuginfo to cut the 136 s root-crate
+relink — noted, not implemented; the failure was calibration, not build speed.
+
+NOTE: the `mutation-requested` label is REMOVED from PR #45 (user decision: do not re-run
+the matrix yet — too slow). Re-add the label when the full 64-shard adjudication should run.
+The 91-survivor killing-owner wave waits for that full honest list.
+
 ## 3. Fix-pass work COMPLETED (all committed; sequence `git log 052dcd3..HEAD`)
 
 Pre-session (previous agents): store data-safety (`2aebe6f`,`c04395c`), 13 port waves, i18n Library

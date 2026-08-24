@@ -18,20 +18,22 @@ concurrency:
 
 jobs:
   mutation:
-    name: cargo-mutants shard ${{ matrix.shard }}/48
-    # Testing every mutant is opt-in on a pull request. Forty-eight shards would crowd out
+    name: cargo-mutants shard ${{ matrix.shard }}/64
+    # Testing every mutant is opt-in on a pull request. Sixty-four shards would crowd out
     # every other workflow, and the next push would void the answer anyway. Attach the
     # `mutation-requested` label once the branch is settled. A push to main, the nightly
-    # run, and a manual run always test.
+    # run, and a manual run always test. Sixty-four shards, not forty-eight: a shard of
+    # root-crate mutants pays about 136 s of workspace relink per mutant, and with the
+    # honest 300 s test budget a 206-mutant shard would brush the 6 h job ceiling.
     if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
     steps:
       - name: Check out the source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,7 +44,7 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
       - name: Run mutation tests
-        run: cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0 --shard ${{ matrix.shard }}/48
+        run: cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300 --shard ${{ matrix.shard }}/64
       - name: Upload mutation records
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -68,7 +70,7 @@ jobs:
           path: shards
       - name: Require every shard to report zero survivors
         env:
-          SHARD_COUNT: "48"
+          SHARD_COUNT: "64"
         run: |
           set -euo pipefail
           # Fail closed. A shard that never reported is a failure, not a pass: the run only proves

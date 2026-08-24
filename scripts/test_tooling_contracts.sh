@@ -200,8 +200,18 @@ test "$(grep -lF 'sys.version_info[:2] == (3, 13)' \
   exit 1
 }
 expect_text CONTRIBUTING.md 'Node.js 26.7.0 and npm 12.0.2 or later'
-expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
-expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
+expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300'
+expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300'
+
+# The test timeout must be explicit. cargo-mutants 27.1.0 calibrates its automatic timeout from a
+# baseline that tests only the shard's mutated package, while `test_workspace = true` makes every
+# mutant run the full workspace suite. The derived budget then times out honest runs. An explicit
+# --timeout is the only calibration that matches the enforced scope, so the multiplier and minimum
+# knobs must not return: they only govern the automatic path and would misread as active policy.
+if grep -qE '^[[:space:]]*(timeout_multiplier|minimum_test_timeout)[[:space:]]*=' .cargo/mutants.toml; then
+  echo 'mutants.toml must not carry automatic-timeout knobs; the explicit --timeout governs' >&2
+  exit 1
+fi
 expect_text .github/workflows/ci.yml 'zizmor .github/workflows .github/actions/install-hyperfine/action.yml'
 
 # Testing every mutant is opt-in on a pull request, so a branch under active work does not queue a
