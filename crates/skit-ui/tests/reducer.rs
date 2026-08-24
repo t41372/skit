@@ -1618,3 +1618,52 @@ fn every_character_binding_accepts_both_shift_shapes() {
         }
     }
 }
+
+/// The library order and the initial selection are pure functions of the surface.
+///
+/// Version 0.4 sorts a slug-sorted listing by activity, newest first, with Python's
+/// stable sort (`src/skit/tui.py:394`, `src/skit/store.py:860`). Ties therefore keep
+/// the ascending slug order, and the cursor starts on the first row. The surface
+/// build must give the same order and the same selection every time.
+#[test]
+fn library_activity_sort_breaks_ties_by_slug_and_selects_the_first_row() {
+    use skit_application::library_detail::LibraryEntryDetail;
+    let detail = |added: &str| LibraryEntryDetail {
+        added_at: added.to_owned(),
+        ..LibraryEntryDetail::default()
+    };
+    // Distinct activity: the newest entry leads even against slug order.
+    let newest_leads = LibraryState::from_surface(
+        LibraryScan {
+            entries: vec![entry("banner", "banner", ""), entry("greet", "greet", "")],
+            diagnostics: Vec::new(),
+        },
+        BTreeMap::from([
+            (Slug::parse("banner").unwrap(), detail("2026-08-24T00:00:01+00:00")),
+            (Slug::parse("greet").unwrap(), detail("2026-08-24T00:00:05+00:00")),
+        ]),
+    );
+    let order = |state: &LibraryState| {
+        state
+            .visible_entries()
+            .map(|entry| entry.slug.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(order(&newest_leads), ["greet", "banner"]);
+    assert_eq!(newest_leads.selected().unwrap().slug.as_str(), "greet");
+    // Tied activity: the ascending slug order holds, and the first row is selected.
+    for _ in 0..8 {
+        let tied = LibraryState::from_surface(
+            LibraryScan {
+                entries: vec![entry("banner", "banner", ""), entry("greet", "greet", "")],
+                diagnostics: Vec::new(),
+            },
+            BTreeMap::from([
+                (Slug::parse("banner").unwrap(), detail("2026-08-24T00:00:00+00:00")),
+                (Slug::parse("greet").unwrap(), detail("2026-08-24T00:00:00+00:00")),
+            ]),
+        );
+        assert_eq!(order(&tied), ["banner", "greet"]);
+        assert_eq!(tied.selected().unwrap().slug.as_str(), "banner");
+    }
+}
