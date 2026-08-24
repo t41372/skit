@@ -14,7 +14,7 @@ use ratatui_crossterm::crossterm::event::{
 use ratatui_interact::{
     components::{
         CheckBox, CheckBoxState, ListPickerState, ScrollableContentState, Select, SelectAction,
-        SelectState, handle_scrollable_content_key, handle_scrollable_content_mouse,
+        SelectState, SelectStyle, handle_scrollable_content_key, handle_scrollable_content_mouse,
         handle_select_key,
     },
     state::FocusManager,
@@ -32,7 +32,8 @@ use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
     footer::handle_footer_scroll,
-    session::render_line_input,
+    rowclip::RowClip,
+    session::render_line_input_band,
     theme::{ACCENT, BOX_MAROON, SELECT_BG, SELECT_FG, panel_block},
 };
 
@@ -790,9 +791,10 @@ pub fn render_add(
         let row_end = row_start.saturating_add(height);
         if row_end > offset && row_start < offset.saturating_add(session.visible_height) {
             let clipped_top = offset.saturating_sub(row_start);
-            let y = body
-                .y
-                .saturating_add(u16::try_from(row_start.saturating_sub(offset)).unwrap_or(0));
+            let y = body.y.saturating_add(
+                u16::try_from(row_start.saturating_sub(offset))
+                    .expect("the Add row starts inside its viewport"),
+            );
             let visible_height = height.saturating_sub(clipped_top).min(
                 session
                     .visible_height
@@ -802,11 +804,16 @@ pub fn render_add(
                 body.x,
                 y,
                 body.width,
-                u16::try_from(visible_height).unwrap_or(u16::MAX),
+                u16::try_from(visible_height).expect("the Add row band fits its viewport"),
+            );
+            let clip = RowClip::new(
+                height,
+                u16::try_from(clipped_top).expect("the row offset fits the visible item"),
+                rect,
             );
             render_row(
                 frame,
-                rect,
+                clip,
                 row,
                 state,
                 session,
@@ -815,7 +822,7 @@ pub fn render_add(
             );
             if let Some(id) = row.id() {
                 hits.push(AddHitRegion {
-                    area: rect,
+                    area: clip.area(),
                     target: id.clone(),
                 });
             }
@@ -1302,29 +1309,32 @@ fn review_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
 
 fn render_row(
     frame: &mut Frame,
-    area: Rect,
+    clip: RowClip,
     row: &RenderRow,
     state: &AddWorkflowState,
     session: &mut AddScreenSession,
     locale: Locale,
     overlays: &mut Vec<Vec<AddHitRegion>>,
 ) {
+    let area = clip.area();
     match row {
         RenderRow::Input(field, label) => {
             if let Some(input) = session.inputs.get(field) {
-                render_line_input(
+                render_line_input_band(
                     frame,
-                    area,
+                    clip,
                     input,
                     false,
                     session.focus.is_focused(&AddControlId::Text(*field)),
                     label,
+                    None,
                 );
             }
         }
         RenderRow::Button(id, label) => {
             let focused = session.focus.is_focused(id);
-            frame.render_widget(
+            clip.paint_paragraph(
+                frame.buffer_mut(),
                 Paragraph::new(Line::from(vec![
                     Span::styled(
                         if focused { "▶ " } else { "  " },
@@ -1342,7 +1352,6 @@ fn render_row(
                         },
                     ),
                 ])),
-                area,
             );
         }
         RenderRow::Check(id, label) => {
@@ -1363,8 +1372,34 @@ fn render_row(
                 );
                 (options, &session.runner)
             };
-            let select = Select::new(&options, select_state).label(label);
-            select.render_stateful(frame, area);
+            if clip.is_full() {
+                let select = Select::new(&options, select_state).label(label);
+                select.render_stateful(frame, area);
+            } else {
+                let style = SelectStyle::default();
+                let display = select_state
+                    .selected_index
+                    .and_then(|index| options.get(index))
+                    .map_or("Please select an option", String::as_str);
+                let border = if select_state.focused {
+                    style.focused_border
+                } else {
+                    style.unfocused_border
+                };
+                clip.paint_bordered_paragraph(
+                    frame.buffer_mut(),
+                    Paragraph::new(Line::from(vec![
+                        Span::styled(display, Style::default().fg(style.text_fg)),
+                        Span::styled(
+                            format!(" {}", style.dropdown_indicator),
+                            Style::default().fg(border),
+                        ),
+                    ])),
+                    Line::from(format!(" {label} ")),
+                    Style::default().fg(border),
+                    0,
+                );
+            }
             if select_state.is_open {
                 let select = Select::new(&options, select_state).label(label);
                 let regions = select.render_dropdown(frame, area, frame.area());
@@ -1388,7 +1423,10 @@ fn render_row(
             }
         }
         RenderRow::Note(message, style) => {
-            frame.render_widget(Paragraph::new(message.as_str()).style(*style), area);
+            clip.paint_paragraph(
+                frame.buffer_mut(),
+                Paragraph::new(message.as_str()).style(*style),
+            );
         }
     }
 }
@@ -1870,6 +1908,60 @@ mod tests {
                 (area.x..area.right()).map(move |column| buffer[(column, row)].symbol())
             })
             .collect()
+    }
+
+    /// A short viewport can cut the top row from a bordered input.
+    ///
+    /// The surviving band starts with the value row. It must not restart the
+    /// control at its top border and hide the value.
+    #[test]
+    fn a_top_clipped_add_input_shows_its_surviving_value_row() {
+        let mut state = AddWorkflowState::new(Vec::new());
+        let _ = state.reduce(AddAction::SetSourcePath("/work/later-row.py".to_owned()));
+        let mut session = AddScreenSession::default();
+
+        let (terminal, geometry) = draw(&state, &mut session, 48, 5);
+        let rendered = text_of(&terminal);
+
+        assert_eq!(geometry.body.height, 2, "the input must be top-clipped");
+        assert_eq!(
+            geometry.first_visible, 2,
+            "the visible band starts at the value row"
+        );
+        assert!(
+            rendered.contains("/work/later-row.py"),
+            "the surviving value row is missing:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_top_clipped_focused_add_select_shows_its_surviving_value_row() {
+        let state = source("task.prompt.md", b"Task", KnownEntryKind::Prompt);
+        let mut session = AddScreenSession::default();
+        session.sync(&state);
+        session.focus.set(AddControlId::Runner);
+        session.sync_values(&state);
+        let mut terminal = Terminal::new(TestBackend::new(48, 2)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                render_row(
+                    frame,
+                    RowClip::new(3, 1, frame.area()),
+                    &RenderRow::Select(AddControlId::Runner, "Prompt runner".to_owned()),
+                    &state,
+                    &mut session,
+                    Locale::En,
+                    &mut Vec::new(),
+                );
+            })
+            .unwrap();
+        let rendered = text_of(&terminal);
+
+        assert!(
+            rendered.contains("ask on the run form"),
+            "the surviving select value is missing: {rendered}"
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@
 
 mod footer;
 mod layout;
+mod rowclip;
 mod screens;
 mod session;
 mod terminal;

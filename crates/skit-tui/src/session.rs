@@ -5,7 +5,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui_core::{
-    buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
     terminal::Frame,
@@ -48,7 +47,9 @@ use unicode_width::UnicodeWidthStr as _;
 use crate::{
     HitRegion, HitTarget, ViewGeometry, command_action,
     footer::FooterSession,
-    map_event, run_field_command_action,
+    map_event,
+    rowclip::RowClip,
+    run_field_command_action,
     screens::add::{AddScreenEvent, AddScreenGeometry, AddScreenSession, render_add},
     screens::library::LibraryScreenSession,
     screens::management::{
@@ -2815,7 +2816,15 @@ pub(crate) fn render_line_input(
     focused: bool,
     label: &str,
 ) {
-    render_line_input_with_suggestion(frame, area, state, secret, focused, label, None);
+    render_line_input_band(
+        frame,
+        RowClip::new(3, 0, area),
+        state,
+        secret,
+        focused,
+        label,
+        None,
+    );
 }
 
 fn render_line_input_with_suggestion(
@@ -2827,41 +2836,29 @@ fn render_line_input_with_suggestion(
     label: &str,
     suggestion: Option<&str>,
 ) {
-    if let Some(cursor) = line_input_into(
-        frame.buffer_mut(),
-        area,
+    render_line_input_band(
+        frame,
+        RowClip::new(3, 0, area),
         state,
         secret,
         focused,
         label,
         suggestion,
-    ) {
-        frame.set_cursor_position(cursor);
-    }
+    );
 }
 
-/// Draw one bordered line input into a buffer and return the cursor cell.
-///
-/// The buffer target lets a scrolled screen draw the control at full height
-/// off screen and keep only the visible rows. The caller owns the frame, so
-/// the caller places the cursor.
-pub(crate) fn line_input_into(
-    buffer: &mut Buffer,
-    area: Rect,
+/// Draw only the visible band of one bordered line input.
+pub(crate) fn render_line_input_band(
+    frame: &mut Frame,
+    clip: RowClip,
     state: &LineInput,
     secret: bool,
     focused: bool,
     label: &str,
     suggestion: Option<&str>,
-) -> Option<(u16, u16)> {
+) {
     let border = if focused { ACCENT } else { BOX_DIM };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border))
-        .title(label.to_owned());
-    let inner = block.inner(area);
-    block.render(area, buffer);
-    let width = usize::from(inner.width.max(1));
+    let width = usize::from(clip.area().width.saturating_sub(2).max(1));
     let scroll = state.visual_scroll(width);
     let display = if secret {
         Line::from(Span::styled(
@@ -2878,10 +2875,17 @@ pub(crate) fn line_input_into(
             ),
         ])
     };
-    Paragraph::new(display)
-        .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX)))
-        .render(inner, buffer);
-    if focused && inner.width > 0 && inner.height > 0 {
+    clip.paint_bordered_paragraph(
+        frame.buffer_mut(),
+        Paragraph::new(display),
+        Line::from(label),
+        Style::default().fg(border),
+        u16::try_from(scroll).unwrap_or(u16::MAX),
+    );
+    if focused
+        && let Some(row) = clip.row(1)
+        && row.width > 2
+    {
         let visual_cursor = if secret {
             state.cursor()
         } else {
@@ -2890,12 +2894,13 @@ pub(crate) fn line_input_into(
         let x = visual_cursor
             .saturating_sub(scroll)
             .min(width.saturating_sub(1));
-        return Some((
-            inner.x.saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
-            inner.y,
+        frame.set_cursor_position((
+            row.x
+                .saturating_add(1)
+                .saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
+            row.y,
         ));
     }
-    None
 }
 
 fn render_flat_search_input(frame: &mut Frame, area: Rect, state: &LineInput, label: &str) {
@@ -2939,20 +2944,27 @@ pub(crate) fn render_textarea(
     focused: bool,
     label: &str,
 ) {
-    textarea_into(frame.buffer_mut(), area, state, focused, label);
+    render_textarea_band(frame, RowClip::new(6, 0, area), state, focused, label);
 }
 
-/// Draw one bordered text area into a buffer.
-///
-/// The buffer target lets a scrolled screen draw the control at full height
-/// off screen and keep only the visible rows.
-pub(crate) fn textarea_into(
-    buffer: &mut Buffer,
-    area: Rect,
+/// Draw only the visible band of one bordered text area.
+pub(crate) fn render_textarea_band(
+    frame: &mut Frame,
+    clip: RowClip,
     state: &mut RichTextArea<'static>,
     focused: bool,
     label: &str,
 ) {
+    if !clip.is_full() {
+        clip.paint_bordered_paragraph(
+            frame.buffer_mut(),
+            Paragraph::new(textarea_text(state)).style(Style::default().fg(Color::White)),
+            Line::from(label),
+            Style::default().fg(if focused { ACCENT } else { BOX_DIM }),
+            0,
+        );
+        return;
+    }
     state.set_block(
         Block::default()
             .borders(Borders::ALL)
@@ -2967,7 +2979,7 @@ pub(crate) fn textarea_into(
         Style::default().fg(Color::White)
     });
     state.set_selection_style(Style::default().fg(SELECT_FG).bg(SELECT_BG));
-    (&*state).render(area, buffer);
+    (&*state).render(clip.area(), frame.buffer_mut());
 }
 
 pub(crate) fn checkbox_style() -> CheckBoxStyle {
