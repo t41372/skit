@@ -246,6 +246,61 @@ Classified faithful, no change: Esc on the library quits (`back_or_quit`, tui.py
 same `Back to list` chip, tui.py:463). The en-vs-zh final-frame difference is the proven VHS
 raster-lag artifact class — key mapping never reads the locale.
 
+## 2.11 Walkthrough tapes committed (base `595e609`)
+
+The walkthrough tapes moved out of the throwaway harness into the repository. They sit beside
+demo.tape and shots.tape, and `docs/assets/demo/record_walkthrough.sh` records them.
+
+| File | What it records |
+|---|---|
+| `walkthrough.tape` | Every screen a keyboard reaches, in one continuous take, ending in a real run. |
+| `walkthrough-shots.tape` | One screenshot per distinct state: 20 frames. |
+| `walkthrough-modals.tape` | The pickers, editors, and guards the shots tape does not reach. |
+| `walkthrough-drafts.tape` | The kept-draft path, whose frames carry a random draft name. |
+| `settings-clip.tape` | The 101x28 clipped-control evidence. It replaces the harness bug tape. |
+
+`scripts/{en,zh,zh-CN}/pep723.py` is a new demo fixture. It declares an empty PEP 723 dependency
+list, so the add review reads that block instead of guessing from the imports.
+
+Three tape changes come from the section 2.10 fixes:
+
+- `?` opens Help, so Help is now a recorded scene in the story tape and the shots tape. Esc
+  closes it. `q` does nothing while it is open, so a tape must close the overlay before it quits.
+- Draft delete arms from keyboard focus, so the drafts tape no longer activates the row first.
+- The library order is deterministic, so the `Up 4` comments no longer claim otherwise.
+
+FRAMES ARE NOT TRACKED, and must not become tracked. Two runs of one tape do not agree: the
+earlier round measured 8 unstable frames of 19, this round measured 9 of 20, and the two
+unstable SETS differ. The cause is the VHS capture stack, not skit. A screenshot can raster a
+neighbouring beat, a torn composite of two beats, or a blank inter-frame, while the emulator
+text grid and the mp4 are correct at every beat. The tracked baseline stays the 12
+`docs/assets/tui-*.png` files that shots.tape produces and the READMEs reference.
+
+Every Wait pattern is locale invariant, so one file records en, zh-CN, and zh-TW. A Wait that
+fails prints the screen and stops the tape, and that is what makes a beat verifiable. Frame
+verification found and replaced two weak anchors: the runner editor waited on `{{prompt}}`,
+which the agent list underneath already shows, and the Ctrl+K picker waited on nothing. They
+now wait on `aider` and on `agent install`, which no earlier screen shows. It also found that
+a character key after the last Screenshot is unsafe while a text field has focus: `q` at the
+end of settings-clip.tape typed into the Name field instead of quitting, and a late raster
+recorded the renamed entry as if it were the beat. That tape now leaves the screen with Esc.
+
+Two version 0.5 defects were found while verifying frames. Neither is in
+`docs/parity-backlog.md`. Neither is fixed here.
+
+1. The run-time value menu (Ctrl+T) prints all seven of its rows in English under zh-CN and
+   zh-TW. `token_label` in `crates/skit-tui/src/screens/run_modal.rs` asks for seven keys that
+   the `skit-i18n` catalog does not hold, so each falls back to its English source key. This
+   breaks product rule 1.
+2. The discard guard truncates its "Keep editing" button in both Chinese locales: zh-CN draws
+   `继续编`, zh-TW draws `繼續編`. `crates/skit-tui/src/screens/modal.rs:258-260` sizes both
+   buttons with `chars().count()`. A CJK glyph occupies two terminal columns, so a four
+   character label needs eight columns and gets six. Other layout code measures with
+   `unicode_width::UnicodeWidthStr`; these two lines do not.
+
+Still present and already known, so not new: the "Entry added" status line follows the user
+across screens, and the Help overlay draws its title twice.
+
 ## 3. Fix-pass work COMPLETED (all committed; sequence `git log 052dcd3..HEAD`)
 
 Pre-session (previous agents): store data-safety (`2aebe6f`,`c04395c`), 13 port waves, i18n Library
