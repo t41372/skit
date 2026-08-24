@@ -2226,7 +2226,8 @@ mod tests {
         let geometry = AddScreenGeometry::default();
         let mut landed = false;
         for _ in 0..12 {
-            let event = session.handle_event(key(KeyCode::Tab, KeyModifiers::NONE), &state, &geometry);
+            let event =
+                session.handle_event(key(KeyCode::Tab, KeyModifiers::NONE), &state, &geometry);
             if let Some(AddScreenEvent::Action(action)) = event {
                 let _ = state.reduce(action);
             }

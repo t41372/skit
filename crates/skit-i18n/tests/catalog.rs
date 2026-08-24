@@ -785,7 +785,11 @@ fn every_tui_completion_status_has_two_complete_translations() {
 fn the_add_receipt_block_is_verbatim_version_0_4() {
     for (key, zh_cn, zh_tw) in [
         ("Added: {}", "已加入:x", "已加入:x"),
-        ("Added: {} ({} mode)", "已加入:x (y 模式)", "已加入:x (y 模式)"),
+        (
+            "Added: {} ({} mode)",
+            "已加入:x (y 模式)",
+            "已加入:x (y 模式)",
+        ),
         ("Description: {}", "描述:x", "描述:x"),
         ("Managed parameters: {}", "管理中的参数:x", "管理中的參數:x"),
         (
@@ -819,7 +823,11 @@ fn the_discard_modal_strings_are_verbatim_version_0_4() {
     for (key, zh_cn, zh_tw) in [
         ("Discard", "放弃", "放棄"),
         ("Keep editing", "继续编辑", "繼續編輯"),
-        ("Discard unsaved changes?", "放弃未保存的更改？", "放棄未儲存的變更？"),
+        (
+            "Discard unsaved changes?",
+            "放弃未保存的更改？",
+            "放棄未儲存的變更？",
+        ),
     ] {
         assert_eq!(text(Locale::ZhCn, key), zh_cn, "zh-CN diverges for {key:?}");
         assert_eq!(text(Locale::ZhTw, key), zh_tw, "zh-TW diverges for {key:?}");

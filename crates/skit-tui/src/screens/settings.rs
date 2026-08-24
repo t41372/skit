@@ -604,7 +604,10 @@ impl SettingsScreenSession {
         let target = frame.buffer_mut();
         for row in 0..area.height {
             for column in 0..area.width {
-                let source = (area.x.saturating_add(column), source_top.saturating_add(row));
+                let source = (
+                    area.x.saturating_add(column),
+                    source_top.saturating_add(row),
+                );
                 target[(area.x.saturating_add(column), area.y.saturating_add(row))] =
                     scratch[source].clone();
             }
@@ -871,10 +874,9 @@ pub fn render_settings(
             Item::Control { key, label } => {
                 if let Some(field) = view.field(key) {
                     let requested = session.requested_rect(item.start, item.height);
-                    let source_top = u16::try_from(
-                        session.scroll.scroll_offset().saturating_sub(item.start),
-                    )
-                    .unwrap_or(u16::MAX);
+                    let source_top =
+                        u16::try_from(session.scroll.scroll_offset().saturating_sub(item.start))
+                            .unwrap_or(u16::MAX);
                     session.render_field(
                         frame,
                         rect,

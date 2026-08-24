@@ -158,8 +158,7 @@ impl UiBinding {
         self.key == key
             && self.modifiers.control == modifiers.control
             && self.modifiers.alt == modifiers.alt
-            && (matches!(self.key, UiKey::Character(_))
-                || self.modifiers.shift == modifiers.shift)
+            && (matches!(self.key, UiKey::Character(_)) || self.modifiers.shift == modifiers.shift)
     }
 }
 

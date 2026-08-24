@@ -1639,8 +1639,14 @@ fn library_activity_sort_breaks_ties_by_slug_and_selects_the_first_row() {
             diagnostics: Vec::new(),
         },
         BTreeMap::from([
-            (Slug::parse("banner").unwrap(), detail("2026-08-24T00:00:01+00:00")),
-            (Slug::parse("greet").unwrap(), detail("2026-08-24T00:00:05+00:00")),
+            (
+                Slug::parse("banner").unwrap(),
+                detail("2026-08-24T00:00:01+00:00"),
+            ),
+            (
+                Slug::parse("greet").unwrap(),
+                detail("2026-08-24T00:00:05+00:00"),
+            ),
         ]),
     );
     let order = |state: &LibraryState| {
@@ -1659,8 +1665,14 @@ fn library_activity_sort_breaks_ties_by_slug_and_selects_the_first_row() {
                 diagnostics: Vec::new(),
             },
             BTreeMap::from([
-                (Slug::parse("banner").unwrap(), detail("2026-08-24T00:00:00+00:00")),
-                (Slug::parse("greet").unwrap(), detail("2026-08-24T00:00:00+00:00")),
+                (
+                    Slug::parse("banner").unwrap(),
+                    detail("2026-08-24T00:00:00+00:00"),
+                ),
+                (
+                    Slug::parse("greet").unwrap(),
+                    detail("2026-08-24T00:00:00+00:00"),
+                ),
             ]),
         );
         assert_eq!(order(&tied), ["banner", "greet"]);
