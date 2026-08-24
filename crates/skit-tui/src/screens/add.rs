@@ -1377,10 +1377,7 @@ fn render_row(
                 select.render_stateful(frame, area);
             } else {
                 let style = SelectStyle::default();
-                let display = select_state
-                    .selected_index
-                    .and_then(|index| options.get(index))
-                    .map_or("Please select an option", String::as_str);
+                let display = &options[select_state.selected_index.unwrap()];
                 let border = if select_state.focused {
                     style.focused_border
                 } else {
