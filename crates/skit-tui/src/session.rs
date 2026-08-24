@@ -937,7 +937,7 @@ impl TuiSession {
 
         let mut hits = Vec::new();
         for (index, field) in form.fields.iter().enumerate() {
-            let Some(row) = self.form.visible_row(index) else {
+            let Some(clip) = self.form.visible_band(index) else {
                 continue;
             };
             let label = crate::field_label(locale, field);
@@ -946,14 +946,14 @@ impl TuiSession {
                     state,
                     secret,
                     focused,
-                } => render_line_input(frame, row, state, *secret, *focused, &label),
+                } => render_line_input_band(frame, clip, state, *secret, *focused, &label, None),
                 FormWidgetControl::TextArea { state, focused, .. } => {
-                    render_textarea(frame, row, state, *focused, &label);
+                    render_textarea_band(frame, clip, state, *focused, &label);
                 }
             }
-            self.form.clicks.register(row, index);
+            self.form.clicks.register(clip.area(), index);
             hits.push(HitRegion {
-                rect: row,
+                rect: clip.area(),
                 action: HitTarget::FocusField(index),
             });
         }
@@ -2071,7 +2071,7 @@ impl FormWidgetSession {
         }
     }
 
-    fn visible_row(&self, index: usize) -> Option<Rect> {
+    fn visible_band(&self, index: usize) -> Option<RowClip> {
         let start = *self.row_starts.get(index)?;
         let height = *self.row_heights.get(index)?;
         let offset = self.scroll.scroll_offset();
@@ -2082,13 +2082,20 @@ impl FormWidgetSession {
         }
         let clipped_start = start.max(offset);
         let clipped_end = end.min(viewport_end);
-        Some(Rect::new(
-            self.viewport.x,
-            self.viewport.y.saturating_add(
-                u16::try_from(clipped_start.saturating_sub(offset)).unwrap_or(u16::MAX),
+        Some(RowClip::new(
+            height,
+            u16::try_from(clipped_start.saturating_sub(start))
+                .expect("the form band offset fits Ratatui geometry"),
+            Rect::new(
+                self.viewport.x,
+                self.viewport.y.saturating_add(
+                    u16::try_from(clipped_start.saturating_sub(offset))
+                        .expect("the form band starts inside its viewport"),
+                ),
+                self.viewport.width,
+                u16::try_from(clipped_end.saturating_sub(clipped_start))
+                    .expect("the form band height fits its viewport"),
             ),
-            self.viewport.width,
-            u16::try_from(clipped_end.saturating_sub(clipped_start)).unwrap_or(u16::MAX),
         ))
     }
 }
@@ -2231,9 +2238,9 @@ fn form_widget_control(field: &FormField) -> FormWidgetControl {
     }
 }
 
-const fn form_control_height(field: &FormField) -> usize {
+fn form_control_height(field: &FormField) -> usize {
     if field.multiline && !field.secret {
-        6
+        textarea_control_height(&field.value, 4)
     } else {
         3
     }
@@ -2804,6 +2811,10 @@ pub(crate) fn new_textarea(value: &str) -> RichTextArea<'static> {
     state
 }
 
+pub(crate) fn textarea_control_height(value: &str, minimum_content_height: usize) -> usize {
+    value.split('\n').count().max(minimum_content_height) + 2
+}
+
 pub(crate) fn textarea_text(state: &RichTextArea<'_>) -> String {
     state.lines().join("\n")
 }
@@ -2955,16 +2966,6 @@ pub(crate) fn render_textarea_band(
     focused: bool,
     label: &str,
 ) {
-    if !clip.is_full() {
-        clip.paint_bordered_paragraph(
-            frame.buffer_mut(),
-            Paragraph::new(textarea_text(state)).style(Style::default().fg(Color::White)),
-            Line::from(label),
-            Style::default().fg(if focused { ACCENT } else { BOX_DIM }),
-            0,
-        );
-        return;
-    }
     state.set_block(
         Block::default()
             .borders(Borders::ALL)
@@ -2979,7 +2980,11 @@ pub(crate) fn render_textarea_band(
         Style::default().fg(Color::White)
     });
     state.set_selection_style(Style::default().fg(SELECT_FG).bg(SELECT_BG));
-    (&*state).render(clip.area(), frame.buffer_mut());
+    if clip.is_full() {
+        (&*state).render(clip.area(), frame.buffer_mut());
+    } else {
+        clip.paint_bounded_stateful_editor(frame.buffer_mut(), &*state);
+    }
 }
 
 pub(crate) fn checkbox_style() -> CheckBoxStyle {
@@ -3004,6 +3009,106 @@ pub(crate) fn radio_style() -> ButtonStyle {
         .focused(SELECT_FG, SELECT_BG)
         .unfocused(Color::White, Color::Reset)
         .toggled(SELECT_FG, SELECT_BG)
+}
+
+#[cfg(test)]
+mod textarea_band_tests {
+    use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};
+
+    use super::*;
+
+    fn rendered(buffer: &Buffer) -> String {
+        buffer
+            .content()
+            .chunks(usize::from(buffer.area.width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_top_clipped_form_textarea_keeps_later_rows_cursor_and_selection_styles() {
+        let form = FormView {
+            purpose: skit_ui::FormPurpose::Settings,
+            title: "Editor".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: None,
+            fields: vec![FormField::multiline("body", "Body", "first\nmiddle\nlast")],
+            focused: 0,
+            submit_label: "Save".to_owned(),
+        };
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(24, 4)).unwrap();
+        terminal
+            .draw(|frame| {
+                session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        // A failed destructure skips the cursor moves, and the style
+        // assertions below then fail: no dead refusal arm is needed.
+        if let FormWidgetControl::TextArea { state, .. } = &mut session.form.controls[0] {
+            state.move_cursor(CursorMove::Jump(1, 0));
+            state.start_selection();
+            state.move_cursor(CursorMove::Bottom);
+            state.move_cursor(CursorMove::End);
+        }
+        // Source row 0 is the top border and source row 1 is `first`.
+        session.form.scroll.set_scroll_offset(2);
+
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let frame = rendered(buffer);
+        let rows = buffer
+            .content()
+            .chunks(usize::from(buffer.area.width))
+            .collect::<Vec<_>>();
+        let middle = rows
+            .iter()
+            .find(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .contains("middle")
+            })
+            .unwrap();
+        let last = rows
+            .iter()
+            .find(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .contains("last")
+            })
+            .unwrap();
+
+        assert_eq!(geometry.first_visible, 2);
+        assert!(
+            frame.contains("middle"),
+            "the middle row is missing:\n{frame}"
+        );
+        assert!(frame.contains("last"), "the last row is missing:\n{frame}");
+        assert!(
+            !frame.contains("first"),
+            "the clipped first row returned:\n{frame}"
+        );
+        assert!(
+            middle
+                .iter()
+                .any(|cell| cell.symbol() != " " && cell.bg == SELECT_BG),
+            "the selection style is missing from the middle row:\n{frame}"
+        );
+        assert!(
+            last.iter()
+                .any(|cell| cell.fg == Color::Black && cell.bg == ACCENT),
+            "the focused cursor style is missing from the last row:\n{frame}"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -46,7 +46,7 @@ use crate::{
     rowclip::RowClip,
     session::{
         TextAreaEventHandling, checkbox_style, edit_textarea, new_textarea, render_line_input_band,
-        render_textarea_band, textarea_text,
+        render_textarea_band, textarea_control_height, textarea_text,
     },
     theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel},
 };
@@ -1011,11 +1011,9 @@ fn shown_label(field: &Field, section: SettingsSectionId, locale: Locale) -> Str
 
 fn control_height(field: &Field, label: &str, locale: Locale, width: u16) -> usize {
     match &field.kind {
-        // The same three rows a single-line box takes, because version 0.4 spends exactly that on
-        // the one field this kind serves here — its description is an `Input`
-        // (`src/skit/tui_settings.py:394-399`). Keeping the kind keeps the line breaks a person can
-        // type; spending six rows on it pushed three sections off a recorded terminal.
-        FieldKind::Multiline => 3,
+        // One line keeps the three rows version 0.4 spends on its `Input`
+        // (`src/skit/tui_settings.py:394-399`). Explicit line breaks add only their own content rows.
+        FieldKind::Multiline => textarea_control_height(&field.value().as_text(), 1),
         FieldKind::Boolean => 1,
         FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
             usize::from(!label.is_empty()).saturating_add(options.len().max(1))
@@ -1234,8 +1232,9 @@ fn fields(view: &SettingsView) -> impl Iterator<Item = &Field> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+    use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::MouseButton;
+    use ratatui_textarea::CursorMove;
     use std::collections::BTreeMap;
 
     use skit_domain::parameters::{ParamDecl, ParameterValue};
@@ -1248,10 +1247,10 @@ mod tests {
     };
 
     use super::{
-        ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        Locale, MouseEvent, MouseEventKind, Rect, SettingsControlId, SettingsItem,
-        SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, SettingsView,
-        TypedValue, choice_key, is_selected, option_text, picked, render_settings,
+        ACCENT, ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, Locale, MouseEvent, MouseEventKind, Rect, SELECT_BG, SettingsControlId,
+        SettingsItem, SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession,
+        SettingsView, TypedValue, choice_key, is_selected, option_text, picked, render_settings,
     };
 
     /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
@@ -1328,6 +1327,13 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn rendered_rows(buffer: &Buffer) -> Vec<&[ratatui_core::buffer::Cell]> {
+        buffer
+            .content()
+            .chunks(usize::from(buffer.area.width))
+            .collect()
     }
 
     /// Walking the keyboard from top to bottom must show every section.
@@ -1646,6 +1652,80 @@ mod tests {
         assert!(
             !frame.contains("Modes"),
             "the clipped label restarted inside the band:\n{frame}"
+        );
+    }
+
+    /// A clipped multiline field keeps the editor's true rows and styles.
+    #[test]
+    fn a_top_clipped_settings_textarea_keeps_later_rows_cursor_and_selection_styles() {
+        let mut view = SettingsView::from_inputs(&settings_inputs());
+        view.sections = vec![SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![SettingsItem::field(Field::new(
+                DESCRIPTION_KEY,
+                "Description",
+                FieldKind::Multiline,
+                FieldOwner::EntryPolicy,
+                FieldValue::text("first\nmiddle\nlast"),
+            ))],
+        )];
+        view.update(SettingsAction::Focus {
+            key: DESCRIPTION_KEY.to_owned(),
+        });
+        let mut session = SettingsScreenSession::default();
+        let _ = draw(&mut session, &view, 24, 4);
+        let body = session.bodies.get_mut(DESCRIPTION_KEY).unwrap();
+        body.move_cursor(CursorMove::Jump(1, 0));
+        body.start_selection();
+        body.move_cursor(CursorMove::Bottom);
+        body.move_cursor(CursorMove::End);
+        let field_start = session.spans[DESCRIPTION_KEY].0;
+        // Source row 0 is the top border and source row 1 is `first`.
+        session.scroll.set_scroll_offset(field_start + 2);
+
+        let (terminal, geometry) = draw(&mut session, &view, 24, 4);
+        let buffer = terminal.backend().buffer();
+        let frame = rendered(buffer);
+        let rows = rendered_rows(buffer);
+        let middle = rows
+            .iter()
+            .find(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .contains("middle")
+            })
+            .unwrap();
+        let last = rows
+            .iter()
+            .find(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .contains("last")
+            })
+            .unwrap();
+
+        assert_eq!(geometry.first_visible, field_start + 2);
+        assert!(
+            frame.contains("middle"),
+            "the middle row is missing:\n{frame}"
+        );
+        assert!(frame.contains("last"), "the last row is missing:\n{frame}");
+        assert!(
+            !frame.contains("first"),
+            "the clipped first row returned:\n{frame}"
+        );
+        assert!(
+            middle
+                .iter()
+                .any(|cell| cell.symbol() != " " && cell.bg == SELECT_BG),
+            "the selection style is missing from the middle row:\n{frame}"
+        );
+        assert!(
+            last.iter()
+                .any(|cell| cell.fg == Color::Black && cell.bg == ACCENT),
+            "the focused cursor style is missing from the last row:\n{frame}"
         );
     }
 

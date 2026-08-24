@@ -54,6 +54,29 @@ impl RowClip {
         paragraph.scroll((self.top, 0)).render(self.area, buffer);
     }
 
+    /// Paint a clipped third-party editor with all of its native cell styles.
+    ///
+    /// Editors alone use this bounded scratch. `ratatui-textarea` keeps its cursor, selection, and
+    /// active-line span builder private, so the adapter renders one editor at the height of that
+    /// field's content and copies only the visible rows. Collection-backed rows never use it.
+    pub(crate) fn paint_bounded_stateful_editor<W: Widget>(self, buffer: &mut Buffer, editor: W) {
+        let full = Rect::new(
+            self.area.x,
+            0,
+            self.area.width,
+            u16::try_from(self.full_height).expect("the editor height fits Ratatui geometry"),
+        );
+        let mut scratch = Buffer::empty(full);
+        editor.render(full, &mut scratch);
+        for (source, target_row) in self.rows() {
+            let source_y = u16::try_from(source).expect("the editor row fits Ratatui geometry");
+            for column in 0..target_row.width {
+                buffer[(target_row.x + column, target_row.y)] =
+                    scratch[(full.x + column, source_y)].clone();
+            }
+        }
+    }
+
     /// Paint a bordered paragraph while keeping its border rows in virtual-row order.
     pub(crate) fn paint_bordered_paragraph(
         self,
