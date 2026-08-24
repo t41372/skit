@@ -295,7 +295,7 @@ fn map_key(key: KeyEvent, state: &LibraryState, geometry: &ViewGeometry) -> Opti
     if let Some(spec) = command_specs(context).find(|spec| {
         spec.bindings
             .iter()
-            .any(|binding| binding.key == chord.key && binding.modifiers == chord.modifiers)
+            .any(|binding| binding.accepts(chord.key, chord.modifiers))
     }) {
         // The settings body owns this contextual chord beside its inline picker item. It has no
         // reducer action because another frontend hosts the typed item with its own picker.

@@ -17,7 +17,8 @@ use skit_ui::{
     PreferencesView, RESYNC_KEY, RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState,
     RunFormView, RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction, RunnerManagerView,
     RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, Screen, SettingsAction,
-    SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UvHealth, command_specs,
+    SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UiKey, UiModifiers, UvHealth,
+    command_specs,
 };
 
 fn entry_with_kind(slug: &str, name: &str, kind: &str, description: &str) -> EntrySummary {
@@ -1571,4 +1572,49 @@ fn a_screen_with_no_runner_section_never_opens_the_agent_editor() {
     );
     assert_eq!(state.modal(), None, "a python entry pins no agent");
     assert!(!state.command_enabled(UiCommand::NewRunner));
+}
+
+/// A terminal reports Shift for an upper-case letter but not for a shifted
+/// symbol. Every advertised character binding must accept both shapes.
+#[test]
+fn every_character_binding_accepts_both_shift_shapes() {
+    let contexts = [
+        CommandContext::LibraryBrowse,
+        CommandContext::LibrarySearch,
+        CommandContext::Form,
+        CommandContext::RunForm,
+        CommandContext::RunPresetName,
+        CommandContext::RunTokenMenu,
+        CommandContext::Preferences,
+        CommandContext::Add,
+        CommandContext::Health,
+        CommandContext::Runners,
+        CommandContext::Settings,
+        CommandContext::RunnerEditor,
+        CommandContext::Report,
+        CommandContext::ConfirmRemove,
+        CommandContext::ConfirmDiscard,
+        CommandContext::Help,
+    ];
+    for context in contexts {
+        for spec in command_specs(context) {
+            for binding in spec.bindings {
+                if !matches!(binding.key, UiKey::Character(_)) {
+                    continue;
+                }
+                for shift in [false, true] {
+                    let chord = UiModifiers {
+                        shift,
+                        ..binding.modifiers
+                    };
+                    assert!(
+                        binding.accepts(binding.key, chord),
+                        "{:?} binding {:?} must accept shift={shift}",
+                        spec.command,
+                        binding.key,
+                    );
+                }
+            }
+        }
+    }
 }
