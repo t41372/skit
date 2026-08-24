@@ -131,17 +131,28 @@ copying Python's reviewed behavior. When in doubt, read `skit-oracle/src/skit/*.
 
 ## 2.9 Walkthrough-findings wave (branch `fix/tui-findings-20260823`, base 67f2f21)
 
-Fixes for the walkthrough-tape round's findings, developed in an isolated worktree for a focused
-review before the merge back. Oracle verdicts with receipts:
+Commit `9e4fab9` recorded this wave as complete. Independent verification found four live defects
+and reclassified the discard question. This section supersedes that record.
 
-| Commit | Finding | Root cause and fix |
-|---|---|---|
-| `2aa692a` | `?` Help key dead | Terminals report Shift for upper-case letters but not for shifted symbols; `map_key` compared modifiers exactly. `UiBinding::accepts` now ignores Shift for character keys (one shared seam). The positive keyboard test drove the binding-table shape, not the terminal shape — it now drives both shapes, plus a spec-derived test over every context. |
-| `32ea213` | Settings clipped-name remnant | `render_field` drew a complete bordered control into the viewport-clipped rect. Now a cut control draws at full height into a scratch buffer and only the visible band is blitted (hits and cursor mapped through the band) — the Textual compositor semantics v0.4 gets for free. Line-input and textarea painters gained buffer-level cores (`line_input_into`, `textarea_into`). |
-| `b2b0344` | Library initial-selection flip | NOT a product bug. 200x probe: surface+reducer are pure functions of inputs, ties keep ascending slug order (Python stable-sort parity, tui.py:394 + store.py:860). The recorded flip is recording-stack input noise (a stray scroll/arrow report; ScrollDown maps to Next). Contract pinned by test; `Up 4` in the tape stays correct. |
-| `820c583` | Draft delete needed activation | v0.4 deletes the HIGHLIGHTED draft (`OptionList.highlighted`, tui_add.py:481-490) with no activation step. New `HighlightDraft` action fires when focus lands on a draft row; activation keeps its extra path-copy step. |
-| `2a9bee5` | zh add-receipt drift | `已加入:`(ASCII colon), `描述:`, `管理中的参数:`, secrets-note `的` — all copied byte-for-byte from the oracle .po into both locales; unused `Added: {} ({})` row removed; catalog test holds the block. |
-| `2ba714b` | Discard ask said twice | v0.4 shows the question once in an untitled border (tui_settings.py:42-65); the panel-title copy is gone (header keeps naming the surface — screen-swap convention). `Discard`=放弃/放棄 and the question's 要…吗 wrapper fixed verbatim; catalog test holds the set. |
+Round 1 made these changes:
+
+| Commit | Result after verification |
+|---|---|
+| `2aa692a` | Fixed the `?` Help key. `UiBinding::accepts` now ignores Shift for character keys, and the binding tests drive both terminal event shapes. |
+| `32ea213` | Fixed one clipped Settings control by drawing it into a scratch buffer. It did not fix top-clipped copy in Settings, top-clipped rows in Add, or top-clipped rows in Preferences. The scratch design also allocated the complete hidden control. |
+| `b2b0344` | Added only a test. The test supplied slug-sorted input, so it did not expose the missing production tie-break. The library order and initial selection were still nondeterministic for equal activity values. |
+| `820c583` | Fixed draft deletion. Focus now reports the highlighted draft to the reducer, as version 0.4 does. |
+| `2a9bee5` | Corrected seven add-receipt strings. It did not test or correct the plaintext-agent sentence at the end of the same oracle block. |
+| `2ba714b` | Removed the third discard-question copy from the panel title and corrected the three discard translations. The body and the shared screen header still show two copies by design. |
+
+The supervisor correction round makes these changes:
+
+| Finding | Correction |
+|---|---|
+| Library activity tie | `replace_surface` now sorts by activity descending and then slug ascending. The reducer contract starts with reversed rows, repeats with shuffled rows and complete details, and holds both the order and selected slug. |
+| Top clipping in Settings, Add, and Preferences | One `RowClip` helper paints only the visible band. Wrapped paragraphs use Ratatui paragraph scrolling. Option lists iterate only visible source rows. The Settings scratch allocation and blit are gone. Each screen has a short-viewport test that asserts surviving later-row content. |
+| Chinese add receipt | The final plaintext-agent sentence now matches the zh-CN and zh-TW `.po` files byte for byte. The catalog test covers every receipt msgid from `.po` lines 595-632. |
+| Discard question | The two-copy rendering and its test stay unchanged. `docs/design/rust-contract-matrix.md` records the screen-header deviation from version 0.4. |
 
 Classified faithful, no change: Esc on the library quits (`back_or_quit`, tui.py:323/676-684,
 `show=False` so unadvertised is correct); Esc leaves search keeping the filter (only refocuses,
@@ -1202,4 +1213,3 @@ Aggregate 4097 / 0 / 525 with complete executable-source line coverage.
 MUTATION SCHEDULING NOTE: the 48-shard matrix re-queues on every push and has repeatedly
 been superseded before getting runner capacity. The tree must FREEZE for it to finish; the
 label stays attached, so the run on the frozen head is the one to read.
-
