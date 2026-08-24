@@ -798,8 +798,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "When this prompt runs, the selected agent receives those values as plaintext and may log or sync them.",
-        "运行此提示词时，所选代理会以明文接收这些值，并可能记录或同步它们。",
-        "執行此提示詞時，所選代理會以明文接收這些值，並可能記錄或同步它們。",
+        "运行此提示词时，所选 agent 会以明文收到这些值，并可能记录或同步它们。",
+        "執行此提示詞時，所選 agent 會以明文收到這些值，並可能記錄或同步它們。",
     ),
     row!(
         "Description updated: {} ({})",

@@ -777,7 +777,7 @@ fn every_tui_completion_status_has_two_complete_translations() {
 
 /// The add receipt block must carry the version 0.4 strings byte for byte.
 ///
-/// Oracle: `src/skit/locales/zh_CN/LC_MESSAGES/skit.po:596-635` and the same
+/// Oracle: `src/skit/locales/zh_CN/LC_MESSAGES/skit.po:595-632` and the same
 /// msgids in `zh_TW`. The verbs and the colon widths are the oracle's, never
 /// house style: `已加入:` with an ASCII colon, `描述:`, `管理中的参数:`, and the
 /// full-width colon that the secrets note really uses.
@@ -799,6 +799,11 @@ fn the_add_receipt_block_is_verbatim_version_0_4() {
         ),
         ("Run it: skit run {}", "运行:skit run x", "執行:skit run x"),
         ("Dependencies: {}", "依赖:x", "依賴:x"),
+        (
+            "When this prompt runs, the selected agent receives those values as plaintext and may log or sync them.",
+            "运行此提示词时，所选 agent 会以明文收到这些值，并可能记录或同步它们。",
+            "執行此提示詞時，所選 agent 會以明文收到這些值，並可能記錄或同步它們。",
+        ),
     ] {
         let values: Vec<&dyn std::fmt::Display> = vec![&"x", &"y"];
         assert_eq!(
