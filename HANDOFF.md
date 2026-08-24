@@ -129,6 +129,25 @@ copying Python's reviewed behavior. When in doubt, read `skit-oracle/src/skit/*.
    Then update the ledger row(s) in `docs/design/python-test-port-ledger.md` (`**X FIXED <sha>**`
    convention) as a separate `docs(ledger):` commit.
 
+## 2.9 Walkthrough-findings wave (branch `fix/tui-findings-20260823`, base 67f2f21)
+
+Fixes for the walkthrough-tape round's findings, developed in an isolated worktree for a focused
+review before the merge back. Oracle verdicts with receipts:
+
+| Commit | Finding | Root cause and fix |
+|---|---|---|
+| `2aa692a` | `?` Help key dead | Terminals report Shift for upper-case letters but not for shifted symbols; `map_key` compared modifiers exactly. `UiBinding::accepts` now ignores Shift for character keys (one shared seam). The positive keyboard test drove the binding-table shape, not the terminal shape — it now drives both shapes, plus a spec-derived test over every context. |
+| `32ea213` | Settings clipped-name remnant | `render_field` drew a complete bordered control into the viewport-clipped rect. Now a cut control draws at full height into a scratch buffer and only the visible band is blitted (hits and cursor mapped through the band) — the Textual compositor semantics v0.4 gets for free. Line-input and textarea painters gained buffer-level cores (`line_input_into`, `textarea_into`). |
+| `b2b0344` | Library initial-selection flip | NOT a product bug. 200x probe: surface+reducer are pure functions of inputs, ties keep ascending slug order (Python stable-sort parity, tui.py:394 + store.py:860). The recorded flip is recording-stack input noise (a stray scroll/arrow report; ScrollDown maps to Next). Contract pinned by test; `Up 4` in the tape stays correct. |
+| `820c583` | Draft delete needed activation | v0.4 deletes the HIGHLIGHTED draft (`OptionList.highlighted`, tui_add.py:481-490) with no activation step. New `HighlightDraft` action fires when focus lands on a draft row; activation keeps its extra path-copy step. |
+| `2a9bee5` | zh add-receipt drift | `已加入:`(ASCII colon), `描述:`, `管理中的参数:`, secrets-note `的` — all copied byte-for-byte from the oracle .po into both locales; unused `Added: {} ({})` row removed; catalog test holds the block. |
+| `2ba714b` | Discard ask said twice | v0.4 shows the question once in an untitled border (tui_settings.py:42-65); the panel-title copy is gone (header keeps naming the surface — screen-swap convention). `Discard`=放弃/放棄 and the question's 要…吗 wrapper fixed verbatim; catalog test holds the set. |
+
+Classified faithful, no change: Esc on the library quits (`back_or_quit`, tui.py:323/676-684,
+`show=False` so unadvertised is correct); Esc leaves search keeping the filter (only refocuses,
+same `Back to list` chip, tui.py:463). The en-vs-zh final-frame difference is the proven VHS
+raster-lag artifact class — key mapping never reads the locale.
+
 ## 3. Fix-pass work COMPLETED (all committed; sequence `git log 052dcd3..HEAD`)
 
 Pre-session (previous agents): store data-safety (`2aebe6f`,`c04395c`), 13 port waves, i18n Library
