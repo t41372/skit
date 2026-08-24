@@ -2244,10 +2244,12 @@ mod tests {
             &state,
             &geometry,
         );
-        let Some(AddScreenEvent::Action(action)) = chord else {
-            panic!("Ctrl+D on a focused draft row must act: {chord:?}");
-        };
-        let _ = state.reduce(action);
+        assert_eq!(
+            chord,
+            Some(AddScreenEvent::Action(AddAction::DeleteSelectedDraft)),
+            "Ctrl+D on a focused draft row must act"
+        );
+        let _ = state.reduce(AddAction::DeleteSelectedDraft);
         assert_eq!(state.stage(), AddStage::ConfirmDraftDelete);
         assert_eq!(state.delete_candidate(), Some(&draft));
     }

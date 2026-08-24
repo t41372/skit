@@ -1102,10 +1102,9 @@ fn render_options(
             .render(Rect::new(area.x, y, area.width, 1), buffer);
         y = y.saturating_add(1);
     }
+    // The area always holds every option row: both render paths size it from
+    // `control_height`, and a scroll cut is clipped after this draw, not here.
     for (index, option) in options.iter().enumerate() {
-        if y >= area.y.saturating_add(area.height) {
-            break;
-        }
         let selected = is_selected(field, option);
         let highlighted = focused
             && if multiple {
@@ -1587,6 +1586,30 @@ mod tests {
         assert_eq!(
             view.submitted_values().get("parameter:GREETING:keep"),
             Some(&FieldValue::boolean(false))
+        );
+    }
+
+    /// A focused control cut by a tiny viewport still places the cursor.
+    ///
+    /// A two-row viewport cannot hold a three-row input, so the focused
+    /// control itself is clipped. The visible band keeps the content row, and
+    /// the cursor must land on it — dropped, it would sit wherever the last
+    /// frame left it.
+    #[test]
+    fn a_clipped_focused_input_still_places_the_cursor_in_the_band() {
+        let view = SettingsView::from_inputs(&settings_inputs());
+        let mut session = SettingsScreenSession::default();
+        let (mut terminal, _) = draw(&mut session, &view, DEMO_WIDTH, 4);
+        let frame = rendered(terminal.backend().buffer());
+        assert!(
+            frame.contains("Brief"),
+            "the content row is not visible:\n{frame}"
+        );
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert_eq!(
+            usize::from(cursor.y),
+            2,
+            "the cursor must sit on the visible content row: {cursor:?}\n{frame}"
         );
     }
 
