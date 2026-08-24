@@ -183,6 +183,21 @@ impl AddScreenSession {
         self.focus.current()
     }
 
+    /// Report a focus landing to the reducer when it is product state.
+    ///
+    /// Version 0.4 deletes the highlighted draft, and the highlight follows the
+    /// keyboard into the list with no activation step (`OptionList.highlighted`,
+    /// `src/skit/tui_add.py:481-490`). Landing on a draft row therefore names
+    /// the row to the reducer; every other landing only repaints.
+    fn focus_event(&self) -> AddScreenEvent {
+        match self.focus.current() {
+            Some(AddControlId::Draft(index)) => {
+                AddScreenEvent::Action(AddAction::HighlightDraft(*index))
+            }
+            _ => AddScreenEvent::Changed,
+        }
+    }
+
     /// Synchronize widgets from durable reducer state only when the control shape changes.
     pub fn sync(&mut self, state: &AddWorkflowState) {
         let signature = signature(state);
@@ -423,12 +438,12 @@ impl AddScreenSession {
         if key.code == KeyCode::Tab {
             self.focus.next();
             self.ensure_focus_visible();
-            return Some(AddScreenEvent::Changed);
+            return Some(self.focus_event());
         }
         if key.code == KeyCode::BackTab {
             self.focus.prev();
             self.ensure_focus_visible();
-            return Some(AddScreenEvent::Changed);
+            return Some(self.focus_event());
         }
         if key.code == KeyCode::Esc {
             return Some(AddScreenEvent::Action(match state.stage() {
@@ -521,12 +536,12 @@ impl AddScreenSession {
                 KeyCode::Down => {
                     self.focus.next();
                     self.ensure_focus_visible();
-                    return Some(AddScreenEvent::Changed);
+                    return Some(self.focus_event());
                 }
                 KeyCode::Up => {
                     self.focus.prev();
                     self.ensure_focus_visible();
-                    return Some(AddScreenEvent::Changed);
+                    return Some(self.focus_event());
                 }
                 _ => {}
             }
@@ -635,12 +650,12 @@ impl AddScreenSession {
             AddControlId::NextField => {
                 self.focus.next();
                 self.ensure_focus_visible();
-                Some(AddScreenEvent::Changed)
+                Some(self.focus_event())
             }
             AddControlId::PreviousField => {
                 self.focus.prev();
                 self.ensure_focus_visible();
-                Some(AddScreenEvent::Changed)
+                Some(self.focus_event())
             }
             AddControlId::Cancel => Some(AddScreenEvent::Action(match state.stage() {
                 AddStage::Kind => AddAction::PickKind(None),
@@ -2188,6 +2203,52 @@ mod tests {
                 .iter()
                 .any(|hit| hit.target == AddControlId::Cancel)
         );
+    }
+
+    /// Tab onto a draft row, then Ctrl+D, must open the delete ask for that row.
+    ///
+    /// Version 0.4 deletes the highlighted draft with no activation step
+    /// (`OptionList.highlighted`, `src/skit/tui_add.py:481-490`). The recorded
+    /// walkthrough proved the old screen ignored Ctrl+D on a row the keyboard
+    /// had only focused, so this drives the real key path end to end.
+    #[test]
+    fn a_tab_focused_draft_row_answers_the_delete_chord() {
+        let draft = skit_ui::DraftSummary {
+            path: PathBuf::from("skit-new-kept.py"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        };
+        let mut state = AddWorkflowState::new(vec![draft.clone()]);
+        let mut session = AddScreenSession::default();
+        session.sync(&state);
+        let geometry = AddScreenGeometry::default();
+        let mut landed = false;
+        for _ in 0..12 {
+            let event = session.handle_event(key(KeyCode::Tab, KeyModifiers::NONE), &state, &geometry);
+            if let Some(AddScreenEvent::Action(action)) = event {
+                let _ = state.reduce(action);
+            }
+            if session.focused() == Some(&AddControlId::Draft(0)) {
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed, "focus never reached the draft row");
+        assert_eq!(state.source().selected_draft(), Some(&draft));
+
+        let chord = session.handle_event(
+            key(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            &state,
+            &geometry,
+        );
+        let Some(AddScreenEvent::Action(action)) = chord else {
+            panic!("Ctrl+D on a focused draft row must act: {chord:?}");
+        };
+        let _ = state.reduce(action);
+        assert_eq!(state.stage(), AddStage::ConfirmDraftDelete);
+        assert_eq!(state.delete_candidate(), Some(&draft));
     }
 
     #[test]
