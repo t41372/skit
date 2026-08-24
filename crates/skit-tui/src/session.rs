@@ -48,7 +48,7 @@ use crate::{
     HitRegion, HitTarget, ViewGeometry, command_action,
     footer::FooterSession,
     map_event,
-    rowclip::RowClip,
+    rowclip::{RowClip, editor_cursor_virtual_row},
     run_field_command_action,
     screens::add::{AddScreenEvent, AddScreenGeometry, AddScreenSession, render_add},
     screens::library::LibraryScreenSession,
@@ -1790,11 +1790,15 @@ impl TuiSession {
                 ..
             } => {
                 let before = textarea_text(state);
+                let before_cursor = state.cursor();
                 match edit_textarea(state, key, undo_group, redo_group) {
                     TextAreaEventHandling::Ignored => return EventHandling::Ignored,
                     TextAreaEventHandling::Consumed | TextAreaEventHandling::VerticalBoundary => {}
                 }
                 let after = textarea_text(state);
+                if state.cursor() != before_cursor {
+                    self.form.pending_ensure_focus = true;
+                }
                 if before == after {
                     EventHandling::Consumed
                 } else {
@@ -1826,7 +1830,11 @@ impl TuiSession {
                 ..
             } => {
                 let selected = state.is_selecting();
+                let before_cursor = state.cursor();
                 let _ = state.insert_str(value);
+                if state.cursor() != before_cursor {
+                    self.form.pending_ensure_focus = true;
+                }
                 *undo_group = 1 + usize::from(selected && !value.is_empty());
                 *redo_group = 0;
                 EventHandling::Action(Action::SetFieldValue {
@@ -2053,6 +2061,10 @@ impl FormWidgetSession {
             next = next.saturating_add(height);
         }
         self.scroll.set_lines(vec![String::new(); next]);
+        let maximum = next.saturating_sub(self.visible_height);
+        if self.scroll.scroll_offset() > maximum {
+            self.scroll.set_scroll_offset(maximum);
+        }
         if self.pending_ensure_focus
             && let (Some(start), Some(height)) = (
                 self.row_starts.get(form.focused),
@@ -2061,7 +2073,17 @@ impl FormWidgetSession {
         {
             let offset = self.scroll.scroll_offset();
             let end = start.saturating_add(*height);
-            if *start < offset {
+            if *height > self.visible_height
+                && let FormWidgetControl::TextArea { state, .. } = &self.controls[form.focused]
+            {
+                let cursor = editor_cursor_virtual_row(*start, state.cursor().0);
+                let next = if cursor - *start < self.visible_height {
+                    *start
+                } else {
+                    cursor + 1 - self.visible_height
+                };
+                self.scroll.set_scroll_offset(next);
+            } else if *start < offset {
                 self.scroll.set_scroll_offset(*start);
             } else if end > offset.saturating_add(self.visible_height) {
                 self.scroll
@@ -3038,25 +3060,45 @@ mod textarea_band_tests {
             focused: 0,
             submit_label: "Save".to_owned(),
         };
+        let mut library = LibraryState::default();
+        library.update(Action::Present(Screen::Form(form.clone())));
         let mut session = TuiSession::default();
         let mut terminal = Terminal::new(TestBackend::new(24, 4)).unwrap();
+        let mut geometry = ViewGeometry::default();
         terminal
             .draw(|frame| {
-                session.render_form(frame, frame.area(), &form, Locale::En);
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
             })
             .unwrap();
-        // A failed destructure skips the cursor moves, and the style
-        // assertions below then fail: no dead refusal arm is needed.
-        if let FormWidgetControl::TextArea { state, .. } = &mut session.form.controls[0] {
-            state.move_cursor(CursorMove::Jump(1, 0));
-            state.start_selection();
-            state.move_cursor(CursorMove::Bottom);
-            state.move_cursor(CursorMove::End);
+        for code in [KeyCode::Up, KeyCode::Up, KeyCode::Home] {
+            assert_eq!(
+                session.handle_event(
+                    Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                    &library,
+                    &geometry,
+                ),
+                EventHandling::Consumed
+            );
         }
-        // Source row 0 is the top border and source row 1 is `first`.
-        session.form.scroll.set_scroll_offset(2);
-
-        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        assert!(
+            rendered(terminal.backend().buffer()).contains("first"),
+            "the real cursor move did not bring the first row into view"
+        );
+        for code in [KeyCode::Down, KeyCode::Down, KeyCode::End] {
+            assert_eq!(
+                session.handle_event(
+                    Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT)),
+                    &library,
+                    &geometry,
+                ),
+                EventHandling::Consumed
+            );
+        }
         terminal
             .draw(|frame| {
                 geometry = session.render_form(frame, frame.area(), &form, Locale::En);
@@ -3107,6 +3149,107 @@ mod textarea_band_tests {
             last.iter()
                 .any(|cell| cell.fg == Color::Black && cell.bg == ACCENT),
             "the focused cursor style is missing from the last row:\n{frame}"
+        );
+
+        let followed = geometry.first_visible;
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: geometry.rows.x,
+                    row: geometry.rows.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &library,
+                &geometry,
+            ),
+            EventHandling::Consumed
+        );
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        assert!(geometry.first_visible > followed);
+        let wheel = geometry.first_visible;
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            geometry.first_visible, wheel,
+            "a render without a cursor move undid the reader's wheel scroll"
+        );
+    }
+
+    #[test]
+    fn form_focus_follow_brings_fields_below_and_above_the_fold_into_view() {
+        let mut library = LibraryState::default();
+        library.update(Action::Present(Screen::Form(FormView {
+            purpose: skit_ui::FormPurpose::Settings,
+            title: "Fields".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: None,
+            fields: vec![
+                FormField::text("zero", "Zero", "value-zero"),
+                FormField::text("one", "One", "value-one"),
+                FormField::text("two", "Two", "value-two"),
+                FormField::text("three", "Three", "value-three"),
+            ],
+            focused: 0,
+            submit_label: "Save".to_owned(),
+        })));
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(24, 5)).unwrap();
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                if let Screen::Form(form) = library.screen() {
+                    geometry = session.render_form(frame, frame.area(), form, Locale::En);
+                }
+            })
+            .unwrap();
+
+        for _ in 0..2 {
+            if let EventHandling::Action(action) = session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+                &library,
+                &geometry,
+            ) {
+                library.update(action);
+            }
+        }
+        terminal
+            .draw(|frame| {
+                if let Screen::Form(form) = library.screen() {
+                    geometry = session.render_form(frame, frame.area(), form, Locale::En);
+                }
+            })
+            .unwrap();
+        assert!(
+            rendered(terminal.backend().buffer()).contains("value-two"),
+            "focus below the fold did not end-align its field"
+        );
+
+        if let EventHandling::Action(action) = session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            &library,
+            &geometry,
+        ) {
+            library.update(action);
+        }
+        terminal
+            .draw(|frame| {
+                if let Screen::Form(form) = library.screen() {
+                    geometry = session.render_form(frame, frame.area(), form, Locale::En);
+                }
+            })
+            .unwrap();
+        assert!(
+            rendered(terminal.backend().buffer()).contains("value-one"),
+            "focus above the viewport did not snap its field to the start"
         );
     }
 }

@@ -43,7 +43,7 @@ use skit_ui::{SettingsAction, SettingsItem, SettingsNote, SettingsSectionId, Set
 use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
-    rowclip::RowClip,
+    rowclip::{RowClip, editor_cursor_virtual_row},
     session::{
         TextAreaEventHandling, checkbox_style, edit_textarea, new_textarea, render_line_input_band,
         render_textarea_band, textarea_control_height, textarea_text,
@@ -307,6 +307,18 @@ impl SettingsScreenSession {
         };
         let offset = self.scroll.scroll_offset();
         let end = start.saturating_add(height);
+        if height > self.visible_height
+            && let Some(body) = self.bodies.get(focused)
+        {
+            let cursor = editor_cursor_virtual_row(start, body.cursor().0);
+            let next = if cursor - start < self.visible_height {
+                start
+            } else {
+                cursor + 1 - self.visible_height
+            };
+            self.scroll.set_scroll_offset(next);
+            return;
+        }
         if start < offset {
             self.scroll.set_scroll_offset(start);
         } else if end > offset.saturating_add(self.visible_height) {
@@ -491,7 +503,11 @@ impl SettingsScreenSession {
     fn handle_paste(&mut self, view: &SettingsView, value: &str) -> Option<SettingsScreenEvent> {
         let focused = view.focused().to_owned();
         if let Some(body) = self.bodies.get_mut(&focused) {
+            let before_cursor = body.cursor();
             body.insert_str(value);
+            if body.cursor() != before_cursor {
+                self.aligned = None;
+            }
             self.undo_group = 1;
             self.redo_group = 0;
             return set_field(&focused, FieldValue::text(textarea_text(body)));
@@ -506,12 +522,16 @@ impl SettingsScreenSession {
     fn edit_body(&mut self, key: &str, event: KeyEvent) -> Option<SettingsScreenEvent> {
         let body = self.bodies.get_mut(key)?;
         let before = textarea_text(body);
+        let before_cursor = body.cursor();
         match edit_textarea(body, event, &mut self.undo_group, &mut self.redo_group) {
             TextAreaEventHandling::Ignored => return None,
             TextAreaEventHandling::VerticalBoundary => return nav(event),
             TextAreaEventHandling::Consumed => {}
         }
         let after = textarea_text(body);
+        if body.cursor() != before_cursor {
+            self.aligned = None;
+        }
         Some(if before == after {
             SettingsScreenEvent::Changed
         } else {
@@ -1234,7 +1254,6 @@ fn fields(view: &SettingsView) -> impl Iterator<Item = &Field> {
 mod tests {
     use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::MouseButton;
-    use ratatui_textarea::CursorMove;
     use std::collections::BTreeMap;
 
     use skit_domain::parameters::{ParamDecl, ParameterValue};
@@ -1673,15 +1692,33 @@ mod tests {
             key: DESCRIPTION_KEY.to_owned(),
         });
         let mut session = SettingsScreenSession::default();
-        let _ = draw(&mut session, &view, 24, 4);
-        let body = session.bodies.get_mut(DESCRIPTION_KEY).unwrap();
-        body.move_cursor(CursorMove::Jump(1, 0));
-        body.start_selection();
-        body.move_cursor(CursorMove::Bottom);
-        body.move_cursor(CursorMove::End);
+        let (_, initial) = draw(&mut session, &view, 24, 4);
+        for event in [
+            key(KeyCode::Up, KeyModifiers::NONE),
+            key(KeyCode::Up, KeyModifiers::NONE),
+            key(KeyCode::Home, KeyModifiers::NONE),
+        ] {
+            assert_eq!(
+                dispatch(&mut session, &mut view, &initial, event),
+                Some(SettingsScreenEvent::Changed)
+            );
+        }
+        let (terminal, top) = draw(&mut session, &view, 24, 4);
+        assert!(
+            rendered(terminal.backend().buffer()).contains("first"),
+            "the real cursor move did not bring the first row into view"
+        );
+        for event in [
+            key(KeyCode::Down, KeyModifiers::SHIFT),
+            key(KeyCode::Down, KeyModifiers::SHIFT),
+            key(KeyCode::End, KeyModifiers::SHIFT),
+        ] {
+            assert_eq!(
+                dispatch(&mut session, &mut view, &top, event),
+                Some(SettingsScreenEvent::Changed)
+            );
+        }
         let field_start = session.spans[DESCRIPTION_KEY].0;
-        // Source row 0 is the top border and source row 1 is `first`.
-        session.scroll.set_scroll_offset(field_start + 2);
 
         let (terminal, geometry) = draw(&mut session, &view, 24, 4);
         let buffer = terminal.backend().buffer();
@@ -1726,6 +1763,23 @@ mod tests {
             last.iter()
                 .any(|cell| cell.fg == Color::Black && cell.bg == ACCENT),
             "the focused cursor style is missing from the last row:\n{frame}"
+        );
+
+        assert_eq!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                mouse(geometry.body, MouseEventKind::ScrollUp),
+            ),
+            Some(SettingsScreenEvent::Changed)
+        );
+        let (_, wheel) = draw(&mut session, &view, 24, 4);
+        assert!(wheel.first_visible < geometry.first_visible);
+        let (_, settled) = draw(&mut session, &view, 24, 4);
+        assert_eq!(
+            settled.first_visible, wheel.first_visible,
+            "a render without a cursor move undid the reader's wheel scroll"
         );
     }
 

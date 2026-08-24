@@ -3,6 +3,11 @@
 use ratatui_core::{buffer::Buffer, layout::Rect, style::Style, text::Line, widgets::Widget};
 use ratatui_widgets::{block::Block, borders::Borders, paragraph::Paragraph};
 
+/// Return the virtual screen row occupied by one editor cursor.
+pub(crate) const fn editor_cursor_virtual_row(control_start: usize, cursor_row: usize) -> usize {
+    control_start + 1 + cursor_row
+}
+
 /// One visible band from a taller virtual item.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct RowClip {
