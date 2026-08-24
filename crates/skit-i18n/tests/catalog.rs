@@ -107,12 +107,12 @@ fn exact_text_and_longest_first_rendering_are_deterministic() {
 #[test]
 fn formatted_messages_translate_the_template_without_translating_user_values() {
     assert_eq!(
-        format_text(Locale::ZhTw, "Added: {} ({})", &[&"Library", &"library"]),
-        "已新增：Library (library)"
+        format_text(Locale::ZhTw, "Added: {} ({} mode)", &[&"Library", &"copy"]),
+        "已加入:Library (copy 模式)"
     );
     assert_eq!(
-        format_text(Locale::En, "Added: {} ({})", &[&"Alpha", &"alpha"]),
-        "Added: Alpha (alpha)"
+        format_text(Locale::En, "Added: {} ({} mode)", &[&"Alpha", &"copy"]),
+        "Added: Alpha (copy mode)"
     );
     assert_eq!(
         format_text(Locale::ZhTw, "Unknown {}", &[&"value"]),
@@ -773,4 +773,68 @@ fn every_tui_completion_status_has_two_complete_translations() {
         render(Locale::ZhTw, "Run finished with exit status 7"),
         "執行完成，結束狀態為 7"
     );
+}
+
+/// The add receipt block must carry the version 0.4 strings byte for byte.
+///
+/// Oracle: `src/skit/locales/zh_CN/LC_MESSAGES/skit.po:595-632` and the same
+/// msgids in `zh_TW`. The verbs and the colon widths are the oracle's, never
+/// house style: `已加入:` with an ASCII colon, `描述:`, `管理中的参数:`, and the
+/// full-width colon that the secrets note really uses.
+#[test]
+fn the_add_receipt_block_is_verbatim_version_0_4() {
+    for (key, zh_cn, zh_tw) in [
+        ("Added: {}", "已加入:x", "已加入:x"),
+        (
+            "Added: {} ({} mode)",
+            "已加入:x (y 模式)",
+            "已加入:x (y 模式)",
+        ),
+        ("Description: {}", "描述:x", "描述:x"),
+        ("Managed parameters: {}", "管理中的参数:x", "管理中的參數:x"),
+        (
+            "Secret parameter values are never saved by skit: {}",
+            "skit 永远不会保存机密参数的值：x",
+            "skit 永遠不會儲存機密參數的值：x",
+        ),
+        ("Run it: skit run {}", "运行:skit run x", "執行:skit run x"),
+        ("Dependencies: {}", "依赖:x", "依賴:x"),
+        (
+            "When this prompt runs, the selected agent receives those values as plaintext and may log or sync them.",
+            "运行此提示词时，所选 agent 会以明文收到这些值，并可能记录或同步它们。",
+            "執行此提示詞時，所選 agent 會以明文收到這些值，並可能記錄或同步它們。",
+        ),
+    ] {
+        let values: Vec<&dyn std::fmt::Display> = vec![&"x", &"y"];
+        assert_eq!(
+            format_text(Locale::ZhCn, key, &values[..key.matches("{}").count()]),
+            zh_cn,
+            "zh-CN diverges for {key:?}"
+        );
+        assert_eq!(
+            format_text(Locale::ZhTw, key, &values[..key.matches("{}").count()]),
+            zh_tw,
+            "zh-TW diverges for {key:?}"
+        );
+    }
+}
+
+/// The discard modal set must carry the version 0.4 strings byte for byte.
+///
+/// Oracle: `skit.po:3366-3375` in both locales. `Discard` is the bare verb,
+/// and the question has no 要…吗 wrapper.
+#[test]
+fn the_discard_modal_strings_are_verbatim_version_0_4() {
+    for (key, zh_cn, zh_tw) in [
+        ("Discard", "放弃", "放棄"),
+        ("Keep editing", "继续编辑", "繼續編輯"),
+        (
+            "Discard unsaved changes?",
+            "放弃未保存的更改？",
+            "放棄未儲存的變更？",
+        ),
+    ] {
+        assert_eq!(text(Locale::ZhCn, key), zh_cn, "zh-CN diverges for {key:?}");
+        assert_eq!(text(Locale::ZhTw, key), zh_tw, "zh-TW diverges for {key:?}");
+    }
 }

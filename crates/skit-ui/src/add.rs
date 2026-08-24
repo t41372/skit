@@ -1230,8 +1230,15 @@ pub enum AddAction {
     SetCommandName(String),
     /// Replace the command description field.
     SetCommandDescription(String),
-    /// Highlight a kept draft row.
+    /// Highlight a kept draft row and point the source path at it.
     SelectDraft(usize),
+    /// Highlight a kept draft row without touching the source path.
+    ///
+    /// Version 0.4 deletes the highlighted draft, and the highlight follows the
+    /// keyboard into the list with no activation step (`OptionList.highlighted`,
+    /// `src/skit/tui_add.py:481-490`). A frontend reports the landing so the
+    /// delete ask can name the row the eye is on.
+    HighlightDraft(usize),
     /// Continue from the source surface.
     Continue,
     /// Return one byte-exact host inspection.
@@ -1501,6 +1508,11 @@ impl AddWorkflowState {
                 if index < self.source.drafts.len() {
                     self.source.selected_draft = Some(index);
                     self.source.path = self.source.drafts[index].path.display().to_string();
+                }
+            }
+            AddAction::HighlightDraft(index) => {
+                if index < self.source.drafts.len() {
+                    self.source.selected_draft = Some(index);
                 }
             }
             AddAction::Continue => return self.continue_source(),
@@ -3069,6 +3081,42 @@ mod tests {
             entry.payload.unwrap().bytes,
             b"# /// script\n# dependencies = [\"httpx\"]\n# ///\nimport requests\n"
         );
+    }
+
+    /// The keyboard highlight alone must arm the draft-delete ask.
+    ///
+    /// Version 0.4 deletes the highlighted draft with no activation step
+    /// (`OptionList.highlighted`, `src/skit/tui_add.py:481-490`). A row the
+    /// focus landed on is enough; the source path must stay untouched.
+    #[test]
+    fn a_focused_draft_row_is_enough_for_the_delete_ask() {
+        let draft = DraftSummary {
+            path: PathBuf::from("skit-new-kept.py"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        };
+        let mut workflow = AddWorkflowState::new(vec![draft.clone()]);
+
+        // Without any highlight the ask has no subject and must not open.
+        assert!(workflow.reduce(AddAction::DeleteSelectedDraft).is_empty());
+        assert_eq!(workflow.stage(), AddStage::Source);
+
+        // A focus landing highlights the row and leaves the source path alone.
+        assert!(workflow.reduce(AddAction::HighlightDraft(0)).is_empty());
+        assert_eq!(workflow.source().selected_draft(), Some(&draft));
+        assert_eq!(workflow.source().path, String::new());
+
+        // The ask now names the highlighted draft.
+        assert!(workflow.reduce(AddAction::DeleteSelectedDraft).is_empty());
+        assert_eq!(workflow.stage(), AddStage::ConfirmDraftDelete);
+        assert_eq!(workflow.delete_candidate(), Some(&draft));
+
+        // An out-of-range landing changes nothing.
+        let mut empty = AddWorkflowState::new(Vec::new());
+        assert!(empty.reduce(AddAction::HighlightDraft(3)).is_empty());
+        assert_eq!(empty.source().selected_draft(), None);
     }
 
     #[test]

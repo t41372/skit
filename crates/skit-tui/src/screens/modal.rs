@@ -240,10 +240,10 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
     let [panel] = Layout::horizontal([Constraint::Length(52)])
         .flex(Flex::Center)
         .areas(panel);
-    let block = padded_panel(
-        text(locale, "Discard unsaved changes?").into_owned(),
-        ACCENT,
-    );
+    // Version 0.4 shows the question once, inside an untitled border
+    // (`src/skit/tui_settings.py:42-65`). The header names the surface; the
+    // panel itself must not repeat the body sentence as a title.
+    let block = padded_panel(String::new(), ACCENT);
     let inner = block.inner(panel);
     frame.render_widget(block, panel);
 

@@ -36,6 +36,16 @@ Version 0.5 keeps the behavior of the pinned oracle. Where it says something dif
 purpose, the change is recorded here with both spellings, so a reader never has to guess whether a
 difference is a decision or a defect.
 
+### The discard confirmation also names its surface
+
+Version 0.4 shows `Discard unsaved changes?` once inside an untitled border
+(`src/skit/tui_settings.py:42-65`). Version 0.5 shows the question in that body and in the shared
+screen header, so it appears twice.
+
+The port names every surface in the header. Examples include `Help`, `Confirm removal`, and `Save
+as preset`. The second question keeps this surface-naming convention and uses the existing
+localized copy.
+
 ### The library item is an "entry", not a "script"
 
 Version 0.4 calls every library item a script, because it started as a script launcher. Version 0.5

@@ -145,6 +145,23 @@ pub struct UiBinding {
     pub compact_hint: &'static str,
 }
 
+impl UiBinding {
+    /// Report whether one physical key chord activates this binding.
+    ///
+    /// A character key carries its own case and symbol, and terminals do
+    /// not report Shift for it consistently: an upper-case letter arrives
+    /// with Shift set, while a shifted symbol such as `?` arrives with
+    /// Shift clear. A character binding therefore ignores the Shift flag.
+    /// Every other key compares all modifiers exactly.
+    #[must_use]
+    pub fn accepts(&self, key: UiKey, modifiers: UiModifiers) -> bool {
+        self.key == key
+            && self.modifiers.control == modifiers.control
+            && self.modifiers.alt == modifiers.alt
+            && (matches!(self.key, UiKey::Character(_)) || self.modifiers.shift == modifiers.shift)
+    }
+}
+
 macro_rules! plain_binding {
     ($key:expr, $hint:expr, $compact_hint:expr $(,)?) => {
         UiBinding {
@@ -2967,7 +2984,9 @@ impl LibraryState {
                 .details
                 .get(&right.slug)
                 .map_or("", LibraryEntryDetail::activity_at);
-            right_activity.cmp(left_activity)
+            right_activity
+                .cmp(left_activity)
+                .then_with(|| left.slug.cmp(&right.slug))
         });
     }
 }

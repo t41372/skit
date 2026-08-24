@@ -6,6 +6,7 @@ use ratatui_core::{
     layout::{Constraint, Flex, Layout, Rect},
     style::{Color, Modifier, Style},
     terminal::Frame,
+    text::{Line, Span},
 };
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -34,7 +35,8 @@ use tui_input::{Input as LineInput, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
-    session::{radio_style, render_line_input, select_style},
+    rowclip::RowClip,
+    session::{radio_style, render_line_input_band, select_style},
     theme::{ACCENT, BOX_DIM, BOX_INDIGO, padded_panel},
 };
 
@@ -167,24 +169,24 @@ impl PreferencesWidgetSession {
         }
 
         for item in &items {
-            let Some(visible) = self.visible_rect(item.start, item.height) else {
+            let Some(clip) = self.visible_band(item.start, item.height) else {
                 continue;
             };
             match &item.item {
                 RenderItem::Spacer => {}
-                RenderItem::Heading(value) => frame.render_widget(
+                RenderItem::Heading(value) => clip.paint_paragraph(
+                    frame.buffer_mut(),
                     Paragraph::new(value.as_str())
                         .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                    visible,
                 ),
-                RenderItem::Copy(value) => frame.render_widget(
+                RenderItem::Copy(value) => clip.paint_paragraph(
+                    frame.buffer_mut(),
                     Paragraph::new(value.as_str())
                         .wrap(Wrap { trim: false })
                         .style(Style::default().fg(Color::DarkGray)),
-                    visible,
                 ),
                 RenderItem::Control(control) => {
-                    self.render_control(frame, visible, control, view, locale);
+                    self.render_control(frame, clip, control, view, locale);
                 }
             }
         }
@@ -605,11 +607,12 @@ impl PreferencesWidgetSession {
     fn render_control(
         &mut self,
         frame: &mut Frame,
-        area: Rect,
+        clip: RowClip,
         control: &PreferencesControl,
         view: &PreferencesView,
         locale: Locale,
     ) {
+        let area = clip.area();
         self.control_areas.push((control.id, area));
         let focused = view.focused() == control.id;
         let label = text(locale, &control.label);
@@ -618,15 +621,16 @@ impl PreferencesWidgetSession {
         };
         match widget {
             PreferencesWidget::Input(state) => {
-                render_line_input(frame, area, state, false, focused, &label);
+                render_line_input_band(frame, clip, state, false, focused, &label, None);
                 if state.value().is_empty()
                     && let PreferencesControlKind::Text(model) = &control.kind
+                    && let Some(content) = clip.row(1)
                 {
                     let inner = Rect::new(
-                        area.x.saturating_add(1),
-                        area.y.saturating_add(1),
-                        area.width.saturating_sub(2),
-                        area.height.saturating_sub(2).min(1),
+                        content.x.saturating_add(1),
+                        content.y,
+                        content.width.saturating_sub(2),
+                        1,
                     );
                     frame.render_widget(
                         Paragraph::new(text(locale, &model.placeholder))
@@ -644,14 +648,47 @@ impl PreferencesWidgetSession {
                 select_area,
                 ..
             } => {
-                let region = Select::new(labels, state)
-                    .label(&label)
-                    .placeholder(&text(locale, "Select"))
-                    .style(select_style())
-                    .render_stateful(frame, area);
-                *select_area = region.area;
+                let placeholder = text(locale, "Select");
+                if clip.is_full() {
+                    let region = Select::new(labels, state)
+                        .label(&label)
+                        .placeholder(&placeholder)
+                        .style(select_style())
+                        .render_stateful(frame, area);
+                    *select_area = region.area;
+                } else {
+                    let style = select_style();
+                    let display = state
+                        .selected_index
+                        .and_then(|index| labels.get(index))
+                        .map_or(placeholder.as_ref(), String::as_str);
+                    let display_style = if state.selected_index.is_some() {
+                        Style::default().fg(style.text_fg)
+                    } else {
+                        Style::default().fg(style.placeholder_fg)
+                    };
+                    let border = if state.focused {
+                        style.focused_border
+                    } else {
+                        style.unfocused_border
+                    };
+                    clip.paint_bordered_paragraph(
+                        frame.buffer_mut(),
+                        Paragraph::new(Line::from(vec![
+                            Span::styled(display, display_style),
+                            Span::styled(
+                                format!(" {}", style.dropdown_indicator),
+                                Style::default().fg(border),
+                            ),
+                        ])),
+                        Line::from(format!(" {label} ")),
+                        Style::default().fg(border),
+                        0,
+                    );
+                    *select_area = area;
+                }
                 self.clicks
-                    .register(region.area, PreferencesHit::Control(control.id));
+                    .register(*select_area, PreferencesHit::Control(control.id));
             }
             PreferencesWidget::Choice {
                 state,
@@ -660,42 +697,15 @@ impl PreferencesWidgetSession {
                 buttons,
                 ..
             } => {
-                let stacked = radio_options_stack(control.id, area.width);
-                let mut y = area.y;
-                if !label.is_empty() {
-                    frame.render_widget(
-                        Paragraph::new(label.as_ref()).style(Style::default().fg(Color::White)),
-                        Rect::new(area.x, y, area.width, 1),
-                    );
-                    y = y.saturating_add(1);
-                }
-                let mut x = area.x;
-                for (index, (option_label, button)) in labels.iter().zip(buttons.iter()).enumerate()
-                {
-                    let wanted = u16::try_from(option_label.width().saturating_add(2))
-                        .unwrap_or(u16::MAX)
-                        .min(area.width.max(1));
-                    if x > area.x && (stacked || x.saturating_add(wanted) > area.right()) {
-                        x = area.x;
-                        y = y.saturating_add(1);
-                    }
-                    if y >= area.bottom() {
-                        break;
-                    }
-                    let option_area = Rect::new(x, y, wanted.min(area.right() - x), 1);
-                    let region = Button::new(option_label, button)
-                        .variant(ButtonVariant::Toggle)
-                        .style(radio_style())
-                        .render_stateful(option_area, frame.buffer_mut());
-                    self.clicks.register(
-                        region.area,
-                        PreferencesHit::Radio {
-                            id: control.id,
-                            option: index,
-                        },
-                    );
-                    x = x.saturating_add(wanted).saturating_add(1);
-                }
+                render_radio_band(
+                    frame,
+                    clip,
+                    control,
+                    &label,
+                    labels,
+                    buttons,
+                    &mut self.clicks,
+                );
                 state.ensure_visible(1);
             }
             PreferencesWidget::Button(state) => {
@@ -891,7 +901,7 @@ impl PreferencesWidgetSession {
         }
     }
 
-    fn visible_rect(&self, start: usize, height: usize) -> Option<Rect> {
+    fn visible_band(&self, start: usize, height: usize) -> Option<RowClip> {
         let offset = self.scroll.scroll_offset();
         let viewport_end = offset.saturating_add(self.visible_height);
         let end = start.saturating_add(height);
@@ -900,14 +910,70 @@ impl PreferencesWidgetSession {
         }
         let clipped_start = start.max(offset);
         let clipped_end = end.min(viewport_end);
-        Some(Rect::new(
-            self.viewport.x,
-            self.viewport.y.saturating_add(
-                u16::try_from(clipped_start.saturating_sub(offset)).unwrap_or(u16::MAX),
+        Some(RowClip::new(
+            height,
+            u16::try_from(clipped_start.saturating_sub(start))
+                .expect("the Preferences band offset fits Ratatui's row offset"),
+            Rect::new(
+                self.viewport.x,
+                self.viewport.y.saturating_add(
+                    u16::try_from(clipped_start.saturating_sub(offset))
+                        .expect("the Preferences band starts inside its viewport"),
+                ),
+                self.viewport.width,
+                u16::try_from(clipped_end.saturating_sub(clipped_start))
+                    .expect("the Preferences band height fits its viewport"),
             ),
-            self.viewport.width,
-            u16::try_from(clipped_end.saturating_sub(clipped_start)).unwrap_or(u16::MAX),
         ))
+    }
+}
+
+fn render_radio_band(
+    frame: &mut Frame,
+    clip: RowClip,
+    control: &PreferencesControl,
+    label: &str,
+    labels: &[String],
+    buttons: &[ButtonState],
+    clicks: &mut ClickRegionRegistry<PreferencesHit>,
+) {
+    let label_rows = usize::from(!label.is_empty());
+    let stacked = radio_options_stack(control.id, clip.area().width);
+    for (source, row) in clip.rows() {
+        if source < label_rows {
+            frame.render_widget(
+                Paragraph::new(label).style(Style::default().fg(Color::White)),
+                row,
+            );
+            continue;
+        }
+        let target_row = source.saturating_sub(label_rows);
+        let mut option_row = 0_usize;
+        let mut x = row.x;
+        for (index, (option_label, button)) in labels.iter().zip(buttons.iter()).enumerate() {
+            let wanted = u16::try_from(option_label.width().saturating_add(2))
+                .unwrap_or(u16::MAX)
+                .min(row.width.max(1));
+            if x > row.x && (stacked || x.saturating_add(wanted) > row.right()) {
+                x = row.x;
+                option_row = option_row.saturating_add(1);
+            }
+            if option_row == target_row {
+                let option_area = Rect::new(x, row.y, wanted.min(row.right() - x), 1);
+                let region = Button::new(option_label, button)
+                    .variant(ButtonVariant::Toggle)
+                    .style(radio_style())
+                    .render_stateful(option_area, frame.buffer_mut());
+                clicks.register(
+                    region.area,
+                    PreferencesHit::Radio {
+                        id: control.id,
+                        option: index,
+                    },
+                );
+            }
+            x = x.saturating_add(wanted).saturating_add(1);
+        }
     }
 }
 
@@ -1404,6 +1470,68 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// A wrapped Preferences sentence keeps its later rows when its top is above the viewport.
+    #[test]
+    fn a_top_clipped_preferences_copy_shows_its_surviving_later_rows() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 24, 4, Locale::En);
+        let copy = layout_items(&view, Locale::En, session.viewport.width)
+            .into_iter()
+            .find(|item| matches!(&item.item, RenderItem::Copy(value) if value.contains("$VISUAL")))
+            .expect("the editor fallback copy is present");
+        assert!(copy.height >= 3, "the copy must wrap across later rows");
+        session
+            .scroll
+            .set_scroll_offset(copy.start.saturating_add(1));
+
+        let terminal = draw(&mut session, &view, 24, 4, Locale::En);
+        let rendered = text(terminal.backend().buffer());
+
+        assert!(
+            rendered.contains("$EDITOR)"),
+            "the surviving final copy row is missing:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains("Empty means: vim"),
+            "the clipped first row restarted inside the band:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_top_clipped_focused_preferences_picker_shows_its_placeholder_row() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        session.sync(&view, Locale::En);
+        let control = view
+            .control(PreferencesControlId::Language)
+            .expect("the language picker is present");
+        if let Some(PreferencesWidget::Choice { state, .. }) =
+            session.widgets.get_mut(&PreferencesControlId::Language)
+        {
+            state.selected_index = None;
+        }
+        let mut terminal = Terminal::new(TestBackend::new(24, 2)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                session.render_control(
+                    frame,
+                    RowClip::new(3, 1, frame.area()),
+                    &control,
+                    &view,
+                    Locale::En,
+                );
+            })
+            .unwrap();
+        let rendered = text(terminal.backend().buffer());
+
+        assert!(
+            rendered.contains("Select"),
+            "the surviving picker placeholder is missing:\n{rendered}"
+        );
     }
 
     #[test]
@@ -2323,7 +2451,13 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
         terminal
             .draw(|frame| {
-                session.render_control(frame, frame.area(), &editor, &view, Locale::En);
+                session.render_control(
+                    frame,
+                    RowClip::new(3, 0, frame.area()),
+                    &editor,
+                    &view,
+                    Locale::En,
+                );
             })
             .unwrap();
         assert!(session.control_area(PreferencesControlId::Editor).is_some());
