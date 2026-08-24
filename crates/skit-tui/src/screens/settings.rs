@@ -18,10 +18,12 @@
 use std::{collections::BTreeMap, fmt::Display};
 
 use ratatui_core::{
+    buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
+    widgets::Widget,
 };
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -42,8 +44,8 @@ use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandl
 
 use crate::{
     session::{
-        TextAreaEventHandling, checkbox_style, edit_textarea, new_textarea, render_line_input,
-        render_textarea, textarea_text,
+        TextAreaEventHandling, checkbox_style, edit_textarea, line_input_into, new_textarea,
+        textarea_into, textarea_text,
     },
     theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel},
 };
@@ -579,20 +581,75 @@ impl SettingsScreenSession {
         frame: &mut Frame,
         area: Rect,
         requested: Rect,
+        source_top: u16,
         draw: &ControlDraw<'_>,
         hits: &mut Vec<SettingsHitRegion>,
     ) {
+        self.rendered.insert(draw.field.key.clone(), requested);
+        if area.height >= requested.height {
+            let cursor = self.draw_control(frame.buffer_mut(), area, draw, hits);
+            if let Some(cursor) = cursor {
+                frame.set_cursor_position(cursor);
+            }
+            return;
+        }
+        // The scroll cut this control. Version 0.4 clips a half-scrolled widget
+        // row by row inside the Textual scroll compositor, so the remnant must
+        // show the control's own rows, never a fresh complete border. Draw the
+        // control at full height off screen and keep only the visible band.
+        let full = Rect::new(area.x, 0, area.width, requested.height);
+        let mut scratch = Buffer::empty(full);
+        let mut local_hits = Vec::new();
+        let cursor = self.draw_control(&mut scratch, full, draw, &mut local_hits);
+        let target = frame.buffer_mut();
+        for row in 0..area.height {
+            for column in 0..area.width {
+                let source = (area.x.saturating_add(column), source_top.saturating_add(row));
+                target[(area.x.saturating_add(column), area.y.saturating_add(row))] =
+                    scratch[source].clone();
+            }
+        }
+        let band_end = source_top.saturating_add(area.height);
+        for hit in local_hits {
+            let top = hit.area.y.max(source_top);
+            let bottom = hit.area.y.saturating_add(hit.area.height).min(band_end);
+            if top >= bottom {
+                continue;
+            }
+            hits.push(SettingsHitRegion {
+                area: Rect::new(
+                    hit.area.x,
+                    area.y.saturating_add(top.saturating_sub(source_top)),
+                    hit.area.width,
+                    bottom.saturating_sub(top),
+                ),
+                target: hit.target,
+            });
+        }
+        if let Some((x, y)) = cursor
+            && (source_top..band_end).contains(&y)
+        {
+            frame.set_cursor_position((x, area.y.saturating_add(y.saturating_sub(source_top))));
+        }
+    }
+
+    fn draw_control(
+        &mut self,
+        buffer: &mut Buffer,
+        area: Rect,
+        draw: &ControlDraw<'_>,
+        hits: &mut Vec<SettingsHitRegion>,
+    ) -> Option<(u16, u16)> {
         let ControlDraw {
             field,
             label,
             focused,
             locale,
         } = *draw;
-        self.rendered.insert(field.key.clone(), requested);
         match &field.kind {
             FieldKind::Multiline => {
                 if let Some(body) = self.bodies.get_mut(&field.key) {
-                    render_textarea(frame, area, body, focused, label);
+                    textarea_into(buffer, area, body, focused, label);
                 }
                 hits.push(SettingsHitRegion {
                     area,
@@ -602,7 +659,9 @@ impl SettingsScreenSession {
             FieldKind::Boolean => {
                 let mut state = CheckBoxState::new(field.value().as_text() == "true");
                 state.set_focused(focused);
-                frame.render_widget(CheckBox::new(label, &state).style(checkbox_style()), area);
+                CheckBox::new(label, &state)
+                    .style(checkbox_style())
+                    .render(area, buffer);
                 hits.push(SettingsHitRegion {
                     area,
                     target: SettingsControlId::Field(field.key.clone()),
@@ -610,7 +669,7 @@ impl SettingsScreenSession {
             }
             FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
                 render_options(
-                    frame,
+                    buffer,
                     area,
                     draw,
                     options,
@@ -618,34 +677,38 @@ impl SettingsScreenSession {
                     hits,
                 );
             }
-            FieldKind::ReadOnly => render_read_only(frame, area, draw),
+            FieldKind::ReadOnly => render_read_only(buffer, area, draw),
             FieldKind::Text
             | FieldKind::Secret
             | FieldKind::Number { .. }
             | FieldKind::Path { .. }
             | FieldKind::ArgumentList { .. } => {
+                let mut cursor = None;
                 if let Some(input) = self.inputs.get(&field.key) {
                     let secret = matches!(field.kind, FieldKind::Secret);
-                    render_line_input(frame, area, input, secret, focused, label);
+                    cursor = line_input_into(buffer, area, input, secret, focused, label, None);
                     if input.value().is_empty() && !field.help.is_empty() && area.height >= 3 {
-                        frame.render_widget(
-                            Paragraph::new(text(locale, &field.help))
-                                .style(Style::default().fg(Color::DarkGray)),
-                            Rect::new(
-                                area.x.saturating_add(1),
-                                area.y.saturating_add(1),
-                                area.width.saturating_sub(2),
-                                1,
-                            ),
-                        );
+                        Paragraph::new(text(locale, &field.help))
+                            .style(Style::default().fg(Color::DarkGray))
+                            .render(
+                                Rect::new(
+                                    area.x.saturating_add(1),
+                                    area.y.saturating_add(1),
+                                    area.width.saturating_sub(2),
+                                    1,
+                                ),
+                                buffer,
+                            );
                     }
                 }
                 hits.push(SettingsHitRegion {
                     area,
                     target: SettingsControlId::Field(field.key.clone()),
                 });
+                return cursor;
             }
         }
+        None
     }
 }
 
@@ -808,10 +871,15 @@ pub fn render_settings(
             Item::Control { key, label } => {
                 if let Some(field) = view.field(key) {
                     let requested = session.requested_rect(item.start, item.height);
+                    let source_top = u16::try_from(
+                        session.scroll.scroll_offset().saturating_sub(item.start),
+                    )
+                    .unwrap_or(u16::MAX);
                     session.render_field(
                         frame,
                         rect,
                         requested,
+                        source_top,
                         &ControlDraw {
                             field,
                             label,
@@ -1011,7 +1079,7 @@ fn read_only_note_height(field: &Field, locale: Locale, width: u16) -> usize {
 /// Every mark comes from the field itself, so an option list that changed while the screen was open
 /// cannot leave a stale tick behind.
 fn render_options(
-    frame: &mut Frame,
+    buffer: &mut Buffer,
     area: Rect,
     draw: &ControlDraw<'_>,
     options: &[ChoiceOption],
@@ -1027,10 +1095,9 @@ fn render_options(
     let multiple = matches!(field.kind, FieldKind::MultiChoice { .. });
     let mut y = area.y;
     if !label.is_empty() {
-        frame.render_widget(
-            Paragraph::new(label).style(Style::default().fg(Color::White)),
-            Rect::new(area.x, y, area.width, 1),
-        );
+        Paragraph::new(label)
+            .style(Style::default().fg(Color::White))
+            .render(Rect::new(area.x, y, area.width, 1), buffer);
         y = y.saturating_add(1);
     }
     for (index, option) in options.iter().enumerate() {
@@ -1051,27 +1118,25 @@ fn render_options(
             (false, false) => "○",
         };
         let row = Rect::new(area.x, y, area.width, 1);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    if highlighted { "▶ " } else { "  " },
-                    Style::default().fg(ACCENT),
-                ),
-                Span::styled(format!("{glyph} "), Style::default().fg(ACCENT)),
-                Span::styled(
-                    option_text(locale, option),
-                    if highlighted {
-                        Style::default()
-                            .fg(SELECT_FG)
-                            .bg(SELECT_BG)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::White)
-                    },
-                ),
-            ])),
-            row,
-        );
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                if highlighted { "▶ " } else { "  " },
+                Style::default().fg(ACCENT),
+            ),
+            Span::styled(format!("{glyph} "), Style::default().fg(ACCENT)),
+            Span::styled(
+                option_text(locale, option),
+                if highlighted {
+                    Style::default()
+                        .fg(SELECT_FG)
+                        .bg(SELECT_BG)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ),
+        ]))
+        .render(row, buffer);
         hits.push(SettingsHitRegion {
             area: row,
             target: SettingsControlId::Option {
@@ -1087,41 +1152,40 @@ fn render_options(
 ///
 /// This is text, not a control that refuses. A greyed input would read as something the user failed
 /// to click, so the reason the field itself carries is shown instead.
-fn render_read_only(frame: &mut Frame, area: Rect, draw: &ControlDraw<'_>) {
+fn render_read_only(buffer: &mut Buffer, area: Rect, draw: &ControlDraw<'_>) {
     let ControlDraw {
         field,
         label,
         locale,
         ..
     } = *draw;
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                if label.is_empty() {
-                    String::new()
-                } else {
-                    format!("{label}: ")
-                },
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(field.value().as_text(), Style::default().fg(Color::White)),
-        ])),
-        Rect::new(area.x, area.y, area.width, 1),
-    );
+    Paragraph::new(Line::from(vec![
+        Span::styled(
+            if label.is_empty() {
+                String::new()
+            } else {
+                format!("{label}: ")
+            },
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(field.value().as_text(), Style::default().fg(Color::White)),
+    ]))
+    .render(Rect::new(area.x, area.y, area.width, 1), buffer);
     if let Some(reason) = field.read_only_reason
         && area.height > 1
     {
-        frame.render_widget(
-            Paragraph::new(text(locale, refusal(reason)))
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::DarkGray)),
-            Rect::new(
-                area.x,
-                area.y.saturating_add(1),
-                area.width,
-                area.height.saturating_sub(1),
-            ),
-        );
+        Paragraph::new(text(locale, refusal(reason)))
+            .wrap(Wrap { trim: false })
+            .style(Style::default().fg(Color::DarkGray))
+            .render(
+                Rect::new(
+                    area.x,
+                    area.y.saturating_add(1),
+                    area.width,
+                    area.height.saturating_sub(1),
+                ),
+                buffer,
+            );
     }
 }
 
@@ -1522,6 +1586,45 @@ mod tests {
             view.submitted_values().get("parameter:GREETING:keep"),
             Some(&FieldValue::boolean(false))
         );
+    }
+
+    /// A control that the scroll cuts in half must still show its visible rows.
+    ///
+    /// Version 0.4 renders the settings body inside a Textual `VerticalScroll`, and the Textual
+    /// compositor clips a half-scrolled widget row by row: the rows inside the viewport stay
+    /// readable, border and content alike. The bug drew a complete fresh bordered control into
+    /// the remnant instead, so a false top border reappeared and the value row vanished while it
+    /// was on screen. The heights are the measured clip states of this fixture: 28 leaves one
+    /// Description row, 29 leaves two, and 32 leaves one Name row.
+    #[test]
+    fn a_half_scrolled_control_keeps_its_visible_rows_readable() {
+        for (height, absent, present) in [
+            (28_u16, "┌Description", None),
+            (29, "┌Description", Some("Summarize a document")),
+            (32, "┌Name", None),
+        ] {
+            let view = SettingsView::from_inputs(&SettingsInputs {
+                revealed: Some(SettingsSectionId::Presets),
+                ..settings_inputs()
+            });
+            let mut session = SettingsScreenSession::default();
+            let (terminal, _) = draw(&mut session, &view, DEMO_WIDTH, height);
+            let frame = rendered(terminal.backend().buffer());
+            assert!(
+                frame.contains("None yet — press Ctrl+S"),
+                "the deep link did not reach the presets at height {height}:\n{frame}"
+            );
+            assert!(
+                !frame.contains(absent),
+                "a cut control drew a fresh top border at height {height}:\n{frame}"
+            );
+            if let Some(present) = present {
+                assert!(
+                    frame.contains(present),
+                    "the visible value row is empty at height {height}:\n{frame}"
+                );
+            }
+        }
     }
 
     /// Pressing `s` in the Library must land the eye on the presets, with or without any.

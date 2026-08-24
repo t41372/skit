@@ -5,10 +5,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use ratatui_core::{
+    buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
+    widgets::Widget,
 };
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -2825,13 +2827,40 @@ fn render_line_input_with_suggestion(
     label: &str,
     suggestion: Option<&str>,
 ) {
+    if let Some(cursor) = line_input_into(
+        frame.buffer_mut(),
+        area,
+        state,
+        secret,
+        focused,
+        label,
+        suggestion,
+    ) {
+        frame.set_cursor_position(cursor);
+    }
+}
+
+/// Draw one bordered line input into a buffer and return the cursor cell.
+///
+/// The buffer target lets a scrolled screen draw the control at full height
+/// off screen and keep only the visible rows. The caller owns the frame, so
+/// the caller places the cursor.
+pub(crate) fn line_input_into(
+    buffer: &mut Buffer,
+    area: Rect,
+    state: &LineInput,
+    secret: bool,
+    focused: bool,
+    label: &str,
+    suggestion: Option<&str>,
+) -> Option<(u16, u16)> {
     let border = if focused { ACCENT } else { BOX_DIM };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border))
         .title(label.to_owned());
     let inner = block.inner(area);
-    frame.render_widget(block, area);
+    block.render(area, buffer);
     let width = usize::from(inner.width.max(1));
     let scroll = state.visual_scroll(width);
     let display = if secret {
@@ -2849,10 +2878,9 @@ fn render_line_input_with_suggestion(
             ),
         ])
     };
-    frame.render_widget(
-        Paragraph::new(display).scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
-        inner,
-    );
+    Paragraph::new(display)
+        .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX)))
+        .render(inner, buffer);
     if focused && inner.width > 0 && inner.height > 0 {
         let visual_cursor = if secret {
             state.cursor()
@@ -2862,11 +2890,12 @@ fn render_line_input_with_suggestion(
         let x = visual_cursor
             .saturating_sub(scroll)
             .min(width.saturating_sub(1));
-        frame.set_cursor_position((
+        return Some((
             inner.x.saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
             inner.y,
         ));
     }
+    None
 }
 
 fn render_flat_search_input(frame: &mut Frame, area: Rect, state: &LineInput, label: &str) {
@@ -2910,6 +2939,20 @@ pub(crate) fn render_textarea(
     focused: bool,
     label: &str,
 ) {
+    textarea_into(frame.buffer_mut(), area, state, focused, label);
+}
+
+/// Draw one bordered text area into a buffer.
+///
+/// The buffer target lets a scrolled screen draw the control at full height
+/// off screen and keep only the visible rows.
+pub(crate) fn textarea_into(
+    buffer: &mut Buffer,
+    area: Rect,
+    state: &mut RichTextArea<'static>,
+    focused: bool,
+    label: &str,
+) {
     state.set_block(
         Block::default()
             .borders(Borders::ALL)
@@ -2924,7 +2967,7 @@ pub(crate) fn render_textarea(
         Style::default().fg(Color::White)
     });
     state.set_selection_style(Style::default().fg(SELECT_FG).bg(SELECT_BG));
-    frame.render_widget(&*state, area);
+    (&*state).render(area, buffer);
 }
 
 pub(crate) fn checkbox_style() -> CheckBoxStyle {
