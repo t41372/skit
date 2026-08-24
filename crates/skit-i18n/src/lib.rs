@@ -739,15 +739,18 @@ const CATALOG: &[Translation] = &[
         "无法保存预设，因为该条目没有表单字段",
         "無法儲存預設，因為該項目沒有表單欄位",
     ),
-    row!("Added: {} ({})", "已添加：{} ({})", "已新增：{} ({})"),
     row!(
         "Added: {} ({} mode)",
-        "已添加：{}（{} 模式）",
-        "已新增：{}（{} 模式）",
+        "已加入:{} ({} 模式)",
+        "已加入:{} ({} 模式)",
     ),
-    row!("Added: {}", "已添加：{}", "已新增：{}"),
-    row!("Description: {}", "说明：{}", "說明：{}"),
-    row!("Managed parameters: {}", "受管参数：{}", "受管參數：{}",),
+    row!("Added: {}", "已加入:{}", "已加入:{}"),
+    row!("Description: {}", "描述:{}", "描述:{}"),
+    row!(
+        "Managed parameters: {}",
+        "管理中的参数:{}",
+        "管理中的參數:{}",
+    ),
     row!(
         "Updated {}. Managed parameters: {}",
         "已更新 {}。受管理的参数:{}",
@@ -790,8 +793,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "Secret parameter values are never saved by skit: {}",
-        "skit 永远不会保存机密参数值：{}",
-        "skit 永遠不會儲存機密參數值：{}",
+        "skit 永远不会保存机密参数的值：{}",
+        "skit 永遠不會儲存機密參數的值：{}",
     ),
     row!(
         "When this prompt runs, the selected agent receives those values as plaintext and may log or sync them.",
