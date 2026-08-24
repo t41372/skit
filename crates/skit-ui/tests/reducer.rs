@@ -1657,16 +1657,40 @@ fn library_activity_sort_breaks_ties_by_slug_and_selects_the_first_row() {
     };
     assert_eq!(order(&newest_leads), ["greet", "banner"]);
     assert_eq!(newest_leads.selected().unwrap().slug.as_str(), "greet");
-    // Tied activity: the ascending slug order holds, and the first row is selected.
-    for _ in 0..8 {
-        let tied = LibraryState::from_surface(
-            LibraryScan {
-                entries: vec![entry("banner", "banner", ""), entry("greet", "greet", "")],
+    // Tied activity: ascending slug order must not depend on the delivery order.
+    let mut tied = LibraryState::from_surface(
+        LibraryScan {
+            entries: vec![
+                entry("greet", "greet", ""),
+                entry("deploy", "deploy", ""),
+                entry("banner", "banner", ""),
+            ],
+            diagnostics: Vec::new(),
+        },
+        BTreeMap::new(),
+    );
+    assert_eq!(order(&tied), ["banner", "deploy", "greet"]);
+    assert_eq!(tied.selected().unwrap().slug.as_str(), "banner");
+
+    // A later complete delivery adds details after the scan. Its shuffled rows
+    // must produce the same order and keep the same selected slug.
+    tied.update(Action::ReplaceSurface {
+        surface: LibrarySurface {
+            scan: LibraryScan {
+                entries: vec![
+                    entry("deploy", "deploy", ""),
+                    entry("greet", "greet", ""),
+                    entry("banner", "banner", ""),
+                ],
                 diagnostics: Vec::new(),
             },
-            BTreeMap::from([
+            details: BTreeMap::from([
                 (
                     Slug::parse("banner").unwrap(),
+                    detail("2026-08-24T00:00:00+00:00"),
+                ),
+                (
+                    Slug::parse("deploy").unwrap(),
                     detail("2026-08-24T00:00:00+00:00"),
                 ),
                 (
@@ -1674,8 +1698,9 @@ fn library_activity_sort_breaks_ties_by_slug_and_selects_the_first_row() {
                     detail("2026-08-24T00:00:00+00:00"),
                 ),
             ]),
-        );
-        assert_eq!(order(&tied), ["banner", "greet"]);
-        assert_eq!(tied.selected().unwrap().slug.as_str(), "banner");
-    }
+        },
+        rerunnable: Vec::new(),
+    });
+    assert_eq!(order(&tied), ["banner", "deploy", "greet"]);
+    assert_eq!(tied.selected().unwrap().slug.as_str(), "banner");
 }

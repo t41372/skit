@@ -2984,7 +2984,9 @@ impl LibraryState {
                 .details
                 .get(&right.slug)
                 .map_or("", LibraryEntryDetail::activity_at);
-            right_activity.cmp(left_activity)
+            right_activity
+                .cmp(left_activity)
+                .then_with(|| left.slug.cmp(&right.slug))
         });
     }
 }
