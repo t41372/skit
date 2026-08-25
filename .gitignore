@@ -1,29 +1,30 @@
 
 reference
 
-# Python
+# Python scripts are supported inputs. Ignore only their generated cache files.
 __pycache__/
 *.py[cod]
 .venv/
 dist/
 build/
 *.egg-info/
-.pytest_cache/
-.ruff_cache/
 
-# Claude Code session-local state (worktrees, task metadata) — transient agent
-# artifacts, never sources; ruff/ty skip gitignored trees, so this also keeps the
-# pre-commit gates from tripping over another agent's in-flight worktree.
+# Rust
+/target/
+*.profraw
+lcov.info
+
+# Claude Code session-local state (worktrees and task metadata) is temporary.
+# It is not product source and must not enter repository checks.
 .claude/
 
+# Agent handoff notes are local and temporary.
+/CLAUDE_HANDOFF.md
+
 # Test / coverage artifacts
-.coverage
-.coverage.*
-coverage.xml
-htmlcov/
 mutants/
-.mutmut-cache
-.mutmut-results.txt
+mutants.out/
+mutants.out.old/
 
 # Benchmark pipeline artifacts (results are CI artifacts, never committed)
 .bench/

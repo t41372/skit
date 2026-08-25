@@ -1,0 +1,34 @@
+[package]
+name = "skit-tui"
+description = "Ratatui frontend adapter for skit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+ratatui-interact.workspace = true
+ratatui-core.workspace = true
+ratatui-widgets.workspace = true
+ratatui-crossterm.workspace = true
+ratatui-textarea.workspace = true
+tui-input.workspace = true
+thiserror.workspace = true
+unicode-width.workspace = true
+skit-application.workspace = true
+skit-form.workspace = true
+skit-i18n.workspace = true
+skit-ui.workspace = true
+skit-domain.workspace = true
+
+[dev-dependencies]
+portable-pty.workspace = true
+skit-i18n.workspace = true
+skit-store.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

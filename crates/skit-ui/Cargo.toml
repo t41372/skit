@@ -1,0 +1,23 @@
+[package]
+name = "skit-ui"
+description = "Frontend-neutral state and reducer shared by terminal and future GUI adapters"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+nucleo-matcher.workspace = true
+serde.workspace = true
+skit-domain.workspace = true
+skit-application.workspace = true
+skit-form.workspace = true
+skit-language.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

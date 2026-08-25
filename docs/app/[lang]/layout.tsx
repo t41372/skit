@@ -1,4 +1,5 @@
 import { Inter } from 'next/font/google';
+import type { Metadata } from 'next';
 import { i18nProvider } from 'fumadocs-ui/i18n';
 import type { ReactNode } from 'react';
 import { Provider } from '@/components/provider';
@@ -9,6 +10,10 @@ import '../global.css';
 const inter = Inter({
   subsets: ['latin'],
 });
+
+export const metadata: Metadata = {
+  metadataBase: new URL('https://t41372.github.io/skit'),
+};
 
 export function generateStaticParams() {
   return i18n.languages.map((lang) => ({ lang }));

@@ -1,0 +1,95 @@
+---
+title: 脚本类型
+description: 什么可以运行、什么会被检测，以及值如何到达脚本。
+---
+
+skit 可以启动十几种条目。Python、shell 与 JS/TS 得到最深入的支持 ——
+skit 通过读取代码找到它们的参数。其他每种类型都能开箱即用地启动，
+并且可以使用手动声明的参数。
+
+## 支持一览 [#support-at-a-glance]
+
+| 脚本类型 | 如何运行 | skit 检测到的参数 |
+| --- | --- | --- |
+| **Python** | uv（`uv run --script`） | CLI 选项（argparse · click · typer）、`input()` 提问、常量 |
+| **Shell**（bash/sh/zsh） | 匹配的 shell | CLI 选项（getopts）、`read` 提问、常量、`${VAR:-}` 环境默认值 |
+| **JS / TS** | deno、bun 或 node —— 先找到者 | CLI 选项（`util.parseArgs`）、`const` 值 |
+| **fish** | fish | CLI 选项（`argparse`）、`set -q` 环境默认值 |
+| **PowerShell** | pwsh | `param()` 定义 |
+| **Ruby · Perl · Lua · R** | 各自的解释器 | —— |
+| **可执行文件** | 直接运行 | —— |
+| **命令模板** | skit 填空后运行该命令 | —— |
+| **提示词** | 你的编码代理（claude · codex · …） | `{{placeholders}}` |
+
+## 值如何到达脚本 [#how-values-reach-the-script]
+
+根据检测到的内容，你在启动菜单中设置的值会走以下三条路径之一 ——
+在菜单中都看不出区别，但它们解释了各类型之间的深度差异：
+
+- **改写的值。** 对于 Python、shell 与 JS/TS，skit 可以在启动时改写其存储副本中
+  检测到的常量（例如 `WIDTH = 800`）。这正是“硬编码常量变成字段”得以实现的原因 ——
+  也是这三种类型最深入的原因。
+- **环境变量。** 环境默认值写法 —— shell 的 `${VAR:-default}` 与
+  fish 的 `set -q NAME; or set NAME default` —— 会先读取环境，
+  因此 skit 以环境变量传递该值，而不触碰脚本。
+- **命令行参数。** 当 skit 读取脚本自身的 CLI 定义时
+  （argparse/click/typer、getopts、`util.parseArgs`、fish 的 `argparse`、
+  PowerShell 的 `param()`），值作为普通参数传入，由脚本自己解析。
+  手动声明的参数走同样的路径。
+
+这就是 fish 与 Python 之间差异的全部原因：fish 脚本中硬编码的
+`set width 800` 不会出现在启动菜单里（skit 不改写 fish 代码），
+但它的 `argparse` 选项与 `set -q` 环境默认值会出现。
+
+## 声明的参数 [#declared-parameters]
+
+你的类型没有自动检测？那就手动声明参数 —— 每种类型都得到相同的
+启动菜单 / 预设 / `--set` 体验，哪怕是一个普通的可执行文件：
+
+```bash
+skit params my_tool --add FORMAT --choices FORMAT=png,jpg,webp --default FORMAT=png
+```
+
+## 外部命令（“needs”） [#external-commands-needs]
+
+任何条目都可以列出它依赖的外部命令（`ffmpeg`、`jq`、…）。
+skit 在每次运行前检查它们是否在你的 `PATH` 中 —— 对每种类型都如此。
+
+## 每个脚本独立的软件包依赖项 [#per-script-package-dependencies]
+
+Python 与 JS/TS 拥有隔离的、按脚本划分的软件包依赖项：
+
+- **Python**：依赖项在脚本中内联声明（PEP 723），由 uv 解析到一个隔离环境中。
+  没有任何全局改动。
+- **JS/TS**：npm 风格的依赖项在首次运行时安装到存储副本旁的 `node_modules`
+  （`skit add` 会根据脚本自身的导入给出建议）。受管依赖项适用于复制的条目 ——
+  被引用的脚本继续使用它自己项目的 `node_modules`。
+
+两个安全与一致性细节：
+
+- 安装从不运行软件包生命周期脚本：npm 与 bun 使用 `--ignore-scripts`，
+  deno 默认跳过它们。
+- 当 skit 选择 deno 作为运行器时，它会传递 `--allow-all`，
+  这样同一个脚本在 deno、bun 与 node 下表现一致。
+
+如果你没有 uv，skit 会为 Python 引导安装它，但从不安装 JS 运行时 ——
+node、bun 或 deno 由你提供。
+
+## 固定运行时 [#pinning-the-runtime]
+
+- JS/TS 运行器顺序是 deno → bun → node，取 `PATH` 上先找到的那个；
+  `js.runner` 配置键可以全局强制指定一个。
+- 解释型类型在添加时根据 shebang 或扩展名记录其解释器 ——
+  一个 `#!/bin/zsh` 脚本会一直在 zsh 下运行。用
+  `skit params NAME --interpreter BINARY` 固定或重置它（为空回到自动；
+  python 与提示词条目拒绝该选项，它们不通过可固定的解释器运行）。
+
+## 平台说明 [#platform-notes]
+
+- **Windows，shell 条目**：skit 先在 `PATH` 上找 bash，然后看
+  `shell.bash_path` 配置键，然后以退出码 126 拒绝 —— 它从不改道走 WSL。
+  PowerShell 条目需要 `pwsh` / `powershell.exe`。
+- **Windows，可执行文件**：文件是否可运行由 `PATHEXT` 决定 ——
+  可执行位在那里没有意义。
+- **行尾与编码**：skit 的编辑限制在 `[tool.skit]` 注释块内，
+  并保留文件自身的行尾（包括 CRLF）与非 UTF-8 字节。

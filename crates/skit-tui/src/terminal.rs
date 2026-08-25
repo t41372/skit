@@ -1,0 +1,979 @@
+//! Crossterm lifecycle and blocking event loop.
+
+use std::io;
+use std::sync::Arc;
+use std::time::Duration;
+
+use ratatui_core::terminal::Terminal;
+use ratatui_crossterm::{
+    CrosstermBackend,
+    crossterm::{
+        event::{self, DisableMouseCapture, EnableMouseCapture},
+        execute,
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    },
+};
+use skit_application::path_completion::PathCompletionProvider;
+use skit_domain::Slug;
+use skit_i18n::{Locale, Localize, Message, detect_locale};
+use skit_ui::{
+    Action, AddWorkflowState, Effect, FormView, LibraryState, RunFormView, Screen, SubmittedValues,
+};
+use thiserror::Error;
+
+use crate::{EventHandling, TuiSession, ViewGeometry, render_with_session};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalEventWait {
+    Blocking,
+    Poll(Duration),
+}
+
+const fn terminal_event_wait(path_completion_pending: bool) -> TerminalEventWait {
+    if path_completion_pending {
+        TerminalEventWait::Poll(Duration::from_millis(25))
+    } else {
+        TerminalEventWait::Blocking
+    }
+}
+
+fn read_terminal_event(wait: TerminalEventWait) -> io::Result<Option<event::Event>> {
+    read_terminal_event_with(wait, event::read, event::poll)
+}
+
+/// The refusal a session gets when its standard streams are not a terminal, if any.
+///
+/// The two answers arrive as parameters, so a test can drive every combination without changing
+/// the process's own streams. An interactive session needs both: input reads keys from stdin, and
+/// every frame draws to stdout.
+fn terminal_claim_refusal(stdin_is_terminal: bool, stdout_is_terminal: bool) -> Option<io::Error> {
+    if stdin_is_terminal && stdout_is_terminal {
+        None
+    } else {
+        Some(io::Error::other("stdin and stdout are not a terminal"))
+    }
+}
+
+/// Claim the terminal for a session: refuse a non-terminal, then enter raw mode and the
+/// alternate screen.
+///
+/// The explicit check is the one cross-platform guard. Unix raw mode fails on its own for a
+/// piped process, but Windows crossterm attaches to the process console even when the standard
+/// streams are redirected, and the event loop would then wait on a console no caller can type
+/// into. The CLI enforces the same policy at every prompt door (`is_terminal` on both streams).
+fn claim_terminal() -> io::Result<()> {
+    use std::io::IsTerminal as _;
+    if let Some(refusal) =
+        terminal_claim_refusal(io::stdin().is_terminal(), io::stdout().is_terminal())
+    {
+        return Err(refusal);
+    }
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+}
+
+/// Take the next event, or report that the poll window closed with nothing to take.
+///
+/// The two terminal calls arrive as parameters, so a test can drive every answer without a live
+/// terminal and without waiting on one. A blocking wait must never poll: it has nothing else to do
+/// until a key arrives.
+fn read_terminal_event_with<R, P>(
+    wait: TerminalEventWait,
+    read: R,
+    poll: P,
+) -> io::Result<Option<event::Event>>
+where
+    R: FnOnce() -> io::Result<event::Event>,
+    P: FnOnce(Duration) -> io::Result<bool>,
+{
+    match wait {
+        TerminalEventWait::Blocking => read().map(Some),
+        TerminalEventWait::Poll(duration) => {
+            if poll(duration)? {
+                read().map(Some)
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn dispatch_event(
+    session: &mut TuiSession,
+    event: event::Event,
+    state: &LibraryState,
+    geometry: &ViewGeometry,
+) -> Option<Action> {
+    match session.handle_event(event, state, geometry) {
+        EventHandling::Action(action) => Some(action),
+        EventHandling::Consumed | EventHandling::Ignored => None,
+    }
+}
+
+/// A terminal lifecycle or input failure.
+#[derive(Debug, Error)]
+pub enum TuiError {
+    /// Crossterm or terminal backend I/O failed.
+    #[error("terminal I/O failed: {0}")]
+    Io(#[from] io::Error),
+    /// A host/reducer cycle did not reach a stable state.
+    #[error("terminal host effects did not settle")]
+    EffectCycle,
+}
+
+impl Localize for TuiError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Io(error) => Message::new("terminal I/O failed: {}").with(error),
+            Self::EffectCycle => Message::new("terminal host effects did not settle"),
+        }
+    }
+}
+
+/// Run the terminal frontend and send each requested effect to its host adapter.
+pub fn run<F, E>(state: LibraryState, host: F, locale: Locale) -> Result<(), TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    run_preflighted(state, |_| Ok::<(), E>(()), host, locale)
+}
+
+/// Run the terminal frontend with asynchronous path completion.
+pub fn run_with_path_completion<F, E>(
+    state: LibraryState,
+    host: F,
+    locale: Locale,
+    provider: Arc<dyn PathCompletionProvider>,
+) -> Result<(), TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    run_preflighted_with_path_completion(state, |_| Ok::<(), E>(()), host, locale, provider)
+}
+
+/// Run the terminal frontend with a check that occurs before terminal suspension.
+///
+/// The check must be local and read-only. A refusal stays on the active screen as a localized
+/// status. The host does not receive the refused effect.
+pub fn run_preflighted<F, P, E>(
+    state: LibraryState,
+    preflight: P,
+    host: F,
+    locale: Locale,
+) -> Result<(), TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    P: FnMut(&Effect) -> Result<(), E>,
+    E: Localize,
+{
+    let _: Option<()> =
+        run_hosted_state(state, Vec::new(), preflight, host, locale, |_| None, None)?;
+    Ok(())
+}
+
+/// Run with both a pre-suspend check and asynchronous path completion.
+pub fn run_preflighted_with_path_completion<F, P, E>(
+    state: LibraryState,
+    preflight: P,
+    host: F,
+    locale: Locale,
+    provider: Arc<dyn PathCompletionProvider>,
+) -> Result<(), TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    P: FnMut(&Effect) -> Result<(), E>,
+    E: Localize,
+{
+    let _: Option<()> = run_hosted_state(
+        state,
+        Vec::new(),
+        preflight,
+        host,
+        locale,
+        |_| None,
+        Some(provider),
+    )?;
+    Ok(())
+}
+
+/// Run the typed add workflow with the same hosted reducer loop as the library workbench.
+///
+/// The result is the created slug, or `None` when the user cancels or quits. Completion and
+/// cancellation use explicit reducer actions. The adapter does not infer an outcome from library
+/// selection or status text.
+pub fn run_add_workflow<F, E>(
+    workflow: AddWorkflowState,
+    opening: Vec<Action>,
+    host: F,
+    locale: Locale,
+) -> Result<Option<Slug>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Add(Box::new(workflow))));
+    run_hosted_state(
+        state,
+        opening,
+        |_| Ok::<(), E>(()),
+        host,
+        locale,
+        add_workflow_outcome,
+        None,
+    )
+    .map(|outcome| {
+        outcome.and_then(|outcome| match outcome {
+            AddWorkflowOutcome::Completed(slug) => Some(slug),
+            AddWorkflowOutcome::Cancelled => None,
+        })
+    })
+}
+
+/// Drive one hosted screen until it reports an outcome.
+///
+/// `opening` is applied before the first draw, through the same reducer and the same host as a key
+/// press. A shell that already named its subject — `skit add greet.py` — arrives at the panel the
+/// subject belongs to rather than at a source picker asking for what it was just given
+/// (`src/skit/cli.py:2116-2126`). Replaying it as actions rather than as a second construction path
+/// means the shell door and the `a` door cannot answer the same command differently.
+fn run_hosted_state<F, P, E, O>(
+    mut state: LibraryState,
+    opening: Vec<Action>,
+    mut preflight: P,
+    mut host: F,
+    mut locale: Locale,
+    mut observe: impl FnMut(&Action) -> Option<O>,
+    path_completion: Option<Arc<dyn PathCompletionProvider>>,
+) -> Result<Option<O>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    P: FnMut(&Effect) -> Result<(), E>,
+    E: Localize,
+{
+    for action in opening {
+        if let Some(outcome) = observe(&action) {
+            return Ok(Some(outcome));
+        }
+        let effect = state.update(action);
+        if !matches!(effect, Effect::None) {
+            let (quit, outcome) = drain_host_effects_observed(
+                &mut state,
+                &mut host,
+                effect,
+                &mut locale,
+                &mut observe,
+            )?;
+            if quit || outcome.is_some() {
+                return Ok(outcome);
+            }
+        }
+    }
+    claim_terminal()?;
+    let _restore = RestoreTerminal;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+    let mut session = path_completion.map_or_else(TuiSession::default, |provider| {
+        TuiSession::with_path_completion(provider)
+    });
+
+    let outcome = loop {
+        let _ = session.refresh_background();
+        let mut geometry = ViewGeometry::default();
+        terminal.draw(|frame| {
+            geometry = render_with_session(frame, &state, locale, &mut session);
+        })?;
+        let Some(event) =
+            read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
+        else {
+            continue;
+        };
+        if let Some(action) = dispatch_event(&mut session, event, &state, &geometry) {
+            let mut outcome = observe(&action);
+            let effect = state.update(action);
+            match effect {
+                Effect::None if outcome.is_some() => break outcome,
+                Effect::None => {}
+                Effect::Quit => break outcome,
+                effect => {
+                    if !accept_host_effect(&mut state, &effect, &mut preflight, locale) {
+                        continue;
+                    }
+                    terminal.show_cursor()?;
+                    suspend_terminal()?;
+                    let (quit, host_outcome) = drain_host_effects_observed(
+                        &mut state,
+                        &mut host,
+                        effect,
+                        &mut locale,
+                        &mut observe,
+                    )?;
+                    if outcome.is_none() {
+                        outcome = host_outcome;
+                    }
+                    if quit || outcome.is_some() {
+                        break outcome;
+                    }
+                    resume_terminal()?;
+                    terminal.clear()?;
+                }
+            }
+        }
+    };
+    terminal.show_cursor()?;
+    Ok(outcome)
+}
+
+fn accept_host_effect<P, E>(
+    state: &mut LibraryState,
+    effect: &Effect,
+    preflight: &mut P,
+    locale: Locale,
+) -> bool
+where
+    P: FnMut(&Effect) -> Result<(), E>,
+    E: Localize,
+{
+    match preflight(effect) {
+        Ok(()) => true,
+        Err(error) => {
+            let status = Message::new("Error: {}")
+                .nested(error.message())
+                .localize(locale);
+            state.update(Action::SetStatus(status));
+            false
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AddWorkflowOutcome {
+    Completed(Slug),
+    Cancelled,
+}
+
+fn add_workflow_outcome(action: &Action) -> Option<AddWorkflowOutcome> {
+    match action {
+        Action::AddCompleted { slug, .. } => Some(AddWorkflowOutcome::Completed(slug.clone())),
+        Action::AddCancelled | Action::Quit => Some(AddWorkflowOutcome::Cancelled),
+        _ => None,
+    }
+}
+
+fn localized_status(error: &impl Localize, locale: Locale) -> String {
+    error.message().localize(locale)
+}
+
+fn action_locale(action: &Action) -> Option<Locale> {
+    let Action::PreferencesSaved { locale, .. } = action else {
+        return None;
+    };
+    Some(detect_locale(Some(locale)))
+}
+
+const HOST_EFFECT_LIMIT: usize = 64;
+
+#[cfg(test)]
+fn drain_host_effects<F, E>(
+    state: &mut LibraryState,
+    host: &mut F,
+    effect: Effect,
+    locale: &mut Locale,
+) -> Result<bool, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    let (quit, _): (bool, Option<()>) =
+        drain_host_effects_observed(state, host, effect, locale, &mut |_| None)?;
+    Ok(quit)
+}
+
+fn drain_host_effects_observed<F, E, O>(
+    state: &mut LibraryState,
+    host: &mut F,
+    mut effect: Effect,
+    locale: &mut Locale,
+    observe: &mut impl FnMut(&Action) -> Option<O>,
+) -> Result<(bool, Option<O>), TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    let mut outcome = None;
+    for _ in 0..HOST_EFFECT_LIMIT {
+        match effect {
+            Effect::None => return Ok((false, outcome)),
+            Effect::Quit => return Ok((true, outcome)),
+            current => match host(current) {
+                Ok(action) => {
+                    if outcome.is_none() {
+                        outcome = observe(&action);
+                    }
+                    if let Some(next_locale) = action_locale(&action) {
+                        *locale = next_locale;
+                    }
+                    effect = state.update(action);
+                }
+                Err(error) => {
+                    state.update(Action::SetStatus(localized_status(&error, *locale)));
+                    return Ok((false, outcome));
+                }
+            },
+        }
+    }
+    Err(TuiError::EffectCycle)
+}
+
+/// Collect one generic form and restore the terminal before returning its values.
+pub fn collect_form<F, E>(
+    form: FormView,
+    host: F,
+    locale: Locale,
+) -> Result<Option<SubmittedValues>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    collect_screen(Screen::Form(form), host, locale, None)
+}
+
+/// Collect one typed launch form and restore the terminal before returning its values.
+///
+/// The host serves the same effects the full workbench serves. A form chip that the footer
+/// advertises — `Ctrl+S Save as preset` above all — must do its work here too, exactly as version
+/// 0.4 saves a preset from the inline run window (`src/skit/tui_form.py:929-959`).
+pub fn collect_run_form<F, E>(
+    form: RunFormView,
+    host: F,
+    locale: Locale,
+) -> Result<Option<SubmittedValues>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    collect_screen(Screen::Run(Box::new(form)), host, locale, None)
+}
+
+/// Collect one typed launch form with asynchronous path completion.
+pub fn collect_run_form_with_path_completion<F, E>(
+    form: RunFormView,
+    host: F,
+    locale: Locale,
+    provider: Arc<dyn PathCompletionProvider>,
+) -> Result<Option<SubmittedValues>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    collect_screen(Screen::Run(Box::new(form)), host, locale, Some(provider))
+}
+
+fn collect_screen<F, E>(
+    screen: Screen,
+    mut host: F,
+    mut locale: Locale,
+    path_completion: Option<Arc<dyn PathCompletionProvider>>,
+) -> Result<Option<SubmittedValues>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    let mut state = LibraryState::default();
+    state.update(Action::Present(screen));
+    claim_terminal()?;
+    let _restore = RestoreTerminal;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+    let mut session = path_completion.map_or_else(TuiSession::default, |provider| {
+        TuiSession::with_path_completion(provider)
+    });
+
+    let values = loop {
+        let _ = session.refresh_background();
+        let mut geometry = ViewGeometry::default();
+        terminal.draw(|frame| {
+            geometry = render_with_session(frame, &state, locale, &mut session);
+        })?;
+        let Some(event) =
+            read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
+        else {
+            continue;
+        };
+        if let Some(action) = dispatch_event(&mut session, event, &state, &geometry) {
+            if action == Action::Quit {
+                break None;
+            }
+            // Escape inside a modal closes only that modal and keeps the form
+            // (`src/skit/tui_form.py:376-377` `action_cancel` dismisses the preset modal). The form
+            // itself is the last screen here, so Escape outside a modal cancels the collection.
+            if action == Action::Back && state.modal().is_none() {
+                break None;
+            }
+            let effect = state.update(action);
+            if let Some(values) = drain_collect_effects(&mut state, &mut host, effect, &mut locale)?
+            {
+                break values;
+            }
+        }
+    };
+    terminal.show_cursor()?;
+    Ok(values)
+}
+
+/// Serve one effect chain for a collected form.
+///
+/// `Ok(None)` continues the event loop. `Ok(Some(values))` finishes the collection, and
+/// `Ok(Some(None))` inside it means the user quit.
+type CollectOutcome = Option<Option<SubmittedValues>>;
+
+fn drain_collect_effects<F, E>(
+    state: &mut LibraryState,
+    host: &mut F,
+    mut effect: Effect,
+    locale: &mut Locale,
+) -> Result<CollectOutcome, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    E: Localize,
+{
+    for _ in 0..HOST_EFFECT_LIMIT {
+        match effect {
+            Effect::None => return Ok(None),
+            Effect::Quit => return Ok(Some(None)),
+            Effect::Submit { values, .. } => return Ok(Some(Some(values))),
+            current => match host(current) {
+                Ok(action) => {
+                    if let Some(next_locale) = action_locale(&action) {
+                        *locale = next_locale;
+                    }
+                    effect = state.update(action);
+                }
+                Err(error) => {
+                    state.update(Action::SetStatus(localized_status(&error, *locale)));
+                    return Ok(None);
+                }
+            },
+        }
+    }
+    Err(TuiError::EffectCycle)
+}
+
+#[derive(Debug)]
+struct RestoreTerminal;
+
+fn suspend_terminal() -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
+}
+
+fn resume_terminal() -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+}
+
+impl Drop for RestoreTerminal {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every stream combination answers the same way on every host: only two real terminals
+    /// proceed, and each refusal names both streams so the caller's report is exact.
+    #[test]
+    fn terminal_claim_refuses_every_stream_shape_that_is_not_two_terminals() {
+        assert!(terminal_claim_refusal(true, true).is_none());
+        for (stdin_is_terminal, stdout_is_terminal) in
+            [(false, true), (true, false), (false, false)]
+        {
+            let refusal = terminal_claim_refusal(stdin_is_terminal, stdout_is_terminal)
+                .expect("a non-terminal stream must refuse");
+            assert_eq!(refusal.to_string(), "stdin and stdout are not a terminal");
+        }
+    }
+
+    #[derive(Debug)]
+    struct HostError;
+
+    impl Localize for HostError {
+        fn message(&self) -> Message {
+            Message::new("entry not found: {}").with("demo")
+        }
+    }
+
+    fn harmless_host(_effect: Effect) -> Result<Action, HostError> {
+        Ok(Action::ClearStatus)
+    }
+
+    #[test]
+    fn terminal_takes_an_event_for_every_wait_the_loop_can_choose() {
+        use std::cell::Cell;
+
+        const WINDOW: Duration = Duration::from_millis(25);
+
+        // One pair of stubs serves every case, and each keeps a count. A case that must not reach a
+        // call proves it by the count standing still, so nothing here is written to never run.
+        let reads = Cell::new(0_u32);
+        let polls = Cell::new(0_u32);
+        let asked_for = Cell::new(Duration::ZERO);
+        let window_has_event = Cell::new(true);
+        let read_fails = Cell::new(false);
+        let poll_fails = Cell::new(false);
+
+        let read = || {
+            reads.set(reads.get() + 1);
+            if read_fails.get() {
+                Err(io::Error::other("read failed"))
+            } else {
+                Ok(event::Event::FocusGained)
+            }
+        };
+        let poll = |waited: Duration| {
+            polls.set(polls.get() + 1);
+            asked_for.set(waited);
+            if poll_fails.get() {
+                Err(io::Error::other("poll failed"))
+            } else {
+                Ok(window_has_event.get())
+            }
+        };
+
+        // A blocking wait takes the next event, and never polls: it has nothing else to do.
+        assert_eq!(
+            read_terminal_event_with(TerminalEventWait::Blocking, read, poll).unwrap(),
+            Some(event::Event::FocusGained)
+        );
+        assert_eq!(reads.get(), 1);
+        assert_eq!(polls.get(), 0, "a blocking wait must not poll");
+
+        // A polling wait asks for the loop's window, and takes the event it reports.
+        assert_eq!(
+            read_terminal_event_with(TerminalEventWait::Poll(WINDOW), read, poll).unwrap(),
+            Some(event::Event::FocusGained)
+        );
+        assert_eq!(asked_for.get(), WINDOW);
+        assert_eq!((reads.get(), polls.get()), (2, 1));
+
+        // An empty window reports nothing to take, so nothing is taken.
+        window_has_event.set(false);
+        assert_eq!(
+            read_terminal_event_with(TerminalEventWait::Poll(WINDOW), read, poll).unwrap(),
+            None
+        );
+        assert_eq!(reads.get(), 2, "an empty window must not take an event");
+        assert_eq!(polls.get(), 2);
+
+        // A window that fails stops there, and the failure reaches the caller.
+        poll_fails.set(true);
+        assert!(read_terminal_event_with(TerminalEventWait::Poll(WINDOW), read, poll).is_err());
+        assert_eq!(reads.get(), 2, "a failed window must not take an event");
+        assert_eq!(polls.get(), 3);
+
+        // A failure while taking the event reaches the caller too.
+        poll_fails.set(false);
+        read_fails.set(true);
+        assert!(read_terminal_event_with(TerminalEventWait::Blocking, read, poll).is_err());
+        assert_eq!(reads.get(), 3);
+        assert_eq!(polls.get(), 3, "a blocking wait must not poll");
+    }
+
+    #[test]
+    fn terminal_waits_for_input_without_pending_path_work() {
+        assert_eq!(terminal_event_wait(false), TerminalEventWait::Blocking);
+        assert_eq!(
+            terminal_event_wait(true),
+            TerminalEventWait::Poll(Duration::from_millis(25))
+        );
+    }
+
+    #[test]
+    fn host_errors_use_the_terminal_locale() {
+        assert_eq!(
+            localized_status(&HostError, Locale::ZhCn),
+            "找不到条目：demo"
+        );
+        assert_eq!(
+            localized_status(&HostError, Locale::ZhTw),
+            "找不到項目：demo"
+        );
+    }
+
+    #[test]
+    fn rejected_preflight_becomes_status_before_the_terminal_can_suspend() {
+        let mut state = LibraryState::default();
+        let effect = Effect::Open {
+            request: skit_ui::HostRequest::Run,
+            selector: Some("demo".to_owned()),
+        };
+        let mut preflight = |_effect: &Effect| Err(HostError);
+
+        assert!(!accept_host_effect(
+            &mut state,
+            &effect,
+            &mut preflight,
+            Locale::ZhCn,
+        ));
+        assert_eq!(state.status(), Some("错误：找不到条目：demo"));
+    }
+
+    #[test]
+    fn a_saved_language_changes_the_running_terminal_locale() {
+        assert_eq!(
+            action_locale(&Action::PreferencesSaved {
+                locale: "zh-TW".to_owned(),
+                message: "Preferences saved".to_owned(),
+            }),
+            Some(Locale::ZhTw)
+        );
+        assert_eq!(action_locale(&Action::ClearStatus), None);
+    }
+
+    #[test]
+    fn host_actions_drain_follow_up_effects_before_the_terminal_resumes() {
+        let mut state = LibraryState::default();
+        let mut calls = 0;
+        let mut host = |_effect| -> Result<Action, HostError> {
+            calls += 1;
+            Ok(if calls == 1 {
+                Action::Reload
+            } else {
+                Action::ClearStatus
+            })
+        };
+        let mut locale = Locale::En;
+
+        assert!(!drain_host_effects(&mut state, &mut host, Effect::Reload, &mut locale).unwrap());
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn an_unrelated_host_error_keeps_its_form_owner() {
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Form(FormView {
+            purpose: skit_ui::FormPurpose::Settings,
+            title: "Edit entry".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: Some("demo".to_owned()),
+            fields: vec![skit_ui::FormField::text("name", "Name", "demo")],
+            focused: 0,
+            submit_label: "Save".to_owned(),
+        })));
+        let effect = state.update(Action::Submit);
+        let mut host = |_effect| -> Result<Action, HostError> { Err(HostError) };
+        let mut locale = Locale::En;
+
+        assert!(!drain_host_effects(&mut state, &mut host, effect, &mut locale).unwrap());
+        assert!(matches!(state.screen(), Screen::Form(_)));
+        assert_eq!(state.status(), Some("entry not found: demo"));
+    }
+
+    #[test]
+    fn a_broken_host_cycle_stops_at_a_fixed_boundary() {
+        let mut state = LibraryState::default();
+        let mut calls = 0;
+        let mut host = |_effect| -> Result<Action, HostError> {
+            calls += 1;
+            Ok(Action::Reload)
+        };
+        let mut locale = Locale::En;
+
+        assert!(matches!(
+            drain_host_effects(&mut state, &mut host, Effect::Reload, &mut locale),
+            Err(TuiError::EffectCycle)
+        ));
+        assert_eq!(calls, HOST_EFFECT_LIMIT);
+    }
+
+    #[test]
+    fn hosted_add_observes_typed_completion_after_the_host_effect_settles() {
+        let slug = Slug::parse("new-tool").unwrap();
+        let completed = slug.clone();
+        let mut state = LibraryState::default();
+        let mut host = move |_effect| -> Result<Action, HostError> {
+            Ok(Action::AddCompleted {
+                surface: skit_application::library_detail::LibrarySurface::default(),
+                rerunnable: Vec::new(),
+                slug: completed.clone(),
+                message: "Added".to_owned(),
+            })
+        };
+        let mut locale = Locale::En;
+        let (quit, outcome) = drain_host_effects_observed(
+            &mut state,
+            &mut host,
+            Effect::Reload,
+            &mut locale,
+            &mut add_workflow_outcome,
+        )
+        .unwrap();
+
+        assert!(!quit);
+        assert_eq!(outcome, Some(AddWorkflowOutcome::Completed(slug)));
+        assert_eq!(state.screen(), &Screen::Library);
+    }
+
+    #[test]
+    fn hosted_add_cancel_is_an_explicit_outcome() {
+        assert_eq!(
+            add_workflow_outcome(&Action::AddCancelled),
+            Some(AddWorkflowOutcome::Cancelled)
+        );
+        assert_eq!(add_workflow_outcome(&Action::ClearStatus), None);
+    }
+
+    #[test]
+    fn public_add_opening_actions_finish_before_terminal_setup() {
+        assert_eq!(harmless_host(Effect::Quit).unwrap(), Action::ClearStatus);
+        let cancelled = run_add_workflow(
+            AddWorkflowState::new(Vec::new()),
+            vec![Action::AddCancelled],
+            harmless_host,
+            Locale::En,
+        )
+        .unwrap();
+        assert_eq!(cancelled, None);
+
+        let slug = Slug::parse("opened").unwrap();
+        let completed = run_add_workflow(
+            AddWorkflowState::new(Vec::new()),
+            vec![Action::AddCompleted {
+                surface: skit_application::library_detail::LibrarySurface::default(),
+                rerunnable: Vec::new(),
+                slug: slug.clone(),
+                message: "Added".to_owned(),
+            }],
+            harmless_host,
+            Locale::En,
+        )
+        .unwrap();
+        assert_eq!(completed, Some(slug));
+
+        let slug = Slug::parse("hosted").unwrap();
+        let hosted = run_add_workflow(
+            AddWorkflowState::new(Vec::new()),
+            vec![Action::Reload],
+            |effect| -> Result<Action, HostError> {
+                assert_eq!(effect, Effect::Reload);
+                Ok(Action::AddCompleted {
+                    surface: skit_application::library_detail::LibrarySurface::default(),
+                    rerunnable: Vec::new(),
+                    slug: slug.clone(),
+                    message: "Added".to_owned(),
+                })
+            },
+            Locale::En,
+        )
+        .unwrap();
+        assert_eq!(hosted, Some(slug));
+    }
+
+    #[test]
+    fn host_and_collection_drains_cover_quit_submit_locale_error_and_cycles() {
+        use std::collections::BTreeMap;
+
+        assert_eq!(
+            TuiError::EffectCycle.message().localize(Locale::En),
+            "terminal host effects did not settle"
+        );
+        let mut state = LibraryState::default();
+        let mut locale = Locale::En;
+        let mut host = |_effect| -> Result<Action, HostError> { Ok(Action::ClearStatus) };
+        assert!(drain_host_effects(&mut state, &mut host, Effect::Quit, &mut locale).unwrap());
+        let mut locale_host = |_effect| -> Result<Action, HostError> {
+            Ok(Action::PreferencesSaved {
+                locale: "zh-CN".to_owned(),
+                message: "saved".to_owned(),
+            })
+        };
+        assert!(
+            !drain_host_effects(&mut state, &mut locale_host, Effect::Reload, &mut locale,)
+                .unwrap()
+        );
+        assert_eq!(locale, Locale::ZhCn);
+
+        let values = BTreeMap::new();
+        let mut unused = harmless_host;
+        assert_eq!(
+            drain_collect_effects(&mut state, &mut unused, Effect::None, &mut locale).unwrap(),
+            None
+        );
+        assert_eq!(
+            drain_collect_effects(&mut state, &mut unused, Effect::Quit, &mut locale).unwrap(),
+            Some(None)
+        );
+        assert_eq!(
+            drain_collect_effects(
+                &mut state,
+                &mut unused,
+                Effect::Submit {
+                    purpose: skit_ui::FormPurpose::Add,
+                    selector: None,
+                    values: values.clone(),
+                },
+                &mut locale,
+            )
+            .unwrap(),
+            Some(Some(values))
+        );
+
+        let mut locale_host = |_effect| -> Result<Action, HostError> {
+            Ok(Action::PreferencesSaved {
+                locale: "zh-TW".to_owned(),
+                message: "saved".to_owned(),
+            })
+        };
+        let _ = drain_collect_effects(&mut state, &mut locale_host, Effect::Reload, &mut locale);
+        assert_eq!(locale, Locale::ZhTw);
+
+        let mut failed = |_effect| -> Result<Action, HostError> { Err(HostError) };
+        assert_eq!(
+            drain_collect_effects(&mut state, &mut failed, Effect::Reload, &mut locale).unwrap(),
+            None
+        );
+
+        let mut cycling = |_effect| -> Result<Action, HostError> { Ok(Action::Reload) };
+        assert!(matches!(
+            drain_collect_effects(&mut state, &mut cycling, Effect::Reload, &mut locale),
+            Err(TuiError::EffectCycle)
+        ));
+    }
+
+    #[test]
+    fn deterministic_dispatch_uses_a_real_rendered_session_without_terminal_lifecycle() {
+        use ratatui_core::{backend::TestBackend, terminal::Terminal};
+        use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let state = LibraryState::default();
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = render_with_session(frame, &state, Locale::En, &mut session);
+            })
+            .unwrap();
+        assert_eq!(
+            dispatch_event(&mut session, Event::FocusGained, &state, &geometry),
+            None
+        );
+        let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(
+            dispatch_event(&mut session, ctrl_c.clone(), &state, &geometry),
+            None
+        );
+        assert_eq!(
+            dispatch_event(&mut session, ctrl_c, &state, &geometry),
+            Some(Action::Quit)
+        );
+    }
+}

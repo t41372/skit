@@ -1,14 +1,10 @@
 name: Release
 
-# Triggered by pushing a vX.Y.Z tag: build → verify → publish to PyPI via
-# Trusted Publisher (OIDC). No PyPI token needed; the trust relationship is bound
-# in the PyPI project settings as "repo + workflow + environment".
 on:
   push:
-    tags:
-      - "v*.*.*"
+    tags: ["v*.*.*"]
+  workflow_dispatch:
 
-# Zero permissions by default; each job requests the minimum it needs.
 permissions: {}
 
 concurrency:
@@ -16,68 +12,246 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build distributions
+  verify:
+    name: Verify the release source
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-        with:
-          python-version: "3.13"
-          # No cache for release-artifact jobs: avoids cache poisoning of what ships to PyPI.
-          enable-cache: false
-
-      # Final gate before publishing: the tag version must exactly match the version in
-      # pyproject, otherwise the wrong version number gets pinned on PyPI forever
-      # (releases cannot be overwritten).
-      - name: Verify tag matches project version
+      - name: Compare the tag and package versions
+        if: github.event_name == 'push'
+        shell: bash
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          proj="$(uv version --short)"
-          echo "tag=$tag project=$proj"
-          if [ "$tag" != "$proj" ]; then
-            echo "::error::Tag v$tag does not match pyproject version $proj"
-            exit 1
-          fi
+          package="$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "skit-cli-rs") | .version')"
+          test "$tag" = "$package" || { echo "tag $tag does not match package $package"; exit 1; }
+      - name: Run the complete test suite
+        run: cargo test --locked --workspace --all-targets --all-features
 
-      - name: Run test suite
-        run: uv sync --dev && uv run pytest -q
-
-      - name: Build sdist + wheel
-        run: uv build
-
-      - name: Check metadata with twine
-        run: uvx twine check dist/*
-
-      - name: Upload build artifacts
+  linux:
+    name: Linux ${{ matrix.target }} (${{ matrix.manylinux }})
+    needs: verify
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64, aarch64]
+        manylinux: [auto, musllinux_1_2]
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          target: ${{ matrix.target }}
+          args: --locked --release --out dist
+          manylinux: ${{ matrix.manylinux }}
+          maturin-version: v1.14.1
+          rust-toolchain: 1.97.1
+      - name: Install uv for the native Linux smoke test
+        if: matrix.target == 'x86_64' && matrix.manylinux == 'auto'
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: false
+      - name: Smoke-test the native Linux wheel
+        if: matrix.target == 'x86_64' && matrix.manylinux == 'auto'
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          export UV_TOOL_BIN_DIR="$RUNNER_TEMP/skit-bin"
+          uv tool install --force --from "$wheel" skit-cli
+          "$UV_TOOL_BIN_DIR/skit" --version
+          "$UV_TOOL_BIN_DIR/skit" --help >/dev/null
+      - name: Upload the wheel
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: dist
+          name: wheels-linux-${{ matrix.target }}-${{ matrix.manylinux }}
           path: dist/
           if-no-files-found: error
 
+  windows:
+    name: Windows ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x64
+          - runner: windows-11-arm
+            target: aarch64
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          target: ${{ matrix.target }}
+          args: --locked --release --out dist
+          maturin-version: v1.14.1
+          rust-toolchain: 1.97.1
+      - name: Install uv for the native Windows smoke test
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: false
+      - name: Smoke-test the native Windows wheel
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem dist -Filter *.whl | Select-Object -First 1
+          $env:UV_TOOL_BIN_DIR = Join-Path $env:RUNNER_TEMP 'skit-bin'
+          uv tool install --force --from $wheel.FullName skit-cli
+          $skit = Join-Path $env:UV_TOOL_BIN_DIR 'skit.exe'
+          & $skit --version
+          & $skit --help > $null
+      - name: Upload the wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheels-windows-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64
+          - runner: macos-latest
+            target: aarch64
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          target: ${{ matrix.target }}
+          args: --locked --release --out dist
+          maturin-version: v1.14.1
+          rust-toolchain: 1.97.1
+      - name: Install uv for the native macOS smoke test
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.12.3"
+          enable-cache: false
+      - name: Smoke-test the native macOS wheel
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          export UV_TOOL_BIN_DIR="$RUNNER_TEMP/skit-bin"
+          uv tool install --force --from "$wheel" skit-cli
+          "$UV_TOOL_BIN_DIR/skit" --version
+          "$UV_TOOL_BIN_DIR/skit" --help >/dev/null
+      - name: Upload the wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheels-macos-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  sdist:
+    name: Source archive
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the source archive
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
+        with:
+          command: sdist
+          args: --out dist
+          maturin-version: v1.14.1
+          rust-toolchain: 1.97.1
+      - name: Upload the source archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wheels-sdist
+          path: dist/
+          if-no-files-found: error
+
+  verify-artifacts:
+    name: Verify the complete distribution set
+    needs: [linux, windows, macos, sdist]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Download all distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: wheels-*
+          path: dist/
+          merge-multiple: true
+      - name: Verify every wheel and the source archive
+        shell: bash
+        run: |
+          wheel_count="$(find dist -maxdepth 1 -name '*.whl' | wc -l)"
+          sdist_count="$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l)"
+          test "$wheel_count" -eq 8
+          test "$sdist_count" -eq 1
+          while IFS= read -r wheel; do
+            unzip -t "$wheel"
+            unzip -Z1 "$wheel" | grep -Eq '[.]dist-info/METADATA$'
+            unzip -Z1 "$wheel" | grep -Eq '[.]data/scripts/skit([.]exe)?$'
+          done < <(find dist -maxdepth 1 -name '*.whl' -print | sort)
+          archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          archive_files="$(tar -tzf "$archive")"
+          grep -Eq '/Cargo[.]lock$' <<<"$archive_files"
+          grep -Eq '/skills/skit/SKILL[.]md$' <<<"$archive_files"
+          grep -Eq '/tests/corpus/' <<<"$archive_files"
+
   publish:
     name: Publish to PyPI
-    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [verify-artifacts]
     runs-on: ubuntu-latest
-    # Bound to a protected environment; add required reviewers there for a manual release gate.
+    timeout-minutes: 30
     environment:
       name: pypi
       url: https://pypi.org/p/skit-cli
     permissions:
-      # Required for the OIDC token exchange; Trusted Publishing uses no long-lived tokens.
       id-token: write
     steps:
-      - name: Download build artifacts
+      - name: Download all distributions
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: dist
+          pattern: wheels-*
           path: dist/
-      - name: Publish
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+          merge-multiple: true
+      - name: Publish with trusted publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/

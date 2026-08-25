@@ -1,0 +1,253 @@
+# category<TAB>expected raw occurrences<TAB>path<TAB>exact trimmed source line<TAB>rationale
+A	1	crates/skit-application/src/lib.rs	"{name} was removed from the library, but its files couldn't be fully deleted: {path} — close any program using them, then delete the folder (or run `skit doctor --rebuild` to restore the entry and retry)."	oracle msgid production/catalog copy
+A	1	crates/skit-application/src/lib.rs	"{} was removed from the library, but its files couldn't be fully deleted: {} — close any program using them, then delete the folder (or run `skit doctor --rebuild` to restore the entry and retry).",	oracle msgid production/catalog copy
+A	1	crates/skit-application/src/tokens.rs	#[error("The environment variable {name} isn't set (needed by {token}).")]	oracle msgid production/catalog copy
+A	1	crates/skit-application/src/tokens.rs	Message::new("The environment variable {} isn't set (needed by {}).")	oracle msgid production/catalog copy
+A	1	crates/skit-application/src/value_resolution.rs	#[error("{name} reads from the environment variable {environment}, but it isn't set.")]	oracle msgid production/catalog copy
+A	1	crates/skit-application/src/value_resolution.rs	Message::new("{} reads from the environment variable {}, but it isn't set.")	oracle msgid production/catalog copy
+A	1	crates/skit-application/tests/port_test_flows.rs	"API_KEY reads from the environment variable MY_API_KEY, but it isn't set."	exact owner for frozen user-visible copy
+A	1	crates/skit-application/tests/port_test_tokens.rs	"The environment variable MISSING_VAR isn't set (needed by {env:MISSING_VAR})."	exact owner for frozen user-visible copy
+A	1	crates/skit-application/tests/value_resolution.rs	"api_key reads from the environment variable MISSING_KEY, but it isn't set."	exact owner for frozen user-visible copy
+A	1	crates/skit-application/tests/value_tokens.rs	"The environment variable MISSING_VAR isn't set (needed by {env:MISSING_VAR})."	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli.rs	"--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	"The runner {} isn't configured (known: {}). Manage runners with: skit runner list",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Dim: "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	"{} hasn't run yet — press Enter to fill the form first.",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	"{} is a kept draft skit can't classify — pass --kind <language> to add it as a script, or --prompt for an AI-agent prompt.",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	"{} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {}.",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	"{} isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.",	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/cli.rs	"{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/cli.rs	"{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/cli.rs	"{}'s stored copy isn't valid UTF-8, so skit can't rewrite the script's own dependency block — and that block is what uv reads. Edit it in the script itself: skit edit {}",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	"{}: its prompt no longer matches a unique input/read call; falling back to position (still injected — double-check this lands on the right question, especially if it's a secret)",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	"💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit {}).",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	#[error("Can't read {path}: {source}")]	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("A Python constraint doesn't apply to {} scripts.").with(kind),	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("A Python constraint doesn't apply to {} scripts.").with(kind_name),	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("What is {}? skit can't tell from the name.").with(&self.filename)	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("{} can't apply here — {} (nothing was added).")	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("{} doesn't take package dependencies; only --need applies")	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/cli.rs	Message::new("{} entries don't take package dependencies — drop --dep.")	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("{} has no form fields, so there's nothing to save.")	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("{} isn't a declared parameter; skipped.").with(name)	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("{} isn't a detectable parameter in the current script; skipped.")	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("{} isn't a managed parameter; --env-source skipped.").with(name)	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("{} isn't a managed parameter; skipped.").with(name)	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("{}: that delivery isn't available for this kind; skipped.").with(name)	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Message::new("{}: the default doesn't fit its type; skipped.").with(name)	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	Self::SourceRead { path, source } => Message::new("Can't read {}: {}")	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli/tests.rs	"--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests.rs	"Error: The runner missing-agent isn't configured (known: —). Manage runners with: skit runner list",	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/src/cli/tests.rs	"Python bytes's stored copy isn't valid UTF-8, so skit can't rewrite the script's own dependency block — and that block is what uv reads. Edit it in the script itself: skit edit Python bytes"	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests.rs	"The runner missing isn't configured (known: —). Manage runners with: skit runner list",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests.rs	"What is tool.xyz? skit can't tell from the name."	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests.rs	"npm is needed to install this script's dependencies, but it isn't on your PATH.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests.rs	.starts_with(&format!("Can't read {}: ", directory.display()))	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests.rs	UiAction::SetStatus(message) if message.contains("hasn't run yet")	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests.rs	assert!(!question.contains("can't tell from the name"));	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/run/command.rs	"The runner {name} isn't configured (known: {known}). Manage runners with: skit runner list"	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/run/command.rs	"The runner {} isn't configured (known: {}). Manage runners with: skit runner list",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/run/command.rs	"The script and its form definitions don't match anymore: source changed after semantic edit planning. Run `skit params demo --resync` to fix it.",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/run/command.rs	"The script and its form definitions don't match anymore: {detail}. Run `skit params {entry} --resync` to fix it."	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/run/command.rs	"The script and its form definitions don't match anymore: {parameter}. Run `skit params {entry} --resync` to fix it."	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/run/command.rs	"The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/run/command.rs	"skit needs Astral's uv to run Python scripts, but it wasn't found on this system. Download uv {} into skit's private directory ({})? This won't touch your PATH or global environment. [Y/n]",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/run/command.rs	#[error("{name} has no form fields, so there's nothing to save.")]	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/run/command.rs	Message::new("{} has no form fields, so there's nothing to save.").with(name)	oracle msgid production/catalog copy
+A	1	crates/skit-cli/tests/edge_workflows.rs	"default doesn't fit its type",	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/edge_workflows.rs	"delivery isn't available",	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/edge_workflows.rs	"isn't a declared parameter",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/edge_workflows.rs	"missing isn't a detectable parameter in the current script; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/i18n_cli.rs	"--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/i18n_cli.rs	"--runner can't apply here — a --cmd template takes only --name/--description (nothing was added).",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/i18n_cli.rs	"shell entries don't take package dependencies — drop --dep.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_add_feedback_contracts.rs	assert!(!flat.contains("isn't a script or an executable"), "{flat}");	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_add_feedback_contracts.rs	assert!(flat.contains("isn't a script or an executable"), "{flat}");	exact owner for frozen user-visible copy
+A	4	crates/skit-cli/tests/port_test_add_no_source.rs	"What is mystery.xyz? skit can't tell from the name.",	exact owner for frozen user-visible copy
+A	3	crates/skit-cli/tests/port_test_add_no_source.rs	output.contains("What is mystery.xyz? skit can't tell from the name."),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_add_no_source.rs	output.contains("isn't a script or an executable"),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_add_validation_contracts.rs	"{file} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {flags}."	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_add_validation_contracts.rs	assert!(out.contains("isn't a Python version constraint"), "{out}");	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_add_validation_contracts.rs	assert!(out.contains("isn't a package requirement"), "{out}");	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_add_validation_contracts.rs	message.starts_with("@@@ isn't a package requirement"),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_add_validation_contracts.rs	message.starts_with("not-a-version isn't a Python version constraint"),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_cli.rs	assert!(out.contains("Can't read"), "{out}");	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_declared_params.rs	"a isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_declared_params.rs	"a: that delivery isn't available for this kind; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_declared_params.rs	"ghost isn't a declared parameter; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_declared_params.rs	"number: the default doesn't fit its type; skipped.",	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_declared_params.rs	"rider isn't a template placeholder, so it can't use placeholder delivery; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_declared_params.rs	assert!(stderr_text(&json_run).contains("WIDTH isn't secret")); // the warning rode stderr	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_declared_params.rs	assert!(stderr_text(&output).contains("WIDTH isn't secret")); // the no-op flag is surfaced	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_dependency_command_contracts.rs	"d doesn't take package dependencies; only --need applies\n",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_dependency_command_contracts.rs	"skit-new-both.py is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop --ref/--exe.",	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_dependency_command_contracts.rs	assert!(combine(output).contains("doesn't apply"));	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_dependency_command_contracts.rs	assert!(combine(output).contains("isn't a Python version constraint"));	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_dependency_command_contracts.rs	assert!(combine(output).contains("isn't a package requirement"));	exact owner for frozen user-visible copy
+A	3	crates/skit-cli/tests/port_test_dependency_command_contracts.rs	assert!(flatten(&combine(output)).contains("A Python constraint doesn't apply to js scripts."));	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_dependency_write_validation.rs	"skit-new-weird.xyz is a kept draft skit can't classify — pass --kind <language> to add it as a script, or --prompt for an AI-agent prompt.",	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_dependency_write_validation.rs	assert!(flat(&output).contains("isn't a Python version constraint"));	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_dependency_write_validation.rs	assert!(flat(&output).contains("isn't a package requirement"));	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_dependency_write_validation.rs	assert!(flat.contains("isn't a script or an executable"));	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_draft_inference_and_reader_cli.rs	assert!(!flat.contains("isn't a script or an executable"), "{flat}");	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_edit.rs	"NOPE isn't a detectable parameter in the current script; skipped.",	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_edit.rs	.contains("GHOST isn't a managed parameter; skipped.")	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_edit.rs	.contains("NOPE isn't a detectable parameter in the current script; skipped.")	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_edit.rs	.find("NOPE isn't a detectable parameter in the current script; skipped.")	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_edit.rs	stderr.contains("NOPE isn't a detectable parameter in the current script; skipped."),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_editor.rs	("en", "Can't read", ":"),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_js_deps.rs	"Couldn't run npm: Exec format error"	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_js_deps.rs	"npm is needed to install this script's dependencies, but it isn't on your PATH."	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_js_deps.rs	(["--dep", "requests"], "don't take package dependencies"),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_js_deps.rs	assert!(text.contains("existing file") || text.contains("--ref can't apply here"));	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_js_deps.rs	assert_eq!(error.to_string(), "Couldn't run npm: exec format error");	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/port_test_js_deps.rs	text.contains("don't take package dependencies") || text.contains("--dep can't apply here")	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_js_inject_cli_batch_c.rs	"The script and its form definitions don't match anymore: WIDTH. Run `skit params mismatch --resync` to fix it.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_prompt_cli.rs	"--runner can't apply here — --edit drafts a fresh script: its kind comes from the shebang you write (e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a prompt is drafted with skit add --prompt (nothing was added).",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_prompt_cli.rs	"--runner can't apply here — a --cmd template takes only --name/--description (nothing was added).",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_prompt_cli.rs	assert!(!combined.contains("isn't declared"), "{combined}");	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_prompt_cli.rs	assert!(!stderr.contains("b isn't a declared parameter"), "{stderr}");	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_prompt_cli.rs	assert!(combined.contains("isn't configured"), "{combined}");	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_prompt_cli.rs	flat.contains("that's where the rendered prompt lands."),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_prompt_kind.rs	stderr.contains("mine") && stderr.contains("isn't configured"),	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/port_test_run_set.rs	"has no form fields, so there's nothing to save.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/source_management.rs	"missing isn't a managed parameter; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/surface_edges.rs	"extra isn't a managed parameter; --env-source skipped.",	exact owner for frozen user-visible copy
+A	2	crates/skit-cli/tests/surface_edges.rs	"extra isn't a managed parameter; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/surface_edges.rs	"missing isn't a managed parameter; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/surface_edges.rs	.stderr(predicate::str::contains("isn't valid UTF-8"))	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/terminal_pty.rs	"Demo has no form fields, so there's nothing to save.",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/terminal_pty.rs	assert!(output.contains("This won't touch your PATH"), "{output}");	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/typed_error_locales.rs	.stderr(predicate::str::contains("isn't a package requirement"))	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/v040_compatibility.rs	"doesn't take package dependencies",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/v040_run_parity_regressions.rs	"--exe can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/v040_run_parity_regressions.rs	"{} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/tests/v040_run_parity_regressions.rs	.stderr(predicate::str::contains("isn't valid UTF-8"))	exact owner for frozen user-visible copy
+A	1	crates/skit-i18n/src/lib.rs	"--ref can't apply here — stdin authors a brand-new copy, and --ref/--exe need an existing file (nothing was added).",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"A Python constraint doesn't apply to {} scripts.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"A runner command must contain the {{prompt}} slot exactly once — that's where the rendered prompt lands.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"Can't safely fill in a value inside double quotes nested in a `…` command substitution — the shell strips one layer of escaping there. Rewrite that part of the template with $(…) instead of backticks.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"Couldn't clear the old dependency environment: {}",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"Link the original — edits take effect immediately, but skit won't write to the file, so parameter definitions are yours to maintain",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"Prompt {} isn't valid UTF-8 (invalid byte at offset {}).",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"Runs js/ts entries that don't pin their own runtime.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"The environment variable {} isn't set (needed by {}).",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"The runner {} isn't configured (known: {}). Manage runners with: skit runner list",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"The script and its form definitions don't match anymore: {}. Run `skit params {} --resync` to fix it.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"This runner row isn't a table.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"This script has subcommands skit can't model — type everything into the extra-arguments field.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"What is {}? skit can't tell from the name.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"skit couldn't read this script's argument declarations — type everything into the extra-arguments field.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly.",	oracle msgid production/catalog copy
+A	2	crates/skit-i18n/src/lib.rs	"skit needs Astral's uv to run Python scripts, but it wasn't found on this system. Download uv {} into skit's private directory ({})? This won't touch your PATH or global environment. [Y/n]",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{{prompt}} can't be the command itself — the first word must be the program to run.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} can't apply here — {} (nothing was added).",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} can't contain a line break: a shell `read` takes ONE line, so everything after the break would be thrown away.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} doesn't take package dependencies; only --need applies",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} entries don't take package dependencies — drop --dep.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} has no form fields, so there's nothing to save.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} hasn't run yet — press Enter to fill the form first.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} is a kept draft skit can't classify — pass --kind <language> to add it as a script, or --prompt for an AI-agent prompt.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} is needed to install this script's dependencies, but it isn't on your PATH.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} is one of skit's own kept drafts — a resumed draft is always added as a copy (and consumed on success), which a reference or program entry can't be. Drop {}.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} is read on the same line as other values, so its value can't contain spaces or tabs — the shell would split it across the other fields. Only the LAST value on a `read` line may contain spaces.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} isn't a Python version constraint (e.g. \">=3.11\" or \">=3.12,<3.13\").",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} isn't a declared parameter; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} isn't a detectable parameter in the current script; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} isn't a managed parameter; --env-source skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} isn't a managed parameter; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.",	oracle msgid production/catalog copy
+A	2	crates/skit-i18n/src/lib.rs	"{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} reads from the environment variable {}, but it isn't set.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{} was removed from the library, but its files couldn't be fully deleted: {} — close any program using them, then delete the folder (or run `skit doctor --rebuild` to restore the entry and retry).",	oracle msgid production/catalog copy
+A	2	crates/skit-i18n/src/lib.rs	"{}'s stored copy isn't valid UTF-8, so skit can't rewrite the script's own dependency block — and that block is what uv reads. Edit it in the script itself: skit edit {}",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{}: its prompt no longer matches a unique input/read call; falling back to position (still injected — double-check this lands on the right question, especially if it's a secret)",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{}: that delivery isn't available for this kind; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{}: the default doesn't fit its type; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit {}).",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	row!("Can't read {}: {}", "无法读取 {}：{}", "無法讀取 {}：{}",),	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	row!("Couldn't run {}: {}", "无法运行 {}:{}", "無法執行 {}:{}",),	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/tests/catalog.rs	"WIDTH isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."	exact owner for frozen user-visible copy
+A	1	crates/skit-i18n/tests/catalog.rs	"{} can't apply here — {} (nothing was added).",	exact owner for frozen user-visible copy
+A	1	crates/skit-i18n/tests/catalog.rs	"{} isn't a declared parameter; skipped.",	exact owner for frozen user-visible copy
+A	2	crates/skit-i18n/tests/catalog.rs	"{} isn't a template placeholder, so it can't use placeholder delivery; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-i18n/tests/catalog.rs	"{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).",	exact owner for frozen user-visible copy
+A	1	crates/skit-i18n/tests/catalog.rs	"{}: that delivery isn't available for this kind; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-i18n/tests/catalog.rs	"{}: the default doesn't fit its type; skipped.",	exact owner for frozen user-visible copy
+A	1	crates/skit-i18n/tests/catalog.rs	let template = "{} isn't secret; --env-source only applies to secret parameters (mark it with --secret first).";	exact owner for frozen user-visible copy
+A	2	crates/skit-i18n/tests/port_test_i18n.rs	let source = "%(file)s isn't a .py file — pass --exe if it's an executable";	exact owner for frozen user-visible copy
+A	1	crates/skit-language/src/lib.rs	"{name} can't contain a line break: a shell `read` takes ONE line, so everything after the break would be thrown away."	oracle msgid production/catalog copy
+A	1	crates/skit-language/src/lib.rs	"{name} is read on the same line as other values, so its value can't contain spaces or tabs — the shell would split it across the other fields. Only the LAST value on a `read` line may contain spaces."	oracle msgid production/catalog copy
+A	1	crates/skit-language/src/lib.rs	"{} can't contain a line break: a shell `read` takes ONE line, so everything after the break would be thrown away.",	oracle msgid production/catalog copy
+A	1	crates/skit-language/src/lib.rs	"{} is read on the same line as other values, so its value can't contain spaces or tabs — the shell would split it across the other fields. Only the LAST value on a `read` line may contain spaces.",	oracle msgid production/catalog copy
+A	1	crates/skit-language/src/lib.rs	"{} isn't a Python version constraint (e.g. \">=3.11\" or \">=3.12,<3.13\").",	oracle msgid production/catalog copy
+A	1	crates/skit-language/src/lib.rs	"{} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").",	oracle msgid production/catalog copy
+A	1	crates/skit-language/src/lib.rs	#[error("{value} isn't a Python version constraint (e.g. \">=3.11\" or \">=3.12,<3.13\").")]	oracle msgid production/catalog copy
+A	1	crates/skit-language/src/lib.rs	#[error("{value} isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").")]	oracle msgid production/catalog copy
+A	1	crates/skit-language/src/prompt_text.rs	#[error("Prompt {path} isn't valid UTF-8 (invalid byte at offset {offset}).")]	oracle msgid production/catalog copy
+A	1	crates/skit-language/src/prompt_text.rs	Message::new("Prompt {} isn't valid UTF-8 (invalid byte at offset {}).")	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/javascript_deps.rs	"Couldn't clear the old dependency environment: package.json: held by another process"	exact owner for frozen user-visible copy
+A	1	crates/skit-runtime/src/javascript_deps.rs	"{} is needed to install this script's dependencies, but it isn't on your PATH.",	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/javascript_deps.rs	#[error("Couldn't clear the old dependency environment: {item}: {reason}")]	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/javascript_deps.rs	#[error("Couldn't run {installer}: {reason}")]	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/javascript_deps.rs	#[error("{name} is needed to install this script's dependencies, but it isn't on your PATH.")]	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/javascript_deps.rs	Message::new("Couldn't clear the old dependency environment: {}")	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/javascript_deps.rs	Self::InstallerStartFailed { installer, reason } => Message::new("Couldn't run {}: {}")	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/launch.rs	"Can't safely fill in a value inside double quotes nested in a `…` command substitution — the shell strips one layer of escaping there. Rewrite that part of the template with $(…) instead of backticks."	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/launch.rs	"Can't safely fill in a value inside double quotes nested in a `…` command substitution — the shell strips one layer of escaping there. Rewrite that part of the template with $(…) instead of backticks.",	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/launch.rs	"{name} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>"	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/src/launch.rs	"{} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>",	oracle msgid production/catalog copy
+A	1	crates/skit-runtime/tests/localization.rs	"Couldn't clear the old dependency environment: package.json: held by another process"	exact owner for frozen user-visible copy
+A	1	crates/skit-runtime/tests/localization.rs	"Couldn't run npm: Exec format error",	exact owner for frozen user-visible copy
+A	1	crates/skit-runtime/tests/port_test_launcher.rs	"{name} isn't available on this system. Install Git for Windows (its bash works) or WSL, or point skit at one with: skit config shell.bash_path <path>"	exact owner for frozen user-visible copy
+A	1	crates/skit-runtime/tests/port_test_template_context_quoting.rs	"Can't safely fill in a value inside double quotes nested in a `…` command \	exact owner for frozen user-visible copy
+A	1	crates/skit-store/src/config.rs	"A runner command must contain the {{prompt}} slot exactly once — that's where the rendered prompt lands.",	oracle msgid production/catalog copy
+A	2	crates/skit-store/src/config.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",	oracle msgid production/catalog copy
+A	1	crates/skit-store/src/config.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",	oracle msgid production/catalog copy
+A	2	crates/skit-store/src/config.rs	"{{prompt}} can't be the command itself — the first word must be the program to run.",	oracle msgid production/catalog copy
+A	1	crates/skit-store/src/config.rs	Self::RowNotTable => Message::new("This runner row isn't a table."),	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/add.rs	"Link the original — edits take effect immediately, but skit won't write to the file, so parameter definitions are yours to maintain"	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/add.rs	"This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/add.rs	"What is {}? skit can't tell from the name."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/add.rs	"💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",	oracle msgid production/catalog copy
+A	2	crates/skit-tui/src/screens/management.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported."	oracle msgid production/catalog copy
+A	2	crates/skit-tui/src/screens/management.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/management.rs	"row-not-table" => "This runner row isn't a table.",	oracle msgid production/catalog copy
+A	2	crates/skit-tui/src/screens/management.rs	"{{prompt}} can't be the command itself — the first word must be the program to run."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/settings.rs	"skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/screens/settings.rs	assert!(frame.contains("skit doesn't write to this file"), "{frame}");	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/session.rs	"The environment variable {} isn't set (needed by {}).",	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/session.rs	"This script has subcommands skit can't model — type everything into the extra-arguments field."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/src/session.rs	"skit couldn't read this script's argument declarations — type everything into the extra-arguments field."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/tests/interactive_run_form.rs	"This script has subcommands skit can't model",	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/tests/interactive_run_form.rs	"couldn't read",	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/tests/port_test_add_review_contracts.rs	.contains("What is foo.xyz? skit can't tell from the name.")	exact owner for frozen user-visible copy
+A	1	crates/skit-ui/src/preferences.rs	"Runs js/ts entries that don't pin their own runtime.",	oracle msgid production/catalog copy
+A	1	crates/skit-ui/src/settings.rs	"skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly."	exact owner for frozen user-visible copy
+A	1	crates/skit-ui/src/settings.rs	"skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly.",	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/cli.rs	"{} isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy.",	oracle msgid production/catalog copy
+A	2	crates/skit-cli/src/cli.rs	"{} isn't a plain constant with a literal value, so there's nothing to normalize; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-cli/src/cli.rs	"{}'s value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.",	oracle msgid production/catalog copy
+A	2	crates/skit-i18n/src/lib.rs	"{} isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy.",	oracle msgid production/catalog copy
+A	2	crates/skit-i18n/src/lib.rs	"{} isn't a plain constant with a literal value, so there's nothing to normalize; skipped.",	oracle msgid production/catalog copy
+A	1	crates/skit-i18n/src/lib.rs	"{}'s value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.",	oracle msgid production/catalog copy
+D	1	crates/skit-cli/tests/edge_workflows.rs	"missing isn't a plain constant",	exact owner for frozen user-visible copy
+D	1	crates/skit-cli/tests/source_management.rs	assert!(stderr.contains("NOPE isn't a plain constant"), "{stderr}");	exact owner for frozen user-visible copy
+D	2	crates/skit-cli/tests/source_management.rs	"Binary isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy."	exact owner for frozen user-visible copy
+D	1	crates/skit-cli/tests/source_management.rs	("absent", "", "X", "X isn't a plain constant"),	exact owner for frozen user-visible copy
+D	1	crates/skit-cli/tests/source_management.rs	"can't be moved into ${...:-...}",	exact owner for frozen user-visible copy
+D	1	crates/skit-language/tests/port_test_shell_inject.rs	"_skit_read 0 'x' 0 {} -p \"It's here: \" who",	trusted authored fixture payload; not skit English copy
+D	1	crates/skit-language/tests/port_test_shell_inject.rs	let src = "#!/usr/bin/env bash\nread -p \"It's here: \" who\necho \"[$who]\"\n";	trusted authored fixture payload; not skit English copy
+D	1	crates/skit-language/tests/port_test_shell_inject.rs	sq("It's here: ")	trusted authored fixture payload; not skit English copy
+D	1	crates/skit-runtime/tests/launch_plan.rs	"tool --name '\"it's $HOME\"'"	trusted authored fixture payload; not skit English copy
+D	1	crates/skit-runtime/tests/launch_plan.rs	&BTreeMap::from([("name".to_owned(), "it's $HOME".to_owned())]),	trusted authored fixture payload; not skit English copy
+D	1	crates/skit-runtime/tests/launch_plan.rs	&BTreeMap::from([("value".to_owned(), "it's $HOME".to_owned())]),	trusted authored fixture payload; not skit English copy
+D	1	crates/skit-runtime/tests/port_test_template_context_quoting.rs	(r#"printf "%s\n" "`printf %s '{v}'`""#, "it's $HOME"),	trusted authored fixture payload; not skit English copy
+A	1	docs/design/rust-contract-matrix.md	finished`, `Last: {name} ✗ failed (code {code})`, or `Last: {name} ✗ couldn't launch`. Version 0.5	oracle msgid quoted in the deviation record

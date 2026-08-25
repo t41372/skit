@@ -12,20 +12,24 @@ export const source = loader({
 });
 
 export function getPageImage(page: (typeof source)['$inferPage']) {
+  const locale = page.locale ?? i18n.defaultLanguage;
   const segments = [...page.slugs, 'image.png'];
 
   return {
+    lang: locale,
     segments,
-    url: `${docsImageRoute}/${segments.join('/')}`,
+    url: `${docsImageRoute(locale)}/${segments.join('/')}`,
   };
 }
 
 export function getPageMarkdownUrl(page: (typeof source)['$inferPage']) {
+  const locale = page.locale ?? i18n.defaultLanguage;
   const segments = [...page.slugs, 'content.md'];
 
   return {
+    lang: locale,
     segments,
-    url: `${docsContentRoute}/${segments.join('/')}`,
+    url: `${docsContentRoute(locale)}/${segments.join('/')}`,
   };
 }
 

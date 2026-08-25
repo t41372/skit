@@ -1,0 +1,2691 @@
+//! Mechanical port of the Python oracle module `tests/test_js_deps.py`
+//! (`origin/main@206f9ef`): "Per-script npm dependencies for JS/TS entries
+//! (`langs/javascript/deps.py` and its seams)." Each `#[test]` keeps its Python
+//! `def test_*` name and its WHY comment so it traces back to its origin.
+//!
+//! WHY skit-cli: this oracle module is deliberately cross-cutting. One Python file
+//! imports `cli`, `config`, `store`, `langs.launch`, `langs.javascript.deps`,
+//! `langs.javascript.analyzer`, `rewrite`, `flows`, `tui`, the registry, and the
+//! repo-tooling `scripts/i18n_coverage.py`. The Rust rewrite DISPERSES that surface:
+//! the dependency materializer is `skit-runtime::javascript_deps`, the import scanner
+//! is `skit-language::external_dependencies`, the mirror axis is
+//! `skit-store::FileConfigStore`, and the `add`/`deps` commands are the composition
+//! root. Only `skit-cli-rs` depends on every one of those crates AND can spawn the real
+//! `skit` binary, so the port lives here and drives each real public surface.
+//!
+//! Concept mapping used throughout:
+//! - Python `js_deps.module_type_for(src)` -> `skit_runtime::javascript_module_type(src)`
+//!   (`""` <-> `None`, `"module"` <-> `Some(Module)`, `"commonjs"` <-> `Some(CommonJs)`).
+//! - Python `js_deps.manifest_text(deps)` -> `skit_runtime::javascript_dependency_manifest`.
+//! - Python `js_deps.ensure_installed(dir, deps, runner, env, module_type=…)` ->
+//!   `skit_runtime::ensure_javascript_dependencies_with_environment` /
+//!   `…_for_module`. The Python subprocess monkeypatch becomes a fake `ProgramProbe`
+//!   plus a recording `DependencyCommandRunner`.
+//! - Python `js_deps.clean(dir)` / `js_deps.clear(dir)` -> `clear_javascript_dependencies`.
+//! - Python `analyzer.external_imports(text, lang=…)` -> `external_dependencies(kind, text)`.
+//! - Python `config.mirror_env(base)` -> `FileConfigStore::mirror_environment(&base)`;
+//!   `config.load_mirror()`/`save_mirror`/`compose` -> `FileConfigStore::{mirror,set,set_many}`.
+//! - Python `cli.app` (`add` / `deps`) -> the real `skit` binary via `assert_cmd`.
+//!
+//! Buckets (recorded per test in the port ledger via the structured result):
+//! - REAL asserting `#[test]` (API exists, behavior agrees): module-type, empty-scan,
+//!   the argv-free ensure error paths, the mirror axis round-trips, and the `add`/`deps`
+//!   happy paths and the Python-constraint refusal.
+//! - DIVERGENCE (full asserting body, `#[ignore]`d): the faithful oracle assertion
+//!   compiles but fails because the Rust rewrite diverges (the conservative `clear`
+//!   transaction and contracts in other owning crates).
+//! - ABSENT (compiling `#[ignore]` stub, MUST-FIX + Python ref): library seams the Rust
+//!   surface never exposes — `split_requirement(s)`, `require_installer`, `needs_install`,
+//!   and a manifest-with-module-type.
+//! - CROSS-CRATE / TOOLING (compiling `#[ignore]` stub naming the owning tier): the TUI
+//!   screens (`skit-tui`/`skit-ui`), the injection temp-file placement (`rewrite`), the
+//!   `RunnerLaunch.build`/`preflight` install wiring (`skit-runtime` launch + `skit-cli`
+//!   run, no injectable ensure seam), and the `scripts/i18n_coverage.py` gate (repo
+//!   tooling; the Rust workspace ships a static `skit-i18n` catalog, no `.po` files).
+//! - PRIVATE HELPER (compiling `#[ignore]` stub): white-box tests of `_install_lock*`,
+//!   whose Rust analogue (`dependency_lock`) is private with no observable lock path.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use tempfile::TempDir;
+
+#[path = "support/temp_root.rs"]
+mod temp_root;
+
+use temp_root::TempRoot;
+
+use skit_application::{
+    CreateEntry, EntryMutationRepository as _, EntryPayload, SourcePermissions,
+    form_state::FormStateRepository as _, payload_stored_name,
+};
+use skit_domain::{EntryKind, EntrySettings, Slug, StorageMode};
+use skit_language::external_dependencies;
+use skit_runtime::{
+    DependencyCommand, DependencyCommandOutput, DependencyCommandRunner, DependencyError,
+    JavaScriptModuleType, ProgramProbe, clear_javascript_dependencies,
+    ensure_javascript_dependencies_for_module, ensure_javascript_dependencies_with_environment,
+    javascript_dependencies_need_install, javascript_dependency_failure_detail,
+    javascript_dependency_manifest, javascript_dependency_manifest_for_module,
+    javascript_module_type, preflight_javascript_dependencies,
+    resolve_javascript_dependency_installer, split_javascript_requirement,
+    split_javascript_requirements,
+};
+use skit_store::{FileConfigStore, FileFormStateStore, FileStore};
+
+// ============================================================================
+// Self-contained fixtures (no shared helper is edited or imported).
+// ============================================================================
+
+/// A `ProgramProbe` that resolves every installer to `/bin/<name>` (or nothing).
+#[derive(Debug)]
+struct FakeProbe {
+    present: bool,
+}
+
+impl ProgramProbe for FakeProbe {
+    fn find_program(&self, name: &str) -> Option<PathBuf> {
+        self.present.then(|| PathBuf::from(format!("/bin/{name}")))
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        path.is_dir()
+    }
+
+    fn is_executable(&self, _path: &Path) -> bool {
+        false
+    }
+}
+
+/// The `subprocess.run` outcome the recording runner reports.
+#[derive(Debug)]
+enum Outcome {
+    Success,
+    Failure,
+    IoError(String),
+}
+
+/// A `DependencyCommandRunner` that records each command and reports a fixed outcome —
+/// the Rust analogue of the oracle's `subprocess.run` monkeypatch.
+#[derive(Debug)]
+struct RecordingRunner {
+    calls: Mutex<Vec<DependencyCommand>>,
+    announcements: Mutex<Vec<String>>,
+    outcome: Outcome,
+}
+
+impl RecordingRunner {
+    fn new(outcome: Outcome) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            announcements: Mutex::new(Vec::new()),
+            outcome,
+        }
+    }
+
+    fn success() -> Self {
+        Self::new(Outcome::Success)
+    }
+
+    fn calls(&self) -> Vec<DependencyCommand> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn announcements(&self) -> Vec<String> {
+        self.announcements.lock().unwrap().clone()
+    }
+}
+
+impl DependencyCommandRunner for RecordingRunner {
+    fn installation_started(&self, installer: &str) {
+        self.announcements
+            .lock()
+            .unwrap()
+            .push(installer.to_owned());
+    }
+
+    fn run(&self, command: &DependencyCommand) -> std::io::Result<DependencyCommandOutput> {
+        self.calls.lock().unwrap().push(command.clone());
+        match &self.outcome {
+            Outcome::Success => Ok(DependencyCommandOutput {
+                success: true,
+                exit_code: Some(0),
+                stderr: Vec::new(),
+            }),
+            Outcome::Failure => Ok(DependencyCommandOutput {
+                success: false,
+                exit_code: Some(1),
+                stderr: Vec::new(),
+            }),
+            Outcome::IoError(message) => Err(std::io::Error::other(message.clone())),
+        }
+    }
+}
+
+/// A private entry directory beneath a live `TempDir` (the lock needs a parent).
+fn entry_dir() -> (TempDir, PathBuf) {
+    let root = TempDir::new().unwrap();
+    let dir = root.path().join("e");
+    std::fs::create_dir(&dir).unwrap();
+    (root, dir)
+}
+
+fn deps(list: &[&str]) -> Vec<String> {
+    list.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect()
+}
+
+/// The exact `json.dumps(indent=2)+"\n"` layout the oracle pins.
+const PY_MANIFEST_CHALK5: &str =
+    "{\n  \"private\": true,\n  \"dependencies\": {\n    \"chalk\": \"^5\"\n  }\n}\n";
+
+// --- Composition root: fresh sandbox + the real `skit` binary ---
+
+struct Sandbox {
+    data: TempRoot,
+    state: TempRoot,
+    config: TempRoot,
+}
+
+impl Sandbox {
+    fn new() -> Self {
+        Self {
+            data: TempRoot::new(),
+            state: TempRoot::new(),
+            config: TempRoot::new(),
+        }
+    }
+
+    fn skit(&self) -> assert_cmd::Command {
+        let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+        command
+            .env("SKIT_DATA_DIR", self.data.path())
+            .env("SKIT_STATE_DIR", self.state.path())
+            .env("SKIT_CONFIG_DIR", self.config.path())
+            .env("SKIT_LANG", "en");
+        command
+    }
+
+    /// The `scripts/<slug>` entry directory (the oracle's `entry.dir`).
+    fn entry_dir(&self, slug: &str) -> PathBuf {
+        self.data.path().join("scripts").join(slug)
+    }
+
+    /// The stored copy's text (the oracle's `entry.script_path.read_text()`): the single
+    /// `script.*` payload beneath the entry directory.
+    fn stored_copy(&self, slug: &str) -> String {
+        let dir = self.entry_dir(slug);
+        let mut payload = None;
+        for item in std::fs::read_dir(&dir).unwrap() {
+            let name = item.unwrap().file_name().to_string_lossy().into_owned();
+            if name.starts_with("script.") {
+                payload = Some(dir.join(name));
+            }
+        }
+        std::fs::read_to_string(payload.expect("a stored script.* copy")).unwrap()
+    }
+}
+
+/// Combine stdout and stderr, mirroring Typer's `CliRunner.output`.
+fn combine(output: &std::process::Output) -> String {
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    text
+}
+
+fn registry_product_rows(bytes: &[u8]) -> toml::Table {
+    let mut document = toml::from_str::<toml::Table>(&String::from_utf8_lossy(bytes)).unwrap();
+    if let Some(entries) = document
+        .get_mut("entries")
+        .and_then(toml::Value::as_table_mut)
+    {
+        for row in entries
+            .iter_mut()
+            .filter_map(|(_, value)| value.as_table_mut())
+        {
+            row.remove("mtime_ns");
+            row.remove("skit_cache");
+        }
+    }
+    document
+}
+
+/// Write a source file with a fixed name so the copy slug is deterministic.
+fn write_source(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, body).unwrap();
+    path
+}
+
+// ============================================================================
+// split_requirement / manifest_text
+// ============================================================================
+
+#[test]
+fn test_split_requirement() {
+    for (requirement, expected) in [
+        ("chalk", ("chalk", "*")),
+        ("chalk@^5", ("chalk", "^5")),
+        ("chalk@5.6.2", ("chalk", "5.6.2")),
+        ("chalk@", ("chalk", "*")),
+        ("@scope/pkg", ("@scope/pkg", "*")),
+        ("@scope/pkg@>=1,<2", ("@scope/pkg", ">=1,<2")),
+        ("@scope", ("@scope", "*")),
+    ] {
+        assert_eq!(
+            split_javascript_requirement(requirement),
+            (expected.0.to_owned(), expected.1.to_owned()),
+            "{requirement}"
+        );
+    }
+}
+
+#[test]
+fn test_manifest_text_is_deterministic_and_private() {
+    // The manifest is the staleness-hash input, so it must be deterministic and private.
+    let text = javascript_dependency_manifest(&deps(&["chalk@^5", " zod ", ""])).unwrap();
+    assert_eq!(
+        text,
+        javascript_dependency_manifest(&deps(&["chalk@^5", " zod ", ""])).unwrap()
+    );
+    assert!(text.contains("\"private\": true"));
+    assert!(text.contains("\"chalk\": \"^5\""));
+    assert!(text.contains("\"zod\": \"*\"")); // whitespace stripped, bare name -> *
+    assert!(text.ends_with('\n'));
+}
+
+#[test]
+fn test_manifest_text_skips_an_empty_requirement() {
+    // A stray empty string (a doubled comma survivor) records nothing, not a garbage key.
+    let text = javascript_dependency_manifest(&deps(&["", "  "])).unwrap();
+    assert!(text.contains("\"dependencies\": {}"));
+}
+
+// ============================================================================
+// clean
+// ============================================================================
+
+#[test]
+fn test_clean_removes_manifest_lockfiles_and_node_modules() {
+    let (root, dir) = entry_dir();
+    for name in [
+        "package.json",
+        "package-lock.json",
+        "bun.lock",
+        "bun.lockb",
+        "deno.lock",
+    ] {
+        std::fs::write(dir.join(name), "{}").unwrap();
+    }
+    std::fs::create_dir_all(dir.join("node_modules").join("chalk")).unwrap();
+    std::fs::write(dir.join("meta.toml"), "").unwrap();
+    clear_javascript_dependencies(&dir).unwrap();
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["meta.toml"]);
+    drop(root);
+}
+
+#[test]
+fn test_clean_on_an_already_clean_dir_is_a_no_op() {
+    // Nothing to remove, nothing raised; the entry dir stays empty (its lock lives in the parent).
+    let (root, dir) = entry_dir();
+    clear_javascript_dependencies(&dir).unwrap();
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+    drop(root);
+}
+
+// ============================================================================
+// require_installer
+// ============================================================================
+
+#[test]
+fn test_require_installer_maps_runner_to_its_own_installer() {
+    let probe = FakeProbe { present: true };
+    for (runner, installer) in [
+        ("node", "npm"),
+        ("bun", "bun"),
+        ("deno", "deno"),
+        ("weird", "npm"),
+    ] {
+        assert_eq!(
+            resolve_javascript_dependency_installer(runner, &probe).unwrap(),
+            PathBuf::from(format!("/bin/{installer}")),
+            "{runner}"
+        );
+    }
+}
+
+#[test]
+fn test_require_installer_missing_raises_126_family() {
+    let error =
+        resolve_javascript_dependency_installer("node", &FakeProbe { present: false }).unwrap_err();
+    assert!(matches!(
+        error,
+        DependencyError::InstallerNotFound { ref name } if name == "npm"
+    ));
+    assert_eq!(
+        error.to_string(),
+        "npm is needed to install this script's dependencies, but it isn't on your PATH."
+    );
+}
+
+// ============================================================================
+// ensure_installed
+// ============================================================================
+
+#[test]
+fn test_ensure_installed_writes_manifest_runs_installer_and_stamps() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    let environment = env(&[("PATH", "/bin"), ("X", "y")]);
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk@^5"]),
+        &environment,
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    let calls = runner.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].program, PathBuf::from("/bin/npm"));
+    assert_eq!(
+        calls[0].args,
+        ["install", "--no-audit", "--no-fund", "--ignore-scripts"]
+    );
+    assert_eq!(calls[0].cwd, dir);
+    assert_eq!(calls[0].environment, environment);
+    assert_eq!(
+        std::fs::read_to_string(dir.join("package.json")).unwrap(),
+        PY_MANIFEST_CHALK5
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("node_modules").join(".skit-deps-ok")).unwrap(),
+        "2f08d78b8e7408bd4c9d0746577cc8aa01b353910216ff3e52df81544fef3338"
+    );
+    drop(root);
+}
+
+#[test]
+fn test_ensure_installed_uses_the_runners_own_installer() {
+    for (runner_name, tail) in [
+        ("bun", vec!["install", "--ignore-scripts"]),
+        ("deno", vec!["install"]),
+    ] {
+        let (root, dir) = entry_dir();
+        let probe = FakeProbe { present: true };
+        let runner = RecordingRunner::success();
+        ensure_javascript_dependencies_with_environment(
+            &dir,
+            runner_name,
+            &deps(&["zod"]),
+            &BTreeMap::new(),
+            &probe,
+            &runner,
+        )
+        .unwrap();
+        let calls = runner.calls();
+        let mut expected = vec![PathBuf::from(format!("/bin/{runner_name}"))];
+        expected.extend(tail.iter().map(PathBuf::from));
+        let mut got = vec![calls[0].program.clone()];
+        got.extend(calls[0].args.iter().map(PathBuf::from));
+        assert_eq!(got, expected);
+        drop(root);
+    }
+}
+
+#[test]
+fn test_ensure_installed_fresh_marker_short_circuits() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let first = RecordingRunner::success();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &probe,
+        &first,
+    )
+    .unwrap();
+    let second = RecordingRunner::success();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &probe,
+        &second,
+    )
+    .unwrap();
+    assert!(second.calls().is_empty(), "fresh marker must not reinstall");
+    drop(root);
+}
+
+#[test]
+fn test_ensure_installed_stale_marker_rebuilds_from_scratch() {
+    for (new_deps, new_runner) in [(deps(&["chalk", "zod"]), "node"), (deps(&["chalk"]), "bun")] {
+        let (root, dir) = entry_dir();
+        let probe = FakeProbe { present: true };
+        let first = RecordingRunner::success();
+        ensure_javascript_dependencies_with_environment(
+            &dir,
+            "node",
+            &deps(&["chalk"]),
+            &BTreeMap::new(),
+            &probe,
+            &first,
+        )
+        .unwrap();
+        let stray = dir.join("node_modules").join("leftover");
+        std::fs::create_dir_all(&stray).unwrap();
+        std::fs::write(dir.join("deno.lock"), "{}").unwrap();
+        let second = RecordingRunner::success();
+        ensure_javascript_dependencies_with_environment(
+            &dir,
+            new_runner,
+            &new_deps,
+            &BTreeMap::new(),
+            &probe,
+            &second,
+        )
+        .unwrap();
+        assert_eq!(second.calls().len(), 1);
+        assert!(!stray.exists());
+        assert!(!dir.join("deno.lock").exists());
+        // The oracle also asserts package.json == manifest_text(new_deps) after the rebuild
+        // (test_js_deps.py:248) -- a self-consistency check on the rewritten manifest (written ==
+        // same-language builder), which holds in Rust too. The manifest's write path and its
+        // name-key divergence FROM the oracle builder are covered by the FAILING CONTRACT tests
+        // above (manifest_text / ensure_installed argv+manifest), so this test asserts only the
+        // wipe-then-reinstall behavior it is named for.
+        drop(root);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn test_ensure_installed_installer_failure_carries_its_stderr() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let bin = TempDir::new().unwrap();
+    for (name, body) in [
+        ("node", "#!/bin/sh\nexit 0\n"),
+        (
+            "npm",
+            concat!(
+                "#!/bin/sh\n",
+                "printf '%s\\n' 'npm error code E404' >&2\n",
+                "printf '%s\\n' 'npm error 404 Not Found - GET https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz - Not found' >&2\n",
+                "printf '%s\\n' 'npm error A complete log of this run can be found in: /tmp/debug.log' >&2\n",
+                "exit 23\n",
+            ),
+        ),
+    ] {
+        let path = bin.path().join(name);
+        fs::write(&path, body).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    let store = FileStore::new(data.path());
+    let kind = EntryKind::parse("js").unwrap();
+    let entry = store
+        .create(CreateEntry {
+            name: "t".to_owned(),
+            kind: kind.clone(),
+            mode: StorageMode::Copy,
+            source: "t.js".to_owned(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"console.log(1);\n".to_vec(),
+                stored_name: Some(payload_stored_name(&kind, Path::new("t.js"))),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                dependencies: vec!["skit-no-such-pkg-e2e-xyz".to_owned()],
+                interpreter: "node".to_owned(),
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    let source_path = store.payload_path(&entry).unwrap();
+    let source_before = fs::read(&source_path).unwrap();
+    let meta_before = fs::read(entry_dir.join("meta.toml")).unwrap();
+    let registry_before = fs::read(data.path().join("registry.toml")).unwrap();
+
+    let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+    let output = command
+        .env("SKIT_DATA_DIR", data.path())
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_CONFIG_DIR", config.path())
+        .env("SKIT_LANG", "en")
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join("xdg-config"))
+        .env("XDG_DATA_HOME", home.path().join("xdg-data"))
+        .env("XDG_STATE_HOME", home.path().join("xdg-state"))
+        .env("PATH", bin.path())
+        .current_dir(home.path())
+        .args(["run", "t", "--no-input"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+
+    assert_eq!(output.status.code(), Some(126), "{stderr}");
+    assert!(
+        output.stdout.is_empty(),
+        "installer output leaked to stdout"
+    );
+    assert!(stderr.contains("Not Found - GET"), "{stderr}");
+    assert!(stderr.contains("skit-no-such-pkg-e2e-xyz"), "{stderr}");
+    assert!(
+        stderr.starts_with("Installing dependencies (npm)…\n"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("Installing dependencies failed (npm): npm error 404 Not Found - GET"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("A complete log"), "{stderr}");
+    assert_eq!(fs::read(&source_path).unwrap(), source_before);
+    assert_eq!(fs::read(entry_dir.join("meta.toml")).unwrap(), meta_before);
+    assert_eq!(
+        fs::read(data.path().join("registry.toml")).unwrap(),
+        registry_before
+    );
+    assert!(fs::read_dir(state.path()).unwrap().next().is_none());
+    assert!(fs::read_dir(config.path()).unwrap().next().is_none());
+    assert!(!entry_dir.join("node_modules/.skit-deps-ok").exists());
+    assert!(!entry_dir.join(".skit-deps").exists());
+    assert!(!entry_dir.join("package.json").exists());
+}
+
+#[test]
+fn test_ensure_installed_failure_without_stderr_still_reports() {
+    // A nonzero installer exit is reported even with no stderr; the message names the installer.
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::new(Outcome::Failure);
+    let error = ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["x"]),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "Installing dependencies failed (npm): ?");
+    assert!(!dir.join("package.json").exists());
+    assert!(!dir.join("node_modules/.skit-deps-ok").exists());
+    drop(root);
+}
+
+#[test]
+fn test_ensure_installed_spawn_oserror_is_wrapped() {
+    // A spawn OSError is wrapped, not raised raw: its text reaches the reported error.
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::new(Outcome::IoError("exec format error".to_owned()));
+    let error = ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["x"]),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap_err();
+    assert_eq!(error.to_string(), "Couldn't run npm: exec format error");
+    assert!(!dir.join("package.json").exists());
+    assert!(!dir.join("node_modules/.skit-deps-ok").exists());
+    drop(root);
+}
+
+#[test]
+fn test_ensure_installed_missing_installer_raises_before_touching_the_dir() {
+    // A missing installer is refused before the entry dir gets a manifest.
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: false };
+    let runner = RecordingRunner::success();
+    let result = ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    );
+    assert!(result.is_err());
+    assert!(!dir.join("package.json").exists());
+    drop(root);
+}
+
+#[test]
+fn test_ensure_installed_stamps_even_when_installer_creates_no_node_modules() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["@5"]),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert!(dir.join("node_modules").join(".skit-deps-ok").is_file());
+    drop(root);
+}
+
+// ============================================================================
+// external_imports (the dependency scanner)
+// ============================================================================
+
+#[test]
+fn test_external_imports_covers_all_import_forms() {
+    let text = concat!(
+        "import chalk from \"chalk\";\n",
+        "import { z } from \"zod\";\n",
+        "export { x } from \"commander\";\n",
+        "const dyn = await import(\"execa\");\n",
+        "const cjs = require(\"rimraf\");\n",
+        "import chalk2 from \"chalk\";\n",
+    );
+    assert_eq!(
+        external_dependencies("js", text),
+        ["chalk", "zod", "commander", "execa", "rimraf"].map(String::from)
+    );
+}
+
+#[test]
+fn test_external_imports_excludes_non_packages() {
+    let text = concat!(
+        "import fs from \"node:fs\";\n",
+        "import path from \"path\";\n",
+        "import local from \"./util.mjs\";\n",
+        "import abs from \"/opt/x.js\";\n",
+        "import n from \"npm:chalk@5\";\n",
+        "import j from \"jsr:@std/fs\";\n",
+        "import remote from \"https://esm.sh/preact\";\n",
+        "import d from \"data:text/javascript,export default 1\";\n",
+        "import log from \"#internal/log\";\n",
+        "import cfg from \"#config\";\n",
+    );
+    assert!(external_dependencies("js", text).is_empty());
+}
+
+#[test]
+fn test_external_imports_rejects_malformed_scoped_specifiers() {
+    // A scoped specifier needs both "@scope" and "/name"; a degenerate one names no package.
+    for specifier in ["@scope/", "@scope//pkg", "@/pkg", "@only-a-scope"] {
+        let text = format!("import x from \"{specifier}\";");
+        assert!(external_dependencies("js", &text).is_empty(), "{specifier}");
+    }
+}
+
+#[test]
+fn test_external_imports_maps_deep_imports_to_the_package_root() {
+    let text = concat!(
+        "import fp from \"lodash/fp\";\n",
+        "import cmd from \"@aws-sdk/client-s3/commands\";\n",
+        "import a from \"@a/b\";\n",
+    );
+    assert_eq!(
+        external_dependencies("js", text),
+        ["lodash", "@aws-sdk/client-s3", "@a/b"].map(String::from)
+    );
+}
+
+#[test]
+fn test_external_imports_skips_unreadable_specifiers() {
+    let text = concat!(
+        "const a = require(name);\n",
+        "const b = require(\"a\", \"b\");\n",
+        "const c = notrequire(\"pkg\");\n",
+        "const d = require();\n",
+        "const e = require(`tpl`);\n",
+    );
+    assert!(external_dependencies("js", text).is_empty());
+}
+
+#[test]
+fn test_external_imports_reads_typescript_under_the_ts_grammar() {
+    let text = "import type { X } from \"type-fest\";\nimport { t } from \"@trpc/server\";\n";
+    assert_eq!(
+        external_dependencies("ts", text),
+        ["type-fest", "@trpc/server"].map(String::from)
+    );
+}
+
+#[test]
+fn test_external_imports_degrades_to_empty_on_a_parse_error() {
+    assert!(external_dependencies("js", "import broken from ;").is_empty());
+}
+
+#[test]
+fn test_external_imports_ignores_an_import_statement_without_a_string_source() {
+    // `import x from 1` has no plain string source; the walk skips it rather than crash.
+    assert!(external_dependencies("js", "import x from 1;").is_empty());
+}
+
+// ============================================================================
+// RunnerLaunch: build installs, preflight checks, sweep
+// ============================================================================
+
+#[test]
+#[ignore = "CROSS-CRATE (launch + run composition): the oracle monkeypatches js_deps.ensure_installed and asserts RunnerLaunch.build calls it with (dir, deps, 'node', mirror-overlaid env). The Rust rewrite installs from the run command with a SystemDependencyCommandRunner (no injectable ensure seam), so 'build calls ensure with the mirror env' is not observable from an integration test without a real installer. Owner: skit-runtime launch + skit-cli run. Python ref test_js_deps.py:409-428, deps.py module."]
+fn test_build_installs_declared_deps_with_the_resolved_runner() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (launch + run composition): copy-mode-without-deps and reference mode must skip the install engine and produce a plain argv launch. The Rust build path has no injectable ensure seam to assert 'engine must not run'. Owner: skit-runtime launch. Python ref test_js_deps.py:435-445."]
+fn test_build_skips_the_engine_without_copy_mode_deps() {}
+
+#[test]
+fn test_preflight_requires_the_installer_when_deps_are_declared() {
+    let (root, dir) = entry_dir();
+    std::fs::create_dir(dir.join(".skit-deps.backup")).unwrap();
+    std::fs::write(dir.join(".skit-deps.backup/sentinel"), b"old").unwrap();
+    std::fs::create_dir(dir.join(".skit-deps.tmp-interrupted")).unwrap();
+    let error = preflight_javascript_dependencies(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &FakeProbe { present: false },
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(error, skit_runtime::DependencyError::InstallerNotFound { ref name } if name == "npm"),
+        "{error:?}"
+    );
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(
+        std::fs::read(dir.join(".skit-deps.backup/sentinel")).unwrap(),
+        b"old"
+    );
+    assert!(dir.join(".skit-deps.tmp-interrupted").is_dir());
+    assert!(!dir.join("package.json").exists());
+}
+
+#[test]
+fn test_preflight_without_deps_does_not_ask_for_an_installer() {
+    let (root, dir) = entry_dir();
+    preflight_javascript_dependencies(&dir, "node", &[], &FakeProbe { present: false })
+        .expect("no dependencies must not require npm");
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+// ============================================================================
+// write_injected adjacency (prefer_entry_dir) and the JS injector's use of it
+// ============================================================================
+
+#[test]
+#[ignore = "CROSS-CRATE (rewrite/injection tier): rewrite.write_injected(prefer_entry_dir=True) writes the injected copy into entry_dir. The Rust injection path (skit-language plan_injection + skit-application delivery) has no public write_injected/prefer_entry_dir surface to drive. Owner: injection tier. Python ref rewrite.py:145-190."]
+fn test_write_injected_prefers_entry_dir_when_asked() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (rewrite/injection tier): prefer_entry_dir falls back to the OS temp dir when entry_dir is unwritable. No public write_injected surface. Owner: injection tier. Python ref rewrite.py:176-180."]
+fn test_write_injected_prefer_entry_dir_falls_back_to_os_temp() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (rewrite/injection tier): the JS injector forwards prefer_entry_dir to write_injected. No public injector/prefer_entry_dir surface. Owner: injection tier. Python ref langs/javascript/inject.py."]
+fn test_js_injector_honors_prefer_entry_dir() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (flows/injection tier): flows.assemble marks prefer_entry_dir True only for npm-flavor copy-mode entries with declared deps. No public flows/prefer_entry_dir surface. Owner: skit-application flows. Python ref flows.py, test_js_deps.py:542-576."]
+fn test_flows_marks_prefer_entry_dir_only_for_deps_managed_npm_copies() {}
+
+// ============================================================================
+// store.update_dependencies guards + cleanup
+// ============================================================================
+
+#[test]
+fn test_update_dependencies_js_copy_records_meta_without_touching_the_script() {
+    // A JS copy records deps in meta (no PEP 723 source sync); the scanned dep is replaced.
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "import chalk from \"chalk\";\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    let before = sandbox.stored_copy("t");
+    sandbox
+        .skit()
+        .args(["deps", "t", "--dep", "chalk@^5"])
+        .assert()
+        .success();
+    let assert = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    assert!(combine(assert.get_output()).contains("\"chalk@^5\""));
+    // No PEP 723 sync for js: the stored copy is byte-unchanged across the deps write.
+    assert_eq!(sandbox.stored_copy("t"), before);
+}
+
+#[test]
+fn test_update_dependencies_js_reference_is_refused() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--ref", "--no-input"])
+        .assert()
+        .success();
+    let assert = sandbox
+        .skit()
+        .args(["deps", "t", "--dep", "chalk"])
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(combine(output).contains("reference-mode"));
+}
+
+#[test]
+fn test_update_dependencies_js_python_constraint_is_refused() {
+    // A Python constraint on a JS entry is a usage refusal naming the constraint.
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "import chalk from \"chalk\";\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    let assert = sandbox
+        .skit()
+        .args(["deps", "t", "--python", ">=3.11"])
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(combine(output).contains("Python constraint"));
+}
+
+#[test]
+#[ignore = "CROSS-CRATE (store clearing wiring): store.update_dependencies('t', []) sweeps the materialized env (package.json + node_modules removed) then records deps=None. Observing the entry directory's private layout needs the store's internal paths; the runtime clear itself is also conservative (see test_clean_removes_*). Owner: skit-store update. Python ref test_js_deps.py:612-620."]
+fn test_update_dependencies_js_clearing_sweeps_the_materialized_env() {}
+
+#[test]
+fn test_update_dependencies_js_reference_clearing_is_allowed() {
+    // Clearing deps (a no-op/cleanup) must never be refused, even in reference mode.
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--ref", "--no-input"])
+        .assert()
+        .success();
+    sandbox
+        .skit()
+        .args(["deps", "t", "--clear"])
+        .assert()
+        .success();
+    let assert = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    assert!(combine(assert.get_output()).contains("\"dependencies\":[]"));
+}
+
+// ============================================================================
+// CLI: add-time suggestion and the deps command
+// ============================================================================
+
+#[test]
+fn test_add_js_no_input_records_scanned_imports() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(
+        source_dir.path(),
+        "t.mjs",
+        "import chalk from \"chalk\";\nimport { z } from \"zod\";\n",
+    );
+    let assert = sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(0));
+    assert!(combine(output).contains("chalk, zod"));
+    let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    let text = combine(view.get_output());
+    assert!(text.contains("\"chalk\""));
+    assert!(text.contains("\"zod\""));
+}
+
+#[test]
+fn test_add_js_explicit_dep_flags_win_without_scanning() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "import chalk from \"chalk\";\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "zod@3", "--dep", "execa", "--no-input"])
+        .assert()
+        .success();
+    let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    let text = combine(view.get_output());
+    // The oracle pins the exact ordered list: `meta.dependencies == ["zod@3", "execa"]`.
+    assert!(text.contains("\"dependencies\":[\"zod@3\",\"execa\"]"));
+}
+
+#[test]
+fn test_add_js_without_external_imports_records_nothing() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(
+        source_dir.path(),
+        "t.mjs",
+        "import fs from \"node:fs\";\nconsole.log(1);\n",
+    );
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    assert!(combine(view.get_output()).contains("\"dependencies\":[]"));
+}
+
+#[test]
+fn test_add_js_reference_mode_asks_no_deps_question() {
+    for extension in ["mjs", "ts"] {
+        let sandbox = Sandbox::new();
+        let source_dir = TempDir::new().unwrap();
+        let source = write_source(
+            source_dir.path(),
+            &format!("t.{extension}"),
+            "import chalk from \"chalk\";\n",
+        );
+        let assert = sandbox
+            .skit()
+            .arg("add")
+            .arg(&source)
+            .args(["--ref", "--no-input"])
+            .assert();
+        let output = assert.get_output();
+        assert_eq!(output.status.code(), Some(0));
+        let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+        assert!(combine(view.get_output()).contains("\"dependencies\":[]"));
+    }
+}
+
+#[test]
+#[ignore = "CROSS-CRATE (cli interactive resolver): cli._resolve_npm_dependencies is a private helper; accepting the scanned suggestion at an interactive prompt has no public Rust entry point (the composition root only exposes the non-interactive `add`). Owner: skit-cli add prompt. Python ref cli._resolve_npm_dependencies, test_js_deps.py:666-678."]
+fn test_resolve_npm_dependencies_interactive_accepts_the_suggestion() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (cli interactive resolver): a ' - ' answer declines the suggestion. No public interactive resolver surface. Owner: skit-cli add prompt. Python ref test_js_deps.py:681-693."]
+fn test_resolve_npm_dependencies_interactive_dash_declines() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (cli interactive resolver): an edited answer 'chalk@^5, zod' splits into two requirements. No public interactive resolver surface. Owner: skit-cli add prompt. Python ref test_js_deps.py:696-708."]
+fn test_resolve_npm_dependencies_interactive_edit_splits_requirements() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (cli interactive resolver): a kind without a scanner suggests nothing. No public interactive resolver surface. Owner: skit-cli add prompt. Python ref test_js_deps.py:711-713."]
+fn test_resolve_npm_dependencies_without_scanner_suggests_nothing() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (cli interactive resolver): a piped stdout must not prompt yet still records the scanned suggestion (covered end-to-end by test_add_js_no_input_records_scanned_imports). No public interactive resolver surface. Owner: skit-cli add prompt. Python ref test_js_deps.py:716-729."]
+fn test_resolve_npm_dependencies_does_not_prompt_when_stdout_is_piped() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (cli interactive resolver): an unreadable source suggests nothing. No public interactive resolver surface. Owner: skit-cli add prompt. Python ref test_js_deps.py:732-737."]
+fn test_resolve_npm_dependencies_unreadable_file_suggests_nothing() {}
+
+#[test]
+fn test_deps_command_sets_and_shows_js_dependencies() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    sandbox
+        .skit()
+        .args(["deps", "t", "--dep", "chalk@^5"])
+        .assert()
+        .success();
+    let view = sandbox.skit().args(["deps", "t"]).assert();
+    assert!(combine(view.get_output()).contains("chalk@^5"));
+    let as_json = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    assert!(combine(as_json.get_output()).contains("\"chalk@^5\""));
+}
+
+#[test]
+fn test_deps_command_python_flag_on_js_is_refused() {
+    // A refused flag is a usage error (exit 2), the same code `skit add` gives.
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    let assert = sandbox
+        .skit()
+        .args(["deps", "t", "--python", ">=3.11"])
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(combine(output).contains("Python constraint"));
+}
+
+#[test]
+fn test_deps_command_dep_on_js_reference_is_refused() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--ref", "--no-input"])
+        .assert()
+        .success();
+    let assert = sandbox
+        .skit()
+        .args(["deps", "t", "--dep", "chalk"])
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(combine(output).contains("reference-mode"));
+}
+
+// ============================================================================
+// TUI: the direct add lane records scanned deps; settings gates the fields
+// ============================================================================
+
+#[test]
+#[ignore = "CROSS-CRATE (skit-tui/skit-ui frontend): the Textual AddReviewScreen scans once at open and shows a '#rv-deps' input. The Rust TUI is a serializable reducer over Ratatui widgets with different identities; the add-review deps field has no 1:1 reducer surface here. Owner: skit-tui add screen. Python ref tui_add.AddReviewScreen, test_js_deps.py:771-793."]
+fn test_tui_direct_add_records_scanned_js_dependencies() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (skit-tui/skit-ui frontend): the direct add lane records none for a JS source without external imports. Owner: skit-tui add screen. Python ref test_js_deps.py:796-817."]
+fn test_tui_direct_add_js_without_imports_records_none() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (skit-tui/skit-ui frontend): the panel scans text once at open, so a source vanishing after the copy landed keeps the suggestions. Owner: skit-tui add screen. Python ref test_js_deps.py:820-852."]
+fn test_tui_direct_add_survives_the_source_vanishing_after_the_copy() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (skit-tui/skit-ui frontend): the JS-copy settings screen offers a '#st-deps' field but never a '#st-python' Python-pin. Owner: skit-tui settings screen. Python ref tui_settings.ScriptSettingsScreen, test_js_deps.py:855-872."]
+fn test_settings_js_copy_offers_deps_without_python_constraint() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (skit-tui/skit-ui frontend): a reference-mode JS settings screen hides the deps section entirely. Owner: skit-tui settings screen. Python ref test_js_deps.py:875-888."]
+fn test_settings_js_reference_hides_the_deps_section() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (skit-tui/skit-ui frontend): the preferences screen's npm mirror axis reveals a custom-URL field and saves the npm registry. The mirror persistence itself is covered by test_mirror_npm_round_trips_through_save_and_load. Owner: skit-tui preferences screen. Python ref tui_prefs.PreferencesScreen, test_js_deps.py:891-915."]
+fn test_prefs_custom_mirror_saves_the_npm_registry() {}
+
+// ============================================================================
+// mirror plumbing
+// ============================================================================
+
+#[test]
+fn test_npm_axis_is_independent_of_the_pypi_axis() {
+    // The npm registry is its own axis: setting only PyPI leaves npm empty, and npm works alone.
+    let pypi_only = TempDir::new().unwrap();
+    let store = FileConfigStore::new(pypi_only.path());
+    store
+        .set("mirror.pypi", "https://pypi.tuna.tsinghua.edu.cn/simple")
+        .unwrap();
+    assert_eq!(store.mirror().unwrap().npm, "");
+
+    let npm_only = TempDir::new().unwrap();
+    let store = FileConfigStore::new(npm_only.path());
+    store.set("mirror.npm", "npmmirror").unwrap();
+    let mirror = store.mirror().unwrap();
+    assert!(mirror.enabled);
+    assert_eq!(mirror.npm, "https://registry.npmmirror.com");
+    assert_eq!(mirror.pypi, "");
+}
+
+#[test]
+fn test_mirror_npm_round_trips_through_save_and_load() {
+    let dir = TempDir::new().unwrap();
+    let store = FileConfigStore::new(dir.path());
+    store.set("mirror.npm", "https://my.registry").unwrap();
+    assert_eq!(store.mirror().unwrap().npm, "https://my.registry");
+}
+
+#[test]
+fn test_mirror_env_sets_npm_registry_and_defers_to_the_user() {
+    let dir = TempDir::new().unwrap();
+    let store = FileConfigStore::new(dir.path());
+    store.set("mirror.npm", "npmmirror").unwrap();
+    let mirror = "https://registry.npmmirror.com";
+    assert_eq!(
+        store
+            .mirror_environment(&BTreeMap::new())
+            .unwrap()
+            .get("NPM_CONFIG_REGISTRY")
+            .map(String::as_str),
+        Some(mirror)
+    );
+    for var in ["NPM_CONFIG_REGISTRY", "npm_config_registry"] {
+        let overlay = store
+            .mirror_environment(&env(&[(var, "https://user.registry")]))
+            .unwrap();
+        assert!(!overlay.contains_key("NPM_CONFIG_REGISTRY"), "{var}");
+    }
+    // An empty value means "unset", so the mirror still applies.
+    let overlay = store
+        .mirror_environment(&env(&[("NPM_CONFIG_REGISTRY", "")]))
+        .unwrap();
+    assert!(overlay.contains_key("NPM_CONFIG_REGISTRY"));
+}
+
+#[test]
+fn test_mirror_env_without_npm_url_sets_nothing_npm() {
+    let dir = TempDir::new().unwrap();
+    let store = FileConfigStore::new(dir.path());
+    store.set("mirror.pypi", "https://p").unwrap();
+    assert!(
+        !store
+            .mirror_environment(&BTreeMap::new())
+            .unwrap()
+            .contains_key("NPM_CONFIG_REGISTRY")
+    );
+}
+
+#[test]
+fn test_load_mirror_type_hardens_a_hand_edited_npm_value() {
+    // A hand-edited non-string npm value is treated as blank, not str()-coerced.
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("config.toml"),
+        "[mirror]\nenabled = true\nnpm = 123\n",
+    )
+    .unwrap();
+    let store = FileConfigStore::new(dir.path());
+    assert_eq!(store.mirror().unwrap().npm, "");
+}
+
+// ============================================================================
+// npm dependency parsing, module type, locking, and failure contracts
+// ============================================================================
+
+#[test]
+fn test_split_requirements_keeps_scoped_packages_apart() {
+    assert_eq!(
+        split_javascript_requirements("chalk, @aws-sdk/client-s3"),
+        ["chalk", "@aws-sdk/client-s3"]
+    );
+    assert_eq!(
+        split_javascript_requirements(" zod@^3 ,, @trpc/server@10 , "),
+        ["zod@^3", "@trpc/server@10"]
+    );
+    assert!(split_javascript_requirements("").is_empty());
+}
+
+#[test]
+fn test_interactive_accept_of_a_scoped_suggestion_round_trips() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(
+        source_dir.path(),
+        "t.mjs",
+        "import chalk from \"chalk\";\nimport { S3Client } from \"@aws-sdk/client-s3\";\n",
+    );
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    assert!(
+        combine(view.get_output()).contains("[\"chalk\",\"@aws-sdk/client-s3\"]"),
+        "scanner order must be preserved, not sorted",
+    );
+}
+
+#[test]
+#[ignore = "CROSS-CRATE (skit-tui/skit-ui frontend): the settings save keeps scoped packages apart. Owner: skit-tui settings screen. Python ref test_js_deps.py:1003-1018."]
+fn test_settings_save_keeps_scoped_packages_apart() {}
+
+#[test]
+fn test_module_type_for() {
+    for (source, expected) in [
+        ("/home/u/tool.mjs", Some(JavaScriptModuleType::Module)),
+        ("/home/u/tool.MJS", Some(JavaScriptModuleType::Module)),
+        ("C:\\u\\tool.cjs", Some(JavaScriptModuleType::CommonJs)),
+        ("/home/u/tool.mts", Some(JavaScriptModuleType::Module)),
+        ("/home/u/tool.cts", Some(JavaScriptModuleType::CommonJs)),
+        ("/home/u/tool.js", None),
+        ("noext", None),
+        ("", None),
+    ] {
+        assert_eq!(javascript_module_type(source), expected, "{source}");
+    }
+}
+
+#[test]
+fn test_manifest_text_carries_the_module_type() {
+    let dependencies = deps(&["chalk"]);
+    let typed = javascript_dependency_manifest_for_module(
+        &dependencies,
+        Some(JavaScriptModuleType::Module),
+    )
+    .unwrap();
+    assert!(typed.contains("\"type\": \"module\""));
+    assert!(
+        !javascript_dependency_manifest(&dependencies)
+            .unwrap()
+            .contains("\"type\"")
+    );
+}
+
+#[test]
+#[ignore = "CROSS-CRATE (launch + run composition): RunnerLaunch.build passes the original extension's module type into ensure_installed, so a .mjs source stored as script.js keeps '\"type\": \"module\"'. No injectable ensure seam is observable from build. Owner: skit-runtime launch. Python ref test_js_deps.py:1044-1060."]
+fn test_build_passes_the_original_extensions_module_type() {}
+
+#[test]
+#[ignore = "PRIVATE HELPER (white-box): _install_lock_path places a persistent lock beside entry_dir (in .locks), outside the deletable entry, and never inside it. The Rust dependency_lock is private with no observable lock-path surface. Python ref deps.py:62-63, 237-252, test_js_deps.py:1063-1069."]
+fn test_install_lock_uses_a_persistent_inode_outside_the_entry() {}
+
+#[test]
+#[ignore = "PRIVATE HELPER (white-box): _install_lock serializes a live holder against a waiter across threads. The Rust dependency_lock is private with no observable acquire/wait surface. Python ref deps.py:237-252, test_js_deps.py:1072-1097."]
+fn test_install_lock_waits_for_a_live_holder() {}
+
+#[test]
+#[ignore = "PRIVATE HELPER (white-box): ensure_installed runs the installer while the per-entry lock is held. The Rust dependency_lock is private with no observable held-during-run surface. Python ref deps.py:371-414, test_js_deps.py:1148-1161."]
+fn test_ensure_installed_serializes_under_the_entry_lock() {}
+
+#[test]
+#[cfg(unix)]
+fn test_update_dependencies_surfaces_clean_failure_as_store_error() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.js", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "chalk", "--no-input"])
+        .assert()
+        .success();
+    let entry_dir = sandbox.entry_dir("t");
+    let stored = entry_dir.join("script.js");
+    let meta = entry_dir.join("meta.toml");
+    let registry = sandbox.data.path().join("registry.toml");
+    let stored_before = std::fs::read(&stored).unwrap();
+    let meta_before = std::fs::read(&meta).unwrap();
+    let registry_before = std::fs::read(&registry).unwrap();
+    std::fs::write(entry_dir.join("package.json"), "{\"private\":true}\n").unwrap();
+    let modules = entry_dir.join("node_modules");
+    std::fs::create_dir_all(modules.join("chalk")).unwrap();
+    std::fs::write(modules.join("chalk/index.js"), "module.exports = 1;\n").unwrap();
+    std::fs::set_permissions(
+        modules.join("chalk"),
+        std::fs::Permissions::from_mode(0o000),
+    )
+    .unwrap();
+
+    let output = sandbox
+        .skit()
+        .args(["deps", "t", "--clear"])
+        .output()
+        .unwrap();
+
+    // Restore permissions wherever the failed transaction kept the authoritative tree.
+    for item in std::fs::read_dir(&entry_dir).unwrap().flatten() {
+        let candidate = if item.file_name() == "node_modules" {
+            item.path()
+        } else {
+            item.path().join("node_modules")
+        };
+        let blocked = candidate.join("chalk");
+        if blocked.exists() {
+            std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+    let rendered = combine(&output);
+    assert_ne!(output.status.code(), Some(0), "{rendered}");
+    assert!(rendered.contains("node_modules"), "{rendered}");
+    assert_eq!(std::fs::read(stored).unwrap(), stored_before);
+    assert_eq!(std::fs::read(meta).unwrap(), meta_before);
+    assert_eq!(
+        registry_product_rows(&std::fs::read(registry).unwrap()),
+        registry_product_rows(&registry_before),
+        "rollback may refresh only the derived cache proof; product rows stay exact"
+    );
+    let remaining = std::fs::read_dir(&entry_dir)
+        .unwrap()
+        .flatten()
+        .map(|item| item.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        remaining
+            .iter()
+            .any(|name| name.starts_with(".skit-deps.tmp-")),
+        "the remaining old tree must stay quarantined for a later retry: {remaining:?}; {rendered}"
+    );
+}
+
+#[test]
+fn test_clean_sweeps_aged_injected_leftovers() {
+    let (root, dir) = entry_dir();
+    let stranded = dir.join(".injected-crash.js");
+    std::fs::write(&stranded, "secret").unwrap();
+    let stranded_file = std::fs::File::options()
+        .write(true)
+        .open(&stranded)
+        .unwrap();
+    stranded_file
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(std::time::SystemTime::UNIX_EPOCH)
+                .set_modified(std::time::SystemTime::UNIX_EPOCH),
+        )
+        .unwrap();
+    clear_javascript_dependencies(&dir).unwrap();
+    assert!(!stranded.exists());
+    drop(root);
+}
+
+#[test]
+fn test_clean_keeps_fresh_injected_leftovers() {
+    // The age gate protects an injected copy that a concurrent run can still use.
+    let (root, dir) = entry_dir();
+    let live = dir.join(".injected-live.js");
+    std::fs::write(&live, "live secret").unwrap();
+    clear_javascript_dependencies(&dir).unwrap();
+    assert!(live.exists());
+    drop(root);
+}
+
+#[test]
+fn test_add_js_ref_with_dep_is_refused_loudly() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    let assert = sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--ref", "--dep", "chalk", "--no-input"])
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(combine(output).contains("Reference-mode"));
+    let list = sandbox.skit().arg("list").assert();
+    assert!(combine(list.get_output()).contains("No entries yet"));
+}
+
+#[test]
+fn test_add_js_with_python_flag_is_refused_loudly() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    let assert = sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--python", ">=3.11", "--no-input"])
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(combine(output).contains("Python constraint"));
+    let list = sandbox.skit().arg("list").assert();
+    assert!(combine(list.get_output()).contains("No entries yet"));
+}
+
+#[test]
+#[ignore = "CROSS-CRATE (rewrite/injection tier): write_injected's DEFAULT location is the OS temp dir (the secrets-never-persist property). No public write_injected surface. Owner: injection tier. Python ref rewrite.py:145-190, test_js_deps.py:1235-1245."]
+fn test_write_injected_default_stays_in_the_os_temp_dir() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (registry deps_flavor): the js/ts specs declare deps_flavor='npm', supports_deps, and a dep_scanner, while python declares 'uv' and no scanner. The Rust rewrite disperses the LangSpec (see port_test_langs.rs); deps_flavor/supports_deps has no single public surface. Owner: language registry. Python ref registry.spec_for, test_js_deps.py:1248-1258."]
+fn test_js_and_ts_specs_declare_the_npm_flavor() {}
+
+#[test]
+#[ignore = "PRIVATE HELPER (white-box): the held lock inode survives entry-directory removal (it lives outside the deletable entry). The Rust dependency_lock is private with no observable lock-path surface. Python ref deps.py:62-63, 237-252, test_js_deps.py:1261-1268."]
+fn test_install_lock_path_survives_entry_directory_removal() {}
+
+// ============================================================================
+// Installer diagnostics, ANSI cleanup, clear locking, and TUI resilience
+// ============================================================================
+
+const REAL_NPM_E404: &[u8] = concat!(
+    "npm error code E404\n",
+    "npm error 404 Not Found - GET https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz - Not found\n",
+    "npm error 404\n",
+    "npm error 404  The requested resource 'skit-no-such-pkg-e2e-xyz@*' could not be found or you do not have permission to access it.\n",
+    "npm error 404 Note that you can also install from a\n",
+    "npm error 404 tarball, folder, http url, or git url.\n",
+    "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+)
+.as_bytes();
+
+const REAL_DENO_MISSING: &[u8] = concat!(
+    "\x1b[0m\x1b[32mDownload\x1b[0m https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz\n",
+    "\x1b[0m\x1b[1m\x1b[31merror\x1b[0m: npm package 'skit-no-such-pkg-e2e-xyz' does not exist.\n",
+)
+.as_bytes();
+
+const REAL_BUN_MISSING: &[u8] = concat!(
+    "Resolving dependencies\n",
+    "Resolved, downloaded and extracted [1]\n",
+    "error: GET https://registry.npmjs.org/skit-no-such-pkg-e2e-xyz - 404\n",
+    "error: skit-no-such-pkg-e2e-xyz@* failed to resolve\n",
+)
+.as_bytes();
+
+const REAL_NPM_ERESOLVE: &[u8] = concat!(
+    "npm error code ERESOLVE\n",
+    "npm error ERESOLVE unable to resolve dependency tree\n",
+    "npm error Could not resolve dependency:\n",
+    "npm error Fix the upstream dependency conflict, or retry this command with --force.\n",
+    "npm error For a full report see:\n",
+    "npm error /tmp/eresolve-report.txt\n",
+    "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+)
+.as_bytes();
+
+const REAL_NPM_ECONNREFUSED: &[u8] = concat!(
+    "npm error code ECONNREFUSED\n",
+    "npm error FetchError: request to http://127.0.0.1:9/chalk failed, reason: connect ECONNREFUSED 127.0.0.1:9\n",
+    "npm error     at ClientRequest.emit (node:events:509:20)\n",
+    "npm error If you are behind a proxy, check npm help config\n",
+    "npm error A complete log of this run can be found in: /tmp/debug.log\n",
+)
+.as_bytes();
+
+#[test]
+fn test_failure_detail_against_real_installer_output() {
+    for (stderr, expected) in [
+        (REAL_NPM_E404, "Not Found - GET"),
+        (REAL_DENO_MISSING, "does not exist"),
+        (REAL_BUN_MISSING, "failed to resolve"),
+        (REAL_NPM_ERESOLVE, "dependency conflict"),
+        (REAL_NPM_ECONNREFUSED, "connect ECONNREFUSED"),
+    ] {
+        let detail = javascript_dependency_failure_detail(stderr);
+        assert!(detail.contains(expected), "{detail:?}");
+        assert!(!detail.contains('\x1b'), "{detail:?}");
+        assert!(!detail.contains("A complete log"), "{detail:?}");
+        assert!(!detail.contains("behind a proxy"), "{detail:?}");
+    }
+}
+
+#[test]
+fn test_failure_detail_names_the_missing_package() {
+    for stderr in [REAL_NPM_E404, REAL_DENO_MISSING, REAL_BUN_MISSING] {
+        assert!(javascript_dependency_failure_detail(stderr).contains("skit-no-such-pkg-e2e-xyz"));
+    }
+}
+
+#[test]
+fn test_failure_detail_empty_stderr_degrades() {
+    assert_eq!(javascript_dependency_failure_detail(b""), "?");
+    assert_eq!(
+        javascript_dependency_failure_detail(b"npm error 404\n\n"),
+        "?"
+    );
+}
+
+#[test]
+#[ignore = "PRIVATE HELPER (white-box): clear() wraps clean() in the same per-entry install lock. The Rust dependency_lock is private with no observable held-during-clear surface. Python ref deps.py:316-322, test_js_deps.py:1390-1407."]
+fn test_clear_takes_the_install_lock() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (store clearing wiring): clearing deps goes through the LOCKED clear() entry point, not the unlocked clean(). Needs the store's clear-vs-clean dispatch, a store-internal wiring not observable here. Owner: skit-store update. Python ref test_js_deps.py:1410-1422."]
+fn test_store_clear_goes_through_the_locked_entry_point() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (skit-tui/skit-ui frontend): a failed deps clear on save is a toast, not an app crash. Owner: skit-tui settings screen. Python ref test_js_deps.py:1425-1455."]
+fn test_settings_save_survives_a_failed_deps_clear() {}
+
+#[test]
+fn test_add_shell_refuses_unusable_flags_loudly() {
+    for (args, fragment) in [
+        (["--dep", "requests"], "don't take package dependencies"),
+        (["--python", ">=3.11"], "Python constraint"),
+    ] {
+        let sandbox = Sandbox::new();
+        let source_dir = TempDir::new().unwrap();
+        let source = write_source(source_dir.path(), "d.sh", "#!/bin/sh\necho hi\n");
+        let assert = sandbox
+            .skit()
+            .arg("add")
+            .arg(&source)
+            .args(args)
+            .arg("--no-input")
+            .assert();
+        let output = assert.get_output();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(combine(output).contains(fragment));
+        let list = sandbox.skit().arg("list").assert();
+        assert!(combine(list.get_output()).contains("No entries yet"));
+    }
+}
+
+#[test]
+fn test_add_cmd_refuses_dep_flag_loudly() {
+    let sandbox = Sandbox::new();
+    let assert = sandbox
+        .skit()
+        .args([
+            "add", "--cmd", "echo {x}", "--name", "e", "--dep", "requests",
+        ])
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(2));
+    let text = combine(output);
+    assert!(
+        text.contains("don't take package dependencies") || text.contains("--dep can't apply here")
+    );
+    let list = sandbox.skit().arg("list").assert();
+    assert!(combine(list.get_output()).contains("No entries yet"));
+}
+
+#[test]
+fn test_add_python_still_honors_both_flags() {
+    // Copy-mode python honors --dep and --python (recorded in the copy's PEP 723 block).
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "j.py", "print(1)\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "requests", "--python", ">=3.11", "--no-input"])
+        .assert()
+        .success();
+    // Copy-mode python records deps in the stored copy's PEP 723 block (meta stays None —
+    // the block is the source of truth); the flags were consumed, not refused.
+    let copy_text = sandbox.stored_copy("j");
+    assert!(copy_text.contains("\"requests\""));
+    assert!(copy_text.contains("requires-python = \">=3.11\""));
+}
+
+// ============================================================================
+// stdin/editor add lanes honor flags and the wizard covers npm dependencies
+// ============================================================================
+
+#[test]
+fn test_add_stdin_honors_explicit_dep_and_python_flags() {
+    let sandbox = Sandbox::new();
+    let assert = sandbox
+        .skit()
+        .args([
+            "add",
+            "-",
+            "--name",
+            "clip",
+            "--dep",
+            "requests>=2,<3",
+            "--python",
+            ">=3.11",
+        ])
+        .write_stdin("print(\"hi\")\n")
+        .assert();
+    assert.success();
+    // The flags are honored into the stored copy's PEP 723 block.
+    let copy_text = sandbox.stored_copy("clip");
+    assert!(copy_text.contains("\"requests>=2,<3\""));
+    assert!(copy_text.contains("requires-python = \">=3.11\""));
+}
+
+#[test]
+fn test_add_stdin_refuses_ref_loudly() {
+    let sandbox = Sandbox::new();
+    let assert = sandbox
+        .skit()
+        .args(["add", "-", "--name", "clip", "--ref"])
+        .write_stdin("print(\"hi\")\n")
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(2));
+    let text = combine(output);
+    assert!(text.contains("existing file") || text.contains("--ref can't apply here"));
+    let list = sandbox.skit().arg("list").assert();
+    assert!(combine(list.get_output()).contains("No entries yet"));
+}
+
+#[test]
+#[ignore = "CROSS-CRATE (cli editor lane): `add --edit --ref` refuses before opening an editor. Driving the editor lane deterministically needs an interactive-editor stub (the oracle monkeypatches editor.open_in_editor); the Rust editor lane needs a real EDITOR. Owner: skit-cli add editor lane. Python ref test_js_deps.py:1530-1534."]
+fn test_add_edit_refuses_ref_loudly() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (cli editor lane): `add --edit` honors --dep/--python. The editor lane needs a scripted EDITOR that writes the file; the oracle monkeypatches editor.open_in_editor. Owner: skit-cli add editor lane. Python ref test_js_deps.py:1537-1566."]
+fn test_add_edit_honors_explicit_dep_and_python_flags() {}
+
+// ============================================================================
+// Lock OSError taxonomy and catalog syntax validation
+// ============================================================================
+
+#[test]
+#[ignore = "PRIVATE HELPER (white-box): an unwritable entry dir surfaces the lock OSError as the 126 prerequisite family, one clean line. The oracle monkeypatches advisory_file_lock; the Rust dependency_lock is private with no injectable seam. Python ref deps.py:237-252, test_js_deps.py:1574-1588."]
+fn test_install_lock_unwritable_dir_raises_126_family_not_a_traceback() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (launch + run composition): a run on an unwritable entry dir exits 126, not 1. Needs the build->lock->install path plus a lock-failure injection seam. Owner: skit-runtime launch + skit-cli run. Python ref test_js_deps.py:1591-1603."]
+fn test_run_on_unwritable_entry_dir_exits_126_not_1() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): scripts/i18n_coverage.py flags an unquoted msgstr in a .po catalog. The Rust workspace ships a static skit-i18n catalog (no .po files) and no i18n_coverage script. Owner: repo i18n tooling. Python ref scripts/i18n_coverage.py, test_js_deps.py:1606-1629."]
+fn test_i18n_gate_catches_an_unquoted_msgstr() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): the i18n gate passes the shipped catalogs. No i18n_coverage script / .po catalogs in the Rust workspace. Owner: repo i18n tooling. Python ref test_js_deps.py:1632-1642."]
+fn test_i18n_gate_passes_the_shipped_catalogs() {}
+
+// ============================================================================
+// persistent-lock lifecycle and continuation-line gate
+// ============================================================================
+
+#[test]
+#[ignore = "PRIVATE HELPER (white-box): the kernel-backed lockfile is never unlinked. The Rust dependency_lock is private with no observable unlink surface. Python ref deps.py:237-252, test_js_deps.py:1650-1662."]
+fn test_install_lock_never_unlinks_its_persistent_inode() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): the i18n gate flags an unquoted continuation line without flagging headers/comments/obsolete entries. No i18n_coverage script / .po catalogs. Owner: repo i18n tooling. Python ref test_js_deps.py:1665-1701."]
+fn test_i18n_gate_catches_an_unquoted_continuation_line() {}
+
+#[test]
+fn test_install_announces_itself_but_a_fresh_marker_stays_silent() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        None,
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(runner.announcements(), ["npm"]);
+
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        None,
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(
+        runner.announcements(),
+        ["npm"],
+        "a fresh marker must stay silent"
+    );
+    assert_eq!(runner.calls().len(), 1);
+    drop(root);
+}
+
+#[test]
+fn test_corrupted_marker_triggers_reinstall_not_a_persistent_crash() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    std::fs::create_dir(dir.join("node_modules")).unwrap();
+    std::fs::write(
+        dir.join("node_modules").join(".skit-deps-ok"),
+        [0xff, 0xfe, b' ', b'g'],
+    )
+    .unwrap();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(runner.calls().len(), 1);
+    let marker = std::fs::read_to_string(dir.join("node_modules").join(".skit-deps-ok")).unwrap();
+    assert_eq!(marker.len(), 64);
+    drop(root);
+}
+
+#[test]
+#[ignore = "PRIVATE HELPER (white-box): the lock reuses the same persistent inode across acquisitions. The Rust dependency_lock is private with no observable inode surface. Python ref test_js_deps.py:1989-1994."]
+fn test_install_lock_reuses_the_same_persistent_inode() {}
+
+#[test]
+fn test_needs_install_true_without_a_marker() {
+    let (root, dir) = entry_dir();
+    assert!(javascript_dependencies_need_install(&dir, "node", &deps(&["chalk"]),).unwrap());
+    assert!(!root.path().join(".locks").exists());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+}
+
+#[test]
+fn test_needs_install_false_when_the_marker_matches() {
+    let (root, dir) = entry_dir();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &FakeProbe { present: true },
+        &RecordingRunner::success(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
+
+    assert!(!javascript_dependencies_need_install(&dir, "node", &deps(&["chalk"]),).unwrap());
+    assert!(!root.path().join(".locks").exists());
+}
+
+#[test]
+fn test_needs_install_true_when_the_declared_deps_changed() {
+    let (root, dir) = entry_dir();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &FakeProbe { present: true },
+        &RecordingRunner::success(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
+
+    assert!(javascript_dependencies_need_install(&dir, "node", &deps(&["chalk", "zod"]),).unwrap());
+    assert!(!root.path().join(".locks").exists());
+}
+
+#[test]
+fn test_preflight_skips_the_installer_when_the_marker_is_already_fresh() {
+    let (root, dir) = entry_dir();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &FakeProbe { present: true },
+        &RecordingRunner::success(),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(root.path().join(".locks")).unwrap();
+
+    preflight_javascript_dependencies(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        &FakeProbe { present: false },
+    )
+    .expect("a fresh marker must not require npm");
+    assert!(!root.path().join(".locks").exists());
+}
+
+#[test]
+fn test_clean_unlinks_a_symlinked_node_modules_but_keeps_the_target() {
+    let (root, dir) = entry_dir();
+    let target = dir.join("shared");
+    std::fs::create_dir_all(target.join("chalk")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, dir.join("node_modules")).unwrap();
+    clear_javascript_dependencies(&dir).unwrap();
+    assert!(!dir.join("node_modules").exists());
+    assert!(target.join("chalk").exists());
+    drop(root);
+}
+
+#[test]
+fn test_add_js_empty_dep_records_nothing() {
+    // An empty/whitespace --dep is junk, not a package.
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "hello.js", "console.log(1)\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["-n", "j", "--dep", "  ", "--no-input"])
+        .assert()
+        .success();
+    let view = sandbox.skit().args(["deps", "j", "--json"]).assert();
+    assert!(combine(view.get_output()).contains("\"dependencies\":[]"));
+}
+
+#[test]
+fn test_deps_command_empty_dep_clears_and_sweeps() {
+    // An empty --dep clears the list (not recorded as [""]) and sweeps the materialized env.
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    sandbox
+        .skit()
+        .args(["deps", "t", "--dep", "chalk"])
+        .assert()
+        .success();
+    let node_modules = sandbox.entry_dir("t").join("node_modules");
+    std::fs::create_dir_all(&node_modules).unwrap();
+    sandbox
+        .skit()
+        .args(["deps", "t", "--dep", ""])
+        .assert()
+        .success();
+    let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    assert!(combine(view.get_output()).contains("\"dependencies\":[]"));
+    // Oracle: clearing sweeps the materialized env, like --clear.
+    assert!(!node_modules.exists());
+
+    // An explicit clear is also a cleanup request when metadata is already empty. A stale
+    // materialization can survive a crash or an older release, and clearing it must not rewrite
+    // unrelated entry or registry bytes.
+    std::fs::create_dir_all(node_modules.join("stale-package")).unwrap();
+    let entry_dir = sandbox.entry_dir("t");
+    let meta_before = std::fs::read(entry_dir.join("meta.toml")).unwrap();
+    let source_before = sandbox.stored_copy("t");
+    let registry = sandbox.data.path().join("registry.toml");
+    let registry_before = std::fs::read(&registry).unwrap();
+    let state_before = std::fs::read_dir(sandbox.state.path()).unwrap().count();
+    let config_before = std::fs::read_dir(sandbox.config.path()).unwrap().count();
+
+    sandbox
+        .skit()
+        .args(["deps", "t", "--clear"])
+        .assert()
+        .success();
+
+    assert!(!node_modules.exists());
+    assert_eq!(
+        std::fs::read(entry_dir.join("meta.toml")).unwrap(),
+        meta_before
+    );
+    assert_eq!(sandbox.stored_copy("t"), source_before);
+    assert_eq!(std::fs::read(registry).unwrap(), registry_before);
+    assert_eq!(
+        std::fs::read_dir(sandbox.state.path()).unwrap().count(),
+        state_before
+    );
+    assert_eq!(
+        std::fs::read_dir(sandbox.config.path()).unwrap().count(),
+        config_before
+    );
+}
+
+#[test]
+fn test_deps_command_write_emits_json_when_asked() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    let assert = sandbox
+        .skit()
+        .args(["deps", "t", "--dep", "chalk@^5", "--json"])
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "dependencies": ["chalk@^5"],
+            "requires_python": "",
+            "needs": [],
+        })
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("updated"));
+}
+
+#[test]
+fn test_deps_command_needs_write_emits_json_and_skips_the_human_line() {
+    // --json on a needs write emits the machine view, not the green confirmation line.
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    let assert = sandbox
+        .skit()
+        .args(["deps", "t", "--need", "jq", "--json"])
+        .assert();
+    let output = assert.get_output();
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "dependencies": [],
+            "requires_python": "",
+            "needs": ["jq"],
+        })
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("updated"));
+}
+
+#[test]
+fn test_deps_command_applies_both_deps_and_needs() {
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    let output = sandbox
+        .skit()
+        .args(["deps", "t", "--dep", "chalk", "--need", "jq"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{}", combine(&output));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Dependencies of t updated: chalk\nNeeds of t updated: jq\n"
+    );
+    assert!(output.stderr.is_empty());
+    let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&view.get_output().stdout).unwrap(),
+        serde_json::json!({
+            "dependencies": ["chalk"],
+            "requires_python": "",
+            "needs": ["jq"],
+        })
+    );
+}
+
+#[test]
+fn test_deps_command_refused_dep_does_not_commit_a_concurrent_need() {
+    // A --dep/--python refusal aborts BEFORE the needs write (deps processed first).
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    let assert = sandbox
+        .skit()
+        .args(["deps", "t", "--need", "jq", "--python", ">=3.11"])
+        .assert();
+    assert_eq!(assert.get_output().status.code(), Some(2));
+    let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    assert!(combine(view.get_output()).contains("\"needs\":[]"));
+}
+
+#[test]
+fn test_deps_command_drops_empty_and_whitespace_needs() {
+    // Mirrors the --dep filter: empty/whitespace command names are junk and dropped.
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "t.mjs", "console.log(1);\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .arg("--no-input")
+        .assert()
+        .success();
+    sandbox
+        .skit()
+        .args(["deps", "t", "--need", "  ", "--need", " jq ", "--need", ""])
+        .assert()
+        .success();
+    let view = sandbox.skit().args(["deps", "t", "--json"]).assert();
+    assert!(combine(view.get_output()).contains("\"needs\":[\"jq\"]"));
+}
+
+// ============================================================================
+// i18n placeholder-parity gate (repo tooling, not product surface)
+// ============================================================================
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): the placeholder-parity gate flags a swapped named placeholder. No i18n_coverage script / .po catalogs in the Rust workspace. Owner: repo i18n tooling. Python ref test_js_deps.py:2177-2190."]
+fn test_placeholder_parity_flags_a_swapped_named_placeholder() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): flags a positional-count mismatch. No i18n_coverage script. Owner: repo i18n tooling. Python ref test_js_deps.py:2193-2201."]
+fn test_placeholder_parity_flags_a_positional_count_mismatch() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): flags a positional conversion-type swap (%s->%d). No i18n_coverage script. Owner: repo i18n tooling. Python ref test_js_deps.py:2204-2214."]
+fn test_placeholder_parity_flags_a_positional_conversion_type_swap() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): the parity gate ignores fuzzy entries. No i18n_coverage script. Owner: repo i18n tooling. Python ref test_js_deps.py:2217-2226."]
+fn test_placeholder_parity_ignores_fuzzy_entries() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): the parity gate accepts matching named and plural forms. No i18n_coverage script. Owner: repo i18n tooling. Python ref test_js_deps.py:2229-2241."]
+fn test_placeholder_parity_accepts_matching_named_and_plural_forms() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): the parity gate skips an untranslated plural form. No i18n_coverage script. Owner: repo i18n tooling. Python ref test_js_deps.py:2244-2255."]
+fn test_placeholder_parity_skips_an_untranslated_plural_form() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): the parity gate passes the shipped catalogs. No i18n_coverage script. Owner: repo i18n tooling. Python ref test_js_deps.py:2258-2259."]
+fn test_placeholder_parity_passes_the_shipped_catalogs() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (i18n repo tooling): the po-syntax gate allows a valid msgctxt line. No i18n_coverage script. Owner: repo i18n tooling. Python ref test_js_deps.py:2262-2271."]
+fn test_po_syntax_allows_a_valid_msgctxt_line() {}
+
+// ============================================================================
+// mutation-hardening: split_requirement boundary + module_type multi-dot,
+// manifest layout, sweep cutoff, unknown-runner fallback, failure-detail noise
+// ============================================================================
+
+#[test]
+fn test_split_requirement_boundary_shapes() {
+    assert_eq!(
+        split_javascript_requirement("a@5"),
+        ("a".to_owned(), "5".to_owned())
+    );
+    assert_eq!(
+        split_javascript_requirement("foo/@2"),
+        ("foo/@2".to_owned(), "*".to_owned())
+    );
+}
+
+#[test]
+fn test_module_type_for_multi_dot_sources() {
+    // Multiple dots: only the LAST names the extension.
+    for (source, expected) in [
+        (
+            "/home/u.name/tool.v2.mjs",
+            Some(JavaScriptModuleType::Module),
+        ),
+        ("archive.tar.cjs", Some(JavaScriptModuleType::CommonJs)),
+    ] {
+        assert_eq!(javascript_module_type(source), expected, "{source}");
+    }
+}
+
+#[test]
+fn test_manifest_text_exact_layout() {
+    assert_eq!(
+        javascript_dependency_manifest_for_module(
+            &deps(&["chalk@^5"]),
+            Some(JavaScriptModuleType::Module),
+        )
+        .unwrap(),
+        "{\n  \"private\": true,\n  \"type\": \"module\",\n  \"dependencies\": {\n    \"chalk\": \"^5\"\n  }\n}\n"
+    );
+}
+
+#[test]
+fn test_ensure_installed_unknown_runner_falls_back_to_npm_argv() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    ensure_javascript_dependencies_with_environment(
+        &dir,
+        "some-future-runner",
+        &deps(&["chalk"]),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    let calls = runner.calls();
+    assert_eq!(calls[0].program, PathBuf::from("/bin/npm"));
+    assert_eq!(
+        calls[0].args,
+        ["install", "--no-audit", "--no-fund", "--ignore-scripts"]
+    );
+    drop(root);
+}
+
+#[test]
+fn test_ensure_installed_writes_the_module_type_into_the_manifest() {
+    // The explicit module type reaches the generated package.json "type" field.
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &deps(&["chalk"]),
+        Some(JavaScriptModuleType::Module),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(dir.join("package.json"))
+            .unwrap()
+            .contains("\"type\": \"module\"")
+    );
+    drop(root);
+}
+
+#[test]
+fn test_failure_detail_drops_bare_paths_even_without_a_cause_line() {
+    let stderr = b"npm error something odd happened\nnpm error /var/log/npm/report.txt\nnpm error C:\\Users\\u\\report.txt\n";
+    assert_eq!(
+        javascript_dependency_failure_detail(stderr),
+        "npm error something odd happened"
+    );
+}
+
+#[test]
+fn test_module_type_for_a_bare_dotfile_name() {
+    // A source whose only dot is at index 0 (".mjs") still pins the flavor.
+    assert_eq!(
+        javascript_module_type(".mjs"),
+        Some(JavaScriptModuleType::Module)
+    );
+}
+
+#[test]
+fn test_failure_detail_filters_each_noise_marker() {
+    for marker in [
+        "A complete log of this run",
+        "Note that you can also install",
+        "tarball, folder, http url",
+        "For a full report see",
+        "If you are behind a proxy",
+    ] {
+        let stderr = format!("npm error install failed for pkg\nnpm error failed: {marker}\n");
+        assert_eq!(
+            javascript_dependency_failure_detail(stderr.as_bytes()),
+            "npm error install failed for pkg"
+        );
+    }
+}
+
+#[test]
+fn test_failure_detail_noise_before_the_cause_still_finds_the_cause() {
+    assert_eq!(
+        javascript_dependency_failure_detail(
+            b"npm error A complete log of this run can be found in: /x.log\nnpm error something odd happened\n"
+        ),
+        "npm error something odd happened"
+    );
+}
+
+#[test]
+fn test_failure_detail_drops_every_npm_prefix_noise_shape() {
+    assert_eq!(
+        javascript_dependency_failure_detail(
+            b"npm error something odd happened\nnpm error at Object.fn (/x.js:1:1)\nnpm error {\nnpm error }\nnpm error c:\\Users\\u\\report.txt\n"
+        ),
+        "npm error something odd happened"
+    );
+}
+
+#[test]
+fn test_failure_detail_deno_line_is_reproduced_exactly() {
+    assert_eq!(
+        javascript_dependency_failure_detail(REAL_DENO_MISSING),
+        "error: npm package 'skit-no-such-pkg-e2e-xyz' does not exist."
+    );
+}
+
+#[test]
+fn test_dependency_failure_messages_verbatim() {
+    assert_eq!(
+        DependencyError::InstallerNotFound {
+            name: "npm".to_owned()
+        }
+        .to_string(),
+        "npm is needed to install this script's dependencies, but it isn't on your PATH."
+    );
+    assert_eq!(
+        DependencyError::InstallerStartFailed {
+            installer: "npm".to_owned(),
+            reason: "Exec format error".to_owned(),
+        }
+        .to_string(),
+        "Couldn't run npm: Exec format error"
+    );
+    assert_eq!(
+        DependencyError::InstallFailed {
+            installer: "npm".to_owned(),
+            exit_code: Some(1),
+            detail: "npm error it failed".to_owned(),
+        }
+        .to_string(),
+        "Installing dependencies failed (npm): npm error it failed"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn test_install_announce_line_verbatim() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(source_dir.path(), "announce.js", "console.log('ok');\n");
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "chalk", "--no-input"])
+        .assert()
+        .success();
+    let bin = TempDir::new().unwrap();
+    for (name, body) in [
+        ("node", "#!/bin/sh\nexit 0\n"),
+        ("npm", "#!/bin/sh\n/bin/mkdir -p node_modules\nexit 0\n"),
+    ] {
+        let path = bin.path().join(name);
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let first = sandbox
+        .skit()
+        .env("PATH", bin.path())
+        .args(["run", "announce", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(first.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(first.stderr).unwrap(),
+        "Installing dependencies (npm)…\n"
+    );
+
+    let second = sandbox
+        .skit()
+        .env("PATH", bin.path())
+        .args(["run", "announce", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(second.status.code(), Some(0));
+    assert!(second.stderr.is_empty(), "fresh launch must stay silent");
+}
+
+#[test]
+#[cfg(unix)]
+fn test_install_subprocess_contract_and_marker_dir_reuse() {
+    use std::{fs, os::unix::fs::PermissionsExt as _};
+
+    let sandbox = Sandbox::new();
+    let source_dir = TempDir::new().unwrap();
+    let source = write_source(
+        source_dir.path(),
+        "subprocess-contract.js",
+        "console.log('script output must come only from node');\n",
+    );
+    sandbox
+        .skit()
+        .arg("add")
+        .arg(&source)
+        .args(["--dep", "chalk", "--no-input"])
+        .assert()
+        .success();
+
+    let mirror = "https://registry.example.test";
+    FileConfigStore::new(sandbox.config.path())
+        .set("mirror.npm", mirror)
+        .unwrap();
+
+    let entry_dir = sandbox.entry_dir("subprocess-contract");
+    let stored = entry_dir.join("script.js");
+    let metadata = entry_dir.join("meta.toml");
+    let registry = sandbox.data.path().join("registry.toml");
+    let source_before = fs::read(&source).unwrap();
+    let stored_before = fs::read(&stored).unwrap();
+    let metadata_before = fs::read(&metadata).unwrap();
+    let registry_before = fs::read(&registry).unwrap();
+    let config_before = fs::read(sandbox.config.path().join("config.toml")).unwrap();
+
+    let bin = TempDir::new().unwrap();
+    let receipt = bin.path().join("npm-receipt");
+    let node = bin.path().join("node");
+    fs::write(&node, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+    let npm = bin.path().join("npm");
+    fs::write(
+        &npm,
+        format!(
+            concat!(
+                "#!/bin/sh\n",
+                "{{\n",
+                "  printf 'cwd=%s\\n' \"$PWD\"\n",
+                "  printf 'argc=%s\\n' \"$#\"\n",
+                "  for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\n",
+                "  printf 'registry=%s\\n' \"${{NPM_CONFIG_REGISTRY-unset}}\"\n",
+                "  printf 'lower-registry=%s\\n' \"${{npm_config_registry-unset}}\"\n",
+                "}} >> '{}'\n",
+                "printf '%s\\n' 'INSTALLER-STDOUT-MUST-BE-CAPTURED'\n",
+                "printf '%s\\n' 'INSTALLER-STDERR-MUST-BE-CAPTURED' >&2\n",
+                "/bin/mkdir -p node_modules/chalk\n",
+                "exit 0\n",
+            ),
+            receipt.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&npm, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let run = || {
+        sandbox
+            .skit()
+            .env("PATH", bin.path())
+            .env_remove("NPM_CONFIG_REGISTRY")
+            .env_remove("npm_config_registry")
+            .args(["run", "subprocess-contract", "--no-input"])
+            .output()
+            .unwrap()
+    };
+
+    let first = run();
+    assert_eq!(first.status.code(), Some(0), "{}", combine(&first));
+    let first_stdout = String::from_utf8(first.stdout).unwrap();
+    let launch_prefix = format!("→ {} {}/.run-", node.display(), entry_dir.display());
+    assert!(first_stdout.starts_with(&launch_prefix), "{first_stdout}");
+    assert!(first_stdout.trim_end().ends_with(".js"), "{first_stdout}");
+    assert_eq!(first_stdout.lines().count(), 1, "{first_stdout}");
+    assert!(!first_stdout.contains("INSTALLER-STDOUT-MUST-BE-CAPTURED"));
+    assert!(!first_stdout.contains("INSTALLER-STDERR-MUST-BE-CAPTURED"));
+    assert_eq!(
+        String::from_utf8(first.stderr).unwrap(),
+        "Installing dependencies (npm)…\n",
+        "successful installer stderr must stay captured"
+    );
+    let expected_receipt = format!(
+        concat!(
+            "cwd={}\n",
+            "argc=4\n",
+            "arg=install\n",
+            "arg=--no-audit\n",
+            "arg=--no-fund\n",
+            "arg=--ignore-scripts\n",
+            "registry={}\n",
+            "lower-registry=unset\n",
+        ),
+        entry_dir.display(),
+        mirror,
+    );
+    assert_eq!(fs::read_to_string(&receipt).unwrap(), expected_receipt);
+
+    let marker = entry_dir.join("node_modules/.skit-deps-ok");
+    assert!(marker.is_file());
+    assert_eq!(fs::read_to_string(&marker).unwrap().len(), 64);
+    assert!(!entry_dir.join(".skit-deps").exists());
+    let mut entry_items = fs::read_dir(&entry_dir)
+        .unwrap()
+        .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    entry_items.sort();
+    assert_eq!(
+        entry_items,
+        ["meta.toml", "node_modules", "package.json", "script.js"]
+    );
+    let mut module_items = fs::read_dir(entry_dir.join("node_modules"))
+        .unwrap()
+        .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    module_items.sort();
+    assert_eq!(module_items, [".skit-deps-ok", "chalk"]);
+    assert_eq!(
+        fs::read_dir(entry_dir.join("node_modules/chalk"))
+            .unwrap()
+            .count(),
+        0
+    );
+
+    let second = run();
+    assert_eq!(second.status.code(), Some(0), "{}", combine(&second));
+    let second_stdout = String::from_utf8(second.stdout).unwrap();
+    assert!(second_stdout.starts_with(&launch_prefix), "{second_stdout}");
+    assert!(second_stdout.trim_end().ends_with(".js"), "{second_stdout}");
+    assert_eq!(second_stdout.lines().count(), 1, "{second_stdout}");
+    assert!(!second_stdout.contains("INSTALLER-STDOUT-MUST-BE-CAPTURED"));
+    assert!(!second_stdout.contains("INSTALLER-STDERR-MUST-BE-CAPTURED"));
+    assert!(second.stderr.is_empty(), "fresh launch must stay silent");
+    assert_eq!(
+        fs::read_to_string(&receipt).unwrap(),
+        expected_receipt,
+        "a fresh launch ran the installer subprocess again"
+    );
+
+    assert_eq!(fs::read(&source).unwrap(), source_before);
+    assert_eq!(fs::read(stored).unwrap(), stored_before);
+    assert_eq!(fs::read(metadata).unwrap(), metadata_before);
+    assert_eq!(fs::read(registry).unwrap(), registry_before);
+    assert_eq!(
+        fs::read(sandbox.config.path().join("config.toml")).unwrap(),
+        config_before
+    );
+    let state = FileFormStateStore::new(sandbox.state.path())
+        .load(&Slug::parse("subprocess-contract").unwrap());
+    assert_eq!(state.values, BTreeMap::new());
+    assert_eq!(state.last_run.exit, Some(0));
+    assert!(
+        state
+            .last_run
+            .at
+            .as_deref()
+            .is_some_and(|at| !at.is_empty())
+    );
+    assert_eq!(state.last_run.values, Some(BTreeMap::new()));
+    let state_files = fs::read_dir(sandbox.state.path().join("values"))
+        .unwrap()
+        .map(|item| item.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(state_files, ["subprocess-contract.toml"]);
+}
+
+#[test]
+fn test_failure_detail_survives_invalid_utf8_bytes() {
+    let detail = javascript_dependency_failure_detail(b"npm error caf\xe9 install failed\n");
+    assert!(detail.contains("install failed"), "{detail:?}");
+    assert!(detail.contains('\u{fffd}'), "{detail:?}");
+}
+
+// ============================================================================
+// module-typed entries with NO deps still need their package.json "type"
+// ============================================================================
+
+#[test]
+fn test_ensure_module_manifest_writes_the_type() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &[],
+        Some(JavaScriptModuleType::CommonJs),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("package.json")).unwrap(),
+        "{\n  \"private\": true,\n  \"type\": \"commonjs\"\n}\n"
+    );
+    drop(root);
+}
+
+#[test]
+fn test_ensure_module_manifest_flavorless_writes_nothing() {
+    // A flavorless origin pins no module type, so no package.json is written.
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &[],
+        None,
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert!(!dir.join("package.json").exists());
+    drop(root);
+}
+
+#[test]
+fn test_ensure_module_manifest_rewrites_only_on_change() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &[],
+        Some(JavaScriptModuleType::Module),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("package.json")).unwrap(),
+        "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n"
+    );
+    let package = dir.join("package.json");
+    let package_file = std::fs::File::options().write(true).open(&package).unwrap();
+    package_file
+        .set_times(
+            std::fs::FileTimes::new()
+                .set_accessed(std::time::SystemTime::UNIX_EPOCH)
+                .set_modified(std::time::SystemTime::UNIX_EPOCH),
+        )
+        .unwrap();
+    drop(package_file);
+    let unchanged_time = package.metadata().unwrap().modified().unwrap();
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &[],
+        Some(JavaScriptModuleType::Module),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(
+        package.metadata().unwrap().modified().unwrap(),
+        unchanged_time,
+        "an identical module manifest must not be rewritten"
+    );
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &[],
+        Some(JavaScriptModuleType::CommonJs),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(dir.join("package.json"))
+            .unwrap()
+            .contains("\"type\": \"commonjs\"")
+    );
+    drop(root);
+}
+
+#[test]
+#[ignore = "CROSS-CRATE (launch + run composition): a deps-free CommonJS (.cjs/.cts) entry gets a minimal '{private, type: commonjs}' package.json from RunnerLaunch.build so deno does not run it as ESM. The private Rust builder has the exact manifest, but this integration test cannot intercept the run composition. Owner: skit-runtime launch. Python ref deps.py:134-155, test_js_deps.py:2310-2322."]
+fn test_build_writes_a_module_manifest_for_a_deps_free_module_typed_entry() {}
+
+#[test]
+#[ignore = "CROSS-CRATE (launch + run composition): a flavorless deps-free entry gets NO package.json (the runner's own default). Not driveable without the run composition. Owner: skit-runtime launch. Python ref test_js_deps.py:2325-2331."]
+fn test_build_writes_no_manifest_for_a_flavorless_deps_free_entry() {}
+
+#[test]
+fn test_ensure_module_manifest_rewrites_a_non_utf8_package_json() {
+    let (root, dir) = entry_dir();
+    let probe = FakeProbe { present: true };
+    let runner = RecordingRunner::success();
+    std::fs::write(dir.join("package.json"), [0xff, 0xfe, b'{', b'}']).unwrap();
+    ensure_javascript_dependencies_for_module(
+        &dir,
+        "node",
+        &[],
+        Some(JavaScriptModuleType::Module),
+        &BTreeMap::new(),
+        &probe,
+        &runner,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("package.json")).unwrap(),
+        "{\n  \"private\": true,\n  \"type\": \"module\"\n}\n"
+    );
+    drop(root);
+}

@@ -1,0 +1,7 @@
+# Keep the committed bytes of every path.
+#
+# skit has byte-exact contracts. `tests/corpus/` is byte-exact input, and four of its files carry
+# CRLF on purpose. `benchmarks/budgets.toml` must match what the renderer writes. Git rewrites line
+# endings at checkout when a host sets `core.autocrlf`, and Windows runners set it. `-text` turns
+# that rewrite off for every path, so a working tree holds the same bytes on every platform.
+* -text

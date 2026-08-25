@@ -1,0 +1,15 @@
+test_workspace = true
+all_features = true
+
+# The test timeout must stay explicit on the command line: `--timeout 300`. cargo-mutants 27.1.0
+# has no `timeout` configuration key. Its automatic calibration measures a baseline that tests only
+# the shard's mutated package, while `test_workspace = true` makes every mutant run the full
+# workspace suite. The derived budget then times out honest runs. Do not add `timeout_multiplier`
+# or `minimum_test_timeout` here: they only govern that automatic path.
+
+# A mutant inside code this host compiles out can never be killed here. The text changes, the file
+# still builds because the item is not compiled, and every test passes, so cargo-mutants reports it
+# missed. `current_argument_dialect` is written twice, once per host, and the Windows half is that
+# case on a Linux runner. The POSIX half is not a survivor either way: `ArgumentDialect` has no
+# `Default`, so mutating it does not build.
+exclude_re = ["replace current_argument_dialect"]

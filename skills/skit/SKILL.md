@@ -23,23 +23,24 @@ is *the user's curated space*: treat it like their dotfiles.
 
 1. **Check the library before writing a new script.** If the user asks for something
    a saved script already does, run that instead of regenerating it.
-2. **Trust exit codes, never output text.** skit's human output is localized (English,
-   繁體中文, 简体中文, …) — string-matching it will break on other machines. The exit
+2. **Trust exit codes, never output text.** skit's human output is localized in multiple
+   languages. String matching will break on other machines. The exit
    code and `--json` payloads are the stable contract.
 3. **Before an entry's first run, `--dry-run` it** and show the user the exact command.
 4. **Never add, remove, or overwrite library entries without asking the user first.**
-   Propose `skit add` when you've written something reusable; don't add it silently.
+   Propose `skit add` after you write something reusable. Do not add it silently.
 5. **Pass `--no-input` on every `skit run` and `skit add`.** It guarantees those never
    block on a prompt; if information is missing, skit fails fast with a named error
-   instead. `skit remove` confirms instead of taking `--no-input` — pass `-y`. The
-   read commands (`list`, `show`, `params`, …) never prompt and don't take the flag.
+   instead. `skit remove`, `skit runner remove`, and `skit preset delete` require
+   confirmation. Pass `-y` only after the user approves the operation. The read commands
+   (`list`, `show`, `params`, …) never prompt and do not accept the flag.
 
 ## Discover entries
 
 ```bash
 skit list                 # every entry: name, kind, description
 skit show <name>          # one entry: parameters, types, defaults, presets
-skit list --json          # same data, machine-readable (only if you're scripting over it)
+skit list --json          # same data in the machine-readable contract
 skit show <name> --json   # full parameter schema as JSON
 ```
 
@@ -97,7 +98,7 @@ When the entry's target process actually ran, its exit code passes through **unt
 | --- | --- |
 | 2 | usage error (bad flags, unknown `--set` name, unknown preset) |
 | 125 | skit-side failure: missing/invalid parameter value, drift, launch failure |
-| 126 | target exists but is not executable |
+| 126 | target cannot launch: not executable, interpreter/runtime/need missing, or prompt runner unresolved |
 | 127 | no such entry in the library (or launch target missing) |
 | 130 | user cancelled the interactive form |
 
@@ -110,7 +111,7 @@ skit add path/to/script.py --name resize -d "Resize images to a target width" --
 skit add path/to/backup.sh --name backup -d "Nightly database dump" --no-input
 skit add - --name fetch-report -d "Pull the weekly report" --no-input   # script text on stdin
 skit add - --kind shell -n backup -d "Nightly dump" --no-input   # stdin + forced kind (any interpreted kind)
-skit add path/to/script.py --ref --no-input      # reference the original file, don't copy
+skit add path/to/script.py --ref --no-input      # reference the original file; do not copy
 skit add path/to/tool --kind shell --name tool -d "Cleanup helper" --no-input   # force the kind
 skit add --cmd 'ffmpeg -i {input} -vf scale={width}:-1 {output}' --name scale-video --no-input
 ```
@@ -135,7 +136,7 @@ skit add --cmd 'ffmpeg -i {input} -vf scale={width}:-1 {output}' --name scale-vi
   `node_modules` next to the stored copy on first run — copy-mode entries only, since
   a reference entry runs from its own project. JS/TS installs never run package
   lifecycle scripts (npm and bun get `--ignore-scripts`; deno skips them by default), so
-  a package that requires its postinstall step won't work. When deno is the resolved
+  a package that requires its postinstall step does not work. When deno is the resolved
   runner, skit invokes it with `--allow-all` — scripts are not sandboxed. External
   *commands* a script of any kind expects on PATH (a shell script needing `jq`, say)
   are `needs`, checked before every run: `skit deps <name> --need jq --need ffmpeg`.
@@ -154,7 +155,7 @@ skit params <name> --secret API_KEY --env-source API_KEY=OPENAI_API_KEY
   value never appears in commands, files, or output. Scripts that parse their own CLI
   (Python argparse/click/typer, shell getopts, JS `util.parseArgs`, fish `argparse`,
   PowerShell `param()`) need no management — skit reads them statically. When the
-  parse can't be read statically (a dynamic optstring, docopt/fire), the run form
+  parser cannot be read statically (a dynamic optstring, docopt/fire), the run form
   falls back to an extra-arguments field, and managed constants add fields
   alongside it rather than replacing anything.
 - **Declared parameters** (for exe, command, and reader-less kinds like ruby/perl/lua/r)
@@ -187,7 +188,7 @@ skit params <name> --template 'ffmpeg -i {input} {output}'  # command kind: rewr
 - `--workdir` sets where the process starts: `origin` (the source file's folder),
   `store` (skit's stored copy), `invoke` (where skit was run from), or an absolute path.
 - `--interpreter` pins the binary an interpreted entry (shell/js/ts/fish/…) launches
-  with; refused on python and prompt kinds — they don't run through a pinnable
+  with; refused on python and prompt kinds because they do not use a pinnable
   interpreter. `skit show <name> --json` reports the entry's `interpreter`.
 - `--template` rewrites a `command` entry's program and re-reads its `{placeholders}`;
   refused on any other kind, and an empty template is refused.
@@ -200,7 +201,7 @@ Named value sets per entry, ideal for recurring jobs:
 skit run <name> --set a=1 --set b=2 --save-preset nightly --dry-run --no-input  # create without running
 skit preset list <name> --json
 skit run <name> -p nightly --no-input
-skit preset delete <name> nightly
+skit preset delete <name> nightly -y
 ```
 
 ## Prompts & runners
@@ -239,7 +240,7 @@ skit params <name> --no-interpolate  # switch insertion off; --interpolate turns
   `--no-interpolate` switches the whole entry to verbatim delivery. `skit params
   <name> --json` lists `placeholders` (managed), `unmanaged`, `runner`, `interpolate`.
 - **Flood guard:** past 30 detected holes an add manages NOTHING automatically (the
-  prompt clearly wasn't written for insertion; stderr says so) — `--add` the ones you
+  prompt clearly was not written for insertion; stderr says so) — `--add` the ones you
   need, or add with `--no-interpolate`.
 - Runners are user-editable config. `skit runner list --json` shows them; register a
   custom tool with the argv after `--`, `{{prompt}}` marking where the rendered text
