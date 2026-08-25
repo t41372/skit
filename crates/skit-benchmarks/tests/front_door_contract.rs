@@ -400,6 +400,19 @@ fn check_proposal_failure_and_zero_enforcement_have_distinct_exit_contracts() {
     assert!(String::from_utf8_lossy(&failed.stdout).contains("FAIL"));
     assert!(failed.stderr.is_empty());
 
+    let enforced_failure = Command::new(benchmark_binary())
+        .args([
+            "check",
+            results.to_str().unwrap(),
+            "--budgets",
+            enforced.to_str().unwrap(),
+            "--require-enforced",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(enforced_failure.status.code(), Some(1));
+    assert!(enforced_failure.stderr.is_empty());
+
     let proposal = Command::new(benchmark_binary())
         .args([
             "check",

@@ -301,8 +301,7 @@ impl LibraryEntryDetail {
         self.last_run
             .as_ref()
             .map(|run| run.at.as_str())
-            .filter(|at| *at > self.added_at.as_str())
-            .unwrap_or(&self.added_at)
+            .map_or(self.added_at.as_str(), |at| at.max(self.added_at.as_str()))
     }
 }
 
@@ -370,6 +369,27 @@ mod tests {
             last_run(now, &at("not a timestamp")).unwrap().age,
             LibraryRunAge::Raw("not a timestamp".to_owned())
         );
+    }
+
+    #[test]
+    fn activity_time_is_the_lexical_maximum_of_add_and_run_times() {
+        let mut detail = LibraryEntryDetail {
+            added_at: "2026-08-09T12:00:00Z".to_owned(),
+            ..LibraryEntryDetail::default()
+        };
+        assert_eq!(detail.activity_at(), detail.added_at);
+        for (last_run, expected) in [
+            ("2026-08-09T11:00:00Z", "2026-08-09T12:00:00Z"),
+            ("2026-08-09T12:00:00Z", "2026-08-09T12:00:00Z"),
+            ("2026-08-09T13:00:00Z", "2026-08-09T13:00:00Z"),
+        ] {
+            detail.last_run = Some(LibraryLastRun {
+                at: last_run.to_owned(),
+                age: LibraryRunAge::JustNow,
+                exit: Some(0),
+            });
+            assert_eq!(detail.activity_at(), expected);
+        }
     }
 
     #[test]

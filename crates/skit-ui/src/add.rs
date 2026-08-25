@@ -1230,8 +1230,15 @@ pub enum AddAction {
     SetCommandName(String),
     /// Replace the command description field.
     SetCommandDescription(String),
-    /// Highlight a kept draft row.
+    /// Highlight a kept draft row and point the source path at it.
     SelectDraft(usize),
+    /// Highlight a kept draft row without touching the source path.
+    ///
+    /// Version 0.4 deletes the highlighted draft, and the highlight follows the
+    /// keyboard into the list with no activation step (`OptionList.highlighted`,
+    /// `src/skit/tui_add.py:481-490`). A frontend reports the landing so the
+    /// delete ask can name the row the eye is on.
+    HighlightDraft(usize),
     /// Continue from the source surface.
     Continue,
     /// Return one byte-exact host inspection.
@@ -1448,6 +1455,15 @@ impl AddWorkflowState {
         self.review.as_ref()
     }
 
+    /// Kept draft the confirmation stage asks about.
+    ///
+    /// The confirmation names the draft, because deleting it removes the only copy
+    /// (`src/skit/tui_add.py:176`).
+    #[must_use]
+    pub const fn delete_candidate(&self) -> Option<&DraftSummary> {
+        self.delete_candidate.as_ref()
+    }
+
     /// Typed validation or host problem.
     #[must_use]
     pub const fn problem(&self) -> Option<&AddProblem> {
@@ -1492,6 +1508,11 @@ impl AddWorkflowState {
                 if index < self.source.drafts.len() {
                     self.source.selected_draft = Some(index);
                     self.source.path = self.source.drafts[index].path.display().to_string();
+                }
+            }
+            AddAction::HighlightDraft(index) => {
+                if index < self.source.drafts.len() {
+                    self.source.selected_draft = Some(index);
                 }
             }
             AddAction::Continue => return self.continue_source(),
@@ -1561,7 +1582,9 @@ impl AddWorkflowState {
                 self.stage = AddStage::Source;
             }
             AddAction::ConfirmDraftDelete(true) => {
-                let Some(draft) = self.delete_candidate.take() else {
+                // The candidate stays until the stage it describes ends. A frontend can draw the
+                // confirmation while the host performs the delete, and the screen names the draft.
+                let Some(draft) = self.delete_candidate.clone() else {
                     return Vec::new();
                 };
                 let request = self.request();
@@ -1577,6 +1600,7 @@ impl AddWorkflowState {
                     return Vec::new();
                 }
                 self.stage = AddStage::Source;
+                self.delete_candidate = None;
                 match result {
                     Ok(DraftDeleteOutcome::Removed | DraftDeleteOutcome::AlreadyMissing) => {
                         self.problem = None;
@@ -2594,6 +2618,52 @@ mod tests {
         );
     }
 
+    /// The confirmation stage always has the draft it asks about. A frontend can draw while the
+    /// host performs the delete, and the screen names the file in that window too; the candidate
+    /// therefore ends exactly when the stage that describes it ends.
+    #[test]
+    fn the_delete_candidate_lives_exactly_as_long_as_the_stage_that_names_it() {
+        let draft = DraftSummary {
+            path: PathBuf::from("skit-new-inflight.py"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        };
+        let mut workflow = AddWorkflowState::new(vec![draft.clone()]);
+        let _ = workflow.reduce(AddAction::SelectDraft(0));
+        let _ = workflow.reduce(AddAction::DeleteSelectedDraft);
+        assert_eq!(workflow.stage(), AddStage::ConfirmDraftDelete);
+        assert_eq!(workflow.delete_candidate(), Some(&draft));
+
+        let effects = workflow.reduce(AddAction::ConfirmDraftDelete(true));
+        let (request, _) = effects
+            .iter()
+            .find_map(delete_effect)
+            .expect("confirmed deletion must emit one typed host request");
+        assert_eq!(
+            workflow.stage(),
+            AddStage::ConfirmDraftDelete,
+            "the stage stays open until the host answers"
+        );
+        assert_eq!(
+            workflow.delete_candidate(),
+            Some(&draft),
+            "the confirmation still names its draft while the delete runs"
+        );
+
+        let _ = workflow.reduce(AddAction::DraftDeleted {
+            request,
+            result: Ok(DraftDeleteOutcome::Removed),
+        });
+        assert_eq!(workflow.stage(), AddStage::Source);
+        assert_eq!(
+            workflow.delete_candidate(),
+            None,
+            "the candidate ends with the stage that described it"
+        );
+    }
+
     #[test]
     fn draft_delete_error_keeps_the_row_and_never_fabricates_success() {
         let draft = DraftSummary {
@@ -3011,6 +3081,42 @@ mod tests {
             entry.payload.unwrap().bytes,
             b"# /// script\n# dependencies = [\"httpx\"]\n# ///\nimport requests\n"
         );
+    }
+
+    /// The keyboard highlight alone must arm the draft-delete ask.
+    ///
+    /// Version 0.4 deletes the highlighted draft with no activation step
+    /// (`OptionList.highlighted`, `src/skit/tui_add.py:481-490`). A row the
+    /// focus landed on is enough; the source path must stay untouched.
+    #[test]
+    fn a_focused_draft_row_is_enough_for_the_delete_ask() {
+        let draft = DraftSummary {
+            path: PathBuf::from("skit-new-kept.py"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        };
+        let mut workflow = AddWorkflowState::new(vec![draft.clone()]);
+
+        // Without any highlight the ask has no subject and must not open.
+        assert!(workflow.reduce(AddAction::DeleteSelectedDraft).is_empty());
+        assert_eq!(workflow.stage(), AddStage::Source);
+
+        // A focus landing highlights the row and leaves the source path alone.
+        assert!(workflow.reduce(AddAction::HighlightDraft(0)).is_empty());
+        assert_eq!(workflow.source().selected_draft(), Some(&draft));
+        assert_eq!(workflow.source().path, String::new());
+
+        // The ask now names the highlighted draft.
+        assert!(workflow.reduce(AddAction::DeleteSelectedDraft).is_empty());
+        assert_eq!(workflow.stage(), AddStage::ConfirmDraftDelete);
+        assert_eq!(workflow.delete_candidate(), Some(&draft));
+
+        // An out-of-range landing changes nothing.
+        let mut empty = AddWorkflowState::new(Vec::new());
+        assert!(empty.reduce(AddAction::HighlightDraft(3)).is_empty());
+        assert_eq!(empty.source().selected_draft(), None);
     }
 
     #[test]

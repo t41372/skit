@@ -39,10 +39,10 @@ use skit_runtime::{
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
-    FileStore, content_hash,
+    FileStore, content_hash, override_directory, platform_config_dir, platform_state_dir,
 };
 use thiserror::Error;
-use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
+use time::{OffsetDateTime, UtcOffset};
 
 use crate::cli::{entry_candidates, preset_candidates, runner_candidates};
 
@@ -70,11 +70,11 @@ pub(crate) struct RunArgs {
     #[arg(add = ArgValueCandidates::new(entry_candidates))]
     pub(crate) selector: String,
 
-    /// Set one field for this run.
+    /// Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the form no longer asks for a field you set).
     #[arg(long = "set", value_name = "NAME=VALUE")]
     pub(crate) values: Vec<String>,
 
-    /// Load one named preset.
+    /// Named preset of parameter values to prefill the form with.
     #[arg(
         long,
         short = 'p',
@@ -82,11 +82,11 @@ pub(crate) struct RunArgs {
     )]
     pub(crate) preset: Option<String>,
 
-    /// Save accepted values as a named preset after the run.
+    /// Save this run's values as a named preset.
     #[arg(long, value_name = "NAME")]
     pub(crate) save_preset: Option<String>,
 
-    /// Select a prompt runner for this run.
+    /// Run a prompt entry with this agent (overrides its pin for one run).
     #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
     pub(crate) runner: Option<String>,
 
@@ -94,23 +94,23 @@ pub(crate) struct RunArgs {
     #[arg(skip)]
     pub(crate) runner_was_picked: bool,
 
-    /// Print the masked launch command and do not start a child.
+    /// Print the exact command that would run (tokens and globs expanded), then exit.
     #[arg(long)]
     pub(crate) dry_run: bool,
 
-    /// Do not open an interactive form.
+    /// Never prompt; reuse last values and defaults.
     #[arg(long)]
     pub(crate) no_input: bool,
 
-    /// Disable enhanced terminal presentation for this run.
+    /// Line-by-line prompts instead of the inline form.
     #[arg(long)]
     pub(crate) plain: bool,
 
-    /// Bypass parameter handling and pass only the argument tail.
+    /// Skip the parameter form and injection and run the script as-is (escape hatch).
     #[arg(long)]
     pub(crate) raw: bool,
 
-    /// Clear the remembered argument tail before this run.
+    /// Forget the remembered extra arguments before this run (they are otherwise reused when you pass none).
     #[arg(long)]
     pub(crate) forget_args: bool,
 
@@ -768,9 +768,7 @@ pub(crate) fn run_with_roots(
     }
     let exit = execute_launch(&plan)?;
     let slug = &entry.slug;
-    let at = OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned());
+    let at = skit_store::now_iso();
     let recorded_values = (!args.raw).then_some(&raw_values);
     state.record_completed_run_with(
         slug,
@@ -1329,91 +1327,17 @@ fn home_dir() -> Option<PathBuf> {
 }
 
 fn resolve_state_dir() -> Result<PathBuf, RunError> {
-    if let Some(path) = env::var_os("SKIT_STATE_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_STATE_DIR")) {
+        return Ok(path);
     }
     platform_state_dir().ok_or(RunError::StateDirectoryUnavailable)
 }
 
 fn resolve_config_dir() -> Result<PathBuf, RunError> {
-    if let Some(path) = env::var_os("SKIT_CONFIG_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_CONFIG_DIR")) {
+        return Ok(path);
     }
     platform_config_dir().ok_or(RunError::ConfigDirectoryUnavailable)
-}
-
-#[cfg(target_os = "windows")]
-fn platform_state_dir() -> Option<PathBuf> {
-    env::var_os("LOCALAPPDATA")
-        .or_else(|| env::var_os("APPDATA"))
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-}
-
-#[cfg(target_os = "windows")]
-fn platform_config_dir() -> Option<PathBuf> {
-    env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-}
-
-#[cfg(target_os = "macos")]
-fn platform_config_dir() -> Option<PathBuf> {
-    platform_state_dir()
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn platform_config_dir() -> Option<PathBuf> {
-    unix_config_dir(env::var_os("XDG_CONFIG_HOME"), env::var_os("HOME"))
-}
-
-/// Name the configuration directory from the two variables that can hold it.
-///
-/// The values arrive as parameters, so a test can ask for both answers without changing the
-/// environment of the whole process.
-#[cfg(all(unix, not(target_os = "macos")))]
-fn unix_config_dir(
-    xdg_config_home: Option<std::ffi::OsString>,
-    home: Option<std::ffi::OsString>,
-) -> Option<PathBuf> {
-    xdg_config_home
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-        .or_else(|| {
-            home.map(PathBuf::from)
-                .map(|path| path.join(".config").join("skit"))
-        })
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn platform_config_dir() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn platform_state_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from).map(|path| {
-        path.join("Library")
-            .join("Application Support")
-            .join("skit")
-    })
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn platform_state_dir() -> Option<PathBuf> {
-    env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-        .or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|path| path.join(".local").join("state").join("skit"))
-        })
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn platform_state_dir() -> Option<PathBuf> {
-    None
 }
 
 #[cfg(test)]
@@ -2216,26 +2140,6 @@ mod tests {
             .unwrap();
         assert_eq!(pinned.name, "local");
         assert_eq!(selection.last_runner(), "prior");
-    }
-
-    /// Both answers, without asking the host what its own environment holds.
-    #[cfg(all(unix, not(target_os = "macos")))]
-    #[test]
-    fn unix_config_dir_prefers_xdg_and_falls_back_to_home() {
-        use std::ffi::OsString;
-
-        assert_eq!(
-            unix_config_dir(
-                Some(OsString::from("/xdg")),
-                Some(OsString::from("/home/user"))
-            ),
-            Some(PathBuf::from("/xdg/skit"))
-        );
-        assert_eq!(
-            unix_config_dir(None, Some(OsString::from("/home/user"))),
-            Some(PathBuf::from("/home/user/.config/skit"))
-        );
-        assert_eq!(unix_config_dir(None, None), None);
     }
 
     #[test]

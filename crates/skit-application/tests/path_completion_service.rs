@@ -7,8 +7,8 @@ use std::{
 use skit_application::{
     path_completion::{
         DirectoryEntry, DirectoryReadError, DirectoryReadFilter, DirectoryReader,
-        PathCompletionContext, PathCompletionKind, PathCompletionRequest, PathCompletionService,
-        PathInputDialect, looks_pathy,
+        PathCompletionContext, PathCompletionKind, PathCompletionProvider, PathCompletionRequest,
+        PathCompletionService, PathInputDialect, looks_pathy,
     },
     tokens::TokenContext,
 };
@@ -25,6 +25,28 @@ fn windows_drive_roots_use_the_same_separator_activation_as_other_paths() {
     }
     assert!(!looks_pathy("C:relative", PathInputDialect::Windows));
     assert!(!looks_pathy("C:relative", PathInputDialect::Posix));
+}
+
+#[test]
+fn directory_filter_checks_prefix_and_hidden_names_independently() {
+    let visible = DirectoryReadFilter::new("no", false);
+    assert!(visible.accepts("notes.md"));
+    assert!(!visible.accepts("other.md"));
+    assert!(!visible.accepts(".notes.md"));
+
+    let hidden = DirectoryReadFilter::new(".no", true);
+    assert!(hidden.accepts(".notes.md"));
+    assert!(!hidden.accepts("notes.md"));
+}
+
+#[test]
+fn every_path_marker_activates_only_its_own_dialect() {
+    for piece in ["~notes", "{cwd}notes", "dir/notes"] {
+        assert!(looks_pathy(piece, PathInputDialect::Posix), "{piece}");
+    }
+    assert!(looks_pathy(r"dir\notes", PathInputDialect::Windows));
+    assert!(!looks_pathy(r"dir\notes", PathInputDialect::Posix));
+    assert!(!looks_pathy("notes", PathInputDialect::Posix));
 }
 
 impl DirectoryReader for RecordingReader {
@@ -77,6 +99,32 @@ fn cwd_expansion_and_directory_filter_have_one_application_owned_contract() {
             DirectoryReadFilter::new("no", false),
         )]
     );
+}
+
+#[test]
+fn object_safe_completion_delegates_to_the_reader() {
+    let service = PathCompletionService::new(RecordingReader::default());
+    let provider: &dyn PathCompletionProvider = &service;
+    assert_eq!(
+        provider.complete(&shlexy_request("run no")),
+        Some("run notes.md".to_owned())
+    );
+}
+
+#[test]
+fn empty_paths_and_ordinary_text_do_not_read_a_directory() {
+    for (value, kind) in [
+        ("", PathCompletionKind::Path),
+        ("notes", PathCompletionKind::Text),
+    ] {
+        let reader = RecordingReader::default();
+        let calls = Arc::clone(&reader.calls);
+        let service = PathCompletionService::new(reader);
+        let mut request = shlexy_request(value);
+        request.kind = kind;
+        assert_eq!(service.complete(&request), None, "{value}");
+        assert!(calls.lock().unwrap().is_empty(), "{value}");
+    }
 }
 
 fn shlexy_request(value: &str) -> PathCompletionRequest {

@@ -119,6 +119,8 @@ fn hyperfine_builder_and_parser_keep_real_argv_and_full_samples() {
     }"#;
     let samples = parse_export(export).unwrap();
     assert_eq!(samples["startup.version"], [0.001, 0.002, 0.004]);
+    let zero = parse_export(r#"{"results":[{"command":"instant","times":[0.0]}]}"#).unwrap();
+    assert_eq!(zero["instant"], [0.0]);
     let metrics = metrics_from_export(&samples).unwrap();
     assert_eq!(metrics["startup.version.median_ms"].value, 2.0);
     assert_eq!(metrics["startup.version.median_ms"].p95, Some(4.0));
@@ -494,6 +496,77 @@ fn budget_predicates_and_report_symbols_keep_all_decay_channels_visible() {
 }
 
 #[test]
+fn enforced_count_excludes_only_rows_that_did_not_apply() {
+    let row = |tier, outcome| BudgetRowResult {
+        budget: Budget {
+            metric: "count".to_owned(),
+            max_value: 100.0,
+            tier,
+            ratchet: false,
+            headroom: 0.1,
+            profiles: Vec::new(),
+            platform: None,
+            ci_only: false,
+            context: BTreeMap::new(),
+            note: String::new(),
+        },
+        outcome,
+        value: None,
+        detail: String::new(),
+        stale: false,
+    };
+    let report = BudgetReport {
+        rows: vec![
+            row(BudgetTier::Enforced, BudgetOutcome::Passed),
+            row(BudgetTier::Enforced, BudgetOutcome::MetricMissing),
+            row(BudgetTier::Enforced, BudgetOutcome::NotApplicable),
+            row(BudgetTier::Target, BudgetOutcome::Passed),
+        ],
+    };
+    assert_eq!(report.enforced_evaluated(), 2);
+    assert!(render_report(&report).contains("enforced: 3 rows, 2 evaluated, 1 passed, 1 failed"));
+}
+
+#[test]
+fn ratchet_staleness_stays_below_the_exact_fraction() {
+    let mut budget = Budget {
+        metric: "latency".to_owned(),
+        max_value: 100.0,
+        tier: BudgetTier::Enforced,
+        ratchet: true,
+        headroom: 0.0,
+        profiles: Vec::new(),
+        platform: None,
+        ci_only: false,
+        context: BTreeMap::new(),
+        note: String::new(),
+    };
+    let is_stale = |budget: &Budget, value| {
+        evaluate(
+            std::slice::from_ref(budget),
+            &results(&[("latency", value, "ms")]),
+        )
+        .rows[0]
+            .stale
+    };
+    assert!(is_stale(&budget, 84.0));
+    assert!(!is_stale(&budget, 85.0));
+    assert!(!is_stale(&budget, 90.0));
+    budget.ratchet = false;
+    assert!(!is_stale(&budget, 10.0));
+}
+
+#[test]
+fn unchanged_ratchet_proposal_needs_no_regression_override() {
+    let mut budget = load_budgets(ENFORCED).unwrap().remove(0);
+    budget.max_value = 11.0;
+    budget.headroom = 0.1;
+    let measured = results(&[("imports.version.modules", 10.0, "count")]);
+    let proposal = propose(&[budget], &measured, false).unwrap();
+    assert_eq!(load_budgets(&proposal).unwrap()[0].max_value, 11.0);
+}
+
+#[test]
 fn propose_is_ci_only_dirty_safe_and_never_widens_without_consent() {
     let budgets = load_budgets(ENFORCED).unwrap();
     let measured = results(&[("imports.version.modules", 291.0, "count")]);
@@ -607,6 +680,52 @@ fn comparison_excludes_harness_metrics_and_flags_exact_changes_and_provenance() 
     assert!(markdown.contains("|Δ| > max(5%, per-unit floor: 2 ms macro / 1 µs micro)"));
     assert!(markdown.contains("Deltas below mix apples and oranges."));
     assert!(!markdown.contains("pipeline.duration_s"));
+}
+
+#[test]
+fn percentage_change_uses_the_base_and_handles_zero() {
+    let delta = Delta {
+        metric: "latency".to_owned(),
+        unit: "ms".to_owned(),
+        base: 200.0,
+        head: 220.0,
+    };
+    assert_eq!(delta.percent(), Some(10.0));
+    assert_eq!(Delta { base: 0.0, ..delta }.percent(), None);
+}
+
+#[test]
+fn comparison_noise_floors_and_relative_threshold_keep_their_boundaries() {
+    let delta = |unit: &str, base: f64, head: f64| Delta {
+        metric: "latency".to_owned(),
+        unit: unit.to_owned(),
+        base,
+        head,
+    };
+    for (unit, head) in [("s", 0.001), ("ms", 1.0), ("us", 0.5)] {
+        assert!(!delta(unit, 0.0, head).is_notable(), "{unit}");
+    }
+    assert!(!delta("ms", 100.0, 103.0).is_notable());
+    assert!(!delta("ms", 100.0, 105.0).is_notable());
+    assert!(delta("ms", 100.0, 106.0).is_notable());
+}
+
+#[test]
+fn comparison_tables_keep_noise_and_signed_zero_separate() {
+    let base = results(&[("noise", 100.0, "ms"), ("change", 100.0, "ms")]);
+    let head = results(&[("noise", 101.0, "ms"), ("change", 90.0, "ms")]);
+    let text = render_comparison(&base, &head, &compare(&base, &head));
+    assert_eq!(text.matches("| `noise` |").count(), 1);
+    assert_eq!(text.matches("| `change` |").count(), 1);
+    assert!(text.contains("### Notable (1)"));
+    assert!(text.contains("Within noise (1)"));
+    assert!(text.contains("| `change` | 100 ms | 90 ms | -10 | -10.0% |"));
+
+    let same = results(&[("same", 100.0, "ms")]);
+    let unchanged = render_comparison(&same, &same, &compare(&same, &same));
+    assert!(unchanged.contains("| `same` | 100 ms | 100 ms | +0 | +0.0% |"));
+    assert!(unchanged.contains("Within noise (1)"));
+    assert!(!unchanged.contains("### Notable (1)"));
 }
 
 #[test]

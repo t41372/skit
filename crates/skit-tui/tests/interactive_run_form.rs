@@ -52,11 +52,21 @@ fn draw(
     width: u16,
     height: u16,
 ) -> (Terminal<TestBackend>, ViewGeometry) {
+    draw_in_locale(session, state, width, height, Locale::En)
+}
+
+fn draw_in_locale(
+    session: &mut TuiSession,
+    state: &LibraryState,
+    width: u16,
+    height: u16,
+    locale: Locale,
+) -> (Terminal<TestBackend>, ViewGeometry) {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
     let mut geometry = ViewGeometry::default();
     terminal
         .draw(|frame| {
-            geometry = render_with_session(frame, state, Locale::En, session);
+            geometry = render_with_session(frame, state, locale, session);
         })
         .unwrap();
     (terminal, geometry)
@@ -620,6 +630,81 @@ fn run_shortcuts_keep_submit_and_preset_save_distinct() {
         ),
         EventHandling::Action(Action::OpenRunTokenMenu)
     );
+}
+
+#[test]
+fn ctrl_t_token_menu_localizes_every_row_in_simplified_chinese() {
+    let mut path = ParamDecl::new("path");
+    path.parameter_type = ParameterType::Path;
+    let form = RunFormView::from_declarations(
+        "paths",
+        "Paths",
+        &[path],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: Some("/home/demo".to_owned()),
+            env: BTreeMap::new(),
+            today: "2026-08-24".to_owned(),
+            now: "12-00-00".to_owned(),
+        },
+    });
+    let mut state = state_with_form(form);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 100, 24);
+    assert_eq!(
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        ),
+        EventHandling::Action(Action::OpenRunTokenMenu)
+    );
+
+    let (terminal, _) = draw_in_locale(&mut session, &state, 100, 24, Locale::ZhCn);
+    let rendered = buffer_text(terminal.backend().buffer());
+    // Ratatui's TestBackend exposes the continuation cell of each wide glyph as a space.
+    let compact = rendered.replace(' ', "");
+    for translated in [
+        "文件或文件夹…",
+        "运行时所在目录（跟着你在哪运行而变）",
+        "此刻目录（固定路径）",
+        "今天日期",
+        "当前时间",
+        "主目录",
+        "环境变量…",
+    ] {
+        assert!(
+            compact.contains(translated),
+            "missing {translated}: {rendered}"
+        );
+    }
+    for source in [
+        "File or folder…",
+        "Directory at run time (changes with where you run)",
+        "This directory, as a fixed path",
+        "Today's date",
+        "Current time",
+        "Home directory",
+        "Environment variable…",
+    ] {
+        assert!(
+            !rendered.contains(source),
+            "untranslated {source}: {rendered}"
+        );
+    }
 }
 
 #[test]

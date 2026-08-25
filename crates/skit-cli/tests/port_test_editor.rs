@@ -48,11 +48,13 @@
 
 #![cfg(unix)]
 
+#[path = "support/pty.rs"]
+mod pty;
+
 use std::fs;
-use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use skit_store::{FileConfigStore, content_hash};
 use tempfile::TempDir;
@@ -336,58 +338,48 @@ fn run_pty(
     editor: Option<&Path>,
     input: &[&[u8]],
 ) -> (u32, String) {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    let mut command = editor_pty_command(args, data, state, config);
+    if let Some(editor) = editor {
+        command.env("EDITOR", editor);
+    }
+    let mut child = pty::PtyChild::spawn(command, editor_pty_size(), pty::AnswerQueries::On);
+    for bytes in input {
+        child.settle();
+        if !child.try_send(bytes) {
+            break;
+        }
+    }
+    let status = child.wait_exit_within(Duration::from_secs(60));
+    child.settle();
+    let output = String::from_utf8_lossy(&child.raw_after(0)).into_owned();
+    (status.exit_code(), output)
+}
 
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 100,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
-    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+/// The `skit` command an editor test runs on a terminal, with every directory pinned.
+fn editor_pty_command(
+    args: &[&str],
+    data: &Path,
+    state: &Path,
+    config: &Path,
+) -> portable_pty::CommandBuilder {
+    let mut command = portable_pty::CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
     command.args(args);
     command.env("TERM", "xterm-256color");
     command.env("SKIT_LANG", "en");
     command.env("SKIT_DATA_DIR", data);
     command.env("SKIT_STATE_DIR", state);
     command.env("SKIT_CONFIG_DIR", config);
-    if let Some(editor) = editor {
-        command.env("EDITOR", editor);
-    }
-    let mut child = pair.slave.spawn_command(command).unwrap();
-    drop(pair.slave);
+    command
+}
 
-    let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let reader_capture = std::sync::Arc::clone(&captured);
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let drain = std::thread::spawn(move || {
-        let mut chunk = [0_u8; 1024];
-        loop {
-            match reader.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(read) => reader_capture
-                    .lock()
-                    .unwrap()
-                    .extend_from_slice(&chunk[..read]),
-            }
-        }
-    });
-    let mut writer = pair.master.take_writer().unwrap();
-    for bytes in input {
-        settle(&captured);
-        if writer.write_all(&keystrokes(bytes)).is_err() {
-            break;
-        }
-        let _ = writer.flush();
+/// The terminal geometry every editor test uses.
+fn editor_pty_size() -> portable_pty::PtySize {
+    portable_pty::PtySize {
+        rows: 24,
+        cols: 120,
+        pixel_width: 0,
+        pixel_height: 0,
     }
-    let status = child.wait().unwrap();
-    drop(writer);
-    drain.join().unwrap();
-    let raw = captured.lock().unwrap().clone();
-    let output = String::from_utf8_lossy(&raw).into_owned();
-    (status.exit_code(), output)
 }
 
 /// Drive one real line prompt, but do not send its answer before the prompt is visible.
@@ -403,73 +395,37 @@ fn run_pty_after_prompt(
     prompt: &str,
     answer: &[u8],
 ) -> (u32, String) {
-    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-    use std::sync::{Arc, Mutex};
-    use std::time::Instant;
-
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
-    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
-    command.args(args);
-    command.env("TERM", "xterm-256color");
-    command.env("SKIT_LANG", "en");
-    command.env("SKIT_DATA_DIR", sandbox.data.path());
-    command.env("SKIT_STATE_DIR", sandbox.state.path());
-    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
+    let mut command = editor_pty_command(
+        args,
+        sandbox.data.path(),
+        sandbox.state.path(),
+        sandbox.config.path(),
+    );
     command.env("VISUAL", editor);
     command.env("EDITOR", editor);
-    let mut child = pair.slave.spawn_command(command).unwrap();
-    drop(pair.slave);
-
-    let captured = Arc::new(Mutex::new(Vec::new()));
-    let drain_target = Arc::clone(&captured);
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let drain = std::thread::spawn(move || {
-        let mut buffer = [0_u8; 1024];
-        while let Ok(count) = reader.read(&mut buffer) {
-            if count == 0 {
-                break;
-            }
-            drain_target
-                .lock()
-                .unwrap()
-                .extend_from_slice(&buffer[..count]);
-        }
-    });
+    let mut child = pty::PtyChild::spawn(command, editor_pty_size(), pty::AnswerQueries::On);
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let current = captured.lock().unwrap().clone();
-        if String::from_utf8_lossy(&current).contains(prompt) {
+        let current = String::from_utf8_lossy(&child.raw_after(0)).into_owned();
+        if current.contains(prompt) {
             break;
         }
         assert!(
             !editor_marker.exists(),
-            "the editor opened before prompt {prompt:?}: {}",
-            String::from_utf8_lossy(&current)
+            "the editor opened before prompt {prompt:?}: {current}"
         );
         assert!(
             Instant::now() < deadline,
-            "PTY output never contained {prompt:?}: {}",
-            String::from_utf8_lossy(&current)
+            "PTY output never contained {prompt:?}: {current}"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
 
-    let mut writer = pair.master.take_writer().unwrap();
-    writer.write_all(&keystrokes(answer)).unwrap();
-    writer.flush().unwrap();
-    let status = child.wait().unwrap();
-    drop(writer);
-    drop(pair.master);
-    drain.join().unwrap();
-    let output = String::from_utf8_lossy(&captured.lock().unwrap())
+    child.send(answer);
+    let status = child.wait_exit_within(Duration::from_secs(60));
+    child.settle();
+    let output = String::from_utf8_lossy(&child.raw_after(0))
         .replace("\r\n", "\n")
         .replace('\r', "");
     (status.exit_code(), output)
@@ -1948,45 +1904,4 @@ fn test_params_edit_missing_copy_refused() {
         ["meta.toml"],
         "the missing payload was not recreated"
     );
-}
-
-/// Deliver one canned answer the way a terminal delivers it.
-///
-/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
-/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
-/// character, so the prompt keeps waiting and both sides stop
-/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
-/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
-/// Unix exactly as it was. This file runs only on Unix today, and keeps the convention so that a
-/// later change of that gate cannot bring the fault back.
-fn keystrokes(answer: &[u8]) -> Vec<u8> {
-    answer
-        .iter()
-        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
-        .collect()
-}
-
-/// Wait until the child has written nothing for a short while, so an answer lands on a prompt that
-/// is already reading.
-///
-/// See the note on the same helper in `port_test_add_no_source.rs`. This file runs only on Unix
-/// today, and keeps the convention so that a later change of that gate cannot bring the fault back.
-fn settle(captured: &std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
-    const QUIET: Duration = Duration::from_millis(60);
-
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut seen = captured.lock().unwrap().len();
-    let mut quiet_since = std::time::Instant::now();
-    while std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-        let now = captured.lock().unwrap().len();
-        if now == seen {
-            if quiet_since.elapsed() >= QUIET {
-                return;
-            }
-        } else {
-            seen = now;
-            quiet_since = std::time::Instant::now();
-        }
-    }
 }

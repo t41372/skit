@@ -79,7 +79,8 @@ use skit_store::{
     CONFIG_KEYS, ConfigError, CoordinatedStateError, ExternalRollbackOutcome, FileAgentSkillStore,
     FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
     FileRunnerManagementStore, PromptRunner, RunnerManagementStoreError, RunnerRemovalCas,
-    SystemDirectoryReader, expand_user_path,
+    SystemDirectoryReader, expand_user_path, override_directory, platform_config_dir,
+    platform_data_dir, platform_state_dir,
 };
 use skit_store::{FileStore, content_hash, stored_filenames};
 use skit_ui::{
@@ -94,19 +95,39 @@ use skit_ui::{
     SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
 };
 use thiserror::Error;
-use unicode_width::UnicodeWidthStr as _;
+use unicode_width::{UnicodeWidthChar as _, UnicodeWidthStr as _};
 
 use crate::run::{RunArgs, RunError, apply_sets};
 
 macro_rules! humanln {
+    ($style:ident: $message:literal $(, $value:expr)* $(,)?) => {
+        println!(
+            "{}",
+            paint_for_output(
+                &format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]),
+                HumanStyle::$style,
+                human_output_width(),
+            )
+        )
+    };
     ($message:literal $(, $value:expr)* $(,)?) => {
-        println!("{}", format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]))
+        humanln!(Plain: $message $(, $value)*)
     };
 }
 
 macro_rules! humanerrln {
+    ($style:ident: $message:literal $(, $value:expr)* $(,)?) => {
+        eprintln!(
+            "{}",
+            paint_for_output(
+                &format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]),
+                HumanStyle::$style,
+                human_error_width(),
+            )
+        )
+    };
     ($message:literal $(, $value:expr)* $(,)?) => {
-        eprintln!("{}", format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]))
+        humanerrln!(Plain: $message $(, $value)*)
     };
 }
 
@@ -281,7 +302,7 @@ struct Cli {
 enum Command {
     /// List every registered entry.
     List {
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -290,55 +311,55 @@ enum Command {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Add one file as a copied or referenced entry.
+    /// Add a script, executable, prompt, or command to skit.
     Add {
         /// Source file to register.
         source: Option<PathBuf>,
-        /// Force an interpreted kind or exe. With stdin, prompt is also valid.
+        /// Force the language kind (e.g. shell, js) for an extensionless file.
         #[arg(long, add = ArgValueCandidates::new(add_kind_candidates))]
         kind: Option<String>,
-        /// Display name. The source stem is the default.
+        /// Name / alias (defaults to the file name).
         #[arg(long, short = 'n')]
         name: Option<String>,
-        /// Description shown in the library.
+        /// Description (inferred from the source when possible).
         #[arg(long, short = 'd')]
         description: Option<String>,
-        /// Write a new source in the configured editor, then add it.
+        /// Write a brand-new script in your editor, then add it.
         #[arg(long, short = 'e')]
         edit: bool,
-        /// Reference the original instead of storing a copy.
+        /// Reference mode: link to the original file instead of copying it.
         #[arg(long = "ref", alias = "reference")]
         reference: bool,
-        /// Register a command template instead of a file.
+        /// Register a command template, e.g. --cmd 'ffmpeg -i {input}'.
         #[arg(long = "cmd")]
         command_template: Option<String>,
-        /// Treat the source as a prompt entry.
+        /// Add the file as a prompt for an AI agent (with no path: draft one in your editor).
         #[arg(long)]
         prompt: bool,
-        /// Force executable kind inference.
+        /// Force the executable kind (normally inferred from the file itself).
         #[arg(long)]
         exe: bool,
-        /// Pin a prompt runner.
+        /// Pin the agent a prompt entry runs with (see skit runner list).
         #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
         runner: Option<String>,
-        /// Disable prompt placeholder insertion.
+        /// Prompt only: no variable insertion at all — the body travels exactly as written.
         #[arg(long)]
         no_interpolate: bool,
-        /// Add one package dependency. Repeat for more than one value.
+        /// A dependency (repeat for more; skips the interactive question).
         #[arg(long = "dep")]
         dependencies: Option<Vec<String>>,
-        /// Set the Python version constraint.
+        /// Python version constraint, e.g. ">=3.11".
         #[arg(long)]
         python: Option<String>,
-        /// Refuse interactive questions.
+        /// Never prompt; accept the detected suggestions.
         #[arg(long)]
         no_input: bool,
     },
-    /// Run one library entry.
+    /// Run a registered entry in the terminal.
     Run(RunArgs),
     /// Set an entry's description (shown in the Library and skit list).
     Describe {
@@ -361,14 +382,14 @@ enum Command {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
-        /// Confirm the destructive operation.
+        /// Skip confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
         /// Refuse to ask for confirmation.
         #[arg(long)]
         no_input: bool,
     },
-    /// Open an entry source in the configured editor.
+    /// Open a script or prompt source in your editor (offers to create a script if the name is new).
     Edit {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -383,34 +404,34 @@ enum Command {
     Deps(DepsArgs),
     /// Check that uv is available and the entry library is intact.
     Doctor {
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
-        /// Rebuild the derived registry.
+        /// Rebuild the index from each entry's meta.toml.
         #[arg(long)]
         rebuild: bool,
     },
-    /// Read or set skit configuration.
+    /// Read or set skit's settings (language, editor, mirror, form style, after-run).
     Config {
         /// Configuration key.
         key: Option<String>,
         /// Replacement value.
         value: Option<String>,
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Manage prompt runners.
+    /// Manage the agents (runners) that prompt entries run with.
     Runner {
         #[command(subcommand)]
         command: RunnerCommand,
     },
-    /// Manage named parameter presets.
+    /// Manage named parameter presets for an entry.
     Preset {
         #[command(subcommand)]
         command: PresetCommand,
     },
-    /// Install the official Agent Skill.
+    /// Connect skit to AI agents: install the official Agent Skill.
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
@@ -424,22 +445,22 @@ struct DepsArgs {
     /// Entry slug or display name.
     #[arg(add = ArgValueCandidates::new(entry_candidates))]
     selector: String,
-    /// Replace package dependencies. Repeat for more than one value.
+    /// A dependency (repeat for more; replaces the whole list).
     #[arg(long = "dep")]
     dependencies: Vec<String>,
-    /// Clear all package dependencies.
+    /// Remove every dependency.
     #[arg(long)]
     clear: bool,
-    /// Replace the Python version constraint.
+    /// Python version constraint, e.g. ">=3.11".
     #[arg(long = "python")]
     requires_python: Option<String>,
-    /// Replace required external commands. Repeat for more than one value.
+    /// An external command the entry needs on PATH (repeat; replaces the whole list).
     #[arg(long = "need")]
     needs: Vec<String>,
-    /// Clear required external commands.
+    /// Remove every needed external command.
     #[arg(long)]
     clear_needs: bool,
-    /// Emit stable machine-readable output.
+    /// Output as JSON.
     #[arg(long)]
     json: bool,
 }
@@ -449,40 +470,40 @@ struct ParamsArgs {
     /// Entry slug or display name.
     #[arg(add = ArgValueCandidates::new(entry_candidates))]
     selector: String,
-    /// Reconcile managed definitions with the current source.
+    /// Prune definitions that no longer match the script and refresh changed types.
     #[arg(long)]
     resync: bool,
-    /// Manage one detected source parameter.
+    /// Bring a currently detected candidate under management (repeatable).
     #[arg(long = "manage")]
     manage: Vec<String>,
-    /// Stop managing one source parameter.
+    /// Drop a managed parameter (repeatable).
     #[arg(long = "unmanage")]
     unmanage: Vec<String>,
-    /// Normalize one shell constant to an environment default.
+    /// Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable).
     #[arg(long = "normalize")]
     normalize: Vec<String>,
-    /// Add a hand-declared parameter.
+    /// Declare a new parameter on an exe/command entry, by name (repeatable).
     #[arg(long = "add")]
     add: Vec<String>,
-    /// Remove a declared parameter.
+    /// Remove a declared parameter, by name (repeatable).
     #[arg(long = "rm")]
     remove: Vec<String>,
-    /// Set a parameter type as NAME=TYPE.
+    /// Set a declared parameter's type, as NAME=str|int|float|bool|choice|path.
     #[arg(long = "type")]
     parameter_types: Vec<String>,
-    /// Set a default as NAME=VALUE.
+    /// Set a declared parameter's default, as NAME=VALUE.
     #[arg(long = "default")]
     defaults: Vec<String>,
-    /// Set choices as NAME=A,B,C.
+    /// Set a declared parameter's choices, as NAME=a,b,c (comma separated).
     #[arg(long)]
     choices: Vec<String>,
-    /// Set delivery as NAME=DELIVERY.
+    /// Set how a declared parameter reaches the program, as NAME=env|flag|placeholder.
     #[arg(long = "deliver", alias = "delivery")]
     delivery: Vec<String>,
     /// Set source binding as NAME=BINDING.
     #[arg(long = "binding")]
     bindings: Vec<String>,
-    /// Set a flag as NAME=--FLAG. An empty flag makes the field positional.
+    /// Set a declared flag parameter's option, as NAME=--out (empty = positional).
     #[arg(long = "flag")]
     flags: Vec<String>,
     /// Allow more than one value for a field.
@@ -503,84 +524,84 @@ struct ParamsArgs {
     /// Set a boolean flag action as NAME=ACTION.
     #[arg(long = "action")]
     actions: Vec<String>,
-    /// Set help text as NAME=TEXT.
+    /// Set a declared parameter's help text, as NAME=text.
     #[arg(long = "help-text")]
     help_text: Vec<String>,
-    /// Set a form prompt as NAME=TEXT.
+    /// Set a parameter's form prompt, as NAME=text (repeatable).
     #[arg(long = "prompt")]
     prompts: Vec<String>,
-    /// Set a secret environment source as NAME=ENVVAR.
+    /// Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable).
     #[arg(long = "env-source")]
     env_sources: Vec<String>,
-    /// Mark fields as required.
+    /// Mark a declared parameter as required (repeatable).
     #[arg(long)]
     required: Vec<String>,
-    /// Mark fields as optional.
+    /// Mark a declared parameter as optional (repeatable).
     #[arg(long)]
     optional: Vec<String>,
-    /// Mark fields as secret.
+    /// Mark a managed parameter as secret (repeatable).
     #[arg(long)]
     secret: Vec<String>,
-    /// Remove the secret marker from fields.
+    /// Remove the secret mark from a managed parameter (repeatable).
     #[arg(long = "no-secret")]
     no_secret: Vec<String>,
-    /// Replace the work-directory policy.
+    /// Set where the entry runs: origin (its own folder), store, invoke (where you run skit from), or an absolute path.
     #[arg(long)]
     workdir: Option<String>,
-    /// Replace a command template.
+    /// Command only: rewrite the template ({placeholders} are re-read from it).
     #[arg(long)]
     template: Option<String>,
-    /// Pin an interpreter or JavaScript runtime.
+    /// Pin the interpreter/runtime an interpreted entry runs with (e.g. zsh, bun; empty value returns to automatic).
     #[arg(long)]
     interpreter: Option<String>,
-    /// Pin a prompt runner. An empty value clears the pin.
+    /// Prompt only: pin the agent this prompt runs with (empty value clears the pin).
     #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
     runner: Option<String>,
-    /// Enable prompt interpolation.
+    /// Prompt only: turn variable insertion on/off for this prompt (off = the body travels exactly as written).
     #[arg(long, conflicts_with = "no_interpolate")]
     interpolate: bool,
     /// Disable prompt interpolation.
     #[arg(long)]
     no_interpolate: bool,
-    /// Emit stable machine-readable output.
+    /// Output the read view as JSON.
     #[arg(long)]
     json: bool,
 }
 
 #[derive(Debug, Subcommand)]
 enum RunnerCommand {
-    /// List configured prompt runners.
+    /// List the configured runners (seeds them into config on first use).
     List {
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
-        /// Include malformed rows when supported.
+        /// Include malformed raw rows and their repair indexes.
         #[arg(long)]
         all: bool,
     },
-    /// Add one direct argv prompt runner.
+    /// Register a runner: skit runner add NAME COMMAND… ({{prompt}} marks where the rendered prompt goes; each shell word becomes one argument, no shell involved).
     Add {
         /// Stable runner name.
         name: String,
         /// Program and arguments. One token must contain `{{prompt}}`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         argv: Vec<String>,
-        /// Replace an existing name.
+        /// Replace the runner if the name already exists (the edit path).
         #[arg(long)]
         force: bool,
     },
-    /// Remove one configured prompt runner.
+    /// Remove a configured runner.
     Remove {
         /// Stable runner name.
         #[arg(add = ArgValueCandidates::new(runner_candidates))]
         name: Option<String>,
-        /// Remove one malformed raw row by its zero-based index or `container`.
+        /// Remove one raw row index from 'runner list --all' (or 'container').
         #[arg(long, allow_negative_numbers = true)]
         row: Option<String>,
-        /// Confirm removal.
+        /// Skip confirmation.
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Refuse to prompt.
+        /// Never prompt.
         #[arg(long)]
         no_input: bool,
     },
@@ -588,27 +609,27 @@ enum RunnerCommand {
 
 #[derive(Debug, Subcommand)]
 enum PresetCommand {
-    /// Save a named preset.
+    /// Save a set of parameter values as a named preset.
     Save {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Preset name.
         name: String,
-        /// Copy the exact public values from the most recent run.
+        /// Save the last run's values without asking (automation-friendly).
         #[arg(long)]
         from_last: bool,
     },
-    /// List named presets.
+    /// List an entry's saved presets.
     List {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
-        /// Emit stable machine-readable output.
+        /// Output as JSON.
         #[arg(long)]
         json: bool,
     },
-    /// Delete one named preset.
+    /// Delete a named preset from an entry.
     Delete {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -627,14 +648,14 @@ enum PresetCommand {
 
 #[derive(Debug, Subcommand)]
 enum AgentCommand {
-    /// Install the bundled Agent Skill.
+    /// Install skit's Agent Skill into an AI agent's skills directory.
     Install {
         /// Agent convention: claude, codex, or agents.
         target: Option<String>,
-        /// Install below this explicit directory.
+        /// Install into this skills directory instead of a named target.
         #[arg(long = "to")]
         directory: Option<PathBuf>,
-        /// Use the current project instead of the user directory.
+        /// Install into the current project (./.claude, ./.codex) instead of your home directory.
         #[arg(long)]
         project: bool,
     },
@@ -1007,11 +1028,11 @@ impl FirstRunPrompt for TerminalFirstRun {
             }
             if https_only {
                 humanerrln!(
-                    "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: {}).",
+                    Red: "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: {}).",
                     typed
                 );
             } else {
-                humanerrln!("A custom choice needs a URL.");
+                humanerrln!(Red: "A custom choice needs a URL.");
             }
         }
     }
@@ -1611,7 +1632,7 @@ fn ask_plain_kind(selector: &PlainKindSelector) -> Result<KnownEntryKind, CliErr
             kind_choice_label(locale, kind.as_str())
         );
     }
-    humanln!("- = cancel");
+    humanln!(Dim: "- = cancel");
     let theme = PlainKindChoiceTheme {
         choices: selector.choice_bracket(),
     };
@@ -1783,7 +1804,7 @@ fn add_plain_draft(
         },
     );
     if result.is_err() {
-        humanerrln!("Your draft was kept at {}", path.display());
+        humanerrln!(Dim: "Your draft was kept at {}", path.display());
     }
     result
 }
@@ -1985,7 +2006,7 @@ fn add_draft(
         add(service, options)
     };
     if result.is_err() {
-        humanerrln!("Your draft was kept at {}", draft.display());
+        humanerrln!(Dim: "Your draft was kept at {}", draft.display());
     }
     result
 }
@@ -2599,19 +2620,7 @@ fn write_table<W: io::Write, const COLUMNS: usize>(
     headers: &[String; COLUMNS],
     rows: &[[String; COLUMNS]],
 ) -> io::Result<()> {
-    let mut widths = std::array::from_fn(|column| {
-        display_lines(&headers[column])
-            .map(str::width)
-            .max()
-            .unwrap_or(0)
-    });
-    for row in rows {
-        for (column, cell) in row.iter().enumerate() {
-            widths[column] =
-                widths[column].max(display_lines(cell).map(str::width).max().unwrap_or(0));
-        }
-    }
-
+    let widths = table_widths(headers, rows, human_output_width());
     write_border(output, '┏', '┳', '┓', '━', &widths)?;
     write_table_row(output, headers, &widths)?;
     write_border(output, '┡', '╇', '┩', '━', &widths)?;
@@ -2619,6 +2628,277 @@ fn write_table<W: io::Write, const COLUMNS: usize>(
         write_table_row(output, row, &widths)?;
     }
     write_border(output, '└', '┴', '┘', '─', &widths)
+}
+
+/// The width a table may occupy, or `None` when the output is not a terminal.
+///
+/// Version 0.4 draws with Rich, whose console width is the terminal's when one is attached and a
+/// fixed default otherwise. A redirected run therefore keeps one deterministic width, which is what
+/// every recorded output in this repository holds.
+fn human_output_width() -> Option<usize> {
+    if !io::stdout().is_terminal() {
+        return None;
+    }
+    ratatui_crossterm::crossterm::terminal::size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+}
+
+/// The width a printed sentence may occupy on the error stream.
+///
+/// Version 0.4 prints its errors through a second console built for the error stream
+/// (`skit-oracle/src/skit/cli.py:63`), so the two streams answer for themselves: a piped stdout
+/// leaves a terminal stderr wrapping, and the reverse.
+fn human_error_width() -> Option<usize> {
+    if !io::stderr().is_terminal() {
+        return None;
+    }
+    ratatui_crossterm::crossterm::terminal::size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+}
+
+/// The colour a printed sentence carries.
+///
+/// Version 0.4 marks the sense of a line with Rich markup, and the sense is the same on both
+/// streams: a receipt is green, a hint is dim, a warning is yellow, and a refusal is red
+/// (`skit-oracle/src/skit/cli.py`). A line that states a fact carries no colour.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HumanStyle {
+    /// A line that states a fact.
+    Plain,
+    /// A receipt for work that finished.
+    Green,
+    /// A note beside the line it explains.
+    Dim,
+    /// A warning about work that continued.
+    Yellow,
+    /// A refusal.
+    Red,
+}
+
+impl HumanStyle {
+    /// The escape sequence Rich writes for this sense, if any.
+    ///
+    /// The values come from Rich itself: a console at `force_terminal` writes `\x1b[32m` for
+    /// `[green]`, `\x1b[31m` for `[red]`, `\x1b[33m` for `[yellow]`, and `\x1b[2m` for `[dim]`,
+    /// each closed by `\x1b[0m`.
+    const fn prefix(self) -> &'static str {
+        match self {
+            Self::Plain => "",
+            Self::Green => "\x1b[32m",
+            Self::Dim => "\x1b[2m",
+            Self::Yellow => "\x1b[33m",
+            Self::Red => "\x1b[31m",
+        }
+    }
+}
+
+/// Whether a stream that is a terminal may also carry colour.
+///
+/// Rich drops every style when `NO_COLOR` holds a value or the terminal calls itself `dumb`, and
+/// version 0.4 keeps those defaults, so the same two answers decide it here.
+fn colour_is_welcome() -> bool {
+    colour_is_welcome_for(
+        env::var_os("NO_COLOR").as_deref(),
+        env::var_os("TERM").as_deref(),
+    )
+}
+
+/// The same answer for the two variables a caller names.
+///
+/// The variables arrive as parameters so every combination is owned without a test changing the
+/// environment of the process it shares with every other test.
+fn colour_is_welcome_for(
+    no_colour: Option<&std::ffi::OsStr>,
+    term: Option<&std::ffi::OsStr>,
+) -> bool {
+    if no_colour.is_some_and(|value| !value.is_empty()) {
+        return false;
+    }
+    !term.is_some_and(|value| value == "dumb")
+}
+
+/// A printed sentence, wearing the colour its sense asks for.
+///
+/// A stream that is not a terminal keeps the plain text, which is why every recorded output in
+/// this repository is unchanged: those runs are redirected.
+fn paint_for_output(text: &str, style: HumanStyle, width: Option<usize>) -> String {
+    let folded = fold_for_output(text, width);
+    if width.is_none() || style == HumanStyle::Plain || !colour_is_welcome() {
+        return folded;
+    }
+    format!("{}{folded}\x1b[0m", style.prefix())
+}
+
+/// A printed sentence, folded to the terminal that shows it.
+///
+/// Version 0.4 prints every sentence through a Rich console, which folds to the console width. The
+/// text keeps its own line breaks, a word moves whole to the next line, and a word too long for one
+/// line is cut at the exact cell it fills, so a long path continues on the line below instead of
+/// running past the edge. A word's trailing spaces stay with it while they fit and go when they do
+/// not, which is what leaves a folded line ending in a space. A wide glyph counts two cells.
+fn fold_for_output(text: &str, width: Option<usize>) -> String {
+    let Some(width) = width.filter(|width| *width > 0) else {
+        return text.to_owned();
+    };
+    display_lines(text)
+        .map(|line| fold_line(line, width).join("\n"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One printed line, folded into the lines a console of this width shows.
+///
+/// The console decides where a line breaks and never drops a character there, so a space that ends
+/// a full line stays and a space that follows a folded word opens the next one. A line longer than
+/// the width then gives up the spaces at its end, which is the only place text is removed.
+fn fold_line(line: &str, width: usize) -> Vec<String> {
+    let characters: Vec<char> = line.chars().collect();
+    let mut breaks: Vec<usize> = Vec::new();
+    let mut cell_offset = 0usize;
+    let mut index = 0usize;
+    while index < characters.len() {
+        let start = index;
+        while index < characters.len() && characters[index] == ' ' {
+            index += 1;
+        }
+        while index < characters.len() && characters[index] != ' ' {
+            index += 1;
+        }
+        let word_end = index;
+        while index < characters.len() && characters[index] == ' ' {
+            index += 1;
+        }
+        let word_cells = cells_of(&characters[start..word_end]);
+        let chunk_cells = cells_of(&characters[start..index]);
+        if width.saturating_sub(cell_offset) >= word_cells {
+            cell_offset += chunk_cells;
+        } else if word_cells > width {
+            let mut piece_start = start;
+            let pieces = chop_cells(&characters[start..index], width);
+            for (position, piece) in pieces.iter().enumerate() {
+                if piece_start > 0 {
+                    breaks.push(piece_start);
+                }
+                if position + 1 == pieces.len() {
+                    cell_offset = cells_of(&characters[piece_start..piece_start + piece]);
+                } else {
+                    piece_start += piece;
+                }
+            }
+        } else if cell_offset > 0 && start > 0 {
+            breaks.push(start);
+            cell_offset = chunk_cells;
+        }
+    }
+    let mut lines = Vec::new();
+    let mut previous = 0usize;
+    for stop in breaks.into_iter().chain(std::iter::once(characters.len())) {
+        lines.push(rstrip_end(&characters[previous..stop], width));
+        previous = stop;
+    }
+    lines
+}
+
+/// The cells a run of characters fills.
+fn cells_of(characters: &[char]) -> usize {
+    characters
+        .iter()
+        .map(|character| character.width().unwrap_or(0))
+        .sum()
+}
+
+/// The character counts of each piece a run of characters breaks into at this width.
+fn chop_cells(characters: &[char], width: usize) -> Vec<usize> {
+    let mut pieces = Vec::new();
+    let mut taken = 0usize;
+    let mut used = 0usize;
+    for character in characters {
+        let cells = character.width().unwrap_or(0);
+        if used + cells > width && taken > 0 {
+            pieces.push(taken);
+            taken = 0;
+            used = 0;
+        }
+        taken += 1;
+        used += cells;
+    }
+    if taken > 0 {
+        pieces.push(taken);
+    }
+    pieces
+}
+
+/// A line with the spaces that reach past the width removed from its end.
+fn rstrip_end(characters: &[char], width: usize) -> String {
+    let mut kept = characters.len();
+    let filled = cells_of(characters);
+    if filled > width {
+        let mut excess = filled - width;
+        while excess > 0 && kept > 0 && characters[kept - 1] == ' ' {
+            kept -= 1;
+            excess -= 1;
+        }
+    }
+    characters[..kept].iter().collect()
+}
+
+/// The width of each column, shrinking the widest ones until the table fits.
+///
+/// Version 0.4 lets Rich fit the table to the console: a table that already fits keeps its natural
+/// columns, and a table that does not gives back width from its widest column first, so narrow
+/// columns stay readable (`skit-oracle/src/skit/cli.py:2291` builds a plain `Table`, whose default
+/// width is the console width). Every column keeps at least one cell so a border never collapses.
+fn table_widths<const COLUMNS: usize>(
+    headers: &[String; COLUMNS],
+    rows: &[[String; COLUMNS]],
+    available: Option<usize>,
+) -> [usize; COLUMNS] {
+    let mut widths: [usize; COLUMNS] = std::array::from_fn(|column| {
+        display_lines(&headers[column])
+            .map(str::width)
+            .max()
+            .unwrap_or(0)
+    });
+    for row in rows {
+        for (column, cell) in row.iter().enumerate() {
+            widths[column] = widths[column].max(cell_width(cell));
+        }
+    }
+    let Some(available) = available else {
+        return widths;
+    };
+    // Every column costs its content plus one space on each side, and every column is followed by a
+    // border character; the leading border adds the last one.
+    let furniture = COLUMNS * 3 + 1;
+    let mut total: usize = widths.iter().sum::<usize>() + furniture;
+    while total > available {
+        let Some(widest) = widest_column(&widths) else {
+            break;
+        };
+        widths[widest] -= 1;
+        total -= 1;
+    }
+    widths
+}
+
+/// The width the longest line of a cell needs.
+fn cell_width(cell: &str) -> usize {
+    display_lines(cell).map(str::width).max().unwrap_or(0)
+}
+
+/// The column to take one cell from, or `None` when none can give more.
+///
+/// The widest column pays first, and a tie goes to the rightmost of the tied columns, which is the
+/// order Rich reduces them in: at 25 columns the `Name`/`Kind`/`Help` table keeps 4, 6 and 5 cells.
+fn widest_column<const COLUMNS: usize>(widths: &[usize; COLUMNS]) -> Option<usize> {
+    widths
+        .iter()
+        .enumerate()
+        .filter(|(_, width)| **width > 1)
+        .max_by_key(|(index, width)| (**width, *index))
+        .map(|(index, _)| index)
 }
 
 fn display_lines(value: &str) -> impl Iterator<Item = &str> {
@@ -2656,19 +2936,79 @@ fn write_table_row<W: io::Write, const COLUMNS: usize>(
 ) -> io::Result<()> {
     let lines = cells
         .iter()
-        .map(|cell| display_lines(cell).collect::<Vec<_>>())
+        .enumerate()
+        .map(|(column, cell)| wrap_cell(cell, widths[column]))
         .collect::<Vec<_>>();
     let height = lines.iter().map(Vec::len).max().unwrap_or(1);
     for line in 0..height {
         write!(output, "│")?;
         for (column, width) in widths.iter().enumerate() {
-            let value = lines[column].get(line).copied().unwrap_or("");
+            let empty = String::new();
+            let value = lines[column].get(line).unwrap_or(&empty);
             let padding = width.saturating_sub(value.width());
             write!(output, " {value}{} │", " ".repeat(padding))?;
         }
         writeln!(output)?;
     }
     Ok(())
+}
+
+/// The lines a cell occupies once it fits the width it was given.
+///
+/// Version 0.4 lets Rich fold a cell: it breaks at spaces first, and a word that cannot fit even
+/// alone is cut with an ellipsis. A cell already inside its width keeps its own lines.
+fn wrap_cell(cell: &str, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    for line in display_lines(cell) {
+        if line.width() <= width {
+            lines.push(line.to_owned());
+            continue;
+        }
+        let mut current = String::new();
+        for word in line.split(' ') {
+            let candidate = if current.is_empty() {
+                word.width()
+            } else {
+                current.width() + 1 + word.width()
+            };
+            if candidate <= width {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(word);
+                continue;
+            }
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            if word.width() <= width {
+                current.push_str(word);
+            } else {
+                lines.push(truncate_to_width(word, width));
+            }
+        }
+        if !current.is_empty() {
+            lines.push(current);
+        }
+    }
+    // A cell always occupies at least one line: splitting on newlines yields the whole cell when it
+    // holds none, and an empty cell yields one empty line.
+    lines
+}
+
+/// A word cut to the width it was given, ending in an ellipsis.
+///
+/// A width of one cell has room for the ellipsis alone, which is what Rich shows there.
+fn truncate_to_width(word: &str, width: usize) -> String {
+    let mut kept = String::new();
+    for character in word.chars() {
+        if kept.width() + character.width().unwrap_or(0) + 1 > width {
+            break;
+        }
+        kept.push(character);
+    }
+    kept.push('…');
+    kept
 }
 
 fn list_description(store: &FileStore, entry: &EntrySummary, locale: Locale) -> String {
@@ -2755,8 +3095,11 @@ fn show(
         serde_json::to_writer(&mut output, &record)?;
         writeln!(output)?;
     } else {
+        // The report is folded as one block: its sentences reach the console the way every other
+        // printed sentence does, and its table rows already fit, so folding leaves them alone.
+        let mut report = Vec::new();
         write_human_show(
-            &mut output,
+            &mut report,
             store,
             &entry,
             &settings,
@@ -2764,6 +3107,8 @@ fn show(
             &state,
             active_locale(),
         )?;
+        let report = String::from_utf8(report).expect("the show report is text");
+        write!(output, "{}", fold_for_output(&report, human_output_width()))?;
     }
     Ok(())
 }
@@ -3194,7 +3539,7 @@ fn onboard_add_source(
     if mode == StorageMode::Reference {
         if !print_modeled_reader_notice(&plan) {
             humanln!(
-                "Reference mode never touches the original file, so parameter setup was skipped."
+                Dim: "Reference mode never touches the original file, so parameter setup was skipped."
             );
         }
         return Ok(source_bytes.to_vec());
@@ -3258,13 +3603,13 @@ fn print_copy_onboarding_facts(plan: &OnboardingPlan, entry_name: &str) {
     let modeled = print_modeled_reader_notice(plan);
     if !modeled && plan.uses_cli_framework() {
         humanln!(
-            "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
+            Dim: "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
             plan.frameworks.join(", ")
         );
     }
     if plan.uses_argv && !plan.uses_cli_framework() {
         humanln!(
-            "This script reads command-line arguments; the run form has an extra-arguments field for them."
+            Dim: "This script reads command-line arguments; the run form has an extra-arguments field for them."
         );
     }
     if !plan.filename_literals.is_empty() {
@@ -4023,7 +4368,7 @@ fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
         };
         humanln!("Added: {} ({} mode)", entry.meta.name, mode);
     } else {
-        humanln!("Added: {}", entry.meta.name);
+        humanln!(Green: "Added: {}", entry.meta.name);
     }
     if !entry.meta.description.is_empty() {
         println!(
@@ -4075,7 +4420,7 @@ fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
     );
     if !secrets.is_empty() {
         humanln!(
-            "Secret parameter values are never saved by skit: {}",
+            Dim: "Secret parameter values are never saved by skit: {}",
             secrets.join(", ")
         );
         if entry.meta.kind.as_str() == "prompt" {
@@ -4149,7 +4494,7 @@ fn remove(
     let slug = claimed.slug.clone();
     let name = service.remove(&claimed)?;
     FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).forget(&slug)?;
-    humanln!("Removed: {}", name);
+    humanln!(Green: "Removed: {}", name);
     Ok(())
 }
 
@@ -4264,10 +4609,10 @@ fn report_unmanaged_prompt_candidates(unmanaged: &[String]) {
 /// A prompt entry reconciles its placeholders instead of printing the generic
 /// drift hint.
 fn report_saved_edit(entry: &Entry, edited: Option<&[u8]>) {
-    humanln!("Saved {}.", entry.meta.name);
+    humanln!(Green: "Saved {}.", entry.meta.name);
     if entry.meta.kind.as_str() != "prompt" {
         humanln!(
-            "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
+            Dim: "skit reconciles parameter drift at run time; review managed parameters with: skit params {}",
             entry.meta.name
         );
         return;
@@ -4395,7 +4740,7 @@ fn edit_with_config_with_claim_hook(
             ));
         }
         humanln!(
-            "Editing the original file (reference mode): {}",
+            Dim: "Editing the original file (reference mode): {}",
             source.display()
         );
         launch_editor(&argv, &source)?;
@@ -4842,21 +5187,21 @@ fn write_deps_receipts(
 ) {
     if dependencies {
         humanln!(
-            "Dependencies of {} updated: {}",
+            Green: "Dependencies of {} updated: {}",
             name,
             list_or_dash(&settings.dependencies)
         );
     }
     if python {
         humanln!(
-            "Python constraint of {} updated: {}",
+            Green: "Python constraint of {} updated: {}",
             name,
             value_or_dash(&settings.requires_python)
         );
     }
     if needs {
         humanln!(
-            "Needs of {} updated: {}",
+            Green: "Needs of {} updated: {}",
             name,
             list_or_dash(&settings.needs)
         );
@@ -5316,7 +5661,7 @@ fn params(
         .collect::<BTreeSet<_>>();
     let mut changed = false;
     for item in malformed_source_values {
-        humanerrln!("Ignored a malformed value: {} (expected NAME=text).", item);
+        humanerrln!(Yellow: "Ignored a malformed value: {} (expected NAME=text).", item);
     }
     for warning in &source_edit_warnings {
         eprintln!(
@@ -5454,7 +5799,7 @@ fn params(
             .collect::<Vec<_>>()
             .join(", ");
         humanln!(
-            "Updated {}. Managed parameters: {}",
+            Green: "Updated {}. Managed parameters: {}",
             held.meta.name,
             if names.is_empty() { "—" } else { &names }
         );
@@ -5656,7 +6001,7 @@ fn edit_declared_params(
     }
 
     for item in malformed {
-        humanerrln!("Ignored a malformed value: {} (expected NAME=VALUE).", item);
+        humanerrln!(Yellow: "Ignored a malformed value: {} (expected NAME=VALUE).", item);
     }
     for warning in &result.warnings {
         eprintln!(
@@ -5720,7 +6065,7 @@ fn edit_declared_params(
             .collect::<Vec<_>>()
             .join(", ");
         humanln!(
-            "Updated {}. Declared parameters: {}",
+            Green: "Updated {}. Declared parameters: {}",
             held.meta.name,
             if names.is_empty() { "—" } else { &names }
         );
@@ -6577,7 +6922,7 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                 }
                 if amp_seeded {
                     humanln!(
-                        "The built-in amp preset uses amp -x and runs the prompt once; it does not open an interactive session."
+                        Dim: "The built-in amp preset uses amp -x and runs the prompt once; it does not open an interactive session."
                     );
                 }
             }
@@ -6592,9 +6937,9 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                 force,
             )?;
             if existed {
-                humanln!("Runner {} updated: {}", name, command);
+                humanln!(Green: "Runner {} updated: {}", name, command);
             } else {
-                humanln!("Runner {} added: {}", name, command);
+                humanln!(Green: "Runner {} added: {}", name, command);
             }
         }
         RunnerCommand::Remove {
@@ -6744,10 +7089,12 @@ fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result
                 )));
             }
             match selection {
-                RunnerSelection::Name(name) => humanln!("Runner {} removed.", name),
-                RunnerSelection::Row(row) => humanln!("Malformed runner row {} removed.", row),
+                RunnerSelection::Name(name) => humanln!(Green: "Runner {} removed.", name),
+                RunnerSelection::Row(row) => {
+                    humanln!(Green: "Malformed runner row {} removed.", row)
+                }
                 RunnerSelection::Container => {
-                    humanln!("Malformed prompt runner container removed.")
+                    humanln!(Green: "Malformed prompt runner container removed.")
                 }
             }
         }
@@ -6812,7 +7159,7 @@ fn preset(
                 secret_names.sort();
                 if !secret_names.is_empty() {
                     humanln!(
-                        "Secret values are never stored in presets; skipped: {}",
+                        Dim: "Secret values are never stored in presets; skipped: {}",
                         secret_names.join(", "),
                     );
                 }
@@ -6832,7 +7179,7 @@ fn preset(
                         .with(entry.meta.name),
                 ));
             }
-            humanln!("Preset \"{}\" saved for {}.", name, entry.meta.name);
+            humanln!(Green: "Preset \"{}\" saved for {}.", name, entry.meta.name);
         }
         PresetCommand::List { selector, json } => {
             let entry = service.show(&selector)?;
@@ -7103,9 +7450,9 @@ fn doctor(
         );
     } else {
         match &snapshot.uv {
-            UvHealth::Found(path) => humanln!("OK uv: {}", path),
-            UvHealth::Missing => humanln!("ERROR uv: not found"),
-            UvHealth::NotRequired => humanln!("OK uv: not required"),
+            UvHealth::Found(path) => humanln!(Green: "OK uv: {}", path),
+            UvHealth::Missing => humanln!(Red: "ERROR uv: not found"),
+            UvHealth::NotRequired => humanln!(Green: "OK uv: not required"),
         }
         if snapshot.entry_count == 1 {
             humanln!("{} entry registered", snapshot.entry_count);
@@ -7117,30 +7464,28 @@ fn doctor(
         humanln!("Config: {}", config_location.display());
         if let Some(count) = rebuilt_entries {
             if count == 1 {
-                humanln!("Index rebuilt: {} entry", count);
+                humanln!(Green: "Index rebuilt: {} entry", count);
             } else {
                 humanln!("Index rebuilt: {} entries", count);
             }
         }
         for name in missing {
-            humanln!("WARN {}: the launch target is gone from disk", name);
+            humanln!(Yellow: "WARN {}: the launch target is gone from disk", name);
         }
         for name in drift {
-            humanln!(
-                "WARN {}: form definitions are out of sync; run: skit params {} --resync",
+            humanln!(Yellow:                 "WARN {}: form definitions are out of sync; run: skit params {} --resync",
                 name,
                 name
             );
         }
         for (name, tools) in needs_missing {
-            humanln!(
-                "WARN {}: missing external commands: {}",
+            humanln!(Yellow:                 "WARN {}: missing external commands: {}",
                 name,
                 tools.join(", ")
             );
         }
         for (name, reason) in launch_blocked {
-            humanln!("WARN {}: a run would refuse to start: {}", name, reason);
+            humanln!(Yellow: "WARN {}: a run would refuse to start: {}", name, reason);
         }
         if !bad_runners.is_empty() {
             let rows = bad_runners.join(", ");
@@ -7149,10 +7494,10 @@ fn doctor(
                 "Ignored malformed runner row(s) in config: {}. Inspect and repair with: skit runner list --all",
                 &[&rows],
             );
-            humanln!("WARN {}", recovery);
+            humanln!(Yellow: "WARN {}", recovery);
         }
         for diagnostic in rebuild_diagnostics {
-            humanln!("WARN {}", diagnostic);
+            humanln!(Yellow: "WARN {}", diagnostic);
         }
     }
     Ok(code)
@@ -7372,7 +7717,7 @@ fn agent(command: AgentCommand) -> Result<(), CliError> {
                         Message::new("Could not write the skill there: {}").nested(error.message()),
                     )
                 })?;
-            humanln!("Installed the skit Agent Skill: {}", path.display());
+            humanln!(Green: "Installed the skit Agent Skill: {}", path.display());
         }
     }
     Ok(())
@@ -10603,118 +10948,24 @@ fn resolve_data_dir(override_dir: Option<PathBuf>) -> Result<PathBuf, CliError> 
     if let Some(path) = override_dir {
         return Ok(path);
     }
-    if let Some(path) = env::var_os("SKIT_DATA_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_DATA_DIR")) {
+        return Ok(path);
     }
     platform_data_dir().ok_or(CliError::DataDirectoryUnavailable)
 }
 
 fn resolve_state_dir() -> Result<PathBuf, CliError> {
-    if let Some(path) = env::var_os("SKIT_STATE_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_STATE_DIR")) {
+        return Ok(path);
     }
     platform_state_dir().ok_or(CliError::DirectoryUnavailable("state"))
 }
 
 fn resolve_config_dir() -> Result<PathBuf, CliError> {
-    if let Some(path) = env::var_os("SKIT_CONFIG_DIR") {
-        return Ok(PathBuf::from(path));
+    if let Some(path) = override_directory(env::var_os("SKIT_CONFIG_DIR")) {
+        return Ok(path);
     }
     platform_config_dir().ok_or(CliError::DirectoryUnavailable("configuration"))
-}
-
-#[cfg(target_os = "windows")]
-fn platform_data_dir() -> Option<PathBuf> {
-    env::var_os("LOCALAPPDATA")
-        .or_else(|| env::var_os("APPDATA"))
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-}
-
-#[cfg(target_os = "windows")]
-fn platform_state_dir() -> Option<PathBuf> {
-    platform_data_dir()
-}
-
-#[cfg(target_os = "windows")]
-fn platform_config_dir() -> Option<PathBuf> {
-    env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-}
-
-#[cfg(target_os = "macos")]
-fn platform_state_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from).map(|path| {
-        path.join("Library")
-            .join("Application Support")
-            .join("skit")
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn platform_config_dir() -> Option<PathBuf> {
-    platform_state_dir()
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn platform_state_dir() -> Option<PathBuf> {
-    env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-        .or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|path| path.join(".local").join("state").join("skit"))
-        })
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn platform_config_dir() -> Option<PathBuf> {
-    env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-        .or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|path| path.join(".config").join("skit"))
-        })
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn platform_state_dir() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn platform_config_dir() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn platform_data_dir() -> Option<PathBuf> {
-    env::var_os("HOME").map(PathBuf::from).map(|path| {
-        path.join("Library")
-            .join("Application Support")
-            .join("skit")
-    })
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn platform_data_dir() -> Option<PathBuf> {
-    env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("skit"))
-        .or_else(|| {
-            env::var_os("HOME")
-                .map(PathBuf::from)
-                .map(|path| path.join(".local").join("share").join("skit"))
-        })
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-fn platform_data_dir() -> Option<PathBuf> {
-    None
 }
 
 #[derive(Debug, Error)]

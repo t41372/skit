@@ -5,8 +5,8 @@ use std::{
 };
 
 use syn::{
-    Attribute, Expr, ExprCall, ExprLit, ItemMod, Lit, Macro, Meta, Token,
-    parse::Parser as _,
+    Attribute, Expr, ExprCall, ExprLit, Ident, ItemMod, Lit, Macro, Meta, Token,
+    parse::{ParseStream, Parser as _},
     punctuated::Punctuated,
     visit::{self, Visit},
 };
@@ -15,6 +15,18 @@ use syn::{
 struct CatalogUses {
     message_templates: Vec<String>,
     human_templates: Vec<String>,
+}
+
+/// The arguments of a human output macro, past the style name it may carry.
+///
+/// A line may name the colour of its sense (`humanln!(Green: "...")`). The template is the
+/// argument after that name, so the scan steps over it and reads the same literal either way.
+fn macro_arguments(input: ParseStream<'_>) -> syn::Result<Punctuated<Expr, Token![,]>> {
+    if input.peek(Ident) && input.peek2(Token![:]) {
+        let _: Ident = input.parse()?;
+        let _: Token![:] = input.parse()?;
+    }
+    Punctuated::parse_terminated(input)
 }
 
 impl<'ast> Visit<'ast> for CatalogUses {
@@ -44,7 +56,7 @@ impl<'ast> Visit<'ast> for CatalogUses {
             .last()
             .map(|segment| segment.ident.to_string());
         if matches!(name.as_deref(), Some("humanln" | "humanerrln")) {
-            let expressions = Punctuated::<Expr, Token![,]>::parse_terminated
+            let expressions = macro_arguments
                 .parse2(node.tokens.clone())
                 .expect("human output macro arguments must parse");
             let expression = expressions

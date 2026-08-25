@@ -44,18 +44,17 @@
 #![cfg(unix)]
 
 use std::fs;
-use std::io::{Read as _, Write as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
 
-use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use portable_pty::{CommandBuilder, PtySize};
 use serde_json::Value;
 use skit_store::{FileConfigStore, PromptRunner};
 use tempfile::TempDir;
 
+#[path = "support/pty.rs"]
+mod pty;
 #[path = "support/temp_root.rs"]
 mod temp_root;
 
@@ -262,24 +261,6 @@ fn snapshot_tree(root: &Path) -> Vec<(PathBuf, Vec<u8>)> {
     output
 }
 
-fn wait_until_pty_output(shared: &Arc<Mutex<Vec<u8>>>, needle: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let text = {
-            let bytes = shared.lock().unwrap();
-            String::from_utf8_lossy(&bytes).into_owned()
-        };
-        if text.contains(needle) {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "PTY did not print {needle:?}; current output: {text}"
-        );
-        thread::sleep(Duration::from_millis(20));
-    }
-}
-
 fn run_runner_confirmation(
     sandbox: &Sandbox,
     args: &[&str],
@@ -298,14 +279,25 @@ fn run_runner_confirmation_in_locale(
     before_answer: impl FnOnce(),
     answer: &[u8],
 ) -> (u32, String) {
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 24,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
+    let mut child = pty::PtyChild::spawn(
+        prompt_pty_command(sandbox, args, locale, None),
+        prompt_pty_size(24),
+        pty::AnswerQueries::On,
+    );
+    child.wait_for_after(0, prompt_needle);
+    before_answer();
+    child.send(answer);
+    let (code, output) = child.finish();
+    (code, output.replace("\r\n", "\n").replace('\r', ""))
+}
+
+/// The `skit` command a prompt test runs on a terminal, with every directory pinned.
+fn prompt_pty_command(
+    sandbox: &Sandbox,
+    args: &[&str],
+    locale: &str,
+    editor: Option<&Path>,
+) -> CommandBuilder {
     let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
     command.args(args);
     command.cwd(sandbox.data.path());
@@ -314,37 +306,21 @@ fn run_runner_confirmation_in_locale(
     command.env("SKIT_STATE_DIR", sandbox.state.path());
     command.env("SKIT_CONFIG_DIR", sandbox.config.path());
     command.env("SKIT_LANG", locale);
+    if let Some(editor) = editor {
+        command.env("VISUAL", "");
+        command.env("EDITOR", editor);
+    }
+    command
+}
 
-    let mut child = pair.slave.spawn_command(command).unwrap();
-    drop(pair.slave);
-    let shared = Arc::new(Mutex::new(Vec::new()));
-    let reader_shared = Arc::clone(&shared);
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let drain = thread::spawn(move || {
-        let mut chunk = [0_u8; 512];
-        loop {
-            match reader.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(count) => reader_shared
-                    .lock()
-                    .unwrap()
-                    .extend_from_slice(&chunk[..count]),
-                Err(_) => break,
-            }
-        }
-    });
-    let mut writer = pair.master.take_writer().unwrap();
-    wait_until_pty_output(&shared, prompt_needle);
-    before_answer();
-    writer.write_all(&keystrokes(answer)).unwrap();
-    writer.flush().unwrap();
-    let status = child.wait().unwrap();
-    drop(writer);
-    drain.join().unwrap();
-    let output = String::from_utf8_lossy(&shared.lock().unwrap())
-        .replace("\r\n", "\n")
-        .replace('\r', "");
-    (status.exit_code(), output)
+/// The terminal geometry a prompt test uses.
+fn prompt_pty_size(rows: u16) -> PtySize {
+    PtySize {
+        rows,
+        cols: 120,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
 }
 
 struct CapturingPromptEditor {
@@ -384,56 +360,16 @@ fn run_prompt_editor_pty(
     editor: &Path,
     answers: &[(&str, &[u8])],
 ) -> (u32, String) {
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 30,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .unwrap();
-    let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
-    command.args(args);
-    command.cwd(sandbox.data.path());
-    command.env("TERM", "xterm-256color");
-    command.env("SKIT_DATA_DIR", sandbox.data.path());
-    command.env("SKIT_STATE_DIR", sandbox.state.path());
-    command.env("SKIT_CONFIG_DIR", sandbox.config.path());
-    command.env("SKIT_LANG", lang);
-    command.env("VISUAL", "");
-    command.env("EDITOR", editor);
-
-    let mut child = pair.slave.spawn_command(command).unwrap();
-    drop(pair.slave);
-    let shared = Arc::new(Mutex::new(Vec::new()));
-    let reader_shared = Arc::clone(&shared);
-    let mut reader = pair.master.try_clone_reader().unwrap();
-    let drain = thread::spawn(move || {
-        let mut chunk = [0_u8; 512];
-        loop {
-            match reader.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(count) => reader_shared
-                    .lock()
-                    .unwrap()
-                    .extend_from_slice(&chunk[..count]),
-                Err(_) => break,
-            }
-        }
-    });
-    let mut writer = pair.master.take_writer().unwrap();
+    let mut child = pty::PtyChild::spawn(
+        prompt_pty_command(sandbox, args, lang, Some(editor)),
+        prompt_pty_size(30),
+        pty::AnswerQueries::On,
+    );
     for (prompt, answer) in answers {
-        wait_until_pty_output(&shared, prompt);
-        writer.write_all(&keystrokes(answer)).unwrap();
-        writer.flush().unwrap();
+        child.send_after_prompt(prompt, answer);
     }
-    let status = child.wait().unwrap();
-    drop(writer);
-    drain.join().unwrap();
-    let output = String::from_utf8_lossy(&shared.lock().unwrap())
-        .replace("\r\n", "\n")
-        .replace('\r', "");
-    (status.exit_code(), output)
+    let (code, output) = child.finish();
+    (code, output.replace("\r\n", "\n").replace('\r', ""))
 }
 
 /// A directory of fake agent binaries for every seed's argv[0] (plus a few named extras). Each
@@ -3615,19 +3551,4 @@ fn test_edit_non_prompt_keeps_the_generic_drift_hint() {
         combined.contains("skit reconciles parameter drift at run time"),
         "{combined}"
     );
-}
-
-/// Deliver one canned answer the way a terminal delivers it.
-///
-/// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
-/// there only a carriage return becomes Enter on Windows: a line feed arrives as an ordinary
-/// character, so the prompt keeps waiting and both sides stop
-/// (`console/src/windows_term/mod.rs:449`). Unix reads either one as Enter
-/// (`console/src/unix_term.rs:323`), so translating here gives both hosts one convention and leaves
-/// Unix exactly as it was.
-fn keystrokes(answer: &[u8]) -> Vec<u8> {
-    answer
-        .iter()
-        .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
-        .collect()
 }

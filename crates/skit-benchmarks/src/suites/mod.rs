@@ -93,18 +93,33 @@ pub(crate) mod tests {
     /// open, and the fork gives that child a copy of the handle. Every start of this program then
     /// fails with "Text file busy" until that child reaches its own start. One successful start
     /// proves the window is closed, and nothing writes this file again.
-    pub(crate) fn wait_past_the_fork_window(path: &Path) {
+    pub(crate) fn wait_past_the_fork_window(path: &Path) -> usize {
+        wait_past_the_fork_window_with(
+            || {
+                std::process::Command::new(path)
+                    .arg(PROBE_ARGUMENT)
+                    .output()
+                    .map(|_| ())
+            },
+            std::thread::sleep,
+        )
+    }
+
+    fn wait_past_the_fork_window_with(
+        mut start: impl FnMut() -> io::Result<()>,
+        mut sleep: impl FnMut(Duration),
+    ) -> usize {
+        let mut retries = 0;
         for _ in 0..49 {
-            match std::process::Command::new(path)
-                .arg(PROBE_ARGUMENT)
-                .output()
-            {
+            match start() {
                 Err(error) if error.kind() == io::ErrorKind::ExecutableFileBusy => {
-                    std::thread::sleep(Duration::from_millis(20));
+                    retries += 1;
+                    sleep(Duration::from_millis(20));
                 }
-                _ => return,
+                _ => return retries,
             }
         }
+        retries
     }
 
     pub(crate) fn executable(path: &Path, body: &str) -> PathBuf {
@@ -268,9 +283,10 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn the_fork_window_wait_returns_once_the_writer_lets_go() {
-        use std::{fs::OpenOptions, thread, time::Instant};
+    fn the_fork_window_wait_retries_while_the_writer_holds_the_file() {
+        use std::fs::OpenOptions;
 
         // A program that any process holds open for writing cannot start: the host answers "Text
         // file busy". Holding the handle here asks for that answer on purpose, which is the answer
@@ -281,15 +297,64 @@ printf ' 80.00 0.008 8 9 openat\n 20.00 0.002 2 1 socket\n' > "$out"
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         let hold = OpenOptions::new().append(true).open(&path).unwrap();
 
-        let probed = path.clone();
-        let started = Instant::now();
-        let waiter = thread::spawn(move || wait_past_the_fork_window(&probed));
-        thread::sleep(Duration::from_millis(80));
+        let retries = wait_past_the_fork_window(&path);
         drop(hold);
 
-        // The wait ends, and only after the writer let go, so it paused at least once.
-        waiter.join().unwrap();
-        assert!(started.elapsed() >= Duration::from_millis(20));
+        assert_eq!(retries, 49);
+    }
+
+    #[test]
+    fn fork_window_retry_stops_on_success_and_on_other_errors() {
+        use std::collections::VecDeque;
+
+        let mut starts = 0;
+        let mut sleeps = Vec::new();
+        let mut outcomes = VecDeque::from([
+            Err(io::Error::from(io::ErrorKind::ExecutableFileBusy)),
+            Ok(()),
+        ]);
+        {
+            let mut record_sleep = |duration| sleeps.push(duration);
+            let retries = wait_past_the_fork_window_with(
+                || {
+                    starts += 1;
+                    outcomes
+                        .pop_front()
+                        .expect("the retry made too many starts")
+                },
+                &mut record_sleep,
+            );
+            assert_eq!(retries, 1);
+            assert_eq!(starts, 2);
+
+            let mut starts = 0;
+            let retries = wait_past_the_fork_window_with(
+                || {
+                    starts += 1;
+                    Err(io::Error::from(io::ErrorKind::NotFound))
+                },
+                &mut record_sleep,
+            );
+            assert_eq!(retries, 0);
+            assert_eq!(starts, 1);
+        }
+        assert_eq!(sleeps, [Duration::from_millis(20)]);
+    }
+
+    #[test]
+    fn fork_window_wait_starts_the_program_when_it_is_not_busy() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("ready-shim");
+        let marker = root.path().join("started");
+        fs::write(
+            &path,
+            format!("#!/bin/sh\nprintf started > \"{}\"\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(wait_past_the_fork_window(&path), 0);
+        assert_eq!(fs::read_to_string(marker).unwrap(), "started");
     }
 
     #[test]

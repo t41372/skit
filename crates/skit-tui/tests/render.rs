@@ -511,10 +511,22 @@ fn every_library_footer_command_has_a_positive_keyboard_mapping() {
     ];
 
     for (code, modifiers, action) in cases {
-        assert_eq!(
-            map_event(key(code, modifiers), &browse, &geometry),
-            Some(action)
-        );
+        // A terminal reports Shift for an upper-case letter but not for a
+        // shifted symbol such as `?`. The map must accept a character key in
+        // both shapes, so each character case runs with and without Shift.
+        let shapes: &[KeyModifiers] = if matches!(code, KeyCode::Char(_)) {
+            &[KeyModifiers::SHIFT, KeyModifiers::empty()]
+        } else {
+            &[KeyModifiers::empty()]
+        };
+        for shape in shapes {
+            let modifiers = (modifiers - KeyModifiers::SHIFT) | *shape;
+            assert_eq!(
+                map_event(key(code, modifiers), &browse, &geometry),
+                Some(action.clone()),
+                "advertised key {code:?} with {modifiers:?} must map"
+            );
+        }
     }
 }
 
@@ -1033,14 +1045,17 @@ fn help_and_detail_are_real_serializable_ui_surfaces() {
         ),
         Some(Action::Back)
     );
-    assert_eq!(
-        map_event(
-            key(KeyCode::Char('?'), KeyModifiers::SHIFT),
-            &view,
-            &ViewGeometry::default()
-        ),
-        Some(Action::Back)
-    );
+    // The terminal reports `?` without Shift, so assert both shapes.
+    for modifiers in [KeyModifiers::SHIFT, KeyModifiers::NONE] {
+        assert_eq!(
+            map_event(
+                key(KeyCode::Char('?'), modifiers),
+                &view,
+                &ViewGeometry::default()
+            ),
+            Some(Action::Back)
+        );
+    }
     let close = geometry
         .unwrap()
         .hits

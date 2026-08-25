@@ -13,6 +13,10 @@ fn profile_parser_accepts_only_the_public_profile_names() {
         BenchmarkProfile::from_str("compare").unwrap(),
         BenchmarkProfile::Compare
     );
+    assert_eq!(
+        BenchmarkProfile::from_str("full").unwrap(),
+        BenchmarkProfile::Full
+    );
     assert!(BenchmarkProfile::from_str("quick").is_err());
 }
 

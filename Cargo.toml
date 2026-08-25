@@ -18,6 +18,14 @@ default-members = ["crates/skit-cli"]
 [profile.release]
 strip = true
 
+# Optimize repeated mutation runs. Keep all test checks enabled.
+[profile.mutants]
+inherits = "test"
+opt-level = 1
+debug = "none"
+debug-assertions = true
+overflow-checks = true
+
 [workspace.package]
 version = "0.5.0"
 edition = "2024"

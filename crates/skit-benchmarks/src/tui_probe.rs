@@ -1,13 +1,17 @@
 //! One fresh-process headless TUI probe.
 
-use std::{fs, path::Path, time::Instant};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use ratatui_core::{backend::TestBackend, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use serde::{Deserialize, Serialize};
 use skit_application::{
     RepositoryError,
-    form_state::FormStateService,
+    form_state::{FormStateService, LastRunState},
     library_detail::{LibrarySurface, LibrarySurfaceService},
 };
 use skit_form::FormLibraryProjector;
@@ -159,8 +163,7 @@ pub fn run_for_dirs(
         .iter()
         .filter_map(|entry| {
             let last_run = form_state.last_run(&entry.slug);
-            (last_run.at.is_some() || last_run.exit.is_some() || last_run.values.is_some())
-                .then(|| entry.slug.clone())
+            is_rerunnable(&last_run).then(|| entry.slug.clone())
         })
         .collect();
     let mut state = LibraryState::from_library_surface(surface);
@@ -175,7 +178,7 @@ pub fn run_for_dirs(
     let mut terminal = Terminal::new(backend).unwrap_or_else(|never| match never {});
     let mut session = TuiSession::default();
     let mut geometry = draw(&mut terminal, &state, &mut session);
-    let first_idle_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let first_idle_ms = duration_ms(started.elapsed());
 
     let select_ms = if entries >= 2 {
         let before = state.selected_visible_index();
@@ -188,7 +191,7 @@ pub fn run_for_dirs(
             "selection",
         )?;
         geometry = draw(&mut terminal, &state, &mut session);
-        let elapsed = started.elapsed().as_secs_f64() * 1_000.0;
+        let elapsed = duration_ms(started.elapsed());
         validate_selection(before, state.selected_visible_index())?;
         Some(elapsed)
     } else {
@@ -212,7 +215,7 @@ pub fn run_for_dirs(
         "search-input",
     )?;
     let _ = draw(&mut terminal, &state, &mut session);
-    let search_ms = started.elapsed().as_secs_f64() * 1_000.0;
+    let search_ms = duration_ms(started.elapsed());
     validate_search(
         entries,
         state.query(),
@@ -225,6 +228,14 @@ pub fn run_for_dirs(
         .then(|| fs::read_to_string(status).ok())
         .flatten();
     ProbeResult::new(first_idle_ms, select_ms, search_ms, status_text)
+}
+
+fn is_rerunnable(last_run: &LastRunState) -> bool {
+    last_run.at.is_some() || last_run.exit.is_some() || last_run.values.is_some()
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
 }
 
 fn library_surface(
@@ -306,8 +317,9 @@ fn dispatch_key(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeMap, fs, time::Duration};
 
+    use skit_application::form_state::LastRunState;
     use tempfile::TempDir;
 
     use crate::dataset::{DEFAULT_SEED, DEFAULT_STATE_FRACTION, dataset_dirs, generate};
@@ -321,6 +333,32 @@ mod tests {
         assert!(super::ProbeResult::new(1.0, Some(-1.0), 1.0, None).is_err());
         assert!(super::ProbeResult::new(1.0, None, -1.0, None).is_err());
         assert!(super::ProbeResult::new(1.0, Some(2.0), 3.0, None).is_ok());
+    }
+
+    #[test]
+    fn elapsed_durations_are_reported_in_milliseconds() {
+        assert_eq!(super::duration_ms(Duration::from_millis(1_234)), 1_234.0);
+    }
+
+    #[test]
+    fn each_partial_run_stamp_marks_an_entry_rerunnable() {
+        assert!(!super::is_rerunnable(&LastRunState::default()));
+        for last_run in [
+            LastRunState {
+                at: Some("2026-08-21T01:02:03Z".to_owned()),
+                ..LastRunState::default()
+            },
+            LastRunState {
+                exit: Some(0),
+                ..LastRunState::default()
+            },
+            LastRunState {
+                values: Some(BTreeMap::new()),
+                ..LastRunState::default()
+            },
+        ] {
+            assert!(super::is_rerunnable(&last_run));
+        }
     }
 
     #[test]
@@ -406,6 +444,15 @@ mod tests {
             ratatui_core::terminal::Terminal::new(backend).unwrap_or_else(|never| match never {});
         let mut session = skit_tui::TuiSession::default();
         let geometry = super::draw(&mut terminal, &state, &mut session);
+        assert_ne!(geometry, skit_tui::ViewGeometry::default());
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .any(|cell| cell.symbol() != " ")
+        );
         assert!(matches!(
             super::dispatch_key(
                 &mut state,

@@ -56,7 +56,7 @@ impl PythonRandom {
         let low = u64::from(self.inner.genrand_uint32_default());
         let high_bits = bits - 32;
         let high = u64::from(self.inner.genrand_uint32_default() >> (32 - high_bits));
-        low | (high << 32)
+        low + (high << 32)
     }
 }
 
@@ -66,5 +66,17 @@ mod tests {
     fn wide_draws_keep_cpython_word_order_and_masking() {
         let mut random = super::PythonRandom::seeded("wide");
         assert_eq!(random.getrandbits(33), 955_102_308);
+    }
+
+    #[test]
+    fn floating_draw_matches_cpython_bits() {
+        let mut random = super::PythonRandom::seeded("wide");
+        assert_eq!(random.random().to_bits(), 0x3fcc_76da_3396_bf88);
+    }
+
+    #[test]
+    fn forty_bit_draw_keeps_both_cpython_words() {
+        let mut random = super::PythonRandom::seeded("wide");
+        assert_eq!(random.getrandbits(40), 245_768_238_180);
     }
 }

@@ -163,6 +163,14 @@ fn the_relative_age_buckets_end_where_version_0_4_ends_them() {
         LibraryRunAge::Minutes(1)
     );
     assert_eq!(
+        LibraryRunAge::from_elapsed("raw", Some(5_399)),
+        LibraryRunAge::Minutes(89)
+    );
+    assert_eq!(
+        LibraryRunAge::from_elapsed("raw", Some(5_400)),
+        LibraryRunAge::Hours(1)
+    );
+    assert_eq!(
         LibraryRunAge::from_elapsed("raw", Some(129_599)),
         LibraryRunAge::Hours(35)
     );

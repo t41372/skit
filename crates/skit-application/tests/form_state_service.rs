@@ -295,6 +295,57 @@ fn state_backed_presets_distinguish_prefill_legacy_and_missing_run_snapshots() {
 }
 
 #[test]
+fn partial_legacy_run_stamps_never_supply_a_last_run_preset() {
+    for (at, exit) in [(Some("2026-08-08T03:00:00Z"), None), (None, Some(0))] {
+        let repository = MemoryState::default();
+        repository
+            .update(&slug(), |state| {
+                state.values = map(&[("city", "Berlin")]);
+                state.last_run.at = at.map(str::to_owned);
+                state.last_run.exit = exit;
+            })
+            .unwrap();
+        let service = FormStateService::new(repository);
+        let before = service.load(&slug());
+        assert!(
+            !service
+                .save_preset_from_state(
+                    &slug(),
+                    "partial",
+                    &declarations(),
+                    PresetSnapshotSource::LastRun,
+                )
+                .unwrap()
+        );
+        assert_eq!(service.load(&slug()), before);
+    }
+}
+
+#[test]
+fn raw_argument_mode_requires_a_nonempty_saved_argument_vector() {
+    let service = FormStateService::new(MemoryState::default());
+    let values = map(&[("city", "Paris")]);
+    for (arguments, expected_raw) in [(vec!["--tail".to_owned()], true), (Vec::new(), false)] {
+        service
+            .record_completed_run_with(
+                &slug(),
+                0,
+                "2026-08-21T01:02:03Z",
+                Some(&values),
+                Some(arguments.clone()),
+                true,
+                None,
+                || Ok::<_, ()>(declarations()),
+            )
+            .unwrap()
+            .unwrap();
+        let state = service.load(&slug());
+        assert_eq!(state.extra_args, arguments);
+        assert_eq!(state.extra_args_raw, expected_raw);
+    }
+}
+
+#[test]
 fn purge_secrets_scrubs_values_presets_and_last_run_in_one_transaction() {
     let repository = MemoryState::default();
     repository

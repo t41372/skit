@@ -934,7 +934,13 @@ mod tests {
                 "agent {{prompt}} {{model}}",
                 RunnerEditorError::UnsupportedHole,
             ),
-            ("agent '{{prompt}}", RunnerEditorError::UnbalancedQuotes),
+            // An unpaired DOUBLE quote is UnbalancedQuotes in both argument dialects: the
+            // POSIX arm's shlex refuses an unterminated quote, and the Windows arm's
+            // validate_windows_quotes refuses an odd count of unescaped quotes. The editor
+            // parses with the host dialect, so the rule row must use the spelling both
+            // hosts refuse; each dialect's own specifics are owned by the parameterized
+            // split_editable_argv owners.
+            ("agent \"{{prompt}}", RunnerEditorError::UnbalancedQuotes),
         ];
         for (command, expected) in cases {
             let mut editor = RunnerEditorView::new();
@@ -977,8 +983,11 @@ mod tests {
         assert_eq!(editor.focused(), RunnerEditorField::Command);
         editor.reduce(RunnerEditorAction::FocusPrevious);
         assert_eq!(editor.focused(), RunnerEditorField::Command);
+        // Double quotes strip in both argument dialects (shlex on POSIX, the Windows
+        // argv rules on Windows), so the typed argv below holds on every host; single
+        // quotes strip only on POSIX.
         editor.reduce(RunnerEditorAction::SetCommand(
-            "codex --model o3 '{{prompt}}'".to_owned(),
+            "codex --model o3 \"{{prompt}}\"".to_owned(),
         ));
         let effect = editor.reduce(RunnerEditorAction::Submit);
         assert_eq!(

@@ -76,11 +76,14 @@ cargo test --locked --workspace --all-targets --all-features
 cargo llvm-cov --locked --workspace --all-targets --all-features --lcov --output-path lcov.info
 bash scripts/test_coverage.sh
 bash scripts/check_coverage.sh lcov.info
-cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20
+cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300
 cargo deny --locked check
 cargo audit --deny warnings
 zizmor .github/workflows .github/actions/install-hyperfine/action.yml
 ```
+
+Mutation commands use the `mutants` Cargo profile. It enables optimization and keeps debug assertions
+and overflow checks. `.cargo/mutants.toml` selects this profile for local and CI runs.
 
 The coverage script merges records from all test binaries. It rejects every uncovered executable
 source line. It ignores only LLVM mappings for structural Rust lines, such as braces, attributes,

@@ -113,6 +113,14 @@ fn environment_provenance_normalizes_platform_and_pr_anchor() {
         Some("29".to_owned())
     );
     assert_eq!(pull_request_number("refs/heads/main"), None);
+    for invalid in [
+        "pull/29/merge",
+        "refs/heads/29/merge",
+        "refs/pull/not-a-number/merge",
+        "refs/pull/29",
+    ] {
+        assert_eq!(pull_request_number(invalid), None, "{invalid}");
+    }
     assert_eq!(version_from_output("Python 3.13.7\n"), "3.13.7");
     assert_eq!(version_from_output("skit 0.5.0\n"), "0.5.0");
     assert_eq!(version_from_output("0.5.0\n"), "0.5.0");
@@ -379,6 +387,17 @@ fn summary_names_missing_incomplete_and_legacy_run_directories() {
     assert!(markdown.contains("image image-1"));
     assert!(markdown.contains("No skipped cases."));
     assert!(markdown.contains("| 0 count | 0 | 2 |"));
+
+    let zero_run = RunRecord {
+        total_duration_s: 0.0,
+        ..legacy
+    };
+    fs::write(
+        root.path().join("run.json"),
+        serde_json::to_string(&zero_run).unwrap(),
+    )
+    .unwrap();
+    assert!(summarize_directory(root.path(), None).is_ok());
 }
 
 #[test]

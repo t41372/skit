@@ -296,7 +296,7 @@ fn ensure_normal_directory(path: &Path) -> Result<(), SummaryError> {
         path: path.to_path_buf(),
         source,
     })?;
-    if metadata.is_dir() && !metadata.file_type().is_symlink() {
+    if metadata.is_dir() {
         Ok(())
     } else {
         Err(SummaryError::UnsafePath(path.to_path_buf()))
@@ -405,6 +405,12 @@ mod tests {
         assert!(matches!(
             super::normal_file_exists(&directory),
             Err(super::SummaryError::UnsafePath(_))
+        ));
+        let regular = root.path().join("regular");
+        fs::write(&regular, "keep").unwrap();
+        assert!(matches!(
+            super::ensure_normal_directory(&regular),
+            Err(super::SummaryError::UnsafePath(path)) if path == regular
         ));
 
         let scan_error = super::suite_entries(

@@ -286,3 +286,13 @@ fn append_skips(lines: &mut Vec<String>, label: &str, results: &Results) {
 fn prefix(value: &str, length: usize) -> &str {
     value.get(..length).unwrap_or(value)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn commit_prefix_truncates_only_when_the_input_is_long_enough() {
+        assert_eq!(super::prefix("abcdef1234567890", 12), "abcdef123456");
+        assert_eq!(super::prefix("abc", 12), "abc");
+        assert_eq!(super::prefix("é", 1), "é");
+    }
+}

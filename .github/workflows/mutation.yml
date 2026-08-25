@@ -17,21 +17,70 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  mutation:
-    name: cargo-mutants shard ${{ matrix.shard }}/48
-    # Testing every mutant is opt-in on a pull request. Forty-eight shards would crowd out
-    # every other workflow, and the next push would void the answer anyway. Attach the
-    # `mutation-requested` label once the branch is settled. A push to main, the nightly
-    # run, and a manual run always test.
+  guard:
+    name: nightly change check
+    # This job decides whether the other two run, so it carries their opt-in label gate too.
+    # Without it, a pull request with no label starts a runner on every push and the workflow
+    # reports success while it tests nothing. With it, the whole workflow reports skipped.
     if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - name: Decide whether this commit needs a run
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Only the nightly can repeat itself. A push, a label and a manual run each name their
+          # own reason to test, so they always run.
+          if [ "$EVENT_NAME" != "schedule" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Schedule each commit once, even if the previous run failed or was cancelled.
+          # This run is in the list too, so the comparison skips its own id.
+          # An API error leaves `previous` empty, and an empty answer runs the matrix: the guard
+          # stops a night only when it knows that nothing changed.
+          # `$ENV.RUN_ID` below is a jq expression, not a shell one.
+          # shellcheck disable=SC2016
+          previous=$(gh api \
+            "repos/$REPOSITORY/actions/workflows/mutation.yml/runs?event=schedule&per_page=2" \
+            --jq '[.workflow_runs[] | select((.id | tostring) != $ENV.RUN_ID) | .head_sha] | first // ""' \
+            || true)
+          if [ "$previous" = "$HEAD_SHA" ]; then
+            echo "$HEAD_SHA already had a scheduled run. This run stops."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  mutation:
+    name: cargo-mutants shard ${{ matrix.shard }}/64
+    # Testing every mutant is opt-in on a pull request. Sixty-four shards would crowd out
+    # every other workflow, and the next push would void the answer anyway. Attach the
+    # `mutation-requested` label once the branch is settled. A push to main and a manual
+    # run always test. The nightly schedules each commit once, even if that run fails or is
+    # cancelled. Sixty-four shards limit the rebuild count per job. Each mutant keeps
+    # the complete workspace tests and the explicit 300 s test budget.
+    needs: guard
+    if: ${{ needs.guard.outputs.run == 'true' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested')) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]
     steps:
       - name: Check out the source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,7 +91,10 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
       - name: Run mutation tests
-        run: cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0 --shard ${{ matrix.shard }}/48
+        env:
+          # Keep compiler scratch trees on the runner's disk.
+          TMPDIR: ${{ runner.temp }}
+        run: cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300 --shard ${{ matrix.shard }}/64
       - name: Upload mutation records
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -54,8 +106,8 @@ jobs:
 
   aggregate:
     name: cargo-mutants (zero survivors)
-    needs: mutation
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested')) }}
+    needs: [guard, mutation]
+    if: ${{ !cancelled() && needs.guard.outputs.run == 'true' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -68,12 +120,17 @@ jobs:
           path: shards
       - name: Require every shard to report zero survivors
         env:
-          SHARD_COUNT: "48"
+          MUTATION_JOB_RESULT: ${{ needs.mutation.result }}
+          SHARD_COUNT: "64"
         run: |
           set -euo pipefail
           # Fail closed. A shard that never reported is a failure, not a pass: the run only proves
           # zero survivors when every shard's own record says so.
           missing=0
+          if [ "$MUTATION_JOB_RESULT" != "success" ]; then
+            echo "mutation matrix did not finish successfully: $MUTATION_JOB_RESULT" >&2
+            missing=$((missing + 1))
+          fi
           for shard in $(seq 0 $((SHARD_COUNT - 1))); do
             record="shards/mutation-shard-$shard"
             if [ ! -s "$record/outcomes.json" ]; then

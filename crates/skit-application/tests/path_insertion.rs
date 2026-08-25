@@ -85,6 +85,7 @@ fn glob_metacharacters_use_the_same_spelling_in_each_argument_dialect() {
 #[test]
 fn windows_argument_text_round_trips_quotes_spaces_and_trailing_backslashes() {
     for picked in [
+        "",
         "plain.txt",
         "two words.txt",
         r#"quote\"inside.txt"#,

@@ -189,13 +189,12 @@ pub fn collect_meta(
     let system = System::new_all();
     let os = System::name().unwrap_or_else(|| env::consts::OS.to_owned());
     let architecture = System::cpu_arch();
-    let cpu = system
+    let first_brand = system
         .cpus()
         .first()
         .map(|cpu| cpu.brand().trim())
-        .filter(|brand| !brand.is_empty())
-        .unwrap_or(&architecture)
-        .to_owned();
+        .unwrap_or("");
+    let cpu = cpu_brand(first_brand, &architecture).to_owned();
     let git = which::which("git").map_err(|_| EnvironmentError::MissingTool("git"))?;
     let host_env = host_probe_environment();
     let commit = probe_stdout(
@@ -227,7 +226,7 @@ pub fn collect_meta(
         profile,
         git: GitInfo {
             commit,
-            dirty: !status.trim().is_empty(),
+            dirty: git_status_is_dirty(&status),
             pr: env::var("GITHUB_REF")
                 .ok()
                 .and_then(|reference| pull_request_number(&reference)),
@@ -238,11 +237,10 @@ pub fn collect_meta(
             kernel: System::kernel_version().unwrap_or_else(|| "unknown".to_owned()),
             cpu,
             cpu_count: system.cpus().len().max(1),
-            mem_total_mib: usize::try_from(system.total_memory() / (1024 * 1024))
-                .unwrap_or(usize::MAX),
+            mem_total_mib: memory_mebibytes(system.total_memory()),
             platform_key: platform_key(&os, &architecture),
-            ci_runner: non_empty_env(CI_RUNNER_VAR),
-            ci_image_version: non_empty_env(CI_IMAGE_VERSION_VAR),
+            ci_runner: non_empty_env_value(env::var(CI_RUNNER_VAR).ok()),
+            ci_image_version: non_empty_env_value(env::var(CI_IMAGE_VERSION_VAR).ok()),
         },
         python: python_version,
         uv: uv_version,
@@ -279,10 +277,33 @@ fn probe_stdout(
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+fn cpu_brand<'a>(brand: &'a str, architecture: &'a str) -> &'a str {
+    let brand = brand.trim();
+    if brand.is_empty() {
+        architecture
+    } else {
+        brand
+    }
+}
+
+fn git_status_is_dirty(status: &str) -> bool {
+    !status.trim().is_empty()
+}
+
+fn memory_mebibytes(bytes: u64) -> usize {
+    usize::try_from(bytes / (1024 * 1024)).unwrap_or(usize::MAX)
+}
+
 fn host_probe_environment() -> BTreeMap<String, String> {
+    host_probe_environment_from(|name| env::var(name).ok())
+}
+
+fn host_probe_environment_from(
+    mut read: impl FnMut(&str) -> Option<String>,
+) -> BTreeMap<String, String> {
     let mut output = BTreeMap::new();
     for name in ["PATH", "SystemRoot", "SYSTEMROOT", "COMSPEC", "PATHEXT"] {
-        if let Ok(value) = env::var(name) {
+        if let Some(value) = read(name) {
             output.insert(name.to_owned(), value);
         }
     }
@@ -290,8 +311,8 @@ fn host_probe_environment() -> BTreeMap<String, String> {
     output
 }
 
-fn non_empty_env(name: &str) -> Option<String> {
-    env::var(name).ok().filter(|value| !value.is_empty())
+fn non_empty_env_value(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.is_empty())
 }
 
 fn path_token(path: &Path) -> String {
@@ -319,7 +340,7 @@ fn absolute_from(
 
 #[cfg(all(test, unix))]
 mod tests {
-    use std::{fs, io, os::unix::fs::PermissionsExt as _, path::Path};
+    use std::{collections::BTreeMap, fs, io, os::unix::fs::PermissionsExt as _, path::Path};
 
     use tempfile::TempDir;
 
@@ -395,6 +416,12 @@ mod tests {
         assert_eq!(super::platform_key("Plan9", "riscv64"), "plan9-riscv64");
         assert_eq!(super::version_from_output(""), "unknown");
         assert_eq!(super::version_from_output("1.2.3"), "1.2.3");
+        assert_eq!(
+            super::host_probe_environment()
+                .get("LC_ALL")
+                .map(String::as_str),
+            Some("C.UTF-8")
+        );
 
         let root = TempDir::new().unwrap();
         let failing = executable(root.path(), "failing", "no version", 7);
@@ -407,5 +434,42 @@ mod tests {
                 .is_absolute()
         );
         assert_eq!(super::path_token(&failing), failing.display().to_string());
+    }
+
+    #[test]
+    fn host_metadata_pure_boundaries_keep_values_and_fallbacks() {
+        assert_eq!(super::cpu_brand("", "arm64"), "arm64");
+        assert_eq!(super::cpu_brand("  Test CPU  ", "arm64"), "Test CPU");
+        assert!(!super::git_status_is_dirty(" \n"));
+        assert!(super::git_status_is_dirty(" M Cargo.toml\n"));
+        assert_eq!(super::memory_mebibytes(0), 0);
+        assert_eq!(super::memory_mebibytes(1_048_576), 1);
+        assert_eq!(super::memory_mebibytes(1_572_864), 1);
+        assert_eq!(super::non_empty_env_value(None), None);
+        assert_eq!(super::non_empty_env_value(Some(String::new())), None);
+        assert_eq!(
+            super::non_empty_env_value(Some("runner".to_owned())),
+            Some("runner".to_owned())
+        );
+    }
+
+    #[test]
+    fn host_probe_environment_keeps_only_present_allowed_values() {
+        let available = BTreeMap::from([
+            ("PATH", "/usr/bin"),
+            ("COMSPEC", "C:\\Windows\\cmd.exe"),
+            ("UNLISTED", "secret"),
+        ]);
+        let selected = super::host_probe_environment_from(|name| {
+            available.get(name).map(|value| (*value).to_owned())
+        });
+        assert_eq!(
+            selected,
+            BTreeMap::from([
+                ("COMSPEC".to_owned(), "C:\\Windows\\cmd.exe".to_owned()),
+                ("LC_ALL".to_owned(), "C.UTF-8".to_owned()),
+                ("PATH".to_owned(), "/usr/bin".to_owned()),
+            ])
+        );
     }
 }

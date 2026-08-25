@@ -152,3 +152,20 @@ fn javascript(lines: usize, rng: &mut PythonRandom, typed: bool) -> Vec<String> 
 fn random_word(rng: &mut PythonRandom) -> &'static str {
     rng.choice(WORDS)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn exact_minimum_source_size_is_valid_for_every_language() {
+        for language in super::LANGUAGES {
+            let source = super::generate(language, 8).unwrap();
+            assert_eq!(source.lines().count(), 8, "{language}");
+            assert!(source.ends_with('\n'), "{language}");
+            assert_eq!(
+                super::generate(language, 7),
+                Err(super::SourceError::TooShort),
+                "{language}"
+            );
+        }
+    }
+}

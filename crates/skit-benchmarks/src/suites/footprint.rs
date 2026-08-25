@@ -379,24 +379,20 @@ fn find_site_packages(venv: &Path) -> Result<PathBuf, SuiteError> {
     }
 }
 
-#[cfg(windows)]
 fn venv_python(venv: &Path) -> PathBuf {
-    venv.join("Scripts/python.exe")
+    venv_executable(venv, cfg!(windows), "python.exe", "python")
 }
 
-#[cfg(not(windows))]
-fn venv_python(venv: &Path) -> PathBuf {
-    venv.join("bin/python")
-}
-
-#[cfg(windows)]
 fn venv_skit(venv: &Path) -> PathBuf {
-    venv.join("Scripts/skit.exe")
+    venv_executable(venv, cfg!(windows), "skit.exe", "skit")
 }
 
-#[cfg(not(windows))]
-fn venv_skit(venv: &Path) -> PathBuf {
-    venv.join("bin/skit")
+fn venv_executable(venv: &Path, windows: bool, windows_name: &str, unix_name: &str) -> PathBuf {
+    if windows {
+        venv.join("Scripts").join(windows_name)
+    } else {
+        venv.join("bin").join(unix_name)
+    }
 }
 
 fn one_artifact(
@@ -567,6 +563,12 @@ mod tests {
                 } else {
                     true
                 };
+                if operation == Some("pip") && success {
+                    fs::write(closure_site_packages(&venv).join("payload"), b"abc").unwrap();
+                    let executable = super::venv_skit(&venv);
+                    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+                    fs::write(executable, b"12345").unwrap();
+                }
                 Ok(super::ClosureProcessOutput {
                     stderr: if success {
                         Vec::new()
@@ -604,7 +606,7 @@ mod tests {
                 .count(),
             2
         );
-        assert!(output.metrics.contains_key("footprint.closure_bytes"));
+        assert_eq!(output.metrics["footprint.closure_bytes"].value, 8.0);
         let serialized = output.to_json().unwrap();
         assert_eq!(SuiteOutput::from_json(&serialized).unwrap(), output);
 
@@ -669,6 +671,38 @@ mod tests {
     }
 
     #[test]
+    fn virtual_environment_tool_paths_cover_both_platform_layouts() {
+        let root = Path::new("venv");
+        assert_eq!(
+            super::venv_executable(root, true, "python.exe", "python"),
+            root.join("Scripts/python.exe")
+        );
+        assert_eq!(
+            super::venv_executable(root, false, "python.exe", "python"),
+            root.join("bin/python")
+        );
+        assert_eq!(
+            super::venv_executable(root, true, "skit.exe", "skit"),
+            root.join("Scripts/skit.exe")
+        );
+        assert_eq!(
+            super::venv_executable(root, false, "skit.exe", "skit"),
+            root.join("bin/skit")
+        );
+        #[cfg(windows)]
+        let expected_skit = root.join("Scripts/skit.exe");
+        #[cfg(not(windows))]
+        let expected_skit = root.join("bin/skit");
+        assert_eq!(super::venv_skit(root), expected_skit);
+
+        #[cfg(windows)]
+        let expected_python = root.join("Scripts/python.exe");
+        #[cfg(not(windows))]
+        let expected_python = root.join("bin/python");
+        assert_eq!(super::venv_python(root), expected_python);
+    }
+
+    #[test]
     fn test_the_library_footprint_metrics_divide_into_each_other() {
         use crate::{
             SuiteKind, SuiteOutput, SuitePlan,
@@ -683,11 +717,13 @@ mod tests {
             DEFAULT_STATE_FRACTION,
         )
         .unwrap();
+        let empty = generate(&root.path().join("empty"), 0, DEFAULT_SEED, 0.0).unwrap();
         let mut context = context(root.path());
         context.datasets.insert(3, manifest);
+        context.datasets.insert(0, empty);
         let plan = SuitePlan {
             kind: SuiteKind::Footprint,
-            library_sizes: vec![3],
+            library_sizes: vec![0, 3],
             warmup: 1,
             minimum_runs: 1,
             samples: 1,
@@ -713,6 +749,16 @@ mod tests {
         let per_entry = output.metrics["footprint.library_bytes_per_entry.n3"].value;
         assert_eq!(total, store + state);
         assert_eq!(per_entry, total / 3.0);
+        assert!(
+            output
+                .metrics
+                .contains_key("footprint.library_total_bytes.n0")
+        );
+        assert!(
+            !output
+                .metrics
+                .contains_key("footprint.library_bytes_per_entry.n0")
+        );
     }
 
     #[test]
@@ -761,9 +807,32 @@ mod tests {
             "Metadata-Version: 2.4\nName: skit-cli\n",
         )
         .unwrap();
+        fs::write(site.join("ignored.dist-info"), b"not a directory").unwrap();
+        fs::create_dir(site.join("ignored-directory")).unwrap();
 
         let sizes = super::distribution_sizes(&site, &venv).unwrap();
         assert_eq!(sizes, [("skit-cli".to_owned(), 8)]);
+
+        fs::remove_file(&script).unwrap();
+        assert_eq!(
+            super::distribution_sizes(&site, &venv).unwrap(),
+            [("skit-cli".to_owned(), 3)]
+        );
+
+        fs::write(&script, b"12345").unwrap();
+        #[cfg(windows)]
+        let relative_script = "../../Scripts/skit.exe";
+        #[cfg(not(windows))]
+        let relative_script = "../../../bin/skit";
+        fs::write(
+            dist.join("RECORD"),
+            format!("payload,,\n{relative_script},,\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            super::distribution_sizes(&site, &venv).unwrap(),
+            [("skit-cli".to_owned(), 8)]
+        );
     }
 
     #[test]

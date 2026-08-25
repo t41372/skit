@@ -11,6 +11,20 @@ expect_text() {
 }
 
 expect_text Cargo.toml 'tree-sitter = "0.26.12"'
+mutation_profile="$(awk '
+  $0 == "[profile.mutants]" { capture = 1; next }
+  capture && /^\[/ { exit }
+  capture { print }
+' Cargo.toml)"
+for setting in \
+  'inherits = "test"' \
+  'opt-level = 1' \
+  'debug = "none"' \
+  'debug-assertions = true' \
+  'overflow-checks = true'; do
+  expect_text <(printf '%s\n' "$mutation_profile") "$setting"
+done
+expect_text .cargo/mutants.toml 'profile = "mutants"'
 setup_uv_pin='astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1'
 test "$(grep -rF "$setup_uv_pin" .github/workflows | wc -l)" -eq 7 || {
   echo 'every setup-uv use must share the pinned v10.0.1 action' >&2
@@ -200,16 +214,29 @@ test "$(grep -lF 'sys.version_info[:2] == (3, 13)' \
   exit 1
 }
 expect_text CONTRIBUTING.md 'Node.js 26.7.0 and npm 12.0.2 or later'
-expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
-expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
+expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300'
+expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --timeout 300'
+expect_text .github/workflows/mutation.yml '          TMPDIR: ${{ runner.temp }}'
+
+# The test timeout must be explicit. cargo-mutants 27.1.0 calibrates its automatic timeout from a
+# baseline that tests only the shard's mutated package, while `test_workspace = true` makes every
+# mutant run the full workspace suite. The derived budget then times out honest runs. An explicit
+# --timeout is the only calibration that matches the enforced scope, so the multiplier and minimum
+# knobs must not return: they only govern the automatic path and would misread as active policy.
+if grep -qE '^[[:space:]]*(timeout_multiplier|minimum_test_timeout)[[:space:]]*=' .cargo/mutants.toml; then
+  echo 'mutants.toml must not carry automatic-timeout knobs; the explicit --timeout governs' >&2
+  exit 1
+fi
 expect_text .github/workflows/ci.yml 'zizmor .github/workflows .github/actions/install-hyperfine/action.yml'
 
 # Testing every mutant is opt-in on a pull request, so a branch under active work does not queue a
-# whole shard set on every push and starve the other workflows. Both jobs carry the gate: the matrix
-# that does the work, and the tally that reads its records.
+# whole shard set on every push and starve the other workflows. All three jobs carry the gate: the
+# change check that gates the other two, the matrix that does the work, and the tally that reads its
+# records. A job without the gate would start a runner on every push and report a success that
+# tested nothing.
 mutation_gate="github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'mutation-requested')"
-test "$(grep -cF "$mutation_gate" .github/workflows/mutation.yml)" -eq 2 || {
-  echo 'both mutation jobs must carry the opt-in label gate' >&2
+test "$(grep -cF "$mutation_gate" .github/workflows/mutation.yml)" -eq 3 || {
+  echo 'every mutation job must carry the opt-in label gate' >&2
   exit 1
 }
 expect_text .github/workflows/mutation.yml 'types: [opened, synchronize, reopened, labeled]'
@@ -242,9 +269,53 @@ test "$mutation_matrix" -eq "$mutation_shards" || {
 }
 expect_text .github/workflows/mutation.yml "SHARD_COUNT: \"$mutation_shards\""
 # The aggregation must survive, and it must fail closed: a shard that never reported is not a pass.
-expect_text .github/workflows/mutation.yml '    needs: mutation'
+expect_text .github/workflows/mutation.yml '    needs: [guard, mutation]'
 expect_text .github/workflows/mutation.yml 'if-no-files-found: error'
 expect_text .github/workflows/mutation.yml 'reported no outcomes'
+
+# A failed matrix can leave partial records with no missed or timed-out mutants.
+# Run the actual aggregate script against complete, partial, and absent records.
+mutation_aggregate_script="$(awk '
+  $0 == "      - name: Require every shard to report zero survivors" { step = 1; next }
+  step && $0 == "        run: |" { body = 1; next }
+  body && /^          / { print substr($0, 11); next }
+  body { exit }
+' .github/workflows/mutation.yml)"
+test -n "$mutation_aggregate_script"
+
+run_mutation_aggregate_fixture() (
+  result=$1
+  evidence=$2
+  fixture=$(mktemp -d)
+  trap 'rm -rf -- "$fixture"' EXIT
+  cd "$fixture"
+  mkdir -p shards/mutation-shard-0
+  if test "$evidence" != missing; then
+    printf '%s\n' '{"outcomes":[]}' > shards/mutation-shard-0/outcomes.json
+  fi
+  case "$evidence" in
+    missed | timeout)
+      printf '%s\n' 'one unresolved mutant' > "shards/mutation-shard-0/$evidence.txt"
+      ;;
+  esac
+  SHARD_COUNT=1 MUTATION_JOB_RESULT="$result" bash -c "$mutation_aggregate_script"
+)
+
+run_mutation_aggregate_fixture success complete >/dev/null
+for matrix_result in failure cancelled skipped; do
+  if run_mutation_aggregate_fixture "$matrix_result" partial >/dev/null 2>&1; then
+    echo "the mutation aggregate accepted a $matrix_result matrix with partial records" >&2
+    exit 1
+  fi
+done
+for shard_evidence in missing missed timeout; do
+  if run_mutation_aggregate_fixture success "$shard_evidence" >/dev/null 2>&1; then
+    echo "the mutation aggregate accepted $shard_evidence shard evidence" >&2
+    exit 1
+  fi
+done
+expect_text .github/workflows/mutation.yml 'MUTATION_JOB_RESULT: ${{ needs.mutation.result }}'
+
 
 # Every workflow job needs a time bound. Without one a stuck job runs to the six-hour default, and
 # the run is cancelled before the log flushes, so the failure teaches nothing about where it stuck.

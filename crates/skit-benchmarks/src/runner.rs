@@ -342,10 +342,10 @@ pub fn path_arg(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::{collections::BTreeMap, fs, path::Path};
 
     #[cfg(unix)]
-    use std::{os::unix::fs::PermissionsExt as _, path::Path};
+    use std::os::unix::fs::PermissionsExt as _;
 
     #[cfg(unix)]
     use crate::{SuiteKind, hyperfine::Case, suites::tests::plan};
@@ -429,6 +429,15 @@ mod tests {
             &original,
             &root.path().join("missing")
         ));
+    }
+
+    #[test]
+    fn rust_tool_discovery_returns_the_cargo_that_runs_the_test_suite() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let cargo = super::discover_rust_tool("cargo", repo_root)
+            .expect("Cargo must be discoverable while Cargo runs this test");
+        let cargo_path = cargo.display().to_string();
+        assert!(cargo.is_file(), "{cargo_path} is not a Cargo executable");
     }
 
     #[test]

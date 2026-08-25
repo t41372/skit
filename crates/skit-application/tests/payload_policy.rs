@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use skit_application::{
-    ExecutableDialect, ExecutableSourceFacts, ForcedAddKind, add_workdir, payload_stored_name,
-    source_is_executable, supports_storage_modes,
+    ExecutableDialect, ExecutableSourceFacts, ForcedAddKind, add_workdir,
+    canonical_stored_filename, payload_stored_name, source_is_executable, supports_storage_modes,
 };
 use skit_domain::{EntryKind, StorageMode};
 
@@ -36,6 +36,11 @@ fn forced_add_kinds_are_closed_without_closing_stored_entry_kinds() {
         assert_eq!(ForcedAddKind::parse(value), None, "{value}");
         assert_eq!(kind(value).as_str(), value, "stored kinds stay open");
     }
+}
+
+#[test]
+fn typescript_without_a_module_extension_has_the_canonical_copy_name() {
+    assert_eq!(canonical_stored_filename("ts"), Some("script.ts"));
 }
 
 #[test]

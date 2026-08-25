@@ -318,6 +318,14 @@ fn strict_derivations_refuse_half_present_pairs_but_scale_can_omit_one_endpoint(
     );
     let results = merge(meta(), vec![scale], 1.0).unwrap();
     assert!(!results.metrics.contains_key("scale.list_json.per_entry_us"));
+
+    let scale = output(
+        SuiteKind::Scale,
+        0.1,
+        &[("scale.list_json.n1000.median_ms", 8.0, "ms")],
+    );
+    let results = merge(meta(), vec![scale], 1.0).unwrap();
+    assert!(!results.metrics.contains_key("scale.list_json.per_entry_us"));
 }
 
 #[test]

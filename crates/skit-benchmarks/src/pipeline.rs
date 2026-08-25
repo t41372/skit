@@ -246,7 +246,7 @@ fn clear_stale_outputs(bench_dir: &Path) -> Result<(), ExecutionError> {
 
 fn remove_generated_directory(path: &Path) -> Result<(), ExecutionError> {
     let metadata = fs::symlink_metadata(path).map_err(|source| io("inspect", path, source))?;
-    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+    if !metadata.is_dir() {
         return Err(ExecutionError::UnsafeCleanup(path.to_path_buf()));
     }
     fs::remove_dir_all(path).map_err(|source| io("remove", path, source))
@@ -597,7 +597,10 @@ esac
         assert!(!super::normal_file_exists(&created).unwrap());
         assert!(super::normal_file_exists(&ordinary_file).unwrap());
         assert!(!super::normal_file_exists(&root.path().join("missing-file")).unwrap());
-        assert!(super::remove_generated_directory(&ordinary_file).is_err());
+        assert!(matches!(
+            super::remove_generated_directory(&ordinary_file),
+            Err(super::ExecutionError::UnsafeCleanup(path)) if path == ordinary_file
+        ));
 
         let linked_file = root.path().join("linked-file");
         symlink(&ordinary_file, &linked_file).unwrap();
