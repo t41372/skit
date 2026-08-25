@@ -21,6 +21,7 @@ use ratatui_widgets::{
 };
 use skit_i18n::{Locale, text};
 use skit_ui::{CommandContext, UiCommand, command_specs};
+use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
     HitRegion, HitTarget, ViewGeometry,
@@ -256,8 +257,8 @@ pub(crate) fn discard_changes(frame: &mut Frame, area: Rect, locale: Locale) -> 
     let discard = text(locale, "Discard");
     let keep = text(locale, "Keep editing");
     let discard_width =
-        u16::try_from(discard.chars().count().saturating_add(4)).unwrap_or(u16::MAX);
-    let keep_width = u16::try_from(keep.chars().count().saturating_add(4)).unwrap_or(u16::MAX);
+        u16::try_from(discard.as_ref().width().saturating_add(4)).unwrap_or(u16::MAX);
+    let keep_width = u16::try_from(keep.as_ref().width().saturating_add(4)).unwrap_or(u16::MAX);
     let [discard_area, keep_area, _] = Layout::horizontal([
         Constraint::Length(discard_width),
         Constraint::Length(keep_width),
@@ -448,6 +449,30 @@ mod tests {
                     HitTarget::Command(UiCommand::KeepEditing)
                 ));
             }
+        }
+    }
+
+    #[test]
+    fn discard_overlay_renders_the_full_keep_editing_label_in_both_chinese_locales() {
+        for (locale, keep) in [(Locale::ZhCn, "继续编辑"), (Locale::ZhTw, "繼續編輯")] {
+            let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = discard_changes(frame, frame.area(), locale);
+                })
+                .unwrap();
+            // Ratatui's TestBackend exposes the continuation cell of each wide glyph as a space.
+            let rendered = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                rendered.replace(' ', "").contains(keep),
+                "missing {keep}: {rendered}"
+            );
         }
     }
 }
