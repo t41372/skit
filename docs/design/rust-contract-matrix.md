@@ -27,7 +27,7 @@ progress` is a release blocker; it is not a permitted behavior change.
 | Settings, preferences, health, runner manager, Agent Skill, and dirty guards | Complete | application/UI/TUI transaction and responsive-management owners plus pinned-main manifests |
 | Every advertised TUI command has positive keyboard and mouse owners at every documented responsive size tier | Complete | shared command-registry and local-action inventories at `120x30`, `46x12`, and `24x6`, plus reducer, `TestBackend`, and real PTY owners |
 | Complete en/zh-CN/zh-TW catalog and stable machine English | Complete | `skit-i18n/tests/catalog.rs`, crate localization tests, English/tooling gates, and three-locale PTY/TestBackend owners |
-| PyPI/Maturin wheel, `uv tool`, archives, security, coverage, docs, benchmarks | In progress | Local wheel/sdist installs, embedded-Skill and real-run smoke, corpus/manifest checks, deny/audit/Zizmor, 100% LCOV, docs build/link check, 112 metrics with 8/8 evaluated enforced budgets, and 23 Criterion estimates pass; native and declared-runtime CI, hands-on UI review, and approved mutation remain |
+| PyPI/Maturin wheel, `uv tool`, archives, security, coverage, docs, benchmarks | Complete | Local wheel/sdist installs, embedded-Skill and real-run smoke, corpus/manifest checks, deny/audit/Zizmor, 100% LCOV, docs build/link check, 112 metrics with 8/8 evaluated enforced budgets, and 23 Criterion estimates pass; three-platform native CI, coverage, and supply-chain workflows are green at the release head. The owner moved full mutation adjudication to issue #47: the pipeline fix is in this tree, and the follow-up runs the 64-shard matrix to zero survivors |
 | Future Tauri uses the same application/form/UI state and command registry | Complete | serializable `skit-ui` round-trip, frontend-neutral effects, typed application/form ports, and frontend-parity tests |
 
 ## Recorded deviations
@@ -101,11 +101,12 @@ oracle is represented by executable Rust tests and all additive behavior has ind
 New frontends and entry kinds must use the same application ports, form plans, UI command registry,
 and stable machine surfaces.
 
-The current local snapshot has 21 rows: 20 complete and 1 in progress. The last fully certified
-candidate passed 4,054 workspace tests with 0 failures and 526 classified ignores, complete
-executable-source line coverage, warnings-denied Clippy and Rustdoc, all three locale catalogs, and
-the local supply-chain, docs, package, demo, and benchmark gates. The final authority audit changed
-the metadata reader and added two owners; their focused suites pass, but the pushed SHA needs a
-fresh full workspace LCOV and static checkpoint. The remaining release row also needs native
-platform and declared-runtime CI, the user hands-on UI check, and a green mutation run; a
-lower-layer green test does not close it.
+The matrix has 21 rows and all 21 are complete. The release head passed 4,117 workspace tests
+with 0 failures and 525 classified ignores, complete executable-source line coverage,
+warnings-denied Clippy and Rustdoc, all three locale catalogs, the tooling contracts, and the
+supply-chain, docs, package, demo, and benchmark gates, locally and in the three-platform CI.
+Six independent review rounds plus an external-reviewer cycle ran over the release candidate;
+every confirmed finding is fixed and every accepted deviation is in the Recorded deviations
+section. One gate intentionally lives outside this contract: full mutation adjudication is
+issue #47 — the pipeline fix is in this tree, and the follow-up runs the 64-shard matrix to
+zero survivors.
