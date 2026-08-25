@@ -29,7 +29,6 @@ use skit_application::{
 };
 use skit_domain::{Entry, EntryId, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_i18n::{Localize as _, Message};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::{
     FileStore,
@@ -637,7 +636,7 @@ impl FileStore {
             mode: request.mode,
             source: request.source,
             source_hash,
-            added_at: format_added_at(OffsetDateTime::now_utc())?,
+            added_at: crate::stamp::now_iso(),
             id: Some(id.clone()),
             workdir: request.workdir,
             description: request.description,
@@ -1042,12 +1041,6 @@ fn encode_metadata(path: &Path, meta: &EntryMeta) -> Result<String, RepositoryEr
         .map_err(|error| invalid(Message::new("could not encode metadata: {}").with(error)))
 }
 
-fn format_added_at(timestamp: OffsetDateTime) -> Result<String, RepositoryError> {
-    timestamp
-        .format(&Rfc3339)
-        .map_err(|error| invalid(Message::new("could not format add timestamp: {}").with(error)))
-}
-
 fn validated_name(name: &str) -> Result<String, RepositoryError> {
     let name = name.trim();
     if name.is_empty() {
@@ -1178,7 +1171,6 @@ mod tests {
 
     use skit_domain::EntryKind;
     use tempfile::TempDir;
-    use time::{Date, Month};
 
     use super::*;
 
@@ -1522,16 +1514,7 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_and_metadata_encoding_report_their_boundary_failures() {
-        let ancient = Date::from_calendar_date(-1, Month::January, 1)
-            .unwrap()
-            .midnight()
-            .assume_utc();
-        assert!(matches!(
-            format_added_at(ancient),
-            Err(RepositoryError::InvalidMutation { .. })
-        ));
-
+    fn metadata_encoding_reports_its_boundary_failures() {
         let root = TempDir::new().unwrap();
         let meta = EntryMeta::minimal("Demo", skit_domain::EntryKind::parse("shell").unwrap());
         let missing = root.path().join("missing.toml");

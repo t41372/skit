@@ -13,6 +13,7 @@ mod path_glob;
 mod paths;
 mod prompt_selection;
 mod read;
+mod stamp;
 mod state;
 mod toml_document;
 
@@ -27,7 +28,11 @@ pub use mutations::{
 };
 pub use path_completion::SystemDirectoryReader;
 pub use path_glob::FileGlobExpander;
-pub use paths::{expand_user_path, stored_filename, stored_filenames};
+pub use paths::{
+    expand_user_path, override_directory, platform_config_dir, platform_data_dir,
+    platform_state_dir, stored_filename, stored_filenames,
+};
 pub use prompt_selection::FilePromptSelectionStore;
 pub use read::FileStore;
+pub use stamp::{iso_stamp, now_iso};
 pub use state::{CoordinatedStateError, ExternalRollbackOutcome, FileFormStateStore};

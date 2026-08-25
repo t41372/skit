@@ -179,7 +179,7 @@ fn human_success_and_health_output_use_the_requested_catalog_but_json_does_not()
         .args(["add", "--cmd", "printf ok", "--name", "Library"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("已新增：Library"));
+        .stdout(predicate::str::contains("已加入:Library"));
     // The v0.4 write confirmation is `key = value` with no localizable words; the
     // localized human surface for config is the unset display sentinel on a read.
     command()

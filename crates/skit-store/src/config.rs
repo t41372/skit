@@ -1527,11 +1527,32 @@ fn preserve_corrupt_backup(path: &Path, original: &[u8]) -> Result<PathBuf, Conf
     } else {
         replace_existing_backup(&target, original, atomic_write_bytes, rename_path)?
     };
-    let permissions = fs::metadata(path)
-        .map_err(|error| io_error("backup", path, error))?
-        .permissions();
-    fs::set_permissions(&saved, permissions).map_err(|error| io_error("backup", &saved, error))?;
+    let original_metadata = fs::metadata(path).map_err(|error| io_error("backup", path, error))?;
+    fs::set_permissions(&saved, original_metadata.permissions())
+        .map_err(|error| io_error("backup", &saved, error))?;
+    copy_file_times(&original_metadata, &saved)
+        .map_err(|error| io_error("backup", &saved, error))?;
     Ok(backup)
+}
+
+/// Give a saved copy the times of the file it copies.
+///
+/// Version 0.4 keeps a corrupt configuration with `shutil.copy2`, which carries the access and
+/// modification times as well as the mode (`skit-oracle/src/skit/atomic.py:309`). A backup a user
+/// opens to recover from should say when the file it holds was written, not when skit noticed the
+/// damage.
+fn copy_file_times(original: &fs::Metadata, saved: &Path) -> io::Result<()> {
+    let mut times = fs::FileTimes::new();
+    if let Ok(modified) = original.modified() {
+        times = times.set_modified(modified);
+    }
+    if let Ok(accessed) = original.accessed() {
+        times = times.set_accessed(accessed);
+    }
+    fs::OpenOptions::new()
+        .write(true)
+        .open(saved)?
+        .set_times(times)
 }
 
 fn rename_path(previous: &Path, target: &Path) -> io::Result<()> {

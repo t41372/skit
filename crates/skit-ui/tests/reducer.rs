@@ -17,7 +17,8 @@ use skit_ui::{
     PreferencesView, RESYNC_KEY, RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState,
     RunFormView, RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction, RunnerManagerView,
     RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner, Screen, SettingsAction,
-    SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UvHealth, command_specs,
+    SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UiKey, UiModifiers, UvHealth,
+    command_specs,
 };
 
 fn entry_with_kind(slug: &str, name: &str, kind: &str, description: &str) -> EntrySummary {
@@ -1571,4 +1572,135 @@ fn a_screen_with_no_runner_section_never_opens_the_agent_editor() {
     );
     assert_eq!(state.modal(), None, "a python entry pins no agent");
     assert!(!state.command_enabled(UiCommand::NewRunner));
+}
+
+/// A terminal reports Shift for an upper-case letter but not for a shifted
+/// symbol. Every advertised character binding must accept both shapes.
+#[test]
+fn every_character_binding_accepts_both_shift_shapes() {
+    let contexts = [
+        CommandContext::LibraryBrowse,
+        CommandContext::LibrarySearch,
+        CommandContext::Form,
+        CommandContext::RunForm,
+        CommandContext::RunPresetName,
+        CommandContext::RunTokenMenu,
+        CommandContext::Preferences,
+        CommandContext::Add,
+        CommandContext::Health,
+        CommandContext::Runners,
+        CommandContext::Settings,
+        CommandContext::RunnerEditor,
+        CommandContext::Report,
+        CommandContext::ConfirmRemove,
+        CommandContext::ConfirmDiscard,
+        CommandContext::Help,
+    ];
+    for context in contexts {
+        for spec in command_specs(context) {
+            for binding in spec.bindings {
+                if !matches!(binding.key, UiKey::Character(_)) {
+                    continue;
+                }
+                for shift in [false, true] {
+                    let chord = UiModifiers {
+                        shift,
+                        ..binding.modifiers
+                    };
+                    assert!(
+                        binding.accepts(binding.key, chord),
+                        "{:?} binding {:?} must accept shift={shift}",
+                        spec.command,
+                        binding.key,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The library order and the initial selection are pure functions of the surface.
+///
+/// Version 0.4 sorts a slug-sorted listing by activity, newest first, with Python's
+/// stable sort (`src/skit/tui.py:394`, `src/skit/store.py:860`). Ties therefore keep
+/// the ascending slug order, and the cursor starts on the first row. The surface
+/// build must give the same order and the same selection every time.
+#[test]
+fn library_activity_sort_breaks_ties_by_slug_and_selects_the_first_row() {
+    use skit_application::library_detail::LibraryEntryDetail;
+    let detail = |added: &str| LibraryEntryDetail {
+        added_at: added.to_owned(),
+        ..LibraryEntryDetail::default()
+    };
+    // Distinct activity: the newest entry leads even against slug order.
+    let newest_leads = LibraryState::from_surface(
+        LibraryScan {
+            entries: vec![entry("banner", "banner", ""), entry("greet", "greet", "")],
+            diagnostics: Vec::new(),
+        },
+        BTreeMap::from([
+            (
+                Slug::parse("banner").unwrap(),
+                detail("2026-08-24T00:00:01+00:00"),
+            ),
+            (
+                Slug::parse("greet").unwrap(),
+                detail("2026-08-24T00:00:05+00:00"),
+            ),
+        ]),
+    );
+    let order = |state: &LibraryState| {
+        state
+            .visible_entries()
+            .map(|entry| entry.slug.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(order(&newest_leads), ["greet", "banner"]);
+    assert_eq!(newest_leads.selected().unwrap().slug.as_str(), "greet");
+    // Tied activity: ascending slug order must not depend on the delivery order.
+    let mut tied = LibraryState::from_surface(
+        LibraryScan {
+            entries: vec![
+                entry("greet", "greet", ""),
+                entry("deploy", "deploy", ""),
+                entry("banner", "banner", ""),
+            ],
+            diagnostics: Vec::new(),
+        },
+        BTreeMap::new(),
+    );
+    assert_eq!(order(&tied), ["banner", "deploy", "greet"]);
+    assert_eq!(tied.selected().unwrap().slug.as_str(), "banner");
+
+    // A later complete delivery adds details after the scan. Its shuffled rows
+    // must produce the same order and keep the same selected slug.
+    tied.update(Action::ReplaceSurface {
+        surface: LibrarySurface {
+            scan: LibraryScan {
+                entries: vec![
+                    entry("deploy", "deploy", ""),
+                    entry("greet", "greet", ""),
+                    entry("banner", "banner", ""),
+                ],
+                diagnostics: Vec::new(),
+            },
+            details: BTreeMap::from([
+                (
+                    Slug::parse("banner").unwrap(),
+                    detail("2026-08-24T00:00:00+00:00"),
+                ),
+                (
+                    Slug::parse("deploy").unwrap(),
+                    detail("2026-08-24T00:00:00+00:00"),
+                ),
+                (
+                    Slug::parse("greet").unwrap(),
+                    detail("2026-08-24T00:00:00+00:00"),
+                ),
+            ]),
+        },
+        rerunnable: Vec::new(),
+    });
+    assert_eq!(order(&tied), ["banner", "deploy", "greet"]);
+    assert_eq!(tied.selected().unwrap().slug.as_str(), "banner");
 }

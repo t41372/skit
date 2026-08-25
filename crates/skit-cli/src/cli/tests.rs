@@ -299,8 +299,8 @@ fn zsh_completion_keeps_runtime_validated_targets_without_parser_conflict_groups
     write_completion(Shell::Zsh, &mut output);
     let output = String::from_utf8(output).unwrap();
     let row_spec = concat!(
-        "'--row=[Remove one malformed raw row by its zero-based index or ",
-        "\\`container\\`]:ROW:_default' \\\n"
+        "'--row=[Remove one raw row index from '\\''runner list --all'\\'' ",
+        "(or '\\''container'\\'')]:ROW:_default' \\\n"
     );
 
     assert!(output.contains(row_spec), "{output}");
@@ -311,11 +311,17 @@ fn zsh_completion_keeps_runtime_validated_targets_without_parser_conflict_groups
     );
 
     for spec in [
-        "'--cmd=[Register a command template instead of a file]:COMMAND_TEMPLATE:_default' \\\n",
-        "'-e[Write a new source in the configured editor, then add it]' \\\n",
-        "'--edit[Write a new source in the configured editor, then add it]' \\\n",
-        "'--prompt[Treat the source as a prompt entry]' \\\n",
-        "'--exe[Force executable kind inference]' \\\n",
+        concat!(
+            "'--cmd=[Register a command template, e.g. --cmd '\\''ffmpeg -i {input}'\\'']",
+            ":COMMAND_TEMPLATE:_default' \\\n"
+        ),
+        "'-e[Write a brand-new script in your editor, then add it]' \\\n",
+        "'--edit[Write a brand-new script in your editor, then add it]' \\\n",
+        concat!(
+            "'--prompt[Add the file as a prompt for an AI agent ",
+            "(with no path\\: draft one in your editor)]' \\\n"
+        ),
+        "'--exe[Force the executable kind (normally inferred from the file itself)]' \\\n",
     ] {
         assert!(output.contains(spec), "missing spec {spec:?}: {output}");
     }
@@ -6487,6 +6493,416 @@ fn the_localized_command_tree_translates_every_description() {
 }
 
 #[test]
+fn every_translated_help_string_keeps_the_version_0_4_wording() {
+    // Version 0.4 wrote each of these with gettext, and its .po files translate every one.
+    // The wording is the contract a user reads, so it is pinned here: an invented replacement
+    // is what let the whole set drift before. A description keeps the oracle text without its
+    // final period, which Clap removes from a doc comment.
+    const HELP: &[(&str, Option<&str>, &str)] = &[
+        (
+            "add",
+            None,
+            "Add a script, executable, prompt, or command to skit",
+        ),
+        (
+            "add",
+            Some("--cmd"),
+            "Register a command template, e.g. --cmd 'ffmpeg -i {input}'",
+        ),
+        (
+            "add",
+            Some("--dep"),
+            "A dependency (repeat for more; skips the interactive question)",
+        ),
+        (
+            "add",
+            Some("--description"),
+            "Description (inferred from the source when possible)",
+        ),
+        (
+            "add",
+            Some("--edit"),
+            "Write a brand-new script in your editor, then add it",
+        ),
+        (
+            "add",
+            Some("--exe"),
+            "Force the executable kind (normally inferred from the file itself)",
+        ),
+        (
+            "add",
+            Some("--kind"),
+            "Force the language kind (e.g. shell, js) for an extensionless file",
+        ),
+        (
+            "add",
+            Some("--name"),
+            "Name / alias (defaults to the file name)",
+        ),
+        (
+            "add",
+            Some("--no-input"),
+            "Never prompt; accept the detected suggestions",
+        ),
+        (
+            "add",
+            Some("--no-interpolate"),
+            "Prompt only: no variable insertion at all — the body travels exactly as written",
+        ),
+        (
+            "add",
+            Some("--prompt"),
+            "Add the file as a prompt for an AI agent (with no path: draft one in your editor)",
+        ),
+        (
+            "add",
+            Some("--python"),
+            "Python version constraint, e.g. \">=3.11\"",
+        ),
+        (
+            "add",
+            Some("--ref"),
+            "Reference mode: link to the original file instead of copying it",
+        ),
+        (
+            "add",
+            Some("--runner"),
+            "Pin the agent a prompt entry runs with (see skit runner list)",
+        ),
+        (
+            "agent install",
+            None,
+            "Install skit's Agent Skill into an AI agent's skills directory",
+        ),
+        (
+            "agent install",
+            Some("--project"),
+            "Install into the current project (./.claude, ./.codex) instead of your home directory",
+        ),
+        (
+            "agent install",
+            Some("--to"),
+            "Install into this skills directory instead of a named target",
+        ),
+        (
+            "agent",
+            None,
+            "Connect skit to AI agents: install the official Agent Skill",
+        ),
+        (
+            "config",
+            None,
+            "Read or set skit's settings (language, editor, mirror, form style, after-run)",
+        ),
+        ("config", Some("--json"), "Output as JSON"),
+        ("deps", Some("--clear"), "Remove every dependency"),
+        (
+            "deps",
+            Some("--clear-needs"),
+            "Remove every needed external command",
+        ),
+        (
+            "deps",
+            Some("--dep"),
+            "A dependency (repeat for more; replaces the whole list)",
+        ),
+        ("deps", Some("--json"), "Output as JSON"),
+        (
+            "deps",
+            Some("--need"),
+            "An external command the entry needs on PATH (repeat; replaces the whole list)",
+        ),
+        (
+            "deps",
+            Some("--python"),
+            "Python version constraint, e.g. \">=3.11\"",
+        ),
+        ("doctor", Some("--json"), "Output as JSON"),
+        (
+            "doctor",
+            Some("--rebuild"),
+            "Rebuild the index from each entry's meta.toml",
+        ),
+        (
+            "edit",
+            None,
+            "Open a script or prompt source in your editor (offers to create a script if the name is new)",
+        ),
+        ("list", Some("--json"), "Output as JSON"),
+        (
+            "params",
+            Some("--add"),
+            "Declare a new parameter on an exe/command entry, by name (repeatable)",
+        ),
+        (
+            "params",
+            Some("--choices"),
+            "Set a declared parameter's choices, as NAME=a,b,c (comma separated)",
+        ),
+        (
+            "params",
+            Some("--default"),
+            "Set a declared parameter's default, as NAME=VALUE",
+        ),
+        (
+            "params",
+            Some("--deliver"),
+            "Set how a declared parameter reaches the program, as NAME=env|flag|placeholder",
+        ),
+        (
+            "params",
+            Some("--env-source"),
+            "Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable)",
+        ),
+        (
+            "params",
+            Some("--flag"),
+            "Set a declared flag parameter's option, as NAME=--out (empty = positional)",
+        ),
+        (
+            "params",
+            Some("--help-text"),
+            "Set a declared parameter's help text, as NAME=text",
+        ),
+        (
+            "params",
+            Some("--interpolate"),
+            "Prompt only: turn variable insertion on/off for this prompt (off = the body travels exactly as written)",
+        ),
+        (
+            "params",
+            Some("--interpreter"),
+            "Pin the interpreter/runtime an interpreted entry runs with (e.g. zsh, bun; empty value returns to automatic)",
+        ),
+        ("params", Some("--json"), "Output the read view as JSON"),
+        (
+            "params",
+            Some("--manage"),
+            "Bring a currently detected candidate under management (repeatable)",
+        ),
+        (
+            "params",
+            Some("--no-secret"),
+            "Remove the secret mark from a managed parameter (repeatable)",
+        ),
+        (
+            "params",
+            Some("--normalize"),
+            "Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable)",
+        ),
+        (
+            "params",
+            Some("--optional"),
+            "Mark a declared parameter as optional (repeatable)",
+        ),
+        (
+            "params",
+            Some("--prompt"),
+            "Set a parameter's form prompt, as NAME=text (repeatable)",
+        ),
+        (
+            "params",
+            Some("--required"),
+            "Mark a declared parameter as required (repeatable)",
+        ),
+        (
+            "params",
+            Some("--resync"),
+            "Prune definitions that no longer match the script and refresh changed types",
+        ),
+        (
+            "params",
+            Some("--rm"),
+            "Remove a declared parameter, by name (repeatable)",
+        ),
+        (
+            "params",
+            Some("--runner"),
+            "Prompt only: pin the agent this prompt runs with (empty value clears the pin)",
+        ),
+        (
+            "params",
+            Some("--secret"),
+            "Mark a managed parameter as secret (repeatable)",
+        ),
+        (
+            "params",
+            Some("--template"),
+            "Command only: rewrite the template ({placeholders} are re-read from it)",
+        ),
+        (
+            "params",
+            Some("--type"),
+            "Set a declared parameter's type, as NAME=str|int|float|bool|choice|path",
+        ),
+        (
+            "params",
+            Some("--unmanage"),
+            "Drop a managed parameter (repeatable)",
+        ),
+        (
+            "params",
+            Some("--workdir"),
+            "Set where the entry runs: origin (its own folder), store, invoke (where you run skit from), or an absolute path",
+        ),
+        ("preset delete", None, "Delete a named preset from an entry"),
+        ("preset list", None, "List an entry's saved presets"),
+        ("preset list", Some("--json"), "Output as JSON"),
+        (
+            "preset save",
+            None,
+            "Save a set of parameter values as a named preset",
+        ),
+        (
+            "preset save",
+            Some("--from-last"),
+            "Save the last run's values without asking (automation-friendly)",
+        ),
+        (
+            "preset",
+            None,
+            "Manage named parameter presets for an entry",
+        ),
+        ("remove", Some("--yes"), "Skip confirmation"),
+        ("run", None, "Run a registered entry in the terminal"),
+        (
+            "run",
+            Some("--dry-run"),
+            "Print the exact command that would run (tokens and globs expanded), then exit",
+        ),
+        (
+            "run",
+            Some("--forget-args"),
+            "Forget the remembered extra arguments before this run (they are otherwise reused when you pass none)",
+        ),
+        (
+            "run",
+            Some("--no-input"),
+            "Never prompt; reuse last values and defaults",
+        ),
+        (
+            "run",
+            Some("--plain"),
+            "Line-by-line prompts instead of the inline form",
+        ),
+        (
+            "run",
+            Some("--preset"),
+            "Named preset of parameter values to prefill the form with",
+        ),
+        (
+            "run",
+            Some("--raw"),
+            "Skip the parameter form and injection and run the script as-is (escape hatch)",
+        ),
+        (
+            "run",
+            Some("--runner"),
+            "Run a prompt entry with this agent (overrides its pin for one run)",
+        ),
+        (
+            "run",
+            Some("--save-preset"),
+            "Save this run's values as a named preset",
+        ),
+        (
+            "run",
+            Some("--set"),
+            "Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the form no longer asks for a field you set)",
+        ),
+        (
+            "runner add",
+            None,
+            "Register a runner: skit runner add NAME COMMAND… ({{prompt}} marks where the rendered prompt goes; each shell word becomes one argument, no shell involved)",
+        ),
+        (
+            "runner add",
+            Some("--force"),
+            "Replace the runner if the name already exists (the edit path)",
+        ),
+        (
+            "runner list",
+            None,
+            "List the configured runners (seeds them into config on first use)",
+        ),
+        (
+            "runner list",
+            Some("--all"),
+            "Include malformed raw rows and their repair indexes",
+        ),
+        ("runner list", Some("--json"), "Output as JSON"),
+        ("runner remove", None, "Remove a configured runner"),
+        ("runner remove", Some("--no-input"), "Never prompt"),
+        (
+            "runner remove",
+            Some("--row"),
+            "Remove one raw row index from 'runner list --all' (or 'container')",
+        ),
+        ("runner remove", Some("--yes"), "Skip confirmation"),
+        (
+            "runner",
+            None,
+            "Manage the agents (runners) that prompt entries run with",
+        ),
+        ("show", Some("--json"), "Output as JSON"),
+    ];
+
+    let english = translate_command(Cli::command(), Locale::En);
+    for (path, flag, expected) in HELP {
+        let mut command = &english;
+        for name in path.split_whitespace() {
+            command = command
+                .get_subcommands()
+                .find(|sub| sub.get_name() == name)
+                .unwrap_or_else(|| panic!("the {path} command exists"));
+        }
+        let actual = match flag {
+            None => command.get_about().map(ToString::to_string),
+            Some(flag) => command
+                .get_arguments()
+                .find(|argument| {
+                    argument
+                        .get_long()
+                        .is_some_and(|long| format!("--{long}") == *flag)
+                })
+                .and_then(|argument| argument.get_help().map(ToString::to_string)),
+        };
+        assert_eq!(
+            actual.as_deref(),
+            Some(*expected),
+            "path={path:?} flag={flag:?}"
+        );
+        for locale in [Locale::ZhCn, Locale::ZhTw] {
+            let translated = text(locale, expected);
+            assert_ne!(
+                translated.as_ref(),
+                *expected,
+                "{locale:?} has no row for {expected:?}"
+            );
+        }
+    }
+
+    // Three canaries hold the exact Chinese the oracle ships, so a row cannot be reworded.
+    assert_eq!(
+        text(
+            Locale::ZhCn,
+            "Manage the agents (runners) that prompt entries run with"
+        ),
+        "管理提示词条目使用的执行器(AI agent)"
+    );
+    assert_eq!(
+        text(Locale::ZhTw, "Python version constraint, e.g. \">=3.11\""),
+        "Python 版本約束,如 \">=3.11\""
+    );
+    assert_eq!(
+        text(
+            Locale::ZhCn,
+            "Register a command template, e.g. --cmd 'ffmpeg -i {input}'"
+        ),
+        "登记命令模板,如 --cmd 'ffmpeg -i {input}'"
+    );
+}
+#[test]
 fn windows_argument_encoding_round_trips_every_quoting_shape() {
     // Each row is one argument list that must survive join then split byte for byte.
     let lists: &[&[&str]] = &[
@@ -7929,10 +8345,13 @@ impl MirrorPromptPty {
 
         let root = TempDir::new().unwrap();
         let result_path = root.path().join("result");
+        // Wide enough that the longest question and refusal reach the terminal on one line: this
+        // harness reads whole sentences, and folding them is owned separately by
+        // `a_printed_sentence_folds_where_the_console_folds_it` and its real-terminal sibling.
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 20,
-                cols: 120,
+                cols: 200,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -11673,6 +12092,10 @@ fn test_resolve_editor_unquoted_windows_path_untouched() {
     );
 }
 
+// This src test module deliberately keeps its own copy of the terminal rules instead of
+// including `tests/support/pty.rs`: an include from src would compile 450 harness lines into
+// the library test build, where the coverage checker counts every line. The canonical rules and
+// their wave evidence live in that module; keep this copy in step with it.
 /// Deliver one canned answer the way a terminal delivers it.
 ///
 /// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and
@@ -11686,4 +12109,142 @@ fn keystrokes(answer: &[u8]) -> Vec<u8> {
         .iter()
         .map(|byte| if *byte == b'\n' { b'\r' } else { *byte })
         .collect()
+}
+
+/// A printed sentence folds the way the console folds it.
+///
+/// Version 0.4 prints through Rich, which breaks a line at its spaces, moves a whole word to the
+/// next line, and cuts a word too long for one line at the exact cell it fills. A space that ends a
+/// line survives while the line still fits, and goes when the line reaches past the width. These
+/// answers were taken from Rich itself over four hundred generated sentences.
+#[test]
+fn a_printed_sentence_folds_where_the_console_folds_it() {
+    let fold = |text: &str, width: usize| fold_for_output(text, Some(width));
+
+    // A width the sentence already fits leaves it whole, and no terminal leaves it whole as well.
+    assert_eq!(fold("abcde fghij", 11), "abcde fghij");
+    assert_eq!(fold_for_output("abcde fghij", None), "abcde fghij");
+
+    // One cell short: the word moves down, and the space it left behind still fits above.
+    assert_eq!(fold("abcde fghij", 10), "abcde \nfghij");
+
+    // The space goes when keeping it would reach past the width.
+    assert_eq!(fold("aaaaaa bb", 7), "aaaaaa \nbb");
+    assert_eq!(fold("aaaaaaa bb", 7), "aaaaaaa\nbb");
+
+    // A word no line can hold is cut at the cell it fills, and what follows joins the remainder.
+    assert_eq!(fold("aaaaaaaa bb", 7), "aaaaaaa\na bb");
+    assert_eq!(
+        fold("abcdefghijklmnopqrstuvwxy", 10),
+        "abcdefghij\nklmnopqrst\nuvwxy"
+    );
+
+    // A wide glyph fills two cells, so five of them fill a ten-cell line.
+    assert_eq!(
+        fold("条目 中文描述文字很长很长", 10),
+        "条目 \n中文描述文\n字很长很长"
+    );
+    assert_eq!(fold("中文中文中文中文", 7), "中文中\n文中文\n中文");
+
+    // An indented report keeps its indent on the line that carries it, which is the shape the
+    // show report prints.
+    assert_eq!(
+        fold("  indented text here we go", 20),
+        "  indented text here\nwe go"
+    );
+
+    // The text keeps the line breaks it arrived with.
+    assert_eq!(fold("aaaa bbbb\ncc", 4), "aaaa\nbbbb\ncc");
+}
+
+/// A table that already fits keeps its natural columns, and one that does not gives back width
+/// from its widest column first.
+///
+/// Version 0.4 lets Rich fit the table to the console width (`skit-oracle/src/skit/cli.py:2291`),
+/// so the same input renders at 67 columns on a wide terminal and at exactly 60 on a narrow one.
+/// The furniture is one border character per column plus the leading one, and a space on each side
+/// of every cell.
+#[test]
+fn table_columns_shrink_only_until_the_table_fits() {
+    let headers = ["Name".to_owned(), "Kind".to_owned(), "Help".to_owned()];
+    let rows = [[
+        "abcd".to_owned(),
+        "python".to_owned(),
+        "hello world".to_owned(),
+    ]];
+    // 4 + 6 + 11 cells plus 3 columns * 3 + 1 of furniture = 31.
+    let natural = [4, 6, 11];
+    assert_eq!(table_widths(&headers, &rows, None), natural);
+    assert_eq!(table_widths(&headers, &rows, Some(100)), natural);
+    assert_eq!(table_widths(&headers, &rows, Some(31)), natural);
+    // One column over: only the widest pays.
+    assert_eq!(table_widths(&headers, &rows, Some(30)), [4, 6, 10]);
+    // The widest keeps paying until it ties, and then the tie pays leftmost first.
+    assert_eq!(table_widths(&headers, &rows, Some(25)), [4, 6, 5]);
+    assert_eq!(table_widths(&headers, &rows, Some(22)), [4, 4, 4]);
+    // A terminal too narrow for the furniture leaves one cell in every column.
+    assert_eq!(table_widths(&headers, &rows, Some(1)), [1, 1, 1]);
+}
+
+/// A cell folds at its spaces, and a word that cannot fit alone is cut with an ellipsis.
+#[test]
+fn a_printed_line_wears_its_sense_and_drops_it_where_it_cannot_show() {
+    use std::ffi::OsStr;
+
+    // Every sense carries the sequence Rich writes for it, closed the way Rich closes it.
+    assert_eq!(super::HumanStyle::Plain.prefix(), "");
+    assert_eq!(super::HumanStyle::Green.prefix(), "\u{1b}[32m");
+    assert_eq!(super::HumanStyle::Dim.prefix(), "\u{1b}[2m");
+    assert_eq!(super::HumanStyle::Yellow.prefix(), "\u{1b}[33m");
+    assert_eq!(super::HumanStyle::Red.prefix(), "\u{1b}[31m");
+
+    // A terminal wears the sense; a redirected stream keeps the plain text.
+    assert_eq!(
+        super::paint_for_output("done", super::HumanStyle::Green, Some(40)),
+        "\u{1b}[32mdone\u{1b}[0m"
+    );
+    assert_eq!(
+        super::paint_for_output("done", super::HumanStyle::Green, None),
+        "done"
+    );
+    // A line that states a fact wears nothing, terminal or not.
+    assert_eq!(
+        super::paint_for_output("done", super::HumanStyle::Plain, Some(40)),
+        "done"
+    );
+    // The colour follows the fold, so a folded line wears one sequence around the whole answer.
+    assert_eq!(
+        super::paint_for_output("aaa bbb", super::HumanStyle::Red, Some(3)),
+        "\u{1b}[31maaa\nbbb\u{1b}[0m"
+    );
+
+    // Rich drops every style for either answer, and keeps it otherwise.
+    assert!(super::colour_is_welcome_for(None, None));
+    assert!(super::colour_is_welcome_for(
+        Some(OsStr::new("")),
+        Some(OsStr::new("xterm-256color"))
+    ));
+    assert!(!super::colour_is_welcome_for(Some(OsStr::new("1")), None));
+    assert!(!super::colour_is_welcome_for(
+        None,
+        Some(OsStr::new("dumb"))
+    ));
+}
+
+#[test]
+fn a_cell_folds_at_its_spaces_before_it_is_cut() {
+    assert_eq!(wrap_cell("hello world", 11), ["hello world"]);
+    assert_eq!(wrap_cell("hello world", 5), ["hello", "world"]);
+    assert_eq!(
+        wrap_cell("a fairly long description", 14),
+        ["a fairly long", "description"]
+    );
+    // An unbreakable word keeps room for the ellipsis, and the ellipsis alone fills one cell.
+    assert_eq!(wrap_cell("a-very-long-name", 8), ["a-very-…"]);
+    assert_eq!(wrap_cell("unbreakable", 1), ["…"]);
+    // A wide glyph costs two cells, so the cut leaves the odd cell empty rather than splitting one.
+    assert_eq!(wrap_cell("工具库示例", 7), ["工具库…"]);
+    // Authored lines survive, and an empty cell still occupies one line.
+    assert_eq!(wrap_cell("one\ntwo", 5), ["one", "two"]);
+    assert_eq!(wrap_cell("", 5), [""]);
 }

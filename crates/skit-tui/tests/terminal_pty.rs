@@ -252,6 +252,11 @@ fn run_child_in_pty(
     }
 }
 
+// This crate deliberately keeps its own compliant harness instead of sharing
+// `skit-cli/tests/support/pty.rs`: a cross-crate share needs a workspace member, and a new
+// member enters the release-guarded sdist census and Cargo lock — not worth churning for this
+// much plumbing. The canonical rules and their wave evidence live in that module; this harness
+// already follows all five (exit-keyed waits, counted answers, translated Enter).
 /// Deliver one canned answer the way a terminal delivers it.
 ///
 /// A terminal sends Enter as a carriage return. Prompts read keys through the `console` crate, and

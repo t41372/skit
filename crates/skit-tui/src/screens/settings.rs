@@ -18,10 +18,12 @@
 use std::{collections::BTreeMap, fmt::Display};
 
 use ratatui_core::{
+    buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
+    widgets::Widget,
 };
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -41,9 +43,10 @@ use skit_ui::{SettingsAction, SettingsItem, SettingsNote, SettingsSectionId, Set
 use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
+    rowclip::{RowClip, editor_cursor_virtual_row},
     session::{
-        TextAreaEventHandling, checkbox_style, edit_textarea, new_textarea, render_line_input,
-        render_textarea, textarea_text,
+        TextAreaEventHandling, checkbox_style, edit_textarea, new_textarea, render_line_input_band,
+        render_textarea_band, textarea_control_height, textarea_text,
     },
     theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel},
 };
@@ -304,6 +307,18 @@ impl SettingsScreenSession {
         };
         let offset = self.scroll.scroll_offset();
         let end = start.saturating_add(height);
+        if height > self.visible_height
+            && let Some(body) = self.bodies.get(focused)
+        {
+            let cursor = editor_cursor_virtual_row(start, body.cursor().0);
+            let next = if cursor - start < self.visible_height {
+                start
+            } else {
+                cursor + 1 - self.visible_height
+            };
+            self.scroll.set_scroll_offset(next);
+            return;
+        }
         if start < offset {
             self.scroll.set_scroll_offset(start);
         } else if end > offset.saturating_add(self.visible_height) {
@@ -488,7 +503,11 @@ impl SettingsScreenSession {
     fn handle_paste(&mut self, view: &SettingsView, value: &str) -> Option<SettingsScreenEvent> {
         let focused = view.focused().to_owned();
         if let Some(body) = self.bodies.get_mut(&focused) {
+            let before_cursor = body.cursor();
             body.insert_str(value);
+            if body.cursor() != before_cursor {
+                self.aligned = None;
+            }
             self.undo_group = 1;
             self.redo_group = 0;
             return set_field(&focused, FieldValue::text(textarea_text(body)));
@@ -503,12 +522,16 @@ impl SettingsScreenSession {
     fn edit_body(&mut self, key: &str, event: KeyEvent) -> Option<SettingsScreenEvent> {
         let body = self.bodies.get_mut(key)?;
         let before = textarea_text(body);
+        let before_cursor = body.cursor();
         match edit_textarea(body, event, &mut self.undo_group, &mut self.redo_group) {
             TextAreaEventHandling::Ignored => return None,
             TextAreaEventHandling::VerticalBoundary => return nav(event),
             TextAreaEventHandling::Consumed => {}
         }
         let after = textarea_text(body);
+        if body.cursor() != before_cursor {
+            self.aligned = None;
+        }
         Some(if before == after {
             SettingsScreenEvent::Changed
         } else {
@@ -546,16 +569,17 @@ impl SettingsScreenSession {
         let offset = self.scroll.scroll_offset();
         Rect::new(
             self.viewport.x,
-            self.viewport
-                .y
-                .saturating_add(u16::try_from(start.saturating_sub(offset)).unwrap_or(u16::MAX)),
+            self.viewport.y.saturating_add(
+                u16::try_from(start.saturating_sub(offset))
+                    .expect("the settings item starts inside terminal geometry"),
+            ),
             self.viewport.width,
-            u16::try_from(height).unwrap_or(u16::MAX),
+            u16::try_from(height).expect("the settings item height fits terminal geometry"),
         )
     }
 
-    /// Return where one virtual span lands on screen, or nothing when it is off the viewport.
-    fn visible_rect(&self, start: usize, height: usize) -> Option<Rect> {
+    /// Return the visible band of one virtual span, or nothing when it is off the viewport.
+    fn visible_band(&self, start: usize, height: usize) -> Option<RowClip> {
         let offset = self.scroll.scroll_offset();
         let viewport_end = offset.saturating_add(self.visible_height);
         let end = start.saturating_add(height);
@@ -564,35 +588,53 @@ impl SettingsScreenSession {
         }
         let clipped_start = start.max(offset);
         let clipped_end = end.min(viewport_end);
-        Some(Rect::new(
-            self.viewport.x,
-            self.viewport.y.saturating_add(
-                u16::try_from(clipped_start.saturating_sub(offset)).unwrap_or(u16::MAX),
+        Some(RowClip::new(
+            height,
+            u16::try_from(clipped_start.saturating_sub(start))
+                .expect("the settings band offset fits Ratatui's row offset"),
+            Rect::new(
+                self.viewport.x,
+                self.viewport.y.saturating_add(
+                    u16::try_from(clipped_start.saturating_sub(offset))
+                        .expect("the settings band starts inside its viewport"),
+                ),
+                self.viewport.width,
+                u16::try_from(clipped_end.saturating_sub(clipped_start))
+                    .expect("the settings band height fits its viewport"),
             ),
-            self.viewport.width,
-            u16::try_from(clipped_end.saturating_sub(clipped_start)).unwrap_or(u16::MAX),
         ))
     }
 
     fn render_field(
         &mut self,
         frame: &mut Frame,
-        area: Rect,
+        clip: RowClip,
         requested: Rect,
         draw: &ControlDraw<'_>,
         hits: &mut Vec<SettingsHitRegion>,
     ) {
+        self.rendered.insert(draw.field.key.clone(), requested);
+        self.draw_control(frame, clip, draw, hits);
+    }
+
+    fn draw_control(
+        &mut self,
+        frame: &mut Frame,
+        clip: RowClip,
+        draw: &ControlDraw<'_>,
+        hits: &mut Vec<SettingsHitRegion>,
+    ) {
+        let area = clip.area();
         let ControlDraw {
             field,
             label,
             focused,
             locale,
         } = *draw;
-        self.rendered.insert(field.key.clone(), requested);
         match &field.kind {
             FieldKind::Multiline => {
                 if let Some(body) = self.bodies.get_mut(&field.key) {
-                    render_textarea(frame, area, body, focused, label);
+                    render_textarea_band(frame, clip, body, focused, label);
                 }
                 hits.push(SettingsHitRegion {
                     area,
@@ -602,7 +644,9 @@ impl SettingsScreenSession {
             FieldKind::Boolean => {
                 let mut state = CheckBoxState::new(field.value().as_text() == "true");
                 state.set_focused(focused);
-                frame.render_widget(CheckBox::new(label, &state).style(checkbox_style()), area);
+                CheckBox::new(label, &state)
+                    .style(checkbox_style())
+                    .render(area, frame.buffer_mut());
                 hits.push(SettingsHitRegion {
                     area,
                     target: SettingsControlId::Field(field.key.clone()),
@@ -610,15 +654,15 @@ impl SettingsScreenSession {
             }
             FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
                 render_options(
-                    frame,
-                    area,
+                    frame.buffer_mut(),
+                    clip,
                     draw,
                     options,
                     self.option_cursors.get(&field.key).copied(),
                     hits,
                 );
             }
-            FieldKind::ReadOnly => render_read_only(frame, area, draw),
+            FieldKind::ReadOnly => render_read_only(frame.buffer_mut(), clip, draw),
             FieldKind::Text
             | FieldKind::Secret
             | FieldKind::Number { .. }
@@ -626,18 +670,22 @@ impl SettingsScreenSession {
             | FieldKind::ArgumentList { .. } => {
                 if let Some(input) = self.inputs.get(&field.key) {
                     let secret = matches!(field.kind, FieldKind::Secret);
-                    render_line_input(frame, area, input, secret, focused, label);
-                    if input.value().is_empty() && !field.help.is_empty() && area.height >= 3 {
-                        frame.render_widget(
-                            Paragraph::new(text(locale, &field.help))
-                                .style(Style::default().fg(Color::DarkGray)),
-                            Rect::new(
-                                area.x.saturating_add(1),
-                                area.y.saturating_add(1),
-                                area.width.saturating_sub(2),
-                                1,
-                            ),
-                        );
+                    render_line_input_band(frame, clip, input, secret, focused, label, None);
+                    if input.value().is_empty()
+                        && !field.help.is_empty()
+                        && let Some(content) = clip.row(1)
+                    {
+                        Paragraph::new(text(locale, &field.help))
+                            .style(Style::default().fg(Color::DarkGray))
+                            .render(
+                                Rect::new(
+                                    content.x.saturating_add(1),
+                                    content.y,
+                                    content.width.saturating_sub(2),
+                                    1,
+                                ),
+                                frame.buffer_mut(),
+                            );
                     }
                 }
                 hits.push(SettingsHitRegion {
@@ -789,28 +837,29 @@ pub fn render_settings(
 
     let mut hits = Vec::new();
     for item in &items {
-        let Some(rect) = session.visible_rect(item.start, item.height) else {
+        let Some(clip) = session.visible_band(item.start, item.height) else {
             continue;
         };
+        let rect = clip.area();
         match &item.item {
             Item::Spacer => {}
-            Item::Heading { text, .. } => frame.render_widget(
+            Item::Heading { text, .. } => clip.paint_paragraph(
+                frame.buffer_mut(),
                 Paragraph::new(text.as_str())
                     .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                rect,
             ),
-            Item::Copy(value) => frame.render_widget(
+            Item::Copy(value) => clip.paint_paragraph(
+                frame.buffer_mut(),
                 Paragraph::new(value.as_str())
                     .wrap(Wrap { trim: false })
                     .style(Style::default().fg(Color::DarkGray)),
-                rect,
             ),
             Item::Control { key, label } => {
                 if let Some(field) = view.field(key) {
                     let requested = session.requested_rect(item.start, item.height);
                     session.render_field(
                         frame,
-                        rect,
+                        clip,
                         requested,
                         &ControlDraw {
                             field,
@@ -982,11 +1031,9 @@ fn shown_label(field: &Field, section: SettingsSectionId, locale: Locale) -> Str
 
 fn control_height(field: &Field, label: &str, locale: Locale, width: u16) -> usize {
     match &field.kind {
-        // The same three rows a single-line box takes, because version 0.4 spends exactly that on
-        // the one field this kind serves here — its description is an `Input`
-        // (`src/skit/tui_settings.py:394-399`). Keeping the kind keeps the line breaks a person can
-        // type; spending six rows on it pushed three sections off a recorded terminal.
-        FieldKind::Multiline => 3,
+        // One line keeps the three rows version 0.4 spends on its `Input`
+        // (`src/skit/tui_settings.py:394-399`). Explicit line breaks add only their own content rows.
+        FieldKind::Multiline => textarea_control_height(&field.value().as_text(), 1),
         FieldKind::Boolean => 1,
         FieldKind::SingleChoice { options } | FieldKind::MultiChoice { options } => {
             usize::from(!label.is_empty()).saturating_add(options.len().max(1))
@@ -1011,8 +1058,8 @@ fn read_only_note_height(field: &Field, locale: Locale, width: u16) -> usize {
 /// Every mark comes from the field itself, so an option list that changed while the screen was open
 /// cannot leave a stale tick behind.
 fn render_options(
-    frame: &mut Frame,
-    area: Rect,
+    buffer: &mut Buffer,
+    clip: RowClip,
     draw: &ControlDraw<'_>,
     options: &[ChoiceOption],
     cursor: Option<usize>,
@@ -1025,18 +1072,21 @@ fn render_options(
         locale,
     } = *draw;
     let multiple = matches!(field.kind, FieldKind::MultiChoice { .. });
-    let mut y = area.y;
-    if !label.is_empty() {
-        frame.render_widget(
-            Paragraph::new(label).style(Style::default().fg(Color::White)),
-            Rect::new(area.x, y, area.width, 1),
-        );
-        y = y.saturating_add(1);
+    let label_rows = usize::from(!label.is_empty());
+    if let Some(row) = clip.row(0)
+        && !label.is_empty()
+    {
+        Paragraph::new(label)
+            .style(Style::default().fg(Color::White))
+            .render(row, buffer);
     }
-    for (index, option) in options.iter().enumerate() {
-        if y >= area.y.saturating_add(area.height) {
-            break;
-        }
+    let first_option = clip.top().saturating_sub(label_rows);
+    let skipped_band_rows = label_rows.saturating_sub(clip.top());
+    for ((_, row), (index, option)) in clip
+        .rows()
+        .skip(skipped_band_rows)
+        .zip(options.iter().enumerate().skip(first_option))
+    {
         let selected = is_selected(field, option);
         let highlighted = focused
             && if multiple {
@@ -1050,28 +1100,25 @@ fn render_options(
             (false, true) => "◉",
             (false, false) => "○",
         };
-        let row = Rect::new(area.x, y, area.width, 1);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    if highlighted { "▶ " } else { "  " },
-                    Style::default().fg(ACCENT),
-                ),
-                Span::styled(format!("{glyph} "), Style::default().fg(ACCENT)),
-                Span::styled(
-                    option_text(locale, option),
-                    if highlighted {
-                        Style::default()
-                            .fg(SELECT_FG)
-                            .bg(SELECT_BG)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::White)
-                    },
-                ),
-            ])),
-            row,
-        );
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                if highlighted { "▶ " } else { "  " },
+                Style::default().fg(ACCENT),
+            ),
+            Span::styled(format!("{glyph} "), Style::default().fg(ACCENT)),
+            Span::styled(
+                option_text(locale, option),
+                if highlighted {
+                    Style::default()
+                        .fg(SELECT_FG)
+                        .bg(SELECT_BG)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ),
+        ]))
+        .render(row, buffer);
         hits.push(SettingsHitRegion {
             area: row,
             target: SettingsControlId::Option {
@@ -1079,7 +1126,6 @@ fn render_options(
                 value: option.value.clone(),
             },
         });
-        y = y.saturating_add(1);
     }
 }
 
@@ -1087,41 +1133,38 @@ fn render_options(
 ///
 /// This is text, not a control that refuses. A greyed input would read as something the user failed
 /// to click, so the reason the field itself carries is shown instead.
-fn render_read_only(frame: &mut Frame, area: Rect, draw: &ControlDraw<'_>) {
+fn render_read_only(buffer: &mut Buffer, clip: RowClip, draw: &ControlDraw<'_>) {
     let ControlDraw {
         field,
         label,
         locale,
         ..
     } = *draw;
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                if label.is_empty() {
-                    String::new()
-                } else {
-                    format!("{label}: ")
-                },
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(field.value().as_text(), Style::default().fg(Color::White)),
-        ])),
-        Rect::new(area.x, area.y, area.width, 1),
-    );
-    if let Some(reason) = field.read_only_reason
-        && area.height > 1
-    {
-        frame.render_widget(
+    for (source, row) in clip.rows() {
+        if source == 0 {
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    if label.is_empty() {
+                        String::new()
+                    } else {
+                        format!("{label}: ")
+                    },
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(field.value().as_text(), Style::default().fg(Color::White)),
+            ]))
+            .render(row, buffer);
+        } else if let Some(reason) = field.read_only_reason {
             Paragraph::new(text(locale, refusal(reason)))
                 .wrap(Wrap { trim: false })
-                .style(Style::default().fg(Color::DarkGray)),
-            Rect::new(
-                area.x,
-                area.y.saturating_add(1),
-                area.width,
-                area.height.saturating_sub(1),
-            ),
-        );
+                .scroll((
+                    u16::try_from(source.saturating_sub(1))
+                        .expect("the read-only paragraph offset fits Ratatui"),
+                    0,
+                ))
+                .style(Style::default().fg(Color::DarkGray))
+                .render(row, buffer);
+        }
     }
 }
 
@@ -1209,7 +1252,7 @@ fn fields(view: &SettingsView) -> impl Iterator<Item = &Field> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
+    use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::MouseButton;
     use std::collections::BTreeMap;
 
@@ -1223,10 +1266,10 @@ mod tests {
     };
 
     use super::{
-        ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        Locale, MouseEvent, MouseEventKind, Rect, SettingsControlId, SettingsItem,
-        SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, SettingsView,
-        TypedValue, choice_key, is_selected, option_text, picked, render_settings,
+        ACCENT, ChoiceOption, Event, Field, FieldKind, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, Locale, MouseEvent, MouseEventKind, Rect, SELECT_BG, SettingsControlId,
+        SettingsItem, SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession,
+        SettingsView, TypedValue, choice_key, is_selected, option_text, picked, render_settings,
     };
 
     /// The recorded demo terminal: 1280x780 at 12.19px per column and 26.33px per row, less 20px of
@@ -1303,6 +1346,13 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn rendered_rows(buffer: &Buffer) -> Vec<&[ratatui_core::buffer::Cell]> {
+        buffer
+            .content()
+            .chunks(usize::from(buffer.area.width))
+            .collect()
     }
 
     /// Walking the keyboard from top to bottom must show every section.
@@ -1522,6 +1572,254 @@ mod tests {
             view.submitted_values().get("parameter:GREETING:keep"),
             Some(&FieldValue::boolean(false))
         );
+    }
+
+    /// A focused control cut by a tiny viewport still places the cursor.
+    ///
+    /// A two-row viewport cannot hold a three-row input, so the focused
+    /// control itself is clipped. The visible band keeps the content row, and
+    /// the cursor must land on it — dropped, it would sit wherever the last
+    /// frame left it.
+    #[test]
+    fn a_clipped_focused_input_still_places_the_cursor_in_the_band() {
+        let view = SettingsView::from_inputs(&settings_inputs());
+        let mut session = SettingsScreenSession::default();
+        let (mut terminal, _) = draw(&mut session, &view, DEMO_WIDTH, 4);
+        let frame = rendered(terminal.backend().buffer());
+        assert!(
+            frame.contains("Brief"),
+            "the content row is not visible:\n{frame}"
+        );
+        let cursor = terminal.get_cursor_position().unwrap();
+        assert_eq!(
+            usize::from(cursor.y),
+            2,
+            "the cursor must sit on the visible content row: {cursor:?}\n{frame}"
+        );
+    }
+
+    /// A wrapped Settings sentence keeps its later rows when its top is above the viewport.
+    #[test]
+    fn a_top_clipped_settings_copy_shows_its_surviving_later_rows() {
+        let mut view = SettingsView::from_inputs(&settings_inputs());
+        view.sections = vec![SettingsSection::new(
+            SettingsSectionId::Presets,
+            vec![SettingsItem::note(
+                "None yet — press Ctrl+S inside the run form to save one.",
+            )],
+        )];
+        let mut session = SettingsScreenSession::default();
+        let _ = draw(&mut session, &view, 24, 4);
+        session.scroll.set_scroll_offset(2);
+
+        let (terminal, geometry) = draw(&mut session, &view, 24, 4);
+        let frame = rendered(terminal.backend().buffer());
+
+        assert_eq!(geometry.first_visible, 2, "the copy must be top-clipped");
+        assert!(
+            frame.contains("run form to save"),
+            "the surviving later copy row is missing:\n{frame}"
+        );
+        assert!(
+            !frame.contains("None yet"),
+            "the clipped first row restarted inside the band:\n{frame}"
+        );
+    }
+
+    /// A clipped option list paints only the option rows inside its visible band.
+    #[test]
+    fn a_top_clipped_settings_option_list_shows_its_surviving_later_rows() {
+        let mut view = SettingsView::from_inputs(&settings_inputs());
+        view.sections = vec![SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![SettingsItem::field(Field::new(
+                "mode",
+                "Modes",
+                FieldKind::SingleChoice {
+                    options: vec![
+                        ChoiceOption::plain("one"),
+                        ChoiceOption::plain("two"),
+                        ChoiceOption::plain("three"),
+                    ],
+                },
+                FieldOwner::EntryPolicy,
+                FieldValue::Explicit(TypedValue::Choice("one".to_owned())),
+            ))],
+        )];
+        view.update(SettingsAction::Focus {
+            key: "mode".to_owned(),
+        });
+        let mut session = SettingsScreenSession::default();
+        let _ = draw(&mut session, &view, 24, 4);
+        session.scroll.set_scroll_offset(2);
+
+        let (terminal, geometry) = draw(&mut session, &view, 24, 4);
+        let frame = rendered(terminal.backend().buffer());
+
+        assert_eq!(
+            geometry.first_visible, 2,
+            "the option list must be top-clipped"
+        );
+        assert!(
+            frame.contains("one"),
+            "the first surviving option is missing:\n{frame}"
+        );
+        assert!(
+            frame.contains("two"),
+            "the later surviving option is missing:\n{frame}"
+        );
+        assert!(
+            !frame.contains("Modes"),
+            "the clipped label restarted inside the band:\n{frame}"
+        );
+    }
+
+    /// A clipped multiline field keeps the editor's true rows and styles.
+    #[test]
+    fn a_top_clipped_settings_textarea_keeps_later_rows_cursor_and_selection_styles() {
+        let mut view = SettingsView::from_inputs(&settings_inputs());
+        view.sections = vec![SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![SettingsItem::field(Field::new(
+                DESCRIPTION_KEY,
+                "Description",
+                FieldKind::Multiline,
+                FieldOwner::EntryPolicy,
+                FieldValue::text("first\nmiddle\nlast"),
+            ))],
+        )];
+        view.update(SettingsAction::Focus {
+            key: DESCRIPTION_KEY.to_owned(),
+        });
+        let mut session = SettingsScreenSession::default();
+        let (_, initial) = draw(&mut session, &view, 24, 4);
+        for event in [
+            key(KeyCode::Up, KeyModifiers::NONE),
+            key(KeyCode::Up, KeyModifiers::NONE),
+            key(KeyCode::Home, KeyModifiers::NONE),
+        ] {
+            assert_eq!(
+                dispatch(&mut session, &mut view, &initial, event),
+                Some(SettingsScreenEvent::Changed)
+            );
+        }
+        let (terminal, top) = draw(&mut session, &view, 24, 4);
+        assert!(
+            rendered(terminal.backend().buffer()).contains("first"),
+            "the real cursor move did not bring the first row into view"
+        );
+        for event in [
+            key(KeyCode::Down, KeyModifiers::SHIFT),
+            key(KeyCode::Down, KeyModifiers::SHIFT),
+            key(KeyCode::End, KeyModifiers::SHIFT),
+        ] {
+            assert_eq!(
+                dispatch(&mut session, &mut view, &top, event),
+                Some(SettingsScreenEvent::Changed)
+            );
+        }
+        let field_start = session.spans[DESCRIPTION_KEY].0;
+
+        let (terminal, geometry) = draw(&mut session, &view, 24, 4);
+        let buffer = terminal.backend().buffer();
+        let frame = rendered(buffer);
+        let rows = rendered_rows(buffer);
+        let middle = rows
+            .iter()
+            .find(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .contains("middle")
+            })
+            .unwrap();
+        let last = rows
+            .iter()
+            .find(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .contains("last")
+            })
+            .unwrap();
+
+        assert_eq!(geometry.first_visible, field_start + 2);
+        assert!(
+            frame.contains("middle"),
+            "the middle row is missing:\n{frame}"
+        );
+        assert!(frame.contains("last"), "the last row is missing:\n{frame}");
+        assert!(
+            !frame.contains("first"),
+            "the clipped first row returned:\n{frame}"
+        );
+        assert!(
+            middle
+                .iter()
+                .any(|cell| cell.symbol() != " " && cell.bg == SELECT_BG),
+            "the selection style is missing from the middle row:\n{frame}"
+        );
+        assert!(
+            last.iter()
+                .any(|cell| cell.fg == Color::Black && cell.bg == ACCENT),
+            "the focused cursor style is missing from the last row:\n{frame}"
+        );
+
+        assert_eq!(
+            dispatch(
+                &mut session,
+                &mut view,
+                &geometry,
+                mouse(geometry.body, MouseEventKind::ScrollUp),
+            ),
+            Some(SettingsScreenEvent::Changed)
+        );
+        let (_, wheel) = draw(&mut session, &view, 24, 4);
+        assert!(wheel.first_visible < geometry.first_visible);
+        let (_, settled) = draw(&mut session, &view, 24, 4);
+        assert_eq!(
+            settled.first_visible, wheel.first_visible,
+            "a render without a cursor move undid the reader's wheel scroll"
+        );
+    }
+
+    /// A control that the scroll cuts in half must still show its visible rows.
+    ///
+    /// Version 0.4 renders the settings body inside a Textual `VerticalScroll`, and the Textual
+    /// compositor clips a half-scrolled widget row by row: the rows inside the viewport stay
+    /// readable, border and content alike. The bug drew a complete fresh bordered control into
+    /// the remnant instead, so a false top border reappeared and the value row vanished while it
+    /// was on screen. The heights are the measured clip states of this fixture: 28 leaves one
+    /// Description row, 29 leaves two, and 32 leaves one Name row.
+    #[test]
+    fn a_half_scrolled_control_keeps_its_visible_rows_readable() {
+        for (height, absent, present) in [
+            (28_u16, "┌Description", None),
+            (29, "┌Description", Some("Summarize a document")),
+            (32, "┌Name", None),
+        ] {
+            let view = SettingsView::from_inputs(&SettingsInputs {
+                revealed: Some(SettingsSectionId::Presets),
+                ..settings_inputs()
+            });
+            let mut session = SettingsScreenSession::default();
+            let (terminal, _) = draw(&mut session, &view, DEMO_WIDTH, height);
+            let frame = rendered(terminal.backend().buffer());
+            assert!(
+                frame.contains("None yet — press Ctrl+S"),
+                "the deep link did not reach the presets at height {height}:\n{frame}"
+            );
+            assert!(
+                !frame.contains(absent),
+                "a cut control drew a fresh top border at height {height}:\n{frame}"
+            );
+            if let Some(present) = present {
+                assert!(
+                    frame.contains(present),
+                    "the visible value row is empty at height {height}:\n{frame}"
+                );
+            }
+        }
     }
 
     /// Pressing `s` in the Library must land the eye on the presets, with or without any.

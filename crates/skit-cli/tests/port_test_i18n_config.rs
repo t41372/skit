@@ -8,7 +8,7 @@ use std::{
     process::{Command, Output},
 };
 
-use skit_i18n::{Locale, requested_locale, system_locale, text};
+use skit_i18n::{Locale, negotiated_system_locale, requested_locale, system_locale, text};
 use skit_store::FileConfigStore;
 use tempfile::TempDir;
 
@@ -114,6 +114,30 @@ fn test_lang_env() {
 fn test_c_locale_ignored() {
     assert_eq!(requested_locale(Some("C")), None);
     let _ = system_locale();
+
+    // The host answers with its own spelling, and the rule that reads the answer is the same
+    // everywhere. A Windows desktop names BCP-47 tags, a unix one names locale values, and either
+    // way the first supported preference wins. Version 0.4 asks Windows a different question and
+    // gets a name no tag matches, which is why a Chinese desktop reads as Chinese here and as
+    // English there (recorded in docs/design/rust-contract-matrix.md).
+    assert_eq!(negotiated_system_locale(["zh-TW".to_owned()]), Locale::ZhTw);
+    assert_eq!(
+        negotiated_system_locale(["zh-Hans-CN".to_owned()]),
+        Locale::ZhCn
+    );
+    assert_eq!(negotiated_system_locale(["en-US".to_owned()]), Locale::En);
+    assert_eq!(
+        negotiated_system_locale(["zh_TW.UTF-8".to_owned()]),
+        Locale::ZhTw
+    );
+    // A preference the catalog cannot serve steps aside for the next one.
+    assert_eq!(
+        negotiated_system_locale(["C".to_owned(), "zh-CN".to_owned()]),
+        Locale::ZhCn
+    );
+    // A host that names nothing, or nothing supported, reads as English.
+    assert_eq!(negotiated_system_locale(Vec::<String>::new()), Locale::En);
+    assert_eq!(negotiated_system_locale(["C".to_owned()]), Locale::En);
 
     let sandbox = Sandbox::new();
     let output = sandbox

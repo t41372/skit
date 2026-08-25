@@ -1666,3 +1666,100 @@ fn deps_refuses_package_axes_for_kinds_without_package_management() {
         .assert()
         .success();
 }
+
+/// Assert one stored timestamp keeps the exact spelling version 0.4 wrote.
+///
+/// Version 0.4 stamps with `datetime.now(UTC).replace(microsecond=0).isoformat()`
+/// (`models.py:248`), which produces `2026-08-23T09:48:54+00:00`: whole seconds, and the offset
+/// named `+00:00`. Every separator and digit position is pinned, so a stamp that keeps the
+/// fractional second or renames the offset is a different string.
+fn assert_v040_stamp(value: &str) {
+    assert_eq!(value.len(), 25, "{value}");
+    assert!(value.ends_with("+00:00"), "{value}");
+    assert!(!value.contains('.'), "{value}");
+    assert!(!value.contains('Z'), "{value}");
+    let bytes = value.as_bytes();
+    for (index, separator) in [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')] {
+        assert_eq!(bytes[index], separator, "{value} at {index}");
+    }
+    for index in [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18] {
+        assert!(bytes[index].is_ascii_digit(), "{value} at {index}");
+    }
+}
+
+fn quoted_field(document: &str, key: &str) -> String {
+    let value = document
+        .parse::<toml::Table>()
+        .unwrap_or_else(|error| panic!("{document} is not a table: {error}"));
+    value
+        .get(key)
+        .and_then(toml::Value::as_str)
+        .unwrap_or_else(|| panic!("{key} is missing from {document}"))
+        .to_owned()
+}
+
+#[test]
+fn stored_timestamps_keep_the_v040_spelling_the_store_and_the_state_file() {
+    let sandbox = Sandbox::new();
+    sandbox.add_command("Demo", "echo hello");
+
+    let meta_path = sandbox.data.path().join("scripts/demo/meta.toml");
+    let meta = fs::read_to_string(&meta_path).unwrap();
+    let added_at = quoted_field(&meta, "added_at");
+    assert_v040_stamp(&added_at);
+    assert!(
+        meta.contains(&format!("added_at = \"{added_at}\"")),
+        "{meta}"
+    );
+
+    let shown = sandbox
+        .command()
+        .args(["show", "demo", "--json"])
+        .output()
+        .unwrap();
+    let record: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(record["added_at"], Value::String(added_at));
+
+    sandbox
+        .command()
+        .args(["run", "demo", "--no-input"])
+        .assert()
+        .success();
+    let state = fs::read_to_string(sandbox.state.path().join("values/demo.toml")).unwrap();
+    let document = state.parse::<toml::Table>().unwrap();
+    let at = document["last_run"]["at"]
+        .as_str()
+        .unwrap_or_else(|| panic!("last_run.at is missing from {state}"));
+    assert_v040_stamp(at);
+}
+
+/// A stamp version 0.4 wrote reads back byte-for-byte: no read path rewrites it.
+#[test]
+fn a_version_0_4_stamp_survives_a_read_unchanged() {
+    let sandbox = Sandbox::new();
+    sandbox.add_command("Demo", "echo hello");
+    let meta_path = sandbox.data.path().join("scripts/demo/meta.toml");
+    let meta = fs::read_to_string(&meta_path).unwrap();
+    let written = quoted_field(&meta, "added_at");
+    let planted = "2019-03-04T05:06:07+00:00";
+    fs::write(
+        &meta_path,
+        meta.replace(
+            &format!("added_at = \"{written}\""),
+            &format!("added_at = \"{planted}\""),
+        ),
+    )
+    .unwrap();
+
+    let shown = sandbox
+        .command()
+        .args(["show", "demo", "--json"])
+        .output()
+        .unwrap();
+    let record: Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(record["added_at"], Value::String(planted.to_owned()));
+    assert_eq!(
+        quoted_field(&fs::read_to_string(&meta_path).unwrap(), "added_at"),
+        planted
+    );
+}

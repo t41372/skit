@@ -139,6 +139,47 @@ fn test_load_toml_recoverable_corrupt_file_backs_up_and_returns_empty() {
     assert_eq!(fs::read(&backup).unwrap(), corrupt); // byte-exact preservation
 }
 
+/// The backup carries the mode and the times of the file it copies.
+///
+/// Version 0.4 saves the corrupt configuration with `shutil.copy2`
+/// (`skit-oracle/src/skit/atomic.py:309`), which preserves the access and modification times as
+/// well as the mode. A user who opens the backup to recover reads when their configuration was
+/// written, not when skit found the damage.
+#[test]
+fn rust_additive_a_corrupt_backup_keeps_the_original_mode_and_times() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let backup = root.path().join("config.toml.bak");
+    fs::write(&path, b"this is = = not valid toml").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    // A file written a while ago: the backup must say so too.
+    let written = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_577_836_800);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new()
+                .set_modified(written)
+                .set_accessed(written),
+        )
+        .unwrap();
+    let before = fs::metadata(&path).unwrap();
+
+    FileConfigStore::new(root.path())
+        .set_with_recovery("editor", "vim")
+        .unwrap()
+        .expect("a corrupt file must be preserved");
+
+    let saved = fs::metadata(&backup).unwrap();
+    assert_eq!(saved.modified().unwrap(), before.modified().unwrap());
+    assert_eq!(saved.permissions(), before.permissions());
+}
+
 #[test]
 fn test_load_toml_recoverable_reports_none_when_backup_itself_fails() {
     // WHY: Python reports no backup, warns, and still applies the requested setting. A directory at

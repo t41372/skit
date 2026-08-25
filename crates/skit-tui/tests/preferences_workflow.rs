@@ -55,7 +55,9 @@ fn dirty_preferences_discard_guard_has_exact_keys_and_clickable_actions() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains("Discard unsaved changes?"));
+    // The recorded screen-header deviation keeps two copies. See
+    // `docs/design/rust-contract-matrix.md#the-discard-confirmation-also-names-its-surface`.
+    assert_eq!(rendered.matches("Discard unsaved changes?").count(), 2);
     assert!(rendered.contains("Discard"));
     assert!(rendered.contains("Keep editing"));
 

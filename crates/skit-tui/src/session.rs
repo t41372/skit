@@ -9,6 +9,7 @@ use ratatui_core::{
     style::{Color, Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
+    widgets::Widget,
 };
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
@@ -46,7 +47,9 @@ use unicode_width::UnicodeWidthStr as _;
 use crate::{
     HitRegion, HitTarget, ViewGeometry, command_action,
     footer::FooterSession,
-    map_event, run_field_command_action,
+    map_event,
+    rowclip::{RowClip, editor_cursor_virtual_row},
+    run_field_command_action,
     screens::add::{AddScreenEvent, AddScreenGeometry, AddScreenSession, render_add},
     screens::library::LibraryScreenSession,
     screens::management::{
@@ -934,7 +937,7 @@ impl TuiSession {
 
         let mut hits = Vec::new();
         for (index, field) in form.fields.iter().enumerate() {
-            let Some(row) = self.form.visible_row(index) else {
+            let Some(clip) = self.form.visible_band(index) else {
                 continue;
             };
             let label = crate::field_label(locale, field);
@@ -943,14 +946,14 @@ impl TuiSession {
                     state,
                     secret,
                     focused,
-                } => render_line_input(frame, row, state, *secret, *focused, &label),
+                } => render_line_input_band(frame, clip, state, *secret, *focused, &label, None),
                 FormWidgetControl::TextArea { state, focused, .. } => {
-                    render_textarea(frame, row, state, *focused, &label);
+                    render_textarea_band(frame, clip, state, *focused, &label);
                 }
             }
-            self.form.clicks.register(row, index);
+            self.form.clicks.register(clip.area(), index);
             hits.push(HitRegion {
-                rect: row,
+                rect: clip.area(),
                 action: HitTarget::FocusField(index),
             });
         }
@@ -1787,11 +1790,15 @@ impl TuiSession {
                 ..
             } => {
                 let before = textarea_text(state);
+                let before_cursor = state.cursor();
                 match edit_textarea(state, key, undo_group, redo_group) {
                     TextAreaEventHandling::Ignored => return EventHandling::Ignored,
                     TextAreaEventHandling::Consumed | TextAreaEventHandling::VerticalBoundary => {}
                 }
                 let after = textarea_text(state);
+                if state.cursor() != before_cursor {
+                    self.form.pending_ensure_focus = true;
+                }
                 if before == after {
                     EventHandling::Consumed
                 } else {
@@ -1823,7 +1830,11 @@ impl TuiSession {
                 ..
             } => {
                 let selected = state.is_selecting();
+                let before_cursor = state.cursor();
                 let _ = state.insert_str(value);
+                if state.cursor() != before_cursor {
+                    self.form.pending_ensure_focus = true;
+                }
                 *undo_group = 1 + usize::from(selected && !value.is_empty());
                 *redo_group = 0;
                 EventHandling::Action(Action::SetFieldValue {
@@ -2050,6 +2061,10 @@ impl FormWidgetSession {
             next = next.saturating_add(height);
         }
         self.scroll.set_lines(vec![String::new(); next]);
+        let maximum = next.saturating_sub(self.visible_height);
+        if self.scroll.scroll_offset() > maximum {
+            self.scroll.set_scroll_offset(maximum);
+        }
         if self.pending_ensure_focus
             && let (Some(start), Some(height)) = (
                 self.row_starts.get(form.focused),
@@ -2058,7 +2073,17 @@ impl FormWidgetSession {
         {
             let offset = self.scroll.scroll_offset();
             let end = start.saturating_add(*height);
-            if *start < offset {
+            if *height > self.visible_height
+                && let FormWidgetControl::TextArea { state, .. } = &self.controls[form.focused]
+            {
+                let cursor = editor_cursor_virtual_row(*start, state.cursor().0);
+                let next = if cursor - *start < self.visible_height {
+                    *start
+                } else {
+                    cursor + 1 - self.visible_height
+                };
+                self.scroll.set_scroll_offset(next);
+            } else if *start < offset {
                 self.scroll.set_scroll_offset(*start);
             } else if end > offset.saturating_add(self.visible_height) {
                 self.scroll
@@ -2068,7 +2093,7 @@ impl FormWidgetSession {
         }
     }
 
-    fn visible_row(&self, index: usize) -> Option<Rect> {
+    fn visible_band(&self, index: usize) -> Option<RowClip> {
         let start = *self.row_starts.get(index)?;
         let height = *self.row_heights.get(index)?;
         let offset = self.scroll.scroll_offset();
@@ -2079,13 +2104,20 @@ impl FormWidgetSession {
         }
         let clipped_start = start.max(offset);
         let clipped_end = end.min(viewport_end);
-        Some(Rect::new(
-            self.viewport.x,
-            self.viewport.y.saturating_add(
-                u16::try_from(clipped_start.saturating_sub(offset)).unwrap_or(u16::MAX),
+        Some(RowClip::new(
+            height,
+            u16::try_from(clipped_start.saturating_sub(start))
+                .expect("the form band offset fits Ratatui geometry"),
+            Rect::new(
+                self.viewport.x,
+                self.viewport.y.saturating_add(
+                    u16::try_from(clipped_start.saturating_sub(offset))
+                        .expect("the form band starts inside its viewport"),
+                ),
+                self.viewport.width,
+                u16::try_from(clipped_end.saturating_sub(clipped_start))
+                    .expect("the form band height fits its viewport"),
             ),
-            self.viewport.width,
-            u16::try_from(clipped_end.saturating_sub(clipped_start)).unwrap_or(u16::MAX),
         ))
     }
 }
@@ -2228,9 +2260,9 @@ fn form_widget_control(field: &FormField) -> FormWidgetControl {
     }
 }
 
-const fn form_control_height(field: &FormField) -> usize {
+fn form_control_height(field: &FormField) -> usize {
     if field.multiline && !field.secret {
-        6
+        textarea_control_height(&field.value, 4)
     } else {
         3
     }
@@ -2801,6 +2833,10 @@ pub(crate) fn new_textarea(value: &str) -> RichTextArea<'static> {
     state
 }
 
+pub(crate) fn textarea_control_height(value: &str, minimum_content_height: usize) -> usize {
+    value.split('\n').count().max(minimum_content_height) + 2
+}
+
 pub(crate) fn textarea_text(state: &RichTextArea<'_>) -> String {
     state.lines().join("\n")
 }
@@ -2813,7 +2849,15 @@ pub(crate) fn render_line_input(
     focused: bool,
     label: &str,
 ) {
-    render_line_input_with_suggestion(frame, area, state, secret, focused, label, None);
+    render_line_input_band(
+        frame,
+        RowClip::new(3, 0, area),
+        state,
+        secret,
+        focused,
+        label,
+        None,
+    );
 }
 
 fn render_line_input_with_suggestion(
@@ -2825,14 +2869,29 @@ fn render_line_input_with_suggestion(
     label: &str,
     suggestion: Option<&str>,
 ) {
+    render_line_input_band(
+        frame,
+        RowClip::new(3, 0, area),
+        state,
+        secret,
+        focused,
+        label,
+        suggestion,
+    );
+}
+
+/// Draw only the visible band of one bordered line input.
+pub(crate) fn render_line_input_band(
+    frame: &mut Frame,
+    clip: RowClip,
+    state: &LineInput,
+    secret: bool,
+    focused: bool,
+    label: &str,
+    suggestion: Option<&str>,
+) {
     let border = if focused { ACCENT } else { BOX_DIM };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border))
-        .title(label.to_owned());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let width = usize::from(inner.width.max(1));
+    let width = usize::from(clip.area().width.saturating_sub(2).max(1));
     let scroll = state.visual_scroll(width);
     let display = if secret {
         Line::from(Span::styled(
@@ -2849,11 +2908,17 @@ fn render_line_input_with_suggestion(
             ),
         ])
     };
-    frame.render_widget(
-        Paragraph::new(display).scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
-        inner,
+    clip.paint_bordered_paragraph(
+        frame.buffer_mut(),
+        Paragraph::new(display),
+        Line::from(label),
+        Style::default().fg(border),
+        u16::try_from(scroll).unwrap_or(u16::MAX),
     );
-    if focused && inner.width > 0 && inner.height > 0 {
+    if focused
+        && let Some(row) = clip.row(1)
+        && row.width > 2
+    {
         let visual_cursor = if secret {
             state.cursor()
         } else {
@@ -2863,8 +2928,10 @@ fn render_line_input_with_suggestion(
             .saturating_sub(scroll)
             .min(width.saturating_sub(1));
         frame.set_cursor_position((
-            inner.x.saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
-            inner.y,
+            row.x
+                .saturating_add(1)
+                .saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
+            row.y,
         ));
     }
 }
@@ -2910,6 +2977,17 @@ pub(crate) fn render_textarea(
     focused: bool,
     label: &str,
 ) {
+    render_textarea_band(frame, RowClip::new(6, 0, area), state, focused, label);
+}
+
+/// Draw only the visible band of one bordered text area.
+pub(crate) fn render_textarea_band(
+    frame: &mut Frame,
+    clip: RowClip,
+    state: &mut RichTextArea<'static>,
+    focused: bool,
+    label: &str,
+) {
     state.set_block(
         Block::default()
             .borders(Borders::ALL)
@@ -2924,7 +3002,11 @@ pub(crate) fn render_textarea(
         Style::default().fg(Color::White)
     });
     state.set_selection_style(Style::default().fg(SELECT_FG).bg(SELECT_BG));
-    frame.render_widget(&*state, area);
+    if clip.is_full() {
+        (&*state).render(clip.area(), frame.buffer_mut());
+    } else {
+        clip.paint_bounded_stateful_editor(frame.buffer_mut(), &*state);
+    }
 }
 
 pub(crate) fn checkbox_style() -> CheckBoxStyle {
@@ -2949,6 +3031,227 @@ pub(crate) fn radio_style() -> ButtonStyle {
         .focused(SELECT_FG, SELECT_BG)
         .unfocused(Color::White, Color::Reset)
         .toggled(SELECT_FG, SELECT_BG)
+}
+
+#[cfg(test)]
+mod textarea_band_tests {
+    use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};
+
+    use super::*;
+
+    fn rendered(buffer: &Buffer) -> String {
+        buffer
+            .content()
+            .chunks(usize::from(buffer.area.width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_top_clipped_form_textarea_keeps_later_rows_cursor_and_selection_styles() {
+        let form = FormView {
+            purpose: skit_ui::FormPurpose::Settings,
+            title: "Editor".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: None,
+            fields: vec![FormField::multiline("body", "Body", "first\nmiddle\nlast")],
+            focused: 0,
+            submit_label: "Save".to_owned(),
+        };
+        let mut library = LibraryState::default();
+        library.update(Action::Present(Screen::Form(form.clone())));
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(24, 4)).unwrap();
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        for code in [KeyCode::Up, KeyCode::Up, KeyCode::Home] {
+            assert_eq!(
+                session.handle_event(
+                    Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                    &library,
+                    &geometry,
+                ),
+                EventHandling::Consumed
+            );
+        }
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        assert!(
+            rendered(terminal.backend().buffer()).contains("first"),
+            "the real cursor move did not bring the first row into view"
+        );
+        for code in [KeyCode::Down, KeyCode::Down, KeyCode::End] {
+            assert_eq!(
+                session.handle_event(
+                    Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT)),
+                    &library,
+                    &geometry,
+                ),
+                EventHandling::Consumed
+            );
+        }
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let frame = rendered(buffer);
+        let rows = buffer
+            .content()
+            .chunks(usize::from(buffer.area.width))
+            .collect::<Vec<_>>();
+        let middle = rows
+            .iter()
+            .find(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .contains("middle")
+            })
+            .unwrap();
+        let last = rows
+            .iter()
+            .find(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .contains("last")
+            })
+            .unwrap();
+
+        assert_eq!(geometry.first_visible, 2);
+        assert!(
+            frame.contains("middle"),
+            "the middle row is missing:\n{frame}"
+        );
+        assert!(frame.contains("last"), "the last row is missing:\n{frame}");
+        assert!(
+            !frame.contains("first"),
+            "the clipped first row returned:\n{frame}"
+        );
+        assert!(
+            middle
+                .iter()
+                .any(|cell| cell.symbol() != " " && cell.bg == SELECT_BG),
+            "the selection style is missing from the middle row:\n{frame}"
+        );
+        assert!(
+            last.iter()
+                .any(|cell| cell.fg == Color::Black && cell.bg == ACCENT),
+            "the focused cursor style is missing from the last row:\n{frame}"
+        );
+
+        let followed = geometry.first_visible;
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::ScrollDown,
+                    column: geometry.rows.x,
+                    row: geometry.rows.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &library,
+                &geometry,
+            ),
+            EventHandling::Consumed
+        );
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        assert!(geometry.first_visible > followed);
+        let wheel = geometry.first_visible;
+        terminal
+            .draw(|frame| {
+                geometry = session.render_form(frame, frame.area(), &form, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            geometry.first_visible, wheel,
+            "a render without a cursor move undid the reader's wheel scroll"
+        );
+    }
+
+    #[test]
+    fn form_focus_follow_brings_fields_below_and_above_the_fold_into_view() {
+        let mut library = LibraryState::default();
+        library.update(Action::Present(Screen::Form(FormView {
+            purpose: skit_ui::FormPurpose::Settings,
+            title: "Fields".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: None,
+            fields: vec![
+                FormField::text("zero", "Zero", "value-zero"),
+                FormField::text("one", "One", "value-one"),
+                FormField::text("two", "Two", "value-two"),
+                FormField::text("three", "Three", "value-three"),
+            ],
+            focused: 0,
+            submit_label: "Save".to_owned(),
+        })));
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(24, 5)).unwrap();
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                if let Screen::Form(form) = library.screen() {
+                    geometry = session.render_form(frame, frame.area(), form, Locale::En);
+                }
+            })
+            .unwrap();
+
+        for _ in 0..2 {
+            if let EventHandling::Action(action) = session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+                &library,
+                &geometry,
+            ) {
+                library.update(action);
+            }
+        }
+        terminal
+            .draw(|frame| {
+                if let Screen::Form(form) = library.screen() {
+                    geometry = session.render_form(frame, frame.area(), form, Locale::En);
+                }
+            })
+            .unwrap();
+        assert!(
+            rendered(terminal.backend().buffer()).contains("value-two"),
+            "focus below the fold did not end-align its field"
+        );
+
+        if let EventHandling::Action(action) = session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            &library,
+            &geometry,
+        ) {
+            library.update(action);
+        }
+        terminal
+            .draw(|frame| {
+                if let Screen::Form(form) = library.screen() {
+                    geometry = session.render_form(frame, frame.area(), form, Locale::En);
+                }
+            })
+            .unwrap();
+        assert!(
+            rendered(terminal.backend().buffer()).contains("value-one"),
+            "focus above the viewport did not snap its field to the start"
+        );
+    }
 }
 
 #[cfg(test)]

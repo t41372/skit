@@ -251,7 +251,8 @@ fn declared_row(declaration: &ParamDecl, kind: &str) -> ParameterRow {
         .with_capabilities(FieldCapabilities {
             reset_default: true,
             ..FieldCapabilities::default()
-        }),
+        })
+        .with_help("default value (optional)"),
         Field::new(
             format!("{prefix}:choices"),
             "Choices",
@@ -266,7 +267,8 @@ fn declared_row(declaration: &ParamDecl, kind: &str) -> ParameterRow {
             FieldKind::Multiline,
             FieldOwner::Declared,
             FieldValue::text(&declaration.help),
-        ),
+        )
+        .with_help("one-line help shown under the field (optional)"),
     ];
     // Version 0.4 shows the flag only for a kind whose launch takes an argument vector.
     if shows_flag(kind) {
