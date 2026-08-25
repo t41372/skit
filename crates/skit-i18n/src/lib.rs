@@ -4010,6 +4010,21 @@ const CATALOG: &[Translation] = &[
         "放棄未儲存的變更？",
     ),
     row!("Insert a run-time value", "插入运行时值", "插入執行階段值",),
+    row!(
+        "Directory at run time (changes with where you run)",
+        "运行时所在目录（跟着你在哪运行而变）",
+        "執行時所在目錄（跟著你在哪執行而變）",
+    ),
+    row!(
+        "This directory, as a fixed path",
+        "此刻目录（固定路径）",
+        "此刻目錄（固定路徑）",
+    ),
+    row!("Today's date", "今天日期", "今天日期"),
+    row!("Current time", "当前时间", "現在時間"),
+    row!("Home directory", "主目录", "家目錄"),
+    row!("Environment variable…", "环境变量…", "環境變數…"),
+    row!("File or folder…", "文件或文件夹…", "檔案或資料夾…"),
     row!("Environment variable", "环境变量", "環境變數"),
     row!(
         "Insert a file or folder",

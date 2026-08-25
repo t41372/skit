@@ -88,6 +88,30 @@ fn every_catalog_row_has_two_complete_translations() {
 }
 
 #[test]
+fn run_time_value_menu_matches_the_oracle_in_both_chinese_locales() {
+    for (source, simplified, traditional) in [
+        (
+            "Directory at run time (changes with where you run)",
+            "运行时所在目录（跟着你在哪运行而变）",
+            "執行時所在目錄（跟著你在哪執行而變）",
+        ),
+        (
+            "This directory, as a fixed path",
+            "此刻目录（固定路径）",
+            "此刻目錄（固定路徑）",
+        ),
+        ("Today's date", "今天日期", "今天日期"),
+        ("Current time", "当前时间", "現在時間"),
+        ("Home directory", "主目录", "家目錄"),
+        ("Environment variable…", "环境变量…", "環境變數…"),
+        ("File or folder…", "文件或文件夹…", "檔案或資料夾…"),
+    ] {
+        assert_eq!(text(Locale::ZhCn, source), simplified);
+        assert_eq!(text(Locale::ZhTw, source), traditional);
+    }
+}
+
+#[test]
 fn exact_text_and_longest_first_rendering_are_deterministic() {
     assert_eq!(text(Locale::ZhTw, "Library"), "工具庫");
     assert_eq!(text(Locale::ZhCn, "Library"), "工具库");
