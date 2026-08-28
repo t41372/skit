@@ -991,6 +991,20 @@ fn inert_editing_and_submission_actions_are_total_on_every_non_form_screen() {
 }
 
 #[test]
+fn shared_focus_actions_move_the_preferences_cursor() {
+    let mut state = state();
+    let preferences = preferences_view();
+    let initial = preferences.focused();
+    state.update(Action::Present(Screen::Preferences(Box::new(preferences))));
+
+    assert_eq!(state.update(Action::FocusNext), Effect::None);
+    let next = state.preferences().unwrap().focused();
+    assert_ne!(next, initial);
+    assert_eq!(state.update(Action::FocusPrevious), Effect::None);
+    assert_eq!(state.preferences().unwrap().focused(), initial);
+}
+
+#[test]
 fn typed_management_screens_reduce_host_effects_and_restore_their_owner() {
     let mut state = state();
     let preferences = preferences_view();

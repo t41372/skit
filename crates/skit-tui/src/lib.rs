@@ -4,6 +4,7 @@
 
 mod footer;
 mod layout;
+mod local_action;
 mod rowclip;
 mod screens;
 mod session;
@@ -16,10 +17,14 @@ use ratatui_crossterm::crossterm::event::{
 };
 use skit_i18n::{Locale, format_text};
 use skit_ui::{
-    Action, CommandContext, FormField, FormView, InputMode, LibraryState, ModalState, Screen,
-    UiBinding, UiCommand, UiKey, UiModifiers, command_specs,
+    Action, CommandContext, FormControl, FormField, FormView, InputMode, LibraryState, ModalState,
+    Screen, UiBinding, UiCommand, UiKey, UiModifiers, command_specs,
 };
 
+pub use local_action::{
+    LocalActionInventory, LocalActionOutcome, LocalActionTarget, LocalAdvertisedAction,
+    LocalKeyBinding,
+};
 pub use screens::add::{
     AddControlId, AddHitRegion, AddScreenEvent, AddScreenGeometry, AddScreenSession, AddTextField,
     render_add,
@@ -56,6 +61,15 @@ pub enum HitTarget {
     },
     /// Focus one form row.
     FocusField(usize),
+    /// Toggle one run-form checkbox.
+    ToggleField(usize),
+    /// Select one run-form radio option by its stable index.
+    SelectFieldOption {
+        /// Field index in the active typed launch form.
+        field: usize,
+        /// Option index in the field's rendered choice list.
+        option: usize,
+    },
 }
 
 /// One clickable rectangular target.
@@ -101,15 +115,20 @@ pub fn render_with_session(
     locale: Locale,
     session: &mut TuiSession,
 ) -> ViewGeometry {
-    session.begin_render(state);
+    session.begin_render(state, locale);
     let header_height = header_height(state, frame.area().height);
-    let footer_height = footer::required_height(
-        frame.area().width,
-        frame.area().height,
-        header_height,
-        state,
-        locale,
-    );
+    let footer_height = if session.shared_footer_suppressed(state) {
+        0
+    } else {
+        footer::required_height(
+            frame.area().width,
+            frame.area().height,
+            header_height,
+            state,
+            locale,
+            session.footer_input_ownership(state),
+        )
+    };
     let areas = layout::split_with_header(frame.area(), footer_height, header_height);
 
     let header = header_kind(state);
@@ -135,17 +154,19 @@ pub fn render_with_session(
             | ModalState::RunFilePicker { .. }),
         ) => session.render_run_modal(frame, areas.body, modal, locale),
         Some(ModalState::RunnerEditor { view, .. }) => {
-            let geometry = render_screen(frame, areas.body, state, locale, session);
+            let _ = render_screen(frame, areas.body, state, locale, session);
             session.render_runner_editor(frame, areas.body, view, locale);
-            geometry
+            // The modal owns input. Do not publish blocked hits from the screen below it.
+            ViewGeometry::default()
         }
         None => render_screen(frame, areas.body, state, locale, session),
     };
-    if areas.footer.height > 0 {
+    if areas.footer.height > 0 && !session.shared_footer_suppressed(state) {
         geometry
             .hits
             .extend(session.render_footer(frame, areas.footer, state, locale));
     }
+    session.capture_local_actions(state);
     session.register_geometry(&geometry);
     session.render_quit_toast(frame, locale);
     geometry
@@ -379,6 +400,18 @@ fn map_mouse(mouse: MouseEvent, state: &LibraryState, geometry: &ViewGeometry) -
                         run_field_command_action(field, command)
                     }
                     HitTarget::FocusField(index) => Action::FocusField(index),
+                    HitTarget::ToggleField(index) => Action::ToggleField(index),
+                    HitTarget::SelectFieldOption { field, option } => {
+                        let value = state
+                            .run_form()
+                            .and_then(|form| form.fields().get(field))
+                            .and_then(|field| match &field.control {
+                                FormControl::Choice(control) => control.options.get(option),
+                                FormControl::Text(_) | FormControl::Checkbox { .. } => None,
+                            })
+                            .cloned()?;
+                        Action::SelectFieldOption { field, value }
+                    }
                 });
             }
             library_context

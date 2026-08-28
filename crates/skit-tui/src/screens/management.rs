@@ -32,6 +32,7 @@ use crate::{
         ActionFooterItem, ActionFooterMouse, ActionFooterSession, ActionFooterStyle,
         action_footer_required_height,
     },
+    local_action::LocalKey,
     session::render_line_input,
     theme::{ACCENT, BOX_DIM, BOX_GREEN, BOX_MAROON, padded_panel},
 };
@@ -55,7 +56,7 @@ enum HealthHit {
 }
 
 /// Mature list and scroll state for the typed Health screen.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct HealthScreenSession {
     issues: ListPickerState,
     summary_scroll: ScrollableContentState,
@@ -68,6 +69,10 @@ pub(crate) struct HealthScreenSession {
 }
 
 impl HealthScreenSession {
+    pub(crate) fn advertised(&self) -> &[(Rect, LocalKey, HealthAction)] {
+        self.footer.advertised()
+    }
+
     /// Render the complete actionable Health report.
     pub(crate) fn render(
         &mut self,
@@ -266,6 +271,9 @@ impl HealthScreenSession {
     pub(crate) fn handle_event(&mut self, event: Event, view: &HealthView) -> HealthEventHandling {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if let Some(action) = self.footer.handle_key(&key) {
+                    return HealthEventHandling::Action(action);
+                }
                 if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
                     return HealthEventHandling::Action(HealthAction::Rebuild);
                 }
@@ -376,7 +384,7 @@ enum RunnerEditorHit {
 }
 
 /// Reusable mature input session for new, edit, and raw-repair runner flows.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RunnerEditorSession {
     name: LineInput,
     command: LineInput,
@@ -387,6 +395,10 @@ pub(crate) struct RunnerEditorSession {
 }
 
 impl RunnerEditorSession {
+    pub(crate) fn advertised(&self) -> &[(Rect, LocalKey, RunnerEditorAction)] {
+        self.footer.advertised()
+    }
+
     /// Render the shared editor as a modal overlay.
     pub(crate) fn render(
         &mut self,
@@ -483,6 +495,9 @@ impl RunnerEditorSession {
         self.sync(view);
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if let Some(action) = self.footer.handle_key(&key) {
+                    return RunnerEditorEventHandling::Action(action);
+                }
                 match key.code {
                     KeyCode::Esc => {
                         return RunnerEditorEventHandling::Action(RunnerEditorAction::Cancel);
@@ -609,7 +624,7 @@ enum RunnerHit {
 }
 
 /// Mature list, buttons, and shared editor for complete runner management.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RunnerManagerSession {
     rows: ListPickerState,
     row_height: usize,
@@ -620,6 +635,32 @@ pub(crate) struct RunnerManagerSession {
 }
 
 impl RunnerManagerSession {
+    pub(crate) fn advertised(
+        &self,
+        view: &RunnerManagerView,
+    ) -> Vec<(Rect, LocalKey, RunnerManagerAction)> {
+        if view.editor().is_some() {
+            self.editor
+                .footer
+                .advertised()
+                .iter()
+                .map(|(rect, key, action)| {
+                    (
+                        *rect,
+                        *key,
+                        if matches!(action, RunnerEditorAction::Cancel) {
+                            RunnerManagerAction::CancelEditor
+                        } else {
+                            RunnerManagerAction::Editor(action.clone())
+                        },
+                    )
+                })
+                .collect()
+        } else {
+            self.footer.advertised().to_vec()
+        }
+    }
+
     /// Render the registry and its active typed overlay.
     pub(crate) fn render(
         &mut self,
@@ -844,6 +885,12 @@ impl RunnerManagerSession {
                 RunnerEditorEventHandling::Ignored => RunnerManagerEventHandling::Ignored,
             };
         }
+        if let Event::Key(key) = &event
+            && let Some(action) = self.footer.handle_key(key)
+            && manager_action_is_current(&action, view)
+        {
+            return RunnerManagerEventHandling::Action(action);
+        }
         if let Event::Mouse(mouse) = &event {
             match self.footer.handle_mouse(mouse) {
                 ActionFooterMouse::Action(action) => {
@@ -979,6 +1026,24 @@ impl RunnerManagerSession {
     }
 }
 
+fn manager_action_is_current(action: &RunnerManagerAction, view: &RunnerManagerView) -> bool {
+    if view.removal().is_some() {
+        let current = matches!(
+            action,
+            RunnerManagerAction::ConfirmRemove | RunnerManagerAction::CancelRemove
+        );
+        return current;
+    }
+    if let Some(index) = view.action_row() {
+        return matches!(
+            action,
+            RunnerManagerAction::RemoveSelected | RunnerManagerAction::CloseActions
+        ) || matches!(action, RunnerManagerAction::EditSelected)
+            && view.rows().get(index).is_some_and(RunnerRow::is_editable);
+    }
+    matches!(action, RunnerManagerAction::New | RunnerManagerAction::Back)
+}
+
 fn health_issue_label(issue: &HealthIssue, locale: Locale) -> String {
     let detail = match &issue.kind {
         HealthIssueKind::MissingTarget => {
@@ -1088,13 +1153,17 @@ fn list_style(accent: Color) -> ListPickerStyle {
 
 pub(crate) fn health_footer_items(locale: Locale) -> Vec<ActionFooterItem<HealthAction>> {
     vec![
-        ActionFooterItem::new("Enter", text(locale, "Jump to entry"), HealthAction::Jump),
         ActionFooterItem::new(
-            "Ctrl+R",
+            LocalKey::Enter,
+            text(locale, "Jump to entry"),
+            HealthAction::Jump,
+        ),
+        ActionFooterItem::new(
+            LocalKey::Control('r'),
             text(locale, "Rebuild index"),
             HealthAction::Rebuild,
         ),
-        ActionFooterItem::new("Esc", text(locale, "Back"), HealthAction::Back),
+        ActionFooterItem::new(LocalKey::Escape, text(locale, "Back"), HealthAction::Back),
     ]
 }
 
@@ -1103,17 +1172,25 @@ pub(crate) fn runner_editor_footer_items(
 ) -> Vec<ActionFooterItem<RunnerEditorAction>> {
     vec![
         ActionFooterItem::new(
-            "Tab/↓",
+            LocalKey::NextField,
             text(locale, "Next field"),
             RunnerEditorAction::FocusNext,
         ),
         ActionFooterItem::new(
-            "Shift+Tab/↑",
+            LocalKey::PreviousField,
             text(locale, "Previous field"),
             RunnerEditorAction::FocusPrevious,
         ),
-        ActionFooterItem::new_group("Enter", text(locale, "Save"), RunnerEditorAction::Submit),
-        ActionFooterItem::new("Esc", text(locale, "Cancel"), RunnerEditorAction::Cancel),
+        ActionFooterItem::new_group(
+            LocalKey::Enter,
+            text(locale, "Save"),
+            RunnerEditorAction::Submit,
+        ),
+        ActionFooterItem::new(
+            LocalKey::Escape,
+            text(locale, "Cancel"),
+            RunnerEditorAction::Cancel,
+        ),
     ]
 }
 
@@ -1122,11 +1199,15 @@ pub(crate) fn runner_manager_footer_items(
 ) -> Vec<ActionFooterItem<RunnerManagerAction>> {
     vec![
         ActionFooterItem::new(
-            "Ctrl+N",
+            LocalKey::Control('n'),
             text(locale, "New agent…"),
             RunnerManagerAction::New,
         ),
-        ActionFooterItem::new("Esc", text(locale, "Back"), RunnerManagerAction::Back),
+        ActionFooterItem::new(
+            LocalKey::Escape,
+            text(locale, "Back"),
+            RunnerManagerAction::Back,
+        ),
     ]
 }
 
@@ -1137,18 +1218,18 @@ pub(crate) fn runner_action_footer_items(
     let mut items = Vec::new();
     if editable {
         items.push(ActionFooterItem::new(
-            "e",
+            LocalKey::Character('e'),
             text(locale, "Edit"),
             RunnerManagerAction::EditSelected,
         ));
     }
     items.push(ActionFooterItem::new(
-        "d",
+        LocalKey::Character('d'),
         text(locale, "Remove"),
         RunnerManagerAction::RemoveSelected,
     ));
     items.push(ActionFooterItem::new(
-        "Esc",
+        LocalKey::Escape,
         text(locale, "Back"),
         RunnerManagerAction::CloseActions,
     ));
@@ -1160,12 +1241,12 @@ pub(crate) fn runner_removal_footer_items(
 ) -> Vec<ActionFooterItem<RunnerManagerAction>> {
     vec![
         ActionFooterItem::new(
-            "y",
+            LocalKey::Character('y'),
             text(locale, "Remove"),
             RunnerManagerAction::ConfirmRemove,
         ),
         ActionFooterItem::new(
-            "Esc",
+            LocalKey::Escape,
             text(locale, "Keep"),
             RunnerManagerAction::CancelRemove,
         ),
@@ -1301,7 +1382,7 @@ mod tests {
             for item in health_footer_items(Locale::En) {
                 let hint = item.advertised_key();
                 assert_eq!(
-                    health_session.handle_event(advertised_key(hint), &health_view),
+                    health_session.handle_event(advertised_key(&hint), &health_view),
                     HealthEventHandling::Action(item.typed_action().clone()),
                     "Health key {hint} at {width}x{height}",
                 );
@@ -1317,7 +1398,7 @@ mod tests {
             for item in runner_editor_footer_items(Locale::En) {
                 let hint = item.advertised_key();
                 assert_eq!(
-                    editor_session.handle_event(advertised_key(hint), &editor_view),
+                    editor_session.handle_event(advertised_key(&hint), &editor_view),
                     RunnerEditorEventHandling::Action(item.typed_action().clone()),
                     "runner editor key {hint} at {width}x{height}",
                 );
@@ -1333,7 +1414,7 @@ mod tests {
             for item in runner_manager_footer_items(Locale::En) {
                 let hint = item.advertised_key();
                 assert_eq!(
-                    manager_session.handle_event(advertised_key(hint), &manager_view,),
+                    manager_session.handle_event(advertised_key(&hint), &manager_view,),
                     RunnerManagerEventHandling::Action(item.typed_action().clone()),
                     "runner manager key {hint} at {width}x{height}",
                 );
@@ -1349,7 +1430,7 @@ mod tests {
             for item in runner_action_footer_items(Locale::En, true) {
                 let hint = item.advertised_key();
                 assert_eq!(
-                    manager_session.handle_event(advertised_key(hint), &action_view,),
+                    manager_session.handle_event(advertised_key(&hint), &action_view,),
                     RunnerManagerEventHandling::Action(item.typed_action().clone()),
                     "runner action key {hint} at {width}x{height}",
                 );
@@ -1364,7 +1445,7 @@ mod tests {
             for item in runner_removal_footer_items(Locale::En) {
                 let hint = item.advertised_key();
                 assert_eq!(
-                    manager_session.handle_event(advertised_key(hint), &action_view,),
+                    manager_session.handle_event(advertised_key(&hint), &action_view,),
                     RunnerManagerEventHandling::Action(item.typed_action().clone()),
                     "runner removal key {hint} at {width}x{height}",
                 );
@@ -1380,12 +1461,82 @@ mod tests {
             for item in runner_action_footer_items(Locale::En, false) {
                 let hint = item.advertised_key();
                 assert_eq!(
-                    manager_session.handle_event(advertised_key(hint), &locked_view,),
+                    manager_session.handle_event(advertised_key(&hint), &locked_view,),
                     RunnerManagerEventHandling::Action(item.typed_action().clone()),
                     "locked runner action key {hint} at {width}x{height}",
                 );
             }
         }
+    }
+
+    #[test]
+    fn management_keyboard_contracts_work_before_the_first_frame() {
+        let health_view = health();
+        let mut health_session = HealthScreenSession::default();
+        assert_eq!(
+            health_session.handle_event(key(KeyCode::Enter), &health_view),
+            HealthEventHandling::Action(HealthAction::Jump)
+        );
+
+        let editor_view = RunnerEditorView::new();
+        let mut editor_session = RunnerEditorSession::default();
+        assert_eq!(
+            editor_session.handle_event(key(KeyCode::Tab), &editor_view),
+            RunnerEditorEventHandling::Action(RunnerEditorAction::FocusNext)
+        );
+
+        let mut manager_session = RunnerManagerSession::default();
+        let manager_view = RunnerManagerView::new(vec![row(0, None, 1)]);
+        assert_eq!(
+            manager_session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+                &manager_view,
+            ),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::New)
+        );
+        assert_eq!(
+            manager_session.handle_event(key(KeyCode::Esc), &manager_view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::Back)
+        );
+
+        let mut action_view = manager_view.clone();
+        action_view.reduce(RunnerManagerAction::ActivateSelected);
+        assert_eq!(
+            manager_session.handle_event(key(KeyCode::Char('d')), &action_view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::RemoveSelected)
+        );
+        action_view.reduce(RunnerManagerAction::RemoveSelected);
+        assert!(manager_action_is_current(
+            &RunnerManagerAction::ConfirmRemove,
+            &action_view,
+        ));
+        let mut direct_session = RunnerManagerSession::default();
+        assert_eq!(
+            direct_session.handle_event(key(KeyCode::Char('y')), &action_view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::ConfirmRemove)
+        );
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                manager_session.render(frame, frame.area(), &action_view, Locale::En);
+            })
+            .unwrap();
+        let confirm_key = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        assert!(
+            manager_session
+                .footer
+                .advertised()
+                .iter()
+                .any(|(_, _, action)| *action == RunnerManagerAction::ConfirmRemove)
+        );
+        assert_eq!(
+            manager_session.footer.handle_key(&confirm_key),
+            Some(RunnerManagerAction::ConfirmRemove)
+        );
+        assert_eq!(
+            manager_session.handle_event(Event::Key(confirm_key), &action_view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::ConfirmRemove)
+        );
     }
 
     #[test]

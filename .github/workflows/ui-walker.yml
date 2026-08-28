@@ -1,0 +1,159 @@
+name: UI model walker
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  schedule:
+    - cron: "29 3 * * *"
+  workflow_dispatch:
+    inputs:
+      record_success:
+        description: Save the final successful cast and render it to a GIF
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: ui-walker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  model-walk:
+    name: Complete UI model walk
+    if: ${{ github.event_name != 'pull_request' || (github.event.action == 'labeled' && github.event.label.name == 'ui-walker-requested') || (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'ui-walker-requested')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      SKIT_WALKER_CASES: "16"
+      SKIT_WALKER_STEPS: "100"
+      SKIT_WALKER_RECORD_SUCCESS: ${{ ((github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ui-walker-requested')) || (github.event_name == 'workflow_dispatch' && inputs.record_success)) && '1' || '0' }}
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run the complete UI model walk
+        id: walker
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p target/ui-walker-artifacts
+          {
+            test "$SKIT_WALKER_CASES" -gt 0 || {
+              echo 'SKIT_WALKER_CASES must be a positive integer' >&2
+              exit 1
+            }
+            test "$SKIT_WALKER_STEPS" -gt 0 || {
+              echo 'SKIT_WALKER_STEPS must be a positive integer' >&2
+              exit 1
+            }
+            test "$SKIT_WALKER_RECORD_SUCCESS" = 0 ||
+              test "$SKIT_WALKER_RECORD_SUCCESS" = 1 || {
+                echo 'SKIT_WALKER_RECORD_SUCCESS must be 0 or 1' >&2
+                exit 1
+              }
+            listed="$(
+              cargo test --locked -p skit-tui --test model_walker driver::nightly_model_walk -- --exact --ignored --list
+            )"
+            printf '%s\n' "$listed"
+            listed_count="$(printf '%s\n' "$listed" |
+              grep -cFx 'driver::nightly_model_walk: test' || true)"
+            test "$listed_count" -eq 1 || {
+              echo "the exact ignored UI walker selector listed $listed_count tests, expected 1" >&2
+              exit 1
+            }
+            timeout --signal=TERM --kill-after=5m 65m \
+              cargo test --locked -p skit-tui --test model_walker driver::nightly_model_walk -- --exact --ignored --nocapture
+            if test "$SKIT_WALKER_RECORD_SUCCESS" = 1; then
+              success_count="$(
+                find target/ui-walker-artifacts \
+                  -mindepth 2 \
+                  -maxdepth 2 \
+                  -type f \
+                  -path 'target/ui-walker-artifacts/success-*/success.cast' \
+                  -print | wc -l
+              )"
+              test "$success_count" -eq 1 || {
+                echo "the requested UI walk wrote $success_count success casts, expected 1" >&2
+                exit 1
+              }
+            fi
+          } 2>&1 |
+            tee target/ui-walker-artifacts/walker.log
+      - name: Install pinned agg
+        env:
+          AGG_SHA256: f111e315cd71056b116302342553dd765b7297579ed511f111d0cedb442aeda6
+          AGG_URL: https://github.com/asciinema/agg/releases/download/v1.9.0/agg-x86_64-unknown-linux-gnu
+        run: |
+          set -euo pipefail
+          curl --fail --location --proto '=https' --tlsv1.2 --output "$RUNNER_TEMP/agg" "$AGG_URL"
+          echo "$AGG_SHA256  $RUNNER_TEMP/agg" | sha256sum --check --strict
+          chmod 0500 "$RUNNER_TEMP/agg"
+      - name: Smoke-test the agg consumer
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            '{"version":3,"term":{"cols":1,"rows":1}}' \
+            '[0.0,"o","\u001b[0m\u001b[2J\u001b[1;1Hx\u001b[?25l"]' \
+            > "$RUNNER_TEMP/agg-smoke.cast"
+          "$RUNNER_TEMP/agg" "$RUNNER_TEMP/agg-smoke.cast" "$RUNNER_TEMP/agg-smoke.gif"
+          test -s "$RUNNER_TEMP/agg-smoke.gif"
+      - name: Render captured casts
+        id: render
+        if: ${{ !cancelled() && (hashFiles('target/ui-walker-artifacts/failure-*/failure.cast') != '' || hashFiles('target/ui-walker-artifacts/success-*/success.cast') != '') }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # agg 1.9.0 ignores resize events. The GIF is a fixed-canvas aid, not a faithful record
+          # of dynamic terminal dimensions.
+          cast_count=0
+          render_failed=0
+          find target/ui-walker-artifacts \
+            -mindepth 2 \
+            -maxdepth 2 \
+            -type f \
+            \( -path 'target/ui-walker-artifacts/failure-*/failure.cast' \
+               -o -path 'target/ui-walker-artifacts/success-*/success.cast' \) \
+            -print0 > "$RUNNER_TEMP/ui-walker-casts"
+          while IFS= read -r -d '' cast; do
+            cast_count=$((cast_count + 1))
+            bundle="${cast%/*}"
+            stem="${cast##*/}"
+            stem="${stem%.cast}"
+            if ! "$RUNNER_TEMP/agg" "$cast" "$bundle/$stem.gif" > "$bundle/agg.log" 2>&1; then
+              echo "agg failed for $cast" >&2
+              render_failed=1
+              continue
+            fi
+            if [ ! -s "$bundle/$stem.gif" ]; then
+              echo "agg wrote no GIF for $cast" >&2
+              render_failed=1
+            fi
+          done < "$RUNNER_TEMP/ui-walker-casts"
+          test "$cast_count" -gt 0 || {
+            echo 'the renderer found no cast bundles' >&2
+            exit 1
+          }
+          test "$render_failed" -eq 0
+      - name: Upload UI walker artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ui-walker-artifacts
+          path: target/ui-walker-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Fail after artifact capture
+        if: ${{ !cancelled() && (steps.walker.outcome == 'failure' || steps.render.outcome == 'failure') }}
+        env:
+          RENDER_OUTCOME: ${{ steps.render.outcome }}
+        run: |
+          if [ "$RENDER_OUTCOME" = "failure" ]; then
+            echo 'cast discovery or agg failed; available diagnostics are in the uploaded artifact' >&2
+          fi
+          echo 'the complete UI model walk or its artifact render failed' >&2
+          exit 1

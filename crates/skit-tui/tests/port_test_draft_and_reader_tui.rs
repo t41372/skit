@@ -326,11 +326,43 @@ fn test_review_dynamic_optstring_keeps_ticks_and_space_chip() {
         ReviewDefaults::default(),
     );
     assert!(!review.candidates().is_empty()); // ...the ticks remain (constants are additive)
-    let screen = render_add_text(&AddWorkflowState::from_review(review), 100, 40);
+    let workflow = AddWorkflowState::from_review(review);
+    let mut session = AddScreenSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    let mut geometry = AddScreenGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_add(frame, frame.area(), &workflow, &mut session, Locale::En);
+        })
+        .unwrap();
+    while !matches!(session.focused(), Some(AddControlId::Candidate(_))) {
+        assert_eq!(
+            session.handle_event(
+                Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+                &workflow,
+                &geometry,
+            ),
+            Some(AddScreenEvent::Changed)
+        );
+    }
+    terminal
+        .draw(|frame| {
+            geometry = render_add(frame, frame.area(), &workflow, &mut session, Locale::En);
+        })
+        .unwrap();
+    let screen = rendered(terminal.backend().buffer());
     assert!(screen.contains(SELF_PARSE_NOTICE)); // the passthrough notice
     assert!(screen.contains(TICK_PROMPT)); // ...and the tick list mounts (the #rv-cand-0 twin)
     assert!(screen.contains("Space")); // the Space chip key hint is advertised
     assert!(screen.contains("Toggle")); // ...as a real toggle path
+    assert!(matches!(
+        session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)),
+            &workflow,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Action(AddAction::SetReviewCandidate { .. }))
+    ));
 }
 
 #[test]
@@ -635,6 +667,22 @@ fn test_delete_draft_chip_only_renders_when_drafts_exist() {
     let mut session = AddScreenSession::default();
     let mut terminal = Terminal::new(TestBackend::new(200, 40)).unwrap();
     let mut geometry = AddScreenGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_add(frame, frame.area(), &present, &mut session, Locale::En);
+        })
+        .unwrap();
+    let draft = geometry
+        .hits
+        .iter()
+        .find(|hit| matches!(hit.target, AddControlId::Draft(_)))
+        .expect("the listed draft is clickable")
+        .area;
+    let selected = session.handle_event(left_click(draft.x, draft.y), &present, &geometry);
+    let Some(AddScreenEvent::Action(action @ AddAction::SelectDraft(_))) = selected else {
+        panic!("the draft click must select its row: {selected:?}");
+    };
+    let _ = present.reduce(action);
     terminal
         .draw(|frame| {
             geometry = render_add(frame, frame.area(), &present, &mut session, Locale::En);

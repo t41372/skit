@@ -256,7 +256,10 @@ fn scroll_footer_commands(
             .unwrap();
         for command in geometry.hits.iter().filter_map(|hit| match hit.action {
             HitTarget::Command(command) => Some(command),
-            HitTarget::RunFieldCommand { .. } | HitTarget::FocusField(_) => None,
+            HitTarget::RunFieldCommand { .. }
+            | HitTarget::FocusField(_)
+            | HitTarget::ToggleField(_)
+            | HitTarget::SelectFieldOption { .. } => None,
         }) {
             if !commands.contains(&command) {
                 commands.push(command);
@@ -973,6 +976,33 @@ fn every_rendered_chip_and_form_row_is_clickable() {
 }
 
 #[test]
+fn a_corrupt_choice_hit_cannot_select_a_text_field() {
+    let run = registry_states()
+        .into_iter()
+        .find_map(|(name, state)| (name == "run form").then_some(state))
+        .unwrap();
+    let geometry = ViewGeometry {
+        hits: vec![HitRegion {
+            rect: Rect::new(1, 1, 1, 1),
+            action: HitTarget::SelectFieldOption {
+                field: 1,
+                option: 0,
+            },
+        }],
+        ..ViewGeometry::default()
+    };
+
+    assert_eq!(
+        map_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), 1, 1),
+            &run,
+            &geometry,
+        ),
+        None
+    );
+}
+
+#[test]
 fn contextual_footer_only_advertises_commands_that_can_run_here() {
     let mut searching = state();
     searching.update(Action::BeginSearch);
@@ -1012,7 +1042,10 @@ fn contextual_footer_only_advertises_commands_that_can_run_here() {
             .iter()
             .filter_map(|hit| match hit.action {
                 HitTarget::Command(command) => Some(command),
-                HitTarget::RunFieldCommand { .. } | HitTarget::FocusField(_) => None,
+                HitTarget::RunFieldCommand { .. }
+                | HitTarget::FocusField(_)
+                | HitTarget::ToggleField(_)
+                | HitTarget::SelectFieldOption { .. } => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);

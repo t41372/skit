@@ -24,8 +24,12 @@ skit-ui.workspace = true
 skit-domain.workspace = true
 
 [dev-dependencies]
+glob.workspace = true
 portable-pty.workspace = true
+proptest.workspace = true
+serde.workspace = true
 skit-i18n.workspace = true
+skit-language.workspace = true
 skit-store.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

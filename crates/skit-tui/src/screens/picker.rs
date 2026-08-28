@@ -1,6 +1,9 @@
 //! Shared list, candidate, and filesystem picker widgets.
 
-use std::path::PathBuf;
+use std::{
+    collections::BTreeSet,
+    path::{Path, PathBuf},
+};
 
 use ratatui_core::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -77,7 +80,7 @@ pub enum PromptCandidatePickerEvent {
 }
 
 /// Complete searchable prompt-variable picker backed by mature input and list state.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PromptCandidatePickerSession {
     picker: ChoicePicker<String>,
     query: LineInput,
@@ -457,7 +460,7 @@ pub enum FilePickerEvent {
 }
 
 /// Ephemeral session backed by `ratatui-interact::FileExplorerState`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FilePickerSession {
     contract: PathPickerState,
     explorer: FileExplorerState,
@@ -468,6 +471,103 @@ pub struct FilePickerSession {
     footer_scroll: ScrollableContentState,
     footer_viewport: Rect,
     footer_visible_height: usize,
+    memory_source: Option<MemoryFilePickerSource>,
+}
+
+/// A deterministic directory tree for adapter tests and non-filesystem frontends.
+#[derive(Clone, Debug)]
+pub(crate) struct MemoryFilePickerSource {
+    root: PathBuf,
+    directories: BTreeSet<PathBuf>,
+    files: BTreeSet<PathBuf>,
+}
+
+impl MemoryFilePickerSource {
+    pub(crate) fn new(
+        root: PathBuf,
+        mut directories: BTreeSet<PathBuf>,
+        files: BTreeSet<PathBuf>,
+    ) -> Self {
+        directories.insert(root.clone());
+        Self {
+            root,
+            directories,
+            files,
+        }
+    }
+
+    pub(crate) fn contains_directory(&self, path: &Path) -> bool {
+        self.directories.contains(path)
+    }
+
+    pub(crate) fn nearest_directory(&self, path: &Path) -> PathBuf {
+        path.ancestors()
+            .find(|candidate| self.contains_directory(candidate))
+            .map_or_else(|| self.root.clone(), Path::to_path_buf)
+    }
+
+    fn load_entries(&self, explorer: &mut FileExplorerState) {
+        explorer.entries.clear();
+        explorer.cursor_index = 0;
+        explorer.scroll = 0;
+        explorer.filtered_indices = None;
+
+        if explorer.current_dir != self.root
+            && let Some(parent) = explorer.current_dir.parent()
+            && self.contains_directory(parent)
+        {
+            explorer
+                .entries
+                .push(FileEntry::parent_dir(parent.to_path_buf()));
+        }
+
+        let visible = |path: &Path| {
+            path.parent() == Some(explorer.current_dir.as_path())
+                && (explorer.show_hidden
+                    || !path
+                        .file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with('.')))
+        };
+        let mut directories = self
+            .directories
+            .iter()
+            .filter(|path| visible(path))
+            .map(|path| {
+                FileEntry::new(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    path.clone(),
+                    EntryType::Directory,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut files = self
+            .files
+            .iter()
+            .filter(|path| visible(path))
+            .map(|path| {
+                FileEntry::new(
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                    path.clone(),
+                    EntryType::File {
+                        extension: path
+                            .extension()
+                            .map(|value| value.to_string_lossy().into_owned()),
+                        size: 0,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        directories.sort_by_key(|entry| entry.name.to_lowercase());
+        files.sort_by_key(|entry| entry.name.to_lowercase());
+        explorer.entries.extend(directories);
+        explorer.entries.extend(files);
+    }
 }
 
 impl FilePickerSession {
@@ -478,6 +578,26 @@ impl FilePickerSession {
         let mut explorer = FileExplorerState::new(start);
         explorer.show_hidden = contract.show_hidden() || contract.query().starts_with('.');
         let io_error = explorer.load_entries().err().map(|error| error.to_string());
+        Self::from_explorer(contract, explorer, io_error, None)
+    }
+
+    pub(crate) fn with_memory_source(
+        contract: PathPickerState,
+        memory_source: MemoryFilePickerSource,
+    ) -> Self {
+        let start = memory_source.nearest_directory(contract.start_dir());
+        let mut explorer = FileExplorerState::new(start);
+        explorer.show_hidden = contract.show_hidden() || contract.query().starts_with('.');
+        memory_source.load_entries(&mut explorer);
+        Self::from_explorer(contract, explorer, None, Some(memory_source))
+    }
+
+    fn from_explorer(
+        contract: PathPickerState,
+        mut explorer: FileExplorerState,
+        io_error: Option<String>,
+        memory_source: Option<MemoryFilePickerSource>,
+    ) -> Self {
         let has_real_entry = select_first_real_entry(&mut explorer);
         let query = LineInput::new(contract.query().to_owned());
         explorer.search_query = contract.query().trim().to_owned();
@@ -497,6 +617,7 @@ impl FilePickerSession {
             footer_scroll: ScrollableContentState::default(),
             footer_viewport: Rect::default(),
             footer_visible_height: 0,
+            memory_source,
         }
     }
 
@@ -742,6 +863,13 @@ impl FilePickerSession {
         let Some(parent) = self.explorer.current_dir.parent().map(PathBuf::from) else {
             return;
         };
+        if self
+            .memory_source
+            .as_ref()
+            .is_some_and(|source| !source.contains_directory(&parent))
+        {
+            return;
+        }
         self.explorer.current_dir = parent;
         self.query.reset();
         self.contract.set_query("");
@@ -754,11 +882,7 @@ impl FilePickerSession {
         let show_hidden = self.contract.show_hidden() || query.starts_with('.');
         if self.explorer.show_hidden != show_hidden {
             self.explorer.show_hidden = show_hidden;
-            self.io_error = self
-                .explorer
-                .load_entries()
-                .err()
-                .map(|error| error.to_string());
+            self.load_entries();
         }
         self.explorer.search_query = query;
         apply_filter(&mut self.explorer);
@@ -771,13 +895,22 @@ impl FilePickerSession {
 
     fn reload_entries(&mut self) {
         self.explorer.show_hidden = self.contract.show_hidden();
-        self.io_error = self
-            .explorer
-            .load_entries()
-            .err()
-            .map(|error| error.to_string());
+        self.load_entries();
         self.explorer.search_query.clear();
         self.reset_empty_filter_focus();
+    }
+
+    fn load_entries(&mut self) {
+        if let Some(source) = &self.memory_source {
+            source.load_entries(&mut self.explorer);
+            self.io_error = None;
+        } else {
+            self.io_error = self
+                .explorer
+                .load_entries()
+                .err()
+                .map(|error| error.to_string());
+        }
     }
 }
 
@@ -1199,6 +1332,58 @@ mod tests {
             Some(FilePickerEvent::Accepted(vec![
                 dir.path().join("reports/tool.py")
             ]))
+        );
+    }
+
+    #[test]
+    fn memory_source_loads_and_navigates_without_a_filesystem_directory() {
+        let contract = PathPickerState::new(
+            PickerPurpose::Source,
+            PathBuf::from("/fixtures"),
+            PathSelectionMode::FileOrDirectory,
+            skit_ui::PathOutputPolicy::Absolute,
+            false,
+        );
+        let source = MemoryFilePickerSource::new(
+            PathBuf::from("/fixtures"),
+            BTreeSet::from([
+                PathBuf::from("/fixtures"),
+                PathBuf::from("/fixtures/nested"),
+            ]),
+            BTreeSet::from([
+                PathBuf::from("/fixtures/alpha.py"),
+                PathBuf::from("/fixtures/nested/beta.py"),
+            ]),
+        );
+        let mut session = FilePickerSession::with_memory_source(contract, source);
+        assert_eq!(session.current_dir(), &PathBuf::from("/fixtures"));
+        assert_eq!(
+            session
+                .explorer()
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["nested", "alpha.py"]
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Backspace), &FilePickerGeometry::default()),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(session.current_dir(), &PathBuf::from("/fixtures"));
+        assert_eq!(
+            session.handle_event(key(KeyCode::Enter), &FilePickerGeometry::default()),
+            Some(FilePickerEvent::Changed)
+        );
+        assert_eq!(session.current_dir(), &PathBuf::from("/fixtures/nested"));
+        assert_eq!(
+            session
+                .explorer()
+                .entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["..", "beta.py"]
         );
     }
 
