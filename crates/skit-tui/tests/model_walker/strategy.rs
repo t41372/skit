@@ -274,30 +274,13 @@ pub(super) fn resolve(
 ) -> ResolvedOperation {
     match operation {
         WalkerOperation::AdvertisedKey { command, binding } => {
-            let commands = command_specs(state.command_context())
-                .filter(|spec| {
-                    spec.command != UiCommand::Quit && state.command_enabled(spec.command)
-                })
-                .collect::<Vec<_>>();
-            let Some(spec) = choose(&commands, *command) else {
+            let Some((_, binding)) = resolve_advertised_command(state, *command, *binding) else {
                 return ResolvedOperation::Noop;
             };
-            let Some(binding) = choose(spec.bindings, *binding) else {
-                return ResolvedOperation::Noop;
-            };
-            ResolvedOperation::Event(Event::Key(binding_event(*binding)))
+            ResolvedOperation::Event(Event::Key(binding_event(binding)))
         }
         WalkerOperation::PublicHit { ordinal } => {
-            let hits = geometry
-                .hits
-                .iter()
-                .filter(|hit| {
-                    hit.rect.width > 0
-                        && hit.rect.height > 0
-                        && hit.action != HitTarget::Command(UiCommand::Quit)
-                })
-                .collect::<Vec<_>>();
-            let Some(hit) = choose(&hits, *ordinal) else {
+            let Some(hit) = resolve_public_hit(geometry, *ordinal) else {
                 return ResolvedOperation::Noop;
             };
             ResolvedOperation::Event(Event::Mouse(MouseEvent {
@@ -366,6 +349,31 @@ pub(super) fn resolve(
             Event::FocusLost
         }),
     }
+}
+
+pub(super) fn resolve_advertised_command(
+    state: &LibraryState,
+    command: u8,
+    binding: u8,
+) -> Option<(UiCommand, UiBinding)> {
+    let commands = command_specs(state.command_context())
+        .filter(|spec| spec.command != UiCommand::Quit && state.command_enabled(spec.command))
+        .collect::<Vec<_>>();
+    let spec = choose(&commands, command)?;
+    Some((spec.command, *choose(spec.bindings, binding)?))
+}
+
+pub(super) fn resolve_public_hit(geometry: &ViewGeometry, ordinal: u8) -> Option<HitRegion> {
+    let hits = geometry
+        .hits
+        .iter()
+        .filter(|hit| {
+            hit.rect.width > 0
+                && hit.rect.height > 0
+                && hit.action != HitTarget::Command(UiCommand::Quit)
+        })
+        .collect::<Vec<_>>();
+    choose(&hits, ordinal).copied().copied()
 }
 
 fn no_quit(event: Event, state: &LibraryState, geometry: &ViewGeometry) -> ResolvedOperation {

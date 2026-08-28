@@ -38,7 +38,10 @@ use super::{
     asciicast::AsciicastRecorder,
     fake_host::FakeHost,
     invariants,
-    strategy::{MouseKind, ResolvedOperation, WalkerOperation, operation_strategy, resolve},
+    strategy::{
+        MouseKind, ResolvedOperation, WalkerOperation, operation_strategy, resolve,
+        resolve_advertised_command, resolve_public_hit,
+    },
 };
 
 const HOST_EFFECT_LIMIT: usize = 64;
@@ -662,6 +665,21 @@ fn check_field_hit_parity(
             return Err(format!("FIELD_PARITY_TARGET target={target:?}"));
         }
     };
+    if matches!(
+        target,
+        HitTarget::ToggleField(_) | HitTarget::SelectFieldOption { .. }
+    ) {
+        let expected = expected_hit_action(target, geometry, state)?;
+        if mouse_handling != EventHandling::Action(expected.clone()) {
+            return Err(format!(
+                "FIELD_SESSION_ACTION target={target:?} actual={mouse_handling:?} expected={expected:?}"
+            ));
+        }
+    }
+    let mouse_is_plain_focus = matches!(
+        &mouse_handling,
+        EventHandling::Action(Action::FocusField(actual)) if *actual == field
+    );
     let mut mouse_state = state.clone();
     apply_probe_handling(
         &mut mouse_state,
@@ -678,77 +696,142 @@ fn check_field_hit_parity(
             "FIELD_PARITY_OWNER target={target:?} fields={field_count}"
         ));
     }
+    let mut focus_session = base_session
+        .try_fork()
+        .ok_or("the persistent TUI session cannot fork for direct focus parity")?;
+    let mut focus_state = state.clone();
+    let focus_effect = focus_state.update(Action::FocusField(field));
+    if host_effect_pending(&focus_effect) {
+        return Err(format!(
+            "FIELD_FOCUS_EFFECT field={field} effect={focus_effect:?}"
+        ));
+    }
+    let focus_endpoint = render_probe_endpoint(&mut focus_session, &focus_state, locale, size)?;
+    if target == HitTarget::FocusField(field)
+        && mouse_is_plain_focus
+        && is_plain_focus_field(state, field)
+        && focus_endpoint == mouse_endpoint
+    {
+        return check_keyboard_focus_path(
+            context,
+            target,
+            field,
+            field_count,
+            &mouse_endpoint.state,
+        );
+    }
+    if state.focused_form_field() != Some(field) {
+        check_keyboard_focus_path(context, target, field, field_count, &focus_endpoint.state)?;
+    }
+
     let activations = field_activation_sequences(state, target);
+    let mut failures = Vec::new();
+    for activation in &activations {
+        let mut candidate_session = focus_session
+            .try_fork()
+            .ok_or("the focused TUI session cannot fork for field activation")?;
+        let mut candidate_state = focus_endpoint.state.clone();
+        let mut candidate_geometry = focus_endpoint.geometry.clone();
+        let mut activation_failed = false;
+        for key in activation {
+            let handling = candidate_session.handle_event(
+                Event::Key(*key),
+                &candidate_state,
+                &candidate_geometry,
+            );
+            if let Err(error) = apply_probe_handling(
+                &mut candidate_state,
+                handling,
+                &format!("activation target={target:?} key={key:?}"),
+            ) {
+                failures.push(error);
+                activation_failed = true;
+                break;
+            }
+            candidate_geometry =
+                render_probe_endpoint(&mut candidate_session, &candidate_state, locale, size)?
+                    .geometry;
+        }
+        if activation_failed {
+            continue;
+        }
+        let candidate =
+            render_probe_endpoint(&mut candidate_session, &candidate_state, locale, size)?;
+        if candidate == mouse_endpoint {
+            return Ok(());
+        }
+        failures.push(format!(
+            "endpoint target={target:?} activation={activation:?} state_equal={} geometry_equal={} buffer_equal={} cursor_equal={}",
+            candidate.state == mouse_endpoint.state,
+            candidate.geometry == mouse_endpoint.geometry,
+            candidate.backend.buffer() == mouse_endpoint.backend.buffer(),
+            candidate.backend.cursor_position() == mouse_endpoint.backend.cursor_position(),
+        ));
+    }
+    Err(format!(
+        "FIELD_SESSION_PARITY target={target:?} mouse_focus={:?} failures={failures:?}",
+        mouse_endpoint.state.focused_form_field(),
+    ))
+}
+
+fn is_plain_focus_field(state: &LibraryState, field: usize) -> bool {
+    if let Some(form) = state.run_form() {
+        return form
+            .fields()
+            .get(field)
+            .is_some_and(|field| matches!(&field.control, skit_ui::FormControl::Text(_)));
+    }
+    state.form().is_some_and(|form| field < form.fields.len())
+}
+
+fn check_keyboard_focus_path(
+    context: FieldParityContext<'_>,
+    target: HitTarget,
+    field: usize,
+    field_count: usize,
+    mouse_state: &LibraryState,
+) -> Result<(), String> {
     let mut failures = Vec::new();
     for navigation in [
         KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
         KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
     ] {
-        for steps in 1..=field_count {
-            let mut key_session = base_session
-                .try_fork()
-                .ok_or("the persistent TUI session cannot fork for field parity")?;
-            let mut key_state = state.clone();
-            let mut failed = false;
-            for step in 0..steps {
-                let handling =
-                    key_session.handle_event(Event::Key(navigation), &key_state, geometry);
-                if let Err(error) = apply_probe_handling(
-                    &mut key_state,
-                    handling,
-                    &format!("navigation target={target:?} step={step}"),
-                ) {
-                    failures.push(error);
-                    failed = true;
-                    break;
-                }
+        let mut key_session = context
+            .session
+            .try_fork()
+            .ok_or("the persistent TUI session cannot fork for direct focus parity")?;
+        let mut key_state = context.state.clone();
+        let mut key_geometry = context.geometry.clone();
+        for step in 1..=field_count {
+            let handling =
+                key_session.handle_event(Event::Key(navigation), &key_state, &key_geometry);
+            apply_probe_handling(
+                &mut key_state,
+                handling,
+                &format!("direct focus field={field} step={step}"),
+            )?;
+            key_geometry =
+                render_probe_endpoint(&mut key_session, &key_state, context.locale, context.size)?
+                    .geometry;
+            let visible = key_geometry
+                .hits
+                .iter()
+                .any(|hit| hit.rect.width > 0 && hit.rect.height > 0 && hit.action == target);
+            // One advertised keyboard path is sufficient. Mouse focus can jump directly to a
+            // field, while Tab and BackTab must traverse the active focus ring.
+            if key_state == *mouse_state && visible {
+                return Ok(());
             }
-            if failed || key_state.focused_form_field() != Some(field) {
-                continue;
-            }
-            for activation in &activations {
-                let mut candidate_session = key_session
-                    .try_fork()
-                    .ok_or("the focused TUI session cannot fork for field activation")?;
-                let mut candidate_state = key_state.clone();
-                let mut activation_failed = false;
-                for key in activation {
-                    let handling = candidate_session.handle_event(
-                        Event::Key(*key),
-                        &candidate_state,
-                        geometry,
-                    );
-                    if let Err(error) = apply_probe_handling(
-                        &mut candidate_state,
-                        handling,
-                        &format!("activation target={target:?} key={key:?}"),
-                    ) {
-                        failures.push(error);
-                        activation_failed = true;
-                        break;
-                    }
-                }
-                if activation_failed {
-                    continue;
-                }
-                let candidate =
-                    render_probe_endpoint(&mut candidate_session, &candidate_state, locale, size)?;
-                if candidate == mouse_endpoint {
-                    return Ok(());
-                }
-                failures.push(format!(
-                    "endpoint target={target:?} navigation={navigation:?} steps={steps} activation={activation:?} state_equal={} geometry_equal={} buffer_equal={} cursor_equal={}",
-                    candidate.state == mouse_endpoint.state,
-                    candidate.geometry == mouse_endpoint.geometry,
-                    candidate.backend.buffer() == mouse_endpoint.backend.buffer(),
-                    candidate.backend.cursor_position() == mouse_endpoint.backend.cursor_position(),
-                ));
-            }
+            failures.push(format!(
+                "navigation={navigation:?} step={step} focus={:?} state_equal={} visible={visible}",
+                key_state.focused_form_field(),
+                key_state == *mouse_state,
+            ));
         }
     }
     Err(format!(
-        "FIELD_SESSION_PARITY target={target:?} mouse_focus={:?} failures={failures:?}",
-        mouse_endpoint.state.focused_form_field(),
+        "FIELD_FOCUS_KEY_PATH field={field} fields={field_count} mouse_focus={:?} failures={failures:?}",
+        mouse_state.focused_form_field(),
     ))
 }
 
@@ -779,7 +862,7 @@ fn field_activation_sequences(state: &LibraryState, target: HitTarget) -> Vec<Ve
                 .collect()
         }
         HitTarget::FocusField(_) => vec![
-            Vec::new(),
+            vec![key(KeyCode::Esc)],
             vec![key(KeyCode::Enter)],
             vec![key(KeyCode::Char(' '))],
             vec![key(KeyCode::Down)],
@@ -1676,6 +1759,51 @@ fn typed_run_controls_compare_complete_mouse_and_keyboard_endpoints() {
         .iter()
         .position(|field| matches!(field.role, skit_ui::RunFieldRole::Runner))
         .unwrap();
+    let runner_hit = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(runner))
+        .expect("the non-current runner picker must be clickable");
+    let mut noncurrent_mouse_session = session.try_fork().unwrap();
+    let mut noncurrent_mouse_state = state.clone();
+    let handling = noncurrent_mouse_session.handle_event(
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: runner_hit.rect.x.saturating_add(runner_hit.rect.width / 2),
+            row: runner_hit.rect.y.saturating_add(runner_hit.rect.height / 2),
+            modifiers: KeyModifiers::NONE,
+        }),
+        &noncurrent_mouse_state,
+        &geometry,
+    );
+    assert_eq!(handling, EventHandling::Action(Action::FocusField(runner)));
+    apply_probe_handling(
+        &mut noncurrent_mouse_state,
+        handling,
+        "non-current picker click",
+    )
+    .unwrap();
+    let noncurrent_mouse = render_probe_endpoint(
+        &mut noncurrent_mouse_session,
+        &noncurrent_mouse_state,
+        Locale::En,
+        size,
+    )
+    .unwrap();
+    let mut focus_only_session = session.try_fork().unwrap();
+    let mut focus_only_state = state.clone();
+    assert_eq!(
+        focus_only_state.update(Action::FocusField(runner)),
+        Effect::None
+    );
+    let focus_only =
+        render_probe_endpoint(&mut focus_only_session, &focus_only_state, Locale::En, size)
+            .unwrap();
+    assert_ne!(
+        noncurrent_mouse, focus_only,
+        "the first picker click must focus and open the dropdown"
+    );
+
     state.update(Action::FocusField(runner));
     let (session, geometry) = render_probe_session(&state, Locale::En, size).unwrap();
     let picker = geometry
@@ -1715,7 +1843,168 @@ fn typed_run_controls_compare_complete_mouse_and_keyboard_endpoints() {
         mouse, key,
         "the advertised Enter key must open the same dropdown"
     );
+    let open_hit = mouse
+        .geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(runner))
+        .expect("the open runner picker must keep its control hit");
+    let mut close_mouse_session = mouse_session.try_fork().unwrap();
+    let mut close_key_session = mouse_session.try_fork().unwrap();
+    assert_eq!(
+        close_mouse_session.handle_event(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: open_hit.rect.x.saturating_add(open_hit.rect.width / 2),
+                row: open_hit.rect.y.saturating_add(open_hit.rect.height / 2),
+                modifiers: KeyModifiers::NONE,
+            }),
+            &state,
+            &mouse.geometry,
+        ),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        close_key_session.handle_event(
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            &state,
+            &mouse.geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let close_mouse =
+        render_probe_endpoint(&mut close_mouse_session, &state, Locale::En, size).unwrap();
+    let close_key =
+        render_probe_endpoint(&mut close_key_session, &state, Locale::En, size).unwrap();
+    assert_ne!(close_mouse, mouse, "the second picker click must close");
+    assert_eq!(
+        close_mouse, close_key,
+        "Escape must close the same dropdown as the picker click"
+    );
     check_public_hit_parity(&state, &geometry, size, &session, Locale::En).unwrap();
+}
+
+#[test]
+fn direct_text_focus_accepts_a_keyboard_path_with_different_scroll_history() {
+    let mut walker = Walker::new(FakeHost::new(), Locale::En, Size::new(24, 6)).unwrap();
+    assert_eq!(
+        resolve_advertised_command(walker.state(), 126, 0).map(|(command, _)| command),
+        Some(UiCommand::Run)
+    );
+    walker
+        .step(&WalkerOperation::AdvertisedKey {
+            command: 126,
+            binding: 0,
+        })
+        .unwrap();
+    assert!(matches!(walker.state().screen(), Screen::Run(_)));
+    assert_eq!(walker.state().focused_form_field(), Some(1));
+
+    assert_eq!(
+        resolve_advertised_command(walker.state(), 63, 0).map(|(command, _)| command),
+        Some(UiCommand::Submit)
+    );
+    walker
+        .step(&WalkerOperation::AdvertisedKey {
+            command: 63,
+            binding: 0,
+        })
+        .unwrap();
+    assert!(matches!(walker.state().screen(), Screen::Library));
+
+    assert_eq!(
+        resolve_public_hit(&walker.geometry, 0).map(|hit| hit.action),
+        Some(HitTarget::Command(UiCommand::Run))
+    );
+    walker
+        .step(&WalkerOperation::PublicHit { ordinal: 0 })
+        .unwrap();
+    assert!(matches!(walker.state().screen(), Screen::Run(_)));
+    assert_eq!(walker.state().focused_form_field(), Some(1));
+
+    walker
+        .step(&WalkerOperation::Resize {
+            width: 46,
+            height: 12,
+        })
+        .unwrap();
+    assert_eq!(walker.terminal_size(), Size::new(46, 12));
+    assert!(walker.geometry.hits.iter().any(|hit| {
+        hit.rect.width > 0 && hit.rect.height > 0 && hit.action == HitTarget::FocusField(2)
+    }));
+
+    assert_eq!(
+        resolve_advertised_command(walker.state(), 215, 0).map(|(command, _)| command),
+        Some(UiCommand::FocusNext)
+    );
+    walker
+        .step(&WalkerOperation::AdvertisedKey {
+            command: 215,
+            binding: 0,
+        })
+        .unwrap();
+
+    assert_eq!(walker.state().focused_form_field(), Some(2));
+    assert_eq!(walker.geometry.first_visible, 11);
+    assert!(walker.geometry.hits.iter().any(|hit| {
+        hit.rect.width > 0 && hit.rect.height > 0 && hit.action == HitTarget::FocusField(2)
+    }));
+}
+
+#[test]
+fn picker_focus_parity_uses_one_post_navigation_session() {
+    let mut walker = Walker::new(FakeHost::new(), Locale::Pseudo, Size::new(120, 30)).unwrap();
+    assert_eq!(
+        resolve_advertised_command(walker.state(), 238, 0).map(|(command, _)| command),
+        Some(UiCommand::Search)
+    );
+    walker
+        .step(&WalkerOperation::AdvertisedKey {
+            command: 238,
+            binding: 0,
+        })
+        .unwrap();
+    assert!(matches!(walker.state().screen(), Screen::Library));
+    assert!(
+        walker
+            .geometry
+            .hits
+            .iter()
+            .any(|hit| hit.action == HitTarget::Command(UiCommand::Run))
+    );
+
+    assert_eq!(
+        resolve_public_hit(&walker.geometry, 2).map(|hit| hit.action),
+        Some(HitTarget::Command(UiCommand::Run))
+    );
+    walker
+        .step(&WalkerOperation::PublicHit { ordinal: 2 })
+        .unwrap();
+    assert!(matches!(walker.state().screen(), Screen::Run(_)));
+    assert_eq!(walker.state().focused_form_field(), Some(1));
+
+    assert_eq!(
+        resolve_public_hit(&walker.geometry, 125).map(|hit| hit.action),
+        Some(HitTarget::Command(UiCommand::FocusPrevious))
+    );
+    walker
+        .step(&WalkerOperation::PublicHit { ordinal: 125 })
+        .unwrap();
+    assert_eq!(walker.state().focused_form_field(), Some(0));
+
+    walker
+        .step(&WalkerOperation::MouseCell {
+            x_fraction: 3,
+            y_fraction: 9,
+            kind: MouseKind::ScrollDown,
+        })
+        .unwrap();
+
+    assert_eq!(walker.state().focused_form_field(), Some(0));
+    assert_eq!(walker.geometry.first_visible, 1);
+    assert!(walker.geometry.hits.iter().any(|hit| {
+        hit.rect.width > 0 && hit.rect.height > 0 && hit.action == HitTarget::FocusField(0)
+    }));
 }
 
 #[test]

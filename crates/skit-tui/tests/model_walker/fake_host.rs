@@ -2418,6 +2418,22 @@ mod tests {
 
     use super::*;
 
+    fn virtual_workdir(tail: &str) -> String {
+        if cfg!(windows) {
+            format!("C:\\{}", tail.replace('/', "\\"))
+        } else {
+            format!("/{tail}")
+        }
+    }
+
+    #[test]
+    fn portable_fake_inputs_follow_both_host_contracts() {
+        assert!(Path::new(&virtual_workdir("fixtures/work")).is_absolute());
+        for dialect in [EditableArgvDialect::Posix, EditableArgvDialect::Windows] {
+            assert!(split_editable_argv("\"unfinished", dialect).is_err());
+        }
+    }
+
     #[test]
     fn fixtures_cover_each_required_host_surface() {
         let host = FakeHost::new();
@@ -2905,6 +2921,7 @@ mod tests {
     #[test]
     fn settings_validate_the_complete_transaction_before_commit() {
         let mut host = FakeHost::new();
+        let workdir = virtual_workdir("fixtures/work");
         let values = BTreeMap::from([
             (
                 skit_ui::NAME_KEY.to_owned(),
@@ -2916,7 +2933,7 @@ mod tests {
             ),
             (
                 skit_ui::WORKDIR_KEY.to_owned(),
-                FieldValue::text("/fixtures/work"),
+                FieldValue::text(workdir.clone()),
             ),
             (
                 skit_ui::DEPENDENCIES_KEY.to_owned(),
@@ -2982,7 +2999,7 @@ mod tests {
 
         let saved = host.model.entries.get("python-tool").unwrap();
         assert_eq!(saved.summary.name, "Python saved");
-        assert_eq!(saved.settings.workdir, "/fixtures/work");
+        assert_eq!(saved.settings.workdir, workdir);
         assert_eq!(saved.settings.interpreter, "");
         assert_eq!(
             saved.settings.effective_dependencies,
@@ -3025,7 +3042,7 @@ mod tests {
                 .unwrap()
                 .value()
                 .as_text(),
-            "/fixtures/work"
+            workdir
         );
 
         let before = host.snapshot();
@@ -4292,7 +4309,7 @@ mod tests {
                 selector: Some("prompt-tool".to_owned()),
                 values: BTreeMap::from([
                     ("_skit_runner".to_owned(), FieldValue::text("missing")),
-                    ("_skit_args".to_owned(), FieldValue::text("'unfinished")),
+                    ("_skit_args".to_owned(), FieldValue::text("\"unfinished")),
                 ]),
             })
             .unwrap();
@@ -4305,7 +4322,7 @@ mod tests {
                 selector: Some("prompt-tool".to_owned()),
                 values: BTreeMap::from([
                     ("_skit_runner".to_owned(), FieldValue::text("codex")),
-                    ("_skit_args".to_owned(), FieldValue::text("'unfinished")),
+                    ("_skit_args".to_owned(), FieldValue::text("\"unfinished")),
                 ]),
             })
             .unwrap();
@@ -4989,9 +5006,10 @@ mod tests {
     fn settings_workdir_projects_into_run_context_and_glob_requests() {
         let mut host = FakeHost::new();
         let mut state = host.initial_state();
+        let custom = virtual_workdir("fixtures/invoke/nested");
         for (saved, expected) in [
-            ("invoke", "/fixtures/invoke"),
-            ("/fixtures/invoke/nested", "/fixtures/invoke/nested"),
+            ("invoke".to_owned(), "/fixtures/invoke".to_owned()),
+            (custom.clone(), custom),
         ] {
             select_entry(&mut state, "python-tool");
             let open = state.update(Action::OpenSettings);
