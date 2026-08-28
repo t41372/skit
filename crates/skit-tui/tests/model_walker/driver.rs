@@ -54,6 +54,23 @@ const REGRESSION_FILE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../target/ui-walker-artifacts/regressions.txt"
 );
+const COMPLETE_PROFILES: &[(Locale, Size)] = &[
+    (Locale::En, Size::new(1, 1)),
+    (Locale::En, Size::new(24, 6)),
+    (Locale::En, Size::new(80, 24)),
+    (Locale::En, Size::new(120, 30)),
+    (Locale::ZhCn, Size::new(1, 1)),
+    (Locale::ZhCn, Size::new(24, 6)),
+    (Locale::ZhCn, Size::new(120, 30)),
+    (Locale::ZhTw, Size::new(1, 1)),
+    (Locale::ZhTw, Size::new(24, 6)),
+    (Locale::ZhTw, Size::new(40, 40)),
+    (Locale::ZhTw, Size::new(120, 30)),
+    (Locale::Pseudo, Size::new(1, 1)),
+    (Locale::Pseudo, Size::new(24, 6)),
+    (Locale::Pseudo, Size::new(120, 12)),
+    (Locale::Pseudo, Size::new(120, 30)),
+];
 trait WalkerHost {
     fn initial_state(&self) -> LibraryState;
     fn serve(&mut self, effect: Effect) -> Result<Action, String>;
@@ -1349,8 +1366,7 @@ fn run_property_profile(
     test_name: &'static str,
     cases: u32,
     steps: usize,
-    locales: &[Locale],
-    initial_sizes: &[Size],
+    profiles: &[(Locale, Size)],
     record_success: bool,
 ) {
     fs::create_dir_all(ARTIFACT_DIR).expect("the walker artifact directory must be writable");
@@ -1366,23 +1382,21 @@ fn run_property_profile(
     let strategy = collection::vec(operation_strategy(), 0..=steps);
     let requested_success = RefCell::new(None);
     let result = TestRunner::new(config).run(&strategy, |operations| {
-        for locale in locales {
-            for initial in initial_sizes {
-                match evaluate_case(&operations, *locale, *initial) {
-                    Ok(success) if record_success => {
-                        *requested_success.borrow_mut() =
-                            Some((operations.clone(), *locale, *initial, success.cast));
-                    }
-                    Ok(_) => {}
-                    Err(failure) => {
-                        return Err(TestCaseError::fail(format!(
-                            "locale={} initial={}x{}: {}",
-                            locale.tag(),
-                            initial.width,
-                            initial.height,
-                            failure.error,
-                        )));
-                    }
+        for &(locale, initial) in profiles {
+            match evaluate_case(&operations, locale, initial) {
+                Ok(success) if record_success => {
+                    *requested_success.borrow_mut() =
+                        Some((operations.clone(), locale, initial, success.cast));
+                }
+                Ok(_) => {}
+                Err(failure) => {
+                    return Err(TestCaseError::fail(format!(
+                        "locale={} initial={}x{}: {}",
+                        locale.tag(),
+                        initial.width,
+                        initial.height,
+                        failure.error,
+                    )));
                 }
             }
         }
@@ -1409,12 +1423,10 @@ fn run_property_profile(
             }
         }
         Err(TestError::Fail(reason, minimal)) => {
-            let replay = locales.iter().find_map(|locale| {
-                initial_sizes.iter().find_map(|initial| {
-                    evaluate_case(&minimal, *locale, *initial)
-                        .err()
-                        .map(|failure| (*locale, *initial, failure))
-                })
+            let replay = profiles.iter().find_map(|&(locale, initial)| {
+                evaluate_case(&minimal, locale, initial)
+                    .err()
+                    .map(|failure| (locale, initial, failure))
             });
             let (locale, initial, failure) = replay.unwrap_or_else(|| {
                 panic!(
@@ -1451,9 +1463,36 @@ fn bounded_smoke_walk_checks_every_transition_boundary() {
         "bounded_smoke_walk_checks_every_transition_boundary",
         8,
         40,
-        &[Locale::En],
-        &[Size::new(80, 24)],
+        &[(Locale::En, Size::new(80, 24))],
         false,
+    );
+}
+
+#[test]
+fn complete_profile_guarantees_common_shapes_without_a_full_cartesian_product() {
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo] {
+        for size in [Size::new(1, 1), Size::new(24, 6), Size::new(120, 30)] {
+            assert!(
+                COMPLETE_PROFILES.contains(&(locale, size)),
+                "the complete profile must retain locale={} size={size:?}",
+                locale.tag()
+            );
+        }
+    }
+    for required in [
+        (Locale::En, Size::new(80, 24)),
+        (Locale::Pseudo, Size::new(120, 12)),
+        (Locale::ZhTw, Size::new(40, 40)),
+    ] {
+        assert!(
+            COMPLETE_PROFILES.contains(&required),
+            "the complete profile must start from {required:?}"
+        );
+    }
+    assert_eq!(
+        COMPLETE_PROFILES.len(),
+        15,
+        "new shapes must not expand into every locale and size pair"
     );
 }
 
@@ -1480,8 +1519,7 @@ fn nightly_model_walk() {
         "nightly_model_walk",
         cases,
         steps,
-        &[Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo],
-        &[Size::new(1, 1), Size::new(24, 6), Size::new(120, 30)],
+        COMPLETE_PROFILES,
         record_success,
     );
 }
