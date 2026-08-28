@@ -30,7 +30,10 @@ use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandl
 
 use crate::{
     EventHandling, ViewGeometry,
-    screens::picker::{FilePickerEvent, FilePickerGeometry, FilePickerSession, render_file_picker},
+    screens::picker::{
+        FilePickerEvent, FilePickerGeometry, FilePickerSession, MemoryFilePickerSource,
+        render_file_picker,
+    },
     session::render_line_input,
 };
 
@@ -75,7 +78,7 @@ enum ModalHit {
 }
 
 /// Ephemeral cursor and selection state for typed launch modals.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RunModalSession {
     signature: Option<ModalSignature>,
     preset: LineInput,
@@ -88,9 +91,15 @@ pub(crate) struct RunModalSession {
     file_geometry: FilePickerGeometry,
     file_missing_root: bool,
     clicks: ClickRegionRegistry<ModalHit>,
+    file_picker_source: Option<MemoryFilePickerSource>,
 }
 
 impl RunModalSession {
+    pub(crate) fn set_file_picker_source(&mut self, source: MemoryFilePickerSource) {
+        self.file_picker_source = Some(source);
+        self.signature = None;
+    }
+
     /// Keep widget state aligned with the serializable modal contract.
     pub(crate) fn sync(&mut self, modal: &ModalState) {
         let signature = match modal {
@@ -128,8 +137,12 @@ impl RunModalSession {
                     self.environment_list = ListPickerState::default();
                 }
                 ModalSignature::File { context, .. } => {
-                    let (contract, missing_root) = file_picker_contract(context);
-                    self.file = Some(FilePickerSession::new(contract));
+                    let (contract, missing_root) =
+                        file_picker_contract(context, self.file_picker_source.as_ref());
+                    self.file = Some(match self.file_picker_source.clone() {
+                        Some(source) => FilePickerSession::with_memory_source(contract, source),
+                        None => FilePickerSession::new(contract),
+                    });
                     self.file_geometry = FilePickerGeometry::default();
                     self.file_missing_root = missing_root;
                 }
@@ -649,10 +662,18 @@ fn list_style() -> ListPickerStyle {
     }
 }
 
-fn file_picker_contract(context: &RunPathContext) -> (PathPickerState, bool) {
+fn file_picker_contract(
+    context: &RunPathContext,
+    memory_source: Option<&MemoryFilePickerSource>,
+) -> (PathPickerState, bool) {
     let workdir = PathBuf::from(&context.workdir);
-    let missing_root = !workdir.is_dir();
-    let start = if missing_root {
+    let missing_root = memory_source.map_or_else(
+        || !workdir.is_dir(),
+        |source| !source.contains_directory(&workdir),
+    );
+    let start = if let Some(source) = memory_source {
+        source.nearest_directory(&workdir)
+    } else if missing_root {
         workdir
             .ancestors()
             .skip(1)
@@ -1101,5 +1122,30 @@ mod tests {
             })
             .unwrap();
         assert!(!buffer_text(&terminal).trim().is_empty());
+    }
+
+    #[test]
+    fn file_modal_uses_the_in_memory_source_for_a_synthetic_workdir() {
+        let modal = ModalState::RunFilePicker {
+            field: 3,
+            context: RunPathContext {
+                workdir: "/fixtures/work".to_owned(),
+                invoke_cwd: "/fixtures/invoke".to_owned(),
+            },
+            mode: RunPathInsertMode::Replace,
+        };
+        let source = MemoryFilePickerSource::new(
+            PathBuf::from("/fixtures"),
+            BTreeSet::from([PathBuf::from("/fixtures"), PathBuf::from("/fixtures/work")]),
+            BTreeSet::from([PathBuf::from("/fixtures/work/input.txt")]),
+        );
+        let mut session = RunModalSession::default();
+        session.set_file_picker_source(source);
+        session.sync(&modal);
+        assert_eq!(
+            session.file.as_ref().unwrap().current_dir(),
+            &PathBuf::from("/fixtures/work")
+        );
+        assert!(!session.file_missing_root);
     }
 }

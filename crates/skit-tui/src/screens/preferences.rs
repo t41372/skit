@@ -64,7 +64,7 @@ enum PreferencesControlShape {
     Button,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum PreferencesWidget {
     Input(LineInput),
     Choice {
@@ -110,7 +110,7 @@ struct PositionedItem {
 }
 
 /// Ephemeral state for mature Preferences widgets.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct PreferencesWidgetSession {
     signature: Option<PreferencesSignature>,
     widgets: HashMap<PreferencesControlId, PreferencesWidget>,
@@ -131,6 +131,31 @@ pub(crate) struct PreferencesWidgetSession {
 }
 
 impl PreferencesWidgetSession {
+    pub(crate) fn focused_owns_vertical_navigation(&self, view: &PreferencesView) -> bool {
+        matches!(
+            self.widgets.get(&view.focused()),
+            Some(PreferencesWidget::Choice { .. })
+        )
+    }
+
+    pub(crate) fn focused_is_input(&self, view: &PreferencesView) -> bool {
+        matches!(
+            self.widgets.get(&view.focused()),
+            Some(PreferencesWidget::Input(_))
+        )
+    }
+
+    pub(crate) fn focused_dropdown_is_open(&self, view: &PreferencesView) -> bool {
+        matches!(
+            self.widgets.get(&view.focused()),
+            Some(PreferencesWidget::Choice {
+                state,
+                presentation: ChoicePresentation::Picker,
+                ..
+            }) if state.is_open
+        )
+    }
+
     /// Render the complete Preferences workflow.
     pub(crate) fn render(
         &mut self,
@@ -570,7 +595,7 @@ impl PreferencesWidgetSession {
         )
     }
 
-    fn sync(&mut self, view: &PreferencesView, locale: Locale) {
+    pub(crate) fn sync(&mut self, view: &PreferencesView, locale: Locale) {
         let controls = view.controls();
         let signature = PreferencesSignature(
             controls
@@ -874,6 +899,10 @@ impl PreferencesWidgetSession {
     }
 
     fn move_focus(&mut self, forward: bool) -> PreferencesEventHandling {
+        PreferencesEventHandling::Action(self.move_focus_action(forward))
+    }
+
+    pub(crate) fn move_focus_action(&mut self, forward: bool) -> PreferencesAction {
         if forward {
             self.focus.next();
         } else {
@@ -882,12 +911,12 @@ impl PreferencesWidgetSession {
         // The session moves its own cursor here, so the next sync sees no change and would never
         // scroll. Without this the keyboard can focus a control that is never drawn at all.
         self.pending_ensure_focus = true;
-        self.focus
-            .current()
-            .copied()
-            .map_or(PreferencesEventHandling::Consumed, |id| {
-                PreferencesEventHandling::Action(PreferencesAction::Focus(id))
-            })
+        PreferencesAction::Focus(
+            self.focus
+                .current()
+                .copied()
+                .expect("the Preferences focus ring is empty"),
+        )
     }
 
     fn ensure_visible(&mut self, start: usize, height: usize) {
@@ -1667,6 +1696,26 @@ mod tests {
                 &view,
             ),
             PreferencesEventHandling::Action(PreferencesAction::ManageAgents)
+        );
+    }
+
+    #[test]
+    fn a_press_outside_preferences_controls_is_ignored() {
+        let mut session = PreferencesWidgetSession::default();
+        let view = view();
+        let _ = draw(&mut session, &view, 80, 24, Locale::En);
+
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: u16::MAX,
+                    row: u16::MAX,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &view,
+            ),
+            PreferencesEventHandling::Ignored
         );
     }
 

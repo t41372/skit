@@ -17,7 +17,7 @@ use skit_tui::{
 use skit_ui::{
     Action, Effect, FormControl, FormField, FormPurpose, FormView, LibraryState, ModalState,
     PathOutputPolicy, PathPickerState, PathSelectionMode, PickerPurpose, RunFormContext,
-    RunFormView, RunPathContext, Screen, UiCommand,
+    RunFormView, RunPathContext, Screen, UiCommand, UiKey,
 };
 
 const ACCENT: Color = Color::Rgb(0xD9, 0x77, 0x57);
@@ -70,6 +70,19 @@ fn draw_in_locale(
         })
         .unwrap();
     (terminal, geometry)
+}
+
+fn assert_run_widget_owned_footer(session: &TuiSession, state: &LibraryState) {
+    let keys = |command| {
+        session
+            .advertised_command_bindings(state, command)
+            .into_iter()
+            .map(|binding| binding.key)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(keys(UiCommand::Submit), [UiKey::Character('r')]);
+    assert_eq!(keys(UiCommand::FocusNext), [UiKey::Tab]);
+    assert_eq!(keys(UiCommand::FocusPrevious), [UiKey::BackTab]);
 }
 
 fn drive(
@@ -395,7 +408,7 @@ fn checkbox_radio_and_picker_have_keyboard_and_mouse_paths() {
     let checkbox = geometry
         .hits
         .iter()
-        .find(|hit| hit.action == HitTarget::FocusField(2))
+        .find(|hit| hit.action == HitTarget::ToggleField(2))
         .unwrap();
     drive(
         &mut session,
@@ -411,15 +424,36 @@ fn checkbox_radio_and_picker_have_keyboard_and_mouse_paths() {
 
     state.update(Action::FocusField(3));
     let (_, geometry) = draw(&mut session, &state, 100, 28);
+    let yaml = geometry
+        .hits
+        .iter()
+        .find(|hit| {
+            hit.action
+                == HitTarget::SelectFieldOption {
+                    field: 3,
+                    option: 1,
+                }
+        })
+        .expect("the radio option must expose its exact typed mouse endpoint");
     drive(
         &mut session,
         &mut state,
         &geometry,
-        key(KeyCode::Right, KeyModifiers::NONE),
+        mouse(yaml.rect.x, yaml.rect.y),
     );
     assert_eq!(
         state.run_form().unwrap().fields()[3].control.value(),
         "yaml"
+    );
+    drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        key(KeyCode::Left, KeyModifiers::NONE),
+    );
+    assert_eq!(
+        state.run_form().unwrap().fields()[3].control.value(),
+        "json"
     );
 
     state.update(Action::FocusField(0));
@@ -461,7 +495,7 @@ fn run_and_generic_form_hits_require_a_mouse_button_press() {
     let run_hit = geometry
         .hits
         .iter()
-        .find(|hit| hit.action == HitTarget::FocusField(2))
+        .find(|hit| hit.action == HitTarget::ToggleField(2))
         .expect("the checkbox must expose its mouse hit area");
 
     for kind in [
@@ -705,6 +739,73 @@ fn ctrl_t_token_menu_localizes_every_row_in_simplified_chinese() {
             "untranslated {source}: {rendered}"
         );
     }
+}
+
+#[test]
+fn an_active_modal_owns_its_footer_after_an_underlying_picker_was_open() {
+    let mut state = state_with_form(complete_surface_form());
+    let runner = state
+        .run_form()
+        .unwrap()
+        .fields()
+        .iter()
+        .position(|field| matches!(field.role, skit_ui::RunFieldRole::Runner))
+        .unwrap();
+    let path = state
+        .run_form()
+        .unwrap()
+        .fields()
+        .iter()
+        .position(|field| {
+            matches!(
+                &field.role,
+                skit_ui::RunFieldRole::Parameter { name } if name == "path"
+            )
+        })
+        .unwrap();
+    state.update(Action::FocusField(runner));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 100, 28);
+    assert_eq!(
+        session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &state, &geometry,),
+        EventHandling::Consumed
+    );
+    assert!(
+        session
+            .advertised_command_bindings(&state, UiCommand::Back)
+            .is_empty(),
+        "the open picker owns Escape before a modal opens"
+    );
+
+    state.update(Action::OpenRunTokenMenuFor(path));
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunTokenMenu { .. })
+    ));
+    let (_, geometry) = draw(&mut session, &state, 100, 28);
+    assert_eq!(
+        session
+            .advertised_command_bindings(&state, UiCommand::CloseModal)
+            .iter()
+            .map(|binding| binding.key)
+            .collect::<Vec<_>>(),
+        [UiKey::Escape]
+    );
+    let close = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::CloseModal))
+        .expect("the active modal Close chip must stay clickable")
+        .rect;
+    let mut mouse_session = session.try_fork().unwrap();
+    assert_eq!(
+        mouse_session.handle_event(mouse(close.x, close.y), &state, &geometry),
+        EventHandling::Action(Action::Back)
+    );
+    assert_eq!(
+        session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &state, &geometry,),
+        EventHandling::Action(Action::Back)
+    );
 }
 
 #[test]
@@ -1664,6 +1765,7 @@ fn central_session_picker_textarea_and_generic_form_matrix_uses_public_screens()
     }
     state.update(Action::FocusField(0));
     let (_, picker_geometry) = draw(&mut session, &state, 54, 16);
+    assert_run_widget_owned_footer(&session, &state);
     let _ = session.handle_event(
         key(KeyCode::Enter, KeyModifiers::NONE),
         &state,
@@ -1694,6 +1796,7 @@ fn central_session_picker_textarea_and_generic_form_matrix_uses_public_screens()
     assert!(buffer_text(terminal.backend().buffer()).contains('a'));
     state.update(Action::FocusField(1));
     let (_, textarea_geometry) = draw(&mut session, &state, 54, 16);
+    assert_run_widget_owned_footer(&session, &state);
     for code in [
         KeyCode::Char('x'),
         KeyCode::Enter,

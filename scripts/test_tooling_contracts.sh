@@ -256,6 +256,139 @@ expect_text .github/workflows/mutation.yml '    needs: mutation'
 expect_text .github/workflows/mutation.yml 'if-no-files-found: error'
 expect_text .github/workflows/mutation.yml 'reported no outcomes'
 
+# The complete UI walk is expensive, so pull requests opt in with one label. Scheduled and manual
+# runs always execute. A failed walk must keep its replay data even when GIF rendering also fails.
+ui_walker_workflow=.github/workflows/ui-walker.yml
+test -f "$ui_walker_workflow" || {
+  echo 'the UI walker workflow is missing' >&2
+  exit 1
+}
+expect_text "$ui_walker_workflow" 'types: [opened, synchronize, reopened, labeled]'
+expect_text "$ui_walker_workflow" 'schedule:'
+expect_text "$ui_walker_workflow" 'workflow_dispatch:'
+expect_text "$ui_walker_workflow" '      record_success:'
+expect_text "$ui_walker_workflow" "SKIT_WALKER_RECORD_SUCCESS: \${{ ((github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ui-walker-requested')) || (github.event_name == 'workflow_dispatch' && inputs.record_success)) && '1' || '0' }}"
+record_success_input="$(awk '
+  $0 == "      record_success:" { capture = 1; print; next }
+  capture && $0 !~ /^        / { exit }
+  capture { print }
+' "$ui_walker_workflow")"
+for contract in '        required: false' '        type: boolean' '        default: false'; do
+  if ! printf '%s\n' "$record_success_input" | grep -Fqx "$contract"; then
+    echo "the record_success input must contain: $contract" >&2
+    exit 1
+  fi
+done
+if grep -Eq '^  push:' "$ui_walker_workflow"; then
+  echo 'the UI walker must not run for an ordinary branch push' >&2
+  exit 1
+fi
+ui_walker_gate="github.event_name != 'pull_request' || (github.event.action == 'labeled' && github.event.label.name == 'ui-walker-requested') || (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'ui-walker-requested'))"
+test "$(grep -cF "$ui_walker_gate" "$ui_walker_workflow")" -eq 1 || {
+  echo 'the UI walker job must reject unrelated label events but honor an existing opt-in label' >&2
+  exit 1
+}
+expect_text "$ui_walker_workflow" 'runs-on: ubuntu-24.04'
+expect_text "$ui_walker_workflow" 'permissions: {}'
+expect_text "$ui_walker_workflow" '      contents: read'
+if grep -Eq '^[[:space:]]+[A-Za-z-]+:[[:space:]]+write([[:space:]]|$)' "$ui_walker_workflow"; then
+  echo 'the UI walker does not need a write permission' >&2
+  exit 1
+fi
+expect_text "$ui_walker_workflow" 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1'
+expect_text "$ui_walker_workflow" 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
+expect_text "$ui_walker_workflow" 'SKIT_WALKER_CASES: "16"'
+expect_text "$ui_walker_workflow" 'SKIT_WALKER_STEPS: "100"'
+expect_text "$ui_walker_workflow" 'timeout-minutes: 90'
+expect_text "$ui_walker_workflow" 'https://github.com/asciinema/agg/releases/download/v1.9.0/agg-x86_64-unknown-linux-gnu'
+expect_text "$ui_walker_workflow" 'f111e315cd71056b116302342553dd765b7297579ed511f111d0cedb442aeda6'
+expect_text "$ui_walker_workflow" '"$RUNNER_TEMP/agg"'
+if grep -Eq 'cargo install([[:space:]]|.*)agg|sudo .*agg|/usr/(local/)?bin/agg' \
+  "$ui_walker_workflow"; then
+  echo 'the UI walker must not install agg globally or through Cargo' >&2
+  exit 1
+fi
+expect_text "$ui_walker_workflow" 'agg-smoke.cast'
+expect_text "$ui_walker_workflow" 'agg-smoke.gif'
+expect_text "$ui_walker_workflow" 'test -s "$RUNNER_TEMP/agg-smoke.gif"'
+expect_text "$ui_walker_workflow" 'agg 1.9.0 ignores resize events'
+
+ui_walker_step() {
+  local name=$1
+  awk -v marker="      - name: $name" '
+    $0 == marker { capture = 1 }
+    capture && $0 ~ /^      - name:/ && $0 != marker { exit }
+    capture { print }
+  ' "$ui_walker_workflow"
+}
+
+expect_ui_step_text() {
+  local name=$1
+  local text=$2
+  local block
+  block="$(ui_walker_step "$name")"
+  if ! printf '%s\n' "$block" | grep -Fq -- "$text"; then
+    echo "the '$name' step does not contain: $text" >&2
+    return 1
+  fi
+}
+
+walker_step='Run the complete UI model walk'
+expect_ui_step_text "$walker_step" 'id: walker'
+expect_ui_step_text "$walker_step" 'continue-on-error: true'
+expect_ui_step_text "$walker_step" 'test "$SKIT_WALKER_CASES" -gt 0'
+expect_ui_step_text "$walker_step" 'test "$SKIT_WALKER_STEPS" -gt 0'
+expect_ui_step_text "$walker_step" 'test "$SKIT_WALKER_RECORD_SUCCESS" = 0'
+expect_ui_step_text "$walker_step" 'test "$SKIT_WALKER_RECORD_SUCCESS" = 1'
+expect_ui_step_text "$walker_step" 'cargo test --locked -p skit-tui --test model_walker driver::nightly_model_walk -- --exact --ignored --list'
+expect_ui_step_text "$walker_step" "grep -cFx 'driver::nightly_model_walk: test'"
+expect_ui_step_text "$walker_step" 'cargo test --locked -p skit-tui --test model_walker driver::nightly_model_walk -- --exact --ignored --nocapture'
+expect_ui_step_text "$walker_step" "-path 'target/ui-walker-artifacts/success-*/success.cast'"
+expect_ui_step_text "$walker_step" 'test "$success_count" -eq 1'
+expect_ui_step_text "$walker_step" 'tee target/ui-walker-artifacts/walker.log'
+expect_ui_step_text "$walker_step" 'timeout --signal=TERM --kill-after=5m 65m'
+
+render_step='Render captured casts'
+expect_ui_step_text "$render_step" 'id: render'
+expect_ui_step_text "$render_step" "hashFiles('target/ui-walker-artifacts/failure-*/failure.cast') != ''"
+expect_ui_step_text "$render_step" "hashFiles('target/ui-walker-artifacts/success-*/success.cast') != ''"
+expect_ui_step_text "$render_step" 'continue-on-error: true'
+expect_ui_step_text "$render_step" "-path 'target/ui-walker-artifacts/failure-*/failure.cast'"
+expect_ui_step_text "$render_step" "-o -path 'target/ui-walker-artifacts/success-*/success.cast'"
+expect_ui_step_text "$render_step" 'bundle="${cast%/*}"'
+expect_ui_step_text "$render_step" 'stem="${stem%.cast}"'
+expect_ui_step_text "$render_step" '"$bundle/$stem.gif"'
+expect_ui_step_text "$render_step" '"$bundle/agg.log"'
+expect_ui_step_text "$render_step" '-print0 > "$RUNNER_TEMP/ui-walker-casts"'
+expect_ui_step_text "$render_step" 'done < "$RUNNER_TEMP/ui-walker-casts"'
+render_block="$(ui_walker_step "$render_step")"
+if printf '%s\n' "$render_block" | grep -Fq 'done < <('; then
+  echo 'the renderer must not discard the find command exit status' >&2
+  exit 1
+fi
+if printf '%s\n' "$render_block" | grep -Eq 'ui-walker-artifacts/(failure\.(cast|gif)|agg\.log)'; then
+  echo 'the renderer must keep each output in its atomic failure bundle' >&2
+  exit 1
+fi
+
+upload_step='Upload UI walker artifacts'
+expect_ui_step_text "$upload_step" 'if: ${{ !cancelled() }}'
+expect_ui_step_text "$upload_step" 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1'
+expect_ui_step_text "$upload_step" 'path: target/ui-walker-artifacts/'
+expect_ui_step_text "$upload_step" 'if-no-files-found: error'
+
+fail_step='Fail after artifact capture'
+expect_ui_step_text "$fail_step" "if: \${{ !cancelled() && (steps.walker.outcome == 'failure' || steps.render.outcome == 'failure') }}"
+expect_ui_step_text "$fail_step" 'exit 1'
+ui_render_line="$(grep -nF -- '- name: Render captured casts' "$ui_walker_workflow" | cut -d: -f1)"
+ui_upload_line="$(grep -nF -- '- name: Upload UI walker artifacts' "$ui_walker_workflow" | cut -d: -f1)"
+ui_fail_line="$(grep -nF -- '- name: Fail after artifact capture' "$ui_walker_workflow" | cut -d: -f1)"
+test -n "$ui_render_line" && test -n "$ui_upload_line" && test -n "$ui_fail_line" &&
+  test "$ui_render_line" -lt "$ui_upload_line" && test "$ui_upload_line" -lt "$ui_fail_line" || {
+  echo 'the UI walker must render, upload, and then fail in that order' >&2
+  exit 1
+}
+
 # Every workflow job needs a time bound. Without one a stuck job runs to the six-hour default, and
 # the run is cancelled before the log flushes, so the failure teaches nothing about where it stuck.
 while IFS= read -r unbounded; do

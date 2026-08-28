@@ -38,7 +38,7 @@ pub(crate) enum ConfirmRemoveEvent {
 }
 
 /// Persistent mature dialog state for entry removal.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ConfirmRemoveSession {
     dialog: DialogState<()>,
     config: Option<DialogConfig>,
@@ -121,7 +121,7 @@ impl ConfirmRemoveSession {
 }
 
 /// Persistent scroll state for the complete keyboard reminder.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct HelpScreenSession {
     scroll: ScrollableContentState,
     viewport: Rect,

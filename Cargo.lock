@@ -2846,17 +2846,21 @@ dependencies = [
 name = "skit-tui"
 version = "0.5.0"
 dependencies = [
+ "glob",
  "portable-pty",
+ "proptest",
  "ratatui-core",
  "ratatui-crossterm",
  "ratatui-interact",
  "ratatui-textarea",
  "ratatui-widgets",
+ "serde",
  "serde_json",
  "skit-application",
  "skit-domain",
  "skit-form",
  "skit-i18n",
+ "skit-language",
  "skit-store",
  "skit-ui",
  "tempfile",

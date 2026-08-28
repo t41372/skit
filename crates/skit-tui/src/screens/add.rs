@@ -32,6 +32,7 @@ use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
     footer::handle_footer_scroll,
+    local_action::LocalKey,
     rowclip::RowClip,
     session::render_line_input_band,
     theme::{ACCENT, BOX_MAROON, SELECT_BG, SELECT_FG, panel_block},
@@ -158,7 +159,7 @@ struct AddSignature {
 }
 
 /// Ephemeral mature-widget state for all add surfaces.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct AddScreenSession {
     signature: Option<AddSignature>,
     focus: FocusManager<AddControlId>,
@@ -175,9 +176,43 @@ pub struct AddScreenSession {
     footer_viewport: Rect,
     footer_visible_height: usize,
     row_spans: BTreeMap<AddControlId, (usize, usize)>,
+    advertised: Vec<(Rect, LocalKey, AddControlId, AddScreenEvent)>,
+    picker_root: Option<PathBuf>,
 }
 
 impl AddScreenSession {
+    pub(crate) fn set_picker_root(&mut self, root: PathBuf) {
+        self.picker_root = Some(root);
+    }
+    pub(crate) fn advertised(&self) -> &[(Rect, LocalKey, AddControlId, AddScreenEvent)] {
+        &self.advertised
+    }
+
+    fn advertise(
+        &mut self,
+        rect: Rect,
+        key: LocalKey,
+        target: AddControlId,
+        state: &AddWorkflowState,
+    ) {
+        if rect.is_empty() {
+            return;
+        }
+        let mut probe = self.clone();
+        if let Some(outcome) = probe.activate(target.clone(), state) {
+            self.advertised.push((rect, key, target, outcome));
+        }
+    }
+
+    fn advertised_target(
+        &self,
+        key: &ratatui_crossterm::crossterm::event::KeyEvent,
+    ) -> Option<AddControlId> {
+        self.advertised
+            .iter()
+            .find_map(|(_, binding, target, _)| binding.accepts(key).then(|| target.clone()))
+    }
+
     /// Current typed focus.
     #[must_use]
     pub fn focused(&self) -> Option<&AddControlId> {
@@ -402,8 +437,11 @@ impl AddScreenSession {
                     (KeyCode::Char('e'), AddStage::Review) | (KeyCode::Char('d'), AddStage::Source)
                 );
             if !input_owns_key {
+                if let Some(target) = self.advertised_target(&key) {
+                    return self.activate(target, state);
+                }
                 return match (key.code, state.stage()) {
-                    (KeyCode::Char('o'), AddStage::Source) => {
+                    (_, AddStage::Source) if BROWSE_SOURCE_KEY.accepts(&key) => {
                         self.activate(AddControlId::BrowseSource, state)
                     }
                     (KeyCode::Char('n'), AddStage::Source) => Some(AddScreenEvent::Action(
@@ -421,10 +459,6 @@ impl AddScreenSession {
                     (KeyCode::Char('s'), AddStage::Review) => {
                         Some(AddScreenEvent::Action(AddAction::Save))
                     }
-                    // Ctrl+O opens the searchable candidate picker only when the
-                    // detected list is capped (more placeholders than the inline
-                    // preview shows). A short prompt lists every candidate inline, so
-                    // Ctrl+O is a no-op.
                     (KeyCode::Char('o'), AddStage::Review)
                         if state.review().is_some_and(|review| {
                             review.prompt_candidates().len() > PROMPT_LIST_PREVIEW_LIMIT
@@ -563,7 +597,9 @@ impl AddScreenSession {
             AddControlId::BrowseSource => {
                 Some(AddScreenEvent::OpenPathPicker(PathPickerState::new(
                     PickerPurpose::Source,
-                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                    self.picker_root.clone().unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                    }),
                     PathSelectionMode::FileOrDirectory,
                     PathOutputPolicy::Absolute,
                     false,
@@ -832,6 +868,19 @@ pub fn render_add(
     for overlay in select_overlays {
         hits.extend(overlay);
     }
+    session.advertised.clear();
+    if state.stage() == AddStage::Source
+        && let Some(browse) = hits
+            .iter()
+            .find(|hit| hit.target == AddControlId::BrowseSource && !hit.area.is_empty())
+    {
+        session.advertise(
+            browse.area,
+            BROWSE_SOURCE_KEY,
+            AddControlId::BrowseSource,
+            state,
+        );
+    }
     hits.extend(render_footer(frame, chunks[1], state, session, locale));
     AddScreenGeometry {
         body,
@@ -883,6 +932,7 @@ const REVIEW_NAME_ID: AddControlId = AddControlId::Text(AddTextField::ReviewName
 const REVIEW_DESCRIPTION_ID: AddControlId = AddControlId::Text(AddTextField::ReviewDescription);
 const DEPENDENCIES_ID: AddControlId = AddControlId::Text(AddTextField::Dependencies);
 const PYTHON_ID: AddControlId = AddControlId::Text(AddTextField::PythonConstraint);
+const BROWSE_SOURCE_KEY: LocalKey = LocalKey::Control('o');
 
 fn build_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
     let mut rows = match state.stage() {
@@ -923,7 +973,7 @@ fn source_rows(state: &AddWorkflowState, locale: Locale) -> Vec<RenderRow> {
         ),
         RenderRow::Button(
             AddControlId::BrowseSource,
-            format!("[Ctrl+O] {}", text(locale, "Select")),
+            format!("[{}] {}", BROWSE_SOURCE_KEY.hint(), text(locale, "Select")),
         ),
         RenderRow::Input(
             AddTextField::CommandTemplate,
@@ -1488,7 +1538,7 @@ fn checkbox_action(id: &AddControlId, selected: bool) -> Option<AddAction> {
 
 #[derive(Debug)]
 struct AddFooterChip {
-    key: &'static str,
+    key: LocalKey,
     label: String,
     target: AddControlId,
 }
@@ -1501,74 +1551,115 @@ struct PositionedAddFooterChip {
     width: u16,
 }
 
-fn footer_chips(state: &AddWorkflowState, locale: Locale) -> Vec<AddFooterChip> {
+fn footer_chips(
+    state: &AddWorkflowState,
+    locale: Locale,
+    session: &AddScreenSession,
+) -> Vec<AddFooterChip> {
     let chip = |key, label: String, target| AddFooterChip { key, label, target };
+    let select_focused = matches!(
+        session.focused(),
+        Some(AddControlId::Storage | AddControlId::Runner)
+    );
+    let next_key = if select_focused {
+        LocalKey::Tab
+    } else {
+        LocalKey::NextField
+    };
+    let previous_key = if select_focused {
+        LocalKey::BackTab
+    } else {
+        LocalKey::PreviousField
+    };
     match state.stage() {
         AddStage::Source => {
-            let mut chips = vec![
-                chip(
-                    "Enter",
-                    text(locale, "Continue").into_owned(),
-                    AddControlId::Continue,
+            let (enter_target, enter_label) = match session.focused() {
+                Some(target @ AddControlId::Draft(_)) => {
+                    (target.clone(), text(locale, "Select").into_owned())
+                }
+                Some(AddControlId::NewScript) => (
+                    AddControlId::NewScript,
+                    text(locale, "Write a script…").into_owned(),
                 ),
+                Some(AddControlId::NewPrompt) => (
+                    AddControlId::NewPrompt,
+                    text(locale, "Draft a prompt…").into_owned(),
+                ),
+                Some(AddControlId::DeleteDraft) => (
+                    AddControlId::DeleteDraft,
+                    text(locale, "Delete draft…").into_owned(),
+                ),
+                Some(AddControlId::Cancel) => {
+                    (AddControlId::Cancel, text(locale, "Cancel").into_owned())
+                }
+                Some(_) | None => (
+                    AddControlId::Continue,
+                    text(locale, "Continue").into_owned(),
+                ),
+            };
+            let mut chips = vec![
+                chip(LocalKey::Enter, enter_label, enter_target),
                 chip(
-                    "Esc",
+                    LocalKey::Escape,
                     text(locale, "Cancel").into_owned(),
                     AddControlId::Cancel,
                 ),
                 chip(
-                    "Ctrl+N",
+                    LocalKey::Control('n'),
                     text(locale, "Write a script…").into_owned(),
                     AddControlId::NewScript,
                 ),
                 chip(
-                    "Ctrl+P",
+                    LocalKey::Control('p'),
                     text(locale, "Draft a prompt…").into_owned(),
                     AddControlId::NewPrompt,
                 ),
             ];
-            if !state.source().listed_drafts().is_empty() {
+            if !state.source().listed_drafts().is_empty()
+                && !matches!(session.focused(), Some(AddControlId::Text(_)))
+            {
                 chips.push(chip(
-                    "Ctrl+D",
+                    LocalKey::Control('d'),
                     text(locale, "Delete draft…").into_owned(),
                     AddControlId::DeleteDraft,
                 ));
             }
             chips.extend([
-                chip("Tab/↓", String::new(), AddControlId::NextField),
-                chip("Shift+Tab/↑", String::new(), AddControlId::PreviousField),
+                chip(next_key, String::new(), AddControlId::NextField),
+                chip(previous_key, String::new(), AddControlId::PreviousField),
             ]);
             chips
         }
         AddStage::Review => {
             let mut chips = vec![
                 chip(
-                    "Ctrl+S",
+                    LocalKey::Control('s'),
                     text(locale, "Add").into_owned(),
                     AddControlId::Save,
                 ),
                 chip(
-                    "Esc",
+                    LocalKey::Escape,
                     text(locale, "Cancel").into_owned(),
                     AddControlId::Cancel,
                 ),
             ];
-            if state.review().is_some_and(|review| {
-                review.lane() == ReviewLane::Prompt
-                    || (review.storage() == StorageMode::Copy && !review.candidates().is_empty())
-            }) {
+            if session
+                .focused()
+                .is_some_and(|focused| session.checks.contains_key(focused))
+            {
                 chips.push(chip(
-                    "Space",
+                    LocalKey::Space,
                     text(locale, "Toggle").into_owned(),
                     AddControlId::ToggleFocused,
                 ));
             }
-            if state
-                .review()
-                .is_some_and(|review| review.lane() != ReviewLane::Executable)
+            if !matches!(session.focused(), Some(AddControlId::Text(_)))
+                && state
+                    .review()
+                    .is_some_and(|review| review.lane() != ReviewLane::Executable)
             {
                 chips.push(chip(
-                    "Ctrl+E",
+                    LocalKey::Control('e'),
                     text(
                         locale,
                         if state
@@ -1585,31 +1676,31 @@ fn footer_chips(state: &AddWorkflowState, locale: Locale) -> Vec<AddFooterChip> 
                 ));
             }
             chips.extend([
-                chip("Tab/↓", String::new(), AddControlId::NextField),
-                chip("Shift+Tab/↑", String::new(), AddControlId::PreviousField),
+                chip(next_key, String::new(), AddControlId::NextField),
+                chip(previous_key, String::new(), AddControlId::PreviousField),
             ]);
             chips
         }
         AddStage::Kind => vec![
             chip(
-                "Enter",
+                LocalKey::Enter,
                 text(locale, "Select").into_owned(),
                 AddControlId::PickFocusedKind,
             ),
             chip(
-                "Esc",
+                LocalKey::Escape,
                 text(locale, "Cancel").into_owned(),
                 AddControlId::Cancel,
             ),
         ],
         AddStage::ConfirmDraftDelete => vec![
             chip(
-                "Enter",
+                LocalKey::Enter,
                 text(locale, "Remove").into_owned(),
                 AddControlId::DeleteDraft,
             ),
             chip(
-                "Esc",
+                LocalKey::Escape,
                 text(locale, "Cancel").into_owned(),
                 AddControlId::Cancel,
             ),
@@ -1630,12 +1721,13 @@ fn render_footer(
         session.footer_visible_height = 0;
         return Vec::new();
     }
-    let chips = footer_chips(state, locale);
+    let chips = footer_chips(state, locale, session);
     let (mut positioned, mut rows) = position_footer_chips(chips, area.width);
     let mut content_width = area.width;
     if rows > usize::from(area.height) && area.width > 1 {
         content_width = area.width.saturating_sub(1);
-        (positioned, rows) = position_footer_chips(footer_chips(state, locale), content_width);
+        (positioned, rows) =
+            position_footer_chips(footer_chips(state, locale, session), content_width);
     }
     session.footer_visible_height = usize::from(area.height);
     session.footer_viewport = Rect::new(area.x, area.y, content_width, area.height);
@@ -1647,7 +1739,7 @@ fn render_footer(
         .into_iter()
         .filter(|item| item.row >= offset && item.row < end)
     {
-        let label = format!("[{}] {}", item.chip.key, item.chip.label);
+        let label = format!("[{}] {}", item.chip.key.hint(), item.chip.label);
         let y = area
             .y
             .saturating_add(u16::try_from(item.row.saturating_sub(offset)).unwrap_or(u16::MAX));
@@ -1658,8 +1750,9 @@ fn render_footer(
         );
         hits.push(AddHitRegion {
             area: chip_area,
-            target: item.chip.target,
+            target: item.chip.target.clone(),
         });
+        session.advertise(chip_area, item.chip.key, item.chip.target, state);
     }
     if rows > session.footer_visible_height {
         let indicator = if session.footer_scroll.is_at_top() {
@@ -1693,6 +1786,7 @@ fn position_footer_chips(
     for chip in chips {
         let desired = u16::try_from(
             chip.key
+                .hint()
                 .width()
                 .saturating_add(chip.label.width())
                 .saturating_add(4),
@@ -1886,6 +1980,44 @@ mod tests {
             })
             .unwrap();
         (terminal, geometry)
+    }
+
+    fn assert_advertised_endpoints(
+        state: &AddWorkflowState,
+        session: &AddScreenSession,
+        geometry: &AddScreenGeometry,
+        viewport: Rect,
+    ) {
+        let advertised = session.advertised.clone();
+        for (index, (rect, key, target, expected)) in advertised.iter().enumerate() {
+            assert!(!rect.is_empty(), "empty local action: {target:?}");
+            assert!(
+                rect.right() <= viewport.right() && rect.bottom() <= viewport.bottom(),
+                "local action escapes the viewport: target={target:?} rect={rect:?} viewport={viewport:?}",
+            );
+            for (other_rect, _, other_target, _) in advertised.iter().skip(index + 1) {
+                assert!(
+                    rect.intersection(*other_rect).is_empty() || target == other_target,
+                    "ambiguous local actions overlap: {target:?} {rect:?} and {other_target:?} {other_rect:?}",
+                );
+            }
+
+            let mut mouse_session = session.clone();
+            let mouse = mouse_session.handle_event(
+                mouse(MouseEventKind::Down(MouseButton::Left), rect.x, rect.y),
+                state,
+                geometry,
+            );
+            assert_eq!(mouse.as_ref(), Some(expected), "mouse target {target:?}");
+            for binding in key.bindings() {
+                let mut key_session = session.clone();
+                assert_eq!(
+                    key_session.handle_event(Event::Key(binding.event()), state, geometry),
+                    Some(expected.clone()),
+                    "key target {target:?} binding={binding:?}",
+                );
+            }
+        }
     }
 
     fn text_of(terminal: &Terminal<TestBackend>) -> String {
@@ -2217,6 +2349,10 @@ mod tests {
             KnownEntryKind::Python,
         );
         let mut session = AddScreenSession::default();
+        let (_, first) = draw(&state, &mut session, 100, 20);
+        while !matches!(session.focused(), Some(AddControlId::Candidate(_))) {
+            let _ = session.handle_event(key(KeyCode::Tab, KeyModifiers::NONE), &state, &first);
+        }
         let (_, geometry) = draw(&state, &mut session, 100, 20);
         for (target, expected) in [
             (AddControlId::Save, AddScreenEvent::Action(AddAction::Save)),
@@ -2575,7 +2711,8 @@ mod tests {
             &state,
             &geometry,
         );
-        let toggle = geometry
+        let (_, toggled_geometry) = draw(&state, &mut session, 70, 20);
+        let toggle = toggled_geometry
             .hits
             .iter()
             .find(|hit| hit.target == AddControlId::ToggleFocused)
@@ -2589,7 +2726,7 @@ mod tests {
                         toggle.area.y,
                     ),
                     &state,
-                    &geometry,
+                    &toggled_geometry,
                 )
                 .is_some()
         );
@@ -2901,7 +3038,8 @@ mod tests {
         let mut cancelled = AddWorkflowState::new(Vec::new());
         let _ = cancelled.reduce(AddAction::Cancel);
         assert_eq!(cancelled.stage(), AddStage::Cancelled);
-        assert!(footer_chips(&cancelled, Locale::En).is_empty());
+        let session = AddScreenSession::default();
+        assert!(footer_chips(&cancelled, Locale::En, &session).is_empty());
         let mut cancelled_session = AddScreenSession::default();
         let (_, cancelled_geometry) = draw(&cancelled, &mut cancelled_session, 1, 1);
         assert_eq!(
@@ -2989,6 +3127,283 @@ mod tests {
         let mut secret_session = AddScreenSession::default();
         let (terminal, _) = draw(&secret_prompt, &mut secret_session, 60, 18);
         assert!(text_of(&terminal).contains("secret"));
+    }
+
+    #[test]
+    fn live_add_inventory_matches_widget_ownership_in_every_stage() {
+        let draft = skit_ui::DraftSummary {
+            path: PathBuf::from("kept.py"),
+            modified: 1,
+            identity: None,
+            permissions: SourcePermissions::default(),
+            content_hash: None,
+        };
+        let mut source_state = AddWorkflowState::new(vec![draft]);
+        let mut source_session = AddScreenSession::default();
+        let (_, mut source_geometry) = draw(&source_state, &mut source_session, 120, 30);
+        assert!(
+            !source_session.advertised.iter().any(|(_, key, target, _)| {
+                *key == LocalKey::Control('d') && *target == AddControlId::DeleteDraft
+            }),
+            "the focused input owns Ctrl+D",
+        );
+        assert_advertised_endpoints(
+            &source_state,
+            &source_session,
+            &source_geometry,
+            Rect::new(0, 0, 120, 30),
+        );
+        for _ in 0..16 {
+            let handling = source_session.handle_event(
+                key(KeyCode::Tab, KeyModifiers::NONE),
+                &source_state,
+                &source_geometry,
+            );
+            if let Some(AddScreenEvent::Action(action)) = handling {
+                let _ = source_state.reduce(action);
+            }
+            if matches!(source_session.focused(), Some(AddControlId::Draft(_))) {
+                break;
+            }
+        }
+        let (_, next_geometry) = draw(&source_state, &mut source_session, 120, 30);
+        source_geometry = next_geometry;
+        assert!(matches!(
+            source_session.focused(),
+            Some(AddControlId::Draft(_))
+        ));
+        assert!(source_session.advertised.iter().any(|(_, key, target, _)| {
+            *key == LocalKey::Control('d') && *target == AddControlId::DeleteDraft
+        }));
+        assert!(source_session.advertised.iter().any(|(_, key, target, _)| {
+            *key == LocalKey::Enter && matches!(target, AddControlId::Draft(_))
+        }));
+        assert_advertised_endpoints(
+            &source_state,
+            &source_session,
+            &source_geometry,
+            Rect::new(0, 0, 120, 30),
+        );
+        for _ in 0..16 {
+            let _ = source_session.handle_event(
+                key(KeyCode::Tab, KeyModifiers::NONE),
+                &source_state,
+                &source_geometry,
+            );
+            if source_session.focused() == Some(&AddControlId::DeleteDraft) {
+                break;
+            }
+        }
+        let (_, delete_geometry) = draw(&source_state, &mut source_session, 120, 30);
+        assert_eq!(source_session.focused(), Some(&AddControlId::DeleteDraft));
+        assert!(source_session.advertised.iter().any(|(_, key, target, _)| {
+            *key == LocalKey::Enter && *target == AddControlId::DeleteDraft
+        }));
+        assert_advertised_endpoints(
+            &source_state,
+            &source_session,
+            &delete_geometry,
+            Rect::new(0, 0, 120, 30),
+        );
+
+        let kind_state = ambiguous("unknown.txt", b"plain body\n");
+        let mut kind_session = AddScreenSession::default();
+        let (_, kind_geometry) = draw(&kind_state, &mut kind_session, 46, 12);
+        assert_advertised_endpoints(
+            &kind_state,
+            &kind_session,
+            &kind_geometry,
+            Rect::new(0, 0, 46, 12),
+        );
+
+        let review_state = source(
+            "tool.py",
+            b"VALUE = 1\nprint(VALUE)\n",
+            KnownEntryKind::Python,
+        );
+        let mut review_session = AddScreenSession::default();
+        let (_, review_geometry) = draw(&review_state, &mut review_session, 120, 30);
+        assert!(
+            !review_session
+                .advertised
+                .iter()
+                .any(|(_, key, _, _)| { matches!(key, LocalKey::Control('e') | LocalKey::Space) })
+        );
+        assert_advertised_endpoints(
+            &review_state,
+            &review_session,
+            &review_geometry,
+            Rect::new(0, 0, 120, 30),
+        );
+        for _ in 0..32 {
+            let _ = review_session.handle_event(
+                key(KeyCode::Tab, KeyModifiers::NONE),
+                &review_state,
+                &review_geometry,
+            );
+            if matches!(review_session.focused(), Some(AddControlId::Candidate(_))) {
+                break;
+            }
+        }
+        let (_, candidate_geometry) = draw(&review_state, &mut review_session, 120, 30);
+        assert!(
+            review_session
+                .advertised
+                .iter()
+                .any(|(_, key, _, _)| { *key == LocalKey::Control('e') })
+        );
+        assert!(
+            review_session
+                .advertised
+                .iter()
+                .any(|(_, key, _, _)| { *key == LocalKey::Space })
+        );
+        assert_advertised_endpoints(
+            &review_state,
+            &review_session,
+            &candidate_geometry,
+            Rect::new(0, 0, 120, 30),
+        );
+
+        let prompt_state = source(
+            "task.prompt.md",
+            b"Review {{topic}}.",
+            KnownEntryKind::Prompt,
+        );
+        let mut prompt_session = AddScreenSession::default();
+        let (_, prompt_geometry) = draw(&prompt_state, &mut prompt_session, 120, 30);
+        for _ in 0..64 {
+            let _ = prompt_session.handle_event(
+                key(KeyCode::Tab, KeyModifiers::NONE),
+                &prompt_state,
+                &prompt_geometry,
+            );
+            if prompt_session.focused() == Some(&AddControlId::Runner) {
+                break;
+            }
+        }
+        let (_, select_geometry) = draw(&prompt_state, &mut prompt_session, 120, 30);
+        assert_eq!(prompt_session.focused(), Some(&AddControlId::Runner));
+        assert!(prompt_session.advertised.iter().any(|(_, key, target, _)| {
+            *key == LocalKey::Tab && *target == AddControlId::NextField
+        }));
+        assert!(prompt_session.advertised.iter().any(|(_, key, target, _)| {
+            *key == LocalKey::BackTab && *target == AddControlId::PreviousField
+        }));
+        assert!(!prompt_session.advertised.iter().any(|(_, key, _, _)| {
+            matches!(key, LocalKey::NextField | LocalKey::PreviousField)
+        }));
+        assert_advertised_endpoints(
+            &prompt_state,
+            &prompt_session,
+            &select_geometry,
+            Rect::new(0, 0, 120, 30),
+        );
+
+        let responsive_source = source_state.clone();
+        let _ = source_state.reduce(AddAction::DeleteSelectedDraft);
+        let mut confirm_session = AddScreenSession::default();
+        let (_, confirm_geometry) = draw(&source_state, &mut confirm_session, 24, 6);
+        assert_eq!(source_state.stage(), AddStage::ConfirmDraftDelete);
+        assert_advertised_endpoints(
+            &source_state,
+            &confirm_session,
+            &confirm_geometry,
+            Rect::new(0, 0, 24, 6),
+        );
+
+        for state in [
+            &responsive_source,
+            &kind_state,
+            &review_state,
+            &prompt_state,
+            &source_state,
+        ] {
+            for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw, Locale::Pseudo] {
+                for (width, height) in [(1, 1), (24, 6), (120, 30)] {
+                    let mut session = AddScreenSession::default();
+                    let (_, geometry) = draw_locale(state, &mut session, width, height, locale);
+                    assert_advertised_endpoints(
+                        state,
+                        &session,
+                        &geometry,
+                        Rect::new(0, 0, width, height),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn clipped_local_actions_are_not_advertised() {
+        let state = AddWorkflowState::new(Vec::new());
+        let mut session = AddScreenSession::default();
+
+        session.advertise(Rect::ZERO, LocalKey::Enter, AddControlId::Continue, &state);
+
+        assert!(session.advertised().is_empty());
+    }
+
+    #[test]
+    fn direct_add_keyboard_contracts_work_before_the_first_frame() {
+        let source_state = AddWorkflowState::new(Vec::new());
+        let geometry = AddScreenGeometry::default();
+        let mut source_session = AddScreenSession::default();
+        source_session.sync(&source_state);
+        assert!(source_session.advertised().is_empty());
+        assert!(matches!(
+            source_session.handle_event(
+                key(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                &source_state,
+                &geometry,
+            ),
+            Some(AddScreenEvent::OpenPathPicker(_))
+        ));
+
+        let mut draft_session = AddScreenSession::default();
+        draft_session.sync(&source_state);
+        assert_eq!(
+            draft_session.handle_event(
+                key(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                &source_state,
+                &geometry,
+            ),
+            Some(AddScreenEvent::Action(AddAction::NewDraft(
+                DraftKind::Script
+            )))
+        );
+
+        let review_state = source("tool.py", b"print('ok')\n", KnownEntryKind::Python);
+        let mut review_session = AddScreenSession::default();
+        review_session.sync(&review_state);
+        assert_eq!(
+            review_session.handle_event(
+                key(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                &review_state,
+                &geometry,
+            ),
+            Some(AddScreenEvent::Action(AddAction::Save))
+        );
+    }
+
+    #[test]
+    fn injected_add_picker_root_does_not_change_the_default_product_policy() {
+        let state = AddWorkflowState::new(Vec::new());
+        let fixture = PathBuf::from("/deterministic/add-picker");
+        let mut injected = AddScreenSession::default();
+        injected.set_picker_root(fixture.clone());
+        assert!(matches!(
+            injected.activate(AddControlId::BrowseSource, &state),
+            Some(AddScreenEvent::OpenPathPicker(contract)) if contract.start_dir() == fixture
+        ));
+
+        let mut default = AddScreenSession::default();
+        assert!(matches!(
+            default.activate(AddControlId::BrowseSource, &state),
+            Some(AddScreenEvent::OpenPathPicker(contract))
+                if contract.start_dir()
+                    == std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        ));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use ratatui_core::{
     widgets::Widget,
 };
 use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui_interact::{
     components::{
@@ -39,14 +39,17 @@ use skit_i18n::{Locale, format_text, text};
 use skit_ui::{
     Action, AddAction, AddWorkflowState, ChoicePresentation, FormControl, FormField, FormView,
     InputMode, LibraryState, ModalState, RunDegradationNotice, RunField, RunFieldRole, RunFormView,
-    RunTokenError, RunValidationError, Screen, UiCommand,
+    RunTokenError, RunValidationError, Screen, UiBinding, UiCommand,
 };
 use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
-    HitRegion, HitTarget, ViewGeometry, command_action,
-    footer::FooterSession,
+    HitRegion, HitTarget, ViewGeometry,
+    footer::{FooterInputOwnership, FooterSession},
+    local_action::{
+        LocalActionInventory, LocalActionOutcome, LocalActionTarget, LocalAdvertisedAction,
+    },
     map_event,
     rowclip::{RowClip, editor_cursor_virtual_row},
     run_field_command_action,
@@ -59,8 +62,8 @@ use crate::{
     screens::modal::{ConfirmRemoveEvent, ConfirmRemoveSession, HelpScreenSession},
     screens::picker::{
         ChoicePickerGeometry, FilePickerEvent, FilePickerGeometry, FilePickerSession,
-        PromptCandidatePickerEvent, PromptCandidatePickerSession, render_file_picker,
-        render_prompt_candidate_picker,
+        MemoryFilePickerSource, PromptCandidatePickerEvent, PromptCandidatePickerSession,
+        render_file_picker, render_prompt_candidate_picker,
     },
     screens::preferences::{PreferencesEventHandling, PreferencesWidgetSession},
     screens::run_modal::{RunModalEvent, RunModalSession},
@@ -118,12 +121,14 @@ pub struct TuiSession {
     add: AddScreenSession,
     add_geometry: AddScreenGeometry,
     add_overlay: Option<AddOverlay>,
+    file_picker_source: Option<MemoryFilePickerSource>,
     health: HealthScreenSession,
     runners: RunnerManagerSession,
     runner_editor: RunnerEditorSession,
     form: FormWidgetSession,
     footer: FooterSession,
     clicks: ClickRegionRegistry<SessionHit>,
+    local_actions: LocalActionInventory,
 }
 
 #[derive(Debug)]
@@ -141,7 +146,7 @@ struct PathSuggestionResult {
     suggestion: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct VisiblePathSuggestion {
     generation: u64,
     field: usize,
@@ -277,6 +282,21 @@ impl PathSuggestionSession {
     fn has_pending_work(&self) -> bool {
         self.in_flight || self.retry_pending
     }
+
+    fn try_fork(&self) -> Option<Self> {
+        if self.requests.is_some() || self.results.is_some() {
+            return None;
+        }
+        Some(Self {
+            requests: None,
+            results: None,
+            generation: self.generation,
+            expected: self.expected.clone(),
+            in_flight: self.in_flight,
+            retry_pending: self.retry_pending,
+            visible: self.visible.clone(),
+        })
+    }
 }
 
 fn run_path_suggestion_worker(
@@ -308,14 +328,14 @@ fn run_path_suggestion_worker(
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum AddOverlay {
     File {
-        session: FilePickerSession,
+        session: Box<FilePickerSession>,
         geometry: FilePickerGeometry,
     },
     Prompt {
-        session: PromptCandidatePickerSession,
+        session: Box<PromptCandidatePickerSession>,
         geometry: ChoicePickerGeometry,
     },
 }
@@ -325,7 +345,7 @@ enum AddOverlayEvent {
     Prompt(PromptCandidatePickerEvent),
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct SearchWidgetSession {
     input: LineInput,
 }
@@ -333,10 +353,18 @@ struct SearchWidgetSession {
 #[derive(Clone, Debug)]
 enum SessionHit {
     SearchInput,
-    Target(HitTarget),
-    Checkbox(usize),
+    Target(SessionTarget),
     Select(usize),
-    RadioOption { field: usize, value: String },
+}
+
+#[derive(Clone, Debug)]
+enum SessionTarget {
+    FocusNext,
+    FocusPrevious,
+    RunFieldCommand { field: usize, command: UiCommand },
+    FocusField(usize),
+    ToggleField(usize),
+    SelectFieldOption { field: usize, value: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -364,7 +392,7 @@ enum ControlShape {
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct RunWidgetSession {
     signature: Option<RunSignature>,
     controls: Vec<WidgetControl>,
@@ -422,7 +450,7 @@ struct RunChip {
     target: HitTarget,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct FormWidgetSession {
     signature: Option<Vec<FieldSignature>>,
     controls: Vec<FormWidgetControl>,
@@ -436,7 +464,7 @@ struct FormWidgetSession {
     pending_ensure_focus: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum FormWidgetControl {
     Input {
         state: LineInput,
@@ -451,7 +479,7 @@ enum FormWidgetControl {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum WidgetControl {
     Input {
         state: LineInput,
@@ -474,6 +502,161 @@ enum WidgetControl {
 }
 
 impl TuiSession {
+    /// Fork the complete terminal widget state when no asynchronous completion worker is active.
+    ///
+    /// The returned session has independent focus, cursor, scroll, overlay, and click registries.
+    /// A session with background path-completion channels cannot fork because receiver state has
+    /// one owner.
+    #[must_use]
+    pub fn try_fork(&self) -> Option<Self> {
+        Some(Self {
+            quit_armed_at: self.quit_armed_at,
+            quit_toast: self.quit_toast.clone(),
+            search: self.search.clone(),
+            library: self.library.clone(),
+            help: self.help.clone(),
+            confirm_remove: self.confirm_remove.clone(),
+            run: self.run.clone(),
+            path_suggestions: self.path_suggestions.try_fork()?,
+            run_modal: self.run_modal.clone(),
+            preferences: self.preferences.clone(),
+            settings: self.settings.clone(),
+            settings_geometry: self.settings_geometry.clone(),
+            settings_prompt_overlay: self.settings_prompt_overlay.clone(),
+            add: self.add.clone(),
+            add_geometry: self.add_geometry.clone(),
+            add_overlay: self.add_overlay.clone(),
+            file_picker_source: self.file_picker_source.clone(),
+            health: self.health.clone(),
+            runners: self.runners.clone(),
+            runner_editor: self.runner_editor.clone(),
+            form: self.form.clone(),
+            footer: self.footer.clone(),
+            clicks: self.clicks.clone(),
+            local_actions: self.local_actions.clone(),
+        })
+    }
+
+    /// Construct a session with one deterministic in-memory file-picker tree.
+    #[must_use]
+    pub fn with_file_picker_tree(
+        root: std::path::PathBuf,
+        directories: std::collections::BTreeSet<std::path::PathBuf>,
+        files: std::collections::BTreeSet<std::path::PathBuf>,
+    ) -> Self {
+        let mut session = Self::default();
+        session.set_file_picker_tree(root, directories, files);
+        session
+    }
+
+    /// Replace the deterministic in-memory file-picker tree.
+    pub fn set_file_picker_tree(
+        &mut self,
+        root: std::path::PathBuf,
+        directories: std::collections::BTreeSet<std::path::PathBuf>,
+        files: std::collections::BTreeSet<std::path::PathBuf>,
+    ) {
+        let source = MemoryFilePickerSource::new(root.clone(), directories, files);
+        self.add.set_picker_root(root);
+        self.run_modal.set_file_picker_source(source.clone());
+        self.file_picker_source = Some(source);
+    }
+
+    /// Return the local key and mouse actions from the most recent frame.
+    #[must_use]
+    pub const fn local_action_inventory(&self) -> &LocalActionInventory {
+        &self.local_actions
+    }
+
+    /// Return the key chords printed for one shared command in the latest widget state.
+    #[must_use]
+    pub fn advertised_command_bindings(
+        &self,
+        state: &LibraryState,
+        command: UiCommand,
+    ) -> Vec<UiBinding> {
+        if self.shared_footer_suppressed(state) {
+            return Vec::new();
+        }
+        crate::footer::advertised_bindings(state, command, self.footer_input_ownership(state))
+    }
+
+    pub(crate) fn capture_local_actions(&mut self, state: &LibraryState) {
+        let advertised = match state.modal() {
+            Some(ModalState::RunnerEditor { .. }) => self
+                .runner_editor
+                .advertised()
+                .iter()
+                .map(|(rect, key, action)| {
+                    (
+                        *rect,
+                        *key,
+                        LocalActionTarget::RunnerEditor(action.clone()),
+                        LocalActionOutcome::Action(Action::RunnerEditor(action.clone())),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            Some(_) => Vec::new(),
+            None => match state.screen() {
+                Screen::Add(_) if self.add_overlay.is_none() => self
+                    .add
+                    .advertised()
+                    .iter()
+                    .map(|(rect, key, target, outcome)| {
+                        (
+                            *rect,
+                            *key,
+                            LocalActionTarget::Add(target.clone()),
+                            add_local_outcome(outcome),
+                        )
+                    })
+                    .collect(),
+                Screen::Health(_) => self
+                    .health
+                    .advertised()
+                    .iter()
+                    .map(|(rect, key, action)| {
+                        (
+                            *rect,
+                            *key,
+                            LocalActionTarget::Health(action.clone()),
+                            LocalActionOutcome::Action(Action::Health(action.clone())),
+                        )
+                    })
+                    .collect(),
+                Screen::Runners(view) => self
+                    .runners
+                    .advertised(view)
+                    .into_iter()
+                    .map(|(rect, key, action)| {
+                        (
+                            rect,
+                            key,
+                            LocalActionTarget::Runners(action.clone()),
+                            LocalActionOutcome::Action(Action::Runners(action)),
+                        )
+                    })
+                    .collect(),
+                Screen::Library
+                | Screen::Run(_)
+                | Screen::Preferences(_)
+                | Screen::Settings(_)
+                | Screen::Form(_)
+                | Screen::Report(_)
+                | Screen::Add(_) => Vec::new(),
+            },
+        };
+        self.local_actions.actions = advertised
+            .into_iter()
+            .map(|(rect, key, target, outcome)| LocalAdvertisedAction {
+                target,
+                keys: key.bindings(),
+                hit: Some(rect),
+                outcome,
+            })
+            .collect();
+    }
+
     /// Construct a session whose path queries run on bounded background workers.
     #[must_use]
     pub fn with_path_completion(provider: Arc<dyn PathCompletionProvider>) -> Self {
@@ -506,11 +689,63 @@ impl TuiSession {
         if is_ctrl_c(&event) {
             return self.handle_ctrl_c();
         }
-        if !crate::footer::is_suppressed(state)
+        if !self.shared_footer_suppressed(state)
             && let Event::Mouse(mouse) = &event
             && self.footer.handle_mouse(mouse)
         {
             return EventHandling::Consumed;
+        }
+        let shared_command = if self.shared_footer_suppressed(state) {
+            None
+        } else {
+            match &event {
+                Event::Mouse(mouse)
+                    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
+                {
+                    geometry.hits.iter().find_map(|hit| {
+                        hit.rect
+                            .contains((mouse.column, mouse.row).into())
+                            .then_some(hit.action)
+                            .and_then(|target| match target {
+                                HitTarget::Command(command) => Some(command),
+                                HitTarget::RunFieldCommand { .. }
+                                | HitTarget::FocusField(_)
+                                | HitTarget::ToggleField(_)
+                                | HitTarget::SelectFieldOption { .. } => None,
+                            })
+                    })
+                }
+                Event::FocusGained
+                | Event::FocusLost
+                | Event::Key(_)
+                | Event::Mouse(_)
+                | Event::Paste(_)
+                | Event::Resize(_, _) => None,
+            }
+        };
+        if let Some(command) = shared_command {
+            match (command, state.screen()) {
+                (UiCommand::FocusNext | UiCommand::FocusPrevious, Screen::Preferences(_)) => {
+                    let action = self
+                        .preferences
+                        .move_focus_action(command == UiCommand::FocusNext);
+                    return EventHandling::Action(Action::Preferences(action));
+                }
+                (UiCommand::FocusNext | UiCommand::FocusPrevious, Screen::Settings(_)) => {
+                    return EventHandling::Action(Action::Settings(
+                        if command == UiCommand::FocusNext {
+                            skit_ui::SettingsAction::FocusNext
+                        } else {
+                            skit_ui::SettingsAction::FocusPrevious
+                        },
+                    ));
+                }
+                (UiCommand::FocusNext | UiCommand::FocusPrevious, _) => {}
+                (_, _) => {
+                    return map_event(event, state, geometry)
+                        .map_or(EventHandling::Ignored, EventHandling::Action);
+                }
+            }
         }
         if let Event::Mouse(mouse) = &event
             && matches!(mouse.kind, MouseEventKind::Down(_))
@@ -561,12 +796,7 @@ impl TuiSession {
             | ModalState::RunFilePicker { .. }),
         ) = state.modal()
         {
-            let fallback = event.clone();
             return match self.run_modal.handle_event(event, modal) {
-                RunModalEvent::Handling(EventHandling::Ignored) => {
-                    map_event(fallback, state, geometry)
-                        .map_or(EventHandling::Ignored, EventHandling::Action)
-                }
                 RunModalEvent::Handling(handling) => handling,
                 RunModalEvent::Insert { field, text } => self.insert_run_text(field, &text),
                 RunModalEvent::OpenEnvironment { field } => {
@@ -754,7 +984,10 @@ impl TuiSession {
             Some(AddScreenEvent::Action(action)) => EventHandling::Action(Action::Add(action)),
             Some(AddScreenEvent::OpenPathPicker(contract)) => {
                 self.add_overlay = Some(AddOverlay::File {
-                    session: FilePickerSession::new(contract),
+                    session: Box::new(match self.file_picker_source.clone() {
+                        Some(source) => FilePickerSession::with_memory_source(contract, source),
+                        None => FilePickerSession::new(contract),
+                    }),
                     geometry: FilePickerGeometry::default(),
                 });
                 EventHandling::Consumed
@@ -762,7 +995,7 @@ impl TuiSession {
             Some(AddScreenEvent::OpenPromptCandidates) => {
                 if let Some(picker) = view.review().map(skit_ui::ReviewState::prompt_picker) {
                     self.add_overlay = Some(AddOverlay::Prompt {
-                        session: PromptCandidatePickerSession::new(picker),
+                        session: Box::new(PromptCandidatePickerSession::new(picker)),
                         geometry: ChoicePickerGeometry::default(),
                     });
                 }
@@ -777,7 +1010,7 @@ impl TuiSession {
         }
     }
 
-    pub(crate) fn begin_render(&mut self, state: &LibraryState) {
+    pub(crate) fn begin_render(&mut self, state: &LibraryState, locale: Locale) {
         self.quit_toast.clear_if_expired();
         self.clicks.clear();
         self.search.sync(state.query());
@@ -795,6 +1028,9 @@ impl TuiSession {
         } else if let Screen::Settings(view) = state.screen() {
             self.path_suggestions.clear();
             self.settings.sync(view);
+        } else if let Screen::Preferences(view) = state.screen() {
+            self.path_suggestions.clear();
+            self.preferences.sync(view, locale);
         } else if let Screen::Form(form) = state.screen() {
             self.path_suggestions.clear();
             self.form.sync(form);
@@ -807,8 +1043,9 @@ impl TuiSession {
 
     pub(crate) fn register_geometry(&mut self, geometry: &ViewGeometry) {
         for hit in &geometry.hits {
-            self.clicks
-                .register(hit.rect, SessionHit::Target(hit.action));
+            if let Some(target) = session_target(hit.action) {
+                self.clicks.register(hit.rect, SessionHit::Target(target));
+            }
         }
     }
 
@@ -819,7 +1056,77 @@ impl TuiSession {
         state: &LibraryState,
         locale: Locale,
     ) -> Vec<HitRegion> {
-        self.footer.render(frame, area, state, locale)
+        self.footer.render(
+            frame,
+            area,
+            state,
+            locale,
+            self.footer_input_ownership(state),
+        )
+    }
+
+    pub(crate) fn shared_footer_suppressed(&self, state: &LibraryState) -> bool {
+        crate::footer::is_suppressed(state) || self.settings_prompt_overlay.is_some()
+    }
+
+    pub(crate) fn footer_input_ownership(&self, state: &LibraryState) -> FooterInputOwnership {
+        if state.modal().is_some() {
+            return FooterInputOwnership::default();
+        }
+        match state.screen() {
+            Screen::Run(form) => {
+                let focused = self.run.controls.get(form.focused());
+                let owns = matches!(
+                    focused,
+                    Some(
+                        WidgetControl::TextArea { .. }
+                            | WidgetControl::Choice {
+                                presentation: ChoicePresentation::Picker,
+                                ..
+                            }
+                    )
+                );
+                FooterInputOwnership {
+                    vertical_navigation: owns,
+                    run_submit: owns,
+                    preferences_input: false,
+                    escape: matches!(
+                        focused,
+                        Some(WidgetControl::Choice {
+                            state,
+                            presentation: ChoicePresentation::Picker,
+                            ..
+                        }) if state.is_open
+                    ),
+                }
+            }
+            Screen::Form(form) => FooterInputOwnership {
+                vertical_navigation: matches!(
+                    self.form.controls.get(form.focused),
+                    Some(FormWidgetControl::TextArea { .. })
+                ),
+                run_submit: false,
+                preferences_input: false,
+                escape: false,
+            },
+            Screen::Preferences(view) => FooterInputOwnership {
+                vertical_navigation: self.preferences.focused_owns_vertical_navigation(view),
+                run_submit: false,
+                preferences_input: self.preferences.focused_is_input(view),
+                escape: self.preferences.focused_dropdown_is_open(view),
+            },
+            Screen::Settings(view) => FooterInputOwnership {
+                vertical_navigation: SettingsScreenSession::focused_owns_vertical_navigation(view),
+                run_submit: false,
+                preferences_input: false,
+                escape: false,
+            },
+            Screen::Library
+            | Screen::Add(_)
+            | Screen::Health(_)
+            | Screen::Runners(_)
+            | Screen::Report(_) => FooterInputOwnership::default(),
+        }
     }
 
     pub(crate) fn render_quit_toast(&mut self, frame: &mut Frame, locale: Locale) {
@@ -1068,6 +1375,13 @@ impl TuiSession {
             );
         }
         self.render_open_dropdowns(frame);
+        hits.retain(|hit| {
+            self.run
+                .dropdown_regions
+                .iter()
+                .flatten()
+                .all(|dropdown| hit.rect.intersection(dropdown.area).is_empty())
+        });
 
         ViewGeometry {
             rows: content,
@@ -1271,7 +1585,7 @@ impl TuiSession {
                     frame, area, state, *secret, *focused, "", suggestion,
                 );
                 self.clicks
-                    .register(area, SessionHit::Target(HitTarget::FocusField(index)));
+                    .register(area, SessionHit::Target(SessionTarget::FocusField(index)));
                 hits.push(HitRegion {
                     rect: area,
                     action: HitTarget::FocusField(index),
@@ -1280,7 +1594,7 @@ impl TuiSession {
             WidgetControl::TextArea { state, focused, .. } => {
                 render_textarea(frame, area, state, *focused, "");
                 self.clicks
-                    .register(area, SessionHit::Target(HitTarget::FocusField(index)));
+                    .register(area, SessionHit::Target(SessionTarget::FocusField(index)));
                 hits.push(HitRegion {
                     rect: area,
                     action: HitTarget::FocusField(index),
@@ -1291,11 +1605,13 @@ impl TuiSession {
                 let region = CheckBox::new(&shown, state)
                     .style(checkbox_style())
                     .render_stateful(area, frame.buffer_mut());
-                self.clicks
-                    .register(region.area, SessionHit::Checkbox(index));
+                self.clicks.register(
+                    region.area,
+                    SessionHit::Target(SessionTarget::ToggleField(index)),
+                );
                 hits.push(HitRegion {
                     rect: region.area,
-                    action: HitTarget::FocusField(index),
+                    action: HitTarget::ToggleField(index),
                 });
             }
             WidgetControl::Choice {
@@ -1326,7 +1642,9 @@ impl TuiSession {
                 let mut x = area.x;
                 let mut y = area.y;
                 if area.width > 0 {
-                    for (option_label, button) in options.iter().zip(buttons.iter()) {
+                    for (option, (option_label, button)) in
+                        options.iter().zip(buttons.iter()).enumerate()
+                    {
                         let width = u16::try_from(option_label.width().saturating_add(2))
                             .unwrap_or(u16::MAX)
                             .min(area.width);
@@ -1341,21 +1659,21 @@ impl TuiSession {
                             .render_stateful(option_area, frame.buffer_mut());
                         self.clicks.register(
                             region.area,
-                            SessionHit::RadioOption {
+                            SessionHit::Target(SessionTarget::SelectFieldOption {
                                 field: index,
                                 value: option_label.clone(),
-                            },
+                            }),
                         );
+                        hits.push(HitRegion {
+                            rect: region.area,
+                            action: HitTarget::SelectFieldOption {
+                                field: index,
+                                option,
+                            },
+                        });
                         x = x.saturating_add(width).saturating_add(1);
                     }
                 }
-                let field_area = area;
-                self.clicks
-                    .register(field_area, SessionHit::Target(HitTarget::FocusField(index)));
-                hits.push(HitRegion {
-                    rect: field_area,
-                    action: HitTarget::FocusField(index),
-                });
                 state.ensure_visible(1);
             }
         }
@@ -1377,8 +1695,10 @@ impl TuiSession {
                     .variant(ButtonVariant::SingleLine)
                     .style(run_chip_style())
                     .render_stateful(chip_area, frame.buffer_mut());
-                self.clicks
-                    .register(region.area, SessionHit::Target(chip.target));
+                if let Some(target) = session_target(chip.target) {
+                    self.clicks
+                        .register(region.area, SessionHit::Target(target));
+                }
                 hits.push(HitRegion {
                     rect: region.area,
                     action: chip.target,
@@ -1412,9 +1732,6 @@ impl TuiSession {
         let focused = form
             .focused()
             .min(self.run.controls.len().saturating_sub(1));
-        if let Some(handling) = self.handle_open_select_key(focused, &key, form) {
-            return handling;
-        }
         match (key.code, key.modifiers) {
             (KeyCode::Char('r'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 return EventHandling::Action(Action::Submit);
@@ -1431,6 +1748,12 @@ impl TuiSession {
             (KeyCode::Char('n'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 return EventHandling::Action(Action::OpenRunRunnerEditor);
             }
+            _ => {}
+        }
+        if let Some(handling) = self.handle_open_select_key(focused, &key, form) {
+            return handling;
+        }
+        match (key.code, key.modifiers) {
             (KeyCode::Esc, _) => return EventHandling::Action(Action::Back),
             (KeyCode::Tab, _) => return self.move_focus(true),
             (KeyCode::BackTab, _) => return self.move_focus(false),
@@ -1716,16 +2039,20 @@ impl TuiSession {
                 let _ = geometry;
                 EventHandling::Ignored
             }
-            Some(SessionHit::Target(HitTarget::Command(command))) => {
-                EventHandling::Action(command_action(command, geometry))
-            }
-            Some(SessionHit::Target(HitTarget::RunFieldCommand { field, command })) => {
+            Some(SessionHit::Target(SessionTarget::FocusNext)) => self.move_focus(true),
+            Some(SessionHit::Target(SessionTarget::FocusPrevious)) => self.move_focus(false),
+            Some(SessionHit::Target(SessionTarget::RunFieldCommand { field, command })) => {
                 EventHandling::Action(run_field_command_action(field, command))
             }
-            Some(SessionHit::Target(HitTarget::FocusField(index))) => {
+            Some(SessionHit::Target(SessionTarget::FocusField(index))) => {
                 EventHandling::Action(Action::FocusField(index))
             }
-            Some(SessionHit::Checkbox(index)) => EventHandling::Action(Action::ToggleField(index)),
+            Some(SessionHit::Target(SessionTarget::ToggleField(index))) => {
+                EventHandling::Action(Action::ToggleField(index))
+            }
+            Some(SessionHit::Target(SessionTarget::SelectFieldOption { field, value })) => {
+                EventHandling::Action(Action::SelectFieldOption { field, value })
+            }
             Some(SessionHit::Select(index)) => {
                 if let Some(WidgetControl::Choice { state, .. }) = self.run.controls.get_mut(index)
                 {
@@ -1736,9 +2063,6 @@ impl TuiSession {
                 } else {
                     EventHandling::Action(Action::FocusField(index))
                 }
-            }
-            Some(SessionHit::RadioOption { field, value }) => {
-                EventHandling::Action(Action::SelectFieldOption { field, value })
             }
         }
     }
@@ -1862,16 +2186,22 @@ impl TuiSession {
         if !matches!(mouse.kind, MouseEventKind::Down(_)) {
             return EventHandling::Ignored;
         }
-        let Some(index) = self
+        if let Some(index) = self
             .form
             .clicks
             .handle_click(mouse.column, mouse.row)
             .copied()
-        else {
-            let _ = geometry;
-            return EventHandling::Ignored;
-        };
-        EventHandling::Action(Action::FocusField(index))
+        {
+            return EventHandling::Action(Action::FocusField(index));
+        }
+        match self.clicks.handle_click(mouse.column, mouse.row).cloned() {
+            Some(SessionHit::Target(SessionTarget::FocusNext)) => self.move_form_focus(true),
+            Some(SessionHit::Target(SessionTarget::FocusPrevious)) => self.move_form_focus(false),
+            _ => {
+                let _ = geometry;
+                EventHandling::Ignored
+            }
+        }
     }
 
     fn move_focus(&mut self, forward: bool) -> EventHandling {
@@ -1907,6 +2237,30 @@ impl TuiSession {
             .map_or(EventHandling::Consumed, |index| {
                 EventHandling::Action(Action::FocusField(index))
             })
+    }
+}
+
+fn session_target(target: HitTarget) -> Option<SessionTarget> {
+    match target {
+        HitTarget::Command(UiCommand::FocusNext) => Some(SessionTarget::FocusNext),
+        HitTarget::Command(UiCommand::FocusPrevious) => Some(SessionTarget::FocusPrevious),
+        HitTarget::Command(_) => None,
+        HitTarget::RunFieldCommand { field, command } => {
+            Some(SessionTarget::RunFieldCommand { field, command })
+        }
+        HitTarget::FocusField(field) => Some(SessionTarget::FocusField(field)),
+        HitTarget::ToggleField(field) => Some(SessionTarget::ToggleField(field)),
+        HitTarget::SelectFieldOption { .. } => None,
+    }
+}
+
+fn add_local_outcome(event: &AddScreenEvent) -> LocalActionOutcome {
+    match event {
+        AddScreenEvent::Action(action) => LocalActionOutcome::Action(Action::Add(action.clone())),
+        AddScreenEvent::OpenRunnerEditor => LocalActionOutcome::Action(Action::OpenAddRunnerEditor),
+        AddScreenEvent::OpenPathPicker(_)
+        | AddScreenEvent::OpenPromptCandidates
+        | AddScreenEvent::Changed => LocalActionOutcome::Consumed,
     }
 }
 
@@ -3070,6 +3424,22 @@ mod textarea_band_tests {
                 geometry = session.render_form(frame, frame.area(), &form, Locale::En);
             })
             .unwrap();
+        assert_eq!(
+            session
+                .advertised_command_bindings(&library, UiCommand::FocusNext)
+                .iter()
+                .map(|binding| binding.key)
+                .collect::<Vec<_>>(),
+            [skit_ui::UiKey::Tab]
+        );
+        assert_eq!(
+            session
+                .advertised_command_bindings(&library, UiCommand::FocusPrevious)
+                .iter()
+                .map(|binding| binding.key)
+                .collect::<Vec<_>>(),
+            [skit_ui::UiKey::BackTab]
+        );
         for code in [KeyCode::Up, KeyCode::Up, KeyCode::Home] {
             assert_eq!(
                 session.handle_event(
@@ -3252,6 +3622,46 @@ mod textarea_band_tests {
             "focus above the viewport did not snap its field to the start"
         );
     }
+
+    #[test]
+    fn a_form_press_outside_controls_and_footer_is_ignored() {
+        let form = FormView {
+            purpose: skit_ui::FormPurpose::Rename,
+            title: "Rename".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: Some("entry".to_owned()),
+            fields: vec![FormField::text("name", "Name", "Entry")],
+            focused: 0,
+            submit_label: "Save".to_owned(),
+        };
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Form(form)));
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                if let Screen::Form(form) = state.screen() {
+                    geometry = session.render_form(frame, frame.area(), form, Locale::En);
+                }
+            })
+            .unwrap();
+
+        assert_eq!(
+            session.handle_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: u16::MAX,
+                    row: u16::MAX,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &state,
+                &geometry,
+            ),
+            EventHandling::Ignored
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3261,6 +3671,7 @@ mod path_suggestion_tests {
         path::{Path, PathBuf},
     };
 
+    use ratatui_core::{backend::TestBackend, terminal::Terminal};
     use skit_application::{
         path_completion::{PathCompletionContext, PathCompletionKind},
         tokens::TokenContext,
@@ -3300,6 +3711,12 @@ mod path_suggestion_tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn a_session_with_path_completion_workers_cannot_fork_the_receivers() {
+        let session = TuiSession::with_path_completion(Arc::new(ContextProvider));
+        assert!(session.try_fork().is_none());
     }
 
     #[test]
@@ -3404,6 +3821,19 @@ mod path_suggestion_tests {
     }
 
     #[test]
+    fn add_runner_editor_inventory_keeps_its_reducer_endpoint() {
+        assert_eq!(
+            add_local_outcome(&AddScreenEvent::OpenRunnerEditor),
+            LocalActionOutcome::Action(Action::OpenAddRunnerEditor)
+        );
+    }
+
+    #[test]
+    fn shared_commands_do_not_enter_the_private_run_hit_registry() {
+        assert!(session_target(HitTarget::Command(UiCommand::Quit)).is_none());
+    }
+
+    #[test]
     fn an_overlay_ignores_events_that_do_not_belong_to_its_picker() {
         let names = (0..=skit_ui::PROMPT_LIST_PREVIEW_LIMIT)
             .map(|index| format!("VALUE_{index}"))
@@ -3419,13 +3849,40 @@ mod path_suggestion_tests {
         assert!(view.prompt_picker_available());
         let mut state = LibraryState::default();
         state.update(Action::Present(Screen::Settings(Box::new(view.clone()))));
-        let mut session = TuiSession {
-            settings_prompt_overlay: Some((
-                PromptCandidatePickerSession::new(view.prompt_picker()),
-                ChoicePickerGeometry::default(),
-            )),
-            ..TuiSession::default()
-        };
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut stale_geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                stale_geometry =
+                    crate::render_with_session(frame, &state, Locale::En, &mut session);
+            })
+            .unwrap();
+        let save = stale_geometry
+            .hits
+            .iter()
+            .find(|hit| hit.action == HitTarget::Command(UiCommand::SaveSettings))
+            .expect("Settings must publish Save before the private overlay opens");
+        session.open_settings_prompt_picker(&view);
+
+        assert!(session.shared_footer_suppressed(&state));
+        assert!(
+            session
+                .advertised_command_bindings(&state, UiCommand::SaveSettings)
+                .is_empty()
+        );
+        let stale_click = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: save.rect.x,
+            row: save.rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(!matches!(
+            session.handle_event(stale_click, &state, &stale_geometry),
+            EventHandling::Action(Action::Settings(
+                skit_ui::SettingsAction::Save | skit_ui::SettingsAction::Close
+            ))
+        ));
 
         assert_eq!(
             session.handle_event(Event::FocusGained, &state, &ViewGeometry::default()),

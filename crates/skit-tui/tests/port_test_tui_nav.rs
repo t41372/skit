@@ -49,9 +49,9 @@ use skit_tui::{
     HitTarget, TuiSession, ViewGeometry, render_add, render_with_session,
 };
 use skit_ui::{
-    Action, AddAction, AddEffect, AddStage, AddWorkflowState, KnownEntryKind, LibraryState,
-    PreferencesAction, PreferencesControlId, ReviewDefaults, ReviewState, RunFormView, Screen,
-    SettingsInputs, SettingsView, SourceSnapshot, UiCommand,
+    Action, AddAction, AddEffect, AddStage, AddWorkflowState, FormField, FormPurpose, FormView,
+    KnownEntryKind, LibraryState, PreferencesAction, PreferencesControlId, ReviewDefaults,
+    ReviewState, RunFormView, Screen, SettingsInputs, SettingsView, SourceSnapshot, UiCommand,
 };
 
 // The oracle drives every form at size (130, 40); the render size is load-bearing for the footer
@@ -209,6 +209,13 @@ fn test_run_form_boots_typeable_and_arrows_walk_the_fields() {
         "the first field must be a typeable input"
     );
 
+    // The backward chip must use the widget's wrapped focus ring. A generic reducer
+    // `FocusPrevious` action only clamps at field zero and is not the keyboard endpoint.
+    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
+    assert_eq!(state.focused_form_field(), Some(2));
+    click_chip(&mut session, &mut state, UiCommand::FocusNext);
+    assert_eq!(state.focused_form_field(), Some(0));
+
     // ↓ moves on, ↑ comes back.
     press(&mut session, &mut state, KeyCode::Down);
     assert_eq!(state.focused_form_field(), Some(1));
@@ -226,6 +233,30 @@ fn test_run_form_boots_typeable_and_arrows_walk_the_fields() {
     assert_eq!(state.focused_form_field(), Some(1));
     let (_, geometry) = draw(&mut session, &state);
     drive(&mut session, &mut state, &geometry, shift_back_tab());
+    assert_eq!(state.focused_form_field(), Some(0));
+}
+
+#[test]
+fn generic_form_footer_focus_uses_the_same_wrapped_ring_as_the_keyboard() {
+    let mut state = present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Fields".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: vec![
+            FormField::text("one", "One", "1"),
+            FormField::text("two", "Two", "2"),
+            FormField::text("three", "Three", "3"),
+        ],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    }));
+    let mut session = TuiSession::default();
+
+    click_chip(&mut session, &mut state, UiCommand::FocusPrevious);
+    assert_eq!(state.focused_form_field(), Some(2));
+    press(&mut session, &mut state, KeyCode::Tab);
     assert_eq!(state.focused_form_field(), Some(0));
 }
 
@@ -625,13 +656,14 @@ fn test_prefs_boots_on_language_and_arrows_move() {
     let mut session = TuiSession::default();
     let (screen, geometry) = draw(&mut session, &state);
     assert_eq!(prefs_focus(&state), PreferencesControlId::Language); // the language dropdown
+    assert!(screen.contains("Tab"), "missing Tab navigation:\n{screen}");
     assert!(
-        screen.contains("Tab/↓"),
-        "missing forward navigation chip:\n{screen}"
+        screen.contains("Shift+Tab"),
+        "missing Shift+Tab navigation:\n{screen}"
     );
     assert!(
-        screen.contains("Shift+Tab/↑"),
-        "missing backward navigation chip:\n{screen}"
+        !screen.contains("Tab/↓") && !screen.contains("Shift+Tab/↑"),
+        "the focused picker must own arrow keys:\n{screen}"
     );
     for command in [UiCommand::FocusNext, UiCommand::FocusPrevious] {
         assert_eq!(
@@ -702,7 +734,9 @@ fn test_prefs_boots_on_language_and_arrows_move() {
             &geometry,
             left_click(next.x, next.y),
         ),
-        EventHandling::Action(Action::FocusNext)
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(
+            PreferencesControlId::AfterRun,
+        )))
     );
     assert_eq!(prefs_focus(&state), PreferencesControlId::AfterRun);
 
@@ -733,7 +767,7 @@ fn test_prefs_boots_on_language_and_arrows_move() {
             &geometry,
             left_click(previous.x, previous.y),
         ),
-        EventHandling::Action(Action::FocusPrevious)
+        EventHandling::Action(Action::Preferences(PreferencesAction::Focus(radio)))
     );
     assert_eq!(prefs_focus(&state), radio);
 
@@ -892,7 +926,7 @@ fn test_settings_boots_on_name_and_arrows_move() {
             &geometry,
             left_click(next.x, next.y),
         ),
-        EventHandling::Action(Action::FocusNext)
+        EventHandling::Action(Action::Settings(skit_ui::SettingsAction::FocusNext))
     );
     assert_eq!(settings_focus(&state), second);
 
@@ -922,7 +956,7 @@ fn test_settings_boots_on_name_and_arrows_move() {
             &geometry,
             left_click(previous.x, previous.y),
         ),
-        EventHandling::Action(Action::FocusPrevious)
+        EventHandling::Action(Action::Settings(skit_ui::SettingsAction::FocusPrevious))
     );
     assert_eq!(settings_focus(&state), "name");
 

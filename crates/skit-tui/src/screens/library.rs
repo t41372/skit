@@ -38,7 +38,7 @@ enum LibraryPane {
 }
 
 /// Persistent focus and scroll state for the Library panes.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct LibraryScreenSession {
     detail_scroll: ScrollableContentState,
     detail_area: Rect,

@@ -181,7 +181,7 @@ struct ControlDraw<'a> {
 ///
 /// Text and option cursors live here. Every selected mark a control shows is read from the model
 /// again on each render, so nothing in this session can disagree with what a save would keep.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SettingsScreenSession {
     signature: Option<Vec<(String, ControlShape)>>,
     inputs: BTreeMap<String, LineInput>,
@@ -213,6 +213,17 @@ struct Alignment {
 }
 
 impl SettingsScreenSession {
+    pub(crate) fn focused_owns_vertical_navigation(view: &SettingsView) -> bool {
+        view.field(view.focused()).is_some_and(|field| {
+            matches!(
+                field.kind,
+                FieldKind::Multiline
+                    | FieldKind::SingleChoice { .. }
+                    | FieldKind::MultiChoice { .. }
+            )
+        })
+    }
+
     /// Return where one field sat in the last render, at the full size it asked for.
     ///
     /// A field the viewport did not reach has no rectangle, because nothing was drawn for it. A
