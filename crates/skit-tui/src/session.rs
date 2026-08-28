@@ -9,20 +9,18 @@ use ratatui_core::{
     style::{Color, Modifier, Style},
     terminal::Frame,
     text::{Line, Span},
-    widgets::Widget,
 };
 use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui_interact::{
     components::{
         Button, ButtonState, ButtonStyle, ButtonVariant, CheckBox, CheckBoxState, CheckBoxStyle,
-        ScrollableContentState, Select, SelectAction, SelectState, SelectStyle, Toast, ToastState,
-        ToastStyle, handle_scrollable_content_key, handle_scrollable_content_mouse,
-        handle_select_key, handle_select_mouse,
+        Select, SelectAction, SelectState, SelectStyle, Toast, ToastState, ToastStyle,
+        handle_select_key,
     },
     state::FocusManager,
-    traits::{ClickRegion, ClickRegionRegistry},
+    traits::ClickRegion,
 };
 use ratatui_textarea::{CursorMove, TextArea as RichTextArea};
 use ratatui_widgets::{
@@ -39,19 +37,23 @@ use skit_i18n::{Locale, format_text, text};
 use skit_ui::{
     Action, AddAction, AddWorkflowState, ChoicePresentation, FormControl, FormField, FormView,
     InputMode, LibraryState, ModalState, RunDegradationNotice, RunField, RunFieldRole, RunFormView,
-    RunTokenError, RunValidationError, Screen, UiCommand,
+    RunTokenError, RunValidationError, RunnerEditorOwner, Screen, UiCommand,
 };
 use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
-    HitRegion, HitTarget, ViewGeometry, command_action,
+    HitRegion, HitTarget, RunFieldCommand, ViewGeometry, command_action,
     footer::FooterSession,
     map_event,
-    rowclip::{RowClip, editor_cursor_virtual_row},
+    pointer::{
+        ClickDispatch, ClickOutcome, ClickTracker, EditableGeometry, HitMap, TextAreaGeometry,
+        TextAreaViewport, display_cursor, display_scroll, is_primary_down, secret_display,
+    },
+    rowclip::{RowClip, bounded_textarea_lines, editor_cursor_virtual_row},
     run_field_command_action,
     screens::add::{AddScreenEvent, AddScreenGeometry, AddScreenSession, render_add},
-    screens::library::LibraryScreenSession,
+    screens::library::{LibraryClickTarget, LibraryPointerHandling, LibraryScreenSession},
     screens::management::{
         HealthEventHandling, HealthScreenSession, RunnerEditorEventHandling, RunnerEditorSession,
         RunnerManagerEventHandling, RunnerManagerSession,
@@ -62,12 +64,16 @@ use crate::{
         PromptCandidatePickerEvent, PromptCandidatePickerSession, render_file_picker,
         render_prompt_candidate_picker,
     },
-    screens::preferences::{PreferencesEventHandling, PreferencesWidgetSession},
+    screens::preferences::{
+        AgentSkillOverlayEventHandling, PreferencesEventHandling, PreferencesWidgetSession,
+    },
+    screens::report::ReportScreenSession,
     screens::run_modal::{RunModalEvent, RunModalSession},
     screens::settings::{
         SettingsScreenEvent, SettingsScreenGeometry, SettingsScreenSession, render_settings,
     },
     theme::{ACCENT, BOX_DIM, BOX_MAROON, SELECT_BG, SELECT_FG, panel_block},
+    viewport::{AlignmentSignature, VirtualScrollState},
 };
 
 /// Result of one stateful terminal event dispatch.
@@ -83,20 +89,16 @@ pub enum EventHandling {
 
 /// One header shape that can own visible rows in the terminal layout.
 pub(crate) enum HeaderKind<'a> {
-    Help,
-    ConfirmRemove,
-    ConfirmDiscardChanges,
-    RunPresetName,
-    RunTokenMenu,
-    RunEnvironmentPicker,
-    RunFilePicker,
-    RunnerEditor(skit_ui::RunnerEditorMode),
     Library { query: &'a str, search: bool },
-    Preferences,
-    Add,
-    Health,
-    Runners,
     Report(&'a str),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TopLevelClickTarget {
+    SearchInput,
+    Command(UiCommand),
+    RunFieldCommand(usize, RunFieldCommand),
+    Library(LibraryClickTarget),
 }
 
 /// Stateful terminal widget session. This state is not serialized into `skit-ui`.
@@ -112,6 +114,7 @@ pub struct TuiSession {
     path_suggestions: PathSuggestionSession,
     run_modal: RunModalSession,
     preferences: PreferencesWidgetSession,
+    report: ReportScreenSession,
     settings: SettingsScreenSession,
     settings_geometry: SettingsScreenGeometry,
     settings_prompt_overlay: Option<(PromptCandidatePickerSession, ChoicePickerGeometry)>,
@@ -123,7 +126,8 @@ pub struct TuiSession {
     runner_editor: RunnerEditorSession,
     form: FormWidgetSession,
     footer: FooterSession,
-    clicks: ClickRegionRegistry<SessionHit>,
+    clicks: HitMap<TopLevelClickTarget>,
+    top_level_click: ClickTracker<TopLevelClickTarget>,
 }
 
 #[derive(Debug)]
@@ -149,12 +153,60 @@ struct VisiblePathSuggestion {
     suggestion: String,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PathSuggestionKey<'a> {
+    generation: u64,
+    field: usize,
+    value: &'a str,
+}
+
+#[derive(Debug)]
+struct ExpectedPathSuggestion {
+    generation: u64,
+    field: usize,
+    request: PathCompletionRequest,
+}
+
+impl ExpectedPathSuggestion {
+    fn key(&self) -> PathSuggestionKey<'_> {
+        PathSuggestionKey {
+            generation: self.generation,
+            field: self.field,
+            value: &self.request.value,
+        }
+    }
+
+    fn request_key(&self) -> (usize, &PathCompletionRequest) {
+        (self.field, &self.request)
+    }
+}
+
+impl PathSuggestionResult {
+    fn key(&self) -> PathSuggestionKey<'_> {
+        PathSuggestionKey {
+            generation: self.generation,
+            field: self.field,
+            value: &self.value,
+        }
+    }
+}
+
+impl VisiblePathSuggestion {
+    fn key(&self) -> PathSuggestionKey<'_> {
+        PathSuggestionKey {
+            generation: self.generation,
+            field: self.field,
+            value: &self.value,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct PathSuggestionSession {
     requests: Option<mpsc::SyncSender<PathSuggestionJob>>,
     results: Option<mpsc::Receiver<PathSuggestionResult>>,
     generation: u64,
-    expected: Option<(u64, usize, PathCompletionRequest)>,
+    expected: Option<ExpectedPathSuggestion>,
     in_flight: bool,
     retry_pending: bool,
     visible: Option<VisiblePathSuggestion>,
@@ -188,7 +240,7 @@ impl PathSuggestionSession {
         let current_matches = self
             .expected
             .as_ref()
-            .is_some_and(|(_, target, expected)| *target == field && expected == &request);
+            .is_some_and(|expected| expected.request_key() == (field, &request));
         if current_matches {
             return;
         }
@@ -202,7 +254,11 @@ impl PathSuggestionSession {
         };
         match self.requests.as_ref().map(|sender| sender.try_send(job)) {
             Some(Ok(())) => {
-                self.expected = Some((generation, field, request));
+                self.expected = Some(ExpectedPathSuggestion {
+                    generation,
+                    field,
+                    request,
+                });
                 self.in_flight = true;
                 self.retry_pending = false;
             }
@@ -221,43 +277,41 @@ impl PathSuggestionSession {
             return false;
         };
         while let Ok(result) = results.try_recv() {
-            let is_current = self
-                .expected
-                .as_ref()
-                .is_some_and(|(generation, field, request)| {
-                    *generation == result.generation
-                        && *field == result.field
-                        && request.value == result.value
-                });
-            if !is_current {
+            let Some(expected) = self.expected.as_ref() else {
+                continue;
+            };
+            if expected.key() != result.key() {
                 continue;
             }
             self.visible = result.suggestion.and_then(|suggestion| {
-                (suggestion != result.value && suggestion.starts_with(&result.value)).then_some(
-                    VisiblePathSuggestion {
-                        generation: result.generation,
-                        field: result.field,
-                        value: result.value,
-                        suggestion,
-                    },
-                )
+                if suggestion == result.value || !suggestion.starts_with(&result.value) {
+                    return None;
+                }
+                Some(VisiblePathSuggestion {
+                    generation: result.generation,
+                    field: result.field,
+                    value: result.value,
+                    suggestion,
+                })
             });
             self.in_flight = false;
             changed = true;
         }
-        changed
+        changed || self.retry_pending
     }
 
     fn visible(&self, field: usize, value: &str) -> Option<&str> {
         self.visible.as_ref().and_then(|visible| {
-            (visible.field == field
-                && visible.value == value
-                && self.expected.as_ref().is_some_and(|expected| {
-                    expected.0 == visible.generation
-                        && expected.1 == field
-                        && expected.2.value == value
-                }))
-            .then_some(visible.suggestion.as_str())
+            let expected = self.expected.as_ref()?;
+            let requested = PathSuggestionKey {
+                generation: visible.generation,
+                field,
+                value,
+            };
+            if visible.key() != requested || expected.key() != requested {
+                return None;
+            }
+            Some(visible.suggestion.as_str())
         })
     }
 
@@ -328,14 +382,15 @@ enum AddOverlayEvent {
 #[derive(Debug, Default)]
 struct SearchWidgetSession {
     input: LineInput,
+    editable: Option<EditableGeometry>,
 }
 
-#[derive(Clone, Debug)]
-enum SessionHit {
-    SearchInput,
-    Target(HitTarget),
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RunClickTarget {
+    FocusField(usize),
     Checkbox(usize),
     Select(usize),
+    SelectOption { field: usize, value: String },
     RadioOption { field: usize, value: String },
 }
 
@@ -369,21 +424,27 @@ struct RunWidgetSession {
     signature: Option<RunSignature>,
     controls: Vec<WidgetControl>,
     focus: FocusManager<usize>,
-    scroll: ScrollableContentState,
+    scroll: VirtualScrollState,
     viewport: Rect,
     visible_height: usize,
     row_starts: Vec<usize>,
     row_heights: Vec<usize>,
-    select_areas: Vec<Rect>,
+    editables: Vec<Option<EditableGeometry>>,
+    textarea_editables: Vec<Option<TextAreaGeometry>>,
+    textarea_viewports: Vec<TextAreaViewport>,
+    select_areas: Vec<Option<Rect>>,
     dropdown_regions: Vec<Vec<ClickRegion<SelectAction>>>,
     pending_ensure_focus: bool,
+    alignment: Option<AlignmentSignature<usize, (usize, usize, usize)>>,
+    hits: HitMap<RunClickTarget>,
+    click: ClickTracker<RunClickTarget>,
 }
 
 #[derive(Clone, Debug)]
 struct RunLayout {
     items: Vec<PositionedRunItem>,
-    field_starts: Vec<usize>,
-    field_heights: Vec<usize>,
+    control_starts: Vec<usize>,
+    control_heights: Vec<usize>,
     height: usize,
 }
 
@@ -426,14 +487,19 @@ struct RunChip {
 struct FormWidgetSession {
     signature: Option<Vec<FieldSignature>>,
     controls: Vec<FormWidgetControl>,
-    clicks: ClickRegionRegistry<usize>,
+    clicks: HitMap<usize>,
     focus: FocusManager<usize>,
-    scroll: ScrollableContentState,
+    scroll: VirtualScrollState,
     viewport: Rect,
     visible_height: usize,
     row_starts: Vec<usize>,
     row_heights: Vec<usize>,
+    editables: Vec<Option<EditableGeometry>>,
+    textarea_editables: Vec<Option<TextAreaGeometry>>,
+    textarea_viewports: Vec<TextAreaViewport>,
+    click: ClickTracker<usize>,
     pending_ensure_focus: bool,
+    alignment: Option<AlignmentSignature<usize, (usize, usize, usize)>>,
 }
 
 #[derive(Debug)]
@@ -503,8 +569,27 @@ impl TuiSession {
         state: &LibraryState,
         geometry: &ViewGeometry,
     ) -> EventHandling {
+        if matches!(event, Event::Resize(_, _)) {
+            self.top_level_click.cancel();
+            self.cancel_owner_clicks();
+        }
+        if let Event::Mouse(mouse) = &event
+            && matches!(
+                mouse.kind,
+                MouseEventKind::ScrollUp
+                    | MouseEventKind::ScrollDown
+                    | MouseEventKind::ScrollLeft
+                    | MouseEventKind::ScrollRight
+            )
+        {
+            self.top_level_click.cancel();
+            self.cancel_owner_clicks();
+        }
         if is_ctrl_c(&event) {
             return self.handle_ctrl_c();
+        }
+        if let Some(handling) = self.handle_blocking_overlay_event(&event, state, geometry) {
+            return handling;
         }
         if !crate::footer::is_suppressed(state)
             && let Event::Mouse(mouse) = &event
@@ -512,14 +597,74 @@ impl TuiSession {
         {
             return EventHandling::Consumed;
         }
-        if let Event::Mouse(mouse) = &event
-            && matches!(mouse.kind, MouseEventKind::Down(_))
+        if state.modal().is_none()
+            && matches!(state.screen(), Screen::Library)
+            && let Event::Mouse(mouse) = &event
             && matches!(
-                self.clicks.handle_click(mouse.column, mouse.row),
-                Some(SessionHit::SearchInput)
+                mouse.kind,
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
             )
         {
-            return EventHandling::Action(Action::BeginSearch);
+            return match self.library.handle_wheel(mouse, geometry) {
+                LibraryPointerHandling::Action(action) => EventHandling::Action(action),
+                LibraryPointerHandling::Consumed => EventHandling::Consumed,
+                LibraryPointerHandling::Ignored => EventHandling::Ignored,
+            };
+        }
+        if let Event::Mouse(mouse) = &event {
+            let mut target = self.clicks.topmost(mouse.column, mouse.row).cloned();
+            if target.is_none()
+                && state.modal().is_none()
+                && matches!(state.screen(), Screen::Library)
+            {
+                target = self
+                    .library
+                    .click_target(mouse, geometry)
+                    .map(TopLevelClickTarget::Library);
+            }
+            if is_primary_down(mouse)
+                && matches!(target, Some(TopLevelClickTarget::SearchInput))
+                && let Some(editable) = self.search.editable
+            {
+                let _ = editable.place_cursor(&mut self.search.input, mouse.column, mouse.row);
+            }
+            if target.is_some()
+                && matches!(
+                    mouse.kind,
+                    MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_)
+                )
+            {
+                self.cancel_owner_clicks();
+            }
+            let dispatch = self.top_level_click.dispatch(mouse, target.as_ref());
+            if let ClickDispatch::Captured(outcome) = dispatch {
+                return match outcome {
+                    ClickOutcome::Armed => EventHandling::Consumed,
+                    ClickOutcome::Activated(TopLevelClickTarget::SearchInput) => {
+                        if state.input_mode() == InputMode::Browse {
+                            EventHandling::Action(Action::BeginSearch)
+                        } else {
+                            EventHandling::Consumed
+                        }
+                    }
+                    ClickOutcome::Activated(TopLevelClickTarget::Command(command)) => {
+                        EventHandling::Action(command_action(
+                            command,
+                            state.command_context(),
+                            geometry,
+                        ))
+                    }
+                    ClickOutcome::Activated(TopLevelClickTarget::RunFieldCommand(
+                        field,
+                        command,
+                    )) => EventHandling::Action(run_field_command_action(field, command)),
+                    ClickOutcome::Activated(TopLevelClickTarget::Library(target)) => self
+                        .library
+                        .activate_click(target, state)
+                        .map_or(EventHandling::Consumed, EventHandling::Action),
+                    ClickOutcome::Ignored => EventHandling::Ignored,
+                };
+            }
         }
         if state.modal().is_none()
             && matches!(state.screen(), Screen::Library)
@@ -533,15 +678,6 @@ impl TuiSession {
         {
             self.search.sync(state.query());
             return self.handle_search_event(event, state, geometry);
-        }
-        if let Some(ModalState::RunnerEditor { view, .. }) = state.modal() {
-            return match self.runner_editor.handle_event(event, view) {
-                RunnerEditorEventHandling::Action(action) => {
-                    EventHandling::Action(Action::RunnerEditor(action))
-                }
-                RunnerEditorEventHandling::Consumed => EventHandling::Consumed,
-                RunnerEditorEventHandling::Ignored => EventHandling::Ignored,
-            };
         }
         if matches!(state.modal(), Some(ModalState::Help)) && self.help.handle_event(&event) {
             return EventHandling::Consumed;
@@ -590,6 +726,9 @@ impl TuiSession {
                 HealthEventHandling::Ignored => EventHandling::Ignored,
             };
         }
+        if matches!(state.screen(), Screen::Report(_)) && self.report.handle_event(&event) {
+            return EventHandling::Consumed;
+        }
         if let Screen::Runners(view) = state.screen() {
             return match self.runners.handle_event(event, view) {
                 RunnerManagerEventHandling::Action(action) => {
@@ -603,22 +742,6 @@ impl TuiSession {
             return self.handle_add_event(event, state, view, geometry);
         }
         if let Screen::Settings(view) = state.screen() {
-            if let Some((session, geometry)) = self.settings_prompt_overlay.as_mut() {
-                return match session.handle_event(event, geometry) {
-                    Some(PromptCandidatePickerEvent::Changed) => EventHandling::Consumed,
-                    Some(PromptCandidatePickerEvent::Cancelled) => {
-                        self.settings_prompt_overlay = None;
-                        EventHandling::Consumed
-                    }
-                    Some(PromptCandidatePickerEvent::Accepted(names)) => {
-                        self.settings_prompt_overlay = None;
-                        EventHandling::Action(Action::Settings(
-                            skit_ui::SettingsAction::SetPromptCandidates(names),
-                        ))
-                    }
-                    None => EventHandling::Ignored,
-                };
-            }
             return match self
                 .settings
                 .handle_event(event.clone(), view, &self.settings_geometry)
@@ -673,7 +796,7 @@ impl TuiSession {
                     self.handle_form_key(key, form)
                 }
                 Event::Mouse(mouse) => {
-                    let handling = self.handle_form_mouse(mouse, geometry);
+                    let handling = self.handle_form_mouse(mouse, form, geometry);
                     if handling == EventHandling::Ignored {
                         map_event(Event::Mouse(mouse), state, geometry)
                             .map_or(EventHandling::Ignored, EventHandling::Action)
@@ -688,6 +811,106 @@ impl TuiSession {
             };
         }
         map_event(event, state, geometry).map_or(EventHandling::Ignored, EventHandling::Action)
+    }
+
+    fn handle_blocking_overlay_event(
+        &mut self,
+        event: &Event,
+        state: &LibraryState,
+        geometry: &ViewGeometry,
+    ) -> Option<EventHandling> {
+        if let Some(ModalState::RunnerEditor { owner, view, .. }) = state.modal() {
+            self.top_level_click.cancel();
+            match owner {
+                RunnerEditorOwner::Run { .. } => self.run.click.cancel(),
+                RunnerEditorOwner::Add => self.add.cancel_click(),
+                RunnerEditorOwner::Settings { .. } => self.settings.cancel_click(),
+            }
+            let pointer_lifecycle = matches!(
+                event,
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_),
+                    ..
+                })
+            );
+            return Some(match self.runner_editor.handle_event(event.clone(), view) {
+                RunnerEditorEventHandling::Action(action) => {
+                    EventHandling::Action(Action::RunnerEditor(action))
+                }
+                RunnerEditorEventHandling::Consumed => EventHandling::Consumed,
+                RunnerEditorEventHandling::Ignored if pointer_lifecycle => EventHandling::Consumed,
+                RunnerEditorEventHandling::Ignored => EventHandling::Ignored,
+            });
+        }
+        if let Screen::Add(view) = state.screen()
+            && self.add_overlay.is_some()
+        {
+            self.top_level_click.cancel();
+            self.add.cancel_click();
+            return Some(self.handle_add_event(event.clone(), state, view, geometry));
+        }
+        if matches!(state.screen(), Screen::Settings(_))
+            && let Some((session, overlay_geometry)) = self.settings_prompt_overlay.as_mut()
+        {
+            self.top_level_click.cancel();
+            self.settings.cancel_click();
+            let blocked_input = matches!(event, Event::Key(_) | Event::Mouse(_) | Event::Paste(_));
+            return Some(
+                match session.handle_event(event.clone(), overlay_geometry) {
+                    Some(PromptCandidatePickerEvent::Changed) => EventHandling::Consumed,
+                    Some(PromptCandidatePickerEvent::Cancelled) => {
+                        self.settings_prompt_overlay = None;
+                        EventHandling::Consumed
+                    }
+                    Some(PromptCandidatePickerEvent::Accepted(names)) => {
+                        self.settings_prompt_overlay = None;
+                        EventHandling::Action(Action::Settings(
+                            skit_ui::SettingsAction::SetPromptCandidates(names),
+                        ))
+                    }
+                    None if blocked_input => EventHandling::Consumed,
+                    None => EventHandling::Ignored,
+                },
+            );
+        }
+        if let Screen::Preferences(view) = state.screen()
+            && let Some(picker) = view.agent_skill_install()
+        {
+            self.top_level_click.cancel();
+            self.preferences.cancel_underlay_click();
+            return Some(
+                match self
+                    .preferences
+                    .handle_agent_skill_overlay_event(event.clone(), view, picker)
+                {
+                    AgentSkillOverlayEventHandling::Action(action) => {
+                        EventHandling::Action(Action::Preferences(action))
+                    }
+                    AgentSkillOverlayEventHandling::Consumed => EventHandling::Consumed,
+                },
+            );
+        }
+        None
+    }
+
+    fn cancel_owner_clicks(&mut self) {
+        self.runner_editor.cancel_click();
+        self.run_modal.cancel_click();
+        self.run.click.cancel();
+        self.form.click.cancel();
+        self.preferences.cancel_click();
+        self.settings.cancel_click();
+        if let Some((picker, _)) = self.settings_prompt_overlay.as_mut() {
+            picker.cancel_click();
+        }
+        self.add.cancel_click();
+        match self.add_overlay.as_mut() {
+            Some(AddOverlay::File { session, .. }) => session.cancel_click(),
+            Some(AddOverlay::Prompt { session, .. }) => session.cancel_click(),
+            None => {}
+        }
+        self.health.cancel_click();
+        self.runners.cancel_click();
     }
 
     fn open_settings_prompt_picker(&mut self, view: &skit_ui::SettingsView) {
@@ -744,6 +967,9 @@ impl TuiSession {
             };
         }
         if self.add_overlay.is_some() {
+            if matches!(event, Event::Mouse(_)) {
+                return EventHandling::Consumed;
+            }
             return map_event(event, state, geometry)
                 .map_or(EventHandling::Ignored, EventHandling::Action);
         }
@@ -807,8 +1033,17 @@ impl TuiSession {
 
     pub(crate) fn register_geometry(&mut self, geometry: &ViewGeometry) {
         for hit in &geometry.hits {
-            self.clicks
-                .register(hit.rect, SessionHit::Target(hit.action));
+            match hit.action {
+                HitTarget::Command(command) => {
+                    self.clicks
+                        .register(hit.rect, TopLevelClickTarget::Command(command));
+                }
+                HitTarget::RunFieldCommand { field, command } => self.clicks.register(
+                    hit.rect,
+                    TopLevelClickTarget::RunFieldCommand(field, command),
+                ),
+                HitTarget::FocusField(_) => {}
+            }
         }
     }
 
@@ -818,8 +1053,10 @@ impl TuiSession {
         area: Rect,
         state: &LibraryState,
         locale: Locale,
+        decorated: bool,
     ) -> Vec<HitRegion> {
-        self.footer.render(frame, area, state, locale)
+        self.footer
+            .render_with_decoration(frame, area, state, locale, decorated)
     }
 
     pub(crate) fn render_quit_toast(&mut self, frame: &mut Frame, locale: Locale) {
@@ -858,53 +1095,18 @@ impl TuiSession {
         kind: HeaderKind<'_>,
         locale: Locale,
     ) {
-        let library_browse = matches!(&kind, HeaderKind::Library { search: false, .. });
         let title = match kind {
-            HeaderKind::Help => text(locale, "Help").into_owned(),
-            HeaderKind::ConfirmRemove => text(locale, "Confirm removal").into_owned(),
-            HeaderKind::ConfirmDiscardChanges => {
-                text(locale, "Discard unsaved changes?").into_owned()
-            }
-            HeaderKind::RunPresetName => text(locale, "Save as preset").into_owned(),
-            HeaderKind::RunTokenMenu => text(locale, "Insert a run-time value").into_owned(),
-            HeaderKind::RunEnvironmentPicker => text(locale, "Environment variable").into_owned(),
-            HeaderKind::RunFilePicker => text(locale, "Insert a file or folder").into_owned(),
-            HeaderKind::RunnerEditor(mode) => match mode {
-                skit_ui::RunnerEditorMode::New => text(locale, "New agent (runner)").into_owned(),
-                skit_ui::RunnerEditorMode::Edit | skit_ui::RunnerEditorMode::Repair => {
-                    text(locale, "Edit agent (runner)").into_owned()
-                }
-            },
-            HeaderKind::Library {
-                query,
-                search: true,
-            } => {
+            HeaderKind::Library { query, search } => {
                 self.search.sync(query);
                 let label = text(locale, "Search");
-                if area.height < 3 {
-                    render_flat_search_input(frame, area, &self.search.input, &label);
+                self.search.editable = if area.height < 3 {
+                    render_flat_search_input(frame, area, &self.search.input, search, &label)
                 } else {
-                    render_line_input(frame, area, &self.search.input, false, true, &label);
-                }
-                self.clicks.register(area, SessionHit::SearchInput);
+                    render_line_input(frame, area, &self.search.input, false, search, &label)
+                };
+                self.clicks.register(area, TopLevelClickTarget::SearchInput);
                 return;
             }
-            HeaderKind::Library {
-                query,
-                search: false,
-            } => format!(
-                "{}: {}",
-                text(locale, "Library"),
-                if query.is_empty() {
-                    text(locale, "all entries").into_owned()
-                } else {
-                    query.to_owned()
-                }
-            ),
-            HeaderKind::Preferences => text(locale, "Preferences").into_owned(),
-            HeaderKind::Add => text(locale, "Add").into_owned(),
-            HeaderKind::Health => text(locale, "Health").into_owned(),
-            HeaderKind::Runners => text(locale, "Agents (prompt runners)").into_owned(),
             HeaderKind::Report(title) => text(locale, title).into_owned(),
         };
         frame.render_widget(
@@ -916,9 +1118,6 @@ impl TuiSession {
             ),
             area,
         );
-        if library_browse {
-            self.clicks.register(area, SessionHit::SearchInput);
-        }
     }
 
     pub(crate) fn render_form(
@@ -934,6 +1133,8 @@ impl TuiSession {
         let inner = block.inner(area);
         frame.render_widget(block, area);
         self.form.prepare_layout(form, inner);
+        self.form.editables = vec![None; self.form.controls.len()];
+        self.form.textarea_editables = vec![None; self.form.controls.len()];
 
         let mut hits = Vec::new();
         for (index, field) in form.fields.iter().enumerate() {
@@ -946,9 +1147,19 @@ impl TuiSession {
                     state,
                     secret,
                     focused,
-                } => render_line_input_band(frame, clip, state, *secret, *focused, &label, None),
+                } => {
+                    self.form.editables[index] =
+                        render_line_input_band(frame, clip, state, *secret, *focused, &label, None);
+                }
                 FormWidgetControl::TextArea { state, focused, .. } => {
-                    render_textarea_band(frame, clip, state, *focused, &label);
+                    self.form.textarea_editables[index] = render_textarea_band(
+                        frame,
+                        clip,
+                        state,
+                        &mut self.form.textarea_viewports[index],
+                        *focused,
+                        &label,
+                    );
                 }
             }
             self.form.clicks.register(clip.area(), index);
@@ -1003,6 +1214,7 @@ impl TuiSession {
         locale: Locale,
     ) -> ViewGeometry {
         self.run.sync(form);
+        self.run.hits.clear();
         let block = panel_block(
             format!("{} {}", text(locale, "Run"), form.name()),
             BOX_MAROON,
@@ -1023,7 +1235,9 @@ impl TuiSession {
         };
         let layout = run_layout(form, locale, content.width);
         self.run.prepare_layout(&layout, form.focused(), content);
-        self.run.select_areas = vec![Rect::default(); self.run.controls.len()];
+        self.run.editables = vec![None; self.run.controls.len()];
+        self.run.textarea_editables = vec![None; self.run.controls.len()];
+        self.run.select_areas = vec![None; self.run.controls.len()];
         self.run.dropdown_regions = vec![Vec::new(); self.run.controls.len()];
 
         let mut hits = Vec::new();
@@ -1050,23 +1264,36 @@ impl TuiSession {
                     }
                     self.render_run_chips(frame, visible, chips, &mut hits);
                 }
-                RunRenderItem::Control(index) if usize::from(visible.height) == item.height => {
-                    self.render_run_control(frame, visible, *index, locale, &mut hits);
+                RunRenderItem::Control(index) => {
+                    let is_full = usize::from(visible.height) == item.height;
+                    let is_textarea = matches!(
+                        self.run.controls.get(*index),
+                        Some(WidgetControl::TextArea { .. })
+                    );
+                    if is_full || is_textarea {
+                        let clipped_top =
+                            self.run.scroll.scroll_offset().saturating_sub(item.start);
+                        self.render_run_control(
+                            frame,
+                            RowClip::new(item.height, clipped_top, visible),
+                            *index,
+                            locale,
+                            &mut hits,
+                        );
+                    }
                 }
-                RunRenderItem::Control(_) | RunRenderItem::Spacer => {}
+                RunRenderItem::Spacer => {}
             }
         }
-        if layout.height > usize::from(content.height) {
-            let mut scrollbar =
-                ScrollbarState::new(layout.height.saturating_sub(usize::from(content.height)))
-                    .position(self.run.scroll.scroll_offset())
-                    .viewport_content_length(usize::from(content.height));
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight).style(run_scrollbar_style()),
-                inner,
-                &mut scrollbar,
-            );
-        }
+        let mut scrollbar =
+            ScrollbarState::new(layout.height.saturating_sub(usize::from(content.height)))
+                .position(self.run.scroll.scroll_offset())
+                .viewport_content_length(usize::from(content.height));
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight).style(run_scrollbar_style()),
+            inner,
+            &mut scrollbar,
+        );
         self.render_open_dropdowns(frame);
 
         ViewGeometry {
@@ -1091,6 +1318,16 @@ impl TuiSession {
             hits: Vec::new(),
             detail_pane_visible: false,
         }
+    }
+
+    pub(crate) fn render_report(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        report: &skit_ui::ReportView,
+        locale: Locale,
+    ) -> ViewGeometry {
+        self.report.render(frame, area, report, locale)
     }
 
     pub(crate) fn render_settings(
@@ -1252,11 +1489,18 @@ impl TuiSession {
     fn render_run_control(
         &mut self,
         frame: &mut Frame,
-        area: Rect,
+        clip: RowClip,
         index: usize,
         locale: Locale,
         hits: &mut Vec<HitRegion>,
     ) {
+        let area = clip.area();
+        let (Some(area_width), Some(_height)) = (
+            std::num::NonZeroU16::new(area.width),
+            std::num::NonZeroU16::new(area.height),
+        ) else {
+            return;
+        };
         let select_style = select_style();
         match &mut self.run.controls[index] {
             WidgetControl::Input {
@@ -1267,20 +1511,29 @@ impl TuiSession {
                 let suggestion = (*focused)
                     .then(|| self.path_suggestions.visible(index, state.value()))
                     .flatten();
-                render_line_input_with_suggestion(
+                self.run.editables[index] = render_line_input_with_suggestion(
                     frame, area, state, *secret, *focused, "", suggestion,
                 );
-                self.clicks
-                    .register(area, SessionHit::Target(HitTarget::FocusField(index)));
+                self.run
+                    .hits
+                    .register(area, RunClickTarget::FocusField(index));
                 hits.push(HitRegion {
                     rect: area,
                     action: HitTarget::FocusField(index),
                 });
             }
             WidgetControl::TextArea { state, focused, .. } => {
-                render_textarea(frame, area, state, *focused, "");
-                self.clicks
-                    .register(area, SessionHit::Target(HitTarget::FocusField(index)));
+                self.run.textarea_editables[index] = render_textarea_band(
+                    frame,
+                    clip,
+                    state,
+                    &mut self.run.textarea_viewports[index],
+                    *focused,
+                    "",
+                );
+                self.run
+                    .hits
+                    .register(area, RunClickTarget::FocusField(index));
                 hits.push(HitRegion {
                     rect: area,
                     action: HitTarget::FocusField(index),
@@ -1291,8 +1544,9 @@ impl TuiSession {
                 let region = CheckBox::new(&shown, state)
                     .style(checkbox_style())
                     .render_stateful(area, frame.buffer_mut());
-                self.clicks
-                    .register(region.area, SessionHit::Checkbox(index));
+                self.run
+                    .hits
+                    .register(region.area, RunClickTarget::Checkbox(index));
                 hits.push(HitRegion {
                     rect: region.area,
                     action: HitTarget::FocusField(index),
@@ -1310,8 +1564,10 @@ impl TuiSession {
                     .placeholder(&placeholder)
                     .style(select_style)
                     .render_stateful(frame, area);
-                self.run.select_areas[index] = region.area;
-                self.clicks.register(region.area, SessionHit::Select(index));
+                self.run.select_areas[index] = Some(region.area);
+                self.run
+                    .hits
+                    .register(region.area, RunClickTarget::Select(index));
                 hits.push(HitRegion {
                     rect: region.area,
                     action: HitTarget::FocusField(index),
@@ -1323,35 +1579,34 @@ impl TuiSession {
                 presentation: ChoicePresentation::Radio,
                 buttons,
             } => {
+                let field_area = area;
+                self.run
+                    .hits
+                    .register(field_area, RunClickTarget::FocusField(index));
                 let mut x = area.x;
                 let mut y = area.y;
-                if area.width > 0 {
-                    for (option_label, button) in options.iter().zip(buttons.iter()) {
-                        let width = u16::try_from(option_label.width().saturating_add(2))
-                            .unwrap_or(u16::MAX)
-                            .min(area.width);
-                        if x > area.x && x.saturating_add(width) > area.right() {
-                            x = area.x;
-                            y = y.saturating_add(1);
-                        }
-                        let option_area = Rect::new(x, y, width, 1);
-                        let region = Button::new(option_label, button)
-                            .variant(ButtonVariant::Toggle)
-                            .style(radio_style())
-                            .render_stateful(option_area, frame.buffer_mut());
-                        self.clicks.register(
-                            region.area,
-                            SessionHit::RadioOption {
-                                field: index,
-                                value: option_label.clone(),
-                            },
-                        );
-                        x = x.saturating_add(width).saturating_add(1);
+                for (option_label, button) in options.iter().zip(buttons.iter()) {
+                    let width = u16::try_from(option_label.width().saturating_add(2))
+                        .unwrap_or(u16::MAX)
+                        .min(area_width.get());
+                    if x.saturating_add(width) > area.right() {
+                        x = area.x;
+                        y = y.saturating_add(1);
                     }
+                    let option_area = Rect::new(x, y, width, 1);
+                    let region = Button::new(option_label, button)
+                        .variant(ButtonVariant::Toggle)
+                        .style(radio_style())
+                        .render_stateful(option_area, frame.buffer_mut());
+                    self.run.hits.register(
+                        region.area,
+                        RunClickTarget::RadioOption {
+                            field: index,
+                            value: option_label.clone(),
+                        },
+                    );
+                    x = x.saturating_add(width).saturating_add(1);
                 }
-                let field_area = area;
-                self.clicks
-                    .register(field_area, SessionHit::Target(HitTarget::FocusField(index)));
                 hits.push(HitRegion {
                     rect: field_area,
                     action: HitTarget::FocusField(index),
@@ -1370,20 +1625,19 @@ impl TuiSession {
     ) {
         for chip in chips {
             let width = chip.width.min(area.width.saturating_sub(chip.x));
-            if width > 0 {
-                let chip_area = Rect::new(area.x.saturating_add(chip.x), area.y, width, 1);
-                let state = ButtonState::enabled();
-                let region = Button::new(&chip.label, &state)
-                    .variant(ButtonVariant::SingleLine)
-                    .style(run_chip_style())
-                    .render_stateful(chip_area, frame.buffer_mut());
-                self.clicks
-                    .register(region.area, SessionHit::Target(chip.target));
-                hits.push(HitRegion {
-                    rect: region.area,
-                    action: chip.target,
-                });
-            }
+            let Some(width) = std::num::NonZeroU16::new(width) else {
+                continue;
+            };
+            let chip_area = Rect::new(area.x.saturating_add(chip.x), area.y, width.get(), 1);
+            let state = ButtonState::enabled();
+            let _region = Button::new(&chip.label, &state)
+                .variant(ButtonVariant::SingleLine)
+                .style(run_chip_style())
+                .render_stateful(chip_area, frame.buffer_mut());
+            hits.push(HitRegion {
+                rect: chip_area,
+                action: chip.target,
+            });
         }
     }
 
@@ -1400,9 +1654,13 @@ impl TuiSession {
                 continue;
             };
             if state.is_open {
+                let Some(anchor) = self.run.select_areas[index] else {
+                    self.run.dropdown_regions[index].clear();
+                    continue;
+                };
                 let regions = Select::new(options, state)
                     .style(select_style())
-                    .render_dropdown(frame, self.run.select_areas[index], screen);
+                    .render_dropdown(frame, anchor, screen);
                 self.run.dropdown_regions[index] = regions;
             }
         }
@@ -1435,11 +1693,7 @@ impl TuiSession {
             (KeyCode::Tab, _) => return self.move_focus(true),
             (KeyCode::BackTab, _) => return self.move_focus(false),
             (KeyCode::PageUp | KeyCode::PageDown, _) => {
-                let _ = handle_scrollable_content_key(
-                    &mut self.run.scroll,
-                    &key,
-                    self.run.visible_height,
-                );
+                let _ = self.run.scroll.handle_key(&key, self.run.visible_height);
                 return EventHandling::Consumed;
             }
             _ => {}
@@ -1495,11 +1749,15 @@ impl TuiSession {
                 ..
             } => {
                 let before = textarea_text(state);
+                let before_cursor = state.cursor();
                 match edit_textarea(state, key, undo_group, redo_group) {
                     TextAreaEventHandling::Ignored => return EventHandling::Ignored,
                     TextAreaEventHandling::Consumed | TextAreaEventHandling::VerticalBoundary => {}
                 }
                 let after = textarea_text(state);
+                if state.cursor() != before_cursor {
+                    self.run.pending_ensure_focus = true;
+                }
                 if before == after {
                     EventHandling::Consumed
                 } else {
@@ -1659,87 +1917,151 @@ impl TuiSession {
         &mut self,
         mouse: MouseEvent,
         form: &RunFormView,
-        geometry: &ViewGeometry,
+        _geometry: &ViewGeometry,
     ) -> EventHandling {
         if matches!(
             mouse.kind,
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) && handle_scrollable_content_mouse(
-            &mut self.run.scroll,
-            &mouse,
-            self.run.viewport,
-            self.run.visible_height,
-        )
-        .is_some()
-        {
-            return EventHandling::Consumed;
-        }
-        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
-            return EventHandling::Ignored;
-        }
-
-        for index in 0..self.run.controls.len() {
-            let WidgetControl::Choice {
-                state,
-                options,
-                presentation: ChoicePresentation::Picker,
-                ..
-            } = &mut self.run.controls[index]
-            else {
-                continue;
-            };
-            if !state.is_open {
-                continue;
-            }
-            if let Some(action) = handle_select_mouse(
-                &mouse,
-                state,
-                self.run.select_areas[index],
-                &self.run.dropdown_regions[index],
-            ) {
-                if let SelectAction::Select(option) = action {
-                    return EventHandling::Action(Action::SelectFieldOption {
-                        field: index,
-                        value: options.get(option).cloned().unwrap_or_default(),
-                    });
-                }
-                if ClickRegion::new(self.run.select_areas[index], ())
-                    .contains(mouse.column, mouse.row)
+        ) {
+            for (index, control) in self.run.controls.iter_mut().enumerate() {
+                let WidgetControl::Choice {
+                    state,
+                    presentation: ChoicePresentation::Picker,
+                    ..
+                } = control
+                else {
+                    continue;
+                };
+                if state.is_open
+                    && self.run.dropdown_regions[index]
+                        .iter()
+                        .any(|region| region.contains(mouse.column, mouse.row))
                 {
+                    self.run.click.cancel();
+                    if mouse.kind == MouseEventKind::ScrollUp {
+                        state.highlight_prev();
+                    } else {
+                        state.highlight_next();
+                    }
+                    state.ensure_visible(self.run.dropdown_regions[index].len().max(1));
                     return EventHandling::Consumed;
                 }
             }
         }
+        if self
+            .run
+            .scroll
+            .handle_mouse(&mouse, self.run.viewport, self.run.visible_height)
+        {
+            return EventHandling::Consumed;
+        }
+        if !matches!(
+            mouse.kind,
+            MouseEventKind::Down(MouseButton::Left) | MouseEventKind::Up(MouseButton::Left)
+        ) {
+            return EventHandling::Ignored;
+        }
 
-        match self.clicks.handle_click(mouse.column, mouse.row).cloned() {
-            None | Some(SessionHit::SearchInput) => {
-                let _ = geometry;
-                EventHandling::Ignored
-            }
-            Some(SessionHit::Target(HitTarget::Command(command))) => {
-                EventHandling::Action(command_action(command, geometry))
-            }
-            Some(SessionHit::Target(HitTarget::RunFieldCommand { field, command })) => {
-                EventHandling::Action(run_field_command_action(field, command))
-            }
-            Some(SessionHit::Target(HitTarget::FocusField(index))) => {
-                EventHandling::Action(Action::FocusField(index))
-            }
-            Some(SessionHit::Checkbox(index)) => EventHandling::Action(Action::ToggleField(index)),
-            Some(SessionHit::Select(index)) => {
-                if let Some(WidgetControl::Choice { state, .. }) = self.run.controls.get_mut(index)
-                {
-                    state.open();
+        let dropdown_target =
+            self.run
+                .controls
+                .iter()
+                .enumerate()
+                .find_map(|(index, control)| {
+                    let WidgetControl::Choice {
+                        state,
+                        options,
+                        presentation: ChoicePresentation::Picker,
+                        ..
+                    } = control
+                    else {
+                        return None;
+                    };
+                    if !state.is_open {
+                        return None;
+                    }
+                    self.run.dropdown_regions[index]
+                        .iter()
+                        .rev()
+                        .find(|region| region.contains(mouse.column, mouse.row))
+                        .and_then(|region| match region.data {
+                            SelectAction::Select(option) => {
+                                options.get(option).cloned().map(|value| {
+                                    RunClickTarget::SelectOption {
+                                        field: index,
+                                        value,
+                                    }
+                                })
+                            }
+                            SelectAction::Focus | SelectAction::Open | SelectAction::Close => None,
+                        })
+                });
+
+        let target = dropdown_target
+            .as_ref()
+            .or_else(|| self.run.hits.topmost(mouse.column, mouse.row));
+        match self.run.click.update(&mouse, target) {
+            ClickOutcome::Armed => {
+                if let Some(RunClickTarget::FocusField(index)) = target {
+                    self.place_run_cursor(*index, mouse.column, mouse.row);
                 }
-                if form.focused() == index {
-                    EventHandling::Consumed
-                } else {
-                    EventHandling::Action(Action::FocusField(index))
+                EventHandling::Consumed
+            }
+            ClickOutcome::Ignored => EventHandling::Ignored,
+            ClickOutcome::Activated(target) => match target {
+                RunClickTarget::FocusField(index) => {
+                    self.place_run_cursor(index, mouse.column, mouse.row);
+                    if form.focused() == index {
+                        EventHandling::Consumed
+                    } else {
+                        EventHandling::Action(Action::FocusField(index))
+                    }
                 }
-            }
-            Some(SessionHit::RadioOption { field, value }) => {
-                EventHandling::Action(Action::SelectFieldOption { field, value })
-            }
+                RunClickTarget::Checkbox(index) => {
+                    EventHandling::Action(Action::ToggleField(index))
+                }
+                RunClickTarget::Select(index) => {
+                    if let Some(WidgetControl::Choice { state, .. }) =
+                        self.run.controls.get_mut(index)
+                    {
+                        state.open();
+                    }
+                    if form.focused() == index {
+                        EventHandling::Consumed
+                    } else {
+                        EventHandling::Action(Action::FocusField(index))
+                    }
+                }
+                RunClickTarget::SelectOption { field, value } => {
+                    EventHandling::Action(Action::SelectFieldOption { field, value })
+                }
+                RunClickTarget::RadioOption { field, value } => {
+                    EventHandling::Action(Action::SelectFieldOption { field, value })
+                }
+            },
+        }
+    }
+
+    fn place_run_cursor(&mut self, index: usize, column: u16, row: u16) {
+        if let Some((editable, WidgetControl::Input { state, .. })) = self
+            .run
+            .editables
+            .get(index)
+            .copied()
+            .flatten()
+            .zip(self.run.controls.get_mut(index))
+        {
+            let _ = editable.place_cursor(state, column, row);
+        }
+        if let Some((editable, WidgetControl::TextArea { state, .. })) = self
+            .run
+            .textarea_editables
+            .get(index)
+            .copied()
+            .flatten()
+            .zip(self.run.controls.get_mut(index))
+        {
+            let _ = editable.place_cursor(state, column, row);
         }
     }
 
@@ -1764,11 +2086,7 @@ impl TuiSession {
                         KeyCode::Enter | KeyCode::Down => self.move_form_focus(true),
                         KeyCode::Up => self.move_form_focus(false),
                         KeyCode::PageUp | KeyCode::PageDown => {
-                            let _ = handle_scrollable_content_key(
-                                &mut self.form.scroll,
-                                &key,
-                                self.form.visible_height,
-                            );
+                            let _ = self.form.scroll.handle_key(&key, self.form.visible_height);
                             EventHandling::Consumed
                         }
                         _ => EventHandling::Ignored,
@@ -1830,11 +2148,7 @@ impl TuiSession {
                 ..
             } => {
                 let selected = state.is_selecting();
-                let before_cursor = state.cursor();
                 let _ = state.insert_str(value);
-                if state.cursor() != before_cursor {
-                    self.form.pending_ensure_focus = true;
-                }
                 *undo_group = 1 + usize::from(selected && !value.is_empty());
                 *redo_group = 0;
                 EventHandling::Action(Action::SetFieldValue {
@@ -1845,33 +2159,61 @@ impl TuiSession {
         }
     }
 
-    fn handle_form_mouse(&mut self, mouse: MouseEvent, geometry: &ViewGeometry) -> EventHandling {
-        if matches!(
-            mouse.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) && handle_scrollable_content_mouse(
-            &mut self.form.scroll,
-            &mouse,
-            self.form.viewport,
-            self.form.visible_height,
-        )
-        .is_some()
+    fn handle_form_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        form: &FormView,
+        geometry: &ViewGeometry,
+    ) -> EventHandling {
+        if self
+            .form
+            .scroll
+            .handle_mouse(&mouse, self.form.viewport, self.form.visible_height)
         {
             return EventHandling::Consumed;
         }
-        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
-            return EventHandling::Ignored;
+        let target = self.form.clicks.topmost(mouse.column, mouse.row).copied();
+        match self.form.click.update(&mouse, target.as_ref()) {
+            ClickOutcome::Armed => {
+                let index = target.expect("an armed form click has one target");
+                self.place_form_cursor(index, mouse.column, mouse.row);
+                EventHandling::Consumed
+            }
+            ClickOutcome::Activated(index) => {
+                if form.focused == index {
+                    EventHandling::Consumed
+                } else {
+                    EventHandling::Action(Action::FocusField(index))
+                }
+            }
+            ClickOutcome::Ignored => {
+                let _ = geometry;
+                EventHandling::Ignored
+            }
         }
-        let Some(index) = self
+    }
+
+    fn place_form_cursor(&mut self, index: usize, column: u16, row: u16) {
+        if let Some((editable, FormWidgetControl::Input { state, .. })) = self
             .form
-            .clicks
-            .handle_click(mouse.column, mouse.row)
+            .editables
+            .get(index)
             .copied()
-        else {
-            let _ = geometry;
-            return EventHandling::Ignored;
-        };
-        EventHandling::Action(Action::FocusField(index))
+            .flatten()
+            .zip(self.form.controls.get_mut(index))
+        {
+            let _ = editable.place_cursor(state, column, row);
+        }
+        if let Some((editable, FormWidgetControl::TextArea { state, .. })) = self
+            .form
+            .textarea_editables
+            .get(index)
+            .copied()
+            .flatten()
+            .zip(self.form.controls.get_mut(index))
+        {
+            let _ = editable.place_cursor(state, column, row);
+        }
     }
 
     fn move_focus(&mut self, forward: bool) -> EventHandling {
@@ -1939,9 +2281,10 @@ impl RunWidgetSession {
         };
         if self.signature.as_ref() != Some(&signature) {
             self.controls = form.fields().iter().map(widget_control).collect();
+            self.textarea_viewports = vec![TextAreaViewport::default(); self.controls.len()];
             self.focus.clear();
             self.focus.register_all(0..self.controls.len());
-            self.scroll = ScrollableContentState::empty();
+            self.scroll = VirtualScrollState::default();
             self.signature = Some(signature);
             self.pending_ensure_focus = true;
         } else {
@@ -1961,24 +2304,42 @@ impl RunWidgetSession {
     fn prepare_layout(&mut self, layout: &RunLayout, focused: usize, viewport: Rect) {
         self.viewport = viewport;
         self.visible_height = usize::from(viewport.height);
-        self.row_starts.clone_from(&layout.field_starts);
-        self.row_heights.clone_from(&layout.field_heights);
-        self.scroll.set_lines(vec![String::new(); layout.height]);
+        self.row_starts.clone_from(&layout.control_starts);
+        self.row_heights.clone_from(&layout.control_heights);
+        self.scroll.set_line_count(layout.height);
         let maximum = layout.height.saturating_sub(self.visible_height);
-        if self.scroll.scroll_offset() > maximum {
-            self.scroll.set_scroll_offset(maximum);
-        }
-        if self.pending_ensure_focus
-            && let (Some(start), Some(height)) =
-                (self.row_starts.get(focused), self.row_heights.get(focused))
+        self.scroll
+            .set_scroll_offset(self.scroll.scroll_offset().min(maximum));
+        let target = self
+            .row_starts
+            .get(focused)
+            .copied()
+            .zip(self.row_heights.get(focused).copied());
+        let reflow = target.map_or((layout.height, 0, 0), |(start, height)| {
+            (layout.height, start, height)
+        });
+        let alignment_changed =
+            AlignmentSignature::update(&mut self.alignment, focused, viewport, reflow);
+        if (self.pending_ensure_focus || alignment_changed)
+            && let Some((start, height)) = target
         {
             let offset = self.scroll.scroll_offset();
-            let end = start.saturating_add(*height);
-            if *start < offset {
-                self.scroll.set_scroll_offset(*start);
-            } else if end > offset.saturating_add(self.visible_height) {
-                self.scroll
-                    .set_scroll_offset(end.saturating_sub(self.visible_height));
+            let end = start.saturating_add(height);
+            if height.cmp(&self.visible_height) == std::cmp::Ordering::Greater
+                && let Some(WidgetControl::TextArea { state, .. }) = self.controls.get(focused)
+            {
+                let last_content_row = height.saturating_sub(3);
+                let cursor =
+                    editor_cursor_virtual_row(start, state.cursor().0.min(last_content_row));
+                let next = start.max(cursor.saturating_add(1).saturating_sub(self.visible_height));
+                self.scroll.set_scroll_offset(next);
+            } else {
+                match start.cmp(&offset) {
+                    std::cmp::Ordering::Less => self.scroll.set_scroll_offset(start),
+                    std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => self
+                        .scroll
+                        .set_scroll_offset(offset.max(end.saturating_sub(self.visible_height))),
+                }
             }
             self.pending_ensure_focus = false;
         }
@@ -2029,9 +2390,10 @@ impl FormWidgetSession {
         let signature = form.fields.iter().map(form_field_signature).collect();
         if self.signature.as_ref() != Some(&signature) {
             self.controls = form.fields.iter().map(form_widget_control).collect();
+            self.textarea_viewports = vec![TextAreaViewport::default(); self.controls.len()];
             self.focus.clear();
             self.focus.register_all(0..self.controls.len());
-            self.scroll = ScrollableContentState::empty();
+            self.scroll = VirtualScrollState::default();
             self.signature = Some(signature);
             self.pending_ensure_focus = true;
         } else {
@@ -2060,34 +2422,36 @@ impl FormWidgetSession {
             self.row_heights.push(height);
             next = next.saturating_add(height);
         }
-        self.scroll.set_lines(vec![String::new(); next]);
+        self.scroll.set_line_count(next);
         let maximum = next.saturating_sub(self.visible_height);
-        if self.scroll.scroll_offset() > maximum {
-            self.scroll.set_scroll_offset(maximum);
-        }
-        if self.pending_ensure_focus
-            && let (Some(start), Some(height)) = (
-                self.row_starts.get(form.focused),
-                self.row_heights.get(form.focused),
-            )
+        self.scroll
+            .set_scroll_offset(self.scroll.scroll_offset().min(maximum));
+        let target = self
+            .row_starts
+            .get(form.focused)
+            .copied()
+            .zip(self.row_heights.get(form.focused).copied());
+        let reflow = target.map_or((next, 0, 0), |(start, height)| (next, start, height));
+        let alignment_changed =
+            AlignmentSignature::update(&mut self.alignment, form.focused, viewport, reflow);
+        if (self.pending_ensure_focus || alignment_changed)
+            && let Some((start, height)) = target
         {
             let offset = self.scroll.scroll_offset();
-            let end = start.saturating_add(*height);
-            if *height > self.visible_height
+            let end = start.saturating_add(height);
+            if height.cmp(&self.visible_height) == std::cmp::Ordering::Greater
                 && let FormWidgetControl::TextArea { state, .. } = &self.controls[form.focused]
             {
-                let cursor = editor_cursor_virtual_row(*start, state.cursor().0);
-                let next = if cursor - *start < self.visible_height {
-                    *start
-                } else {
-                    cursor + 1 - self.visible_height
-                };
+                let cursor = editor_cursor_virtual_row(start, state.cursor().0);
+                let next = start.max(cursor.saturating_add(1).saturating_sub(self.visible_height));
                 self.scroll.set_scroll_offset(next);
-            } else if *start < offset {
-                self.scroll.set_scroll_offset(*start);
-            } else if end > offset.saturating_add(self.visible_height) {
-                self.scroll
-                    .set_scroll_offset(end.saturating_sub(self.visible_height));
+            } else {
+                match start.cmp(&offset) {
+                    std::cmp::Ordering::Less => self.scroll.set_scroll_offset(start),
+                    std::cmp::Ordering::Equal | std::cmp::Ordering::Greater => self
+                        .scroll
+                        .set_scroll_offset(offset.max(end.saturating_sub(self.visible_height))),
+                }
             }
             self.pending_ensure_focus = false;
         }
@@ -2106,8 +2470,7 @@ impl FormWidgetSession {
         let clipped_end = end.min(viewport_end);
         Some(RowClip::new(
             height,
-            u16::try_from(clipped_start.saturating_sub(start))
-                .expect("the form band offset fits Ratatui geometry"),
+            clipped_start.saturating_sub(start),
             Rect::new(
                 self.viewport.x,
                 self.viewport.y.saturating_add(
@@ -2331,7 +2694,7 @@ pub(crate) fn edit_textarea(
     if (key.code == KeyCode::Char('z')
         && key
             .modifiers
-            .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT))
+            .contains(KeyModifiers::CONTROL.union(KeyModifiers::SHIFT)))
         || (key.code == KeyCode::Char('y') && key.modifiers == KeyModifiers::CONTROL)
     {
         let count = (*redo_group).max(1);
@@ -2406,6 +2769,247 @@ fn select_radio(
     })
 }
 
+#[cfg(test)]
+mod editor_contract_tests {
+    use super::*;
+
+    fn edit(
+        state: &mut RichTextArea<'static>,
+        undo_group: &mut usize,
+        redo_group: &mut usize,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> TextAreaEventHandling {
+        edit_textarea(
+            state,
+            KeyEvent::new(code, modifiers),
+            undo_group,
+            redo_group,
+        )
+    }
+
+    fn undone_edit() -> (RichTextArea<'static>, usize, usize) {
+        let mut state = new_textarea("ab");
+        let (mut undo_group, mut redo_group) = (0, 0);
+        assert_eq!(
+            edit(
+                &mut state,
+                &mut undo_group,
+                &mut redo_group,
+                KeyCode::Char('c'),
+                KeyModifiers::NONE,
+            ),
+            TextAreaEventHandling::Consumed
+        );
+        assert_eq!(textarea_text(&state), "abc");
+        assert_eq!(
+            edit(
+                &mut state,
+                &mut undo_group,
+                &mut redo_group,
+                KeyCode::Char('z'),
+                KeyModifiers::CONTROL,
+            ),
+            TextAreaEventHandling::Consumed
+        );
+        assert_eq!(textarea_text(&state), "ab");
+        (state, undo_group, redo_group)
+    }
+
+    #[test]
+    fn textarea_undo_and_redo_require_their_exact_key_chords() {
+        for (code, modifiers) in [
+            (
+                KeyCode::Char('z'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            (
+                KeyCode::Char('z'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT | KeyModifiers::ALT,
+            ),
+            (KeyCode::Char('y'), KeyModifiers::CONTROL),
+        ] {
+            let (mut state, mut undo_group, mut redo_group) = undone_edit();
+            assert_eq!(
+                edit(
+                    &mut state,
+                    &mut undo_group,
+                    &mut redo_group,
+                    code,
+                    modifiers,
+                ),
+                TextAreaEventHandling::Consumed
+            );
+            assert_eq!(textarea_text(&state), "abc", "redo chord {code:?}");
+        }
+
+        for (code, modifiers) in [
+            (KeyCode::Char('q'), KeyModifiers::CONTROL),
+            (
+                KeyCode::Char('q'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            (
+                KeyCode::Char('y'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+        ] {
+            let (mut state, mut undo_group, mut redo_group) = undone_edit();
+            let _ = edit(
+                &mut state,
+                &mut undo_group,
+                &mut redo_group,
+                code,
+                modifiers,
+            );
+            assert_eq!(textarea_text(&state), "ab", "false redo chord {code:?}");
+        }
+
+        for (code, modifiers, expected) in [
+            (KeyCode::Char('z'), KeyModifiers::NONE, "abz"),
+            (KeyCode::Char('z'), KeyModifiers::SHIFT, "abz"),
+            (KeyCode::Char('y'), KeyModifiers::NONE, "aby"),
+        ] {
+            let (mut state, mut undo_group, mut redo_group) = undone_edit();
+            let _ = edit(
+                &mut state,
+                &mut undo_group,
+                &mut redo_group,
+                code,
+                modifiers,
+            );
+            assert_eq!(textarea_text(&state), expected, "plain character {code:?}");
+        }
+    }
+
+    #[test]
+    fn textarea_undo_groups_selection_replacement_and_deletion_exactly() {
+        let mut replaced = new_textarea("ab");
+        let (mut undo_group, mut redo_group) = (0, 0);
+        for (code, modifiers) in [
+            (KeyCode::End, KeyModifiers::NONE),
+            (KeyCode::Left, KeyModifiers::SHIFT),
+            (KeyCode::Char('界'), KeyModifiers::NONE),
+            (KeyCode::Left, KeyModifiers::NONE),
+        ] {
+            let _ = edit(
+                &mut replaced,
+                &mut undo_group,
+                &mut redo_group,
+                code,
+                modifiers,
+            );
+        }
+        assert_eq!(textarea_text(&replaced), "a界");
+        let _ = edit(
+            &mut replaced,
+            &mut undo_group,
+            &mut redo_group,
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(textarea_text(&replaced), "ab");
+
+        let mut deleted = new_textarea("ab");
+        let (mut undo_group, mut redo_group) = (0, 0);
+        for (code, modifiers) in [
+            (KeyCode::End, KeyModifiers::NONE),
+            (KeyCode::Char('Q'), KeyModifiers::NONE),
+            (KeyCode::Left, KeyModifiers::SHIFT),
+            (KeyCode::Backspace, KeyModifiers::NONE),
+        ] {
+            let _ = edit(
+                &mut deleted,
+                &mut undo_group,
+                &mut redo_group,
+                code,
+                modifiers,
+            );
+        }
+        assert_eq!(textarea_text(&deleted), "ab");
+        let _ = edit(
+            &mut deleted,
+            &mut undo_group,
+            &mut redo_group,
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL,
+        );
+        assert_eq!(textarea_text(&deleted), "abQ");
+    }
+
+    #[test]
+    fn textarea_reports_only_unmodified_vertical_edges_as_boundaries() {
+        for (code, modifiers, expected) in [
+            (
+                KeyCode::F(2),
+                KeyModifiers::NONE,
+                TextAreaEventHandling::Ignored,
+            ),
+            (
+                KeyCode::Up,
+                KeyModifiers::NONE,
+                TextAreaEventHandling::VerticalBoundary,
+            ),
+            (
+                KeyCode::Up,
+                KeyModifiers::SHIFT,
+                TextAreaEventHandling::Consumed,
+            ),
+            (
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+                TextAreaEventHandling::Consumed,
+            ),
+        ] {
+            let mut state = new_textarea("ab");
+            let (mut undo_group, mut redo_group) = (0, 0);
+            assert_eq!(
+                edit(
+                    &mut state,
+                    &mut undo_group,
+                    &mut redo_group,
+                    code,
+                    modifiers,
+                ),
+                expected,
+                "event classification for {code:?}"
+            );
+        }
+
+        let mut selected = new_textarea("a\nb");
+        selected.start_selection();
+        let (mut undo_group, mut redo_group) = (0, 0);
+        assert_eq!(
+            edit(
+                &mut selected,
+                &mut undo_group,
+                &mut redo_group,
+                KeyCode::Up,
+                KeyModifiers::NONE,
+            ),
+            TextAreaEventHandling::Consumed
+        );
+    }
+
+    #[test]
+    fn radio_navigation_stops_at_both_ends_and_moves_one_option() {
+        let options = ["zero".to_owned(), "one".to_owned(), "two".to_owned()];
+        for (selected, forward, expected) in
+            [(1, true, 2), (2, true, 2), (1, false, 0), (0, false, 0)]
+        {
+            let mut state = SelectState::with_selected(options.len(), selected);
+            assert_eq!(
+                select_radio(4, &mut state, &options, forward),
+                EventHandling::Action(Action::SelectFieldOption {
+                    field: 4,
+                    value: options[expected].clone(),
+                })
+            );
+            assert_eq!(state.selected_index, Some(expected));
+        }
+    }
+}
+
 fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
     let mut items = Vec::new();
     let mut start = 0_usize;
@@ -2436,7 +3040,7 @@ fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
             width,
         );
     }
-    if form.has_parameters() && form.preset_names().len() == 0 {
+    if form.has_parameters() && form.preset_names().next().is_none() {
         // Version 0.4 keeps the row labelled even when it is empty: `Preset:` then the hint, on
         // one line (`src/skit/tui_form.py:741-757`). Without the label the sentence floats free
         // and never says which control it is about.
@@ -2463,10 +3067,9 @@ fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
         );
     }
 
-    let mut field_starts = Vec::with_capacity(form.fields().len());
-    let mut field_heights = Vec::with_capacity(form.fields().len());
+    let mut control_starts = Vec::with_capacity(form.fields().len());
+    let mut control_heights = Vec::with_capacity(form.fields().len());
     for (index, field) in form.fields().iter().enumerate() {
-        let field_start = start;
         let label = run_field_label(field, locale);
         let label_width = u16::try_from(label.width()).unwrap_or(u16::MAX);
         // The chips continue the label's own row, two columns after it, exactly as version 0.4
@@ -2491,25 +3094,27 @@ fn run_layout(form: &RunFormView, locale: Locale, width: u16) -> RunLayout {
                 1,
             );
         }
+        let control_start = start;
+        let control_height = run_control_height(field, width);
         push_run_item(
             &mut items,
             &mut start,
             RunRenderItem::Control(index),
-            run_control_height(field, width),
+            control_height,
         );
+        control_starts.push(control_start);
+        control_heights.push(control_height);
         for note in run_field_notes(field, locale) {
             push_run_copy(&mut items, &mut start, note, width);
         }
         if index + 1 < form.fields().len() {
             push_run_item(&mut items, &mut start, RunRenderItem::Spacer, 1);
         }
-        field_starts.push(field_start);
-        field_heights.push(start.saturating_sub(field_start));
     }
     RunLayout {
         items,
-        field_starts,
-        field_heights,
+        control_starts,
+        control_heights,
         height: start,
     }
 }
@@ -2725,7 +3330,7 @@ fn run_field_chips(
             format!("📁 {}", text(locale, "browse")),
             HitTarget::RunFieldCommand {
                 field: index,
-                command: UiCommand::BrowsePath,
+                command: RunFieldCommand::BrowsePath,
             },
         ));
     }
@@ -2734,7 +3339,7 @@ fn run_field_chips(
             format!("▾ {}", text(locale, "insert")),
             HitTarget::RunFieldCommand {
                 field: index,
-                command: UiCommand::InsertValue,
+                command: RunFieldCommand::InsertValue,
             },
         ));
     }
@@ -2743,7 +3348,7 @@ fn run_field_chips(
             format!("↺ {}", text(locale, "default")),
             HitTarget::RunFieldCommand {
                 field: index,
-                command: UiCommand::ResetDefault,
+                command: RunFieldCommand::ResetDefault,
             },
         ));
     }
@@ -2766,7 +3371,7 @@ fn run_chip_rows(
         let wanted = u16::try_from(label.width().saturating_add(2))
             .unwrap_or(u16::MAX)
             .min(available);
-        if x > 0 && x.saturating_add(wanted) > available && !(row.is_empty() && rows.is_empty()) {
+        if x != 0 && x.saturating_add(wanted) > available {
             rows.push(row);
             row = Vec::new();
             x = 0;
@@ -2806,7 +3411,7 @@ fn packed_row_count(labels: &[String], width: u16) -> usize {
         let wanted = u16::try_from(label.width().saturating_add(2))
             .unwrap_or(u16::MAX)
             .min(available);
-        if x > 0 && x.saturating_add(wanted) > available {
+        if x.saturating_add(wanted) > available {
             rows = rows.saturating_add(1);
             x = 0;
         }
@@ -2848,7 +3453,7 @@ pub(crate) fn render_line_input(
     secret: bool,
     focused: bool,
     label: &str,
-) {
+) -> Option<EditableGeometry> {
     render_line_input_band(
         frame,
         RowClip::new(3, 0, area),
@@ -2857,7 +3462,20 @@ pub(crate) fn render_line_input(
         focused,
         label,
         None,
-    );
+    )
+}
+
+pub(crate) fn render_search_line_input(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LineInput,
+    label: &str,
+) -> Option<EditableGeometry> {
+    if area.height < 3 {
+        render_flat_search_input(frame, area, state, true, label)
+    } else {
+        render_line_input(frame, area, state, false, true, label)
+    }
 }
 
 fn render_line_input_with_suggestion(
@@ -2868,7 +3486,7 @@ fn render_line_input_with_suggestion(
     focused: bool,
     label: &str,
     suggestion: Option<&str>,
-) {
+) -> Option<EditableGeometry> {
     render_line_input_band(
         frame,
         RowClip::new(3, 0, area),
@@ -2877,7 +3495,7 @@ fn render_line_input_with_suggestion(
         focused,
         label,
         suggestion,
-    );
+    )
 }
 
 /// Draw only the visible band of one bordered line input.
@@ -2889,13 +3507,13 @@ pub(crate) fn render_line_input_band(
     focused: bool,
     label: &str,
     suggestion: Option<&str>,
-) {
+) -> Option<EditableGeometry> {
     let border = if focused { ACCENT } else { BOX_DIM };
     let width = usize::from(clip.area().width.saturating_sub(2).max(1));
-    let scroll = state.visual_scroll(width);
+    let scroll = display_scroll(state.value(), state.cursor(), width, secret);
     let display = if secret {
         Line::from(Span::styled(
-            "•".repeat(state.value().chars().count()),
+            secret_display(state.value()),
             Style::default().fg(Color::White),
         ))
     } else {
@@ -2919,11 +3537,7 @@ pub(crate) fn render_line_input_band(
         && let Some(row) = clip.row(1)
         && row.width > 2
     {
-        let visual_cursor = if secret {
-            state.cursor()
-        } else {
-            state.visual_cursor()
-        };
+        let visual_cursor = display_cursor(state.value(), state.cursor(), secret);
         let x = visual_cursor
             .saturating_sub(scroll)
             .min(width.saturating_sub(1));
@@ -2934,17 +3548,38 @@ pub(crate) fn render_line_input_band(
             row.y,
         ));
     }
+    clip.row(1).and_then(|row| {
+        (row.width > 2).then(|| {
+            EditableGeometry::new(
+                Rect::new(
+                    row.x.saturating_add(1),
+                    row.y,
+                    row.width.saturating_sub(2),
+                    1,
+                ),
+                scroll,
+                secret,
+            )
+        })
+    })
 }
 
-fn render_flat_search_input(frame: &mut Frame, area: Rect, state: &LineInput, label: &str) {
+fn render_flat_search_input(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LineInput,
+    focused: bool,
+    label: &str,
+) -> Option<EditableGeometry> {
     let content = Rect::new(
         area.x.saturating_add(1),
         area.y,
         area.width.saturating_sub(2),
         area.height.min(1),
     );
-    let width = usize::from(content.width.max(1));
-    let scroll = state.visual_scroll(width);
+    let width = usize::from(std::num::NonZeroU16::new(content.width)?.get());
+    let _height = std::num::NonZeroU16::new(content.height)?;
+    let scroll = display_scroll(state.value(), state.cursor(), width, false);
     let shown = if state.value().is_empty() {
         label.to_owned()
     } else {
@@ -2956,9 +3591,8 @@ fn render_flat_search_input(frame: &mut Frame, area: Rect, state: &LineInput, la
             .scroll((0, u16::try_from(scroll).unwrap_or(u16::MAX))),
         content,
     );
-    if content.width > 0 && content.height > 0 {
-        let x = state
-            .visual_cursor()
+    if focused {
+        let x = display_cursor(state.value(), state.cursor(), false)
             .saturating_sub(scroll)
             .min(width.saturating_sub(1));
         frame.set_cursor_position((
@@ -2968,16 +3602,7 @@ fn render_flat_search_input(frame: &mut Frame, area: Rect, state: &LineInput, la
             content.y,
         ));
     }
-}
-
-pub(crate) fn render_textarea(
-    frame: &mut Frame,
-    area: Rect,
-    state: &mut RichTextArea<'static>,
-    focused: bool,
-    label: &str,
-) {
-    render_textarea_band(frame, RowClip::new(6, 0, area), state, focused, label);
+    Some(EditableGeometry::new(content, scroll, false))
 }
 
 /// Draw only the visible band of one bordered text area.
@@ -2985,9 +3610,10 @@ pub(crate) fn render_textarea_band(
     frame: &mut Frame,
     clip: RowClip,
     state: &mut RichTextArea<'static>,
+    viewport: &mut TextAreaViewport,
     focused: bool,
     label: &str,
-) {
+) -> Option<TextAreaGeometry> {
     state.set_block(
         Block::default()
             .borders(Borders::ALL)
@@ -3002,11 +3628,44 @@ pub(crate) fn render_textarea_band(
         Style::default().fg(Color::White)
     });
     state.set_selection_style(Style::default().fg(SELECT_FG).bg(SELECT_BG));
-    if clip.is_full() {
-        (&*state).render(clip.area(), frame.buffer_mut());
-    } else {
-        clip.paint_bounded_stateful_editor(frame.buffer_mut(), &*state);
-    }
+    let content_width = usize::from(clip.area().width.saturating_sub(2));
+    let content_height = clip.full_height().saturating_sub(2);
+    viewport.align(state, content_width, content_height);
+    let content_start = clip.top().max(1);
+    let content_end = clip
+        .top()
+        .saturating_add(usize::from(clip.area().height))
+        .min(clip.full_height().saturating_sub(1));
+    let first_row = viewport
+        .top_row()
+        .saturating_add(content_start.saturating_sub(1));
+    let lines = bounded_textarea_lines(
+        state,
+        first_row,
+        content_end.saturating_sub(content_start),
+        viewport.left_cell(),
+        content_width,
+        Style::default().fg(SELECT_FG).bg(SELECT_BG),
+    );
+    clip.paint_bordered_lines(
+        frame.buffer_mut(),
+        lines,
+        Line::from(label.to_owned()),
+        Style::default().fg(if focused { ACCENT } else { BOX_DIM }),
+    );
+    let first = clip.row(content_start)?;
+    (content_start < content_end && first.width > 2).then(|| {
+        viewport.geometry(
+            Rect::new(
+                first.x.saturating_add(1),
+                first.y,
+                first.width.saturating_sub(2),
+                u16::try_from(content_end.saturating_sub(content_start)).unwrap_or(u16::MAX),
+            ),
+            content_start.saturating_sub(1),
+            usize::from(state.tab_length()),
+        )
+    })
 }
 
 pub(crate) fn checkbox_style() -> CheckBoxStyle {
@@ -3035,6 +3694,8 @@ pub(crate) fn radio_style() -> ButtonStyle {
 
 #[cfg(test)]
 mod textarea_band_tests {
+    use std::collections::BTreeMap;
+
     use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};
 
     use super::*;
@@ -3046,6 +3707,1318 @@ mod textarea_band_tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn an_open_run_select_without_a_visible_anchor_has_no_origin_dropdown() {
+        let mut select = SelectState::new(2);
+        select.open();
+        let mut session = TuiSession::default();
+        session.run.controls.push(WidgetControl::Choice {
+            state: select,
+            options: vec!["first".to_owned(), "second".to_owned()],
+            presentation: ChoicePresentation::Picker,
+            buttons: Vec::new(),
+        });
+        session.run.select_areas.push(None);
+        session.run.dropdown_regions.push(Vec::new());
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+        terminal
+            .draw(|frame| session.render_open_dropdowns(frame))
+            .unwrap();
+        assert!(
+            session.run.dropdown_regions[0].is_empty(),
+            "a clipped select rendered a ghost dropdown at the default anchor"
+        );
+    }
+
+    #[test]
+    fn open_run_select_wheel_is_contained_and_reaches_the_last_option() {
+        let options = (0..20)
+            .map(|index| format!("option-{index:02}"))
+            .collect::<Vec<_>>();
+        let form = RunFormView::from_declarations(
+            "demo",
+            "Demo",
+            &[],
+            &BTreeMap::new(),
+            &options,
+            &options[0],
+            &BTreeMap::new(),
+            "",
+        );
+        let mut session = TuiSession::default();
+        session.run.sync(&form);
+        let index = 0;
+        assert_eq!(
+            session.handle_open_select_key(
+                index,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &form,
+            ),
+            Some(EventHandling::Consumed)
+        );
+        assert_eq!(
+            session.handle_open_select_key(
+                index,
+                &KeyEvent::new(KeyCode::F(2), KeyModifiers::NONE),
+                &form,
+            ),
+            None,
+            "an open picker must leave unrelated keys to the form"
+        );
+        session.run.dropdown_regions = vec![Vec::new(); session.run.controls.len()];
+        session.run.dropdown_regions[index].push(ClickRegion::new(
+            Rect::new(4, 4, 20, 1),
+            SelectAction::Focus,
+        ));
+        session.run.dropdown_regions[index].extend((0..3).map(|option| {
+            ClickRegion::new(
+                Rect::new(5, 5 + u16::try_from(option).unwrap(), 20, 1),
+                SelectAction::Select(option),
+            )
+        }));
+        assert_eq!(
+            session.handle_run_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 4,
+                    row: 4,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &form,
+                &ViewGeometry::default(),
+            ),
+            EventHandling::Ignored,
+            "a non-option dropdown region must not arm an option"
+        );
+        assert_eq!(
+            session.handle_run_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 5,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &form,
+                &ViewGeometry::default(),
+            ),
+            EventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_run_mouse(
+                MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    column: 5,
+                    row: 5,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &form,
+                &ViewGeometry::default(),
+            ),
+            EventHandling::Action(Action::SelectFieldOption {
+                field: index,
+                value: "option-00".to_owned(),
+            })
+        );
+        for _ in 0..30 {
+            assert_eq!(
+                session.handle_run_mouse(
+                    MouseEvent {
+                        kind: MouseEventKind::ScrollDown,
+                        column: 5,
+                        row: 5,
+                        modifiers: KeyModifiers::NONE,
+                    },
+                    &form,
+                    &ViewGeometry::default(),
+                ),
+                EventHandling::Consumed
+            );
+        }
+        for kind in [MouseEventKind::ScrollUp, MouseEventKind::ScrollDown] {
+            assert_eq!(
+                session.handle_run_mouse(
+                    MouseEvent {
+                        kind,
+                        column: 5,
+                        row: 5,
+                        modifiers: KeyModifiers::NONE,
+                    },
+                    &form,
+                    &ViewGeometry::default(),
+                ),
+                EventHandling::Consumed
+            );
+        }
+        assert_eq!(
+            session.handle_open_select_key(
+                index,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &form,
+            ),
+            Some(EventHandling::Action(Action::SelectFieldOption {
+                field: index,
+                value: "option-19".to_owned(),
+            }))
+        );
+    }
+
+    #[test]
+    fn search_mouse_fallback_ignores_pointer_motion() {
+        let mut state = LibraryState::default();
+        state.update(Action::BeginSearch);
+        let mut session = TuiSession::default();
+
+        assert_eq!(
+            session.handle_search_event(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Moved,
+                    column: 0,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &state,
+                &ViewGeometry::default(),
+            ),
+            EventHandling::Ignored
+        );
+    }
+
+    #[test]
+    fn search_and_bordered_inputs_publish_only_real_content_cells() {
+        let input = LineInput::new("界abc".to_owned());
+
+        let mut compact = Terminal::new(TestBackend::new(8, 2)).unwrap();
+        let mut compact_geometry = None;
+        compact
+            .draw(|frame| {
+                compact_geometry = render_search_line_input(frame, frame.area(), &input, "Search");
+            })
+            .unwrap();
+        let compact_text = rendered(compact.backend().buffer());
+        assert!(compact_geometry.is_some());
+        assert!(
+            !compact_text.contains('╭'),
+            "a two-row search drew a border"
+        );
+
+        let mut bordered = Terminal::new(TestBackend::new(8, 3)).unwrap();
+        let mut bordered_geometry = None;
+        bordered
+            .draw(|frame| {
+                bordered_geometry = render_search_line_input(frame, frame.area(), &input, "Search");
+            })
+            .unwrap();
+        assert!(bordered_geometry.is_some());
+        assert!(
+            rendered(bordered.backend().buffer()).contains('┌'),
+            "an exact three-row search lost its border"
+        );
+        assert_eq!(
+            bordered.backend().cursor_position().y,
+            1,
+            "the exact-width Unicode input lost its content cursor"
+        );
+
+        let mut two_columns = Terminal::new(TestBackend::new(2, 3)).unwrap();
+        let mut two_column_geometry = None;
+        two_columns
+            .draw(|frame| {
+                two_column_geometry = render_line_input(
+                    frame,
+                    frame.area(),
+                    &LineInput::new(String::new()),
+                    false,
+                    true,
+                    "Value",
+                );
+            })
+            .unwrap();
+        assert!(two_column_geometry.is_none());
+        assert_ne!(
+            two_columns.backend().cursor_position(),
+            ratatui_core::layout::Position::new(1, 1),
+            "a border-only row fabricated a content cursor"
+        );
+
+        let mut three_columns = Terminal::new(TestBackend::new(3, 3)).unwrap();
+        let mut three_column_geometry = None;
+        three_columns
+            .draw(|frame| {
+                three_column_geometry = render_line_input(
+                    frame,
+                    frame.area(),
+                    &LineInput::new(String::new()),
+                    false,
+                    true,
+                    "Value",
+                );
+            })
+            .unwrap();
+        assert!(
+            three_column_geometry.is_some(),
+            "one content cell lost geometry"
+        );
+        assert_eq!(
+            three_columns.backend().cursor_position(),
+            ratatui_core::layout::Position::new(1, 1)
+        );
+
+        for (width, height, focused, expected_geometry) in [
+            (2, 1, true, false),
+            (3, 0, true, false),
+            (3, 1, false, true),
+            (3, 1, true, true),
+        ] {
+            let backend_height = height.max(1);
+            let mut terminal = Terminal::new(TestBackend::new(width, backend_height)).unwrap();
+            let mut geometry = None;
+            terminal
+                .draw(|frame| {
+                    geometry = render_flat_search_input(
+                        frame,
+                        Rect::new(0, 0, width, height),
+                        &input,
+                        focused,
+                        "Search",
+                    );
+                })
+                .unwrap();
+            assert_eq!(
+                geometry.is_some(),
+                expected_geometry,
+                "flat search geometry at {width}x{height}, focused={focused}"
+            );
+            if focused && !expected_geometry {
+                assert_ne!(
+                    terminal.backend().cursor_position(),
+                    ratatui_core::layout::Position::new(1, 0),
+                    "a flat input without content fabricated a cursor"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn flat_search_paints_and_places_its_caret_in_exact_nonzero_content() {
+        for (area, value, label, painted, expected_cursor) in [
+            (
+                Rect::new(2, 1, 3, 1),
+                "",
+                "Q",
+                vec![(3, "Q")],
+                ratatui_core::layout::Position::new(3, 1),
+            ),
+            (
+                Rect::new(2, 1, 5, 1),
+                "ab",
+                "Search",
+                vec![(3, "a"), (4, "b")],
+                ratatui_core::layout::Position::new(5, 1),
+            ),
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
+            let mut geometry = None;
+            terminal
+                .draw(|frame| {
+                    geometry = render_flat_search_input(
+                        frame,
+                        area,
+                        &LineInput::new(value.to_owned()),
+                        true,
+                        label,
+                    );
+                })
+                .unwrap();
+
+            assert!(geometry.is_some(), "nonzero content lost edit geometry");
+            for (column, symbol) in painted {
+                assert_eq!(
+                    terminal.backend().buffer()[(column, area.y)].symbol(),
+                    symbol,
+                    "the flat input did not paint its final visible cells"
+                );
+            }
+            assert_eq!(
+                terminal.backend().cursor_position(),
+                expected_cursor,
+                "the focused flat input did not place its terminal caret"
+            );
+        }
+    }
+
+    #[test]
+    fn clipped_textarea_geometry_excludes_borders_and_zero_width_content() {
+        fn draw_band(top: u16, width: u16, height: u16) -> (bool, String) {
+            let backend_height = height.max(1);
+            let mut terminal = Terminal::new(TestBackend::new(width, backend_height)).unwrap();
+            let mut state = new_textarea("zero\none\ntwo\nthree");
+            let mut viewport = TextAreaViewport::default();
+            let mut has_geometry = false;
+            terminal
+                .draw(|frame| {
+                    has_geometry = render_textarea_band(
+                        frame,
+                        RowClip::new(6, usize::from(top), Rect::new(0, 0, width, height)),
+                        &mut state,
+                        &mut viewport,
+                        true,
+                        "Body",
+                    )
+                    .is_some();
+                })
+                .unwrap();
+            (has_geometry, rendered(terminal.backend().buffer()))
+        }
+
+        assert!(!draw_band(0, 8, 1).0, "a top border became editable");
+        assert!(draw_band(1, 8, 1).0, "one content row lost geometry");
+        assert!(
+            !draw_band(1, 2, 1).0,
+            "a border-only textarea width became editable"
+        );
+        assert!(!draw_band(5, 8, 1).0, "a bottom border became editable");
+        let (has_geometry, rendered) = draw_band(4, 8, 2);
+        assert!(has_geometry, "the last content row lost geometry");
+        assert!(
+            rendered.contains("three"),
+            "the bottom-clipped editor did not paint its last content row: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn bounded_textarea_render_keeps_complete_unicode_graphemes_and_cursor_style() {
+        for (value, expected) in [("e\u{301}x", "e\u{301}"), ("👨‍👩‍👧x", "👨‍👩‍👧")]
+        {
+            for (width, horizontal_tail) in [(12, false), (5, true)] {
+                let value = if horizontal_tail {
+                    format!("abcd{value}")
+                } else {
+                    value.to_owned()
+                };
+                let mut state = new_textarea(&value);
+                if !horizontal_tail {
+                    state.move_cursor(CursorMove::Head);
+                }
+                let mut viewport = TextAreaViewport::default();
+                let mut terminal = Terminal::new(TestBackend::new(width, 3)).unwrap();
+                terminal
+                    .draw(|frame| {
+                        let _ = render_textarea_band(
+                            frame,
+                            RowClip::new(3, 0, frame.area()),
+                            &mut state,
+                            &mut viewport,
+                            true,
+                            "Body",
+                        );
+                    })
+                    .unwrap();
+                let content_x = 1;
+                let cell = &terminal.backend().buffer()[(content_x, 1)];
+                assert_eq!(
+                    cell.symbol(),
+                    expected,
+                    "the final buffer split {expected:?} at width {width}"
+                );
+                if !horizontal_tail {
+                    assert_eq!(cell.fg, Color::Black);
+                    assert_eq!(cell.bg, ACCENT, "the cursor did not style one grapheme");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn one_cell_textarea_keeps_a_caret_for_a_cursor_inside_one_grapheme() {
+        for value in ["e\u{301}x", "👨‍👩‍👧x"] {
+            let mut state = new_textarea(value);
+            state.move_cursor(CursorMove::Head);
+            state.move_cursor(CursorMove::Forward);
+            assert_eq!(
+                state.cursor().1,
+                1,
+                "the fixture cursor must be inside {value:?}"
+            );
+            let mut viewport = TextAreaViewport::default();
+            let mut terminal = Terminal::new(TestBackend::new(3, 3)).unwrap();
+
+            terminal
+                .draw(|frame| {
+                    let _ = render_textarea_band(
+                        frame,
+                        RowClip::new(3, 0, frame.area()),
+                        &mut state,
+                        &mut viewport,
+                        true,
+                        "Body",
+                    );
+                })
+                .unwrap();
+
+            let caret = &terminal.backend().buffer()[(1, 1)];
+            assert_eq!(caret.fg, Color::Black, "the caret vanished for {value:?}");
+            assert_eq!(caret.bg, ACCENT, "the caret vanished for {value:?}");
+            assert_eq!(
+                textarea_text(&state),
+                value,
+                "render changed the model value"
+            );
+        }
+
+        let mut state = new_textarea("a\tX");
+        state.move_cursor(CursorMove::Head);
+        state.move_cursor(CursorMove::Forward);
+        state.move_cursor(CursorMove::Forward);
+        assert_eq!(state.cursor().1, 2, "the cursor must follow the tab");
+        let mut viewport = TextAreaViewport::default();
+        let mut terminal = Terminal::new(TestBackend::new(3, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = render_textarea_band(
+                    frame,
+                    RowClip::new(3, 0, frame.area()),
+                    &mut state,
+                    &mut viewport,
+                    true,
+                    "Body",
+                );
+            })
+            .unwrap();
+        let caret = &terminal.backend().buffer()[(1, 1)];
+        assert_eq!(caret.symbol(), "X");
+        assert_eq!((caret.fg, caret.bg), (Color::Black, ACCENT));
+    }
+
+    #[test]
+    fn rendered_textarea_clicks_use_tab_cells_and_rows_above_u16() {
+        for column in [0, 1, 2] {
+            let mut state = new_textarea("\tX");
+            state.move_cursor(CursorMove::Head);
+            let mut viewport = TextAreaViewport::default();
+            let mut geometry = None;
+            let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
+            terminal
+                .draw(|frame| {
+                    geometry = render_textarea_band(
+                        frame,
+                        RowClip::new(3, 0, frame.area()),
+                        &mut state,
+                        &mut viewport,
+                        true,
+                        "Body",
+                    );
+                })
+                .unwrap();
+            let geometry = geometry.expect("the tab row is editable");
+            assert!(geometry.place_cursor(&mut state, 1 + column, 1));
+            state.insert_char('Z');
+            assert_eq!(textarea_text(&state), "Z\tX", "tab cell {column}");
+        }
+
+        let mut lines = vec![String::new(); usize::from(u16::MAX) + 2];
+        lines[usize::from(u16::MAX) + 1] = "abcdef".to_owned();
+        let mut state = RichTextArea::new(lines);
+        state.move_cursor(CursorMove::Bottom);
+        state.move_cursor(CursorMove::Head);
+        let mut viewport = TextAreaViewport::default();
+        let mut geometry = None;
+        let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                geometry = render_textarea_band(
+                    frame,
+                    RowClip::new(3, 0, frame.area()),
+                    &mut state,
+                    &mut viewport,
+                    true,
+                    "Body",
+                );
+            })
+            .unwrap();
+        let geometry = geometry.expect("the virtual tail row is editable");
+        assert!(geometry.place_cursor(&mut state, 4, 1));
+        state.insert_char('X');
+        assert_eq!(state.lines().last().unwrap(), "abcXdef");
+
+        let mut state = new_textarea("a");
+        state.move_cursor(CursorMove::Head);
+        let mut viewport = TextAreaViewport::default();
+        let mut geometry = None;
+        let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                geometry = render_textarea_band(
+                    frame,
+                    RowClip::new(3, 0, frame.area()),
+                    &mut state,
+                    &mut viewport,
+                    true,
+                    "Body",
+                );
+            })
+            .unwrap();
+        let geometry = geometry.expect("the short row is editable");
+        assert!(geometry.place_cursor(&mut state, 7, 1));
+        state.insert_char('X');
+        assert_eq!(textarea_text(&state), "aX");
+    }
+
+    #[test]
+    fn run_checkbox_style_is_visible_on_the_rendered_control() {
+        for (checked, focused, symbol, color) in [
+            (false, false, "☐", Color::White),
+            (false, true, "☐", ACCENT),
+            (true, false, "☑", Color::Green),
+            (true, true, "☑", ACCENT),
+        ] {
+            let state = CheckBoxState {
+                checked,
+                focused,
+                ..CheckBoxState::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(12, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = CheckBox::new("value", &state)
+                        .style(checkbox_style())
+                        .render_stateful(frame.area(), frame.buffer_mut());
+                })
+                .unwrap();
+            let cell = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .find(|cell| cell.symbol() == symbol)
+                .expect("checkbox symbol");
+            assert_eq!(cell.fg, color, "checked={checked}, focused={focused}");
+        }
+    }
+
+    #[test]
+    fn an_oversized_focused_run_group_does_not_align_to_its_note_tail() {
+        let mut run = RunWidgetSession {
+            pending_ensure_focus: true,
+            ..RunWidgetSession::default()
+        };
+        let layout = RunLayout {
+            items: Vec::new(),
+            control_starts: vec![1],
+            control_heights: vec![3],
+            height: 12,
+        };
+        run.prepare_layout(&layout, 0, Rect::new(0, 0, 24, 4));
+        assert!(
+            run.scroll.scroll_offset() < 8,
+            "the focused control was hidden to show the tail of its oversized note group"
+        );
+    }
+
+    fn positioned_run_layout(start: usize, height: usize, total: usize) -> RunLayout {
+        RunLayout {
+            items: Vec::new(),
+            control_starts: vec![start],
+            control_heights: vec![height],
+            height: total,
+        }
+    }
+
+    fn run_session_at(offset: usize) -> RunWidgetSession {
+        let mut run = RunWidgetSession {
+            pending_ensure_focus: true,
+            ..RunWidgetSession::default()
+        };
+        run.scroll.set_lines(vec![String::new(); 12]);
+        run.scroll.set_scroll_offset(offset);
+        run
+    }
+
+    #[test]
+    fn run_focus_alignment_changes_only_for_a_control_outside_the_viewport() {
+        let viewport = Rect::new(5, 7, 20, 4);
+
+        let mut exact = run_session_at(1);
+        exact.prepare_layout(&positioned_run_layout(1, 4, 12), 0, viewport);
+        assert_eq!(
+            exact.scroll.scroll_offset(),
+            1,
+            "a control on both viewport boundaries changed the user offset"
+        );
+
+        let mut above = run_session_at(2);
+        above.prepare_layout(&positioned_run_layout(1, 2, 12), 0, viewport);
+        assert_eq!(above.scroll.scroll_offset(), 1);
+
+        let mut below = run_session_at(1);
+        below.prepare_layout(&positioned_run_layout(2, 4, 12), 0, viewport);
+        assert_eq!(
+            below.scroll.scroll_offset(),
+            2,
+            "one hidden row did not move the focused control into view"
+        );
+
+        below.scroll.set_scroll_offset(5);
+        below.prepare_layout(&positioned_run_layout(2, 4, 12), 0, viewport);
+        assert_eq!(
+            below.scroll.scroll_offset(),
+            5,
+            "an unchanged layout reset a later user scroll"
+        );
+
+        let mut clamped = run_session_at(7);
+        clamped.prepare_layout(&positioned_run_layout(0, 1, 8), 1, viewport);
+        assert_eq!(
+            clamped.scroll.scroll_offset(),
+            4,
+            "a shorter layout retained an offset after its last full viewport"
+        );
+    }
+
+    #[test]
+    fn long_run_textarea_cursor_stays_inside_its_fixed_outer_control() {
+        let value = (0..30)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut run = run_session_at(0);
+        run.controls.push(WidgetControl::TextArea {
+            state: Box::new(new_textarea(&value)),
+            focused: true,
+            undo_group: 0,
+            redo_group: 0,
+        });
+        let layout = positioned_run_layout(2, 6, 12);
+        run.prepare_layout(&layout, 0, Rect::new(0, 0, 24, 5));
+        assert_eq!(
+            run.scroll.scroll_offset(),
+            2,
+            "the textarea's internal cursor escaped the outer layout extent"
+        );
+        assert!(run.scroll.scroll_offset() <= layout.height.saturating_sub(run.visible_height));
+    }
+
+    #[test]
+    fn run_visible_rect_rejects_each_disjoint_side_and_clips_each_overlap() {
+        let mut run = run_session_at(3);
+        run.viewport = Rect::new(5, 7, 20, 4);
+        run.visible_height = 4;
+
+        assert_eq!(run.visible_rect(0, 3), None, "an item above became a hit");
+        assert_eq!(run.visible_rect(7, 2), None, "an item below became a hit");
+        assert_eq!(run.visible_rect(2, 3), Some(Rect::new(5, 7, 20, 2)));
+        assert_eq!(run.visible_rect(5, 3), Some(Rect::new(5, 9, 20, 2)));
+    }
+
+    fn generic_form(fields: Vec<FormField>, focused: usize) -> FormView {
+        FormView {
+            purpose: skit_ui::FormPurpose::Settings,
+            title: "Form".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: None,
+            fields,
+            focused,
+            submit_label: "Save".to_owned(),
+        }
+    }
+
+    #[test]
+    fn generic_form_alignment_and_clipping_use_exact_viewport_boundaries() {
+        let fields = (0..4)
+            .map(|index| FormField::text(format!("field-{index}"), "Field", "value"))
+            .collect::<Vec<_>>();
+        let viewport = Rect::new(4, 6, 18, 3);
+        let form = generic_form(fields, 1);
+
+        let mut exact = FormWidgetSession {
+            pending_ensure_focus: true,
+            ..FormWidgetSession::default()
+        };
+        exact.sync(&form);
+        exact.scroll.set_lines(vec![String::new(); 12]);
+        exact.scroll.set_scroll_offset(3);
+        exact.prepare_layout(&form, viewport);
+        assert_eq!(exact.scroll.scroll_offset(), 3);
+
+        let mut above = FormWidgetSession {
+            pending_ensure_focus: true,
+            ..FormWidgetSession::default()
+        };
+        above.sync(&form);
+        above.scroll.set_lines(vec![String::new(); 12]);
+        above.scroll.set_scroll_offset(4);
+        above.prepare_layout(&form, viewport);
+        assert_eq!(above.scroll.scroll_offset(), 3);
+
+        let mut below = FormWidgetSession {
+            pending_ensure_focus: true,
+            ..FormWidgetSession::default()
+        };
+        below.sync(&form);
+        below.scroll.set_lines(vec![String::new(); 12]);
+        below.scroll.set_scroll_offset(2);
+        below.prepare_layout(&form, viewport);
+        assert_eq!(below.scroll.scroll_offset(), 3);
+
+        exact.scroll.set_scroll_offset(7);
+        exact.prepare_layout(&form, viewport);
+        assert_eq!(
+            exact.scroll.scroll_offset(),
+            7,
+            "an unchanged form reflow reset a user scroll"
+        );
+
+        let mut no_target = form.clone();
+        no_target.focused = usize::MAX;
+        let mut clamped = FormWidgetSession::default();
+        clamped.sync(&no_target);
+        clamped.scroll.set_lines(vec![String::new(); 12]);
+        clamped.scroll.set_scroll_offset(11);
+        clamped.prepare_layout(&no_target, viewport);
+        assert_eq!(
+            clamped.scroll.scroll_offset(),
+            9,
+            "a shorter form retained an offset after its last full viewport"
+        );
+
+        exact.row_starts = vec![0, 2, 3, 5, 6];
+        exact.row_heights = vec![3, 3, 3, 3, 2];
+        exact.scroll.set_scroll_offset(3);
+        assert!(exact.visible_band(0).is_none(), "an above band survived");
+        assert!(exact.visible_band(4).is_none(), "a below band survived");
+        let clipped_top = exact.visible_band(1).expect("top-clipped band");
+        assert_eq!(clipped_top.area(), Rect::new(4, 6, 18, 2));
+        let top = exact.visible_band(2).expect("exact visible band");
+        assert_eq!(top.area(), Rect::new(4, 6, 18, 3));
+        let clipped_bottom = exact.visible_band(3).expect("bottom-clipped band");
+        assert_eq!(clipped_bottom.area(), Rect::new(4, 8, 18, 1));
+    }
+
+    #[test]
+    fn oversized_form_textarea_aligns_its_cursor_row_without_hiding_its_start() {
+        let form = generic_form(
+            vec![
+                FormField::text("prefix", "Prefix", "value"),
+                FormField::multiline("body", "Body", "zero\none\ntwo\nthree\nfour"),
+            ],
+            1,
+        );
+        let viewport = Rect::new(0, 0, 20, 4);
+        let mut session = TuiSession::default();
+        session.form.sync(&form);
+        session.form.prepare_layout(&form, viewport);
+        assert_eq!(
+            session.form.scroll.scroll_offset(),
+            5,
+            "the last textarea row was not aligned inside the viewport"
+        );
+
+        for _ in 0..10 {
+            assert_eq!(
+                session.handle_form_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &form,),
+                EventHandling::Consumed,
+                "the textarea did not accept an upward cursor command"
+            );
+        }
+        session.form.prepare_layout(&form, viewport);
+        assert_eq!(
+            session.form.scroll.scroll_offset(),
+            3,
+            "the first textarea row was hidden by absolute-row arithmetic"
+        );
+    }
+
+    #[test]
+    fn run_textarea_outer_alignment_distinguishes_cursor_viewport_boundaries() {
+        let value = (0..6)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let layout = positioned_run_layout(5, 6, 15);
+        let viewport = Rect::new(0, 0, 24, 3);
+
+        for (cursor_row, expected_offset) in [(0, 5), (2, 6), (3, 7)] {
+            let mut state = new_textarea(&value);
+            state.move_cursor(CursorMove::Jump(cursor_row, 0));
+            let mut run = run_session_at(0);
+            run.controls.push(WidgetControl::TextArea {
+                state: Box::new(state),
+                focused: true,
+                undo_group: 0,
+                redo_group: 0,
+            });
+
+            run.prepare_layout(&layout, 0, viewport);
+
+            assert_eq!(
+                run.scroll.scroll_offset(),
+                expected_offset,
+                "cursor row {cursor_row} did not keep the outer textarea caret visible"
+            );
+        }
+    }
+
+    #[test]
+    fn form_textarea_alignment_distinguishes_cursor_viewport_boundaries() {
+        let value = (0..6)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let form = generic_form(
+            vec![
+                FormField::text("prefix", "Prefix", "value"),
+                FormField::multiline("body", "Body", &value),
+            ],
+            1,
+        );
+        let viewport = Rect::new(0, 0, 24, 3);
+
+        for (cursor_row, expected_offset) in [(0, 3), (2, 4), (3, 5)] {
+            let mut session = TuiSession::default();
+            session.form.sync(&form);
+            for _ in 0..10 {
+                assert_eq!(
+                    session.handle_form_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &form,),
+                    EventHandling::Consumed
+                );
+            }
+            for _ in 0..cursor_row {
+                assert_eq!(
+                    session
+                        .handle_form_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), &form,),
+                    EventHandling::Consumed
+                );
+            }
+
+            session.form.prepare_layout(&form, viewport);
+
+            assert_eq!(
+                session.form.scroll.scroll_offset(),
+                expected_offset,
+                "cursor row {cursor_row} did not keep the form textarea caret visible"
+            );
+        }
+
+        let mut unchanged = FormWidgetSession::default();
+        unchanged.sync(&form);
+        unchanged.prepare_layout(&form, viewport);
+        unchanged.scroll.set_scroll_offset(7);
+        unchanged.prepare_layout(&form, viewport);
+        assert_eq!(
+            unchanged.scroll.scroll_offset(),
+            7,
+            "an unchanged textarea layout reset a later user scroll"
+        );
+    }
+
+    #[test]
+    fn generic_form_control_shape_requires_multiline_and_nonsecret_text() {
+        let plain = FormField::text("plain", "Plain", "value");
+        let multiline = FormField::multiline("body", "Body", "first\nsecond");
+        let mut secret_multiline = multiline.clone();
+        secret_multiline.secret = true;
+
+        assert!(matches!(
+            form_widget_control(&plain),
+            FormWidgetControl::Input { secret: false, .. }
+        ));
+        assert!(matches!(
+            form_widget_control(&multiline),
+            FormWidgetControl::TextArea { .. }
+        ));
+        assert!(matches!(
+            form_widget_control(&secret_multiline),
+            FormWidgetControl::Input { secret: true, .. }
+        ));
+    }
+
+    #[test]
+    fn generic_form_controls_sync_external_values_without_resetting_equal_values() {
+        let mut input_form = generic_form(vec![FormField::text("name", "Name", "abcdef")], 0);
+        let mut input_session = TuiSession::default();
+        input_session.form.sync(&input_form);
+        assert_eq!(
+            input_session.handle_form_key(
+                KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+                &input_form,
+            ),
+            EventHandling::Consumed
+        );
+        input_session.form.sync(&input_form);
+        assert_eq!(
+            input_session.handle_form_key(
+                KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE),
+                &input_form,
+            ),
+            EventHandling::Action(Action::SetFieldValue {
+                field: 0,
+                value: "abcdeXf".to_owned(),
+            }),
+            "an equal external value reset the line-input cursor"
+        );
+        input_form.fields[0].value = "changed".to_owned();
+        input_session.form.sync(&input_form);
+        assert_eq!(
+            input_session.handle_form_key(
+                KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+                &input_form,
+            ),
+            EventHandling::Action(Action::SetFieldValue {
+                field: 0,
+                value: "changed!".to_owned(),
+            }),
+            "an external line-input value did not replace the stale editor value"
+        );
+
+        let mut textarea_form = generic_form(
+            vec![FormField::multiline("body", "Body", "first\nsecond")],
+            0,
+        );
+        let mut textarea_session = TuiSession::default();
+        textarea_session.form.sync(&textarea_form);
+        assert_eq!(
+            textarea_session.handle_form_key(
+                KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+                &textarea_form,
+            ),
+            EventHandling::Consumed
+        );
+        textarea_session.form.sync(&textarea_form);
+        assert_eq!(
+            textarea_session.handle_form_key(
+                KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE),
+                &textarea_form,
+            ),
+            EventHandling::Action(Action::SetFieldValue {
+                field: 0,
+                value: "first\nseconXd".to_owned(),
+            }),
+            "an equal external value reset the textarea cursor"
+        );
+        textarea_form.fields[0].value = "new\nvalue".to_owned();
+        textarea_session.form.sync(&textarea_form);
+        assert_eq!(
+            textarea_session.handle_form_key(
+                KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE),
+                &textarea_form,
+            ),
+            EventHandling::Action(Action::SetFieldValue {
+                field: 0,
+                value: "new\nvalue!".to_owned(),
+            }),
+            "an external textarea value did not replace the stale editor value"
+        );
+    }
+
+    fn text_control(value: &str, multiline: bool, secret: bool) -> FormControl {
+        FormControl::Text(skit_ui::TextControl {
+            value: value.to_owned(),
+            multiline,
+            secret,
+            ..skit_ui::TextControl::default()
+        })
+    }
+
+    fn choice_control(options: &[&str], selected: &str) -> FormControl {
+        FormControl::Choice(skit_ui::ChoiceControl {
+            options: options.iter().map(|value| (*value).to_owned()).collect(),
+            selected: selected.to_owned(),
+            presentation: ChoicePresentation::Radio,
+        })
+    }
+
+    fn run_field_with_control(key: &str, control: FormControl) -> RunField {
+        RunField {
+            key: key.to_owned(),
+            label: key.to_owned(),
+            help: String::new(),
+            role: RunFieldRole::Parameter {
+                name: key.to_owned(),
+            },
+            parameter_type: ParameterType::Str,
+            multiple: false,
+            binding: skit_domain::parameters::ParameterBinding::None,
+            delivery: skit_domain::parameters::ParameterDelivery::Flag,
+            control,
+            required: false,
+            default: None,
+            degraded: false,
+            input_binding: false,
+            env_source: String::new(),
+            validation_error: None,
+            feedback: Default::default(),
+        }
+    }
+
+    fn rendered_run_control(control: WidgetControl) -> Vec<(String, Color)> {
+        let mut session = TuiSession::default();
+        session.run.controls.push(control);
+        session.run.editables.push(None);
+        session.run.textarea_editables.push(None);
+        session
+            .run
+            .textarea_viewports
+            .push(TextAreaViewport::default());
+        session.run.select_areas.push(None);
+        session.run.dropdown_regions.push(Vec::new());
+        let mut terminal = Terminal::new(TestBackend::new(24, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                session.render_run_control(
+                    frame,
+                    RowClip::new(1, 0, Rect::new(0, 0, 24, 1)),
+                    0,
+                    Locale::En,
+                    &mut Vec::new(),
+                );
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| (cell.symbol().to_owned(), cell.fg))
+            .collect()
+    }
+
+    fn run_form_for_event_tests() -> RunFormView {
+        RunFormView::from_declarations(
+            "demo",
+            "Demo",
+            &[],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        )
+    }
+
+    #[test]
+    fn run_control_shape_and_choice_selection_follow_the_typed_model() {
+        let multiline = run_field_with_control("body", text_control("a\nb", true, false));
+        let secret_multiline = run_field_with_control("secret", text_control("a\nb", true, true));
+        assert!(matches!(
+            widget_control(&multiline),
+            WidgetControl::TextArea { .. }
+        ));
+        assert!(matches!(
+            widget_control(&secret_multiline),
+            WidgetControl::Input { secret: true, .. }
+        ));
+
+        let selected = rendered_run_control(widget_control(&run_field_with_control(
+            "choice",
+            choice_control(&["a", "b"], "b"),
+        )));
+        assert_eq!(
+            selected
+                .iter()
+                .find(|(symbol, _)| symbol == "a")
+                .expect("first radio option")
+                .1,
+            Color::White
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .find(|(symbol, _)| symbol == "b")
+                .expect("selected radio option")
+                .1,
+            SELECT_FG
+        );
+
+        let missing = rendered_run_control(widget_control(&run_field_with_control(
+            "choice",
+            choice_control(&["a", "b"], "missing"),
+        )));
+        for option in ["a", "b"] {
+            assert_eq!(
+                missing
+                    .iter()
+                    .find(|(symbol, _)| symbol == option)
+                    .expect("unselected radio option")
+                    .1,
+                Color::White,
+                "a missing model selection toggled {option}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_controls_sync_every_external_value_and_preserve_equal_text_cursors() {
+        let form = run_form_for_event_tests();
+        let mut input_session = TuiSession::default();
+        input_session
+            .run
+            .controls
+            .push(widget_control(&run_field_with_control(
+                "input",
+                text_control("abcdef", false, false),
+            )));
+        assert_eq!(
+            input_session.handle_run_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &form,),
+            EventHandling::Consumed
+        );
+        input_session.run.controls[0].sync_value(&text_control("abcdef", false, false));
+        assert_eq!(
+            input_session
+                .handle_run_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE), &form,),
+            EventHandling::Action(Action::SetFieldValue {
+                field: 0,
+                value: "abcdeXf".to_owned(),
+            }),
+            "an equal run value reset the line-input cursor"
+        );
+        input_session.run.controls[0].sync_value(&text_control("changed", false, false));
+        assert_eq!(
+            input_session
+                .handle_run_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE), &form,),
+            EventHandling::Action(Action::SetFieldValue {
+                field: 0,
+                value: "changed!".to_owned(),
+            }),
+            "an external run value did not replace stale line-input text"
+        );
+
+        let mut textarea_session = TuiSession::default();
+        textarea_session
+            .run
+            .controls
+            .push(widget_control(&run_field_with_control(
+                "body",
+                text_control("first\nsecond", true, false),
+            )));
+        assert_eq!(
+            textarea_session
+                .handle_run_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &form,),
+            EventHandling::Consumed
+        );
+        textarea_session.run.controls[0].sync_value(&text_control("first\nsecond", true, false));
+        assert_eq!(
+            textarea_session
+                .handle_run_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE), &form,),
+            EventHandling::Action(Action::SetFieldValue {
+                field: 0,
+                value: "first\nseconXd".to_owned(),
+            }),
+            "an equal run value reset the textarea cursor"
+        );
+        textarea_session.run.controls[0].sync_value(&text_control("new\nvalue", true, false));
+        assert_eq!(
+            textarea_session
+                .handle_run_key(KeyEvent::new(KeyCode::Char('!'), KeyModifiers::NONE), &form,),
+            EventHandling::Action(Action::SetFieldValue {
+                field: 0,
+                value: "new\nvalue!".to_owned(),
+            }),
+            "an external run value did not replace stale textarea text"
+        );
+
+        let mut checkbox = WidgetControl::Checkbox(CheckBoxState::new(false));
+        checkbox.sync_value(&FormControl::Checkbox { checked: true });
+        let checked = rendered_run_control(checkbox);
+        assert!(
+            checked.iter().any(|(symbol, _)| symbol == "☑"),
+            "the external boolean value did not reach the rendered checkbox"
+        );
+
+        let mut choice = widget_control(&run_field_with_control(
+            "choice",
+            choice_control(&["a", "b"], "a"),
+        ));
+        choice.sync_value(&choice_control(&["a", "b"], "b"));
+        let selected = rendered_run_control(choice);
+        assert_eq!(
+            selected
+                .iter()
+                .find(|(symbol, _)| symbol == "b")
+                .expect("externally selected radio option")
+                .1,
+            SELECT_FG
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .find(|(symbol, _)| symbol == "a")
+                .expect("externally unselected radio option")
+                .1,
+            Color::White
+        );
+    }
+
+    #[test]
+    fn run_choice_focus_marks_only_the_active_option_and_closes_on_blur() {
+        let missing = run_field_with_control("choice", choice_control(&["a", "b"], "missing"));
+        let mut focused = widget_control(&missing);
+        focused.set_focused(true);
+        let focused = rendered_run_control(focused);
+        assert_eq!(
+            focused
+                .iter()
+                .find(|(symbol, _)| symbol == "a")
+                .expect("focused fallback radio option")
+                .1,
+            SELECT_FG
+        );
+        assert_eq!(
+            focused
+                .iter()
+                .find(|(symbol, _)| symbol == "b")
+                .expect("unfocused radio option")
+                .1,
+            Color::White
+        );
+
+        let mut unfocused = widget_control(&missing);
+        unfocused.set_focused(false);
+        let unfocused = rendered_run_control(unfocused);
+        for option in ["a", "b"] {
+            assert_eq!(
+                unfocused
+                    .iter()
+                    .find(|(symbol, _)| symbol == option)
+                    .expect("blurred radio option")
+                    .1,
+                Color::White,
+                "blur left focus on {option}"
+            );
+        }
+
+        let picker = FormControl::Choice(skit_ui::ChoiceControl {
+            options: vec!["a".to_owned(), "b".to_owned()],
+            selected: "b".to_owned(),
+            presentation: ChoicePresentation::Picker,
+        });
+        let mut session = TuiSession::default();
+        session
+            .run
+            .controls
+            .push(widget_control(&run_field_with_control("choice", picker)));
+        session.run.controls[0].set_focused(true);
+        let form = run_form_for_event_tests();
+        assert_eq!(
+            session.handle_open_select_key(
+                0,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &form,
+            ),
+            Some(EventHandling::Consumed),
+            "the focused picker did not open"
+        );
+        session.run.controls[0].set_focused(false);
+        assert_eq!(
+            session.handle_open_select_key(
+                0,
+                &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                &form,
+            ),
+            None,
+            "a blurred picker stayed open"
+        );
     }
 
     #[test]
@@ -3302,6 +5275,172 @@ mod path_suggestion_tests {
         }
     }
 
+    fn request_with_value(value: &str) -> PathCompletionRequest {
+        PathCompletionRequest {
+            value: value.to_owned(),
+            ..request("/new")
+        }
+    }
+
+    fn seeded_visible_session(
+        visible: (u64, usize, &str),
+        expected: (u64, usize, &str),
+    ) -> PathSuggestionSession {
+        PathSuggestionSession {
+            expected: Some(ExpectedPathSuggestion {
+                generation: expected.0,
+                field: expected.1,
+                request: request_with_value(expected.2),
+            }),
+            visible: Some(VisiblePathSuggestion {
+                generation: visible.0,
+                field: visible.1,
+                value: visible.2.to_owned(),
+                suggestion: format!("{}.txt", visible.2),
+            }),
+            ..PathSuggestionSession::default()
+        }
+    }
+
+    #[test]
+    fn refresh_rejects_identical_and_unrelated_suggestions() {
+        for suggestion in ["n", "old.txt"] {
+            let (result_tx, result_rx) = mpsc::channel();
+            let mut suggestions = PathSuggestionSession {
+                results: Some(result_rx),
+                expected: Some(ExpectedPathSuggestion {
+                    generation: 7,
+                    field: 2,
+                    request: request_with_value("n"),
+                }),
+                in_flight: true,
+                ..PathSuggestionSession::default()
+            };
+            result_tx
+                .send(PathSuggestionResult {
+                    generation: 7,
+                    field: 2,
+                    value: "n".to_owned(),
+                    suggestion: Some(suggestion.to_owned()),
+                })
+                .unwrap();
+
+            assert!(suggestions.refresh());
+            assert_eq!(suggestions.visible(2, "n"), None, "accepted {suggestion:?}");
+        }
+    }
+
+    #[test]
+    fn refresh_drains_results_that_arrive_after_cancellation() {
+        let (request_tx, request_rx) = mpsc::sync_channel(2);
+        let (result_tx, result_rx) = mpsc::channel();
+        let mut suggestions = PathSuggestionSession {
+            requests: Some(request_tx),
+            results: Some(result_rx),
+            ..PathSuggestionSession::default()
+        };
+
+        suggestions.ensure(2, Some(request_with_value("old")));
+        let old_job = request_rx.recv().unwrap();
+        for suffix in ["txt", "toml"] {
+            result_tx
+                .send(PathSuggestionResult {
+                    generation: old_job.generation,
+                    field: old_job.field,
+                    value: old_job.request.value.clone(),
+                    suggestion: Some(format!("old.{suffix}")),
+                })
+                .unwrap();
+        }
+
+        suggestions.clear();
+        assert!(!suggestions.refresh());
+        assert_eq!(suggestions.visible(2, "old"), None);
+        assert!(matches!(
+            suggestions.results.as_ref().unwrap().try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+
+        suggestions.ensure(2, Some(request_with_value("new")));
+        let new_job = request_rx.recv().unwrap();
+        result_tx
+            .send(PathSuggestionResult {
+                generation: new_job.generation,
+                field: new_job.field,
+                value: new_job.request.value.clone(),
+                suggestion: Some("new.txt".to_owned()),
+            })
+            .unwrap();
+
+        assert!(suggestions.refresh());
+        assert_eq!(suggestions.visible(2, "new"), Some("new.txt"));
+    }
+
+    #[test]
+    fn visible_suggestion_requires_one_complete_identity() {
+        assert_eq!(
+            seeded_visible_session((7, 2, "n"), (7, 2, "n")).visible(2, "n"),
+            Some("n.txt")
+        );
+        for (label, visible, expected, requested) in [
+            ("visible field", (7, 1, "n"), (7, 2, "n"), (2, "n")),
+            ("visible value", (7, 2, "old"), (7, 2, "n"), (2, "n")),
+            ("expected generation", (7, 2, "n"), (8, 2, "n"), (2, "n")),
+            ("expected field", (7, 2, "n"), (7, 3, "n"), (2, "n")),
+            ("expected value", (7, 2, "n"), (7, 2, "old"), (2, "n")),
+        ] {
+            assert_eq!(
+                seeded_visible_session(visible, expected).visible(requested.0, requested.1),
+                None,
+                "accepted stale {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepting_or_leaving_the_run_screen_clears_suggestion_state() {
+        let mut accepted = seeded_visible_session((7, 2, "n"), (7, 2, "n"));
+        assert_eq!(accepted.take(2, "n"), Some("n.txt".to_owned()));
+        assert_eq!(accepted.take(2, "n"), None);
+
+        let (_result_tx, result_rx) = mpsc::channel();
+        let mut session = TuiSession {
+            path_suggestions: PathSuggestionSession {
+                results: Some(result_rx),
+                retry_pending: true,
+                ..seeded_visible_session((7, 2, "n"), (7, 2, "n"))
+            },
+            ..TuiSession::default()
+        };
+        session.begin_render(&LibraryState::default());
+        assert!(!session.refresh_background());
+        assert_eq!(session.path_suggestions.visible(2, "n"), None);
+    }
+
+    #[test]
+    fn terminal_poll_deadline_tracks_in_flight_and_retry_work() {
+        use crate::terminal::{TerminalEventWait, terminal_event_wait};
+
+        let mut session = TuiSession::default();
+        assert_eq!(
+            terminal_event_wait(session.has_pending_path_completion()),
+            TerminalEventWait::Blocking
+        );
+
+        session.path_suggestions.in_flight = true;
+        assert_eq!(
+            terminal_event_wait(session.has_pending_path_completion()),
+            TerminalEventWait::Poll(Duration::from_millis(25))
+        );
+
+        session.path_suggestions.in_flight = false;
+        session.path_suggestions.retry_pending = true;
+        assert_eq!(
+            terminal_event_wait(session.has_pending_path_completion()),
+            TerminalEventWait::Poll(Duration::from_millis(25))
+        );
+    }
+
     #[test]
     fn same_value_in_a_new_context_replaces_the_old_pending_request() {
         let mut suggestions = PathSuggestionSession::new(Arc::new(ContextProvider));
@@ -3349,6 +5488,10 @@ mod path_suggestion_tests {
         assert!(suggestions.expected.is_none());
         assert!(!suggestions.in_flight);
         assert!(suggestions.retry_pending);
+        assert!(
+            suggestions.refresh(),
+            "a pending retry must request the render pass that calls ensure again"
+        );
         drop(held_requests);
     }
 
@@ -3429,6 +5572,11 @@ mod path_suggestion_tests {
 
         assert_eq!(
             session.handle_event(Event::FocusGained, &state, &ViewGeometry::default()),
+            EventHandling::Ignored
+        );
+        assert!(session.settings_prompt_overlay.is_some());
+        assert_eq!(
+            session.handle_event(Event::Resize(40, 10), &state, &ViewGeometry::default()),
             EventHandling::Ignored
         );
         assert!(session.settings_prompt_overlay.is_some());

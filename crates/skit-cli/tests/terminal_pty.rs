@@ -32,7 +32,7 @@ use unicode_width::UnicodeWidthStr as _;
 #[path = "support/pty.rs"]
 mod pty;
 
-use pty::{AnswerQueries, PtyChild, strip_terminal_control, styles_over};
+use pty::{AnswerQueries, PtyChild, final_terminal_screen, strip_terminal_control, styles_over};
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
     let directory = data.join("scripts/demo");
@@ -467,6 +467,31 @@ impl LiveTui {
         home: &Path,
         locale: &str,
     ) -> Self {
+        Self::spawn_command_at_size(
+            args,
+            data,
+            state,
+            config,
+            home,
+            locale,
+            PtySize {
+                rows: 40,
+                cols: 120,
+                pixel_width: 0,
+                pixel_height: 0,
+            },
+        )
+    }
+
+    fn spawn_command_at_size(
+        args: &[&str],
+        data: &Path,
+        state: &Path,
+        config: &Path,
+        home: &Path,
+        locale: &str,
+        size: PtySize,
+    ) -> Self {
         let mut command = CommandBuilder::new(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
         command.args(args);
         command.cwd(home);
@@ -479,16 +504,7 @@ impl LiveTui {
         command.env("HOME", home);
         command.env("USERPROFILE", home);
         Self {
-            pty: PtyChild::spawn(
-                command,
-                PtySize {
-                    rows: 40,
-                    cols: 120,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                },
-                AnswerQueries::On,
-            ),
+            pty: PtyChild::spawn(command, size, AnswerQueries::On),
         }
     }
 
@@ -512,6 +528,27 @@ impl LiveTui {
 
     fn checkpoint(&mut self) -> usize {
         self.pty.checkpoint()
+    }
+
+    fn raw_after(&mut self, checkpoint: usize) -> Vec<u8> {
+        self.pty.raw_after(checkpoint)
+    }
+
+    fn settle(&mut self) {
+        self.pty.settle();
+    }
+
+    fn write_raw(&mut self, bytes: &[u8]) {
+        self.pty.write_raw(bytes);
+    }
+
+    fn resize(&mut self, rows: u16, columns: u16) {
+        self.pty.resize(PtySize {
+            rows,
+            cols: columns,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
     }
 
     fn wait_for(&mut self, needle: &str) -> String {
@@ -585,6 +622,164 @@ fn bare_invocation_runs_the_first_run_gate_and_returns_after_the_library_quits()
     assert_eq!(tree_snapshot(data.path()), data_before);
     assert_eq!(tree_snapshot(state.path()), state_before);
     assert_eq!(tree_snapshot(config.path()), config_before);
+}
+
+// The SGR mouse protocol and cursor query used by this test are Unix PTY byte protocols.
+#[cfg(unix)]
+#[test]
+fn responsive_library_accepts_real_sgr_mouse_and_uses_selective_redraws() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    FileConfigStore::new(config.path().to_path_buf())
+        .mark_mirror_configured()
+        .unwrap();
+    write_command_entry(data.path(), false);
+
+    let mut tui = LiveTui::spawn_command_at_size(
+        &["tui"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+        PtySize {
+            rows: 12,
+            cols: 46,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+    );
+    tui.answer_cursor_query_after(0);
+    tui.wait_for("Library");
+    tui.settle();
+
+    let startup = tui.raw_after(0);
+    assert!(
+        startup
+            .windows(b"\x1b[?1003h".len())
+            .any(|part| part == b"\x1b[?1003h"),
+        "the terminal did not enable all-motion mouse capture"
+    );
+    assert!(
+        startup
+            .windows(b"\x1b[?1006h".len())
+            .any(|part| part == b"\x1b[?1006h"),
+        "the terminal did not enable SGR mouse coordinates"
+    );
+
+    let consumed = tui.checkpoint();
+    tui.send(&[0x03]);
+    tui.settle();
+    assert!(
+        !tui.raw_after(consumed).is_empty(),
+        "the consumed first Ctrl+C did not redraw its quit notice"
+    );
+
+    // Column and row numbers in SGR mouse input are one-based. The short layout puts its flat
+    // Search input on terminal row 1. This writes the terminal protocol, not a Rust Event.
+    let press = tui.checkpoint();
+    tui.write_raw(b"\x1b[<0;2;1M");
+    tui.settle();
+    assert!(
+        !tui.raw_after(press).is_empty(),
+        "the consumed SGR primary press did not redraw its armed state"
+    );
+    tui.write_raw(b"\x1b[<0;2;1m");
+    tui.settle();
+    tui.send(b"Z");
+    tui.settle();
+    let raw = tui.raw_after(0);
+    let history = strip_terminal_control(&String::from_utf8_lossy(&raw));
+    let final_screen = final_terminal_screen(&raw, 12, 46);
+    assert!(
+        history.contains("Demo"),
+        "the terminal history did not contain the entry before search"
+    );
+    assert!(
+        final_screen.contains('Z'),
+        "search did not receive focus from the SGR Down/Up exchange:\n{final_screen}"
+    );
+    assert!(
+        !final_screen.contains("Demo"),
+        "the final grid kept an entry that the active search removed:\n{final_screen}"
+    );
+
+    let resized = tui.checkpoint();
+    tui.resize(12, 47);
+    tui.settle();
+    assert!(
+        !tui.raw_after(resized).is_empty(),
+        "a real PTY resize did not draw the new responsive layout"
+    );
+
+    tui.send(b"\x1b");
+    tui.settle();
+    let quit = tui.checkpoint();
+    tui.send(b"q");
+    let (code, output) = tui.wait_for_exit_status_after(quit);
+    assert_eq!(code, 0, "{output}");
+    let shutdown = tui.raw_after(quit);
+    for disabled in [b"\x1b[?1006l".as_slice(), b"\x1b[?1003l".as_slice()] {
+        assert!(
+            shutdown
+                .windows(disabled.len())
+                .any(|part| part == disabled),
+            "the terminal did not disable mouse capture: {shutdown:?}"
+        );
+    }
+}
+
+#[test]
+fn terminal_grid_oracle_applies_overwrite_and_erase_sequences() {
+    let history = b"\x1b[?1049hstale\x1b[1;1Hnow\x1b[K";
+
+    assert_eq!(final_terminal_screen(history, 3, 12), "now");
+    assert!(
+        strip_terminal_control(&String::from_utf8_lossy(history)).contains("stale"),
+        "the synthetic case must prove that a stripped history keeps stale text"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ignored_sgr_pointer_move_produces_no_terminal_frame() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    FileConfigStore::new(config.path().to_path_buf())
+        .mark_mirror_configured()
+        .unwrap();
+    write_command_entry(data.path(), false);
+
+    let mut tui = LiveTui::spawn_command_at_size(
+        &["tui"],
+        data.path(),
+        state.path(),
+        config.path(),
+        home.path(),
+        "en",
+        PtySize {
+            rows: 12,
+            cols: 46,
+            pixel_width: 0,
+            pixel_height: 0,
+        },
+    );
+    tui.answer_cursor_query_after(0);
+    tui.wait_for("Library");
+    tui.settle();
+
+    let moved = tui.checkpoint();
+    tui.write_raw(b"\x1b[<35;2;1M");
+    tui.settle();
+    let unexpected = tui.raw_after(moved);
+    assert!(
+        unexpected.is_empty(),
+        "an ignored SGR pointer move triggered terminal output: {unexpected:?}"
+    );
 }
 
 // Synchronizes through the LiveTui cursor-position handshake, which exists only on unix
@@ -975,8 +1170,10 @@ fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
     assert!(!form_state.exists());
     let submit = tui.checkpoint();
     tui.send_effect_key(&[0x12]);
-    let refused = tui.wait_for_after(submit, "program");
     let program_error = format!("required program was not found: {MISSING_RUNNER}");
+    // Wait for the unique suffix. A wait for an earlier word can return while the PTY still has
+    // the rest of this line in another read chunk.
+    let refused = tui.wait_for_after(submit, MISSING_RUNNER);
     assert!(
         compact_terminal_text(&refused).contains(&compact_terminal_text(&program_error)),
         "the selected runner refusal lost its exact typed error: {refused}"
@@ -992,9 +1189,11 @@ fn test_selected_prompt_runner_preflight_failure_returns_to_library() {
 
     let library = tui.wait_for_after(submit, "Library");
     let expected = format!("Error: {program_error}");
+    tui.settle();
+    let final_screen = final_terminal_screen(&tui.raw_after(0), 40, 120);
     assert!(
-        compact_terminal_text(&library).contains(&compact_terminal_text(&expected)),
-        "the Library lost the exact localized refusal: {library}"
+        compact_terminal_text(&final_screen).contains(&compact_terminal_text(&expected)),
+        "the Library lost the exact localized refusal:\n{final_screen}\nhistory:\n{library}"
     );
     let quit = tui.checkpoint();
     tui.send(b"q");
@@ -3001,6 +3200,8 @@ fn a_printed_line_wears_the_colour_of_its_sense_only_on_a_terminal() {
         command.env("SKIT_STATE_DIR", state.path());
         command.env("SKIT_CONFIG_DIR", config.path());
         command.env("SKIT_LANG", "en");
+        command.env_remove("NO_COLOR");
+        command.env("TERM", "xterm-256color");
         // An empty PATH leaves uv unfound, which is the report's red sense.
         command.env("PATH", data.path());
         for (name, value) in extra {
@@ -3055,6 +3256,8 @@ fn a_printed_line_wears_the_colour_of_its_sense_only_on_a_terminal() {
     removal.env("SKIT_STATE_DIR", state.path());
     removal.env("SKIT_CONFIG_DIR", config.path());
     removal.env("SKIT_LANG", "en");
+    removal.env_remove("NO_COLOR");
+    removal.env("TERM", "xterm-256color");
     let removed = PtyChild::spawn(
         removal,
         PtySize {

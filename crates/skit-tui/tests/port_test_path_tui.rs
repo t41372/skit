@@ -332,13 +332,25 @@ fn completion_worker_test() -> MutexGuard<'static, ()> {
 /// suite, and the polls below read the real checkpoint, so a healthy run never waits it out.
 const WORKER_ANSWER_BUDGET: Duration = Duration::from_secs(30);
 
-fn wait_for_completion(session: &mut TuiSession) {
-    // Poll the actual result checkpoint; do not add a fixed delay to the successful path. The
-    // short sleep between polls keeps the waiter from competing for the very time slices the
-    // workers need on an oversubscribed host.
+fn wait_for_completion(
+    session: &mut TuiSession,
+    state: &LibraryState,
+    locale: Locale,
+    expected: &str,
+) {
+    // A refresh can request a render that retries a full worker queue. It does not prove that a
+    // result is visible. Follow the production refresh-render loop and wait for the real ghost.
     let deadline = Instant::now() + WORKER_ANSWER_BUDGET;
     while Instant::now() < deadline {
-        if session.refresh_background() {
+        let _ = session.refresh_background();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = render_with_session(frame, state, locale, session);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        if region_text(buffer, buffer.area).contains(expected) {
             return;
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -954,9 +966,19 @@ fn test_picker_row_click_is_the_mouse_path() {
         .iter()
         .find(|hit| hit.target == FilePickerHit::Entry(0))
         .expect("a clickable row for data.csv");
-    let event = click(hit.area.x + 2, hit.area.y);
     assert_eq!(
-        session.handle_event(event, &geometry),
+        session.handle_event(click(hit.area.x + 2, hit.area.y), &geometry),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse(
+                MouseEventKind::Up(MouseButton::Left),
+                hit.area.x + 2,
+                hit.area.y,
+            ),
+            &geometry,
+        ),
         Some(FilePickerEvent::Accepted(vec![PathBuf::from("data.csv")]))
     );
 }
@@ -1033,7 +1055,21 @@ fn test_picker_esc_cancels_and_up_chip_is_clickable() {
         .iter()
         .find(|hit| hit.target == FilePickerHit::Up)
         .expect("an Up chip");
-    let _ = session.handle_event(click(up.area.x + 1, up.area.y), &geometry);
+    assert_eq!(
+        session.handle_event(click(up.area.x + 1, up.area.y), &geometry),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse(
+                MouseEventKind::Up(MouseButton::Left),
+                up.area.x + 1,
+                up.area.y,
+            ),
+            &geometry,
+        ),
+        Some(FilePickerEvent::Changed)
+    );
     assert_eq!(session.current_dir(), &root);
     assert_eq!(
         feed(&mut session, key(KeyCode::Esc)),
@@ -1072,7 +1108,7 @@ fn test_path_fields_render_hint_and_suggester() {
     let mut session = completion_session();
     let geometry = render_root(&mut session, &state);
     type_run_value(&mut session, &mut state, &geometry, "da");
-    wait_for_completion(&mut session);
+    wait_for_completion(&mut session, &state, Locale::En, "data.csv");
 
     let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
     terminal
@@ -1104,7 +1140,7 @@ fn right_accepts_only_the_current_ghost_at_the_end_of_the_input() {
     let mut session = completion_session();
     let geometry = render_root(&mut session, &state);
     type_run_value(&mut session, &mut state, &geometry, "da");
-    wait_for_completion(&mut session);
+    wait_for_completion(&mut session, &state, Locale::En, "data.csv");
     assert_eq!(field_value(&state, 0), "da", "a ghost is not a value");
 
     assert_eq!(
@@ -1233,7 +1269,7 @@ fn path_hint_and_existing_browse_door_stay_complete_in_three_locales() {
         let mut session = completion_session();
         let geometry = render_root(&mut session, &state);
         type_run_value(&mut session, &mut state, &geometry, "da");
-        wait_for_completion(&mut session);
+        wait_for_completion(&mut session, &state, locale, "data.csv");
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal
             .draw(|frame| {
@@ -1876,6 +1912,13 @@ fn test_picker_pinned_row_shows_its_label() {
     }
     assert_eq!(
         session.handle_event(click(area.x, area.y), &geometry),
+        Some(FilePickerEvent::Changed)
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse(MouseEventKind::Up(MouseButton::Left), area.x, area.y),
+            &geometry,
+        ),
         Some(FilePickerEvent::Accepted(vec![PathBuf::new()]))
     );
 }

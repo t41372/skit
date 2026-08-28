@@ -522,7 +522,15 @@ fn test_form_picker_mouse_click_picks_a_runner() {
         assert_eq!(runner_value(&state), original);
     }
 
-    let handling = session.handle_event(mouse(runner.x, runner.y), &state, &geometry);
+    assert_eq!(
+        session.handle_event(mouse(runner.x, runner.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    let handling = session.handle_event(
+        mouse_with_kind(MouseEventKind::Up(MouseButton::Left), runner.x, runner.y),
+        &state,
+        &geometry,
+    );
     let EventHandling::Action(action) = handling else {
         panic!("clicking the closed runner picker must focus and open it: {handling:?}");
     };
@@ -537,7 +545,16 @@ fn test_form_picker_mouse_click_picks_a_runner() {
         })
         .unwrap();
     let (column, row) = buffer_position(terminal.backend().buffer(), RUNNERS[1]);
-    let handling = session.handle_event(mouse(column, row), &state, &geometry);
+    assert_eq!(
+        session.handle_event(mouse(column, row), &state, &geometry),
+        EventHandling::Consumed,
+        "runner option Down must arm without selecting"
+    );
+    let handling = session.handle_event(
+        mouse_with_kind(MouseEventKind::Up(MouseButton::Left), column, row),
+        &state,
+        &geometry,
+    );
     let EventHandling::Action(action) = handling else {
         panic!("clicking a rendered runner option must select it: {handling:?}");
     };
@@ -896,9 +913,15 @@ fn settings_short_candidate_cursor_and_mouse_can_pick_a_non_first_name() {
         })
         .unwrap();
     let (column, row) = buffer_position(terminal.backend().buffer(), "☐ c");
-    let EventHandling::Action(action) =
-        mouse_session.handle_event(mouse(column, row), &mouse_state, &mouse_geometry)
-    else {
+    assert_eq!(
+        mouse_session.handle_event(mouse(column, row), &mouse_state, &mouse_geometry),
+        EventHandling::Consumed
+    );
+    let EventHandling::Action(action) = mouse_session.handle_event(
+        mouse_with_kind(MouseEventKind::Up(MouseButton::Left), column, row),
+        &mouse_state,
+        &mouse_geometry,
+    ) else {
         panic!("the non-first option must keep its mouse twin");
     };
     mouse_state.update(action);
@@ -1142,6 +1165,14 @@ fn test_settings_candidate_picker_reaches_a_hidden_name_and_waits_for_outer_save
     }
     assert_eq!(
         session.handle_event(mouse(point.0, point.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), point.0, point.1),
+            &state,
+            &geometry,
+        ),
         EventHandling::Consumed
     );
     assert!(
@@ -1390,7 +1421,21 @@ fn test_review_candidate_picker_select_all_and_done_are_mouse_operable() {
         .find(|hit| hit.target == ChoicePickerHit::SelectAll)
         .expect("the select-all control is a mouse target")
         .area;
-    let _ = session.handle_event(mouse(select_all.x, select_all.y), &geometry);
+    assert_eq!(
+        session.handle_event(mouse(select_all.x, select_all.y), &geometry),
+        Some(PromptCandidatePickerEvent::Changed)
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(
+                MouseEventKind::Up(MouseButton::Left),
+                select_all.x,
+                select_all.y,
+            ),
+            &geometry,
+        ),
+        Some(PromptCandidatePickerEvent::Changed)
+    );
 
     let (_, geometry) = draw_picker(&mut session, 100, 40);
     let done = geometry
@@ -1399,8 +1444,15 @@ fn test_review_candidate_picker_select_all_and_done_are_mouse_operable() {
         .find(|hit| hit.target == ChoicePickerHit::Done)
         .expect("Done is a mouse target")
         .area;
+    assert_eq!(
+        session.handle_event(mouse(done.x, done.y), &geometry),
+        Some(PromptCandidatePickerEvent::Changed)
+    );
     let PromptCandidatePickerEvent::Accepted(picked) = session
-        .handle_event(mouse(done.x, done.y), &geometry)
+        .handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), done.x, done.y),
+            &geometry,
+        )
         .unwrap()
     else {
         panic!("clicking Done must accept the picker");

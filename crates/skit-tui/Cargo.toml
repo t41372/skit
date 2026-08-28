@@ -16,6 +16,7 @@ ratatui-crossterm.workspace = true
 ratatui-textarea.workspace = true
 tui-input.workspace = true
 thiserror.workspace = true
+unicode-segmentation.workspace = true
 unicode-width.workspace = true
 skit-application.workspace = true
 skit-form.workspace = true

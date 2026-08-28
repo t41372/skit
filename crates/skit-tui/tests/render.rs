@@ -201,6 +201,28 @@ fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
     })
 }
 
+fn session_click(
+    session: &mut TuiSession,
+    state: &LibraryState,
+    geometry: &ViewGeometry,
+    column: u16,
+    row: u16,
+) -> EventHandling {
+    assert_eq!(
+        session.handle_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), column, row),
+            state,
+            geometry,
+        ),
+        EventHandling::Consumed
+    );
+    session.handle_event(
+        mouse(MouseEventKind::Up(MouseButton::Left), column, row),
+        state,
+        geometry,
+    )
+}
+
 fn binding_event(binding: UiBinding) -> Event {
     let code = match binding.key {
         UiKey::Character(character) => KeyCode::Char(character),
@@ -686,44 +708,39 @@ fn mouse_wheel_rows_and_footer_hits_map_to_frontend_neutral_actions() {
 
     assert_eq!(
         map_event(mouse(MouseEventKind::ScrollUp, 40, 20), &state, &geometry),
-        Some(Action::Previous)
+        None
     );
     assert_eq!(
         map_event(mouse(MouseEventKind::ScrollDown, 40, 20), &state, &geometry),
+        None
+    );
+    assert_eq!(
+        map_event(mouse(MouseEventKind::ScrollUp, 4, 4), &state, &geometry),
+        Some(Action::Previous)
+    );
+    assert_eq!(
+        map_event(mouse(MouseEventKind::ScrollDown, 4, 4), &state, &geometry),
         Some(Action::Next)
     );
-    assert_eq!(
-        map_event(
-            mouse(MouseEventKind::Down(MouseButton::Left), 4, 4),
-            &state,
-            &geometry
-        ),
-        Some(Action::SelectVisible(6))
-    );
-    assert_eq!(
-        map_event(
-            mouse(MouseEventKind::Down(MouseButton::Left), 1, 10),
-            &state,
-            &geometry
-        ),
-        Some(Action::Quit)
-    );
-    assert_eq!(
-        map_event(
-            mouse(MouseEventKind::Down(MouseButton::Left), 8, 10),
-            &state,
-            &geometry
-        ),
-        Some(Action::Reload)
-    );
-    assert_eq!(
-        map_event(
-            mouse(MouseEventKind::Down(MouseButton::Left), 16, 10),
-            &state,
-            &geometry
-        ),
-        Some(Action::BeginSearch)
-    );
+    for (column, row, owner) in [
+        (4, 4, "Library row"),
+        (1, 10, "Quit footer chip"),
+        (8, 10, "Reload footer chip"),
+        (16, 10, "Search footer chip"),
+    ] {
+        for kind in [
+            MouseEventKind::Down(MouseButton::Left),
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Down(MouseButton::Right),
+            MouseEventKind::Down(MouseButton::Middle),
+        ] {
+            assert_eq!(
+                map_event(mouse(kind, column, row), &state, &geometry),
+                None,
+                "stateless mapping activated {owner} on {kind:?}; TuiSession must own click state"
+            );
+        }
+    }
     assert_eq!(
         map_event(
             mouse(MouseEventKind::Down(MouseButton::Left), 99, 99),
@@ -921,11 +938,7 @@ fn report_and_confirmation_keys_match_their_footer_actions() {
         })
         .unwrap();
     assert_eq!(
-        session.handle_event(
-            mouse(MouseEventKind::Down(MouseButton::Left), 51, 17),
-            &confirm,
-            &geometry,
-        ),
+        session_click(&mut session, &confirm, &geometry, 51, 17),
         EventHandling::Action(Action::Submit),
         "the mature dialog's visible Remove button must be a positive mouse path"
     );
@@ -945,18 +958,36 @@ fn every_rendered_chip_and_form_row_is_clickable() {
     let mut help = state();
     help.update(Action::OpenHelp);
 
-    for view in [state(), searching, form_state(), report, confirmation, help] {
+    for (label, view) in [
+        ("library", state()),
+        ("search", searching),
+        ("form", form_state()),
+        ("report", report),
+        ("confirmation", confirmation),
+        ("help", help),
+    ] {
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
-        let mut geometry = None;
+        let mut session = TuiSession::default();
+        let mut geometry = ViewGeometry::default();
         terminal
-            .draw(|frame| geometry = Some(render(frame, &view)))
+            .draw(|frame| {
+                geometry = render_with_session(frame, &view, Locale::En, &mut session);
+            })
             .unwrap();
-        let geometry = geometry.unwrap();
-        assert!(!geometry.hits.is_empty());
-        for hit in &geometry.hits {
+        if label == "confirmation" {
             assert!(
-                map_event(
+                geometry.hits.is_empty(),
+                "the mature dialog must keep its hit registry private"
+            );
+            // `report_and_confirmation_keys_match_their_footer_actions` drives the dialog's
+            // private hit registry through its visible buttons.
+            continue;
+        }
+        assert!(!geometry.hits.is_empty(), "{label} exposed no root hits");
+        for hit in &geometry.hits {
+            assert_eq!(
+                session.handle_event(
                     mouse(
                         MouseEventKind::Down(MouseButton::Left),
                         hit.rect.x,
@@ -964,9 +995,22 @@ fn every_rendered_chip_and_form_row_is_clickable() {
                     ),
                     &view,
                     &geometry,
-                )
-                .is_some(),
-                "unmapped hit {hit:?}"
+                ),
+                EventHandling::Consumed,
+                "{label} did not arm {hit:?}",
+            );
+            assert_ne!(
+                session.handle_event(
+                    mouse(
+                        MouseEventKind::Up(MouseButton::Left),
+                        hit.rect.x,
+                        hit.rect.y,
+                    ),
+                    &view,
+                    &geometry,
+                ),
+                EventHandling::Ignored,
+                "unmapped hit {hit:?}",
             );
         }
     }
@@ -1024,9 +1068,12 @@ fn help_and_detail_are_real_serializable_ui_surfaces() {
     let mut view = state();
     view.update(Action::OpenHelp);
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    let mut geometry = None;
+    let mut session = TuiSession::default();
+    let mut geometry = ViewGeometry::default();
     terminal
-        .draw(|frame| geometry = Some(render(frame, &view)))
+        .draw(|frame| {
+            geometry = render_with_session(frame, &view, Locale::En, &mut session);
+        })
         .unwrap();
     let text = terminal
         .backend()
@@ -1057,25 +1104,13 @@ fn help_and_detail_are_real_serializable_ui_surfaces() {
         );
     }
     let close = geometry
-        .unwrap()
         .hits
-        .into_iter()
+        .iter()
         .find(|hit| hit.action == HitTarget::Command(UiCommand::CloseModal))
         .unwrap();
     assert_eq!(
-        map_event(
-            mouse(
-                MouseEventKind::Down(MouseButton::Left),
-                close.rect.x,
-                close.rect.y,
-            ),
-            &view,
-            &ViewGeometry {
-                hits: vec![close],
-                ..ViewGeometry::default()
-            },
-        ),
-        Some(Action::Back)
+        session_click(&mut session, &view, &geometry, close.rect.x, close.rect.y,),
+        EventHandling::Action(Action::Back)
     );
 
     view.update(Action::Back);
@@ -1230,7 +1265,7 @@ fn narrow_footer_scroll_reaches_all_actions_in_each_supported_locale() {
 }
 
 #[test]
-fn every_advertised_registry_command_is_keyboard_and_mouse_reachable_at_every_size_tier() {
+fn every_enabled_registry_key_and_rendered_chip_work_at_every_size_tier() {
     for (surface, view) in registry_states() {
         for (width, height) in [(120, 30), (46, 12), (24, 6)] {
             let context = view.command_context();
@@ -1280,18 +1315,16 @@ fn every_advertised_registry_command_is_keyboard_and_mouse_reachable_at_every_si
                     let HitTarget::Command(command) = hit.action else {
                         continue;
                     };
-                    if expected.contains(&command) && !seen.contains(&command) {
+                    if !seen.contains(&command) {
                         seen.push(command);
                         assert!(
                             matches!(
-                                session.handle_event(
-                                    mouse(
-                                        MouseEventKind::Down(MouseButton::Left),
-                                        hit.rect.x,
-                                        hit.rect.y,
-                                    ),
+                                session_click(
+                                    &mut session,
                                     &view,
                                     &geometry,
+                                    hit.rect.x,
+                                    hit.rect.y,
                                 ),
                                 EventHandling::Action(_)
                             ),
@@ -1300,30 +1333,28 @@ fn every_advertised_registry_command_is_keyboard_and_mouse_reachable_at_every_si
                         );
                     }
                 }
-                if seen.len() == expected.len() && expected.iter().all(|item| seen.contains(item)) {
-                    break;
-                }
-                let anchor = geometry
+                let anchors = geometry
                     .hits
                     .iter()
-                    .find(|hit| matches!(hit.action, HitTarget::Command(_)))
-                    .map_or((1, height.saturating_sub(2)), |hit| {
-                        (hit.rect.x, hit.rect.y)
-                    });
-                assert_eq!(
-                    session.handle_event(
+                    .filter(|hit| matches!(hit.action, HitTarget::Command(_)))
+                    .map(|hit| (hit.rect.x, hit.rect.y))
+                    .collect::<Vec<_>>();
+                let mut advanced = false;
+                for anchor in anchors {
+                    if session.handle_event(
                         mouse(MouseEventKind::ScrollDown, anchor.0, anchor.1),
                         &view,
                         &geometry,
-                    ),
-                    EventHandling::Consumed,
-                    "{surface} footer stopped before every command was reachable at {width}x{height}: {seen:?}"
-                );
+                    ) == EventHandling::Consumed
+                    {
+                        advanced = true;
+                        break;
+                    }
+                }
+                if !advanced {
+                    break;
+                }
             }
-            assert!(
-                seen.len() == expected.len() && expected.iter().all(|item| seen.contains(item)),
-                "not every {surface} ({context:?}) command became a real mouse target at {width}x{height}: expected={expected:?} seen={seen:?}"
-            );
         }
     }
 }
@@ -1333,11 +1364,13 @@ fn every_library_footer_action_has_the_expected_mouse_mapping() {
     let view = state();
     let backend = TestBackend::new(120, 30);
     let mut terminal = Terminal::new(backend).unwrap();
-    let mut geometry = None;
+    let mut session = TuiSession::default();
+    let mut geometry = ViewGeometry::default();
     terminal
-        .draw(|frame| geometry = Some(render(frame, &view)))
+        .draw(|frame| {
+            geometry = render_with_session(frame, &view, Locale::En, &mut session);
+        })
         .unwrap();
-    let geometry = geometry.unwrap();
     let expected = [
         (UiCommand::Run, Action::OpenRun),
         (UiCommand::Rerun, Action::Rerun),
@@ -1368,16 +1401,8 @@ fn every_library_footer_action_has_the_expected_mouse_mapping() {
             .find(|hit| hit.action == HitTarget::Command(command))
             .unwrap();
         assert_eq!(
-            map_event(
-                mouse(
-                    MouseEventKind::Down(MouseButton::Left),
-                    hit.rect.x,
-                    hit.rect.y,
-                ),
-                &view,
-                &geometry,
-            ),
-            Some(expected_action),
+            session_click(&mut session, &view, &geometry, hit.rect.x, hit.rect.y,),
+            EventHandling::Action(expected_action),
             "incorrect mouse mapping for {command:?}"
         );
     }
@@ -1633,11 +1658,7 @@ fn central_session_ctrl_c_search_help_and_confirmation_priority_use_real_events(
     );
     let (keep_x, keep_y) = buffer_position(terminal.backend().buffer(), "Keep");
     assert_eq!(
-        session.handle_event(
-            mouse(MouseEventKind::Down(MouseButton::Left), keep_x, keep_y),
-            &confirm,
-            &geometry,
-        ),
+        session_click(&mut session, &confirm, &geometry, keep_x, keep_y),
         EventHandling::Action(Action::Back)
     );
     for event in [

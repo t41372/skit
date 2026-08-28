@@ -134,10 +134,10 @@ fn rendered(buffer: &Buffer) -> String {
     buffer.content().iter().map(|cell| cell.symbol()).collect()
 }
 
-/// Click one rendered add control through the same mouse path as the host session.
-fn left_click(column: u16, row: u16) -> Event {
+/// Send one primary mouse phase through the same path as the host session.
+fn left_mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
     Event::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
+        kind,
         column,
         row,
         modifiers: KeyModifiers::NONE,
@@ -452,7 +452,27 @@ fn test_ctrl_d_deletes_the_highlighted_draft_after_confirm() {
         .find(|hit| hit.target == AddControlId::Draft(doomed_index))
         .expect("the doomed draft is a mouse target")
         .area;
-    let select = session.handle_event(left_click(draft_area.x, draft_area.y), &workflow, &geometry);
+    assert_eq!(
+        session.handle_event(
+            left_mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                draft_area.x,
+                draft_area.y,
+            ),
+            &workflow,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
+    let select = session.handle_event(
+        left_mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            draft_area.x,
+            draft_area.y,
+        ),
+        &workflow,
+        &geometry,
+    );
     assert_eq!(
         select,
         Some(AddScreenEvent::Action(AddAction::SelectDraft(doomed_index)))
@@ -650,7 +670,19 @@ fn test_delete_draft_chip_only_renders_when_drafts_exist() {
         .find(|hit| hit.target == AddControlId::DeleteDraft)
         .expect("the advertised delete chip is clickable")
         .area;
-    let event = session.handle_event(left_click(delete.x, delete.y), &present, &geometry);
+    assert_eq!(
+        session.handle_event(
+            left_mouse(MouseEventKind::Down(MouseButton::Left), delete.x, delete.y,),
+            &present,
+            &geometry,
+        ),
+        Some(AddScreenEvent::Changed)
+    );
+    let event = session.handle_event(
+        left_mouse(MouseEventKind::Up(MouseButton::Left), delete.x, delete.y),
+        &present,
+        &geometry,
+    );
     assert_eq!(
         event,
         Some(AddScreenEvent::Action(AddAction::DeleteSelectedDraft))

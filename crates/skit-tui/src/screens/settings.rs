@@ -15,7 +15,7 @@
 //! stale mark behind. Only a text cursor lives here, because only a text cursor is the terminal's
 //! own.
 
-use std::{collections::BTreeMap, fmt::Display};
+use std::{cmp::Ordering, collections::BTreeMap, fmt::Display, num::NonZeroUsize};
 
 use ratatui_core::{
     buffer::Buffer,
@@ -26,12 +26,9 @@ use ratatui_core::{
     widgets::Widget,
 };
 use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use ratatui_interact::components::{
-    CheckBox, CheckBoxState, ScrollableContentState, handle_scrollable_content_key,
-    handle_scrollable_content_mouse,
-};
+use ratatui_interact::components::{CheckBox, CheckBoxState};
 use ratatui_textarea::TextArea as RichTextArea;
 use ratatui_widgets::{
     paragraph::{Paragraph, Wrap},
@@ -43,12 +40,14 @@ use skit_ui::{SettingsAction, SettingsItem, SettingsNote, SettingsSectionId, Set
 use tui_input::{Input as LineInput, InputRequest, backend::crossterm::EventHandler as _};
 
 use crate::{
+    pointer::{ClickOutcome, ClickTracker, EditableGeometry, TextAreaGeometry, TextAreaViewport},
     rowclip::{RowClip, editor_cursor_virtual_row},
     session::{
         TextAreaEventHandling, checkbox_style, edit_textarea, new_textarea, render_line_input_band,
         render_textarea_band, textarea_control_height, textarea_text,
     },
     theme::{ACCENT, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel},
+    viewport::VirtualScrollState,
 };
 
 /// Typed focus and mouse identity. User-visible English never selects behavior.
@@ -186,8 +185,11 @@ pub struct SettingsScreenSession {
     signature: Option<Vec<(String, ControlShape)>>,
     inputs: BTreeMap<String, LineInput>,
     bodies: BTreeMap<String, Box<RichTextArea<'static>>>,
+    body_viewports: BTreeMap<String, TextAreaViewport>,
+    input_editables: BTreeMap<String, EditableGeometry>,
+    body_editables: BTreeMap<String, TextAreaGeometry>,
     option_cursors: BTreeMap<String, usize>,
-    scroll: ScrollableContentState,
+    scroll: VirtualScrollState,
     viewport: Rect,
     visible_height: usize,
     spans: BTreeMap<String, (usize, usize)>,
@@ -195,6 +197,7 @@ pub struct SettingsScreenSession {
     undo_group: usize,
     redo_group: usize,
     aligned: Option<Alignment>,
+    click: ClickTracker<SettingsControlId>,
 }
 
 /// What the viewport was last aligned for.
@@ -213,6 +216,10 @@ struct Alignment {
 }
 
 impl SettingsScreenSession {
+    pub(crate) fn cancel_click(&mut self) {
+        self.click.cancel();
+    }
+
     /// Return where one field sat in the last render, at the full size it asked for.
     ///
     /// A field the viewport did not reach has no rectangle, because nothing was drawn for it. A
@@ -230,9 +237,11 @@ impl SettingsScreenSession {
             .map(|field| (field.key.clone(), shape(field)))
             .collect::<Vec<_>>();
         if self.signature.as_ref() != Some(&signature) {
+            self.click.cancel();
             self.signature = Some(signature);
             self.inputs.clear();
             self.bodies.clear();
+            self.body_viewports.clear();
             self.option_cursors.clear();
             for field in fields(view) {
                 let value = field.value().as_text();
@@ -240,6 +249,8 @@ impl SettingsScreenSession {
                     ControlShape::Body => {
                         self.bodies
                             .insert(field.key.clone(), Box::new(new_textarea(&value)));
+                        self.body_viewports
+                            .insert(field.key.clone(), TextAreaViewport::default());
                     }
                     ControlShape::Line { .. } => {
                         self.inputs.insert(field.key.clone(), LineInput::new(value));
@@ -288,9 +299,8 @@ impl SettingsScreenSession {
     /// back one frame later.
     fn follow_focus(&mut self, focused: &str, total: usize) {
         let maximum = total.saturating_sub(self.visible_height);
-        if self.scroll.scroll_offset() > maximum {
-            self.scroll.set_scroll_offset(maximum);
-        }
+        self.scroll
+            .set_scroll_offset(self.scroll.scroll_offset().min(maximum));
         let current = Alignment {
             focused: focused.to_owned(),
             visible_height: self.visible_height,
@@ -307,26 +317,25 @@ impl SettingsScreenSession {
         };
         let offset = self.scroll.scroll_offset();
         let end = start.saturating_add(height);
-        if height > self.visible_height
+        if matches!(height.cmp(&self.visible_height), Ordering::Greater)
             && let Some(body) = self.bodies.get(focused)
         {
             let cursor = editor_cursor_virtual_row(start, body.cursor().0);
-            let next = if cursor - start < self.visible_height {
-                start
-            } else {
-                cursor + 1 - self.visible_height
-            };
+            let next = cursor
+                .saturating_add(1)
+                .saturating_sub(self.visible_height)
+                .max(start);
             self.scroll.set_scroll_offset(next);
             return;
         }
-        if start < offset {
-            self.scroll.set_scroll_offset(start);
-        } else if end > offset.saturating_add(self.visible_height) {
-            // Show as much of the target as fits, and never past its first row. A target taller
-            // than the viewport would otherwise arrive showing only its tail, which for a section
-            // means the heading and the opening sentence are the parts that scroll away.
-            self.scroll
-                .set_scroll_offset(end.saturating_sub(self.visible_height).min(start));
+        let viewport_end = offset.saturating_add(self.visible_height);
+        match (start.cmp(&offset), end.cmp(&viewport_end)) {
+            (Ordering::Less, _) => self.scroll.set_scroll_offset(start),
+            (Ordering::Equal | Ordering::Greater, Ordering::Greater) => {
+                self.scroll
+                    .set_scroll_offset(end.saturating_sub(self.visible_height).min(start));
+            }
+            (Ordering::Equal | Ordering::Greater, Ordering::Less | Ordering::Equal) => {}
         }
     }
 
@@ -451,26 +460,37 @@ impl SettingsScreenSession {
         view: &SettingsView,
         geometry: &SettingsScreenGeometry,
     ) -> Option<SettingsScreenEvent> {
-        if matches!(
-            mouse.kind,
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-        ) {
-            return handle_scrollable_content_mouse(
-                &mut self.scroll,
-                mouse,
-                self.viewport,
-                self.visible_height,
-            )
-            .map(|_| SettingsScreenEvent::Changed);
-        }
-        if !matches!(mouse.kind, MouseEventKind::Down(_)) {
-            return None;
+        if self
+            .scroll
+            .handle_mouse(mouse, self.viewport, self.visible_height)
+        {
+            return Some(SettingsScreenEvent::Changed);
         }
         let target = geometry
             .hits
             .iter()
+            .rev()
             .find(|hit| hit.area.contains((mouse.column, mouse.row).into()))
-            .map(|hit| hit.target.clone())?;
+            .map(|hit| &hit.target);
+        if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(SettingsControlId::Field(key)) = target
+        {
+            if let Some(editable) = self.input_editables.get(key).copied()
+                && let Some(input) = self.inputs.get_mut(key)
+            {
+                let _ = editable.place_cursor(input, mouse.column, mouse.row);
+            }
+            if let Some(editable) = self.body_editables.get(key).copied()
+                && let Some(body) = self.bodies.get_mut(key)
+            {
+                let _ = editable.place_cursor(body, mouse.column, mouse.row);
+            }
+        }
+        let target = match self.click.update(mouse, target) {
+            ClickOutcome::Armed => return Some(SettingsScreenEvent::Changed),
+            ClickOutcome::Activated(target) => target,
+            ClickOutcome::Ignored => return None,
+        };
         match target {
             // A click on a toggle both moves the keyboard and flips it, which is the one thing a
             // person means by clicking a checkbox.
@@ -503,11 +523,11 @@ impl SettingsScreenSession {
     fn handle_paste(&mut self, view: &SettingsView, value: &str) -> Option<SettingsScreenEvent> {
         let focused = view.focused().to_owned();
         if let Some(body) = self.bodies.get_mut(&focused) {
-            let before_cursor = body.cursor();
-            body.insert_str(value);
-            if body.cursor() != before_cursor {
-                self.aligned = None;
+            if value.is_empty() {
+                return None;
             }
+            body.insert_str(value);
+            self.aligned = None;
             self.undo_group = 1;
             self.redo_group = 0;
             return set_field(&focused, FieldValue::text(textarea_text(body)));
@@ -560,8 +580,9 @@ impl SettingsScreenSession {
     }
 
     fn scroll_key(&mut self, key: KeyEvent) -> Option<SettingsScreenEvent> {
-        handle_scrollable_content_key(&mut self.scroll, &key, self.visible_height)
-            .map(|_| SettingsScreenEvent::Changed)
+        self.scroll
+            .handle_key(&key, self.visible_height)
+            .then_some(SettingsScreenEvent::Changed)
     }
 
     /// Return where one virtual span lands on screen at its full height, clipped by nothing.
@@ -569,12 +590,11 @@ impl SettingsScreenSession {
         let offset = self.scroll.scroll_offset();
         Rect::new(
             self.viewport.x,
-            self.viewport.y.saturating_add(
-                u16::try_from(start.saturating_sub(offset))
-                    .expect("the settings item starts inside terminal geometry"),
-            ),
+            self.viewport
+                .y
+                .saturating_add(u16::try_from(start.saturating_sub(offset)).unwrap_or(u16::MAX)),
             self.viewport.width,
-            u16::try_from(height).expect("the settings item height fits terminal geometry"),
+            u16::try_from(height).unwrap_or(u16::MAX),
         )
     }
 
@@ -590,8 +610,7 @@ impl SettingsScreenSession {
         let clipped_end = end.min(viewport_end);
         Some(RowClip::new(
             height,
-            u16::try_from(clipped_start.saturating_sub(start))
-                .expect("the settings band offset fits Ratatui's row offset"),
+            clipped_start.saturating_sub(start),
             Rect::new(
                 self.viewport.x,
                 self.viewport.y.saturating_add(
@@ -633,8 +652,13 @@ impl SettingsScreenSession {
         } = *draw;
         match &field.kind {
             FieldKind::Multiline => {
-                if let Some(body) = self.bodies.get_mut(&field.key) {
-                    render_textarea_band(frame, clip, body, focused, label);
+                if let (Some(body), Some(viewport)) = (
+                    self.bodies.get_mut(&field.key),
+                    self.body_viewports.get_mut(&field.key),
+                ) && let Some(editable) =
+                    render_textarea_band(frame, clip, body, viewport, focused, label)
+                {
+                    self.body_editables.insert(field.key.clone(), editable);
                 }
                 hits.push(SettingsHitRegion {
                     area,
@@ -670,9 +694,12 @@ impl SettingsScreenSession {
             | FieldKind::ArgumentList { .. } => {
                 if let Some(input) = self.inputs.get(&field.key) {
                     let secret = matches!(field.kind, FieldKind::Secret);
-                    render_line_input_band(frame, clip, input, secret, focused, label, None);
+                    if let Some(editable) =
+                        render_line_input_band(frame, clip, input, secret, focused, label, None)
+                    {
+                        self.input_editables.insert(field.key.clone(), editable);
+                    }
                     if input.value().is_empty()
-                        && !field.help.is_empty()
                         && let Some(content) = clip.row(1)
                     {
                         Paragraph::new(text(locale, &field.help))
@@ -787,6 +814,20 @@ pub fn render_settings(
     locale: Locale,
 ) -> SettingsScreenGeometry {
     session.sync(view);
+    if area.is_empty() {
+        session.viewport = area;
+        session.visible_height = 0;
+        session.spans.clear();
+        session.rendered.clear();
+        session.input_editables.clear();
+        session.body_editables.clear();
+        session.aligned = None;
+        return SettingsScreenGeometry {
+            body: area,
+            first_visible: session.scroll.scroll_offset(),
+            hits: Vec::new(),
+        };
+    }
     // Version 0.4 titles the panel with the entry name it opened with
     // (`src/skit/tui_settings.py:869-871`).
     let block = padded_panel(
@@ -796,15 +837,29 @@ pub fn render_settings(
     let body = block.inner(area);
     frame.render_widget(block, area);
     session.viewport = body;
-    session.visible_height = usize::from(body.height).max(1);
+    session.visible_height = usize::from(body.height);
+    if body.is_empty() {
+        session.spans.clear();
+        session.rendered.clear();
+        session.input_editables.clear();
+        session.body_editables.clear();
+        session.aligned = None;
+        return SettingsScreenGeometry {
+            body,
+            first_visible: session.scroll.scroll_offset(),
+            hits: Vec::new(),
+        };
+    }
 
     let items = layout_items(view, locale, body.width);
     let total = items
         .last()
         .map_or(0, |item| item.start.saturating_add(item.height));
-    session.scroll.set_lines(vec![String::new(); total.max(1)]);
+    session.scroll.set_line_count(total.max(1));
     session.spans.clear();
     session.rendered.clear();
+    session.input_editables.clear();
+    session.body_editables.clear();
     for (index, item) in items.iter().enumerate() {
         match &item.item {
             Item::Control { key, .. } => {
@@ -902,8 +957,8 @@ pub fn render_settings(
     // Version 0.4 hosts the body in a `VerticalScroll`, whose scrollbar is the only thing that says
     // the screen continues (`src/skit/tui_settings.py:388`, and visible in its shipped frame). With
     // the sections below the fold and no mark beside them, a reader has nothing to act on.
-    if total > usize::from(body.height) {
-        let mut scrollbar = ScrollbarState::new(total.saturating_sub(usize::from(body.height)))
+    if let Some(overflow) = NonZeroUsize::new(total.saturating_sub(usize::from(body.height))) {
+        let mut scrollbar = ScrollbarState::new(overflow.get())
             .position(session.scroll.scroll_offset())
             .viewport_content_length(usize::from(body.height));
         frame.render_stateful_widget(
@@ -1539,17 +1594,7 @@ mod tests {
             })
             .expect("the candidate is not a click target");
         let area = hit.area;
-        dispatch(
-            &mut session,
-            &mut view,
-            &geometry,
-            Event::Mouse(MouseEvent {
-                kind: MouseEventKind::Down(MouseButton::Left),
-                column: area.x,
-                row: area.y,
-                modifiers: KeyModifiers::NONE,
-            }),
-        );
+        dispatch_click(&mut session, &mut view, &geometry, area);
         assert_eq!(
             view.submitted_values()
                 .get(MANAGE_KEY)
@@ -1968,6 +2013,69 @@ mod tests {
         handled
     }
 
+    fn dispatch_click(
+        session: &mut SettingsScreenSession,
+        view: &mut SettingsView,
+        geometry: &SettingsScreenGeometry,
+        area: Rect,
+    ) -> Option<SettingsScreenEvent> {
+        assert_eq!(
+            session.handle_event(click(area), view, geometry),
+            Some(SettingsScreenEvent::Changed),
+        );
+        dispatch(
+            session,
+            view,
+            geometry,
+            mouse(area, MouseEventKind::Up(MouseButton::Left)),
+        )
+    }
+
+    #[test]
+    fn settings_click_rejects_mismatched_release_and_nonprimary_buttons() {
+        let mut session = SettingsScreenSession::default();
+        let view = prompt_view();
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        let field_area = |key: &str| {
+            geometry
+                .hits
+                .iter()
+                .find(|hit| hit.target == SettingsControlId::Field(key.to_owned()))
+                .unwrap()
+                .area
+        };
+        let name = field_area(NAME_KEY);
+        let description = field_area(DESCRIPTION_KEY);
+        assert_eq!(
+            session.handle_event(click(name), &view, &geometry),
+            Some(SettingsScreenEvent::Changed)
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(description, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+                &geometry,
+            ),
+            None
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(name, MouseEventKind::Down(MouseButton::Right)),
+                &view,
+                &geometry,
+            ),
+            None
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse(name, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+                &geometry,
+            ),
+            None
+        );
+    }
+
     /// Typing reaches the focused box, and the model keeps every character.
     #[test]
     fn typing_reaches_the_focused_box_and_the_model_keeps_it() {
@@ -2241,7 +2349,17 @@ mod tests {
                 description_value
             );
         }
-        dispatch(&mut session, &mut view, &geometry, click(description.area));
+        assert_eq!(
+            session.handle_event(click(description.area), &view, &geometry),
+            Some(SettingsScreenEvent::Changed)
+        );
+        assert_eq!(view.focused(), NAME_KEY);
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            mouse(description.area, MouseEventKind::Up(MouseButton::Left)),
+        );
         assert_eq!(view.focused(), DESCRIPTION_KEY);
 
         // Clicking a text box moves the keyboard to it.
@@ -2250,7 +2368,7 @@ mod tests {
             .iter()
             .find(|hit| hit.target == SettingsControlId::Field(NEEDS_KEY.to_owned()))
             .expect("the needs box is clickable");
-        dispatch(&mut session, &mut view, &geometry, click(needs.area));
+        dispatch_click(&mut session, &mut view, &geometry, needs.area);
         assert_eq!(view.focused(), NEEDS_KEY);
 
         // Clicking one option picks it, by value, and takes the keyboard with it.
@@ -2265,7 +2383,7 @@ mod tests {
                     }
             })
             .expect("every option is clickable");
-        dispatch(&mut session, &mut view, &geometry, click(store.area));
+        dispatch_click(&mut session, &mut view, &geometry, store.area);
         assert_eq!(view.field(WORKDIR_KEY).unwrap().value().as_text(), "store");
         assert_eq!(view.focused(), WORKDIR_KEY);
 
@@ -2276,7 +2394,7 @@ mod tests {
             .find(|hit| hit.target == SettingsControlId::NewRunner)
             .expect("the new-agent chip is clickable");
         assert_eq!(
-            session.handle_event(click(door.area), &view, &geometry),
+            dispatch_click(&mut session, &mut view, &geometry, door.area),
             Some(SettingsScreenEvent::Action(SettingsAction::NewRunner))
         );
     }
@@ -2380,7 +2498,20 @@ mod tests {
             .iter()
             .find(|hit| hit.target == SettingsControlId::Field("kind:boolean".to_owned()))
             .expect("a toggle is clickable");
-        dispatch(&mut session, &mut view, &geometry, click(toggle.area));
+        assert_eq!(
+            session.handle_event(click(toggle.area), &view, &geometry),
+            Some(SettingsScreenEvent::Changed)
+        );
+        assert_eq!(
+            view.field("kind:boolean").unwrap().value().as_text(),
+            "true"
+        );
+        dispatch(
+            &mut session,
+            &mut view,
+            &geometry,
+            mouse(toggle.area, MouseEventKind::Up(MouseButton::Left)),
+        );
         assert_eq!(
             view.field("kind:boolean").unwrap().value().as_text(),
             "false",
@@ -2602,6 +2733,22 @@ mod tests {
             key: DESCRIPTION_KEY.to_owned(),
         });
         let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 90);
+        let before_empty_paste = view
+            .field(DESCRIPTION_KEY)
+            .expect("description exists")
+            .value()
+            .clone();
+        assert_eq!(
+            session.handle_event(Event::Paste(String::new()), &view, &geometry),
+            None
+        );
+        assert_eq!(
+            view.field(DESCRIPTION_KEY)
+                .expect("description exists")
+                .value(),
+            &before_empty_paste,
+            "an empty textarea paste must not change the model",
+        );
         let pasted = dispatch(
             &mut session,
             &mut view,
@@ -2795,6 +2942,599 @@ mod tests {
     }
 
     #[test]
+    fn same_signature_line_input_preserves_cursor_and_accepts_external_values() {
+        let view = prompt_view();
+        let mut stable = SettingsScreenSession::default();
+        let (_, geometry) = draw(&mut stable, &view, DEMO_WIDTH, 40);
+        for _ in 0..2 {
+            assert_eq!(
+                stable.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &view, &geometry,),
+                Some(SettingsScreenEvent::Changed)
+            );
+        }
+        let _ = draw(&mut stable, &view, DEMO_WIDTH, 40);
+        assert_eq!(
+            stable.handle_event(
+                key(KeyCode::Char('X'), KeyModifiers::NONE),
+                &view,
+                &geometry,
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField {
+                key: NAME_KEY.to_owned(),
+                value: FieldValue::text("BriXef"),
+            }))
+        );
+
+        let mut external = SettingsScreenSession::default();
+        let mut replaced = prompt_view();
+        let _ = draw(&mut external, &replaced, DEMO_WIDTH, 40);
+        replaced.set_value(NAME_KEY, FieldValue::text("Host replacement"));
+        let (terminal, geometry) = draw(&mut external, &replaced, DEMO_WIDTH, 40);
+        let area = external.field_area(NAME_KEY).expect("name field area");
+        let mut name_control = String::new();
+        for row in area.y..area.bottom() {
+            for column in area.x..area.right() {
+                name_control.push_str(terminal.backend().buffer()[(column, row)].symbol());
+            }
+        }
+        assert!(name_control.contains("Host replacement"), "{name_control}");
+        assert!(
+            !name_control.contains("Brief"),
+            "stale input remains: {name_control}"
+        );
+        assert_eq!(
+            external.handle_event(
+                key(KeyCode::Char('X'), KeyModifiers::NONE),
+                &replaced,
+                &geometry,
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField {
+                key: NAME_KEY.to_owned(),
+                value: FieldValue::text("Host replacementX"),
+            }))
+        );
+    }
+
+    #[test]
+    fn matching_release_requires_the_same_control_shape_after_recompose() {
+        let mut view = prompt_view();
+        view.sections = vec![SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![SettingsItem::field(Field::new(
+                "same",
+                "Same",
+                FieldKind::Text,
+                FieldOwner::Declared,
+                FieldValue::text("value"),
+            ))],
+        )];
+        view.update(SettingsAction::Focus {
+            key: "same".to_owned(),
+        });
+
+        let mut stable = SettingsScreenSession::default();
+        let (_, geometry) = draw(&mut stable, &view, 40, 10);
+        let stable_area = stable.field_area("same").expect("text field area");
+        assert_eq!(
+            stable.handle_event(click(stable_area), &view, &geometry),
+            Some(SettingsScreenEvent::Changed)
+        );
+        let (_, stable_geometry) = draw(&mut stable, &view, 40, 10);
+        assert_eq!(
+            stable.handle_event(
+                mouse(stable_area, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+                &stable_geometry,
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::Focus {
+                key: "same".to_owned(),
+            }))
+        );
+
+        let mut changed = SettingsScreenSession::default();
+        let (_, geometry) = draw(&mut changed, &view, 40, 10);
+        let old_area = changed.field_area("same").expect("old field area");
+        assert_eq!(
+            changed.handle_event(click(old_area), &view, &geometry),
+            Some(SettingsScreenEvent::Changed)
+        );
+        let field = view.field_mut("same").expect("same field");
+        field.kind = FieldKind::Boolean;
+        field.set_value(FieldValue::boolean(true));
+        let (_, changed_geometry) = draw(&mut changed, &view, 40, 10);
+        assert_eq!(
+            changed.handle_event(
+                mouse(old_area, MouseEventKind::Up(MouseButton::Left)),
+                &view,
+                &changed_geometry,
+            ),
+            None,
+            "a release must not toggle a control that changed shape after press"
+        );
+    }
+
+    #[test]
+    fn available_prompt_picker_does_not_capture_plain_keys() {
+        let mut inputs = settings_inputs();
+        inputs.interpolate = true;
+        inputs.candidates = (0..skit_ui::PROMPT_LIST_PREVIEW_LIMIT + 2)
+            .map(|index| format!("value_{index}"))
+            .collect();
+        let view = SettingsView::from_inputs(&inputs);
+        assert!(view.prompt_picker_available());
+        let mut session = SettingsScreenSession::default();
+        let (_, geometry) = draw(&mut session, &view, DEMO_WIDTH, 60);
+        assert_eq!(
+            session.handle_event(
+                key(KeyCode::Char('x'), KeyModifiers::NONE),
+                &view,
+                &geometry,
+            ),
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField {
+                key: NAME_KEY.to_owned(),
+                value: FieldValue::text("Briefx"),
+            }))
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::Tab, KeyModifiers::NONE), &view, &geometry),
+            Some(SettingsScreenEvent::Action(SettingsAction::FocusNext))
+        );
+        assert_eq!(
+            session.handle_event(
+                key(KeyCode::Char('o'), KeyModifiers::CONTROL),
+                &view,
+                &geometry,
+            ),
+            Some(SettingsScreenEvent::OpenPromptCandidates)
+        );
+    }
+
+    #[test]
+    fn multi_choice_mouse_keeps_selection_order_cursor_and_focus_style() {
+        let options = vec![
+            ChoiceOption::plain("one"),
+            ChoiceOption::plain("two"),
+            ChoiceOption::plain("three"),
+        ];
+        let mut view = prompt_view();
+        view.sections = vec![SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![
+                SettingsItem::field(Field::new(
+                    "multiple",
+                    "Multiple",
+                    FieldKind::MultiChoice { options },
+                    FieldOwner::Declared,
+                    FieldValue::Explicit(TypedValue::Choices(vec![
+                        "one".to_owned(),
+                        "two".to_owned(),
+                        "hidden".to_owned(),
+                    ])),
+                )),
+                SettingsItem::field(Field::new(
+                    "other",
+                    "Other",
+                    FieldKind::Text,
+                    FieldOwner::Declared,
+                    FieldValue::text("value"),
+                )),
+            ],
+        )];
+        view.update(SettingsAction::Focus {
+            key: "multiple".to_owned(),
+        });
+        let mut session = SettingsScreenSession::default();
+        let (terminal, geometry) = draw(&mut session, &view, 50, 18);
+        let option_area = |geometry: &SettingsScreenGeometry, value: &str| {
+            geometry
+                .hits
+                .iter()
+                .find(|hit| {
+                    hit.target
+                        == (SettingsControlId::Option {
+                            field: "multiple".to_owned(),
+                            value: value.to_owned(),
+                        })
+                })
+                .expect("option hit")
+                .area
+        };
+        let highlighted = |buffer: &Buffer, area: Rect| {
+            (area.x..area.right()).any(|column| buffer[(column, area.y)].bg == SELECT_BG)
+        };
+        assert!(highlighted(
+            terminal.backend().buffer(),
+            option_area(&geometry, "one")
+        ));
+        assert!(!highlighted(
+            terminal.backend().buffer(),
+            option_area(&geometry, "two")
+        ));
+        assert!(!highlighted(
+            terminal.backend().buffer(),
+            option_area(&geometry, "three")
+        ));
+
+        let three = option_area(&geometry, "three");
+        assert!(matches!(
+            dispatch_click(&mut session, &mut view, &geometry, three),
+            Some(SettingsScreenEvent::Action(SettingsAction::SetField { .. }))
+        ));
+        assert_eq!(
+            view.field("multiple").unwrap().value().explicit(),
+            Some(&TypedValue::Choices(vec![
+                "one".to_owned(),
+                "two".to_owned(),
+                "three".to_owned(),
+                "hidden".to_owned(),
+            ]))
+        );
+        let (terminal, geometry) = draw(&mut session, &view, 50, 18);
+        assert!(highlighted(
+            terminal.backend().buffer(),
+            option_area(&geometry, "three")
+        ));
+        assert!(!highlighted(
+            terminal.backend().buffer(),
+            option_area(&geometry, "one")
+        ));
+
+        let two = option_area(&geometry, "two");
+        let _ = dispatch_click(&mut session, &mut view, &geometry, two);
+        assert_eq!(
+            view.field("multiple").unwrap().value().explicit(),
+            Some(&TypedValue::Choices(vec![
+                "one".to_owned(),
+                "three".to_owned(),
+                "hidden".to_owned(),
+            ]))
+        );
+        view.update(SettingsAction::Focus {
+            key: "other".to_owned(),
+        });
+        let (terminal, geometry) = draw(&mut session, &view, 50, 18);
+        for value in ["one", "two", "three"] {
+            assert!(!highlighted(
+                terminal.backend().buffer(),
+                option_area(&geometry, value)
+            ));
+        }
+    }
+
+    #[test]
+    fn page_keys_and_visible_geometry_exclude_both_offscreen_sides() {
+        let fields = (0..10)
+            .map(|index| {
+                SettingsItem::field(Field::new(
+                    format!("field-{index}"),
+                    format!("Field {index}"),
+                    FieldKind::Text,
+                    FieldOwner::Declared,
+                    FieldValue::text(format!("value-{index}")),
+                ))
+            })
+            .collect();
+        let mut view = prompt_view();
+        view.sections = vec![SettingsSection::new(SettingsSectionId::Basics, fields)];
+        view.update(SettingsAction::Focus {
+            key: "field-0".to_owned(),
+        });
+        let mut session = SettingsScreenSession::default();
+        let (_, top) = draw(&mut session, &view, 40, 8);
+        assert!(session.field_area("field-9").is_none());
+        assert!(
+            !top.hits
+                .iter()
+                .any(|hit| { hit.target == SettingsControlId::Field("field-9".to_owned()) })
+        );
+        assert_eq!(
+            session.handle_event(key(KeyCode::PageDown, KeyModifiers::NONE), &view, &top,),
+            Some(SettingsScreenEvent::Changed)
+        );
+        let (_, bottom) = draw(&mut session, &view, 40, 8);
+        assert!(bottom.first_visible > top.first_visible);
+        assert!(session.field_area("field-0").is_none());
+        assert!(
+            !bottom
+                .hits
+                .iter()
+                .any(|hit| { hit.target == SettingsControlId::Field("field-0".to_owned()) })
+        );
+        for hit in &bottom.hits {
+            assert!(hit.area.height > 0, "zero-height hit: {hit:?}");
+            assert!(bottom.body.contains((hit.area.x, hit.area.y).into()));
+        }
+        assert_eq!(
+            session.handle_event(key(KeyCode::PageUp, KeyModifiers::NONE), &view, &bottom),
+            Some(SettingsScreenEvent::Changed)
+        );
+    }
+
+    #[test]
+    fn ordinary_focus_jumps_scroll_only_when_the_target_is_outside_the_viewport() {
+        let fields = (0..10)
+            .map(|index| {
+                SettingsItem::field(Field::new(
+                    format!("field-{index}"),
+                    format!("Field {index}"),
+                    FieldKind::Text,
+                    FieldOwner::Declared,
+                    FieldValue::text(format!("value-{index}")),
+                ))
+            })
+            .collect();
+        let mut view = prompt_view();
+        view.sections = vec![SettingsSection::new(SettingsSectionId::Basics, fields)];
+        view.update(SettingsAction::Focus {
+            key: "field-0".to_owned(),
+        });
+        let mut session = SettingsScreenSession::default();
+        let (_, mut geometry) = draw(&mut session, &view, 40, 8);
+        for _ in 0..5 {
+            assert_eq!(
+                session.handle_event(
+                    mouse(geometry.body, MouseEventKind::ScrollDown),
+                    &view,
+                    &geometry,
+                ),
+                Some(SettingsScreenEvent::Changed)
+            );
+            (_, geometry) = draw(&mut session, &view, 40, 8);
+        }
+        let reader_offset = geometry.first_visible;
+        assert!(
+            reader_offset > 0,
+            "the wheel did not establish a scrolled viewport"
+        );
+
+        let already_visible = (1..9)
+            .map(|index| format!("field-{index}"))
+            .find(|key| {
+                let Some(area) = session.field_area(key) else {
+                    return false;
+                };
+                let fully_drawn = geometry.hits.iter().any(|hit| {
+                    hit.target == SettingsControlId::Field(key.clone()) && hit.area == area
+                });
+                fully_drawn && area.y >= geometry.body.y && area.bottom() < geometry.body.bottom()
+            })
+            .expect("the scrolled viewport must contain a complete control above its bottom edge");
+        view.update(SettingsAction::Focus {
+            key: already_visible,
+        });
+        let (_, still) = draw(&mut session, &view, 40, 8);
+        assert_eq!(
+            still.first_visible, reader_offset,
+            "focusing a complete visible control moved the reader's viewport"
+        );
+
+        view.update(SettingsAction::Focus {
+            key: "field-9".to_owned(),
+        });
+        let (_, jumped) = draw(&mut session, &view, 40, 8);
+        assert!(
+            jumped.first_visible > reader_offset,
+            "focus did not bring a control below the viewport into view"
+        );
+        let area = session
+            .field_area("field-9")
+            .expect("the focused control below the fold was not rendered");
+        assert!(
+            area.y >= jumped.body.y && area.bottom() <= jumped.body.bottom(),
+            "focused control {area:?} is outside {:?}",
+            jumped.body
+        );
+    }
+
+    #[test]
+    fn oversized_textarea_aligns_top_and_first_rows_below_the_viewport() {
+        let body = (0..8)
+            .map(|index| format!("line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut view = prompt_view();
+        view.sections = vec![SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![
+                SettingsItem::field(Field::new(
+                    "prefix",
+                    "Prefix",
+                    FieldKind::Text,
+                    FieldOwner::Declared,
+                    FieldValue::text("fixed"),
+                )),
+                SettingsItem::field(Field::new(
+                    "body",
+                    "Body",
+                    FieldKind::Multiline,
+                    FieldOwner::Declared,
+                    FieldValue::text(body),
+                )),
+            ],
+        )];
+        view.update(SettingsAction::Focus {
+            key: "body".to_owned(),
+        });
+        let mut session = SettingsScreenSession::default();
+        let (_, initial) = draw(&mut session, &view, 30, 8);
+        for _ in 0..7 {
+            assert_eq!(
+                session.handle_event(key(KeyCode::Up, KeyModifiers::NONE), &view, &initial),
+                Some(SettingsScreenEvent::Changed)
+            );
+        }
+        let (top, top_geometry) = draw(&mut session, &view, 30, 8);
+        assert_eq!(top_geometry.first_visible, 4);
+        assert!(rendered(top.backend().buffer()).contains("line-0"));
+
+        for _ in 0..5 {
+            assert_eq!(
+                session.handle_event(key(KeyCode::Down, KeyModifiers::NONE), &view, &top_geometry,),
+                Some(SettingsScreenEvent::Changed)
+            );
+        }
+        let (boundary, boundary_geometry) = draw(&mut session, &view, 30, 8);
+        assert_eq!(
+            boundary_geometry.first_visible, 5,
+            "the first cursor row below the viewport did not advance by one"
+        );
+        assert!(rendered(boundary.backend().buffer()).contains("line-5"));
+
+        assert_eq!(
+            session.handle_event(
+                key(KeyCode::Down, KeyModifiers::NONE),
+                &view,
+                &boundary_geometry,
+            ),
+            Some(SettingsScreenEvent::Changed)
+        );
+        let (below, below_geometry) = draw(&mut session, &view, 30, 8);
+        assert_eq!(below_geometry.first_visible, 6);
+        assert!(rendered(below.backend().buffer()).contains("line-6"));
+    }
+
+    #[test]
+    fn multiline_content_beyond_terminal_coordinates_keeps_its_tail_caret_and_hit() {
+        let mut body = "row\n".repeat(65_536);
+        body.push_str("VISIBLE-TAIL");
+        let mut view = prompt_view();
+        view.sections = vec![SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![SettingsItem::field(Field::new(
+                DESCRIPTION_KEY,
+                "Description",
+                FieldKind::Multiline,
+                FieldOwner::Declared,
+                FieldValue::text(body.clone()),
+            ))],
+        )];
+        view.update(SettingsAction::Focus {
+            key: DESCRIPTION_KEY.to_owned(),
+        });
+        let mut session = SettingsScreenSession::default();
+
+        let (terminal, geometry) = draw(&mut session, &view, 36, 8);
+        let hit = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.target == SettingsControlId::Field(DESCRIPTION_KEY.to_owned()))
+            .expect("the visible textarea band must remain clickable");
+        let buffer = terminal.backend().buffer();
+
+        assert!(
+            rendered(buffer).contains("VISIBLE-TAIL"),
+            "the tail at a virtual row above u16::MAX is not visible"
+        );
+        assert!(
+            hit.area.height > 0
+                && hit.area.y >= geometry.body.y
+                && hit.area.bottom() <= geometry.body.bottom(),
+            "the textarea published a ghost hit outside its viewport: {hit:?}"
+        );
+        assert!(
+            (hit.area.y..hit.area.bottom()).any(|row| {
+                (hit.area.x..hit.area.right()).any(|column| {
+                    let cell = &buffer[(column, row)];
+                    cell.fg == Color::Black && cell.bg == ACCENT
+                })
+            }),
+            "the visible tail lost its focused caret style"
+        );
+        assert_eq!(
+            view.field(DESCRIPTION_KEY).unwrap().value().as_text(),
+            body,
+            "rendering must not truncate the model value"
+        );
+    }
+
+    #[test]
+    fn boolean_help_read_only_and_scrollbar_use_their_own_rendered_rows() {
+        let mut view = prompt_view();
+        view.sections = vec![SettingsSection::new(
+            SettingsSectionId::Basics,
+            vec![
+                SettingsItem::field(Field::new(
+                    "yes",
+                    "Enabled",
+                    FieldKind::Boolean,
+                    FieldOwner::Declared,
+                    FieldValue::boolean(true),
+                )),
+                SettingsItem::field(Field::new(
+                    "no",
+                    "Disabled",
+                    FieldKind::Boolean,
+                    FieldOwner::Declared,
+                    FieldValue::boolean(false),
+                )),
+                SettingsItem::field(
+                    Field::new(
+                        "empty",
+                        "Empty",
+                        FieldKind::Text,
+                        FieldOwner::Declared,
+                        FieldValue::text(""),
+                    )
+                    .with_help("A name is required."),
+                ),
+                SettingsItem::field(Field::read_only(
+                    "linked",
+                    "Linked",
+                    FieldOwner::Declared,
+                    FieldValue::text("/tmp/source.md"),
+                    ReadOnlyReason::ReferenceMode,
+                )),
+            ],
+        )];
+        view.update(SettingsAction::Focus {
+            key: "yes".to_owned(),
+        });
+        let mut session = SettingsScreenSession::default();
+        let (terminal, _) = draw(&mut session, &view, 30, 24);
+        let rows = rendered(terminal.backend().buffer())
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let enabled = rows.iter().find(|row| row.contains("Enabled")).unwrap();
+        let disabled = rows.iter().find(|row| row.contains("Disabled")).unwrap();
+        assert!(enabled.contains('☑'), "{enabled}");
+        assert!(disabled.contains('☐'), "{disabled}");
+        assert!(rows.iter().any(|row| row.contains("A name is required.")));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.contains("Linked: /tmp/source.md"))
+                .count(),
+            1
+        );
+        assert!(rows.iter().any(|row| row.contains("source directly.")));
+
+        let fields = (0..12)
+            .map(|index| {
+                SettingsItem::field(Field::new(
+                    format!("long-{index}"),
+                    format!("Long {index}"),
+                    FieldKind::Text,
+                    FieldOwner::Declared,
+                    FieldValue::text(format!("value-{index}")),
+                ))
+            })
+            .collect();
+        view.sections = vec![SettingsSection::new(SettingsSectionId::Basics, fields)];
+        view.update(SettingsAction::Focus {
+            key: "long-0".to_owned(),
+        });
+        let mut scrolling = SettingsScreenSession::default();
+        let (terminal, _) = draw(&mut scrolling, &view, 40, 8);
+        assert!(
+            (0..terminal.backend().buffer().area.height).any(|row| {
+                let cell = &terminal.backend().buffer()[(39, row)];
+                cell.symbol() == "█" && cell.fg == super::BOX_INDIGO
+            }),
+            "the overflow scrollbar lost its indigo thumb"
+        );
+    }
+
+    #[test]
     fn option_cursors_and_unavailable_picker_keep_keyboard_and_mouse_reverses() {
         let mut session = SettingsScreenSession::default();
         let options = vec![ChoiceOption::plain("one"), ChoiceOption::plain("two")];
@@ -2887,7 +3627,21 @@ mod tests {
             row: 0,
             modifiers: KeyModifiers::NONE,
         };
-        assert_eq!(session.handle_mouse(&mouse, &view, &geometry), None);
+        assert_eq!(
+            session.handle_mouse(&mouse, &view, &geometry),
+            Some(SettingsScreenEvent::Changed)
+        );
+        assert_eq!(
+            session.handle_mouse(
+                &MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    ..mouse
+                },
+                &view,
+                &geometry,
+            ),
+            None
+        );
 
         assert_eq!(
             choice_key(

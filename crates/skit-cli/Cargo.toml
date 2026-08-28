@@ -54,6 +54,7 @@ predicates.workspace = true
 portable-pty.workspace = true
 syn.workspace = true
 tempfile.workspace = true
+vt100.workspace = true
 
 [lints]
 workspace = true
