@@ -24,12 +24,12 @@ use thiserror::Error;
 use crate::{EventHandling, TuiSession, ViewGeometry, render_with_session};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TerminalEventWait {
+pub(crate) enum TerminalEventWait {
     Blocking,
     Poll(Duration),
 }
 
-const fn terminal_event_wait(path_completion_pending: bool) -> TerminalEventWait {
+pub(crate) const fn terminal_event_wait(path_completion_pending: bool) -> TerminalEventWait {
     if path_completion_pending {
         TerminalEventWait::Poll(Duration::from_millis(25))
     } else {
@@ -50,7 +50,10 @@ fn terminal_claim_refusal(stdin_is_terminal: bool, stdout_is_terminal: bool) -> 
     if stdin_is_terminal && stdout_is_terminal {
         None
     } else {
-        Some(io::Error::other("stdin and stdout are not a terminal"))
+        Some(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "stdin and stdout are not a terminal",
+        ))
     }
 }
 
@@ -68,8 +71,35 @@ fn claim_terminal() -> io::Result<()> {
     {
         return Err(refusal);
     }
-    enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+    let enter = || execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture);
+    claim_terminal_with(enable_raw_mode, enter, restore_terminal)
+}
+
+/// Restore both terminal modes after a completed session or a partial claim.
+///
+/// Raw mode and the alternate screen are independent terminal resources. Restoration always
+/// attempts both and keeps the first restoration error. A failed claim uses this function for
+/// best-effort rollback and keeps the original claim error.
+fn restore_terminal() -> io::Result<()> {
+    restorative_terminal_transition(disable_raw_mode, || {
+        execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
+    })
+}
+
+fn claim_terminal_with<E, T, R>(enable: E, transition: T, rollback: R) -> io::Result<()>
+where
+    E: FnOnce() -> io::Result<()>,
+    T: FnOnce() -> io::Result<()>,
+    R: FnOnce() -> io::Result<()>,
+{
+    enable()?;
+    match transition() {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = rollback();
+            Err(error)
+        }
+    }
 }
 
 /// Take the next event, or report that the poll window closed with nothing to take.
@@ -98,15 +128,36 @@ where
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct TerminalDispatch {
+    action: Option<Action>,
+    redraw: bool,
+}
+
+const fn request_redraw(current: bool, changed: bool) -> bool {
+    current || changed
+}
+
 fn dispatch_event(
     session: &mut TuiSession,
     event: event::Event,
     state: &LibraryState,
     geometry: &ViewGeometry,
-) -> Option<Action> {
+) -> TerminalDispatch {
+    let resized = matches!(event, event::Event::Resize(_, _));
     match session.handle_event(event, state, geometry) {
-        EventHandling::Action(action) => Some(action),
-        EventHandling::Consumed | EventHandling::Ignored => None,
+        EventHandling::Action(action) => TerminalDispatch {
+            action: Some(action),
+            redraw: true,
+        },
+        EventHandling::Consumed => TerminalDispatch {
+            action: None,
+            redraw: true,
+        },
+        EventHandling::Ignored => TerminalDispatch {
+            action: None,
+            redraw: resized,
+        },
     }
 }
 
@@ -272,7 +323,7 @@ where
         }
     }
     claim_terminal()?;
-    let _restore = RestoreTerminal;
+    let _restore = RestoreTerminal::new(restore_terminal);
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -280,51 +331,116 @@ where
         TuiSession::with_path_completion(provider)
     });
 
+    let mut geometry = ViewGeometry::default();
+    let mut redraw = true;
     let outcome = loop {
-        let _ = session.refresh_background();
-        let mut geometry = ViewGeometry::default();
-        terminal.draw(|frame| {
-            geometry = render_with_session(frame, &state, locale, &mut session);
-        })?;
+        redraw = request_redraw(redraw, session.refresh_background());
+        if redraw {
+            terminal.draw(|frame| {
+                geometry = render_with_session(frame, &state, locale, &mut session);
+            })?;
+            redraw = false;
+        }
         let Some(event) =
             read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
         else {
             continue;
         };
-        if let Some(action) = dispatch_event(&mut session, event, &state, &geometry) {
-            let mut outcome = observe(&action);
-            let effect = state.update(action);
-            match effect {
-                Effect::None if outcome.is_some() => break outcome,
-                Effect::None => {}
-                Effect::Quit => break outcome,
-                effect => {
-                    if !accept_host_effect(&mut state, &effect, &mut preflight, locale) {
-                        continue;
+        let dispatched = dispatch_event(&mut session, event, &state, &geometry);
+        redraw = request_redraw(redraw, dispatched.redraw);
+        if let Some(action) = dispatched.action {
+            let step = advance_hosted_action(
+                &mut state,
+                action,
+                &mut preflight,
+                &mut host,
+                &mut locale,
+                &mut observe,
+                &mut |transition| match transition {
+                    HostedTerminalTransition::Suspend => {
+                        terminal.show_cursor()?;
+                        sequential_terminal_transition(disable_raw_mode, || {
+                            execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
+                        })
                     }
-                    terminal.show_cursor()?;
-                    suspend_terminal()?;
-                    let (quit, host_outcome) = drain_host_effects_observed(
-                        &mut state,
-                        &mut host,
-                        effect,
-                        &mut locale,
-                        &mut observe,
-                    )?;
-                    if outcome.is_none() {
-                        outcome = host_outcome;
+                    HostedTerminalTransition::Resume => {
+                        sequential_terminal_transition(enable_raw_mode, || {
+                            execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+                        })?;
+                        terminal.clear()
                     }
-                    if quit || outcome.is_some() {
-                        break outcome;
-                    }
-                    resume_terminal()?;
-                    terminal.clear()?;
-                }
+                },
+            )?;
+            if let HostedActionStep::Finish(outcome) = step {
+                break outcome;
             }
         }
     };
     terminal.show_cursor()?;
     Ok(outcome)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostedTerminalTransition {
+    Suspend,
+    Resume,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum HostedActionStep<O> {
+    Continue,
+    Finish(Option<O>),
+}
+
+/// Apply one dispatched action and report whether the hosted loop continues.
+///
+/// The transition callback is the terminal boundary. Production leaves and re-enters the
+/// alternate screen there. Tests use the same path with a recorded fake lifecycle.
+fn advance_hosted_action<F, P, E, O>(
+    state: &mut LibraryState,
+    action: Action,
+    preflight: &mut P,
+    host: &mut F,
+    locale: &mut Locale,
+    observe: &mut impl FnMut(&Action) -> Option<O>,
+    transition: &mut impl FnMut(HostedTerminalTransition) -> io::Result<()>,
+) -> Result<HostedActionStep<O>, TuiError>
+where
+    F: FnMut(Effect) -> Result<Action, E>,
+    P: FnMut(&Effect) -> Result<(), E>,
+    E: Localize,
+{
+    let mut outcome = observe(&action);
+    let effect = state.update(action);
+    match effect {
+        Effect::None => {
+            if outcome.is_some() {
+                Ok(HostedActionStep::Finish(outcome))
+            } else {
+                Ok(HostedActionStep::Continue)
+            }
+        }
+        Effect::Quit => Ok(HostedActionStep::Finish(outcome)),
+        effect => {
+            if !accept_host_effect(state, &effect, preflight, *locale) {
+                return Ok(HostedActionStep::Continue);
+            }
+            transition(HostedTerminalTransition::Suspend)?;
+            let (quit, host_outcome) =
+                drain_host_effects_observed(state, host, effect, locale, observe)?;
+            if outcome.is_none() {
+                outcome = host_outcome;
+            }
+            if quit {
+                return Ok(HostedActionStep::Finish(outcome));
+            }
+            if outcome.is_some() {
+                return Ok(HostedActionStep::Finish(outcome));
+            }
+            transition(HostedTerminalTransition::Resume)?;
+            Ok(HostedActionStep::Continue)
+        }
+    }
 }
 
 fn accept_host_effect<P, E>(
@@ -485,7 +601,7 @@ where
     let mut state = LibraryState::default();
     state.update(Action::Present(screen));
     claim_terminal()?;
-    let _restore = RestoreTerminal;
+    let _restore = RestoreTerminal::new(restore_terminal);
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -493,36 +609,57 @@ where
         TuiSession::with_path_completion(provider)
     });
 
+    let mut geometry = ViewGeometry::default();
+    let mut redraw = true;
     let values = loop {
-        let _ = session.refresh_background();
-        let mut geometry = ViewGeometry::default();
-        terminal.draw(|frame| {
-            geometry = render_with_session(frame, &state, locale, &mut session);
-        })?;
+        redraw = request_redraw(redraw, session.refresh_background());
+        if redraw {
+            terminal.draw(|frame| {
+                geometry = render_with_session(frame, &state, locale, &mut session);
+            })?;
+            redraw = false;
+        }
         let Some(event) =
             read_terminal_event(terminal_event_wait(session.has_pending_path_completion()))?
         else {
             continue;
         };
-        if let Some(action) = dispatch_event(&mut session, event, &state, &geometry) {
-            if action == Action::Quit {
-                break None;
-            }
-            // Escape inside a modal closes only that modal and keeps the form
-            // (`src/skit/tui_form.py:376-377` `action_cancel` dismisses the preset modal). The form
-            // itself is the last screen here, so Escape outside a modal cancels the collection.
-            if action == Action::Back && state.modal().is_none() {
-                break None;
-            }
-            let effect = state.update(action);
-            if let Some(values) = drain_collect_effects(&mut state, &mut host, effect, &mut locale)?
-            {
-                break values;
+        let dispatched = dispatch_event(&mut session, event, &state, &geometry);
+        redraw = request_redraw(redraw, dispatched.redraw);
+        if let Some(action) = dispatched.action {
+            match collect_action_step(&mut state, action) {
+                CollectActionStep::Cancel => break None,
+                CollectActionStep::Effect(effect) => {
+                    if let Some(values) =
+                        drain_collect_effects(&mut state, &mut host, effect, &mut locale)?
+                    {
+                        break values;
+                    }
+                }
             }
         }
     };
     terminal.show_cursor()?;
     Ok(values)
+}
+
+#[derive(Debug, PartialEq)]
+enum CollectActionStep {
+    Cancel,
+    Effect(Effect),
+}
+
+fn collect_action_step(state: &mut LibraryState, action: Action) -> CollectActionStep {
+    if matches!(action, Action::Quit) {
+        return CollectActionStep::Cancel;
+    }
+    // Escape inside a modal closes only that modal and keeps the form
+    // (`src/skit/tui_form.py:376-377` `action_cancel` dismisses the preset modal). The form itself
+    // is the last screen here, so Escape outside a modal cancels the collection.
+    if matches!(action, Action::Back) && state.modal().is_none() {
+        return CollectActionStep::Cancel;
+    }
+    CollectActionStep::Effect(state.update(action))
 }
 
 /// Serve one effect chain for a collected form.
@@ -563,29 +700,72 @@ where
     Err(TuiError::EffectCycle)
 }
 
-#[derive(Debug)]
-struct RestoreTerminal;
-
-fn suspend_terminal() -> io::Result<()> {
-    disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
+fn sequential_terminal_transition<F, S>(first: F, second: S) -> io::Result<()>
+where
+    F: FnOnce() -> io::Result<()>,
+    S: FnOnce() -> io::Result<()>,
+{
+    first()?;
+    second()
 }
 
-fn resume_terminal() -> io::Result<()> {
-    enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+fn restorative_terminal_transition<F, S>(first: F, second: S) -> io::Result<()>
+where
+    F: FnOnce() -> io::Result<()>,
+    S: FnOnce() -> io::Result<()>,
+{
+    let first = first();
+    let second = second();
+    first.and(second)
 }
 
-impl Drop for RestoreTerminal {
+struct RestoreTerminal<F>
+where
+    F: FnOnce() -> io::Result<()>,
+{
+    restore: Option<F>,
+}
+
+impl<F> RestoreTerminal<F>
+where
+    F: FnOnce() -> io::Result<()>,
+{
+    fn new(restore: F) -> Self {
+        Self {
+            restore: Some(restore),
+        }
+    }
+}
+
+impl<F> Drop for RestoreTerminal<F>
+where
+    F: FnOnce() -> io::Result<()>,
+{
     fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+        if let Some(restore) = self.restore.take() {
+            let _ = restore();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn empty_run_form() -> RunFormView {
+        use std::collections::BTreeMap;
+
+        RunFormView::from_declarations(
+            "demo",
+            "Demo",
+            &[],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        )
+    }
 
     /// Every stream combination answers the same way on every host: only two real terminals
     /// proceed, and each refusal names both streams so the caller's report is exact.
@@ -597,8 +777,47 @@ mod tests {
         {
             let refusal = terminal_claim_refusal(stdin_is_terminal, stdout_is_terminal)
                 .expect("a non-terminal stream must refuse");
+            assert_eq!(refusal.kind(), io::ErrorKind::NotConnected);
             assert_eq!(refusal.to_string(), "stdin and stdout are not a terminal");
         }
+    }
+
+    #[test]
+    fn terminal_claim_rolls_back_when_the_screen_transition_fails() {
+        use std::cell::Cell;
+
+        let step_calls = Cell::new(0_usize);
+        let step = || {
+            step_calls.set(step_calls.get().saturating_add(1));
+            Ok(())
+        };
+        let error = claim_terminal_with(
+            || Ok(()),
+            || Err(io::Error::other("screen transition failed")),
+            step,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "screen transition failed");
+        assert_eq!(step_calls.get(), 1, "raw mode was not rolled back");
+
+        step_calls.set(0);
+        let error = claim_terminal_with(|| Err(io::Error::other("raw mode failed")), step, step)
+            .unwrap_err();
+        assert_eq!(error.to_string(), "raw mode failed");
+        assert_eq!(
+            step_calls.get(),
+            0,
+            "a failed raw-mode claim ran a later terminal step"
+        );
+    }
+
+    #[test]
+    fn redraw_requests_are_monotonic_until_the_loop_draws() {
+        assert!(!request_redraw(false, false));
+        assert!(request_redraw(false, true));
+        assert!(request_redraw(true, false));
+        assert!(request_redraw(true, true));
     }
 
     #[derive(Debug)]
@@ -878,6 +1097,293 @@ mod tests {
     }
 
     #[test]
+    fn hosted_action_step_distinguishes_local_continue_and_typed_finish() {
+        use std::cell::RefCell;
+
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Add(Box::new(
+            AddWorkflowState::new(Vec::new()),
+        ))));
+        let mut locale = Locale::En;
+        let mut host = harmless_host;
+        let mut preflight = |_effect: &Effect| Ok::<(), HostError>(());
+        let mut observe = add_workflow_outcome;
+        let transitions = RefCell::new(Vec::new());
+        let mut record_transition = |transition| {
+            transitions.borrow_mut().push(transition);
+            Ok(())
+        };
+
+        assert_eq!(
+            advance_hosted_action(
+                &mut state,
+                Action::ClearStatus,
+                &mut preflight,
+                &mut host,
+                &mut locale,
+                &mut observe,
+                &mut record_transition,
+            )
+            .unwrap(),
+            HostedActionStep::Continue
+        );
+        assert!(transitions.borrow().is_empty());
+        assert_eq!(
+            advance_hosted_action(
+                &mut state,
+                Action::AddCancelled,
+                &mut preflight,
+                &mut host,
+                &mut locale,
+                &mut observe,
+                &mut record_transition,
+            )
+            .unwrap(),
+            HostedActionStep::Finish(Some(AddWorkflowOutcome::Cancelled))
+        );
+        assert!(transitions.borrow().is_empty());
+
+        // The same recorder is live when an actual host effect crosses the terminal boundary.
+        // This distinguishes the two local actions above from an accidentally suppressed
+        // transition callback.
+        let mut continuing_state = LibraryState::default();
+        let mut continuing_host = harmless_host;
+        let mut no_outcome = |_action: &Action| None::<()>;
+        assert_eq!(
+            advance_hosted_action(
+                &mut continuing_state,
+                Action::Reload,
+                &mut preflight,
+                &mut continuing_host,
+                &mut locale,
+                &mut no_outcome,
+                &mut record_transition,
+            )
+            .unwrap(),
+            HostedActionStep::Continue
+        );
+        assert_eq!(
+            &*transitions.borrow(),
+            &[
+                HostedTerminalTransition::Suspend,
+                HostedTerminalTransition::Resume,
+            ]
+        );
+    }
+
+    #[test]
+    fn hosted_action_step_finishes_for_quit_or_outcome_independently() {
+        let mut locale = Locale::En;
+        let mut preflight = |_effect: &Effect| Ok::<(), HostError>(());
+
+        let mut quit_state = LibraryState::default();
+        let mut quit_host = |_effect| -> Result<Action, HostError> { Ok(Action::Quit) };
+        let mut no_outcome = |_action: &Action| None::<()>;
+        let mut transitions = Vec::new();
+        assert_eq!(
+            advance_hosted_action(
+                &mut quit_state,
+                Action::Reload,
+                &mut preflight,
+                &mut quit_host,
+                &mut locale,
+                &mut no_outcome,
+                &mut |transition| {
+                    transitions.push(transition);
+                    Ok(())
+                },
+            )
+            .unwrap(),
+            HostedActionStep::Finish(None)
+        );
+        assert_eq!(transitions, [HostedTerminalTransition::Suspend]);
+
+        let slug = Slug::parse("settled").unwrap();
+        let completed = slug.clone();
+        let mut outcome_state = LibraryState::default();
+        outcome_state.update(Action::Present(Screen::Add(Box::new(
+            AddWorkflowState::new(Vec::new()),
+        ))));
+        let mut outcome_host = move |_effect| -> Result<Action, HostError> {
+            Ok(Action::AddCompleted {
+                surface: skit_application::library_detail::LibrarySurface::default(),
+                rerunnable: Vec::new(),
+                slug: completed.clone(),
+                message: "Added".to_owned(),
+            })
+        };
+        let mut observe = add_workflow_outcome;
+        transitions.clear();
+        assert_eq!(
+            advance_hosted_action(
+                &mut outcome_state,
+                Action::Reload,
+                &mut preflight,
+                &mut outcome_host,
+                &mut locale,
+                &mut observe,
+                &mut |transition| {
+                    transitions.push(transition);
+                    Ok(())
+                },
+            )
+            .unwrap(),
+            HostedActionStep::Finish(Some(AddWorkflowOutcome::Completed(slug)))
+        );
+        assert_eq!(transitions, [HostedTerminalTransition::Suspend]);
+
+        let mut continuing_state = LibraryState::default();
+        let mut continuing_host = harmless_host;
+        let mut no_outcome = |_action: &Action| None::<()>;
+        transitions.clear();
+        assert_eq!(
+            advance_hosted_action(
+                &mut continuing_state,
+                Action::Reload,
+                &mut preflight,
+                &mut continuing_host,
+                &mut locale,
+                &mut no_outcome,
+                &mut |transition| {
+                    transitions.push(transition);
+                    Ok(())
+                },
+            )
+            .unwrap(),
+            HostedActionStep::Continue
+        );
+        assert_eq!(
+            transitions,
+            [
+                HostedTerminalTransition::Suspend,
+                HostedTerminalTransition::Resume,
+            ]
+        );
+    }
+
+    #[test]
+    fn collected_form_actions_cancel_only_the_form_owner() {
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Run(Box::new(empty_run_form()))));
+        assert_eq!(
+            collect_action_step(&mut state, Action::Quit),
+            CollectActionStep::Cancel
+        );
+
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Run(Box::new(empty_run_form()))));
+        assert_eq!(
+            collect_action_step(&mut state, Action::Back),
+            CollectActionStep::Cancel
+        );
+
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Run(Box::new(empty_run_form()))));
+        state.update(Action::OpenHelp);
+        assert!(state.modal().is_some());
+        assert_eq!(
+            collect_action_step(&mut state, Action::Back),
+            CollectActionStep::Effect(Effect::None)
+        );
+        assert!(state.modal().is_none());
+    }
+
+    #[test]
+    fn public_run_collection_still_claims_a_real_terminal() {
+        use std::process::{Command, Stdio};
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "terminal::tests::public_run_collection_rejects_piped_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+
+    #[test]
+    #[ignore = "runs only as the piped child of the public wrapper contract"]
+    fn public_run_collection_rejects_piped_child() {
+        let error = collect_run_form(empty_run_form(), harmless_host, Locale::En)
+            .expect_err("a collected form must reject non-terminal test streams");
+        assert!(matches!(
+            &error,
+            TuiError::Io(error)
+                if error.kind() == io::ErrorKind::NotConnected
+                    && error.to_string() == "stdin and stdout are not a terminal"
+        ));
+    }
+
+    #[test]
+    fn terminal_transition_primitives_keep_order_errors_and_drop_restoration() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let first_calls = Rc::clone(&calls);
+        let second_calls = Rc::clone(&calls);
+        let mut second = move || {
+            second_calls.borrow_mut().push("second");
+            Ok(())
+        };
+        sequential_terminal_transition(
+            move || {
+                first_calls.borrow_mut().push("first");
+                Ok(())
+            },
+            &mut second,
+        )
+        .unwrap();
+        assert_eq!(&*calls.borrow(), &["first", "second"]);
+
+        calls.borrow_mut().clear();
+        let first_calls = Rc::clone(&calls);
+        let error = sequential_terminal_transition(
+            move || {
+                first_calls.borrow_mut().push("first-error");
+                Err(io::Error::other("first failed"))
+            },
+            &mut second,
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "first failed");
+        assert_eq!(&*calls.borrow(), &["first-error"]);
+
+        calls.borrow_mut().clear();
+        let first_calls = Rc::clone(&calls);
+        let second_calls = Rc::clone(&calls);
+        let error = restorative_terminal_transition(
+            move || {
+                first_calls.borrow_mut().push("restore-raw-error");
+                Err(io::Error::other("raw restore failed"))
+            },
+            move || {
+                second_calls.borrow_mut().push("restore-screen");
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "raw restore failed");
+        assert_eq!(&*calls.borrow(), &["restore-raw-error", "restore-screen"]);
+
+        calls.borrow_mut().clear();
+        let restore_calls = Rc::clone(&calls);
+        {
+            let _restore = RestoreTerminal::new(move || {
+                restore_calls.borrow_mut().push("drop-restore");
+                Ok(())
+            });
+        }
+        assert_eq!(&*calls.borrow(), &["drop-restore"]);
+    }
+
+    #[test]
     fn host_and_collection_drains_cover_quit_submit_locale_error_and_cycles() {
         use std::collections::BTreeMap;
 
@@ -962,18 +1468,65 @@ mod tests {
                 geometry = render_with_session(frame, &state, Locale::En, &mut session);
             })
             .unwrap();
-        assert_eq!(
-            dispatch_event(&mut session, Event::FocusGained, &state, &geometry),
-            None
-        );
+        let ignored = dispatch_event(&mut session, Event::FocusGained, &state, &geometry);
+        assert_eq!(ignored.action, None);
+        assert!(!ignored.redraw);
         let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert_eq!(
-            dispatch_event(&mut session, ctrl_c.clone(), &state, &geometry),
-            None
+        let consumed = dispatch_event(&mut session, ctrl_c.clone(), &state, &geometry);
+        assert_eq!(consumed.action, None);
+        assert!(consumed.redraw);
+        let action = dispatch_event(&mut session, ctrl_c, &state, &geometry);
+        assert_eq!(action.action, Some(Action::Quit));
+        assert!(action.redraw);
+    }
+
+    #[test]
+    fn dispatch_keeps_ignored_consumed_action_and_resize_redraw_decisions_distinct() {
+        use ratatui_core::{backend::TestBackend, terminal::Terminal};
+        use ratatui_crossterm::crossterm::event::{
+            Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+        };
+
+        let state = LibraryState::default();
+        let mut session = TuiSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = render_with_session(frame, &state, Locale::En, &mut session);
+            })
+            .unwrap();
+
+        let ignored = dispatch_event(
+            &mut session,
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &state,
+            &geometry,
         );
-        assert_eq!(
-            dispatch_event(&mut session, ctrl_c, &state, &geometry),
-            Some(Action::Quit)
+        let consumed = dispatch_event(
+            &mut session,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            &state,
+            &geometry,
         );
+        assert!(!ignored.redraw, "an ignored pointer move must not redraw");
+        assert!(consumed.redraw, "a consumed event must request a redraw");
+
+        let resized = dispatch_event(&mut session, Event::Resize(59, 13), &state, &geometry);
+        assert!(resized.redraw, "a terminal resize must request a redraw");
+
+        let action = dispatch_event(
+            &mut session,
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            &state,
+            &geometry,
+        );
+        assert!(action.redraw, "an action must request a redraw");
+        assert_eq!(action.action, Some(Action::Quit));
     }
 }

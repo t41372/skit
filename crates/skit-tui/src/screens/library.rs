@@ -7,7 +7,7 @@ use ratatui_core::{
     text::{Line, Span},
 };
 use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
 use ratatui_interact::{
     components::{
@@ -22,12 +22,13 @@ use ratatui_widgets::{
 use skit_domain::{EntrySummary, StorageMode};
 use skit_i18n::{Locale, format_text, kind_label, text};
 use skit_ui::{
-    DetailPaneMode, LibraryEntryDetail, LibraryLastRun, LibraryPromptRunner, LibraryRunAge,
+    Action, DetailPaneMode, LibraryEntryDetail, LibraryLastRun, LibraryPromptRunner, LibraryRunAge,
     LibraryState,
 };
 
 use crate::{
     ViewGeometry,
+    pointer::contains,
     theme::{ACCENT, BOX_GREEN, BOX_INDIGO, SELECT_BG, SELECT_FG, padded_panel, panel_block},
 };
 
@@ -37,11 +38,26 @@ enum LibraryPane {
     Detail,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LibraryClickTarget {
+    Row(usize),
+    Detail,
+}
+
+/// Result of one pointer event owned by the Library body.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LibraryPointerHandling {
+    Action(Action),
+    Consumed,
+    Ignored,
+}
+
 /// Persistent focus and scroll state for the Library panes.
 #[derive(Debug)]
 pub(crate) struct LibraryScreenSession {
     detail_scroll: ScrollableContentState,
     detail_area: Rect,
+    detail_hit_area: Rect,
     detail_height: usize,
     focus: FocusManager<LibraryPane>,
     detail_signature: Option<(Option<skit_domain::Slug>, u16)>,
@@ -54,6 +70,7 @@ impl Default for LibraryScreenSession {
         Self {
             detail_scroll: ScrollableContentState::empty(),
             detail_area: Rect::default(),
+            detail_hit_area: Rect::default(),
             detail_height: 0,
             focus,
             detail_signature: None,
@@ -71,12 +88,12 @@ impl LibraryScreenSession {
     ) -> ViewGeometry {
         let narrow = crate::layout::is_narrow(area.width);
         let short = crate::layout::is_short(frame.area().height);
-        let show_detail = match state.detail_pane_mode() {
+        let detail_requested = match state.detail_pane_mode() {
             DetailPaneMode::PinnedOpen => true,
             DetailPaneMode::PinnedClosed => false,
             DetailPaneMode::Automatic => !narrow || !short,
         };
-        let panes = if !show_detail {
+        let panes = if !detail_requested {
             Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(100), Constraint::Length(0)])
@@ -92,6 +109,10 @@ impl LibraryScreenSession {
                 .constraints([Constraint::Ratio(3, 5), Constraint::Ratio(2, 5)])
                 .split(area)
         };
+        let show_detail = detail_requested && !panes[1].is_empty();
+        if !show_detail {
+            self.focus.set(LibraryPane::List);
+        }
 
         let list_block = panel_block(text(locale, "Library").into_owned(), BOX_GREEN);
         let table_inner = list_block.inner(panes[0]);
@@ -169,6 +190,73 @@ impl LibraryScreenSession {
         }
     }
 
+    /// Route one wheel event to the Library pane under the pointer.
+    pub(crate) fn handle_wheel(
+        &mut self,
+        mouse: &MouseEvent,
+        geometry: &ViewGeometry,
+    ) -> LibraryPointerHandling {
+        if contains(self.detail_area, mouse.column, mouse.row) {
+            self.focus.set(LibraryPane::Detail);
+            let _ = handle_scrollable_content_mouse(
+                &mut self.detail_scroll,
+                mouse,
+                self.detail_area,
+                self.detail_height,
+            );
+            return LibraryPointerHandling::Consumed;
+        }
+        if contains(geometry.rows, mouse.column, mouse.row) {
+            self.focus.set(LibraryPane::List);
+            return LibraryPointerHandling::Action(if mouse.kind == MouseEventKind::ScrollUp {
+                Action::Previous
+            } else {
+                Action::Next
+            });
+        }
+        LibraryPointerHandling::Ignored
+    }
+
+    /// Return the semantic Library target under one pointer coordinate.
+    pub(crate) fn click_target(
+        &self,
+        mouse: &MouseEvent,
+        geometry: &ViewGeometry,
+    ) -> Option<LibraryClickTarget> {
+        if contains(self.detail_hit_area, mouse.column, mouse.row) {
+            Some(LibraryClickTarget::Detail)
+        } else if contains(geometry.rows, mouse.column, mouse.row) {
+            let index = geometry
+                .first_visible
+                .saturating_add(usize::from(mouse.row.saturating_sub(geometry.rows.y)));
+            Some(LibraryClickTarget::Row(index))
+        } else {
+            None
+        }
+    }
+
+    /// Activate a semantic Library target after the shared tracker matches its release.
+    pub(crate) fn activate_click(
+        &mut self,
+        target: LibraryClickTarget,
+        state: &LibraryState,
+    ) -> Option<Action> {
+        match target {
+            LibraryClickTarget::Detail => {
+                self.focus.set(LibraryPane::Detail);
+                None
+            }
+            LibraryClickTarget::Row(index) => {
+                self.focus.set(LibraryPane::List);
+                Some(if state.selected_visible_index() == Some(index) {
+                    Action::OpenRun
+                } else {
+                    Action::SelectVisible(index)
+                })
+            }
+        }
+    }
+
     fn render_detail(
         &mut self,
         frame: &mut Frame,
@@ -177,8 +265,9 @@ impl LibraryScreenSession {
         state: &LibraryState,
         locale: Locale,
     ) {
-        if area.width == 0 || area.height == 0 {
+        if area.is_empty() {
             self.detail_area = Rect::default();
+            self.detail_hit_area = Rect::default();
             self.detail_height = 0;
             return;
         }
@@ -195,10 +284,10 @@ impl LibraryScreenSession {
             .set_lines(vec![String::new(); line_count]);
         self.detail_height = usize::from(inner.height);
         self.detail_area = inner;
+        self.detail_hit_area = area;
         let maximum = line_count.saturating_sub(self.detail_height);
-        if self.detail_scroll.scroll_offset() > maximum {
-            self.detail_scroll.set_scroll_offset(maximum);
-        }
+        self.detail_scroll
+            .set_scroll_offset(self.detail_scroll.scroll_offset().min(maximum));
         let indicator = match (
             self.detail_scroll.is_at_top(),
             self.detail_scroll.is_at_bottom(self.detail_height),
@@ -222,40 +311,9 @@ impl LibraryScreenSession {
         );
     }
 
-    /// Dispatch detail-pane focus and scrolling through the mature scroll component.
+    /// Dispatch detail-pane keyboard scrolling through the mature scroll component.
     pub(crate) fn handle_event(&mut self, event: &Event) -> bool {
         match event {
-            Event::Mouse(mouse)
-                if matches!(
-                    mouse.kind,
-                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                ) =>
-            {
-                if !self.detail_area.contains((mouse.column, mouse.row).into()) {
-                    return false;
-                }
-                self.focus.set(LibraryPane::Detail);
-                handle_scrollable_content_mouse(
-                    &mut self.detail_scroll,
-                    mouse,
-                    self.detail_area,
-                    self.detail_height,
-                )
-                .is_some()
-            }
-            Event::Mouse(mouse)
-                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
-                    && self.detail_area.contains((mouse.column, mouse.row).into()) =>
-            {
-                self.focus.set(LibraryPane::Detail);
-                true
-            }
-            Event::Mouse(mouse)
-                if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
-            {
-                self.focus.set(LibraryPane::List);
-                false
-            }
             Event::Key(key)
                 if key.kind != KeyEventKind::Release
                     && self.focus.is_focused(&LibraryPane::Detail)
@@ -513,4 +571,57 @@ fn supports_modes(kind: &str) -> bool {
             | "r"
             | "prompt"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui_core::{backend::TestBackend, terminal::Terminal};
+    use ratatui_crossterm::crossterm::event::KeyEvent;
+    use skit_application::LibraryScan;
+    use skit_domain::{EntryKind, Slug};
+
+    #[test]
+    fn a_zero_area_detail_is_not_visible_and_releases_keyboard_focus() {
+        let state = LibraryState::from_scan(LibraryScan {
+            entries: vec![EntrySummary {
+                slug: Slug::parse("entry").unwrap(),
+                name: "Entry".to_owned(),
+                kind: EntryKind::parse("python").unwrap(),
+                mode: StorageMode::Copy,
+                description: "Detail".to_owned(),
+                target: None,
+            }],
+            diagnostics: Vec::new(),
+        });
+        let mut session = LibraryScreenSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 18)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), &state, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            session.activate_click(LibraryClickTarget::Detail, &state),
+            None
+        );
+
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = session.render(frame, Rect::new(0, 0, 100, 0), &state, Locale::En);
+            })
+            .unwrap();
+        assert!(
+            !session.handle_event(&Event::Key(KeyEvent::new(
+                KeyCode::Down,
+                KeyModifiers::NONE,
+            ))),
+            "a zero-area detail consumed Library-list navigation"
+        );
+        assert!(
+            !geometry.detail_pane_visible,
+            "a zero-area detail was advertised as visible"
+        );
+    }
 }

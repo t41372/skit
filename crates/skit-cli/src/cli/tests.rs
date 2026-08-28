@@ -12200,22 +12200,26 @@ fn a_printed_line_wears_its_sense_and_drops_it_where_it_cannot_show() {
 
     // A terminal wears the sense; a redirected stream keeps the plain text.
     assert_eq!(
-        super::paint_for_output("done", super::HumanStyle::Green, Some(40)),
+        super::paint_for_output_with_colour("done", super::HumanStyle::Green, Some(40), true,),
         "\u{1b}[32mdone\u{1b}[0m"
     );
     assert_eq!(
-        super::paint_for_output("done", super::HumanStyle::Green, None),
+        super::paint_for_output_with_colour("done", super::HumanStyle::Green, None, true),
         "done"
     );
     // A line that states a fact wears nothing, terminal or not.
     assert_eq!(
-        super::paint_for_output("done", super::HumanStyle::Plain, Some(40)),
+        super::paint_for_output_with_colour("done", super::HumanStyle::Plain, Some(40), true,),
         "done"
     );
     // The colour follows the fold, so a folded line wears one sequence around the whole answer.
     assert_eq!(
-        super::paint_for_output("aaa bbb", super::HumanStyle::Red, Some(3)),
+        super::paint_for_output_with_colour("aaa bbb", super::HumanStyle::Red, Some(3), true,),
         "\u{1b}[31maaa\nbbb\u{1b}[0m"
+    );
+    assert_eq!(
+        super::paint_for_output_with_colour("done", super::HumanStyle::Green, Some(40), false,),
+        "done"
     );
 
     // Rich drops every style for either answer, and keeps it otherwise.

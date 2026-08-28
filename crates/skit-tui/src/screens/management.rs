@@ -7,14 +7,13 @@ use ratatui_core::{
     text::Line,
 };
 use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui_interact::{
     components::{
         ListPicker, ListPickerState, ListPickerStyle, ScrollableContentState,
         handle_scrollable_content_key, handle_scrollable_content_mouse,
     },
-    state::FocusManager,
     traits::ClickRegionRegistry,
 };
 use ratatui_widgets::{clear::Clear, paragraph::Paragraph, paragraph::Wrap};
@@ -32,6 +31,7 @@ use crate::{
         ActionFooterItem, ActionFooterMouse, ActionFooterSession, ActionFooterStyle,
         action_footer_required_height,
     },
+    pointer::{ClickOutcome, ClickTracker, EditableGeometry},
     session::render_line_input,
     theme::{ACCENT, BOX_DIM, BOX_GREEN, BOX_MAROON, padded_panel},
 };
@@ -49,7 +49,22 @@ pub(crate) enum HealthEventHandling {
     Ignored,
 }
 
-#[derive(Clone, Debug)]
+fn cancels_pointer_press(event: &Event) -> bool {
+    match event {
+        Event::Resize(_, _) => true,
+        Event::Mouse(mouse) => matches!(
+            mouse.kind,
+            MouseEventKind::Drag(_)
+                | MouseEventKind::ScrollUp
+                | MouseEventKind::ScrollDown
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight
+        ),
+        Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Paste(_) => false,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum HealthHit {
     Issue(usize),
 }
@@ -63,11 +78,18 @@ pub(crate) struct HealthScreenSession {
     summary_height: usize,
     issue_height: usize,
     clicks: ClickRegionRegistry<HealthHit>,
+    click: ClickTracker<HealthHit>,
     issue_areas: Vec<(usize, Rect)>,
     footer: ActionFooterSession<HealthAction>,
 }
 
 impl HealthScreenSession {
+    /// Cancel armed issue and footer targets before a pointer discontinuity.
+    pub(crate) fn cancel_click(&mut self) {
+        self.click.cancel();
+        self.footer.cancel_click();
+    }
+
     /// Render the complete actionable Health report.
     pub(crate) fn render(
         &mut self,
@@ -214,14 +236,13 @@ impl HealthScreenSession {
                 .cloned()
                 .map(|problem| Line::styled(problem, Style::default().fg(Color::Yellow))),
         );
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let content_height = paragraph.line_count(area.width.max(1));
         self.summary_scroll
-            .set_lines(vec![String::new(); lines.len()]);
-        let maximum = lines.len().saturating_sub(self.summary_height);
-        if self.summary_scroll.scroll_offset() > maximum {
-            self.summary_scroll.set_scroll_offset(maximum);
-        }
+            .set_lines(vec![String::new(); content_height]);
+        crate::viewport::Viewport::new(area, content_height).clamp_scroll(&mut self.summary_scroll);
         frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((
+            paragraph.scroll((
                 u16::try_from(self.summary_scroll.scroll_offset()).unwrap_or(u16::MAX),
                 0,
             )),
@@ -264,6 +285,9 @@ impl HealthScreenSession {
 
     /// Dispatch keyboard and mouse through mature list/scroll state.
     pub(crate) fn handle_event(&mut self, event: Event, view: &HealthView) -> HealthEventHandling {
+        if cancels_pointer_press(&event) {
+            self.cancel_click();
+        }
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -300,15 +324,27 @@ impl HealthScreenSession {
                     HealthEventHandling::Ignored
                 }
             }
-            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
-                if let ActionFooterMouse::Action(action) = self.footer.handle_mouse(&mouse) {
-                    return HealthEventHandling::Action(action);
+            Event::Mouse(mouse)
+                if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::Up(_)) =>
+            {
+                match self.footer.handle_mouse(&mouse) {
+                    ActionFooterMouse::Action(action) => {
+                        self.click.cancel();
+                        return HealthEventHandling::Action(action);
+                    }
+                    ActionFooterMouse::Armed => {
+                        self.click.cancel();
+                        return HealthEventHandling::Consumed;
+                    }
+                    ActionFooterMouse::Scrolled | ActionFooterMouse::Ignored => {}
                 }
-                match self.clicks.handle_click(mouse.column, mouse.row).cloned() {
-                    Some(HealthHit::Issue(index)) => {
+                let target = self.clicks.handle_click(mouse.column, mouse.row);
+                match self.click.update(&mouse, target) {
+                    ClickOutcome::Armed => HealthEventHandling::Consumed,
+                    ClickOutcome::Activated(HealthHit::Issue(index)) => {
                         HealthEventHandling::Action(HealthAction::ActivateIssue(index))
                     }
-                    None => HealthEventHandling::Ignored,
+                    ClickOutcome::Ignored => HealthEventHandling::Ignored,
                 }
             }
             Event::Mouse(mouse)
@@ -321,6 +357,7 @@ impl HealthScreenSession {
                     self.footer.handle_mouse(&mouse),
                     ActionFooterMouse::Scrolled
                 ) {
+                    self.click.cancel();
                     HealthEventHandling::Consumed
                 } else if self
                     .issue_areas
@@ -370,7 +407,7 @@ pub(crate) enum RunnerEditorEventHandling {
     Ignored,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum RunnerEditorHit {
     Field(RunnerEditorField),
 }
@@ -380,13 +417,21 @@ enum RunnerEditorHit {
 pub(crate) struct RunnerEditorSession {
     name: LineInput,
     command: LineInput,
-    focus: FocusManager<RunnerEditorField>,
     signature: Option<(String, String, bool)>,
     clicks: ClickRegionRegistry<RunnerEditorHit>,
+    click: ClickTracker<RunnerEditorHit>,
+    name_editable: Option<EditableGeometry>,
+    command_editable: Option<EditableGeometry>,
     footer: ActionFooterSession<RunnerEditorAction>,
 }
 
 impl RunnerEditorSession {
+    /// Cancel armed field and footer targets before a pointer discontinuity.
+    pub(crate) fn cancel_click(&mut self) {
+        self.click.cancel();
+        self.footer.cancel_click();
+    }
+
     /// Render the shared editor as a modal overlay.
     pub(crate) fn render(
         &mut self,
@@ -426,7 +471,7 @@ impl RunnerEditorSession {
         } else {
             text(locale, "Name, e.g. aider").into_owned()
         };
-        render_line_input(
+        self.name_editable = render_line_input(
             frame,
             name,
             &self.name,
@@ -434,7 +479,7 @@ impl RunnerEditorSession {
             view.focused() == RunnerEditorField::Name,
             &name_label,
         );
-        render_line_input(
+        self.command_editable = render_line_input(
             frame,
             command,
             &self.command,
@@ -481,6 +526,9 @@ impl RunnerEditorSession {
         view: &RunnerEditorView,
     ) -> RunnerEditorEventHandling {
         self.sync(view);
+        if cancels_pointer_press(&event) {
+            self.cancel_click();
+        }
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 match key.code {
@@ -538,37 +586,62 @@ impl RunnerEditorSession {
                     }
                 })
             }
-            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
-                if let ActionFooterMouse::Action(action) = self.footer.handle_mouse(&mouse) {
-                    return RunnerEditorEventHandling::Action(action);
-                }
-                match self.clicks.handle_click(mouse.column, mouse.row).cloned() {
-                    Some(RunnerEditorHit::Field(field)) => {
-                        RunnerEditorEventHandling::Action(RunnerEditorAction::Focus(field))
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::Down(_) | MouseEventKind::Up(_) => {
+                    match self.footer.handle_mouse(&mouse) {
+                        ActionFooterMouse::Action(action) => {
+                            self.click.cancel();
+                            return RunnerEditorEventHandling::Action(action);
+                        }
+                        ActionFooterMouse::Armed => {
+                            self.click.cancel();
+                            return RunnerEditorEventHandling::Consumed;
+                        }
+                        ActionFooterMouse::Scrolled | ActionFooterMouse::Ignored => {}
                     }
-                    None => RunnerEditorEventHandling::Ignored,
+                    let target = self.clicks.handle_click(mouse.column, mouse.row);
+                    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                        && let Some(RunnerEditorHit::Field(field)) = target
+                    {
+                        let editable = match field {
+                            RunnerEditorField::Name => self.name_editable,
+                            RunnerEditorField::Command => self.command_editable,
+                        };
+                        let input = match field {
+                            RunnerEditorField::Name => &mut self.name,
+                            RunnerEditorField::Command => &mut self.command,
+                        };
+                        if let Some(editable) = editable {
+                            let _ = editable.place_cursor(input, mouse.column, mouse.row);
+                        }
+                    }
+                    match self.click.update(&mouse, target) {
+                        ClickOutcome::Armed => RunnerEditorEventHandling::Consumed,
+                        ClickOutcome::Activated(RunnerEditorHit::Field(field)) => {
+                            RunnerEditorEventHandling::Action(RunnerEditorAction::Focus(field))
+                        }
+                        ClickOutcome::Ignored => RunnerEditorEventHandling::Ignored,
+                    }
                 }
-            }
-            Event::Mouse(mouse)
-                if matches!(
-                    mouse.kind,
-                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                ) =>
-            {
-                if matches!(
-                    self.footer.handle_mouse(&mouse),
-                    ActionFooterMouse::Scrolled
-                ) {
-                    RunnerEditorEventHandling::Consumed
-                } else {
-                    RunnerEditorEventHandling::Ignored
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    if matches!(
+                        self.footer.handle_mouse(&mouse),
+                        ActionFooterMouse::Scrolled
+                    ) {
+                        self.click.cancel();
+                        RunnerEditorEventHandling::Consumed
+                    } else {
+                        RunnerEditorEventHandling::Ignored
+                    }
                 }
+                MouseEventKind::Moved
+                | MouseEventKind::Drag(_)
+                | MouseEventKind::ScrollLeft
+                | MouseEventKind::ScrollRight => RunnerEditorEventHandling::Ignored,
+            },
+            Event::FocusGained | Event::FocusLost | Event::Key(_) | Event::Resize(_, _) => {
+                RunnerEditorEventHandling::Ignored
             }
-            Event::FocusGained
-            | Event::FocusLost
-            | Event::Mouse(_)
-            | Event::Key(_)
-            | Event::Resize(_, _) => RunnerEditorEventHandling::Ignored,
         }
     }
 
@@ -583,12 +656,6 @@ impl RunnerEditorSession {
             self.command = LineInput::new(view.command().to_owned());
             self.signature = Some(signature);
         }
-        self.focus.clear();
-        if !view.name_is_locked() {
-            self.focus.register(RunnerEditorField::Name);
-        }
-        self.focus.register(RunnerEditorField::Command);
-        self.focus.set(view.focused());
     }
 }
 
@@ -603,7 +670,7 @@ pub(crate) enum RunnerManagerEventHandling {
     Ignored,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum RunnerHit {
     Row(usize),
 }
@@ -611,15 +678,24 @@ enum RunnerHit {
 /// Mature list, buttons, and shared editor for complete runner management.
 #[derive(Debug, Default)]
 pub(crate) struct RunnerManagerSession {
+    interaction_view: Option<RunnerManagerView>,
     rows: ListPickerState,
     row_height: usize,
     clicks: ClickRegionRegistry<RunnerHit>,
+    click: ClickTracker<RunnerHit>,
     row_areas: Vec<(usize, Rect)>,
     editor: RunnerEditorSession,
     footer: ActionFooterSession<RunnerManagerAction>,
 }
 
 impl RunnerManagerSession {
+    /// Cancel armed row, editor, and footer targets before a pointer discontinuity.
+    pub(crate) fn cancel_click(&mut self) {
+        self.click.cancel();
+        self.editor.cancel_click();
+        self.footer.cancel_click();
+    }
+
     /// Render the registry and its active typed overlay.
     pub(crate) fn render(
         &mut self,
@@ -628,6 +704,10 @@ impl RunnerManagerSession {
         view: &RunnerManagerView,
         locale: Locale,
     ) {
+        if self.interaction_view.as_ref() != Some(view) {
+            self.cancel_click();
+            self.interaction_view = Some(view.clone());
+        }
         self.clicks.clear();
         self.row_areas.clear();
         let block = padded_panel(
@@ -831,6 +911,9 @@ impl RunnerManagerSession {
         event: Event,
         view: &RunnerManagerView,
     ) -> RunnerManagerEventHandling {
+        if cancels_pointer_press(&event) {
+            self.cancel_click();
+        }
         if let Some(editor) = view.editor() {
             return match self.editor.handle_event(event, editor) {
                 RunnerEditorEventHandling::Action(action) => RunnerManagerEventHandling::Action(
@@ -847,9 +930,13 @@ impl RunnerManagerSession {
         if let Event::Mouse(mouse) = &event {
             match self.footer.handle_mouse(mouse) {
                 ActionFooterMouse::Action(action) => {
+                    self.click.cancel();
                     return RunnerManagerEventHandling::Action(action);
                 }
-                ActionFooterMouse::Scrolled => return RunnerManagerEventHandling::Consumed,
+                ActionFooterMouse::Scrolled | ActionFooterMouse::Armed => {
+                    self.click.cancel();
+                    return RunnerManagerEventHandling::Consumed;
+                }
                 ActionFooterMouse::Ignored => {}
             }
         }
@@ -862,7 +949,7 @@ impl RunnerManagerSession {
         self.handle_list_event(event)
     }
 
-    fn handle_list_event(&self, event: Event) -> RunnerManagerEventHandling {
+    fn handle_list_event(&mut self, event: Event) -> RunnerManagerEventHandling {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -888,12 +975,16 @@ impl RunnerManagerSession {
                     RunnerManagerEventHandling::Action,
                 )
             }
-            Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)) => {
-                match self.clicks.handle_click(mouse.column, mouse.row).cloned() {
-                    Some(RunnerHit::Row(index)) => {
+            Event::Mouse(mouse)
+                if matches!(mouse.kind, MouseEventKind::Down(_) | MouseEventKind::Up(_)) =>
+            {
+                let target = self.clicks.handle_click(mouse.column, mouse.row);
+                match self.click.update(&mouse, target) {
+                    ClickOutcome::Armed => RunnerManagerEventHandling::Consumed,
+                    ClickOutcome::Activated(RunnerHit::Row(index)) => {
                         RunnerManagerEventHandling::Action(RunnerManagerAction::ActivateRow(index))
                     }
-                    None => RunnerManagerEventHandling::Ignored,
+                    ClickOutcome::Ignored => RunnerManagerEventHandling::Ignored,
                 }
             }
             Event::Mouse(mouse)
@@ -1181,6 +1272,7 @@ mod tests {
         HealthIssue, HealthIssueKind, HealthRebuildOutcome, HealthSnapshot, HealthView,
         MirrorHealth, RunnerRow, RunnerRowIdentity, UvHealth,
     };
+    use unicode_width::UnicodeWidthStr as _;
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -1217,6 +1309,63 @@ mod tests {
         })
     }
 
+    fn health_click(
+        session: &mut HealthScreenSession,
+        view: &HealthView,
+        column: u16,
+        row: u16,
+    ) -> HealthEventHandling {
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Down(MouseButton::Left), column, row),
+                view
+            ),
+            HealthEventHandling::Consumed,
+        );
+        session.handle_event(
+            mouse_event(MouseEventKind::Up(MouseButton::Left), column, row),
+            view,
+        )
+    }
+
+    fn editor_click(
+        session: &mut RunnerEditorSession,
+        view: &RunnerEditorView,
+        column: u16,
+        row: u16,
+    ) -> RunnerEditorEventHandling {
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Down(MouseButton::Left), column, row),
+                view
+            ),
+            RunnerEditorEventHandling::Consumed,
+        );
+        session.handle_event(
+            mouse_event(MouseEventKind::Up(MouseButton::Left), column, row),
+            view,
+        )
+    }
+
+    fn manager_click(
+        session: &mut RunnerManagerSession,
+        view: &RunnerManagerView,
+        column: u16,
+        row: u16,
+    ) -> RunnerManagerEventHandling {
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Down(MouseButton::Left), column, row),
+                view
+            ),
+            RunnerManagerEventHandling::Consumed,
+        );
+        session.handle_event(
+            mouse_event(MouseEventKind::Up(MouseButton::Left), column, row),
+            view,
+        )
+    }
+
     fn text_position(buffer: &ratatui_core::buffer::Buffer, needle: &str) -> (u16, u16) {
         (0..buffer.area.height)
             .find_map(|y| {
@@ -1239,6 +1388,42 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn row_text(buffer: &ratatui_core::buffer::Buffer, area: Rect) -> String {
+        let mut rendered = String::new();
+        for y in area.y..area.bottom() {
+            let mut x = area.x;
+            while x < area.right() {
+                let symbol = buffer[(x, y)].symbol();
+                rendered.push_str(symbol);
+                x = x.saturating_add(
+                    u16::try_from(symbol.width().max(1)).expect("one cell symbol fits a row"),
+                );
+            }
+            rendered.push('\n');
+        }
+        rendered
+    }
+
+    fn styled_area(buffer: &ratatui_core::buffer::Buffer, foreground: Color) -> Option<Rect> {
+        let cells = (0..buffer.area.height).flat_map(|y| {
+            (0..buffer.area.width)
+                .filter(move |&x| buffer[(x, y)].fg == foreground)
+                .map(move |x| (x, y))
+        });
+        let (minimum_x, minimum_y, maximum_x, maximum_y) =
+            cells.fold(None, |bounds: Option<(u16, u16, u16, u16)>, (x, y)| {
+                Some(bounds.map_or((x, y, x, y), |(min_x, min_y, max_x, max_y)| {
+                    (min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y))
+                }))
+            })?;
+        Some(Rect::new(
+            minimum_x,
+            minimum_y,
+            maximum_x.saturating_sub(minimum_x).saturating_add(1),
+            maximum_y.saturating_sub(minimum_y).saturating_add(1),
+        ))
     }
 
     fn health() -> HealthView {
@@ -1436,7 +1621,17 @@ mod tests {
         let (index, area) = session.issue_areas[1];
         assert_eq!(index, 1);
         assert_eq!(
-            session.handle_event(mouse(area.x, area.y), &view),
+            session.handle_event(
+                mouse_event(MouseEventKind::Down(MouseButton::Left), area.x, area.y),
+                &view,
+            ),
+            HealthEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Up(MouseButton::Left), area.x, area.y),
+                &view,
+            ),
             HealthEventHandling::Action(HealthAction::ActivateIssue(1))
         );
         for (needle, expected) in [
@@ -1446,11 +1641,192 @@ mod tests {
         ] {
             let (x, y) = text_position(terminal.backend().buffer(), needle);
             assert_eq!(
-                session.handle_event(mouse(x, y), &view),
+                session.handle_event(
+                    mouse_event(MouseEventKind::Down(MouseButton::Left), x, y),
+                    &view,
+                ),
+                HealthEventHandling::Consumed
+            );
+            assert_eq!(
+                session.handle_event(
+                    mouse_event(MouseEventKind::Up(MouseButton::Left), x, y),
+                    &view,
+                ),
                 HealthEventHandling::Action(expected),
                 "visible Health chip must be clickable: {needle}"
             );
         }
+    }
+
+    #[test]
+    fn health_footer_press_cancels_an_armed_issue_row() {
+        let view = health();
+        let mut session = HealthScreenSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 25)).unwrap();
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+            .unwrap();
+        let issue = session.issue_areas[0].1;
+        let footer = text_position(terminal.backend().buffer(), "Enter Jump to entry");
+
+        assert_eq!(
+            session.handle_event(mouse(issue.x, issue.y), &view),
+            HealthEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(mouse(footer.0, footer.1), &view),
+            HealthEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Up(MouseButton::Left), footer.0, footer.1),
+                &view,
+            ),
+            HealthEventHandling::Action(HealthAction::Jump)
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Up(MouseButton::Left), issue.x, issue.y),
+                &view,
+            ),
+            HealthEventHandling::Ignored,
+            "the earlier issue press stayed armed after the footer completed a click"
+        );
+    }
+
+    #[test]
+    fn management_owners_cancel_armed_targets_before_a_late_release() {
+        let health_view = health();
+        let mut health_session = HealthScreenSession::default();
+        let mut health_terminal = Terminal::new(TestBackend::new(100, 25)).unwrap();
+        health_terminal
+            .draw(|frame| {
+                health_session.render(frame, frame.area(), &health_view, Locale::En);
+            })
+            .unwrap();
+        let first_issue = health_session.issue_areas[0].1;
+        let second_issue = health_session.issue_areas[1].1;
+        assert_eq!(
+            health_session.handle_event(mouse(first_issue.x, first_issue.y), &health_view),
+            HealthEventHandling::Consumed
+        );
+        assert_eq!(
+            health_session.handle_event(
+                mouse_event(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    second_issue.x,
+                    second_issue.y,
+                ),
+                &health_view,
+            ),
+            HealthEventHandling::Ignored
+        );
+        assert_eq!(
+            health_session.handle_event(
+                mouse_event(
+                    MouseEventKind::Up(MouseButton::Left),
+                    first_issue.x,
+                    first_issue.y,
+                ),
+                &health_view,
+            ),
+            HealthEventHandling::Ignored,
+            "a Health issue activated after a drag cancelled its press"
+        );
+
+        let health_footer =
+            text_position(health_terminal.backend().buffer(), "Enter Jump to entry");
+        assert_eq!(
+            health_session.handle_event(mouse(health_footer.0, health_footer.1), &health_view),
+            HealthEventHandling::Consumed
+        );
+        assert_eq!(
+            health_session.handle_event(Event::Resize(80, 18), &health_view),
+            HealthEventHandling::Ignored
+        );
+        assert_eq!(
+            health_session.handle_event(
+                mouse_event(
+                    MouseEventKind::Up(MouseButton::Left),
+                    health_footer.0,
+                    health_footer.1,
+                ),
+                &health_view,
+            ),
+            HealthEventHandling::Ignored,
+            "a Health footer action survived a resize"
+        );
+
+        let editor_view = RunnerEditorView::new();
+        let mut editor_session = RunnerEditorSession::default();
+        let mut editor_terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        editor_terminal
+            .draw(|frame| {
+                editor_session.render(frame, frame.area(), &editor_view, Locale::En);
+            })
+            .unwrap();
+        let editor_footer = text_position(editor_terminal.backend().buffer(), "Enter Save");
+        assert_eq!(
+            editor_session.handle_event(mouse(editor_footer.0, editor_footer.1), &editor_view,),
+            RunnerEditorEventHandling::Consumed
+        );
+        assert_eq!(
+            editor_session.handle_event(
+                mouse_event(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    editor_footer.0,
+                    editor_footer.1,
+                ),
+                &editor_view,
+            ),
+            RunnerEditorEventHandling::Ignored
+        );
+        assert_eq!(
+            editor_session.handle_event(
+                mouse_event(
+                    MouseEventKind::Up(MouseButton::Left),
+                    editor_footer.0,
+                    editor_footer.1,
+                ),
+                &editor_view,
+            ),
+            RunnerEditorEventHandling::Ignored,
+            "a RunnerEditor footer action survived a drag"
+        );
+
+        let manager_view = RunnerManagerView::new(vec![row(0, None, 0), row(1, None, 0)]);
+        let mut manager_session = RunnerManagerSession::default();
+        let mut manager_terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        manager_terminal
+            .draw(|frame| {
+                manager_session.render(frame, frame.area(), &manager_view, Locale::En);
+            })
+            .unwrap();
+        let first_row = manager_session.row_areas[0].1;
+        let second_row = manager_session.row_areas[1].1;
+        assert_eq!(
+            manager_session.handle_event(mouse(first_row.x, first_row.y), &manager_view),
+            RunnerManagerEventHandling::Consumed
+        );
+        assert_eq!(
+            manager_session.handle_event(
+                mouse_event(MouseEventKind::ScrollDown, second_row.x, second_row.y),
+                &manager_view,
+            ),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::Next)
+        );
+        assert_eq!(
+            manager_session.handle_event(
+                mouse_event(
+                    MouseEventKind::Up(MouseButton::Left),
+                    first_row.x,
+                    first_row.y,
+                ),
+                &manager_view,
+            ),
+            RunnerManagerEventHandling::Ignored,
+            "a RunnerManager row activated after its wheel cancellation"
+        );
     }
 
     #[test]
@@ -1468,7 +1844,7 @@ mod tests {
 
         let (x, y) = text_position(terminal.backend().buffer(), "Enter Jump to entry");
         assert_eq!(
-            session.handle_event(mouse(x, y), &view),
+            health_click(&mut session, &view, x, y),
             HealthEventHandling::Action(HealthAction::Jump)
         );
         assert_eq!(
@@ -1502,7 +1878,7 @@ mod tests {
         );
         let (index, area) = session.row_areas[1];
         assert_eq!(
-            session.handle_event(mouse(area.x, area.y), &view),
+            manager_click(&mut session, &view, area.x, area.y),
             RunnerManagerEventHandling::Action(RunnerManagerAction::ActivateRow(index))
         );
 
@@ -1511,6 +1887,86 @@ mod tests {
             .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
             .unwrap();
         assert!(lines(terminal.backend().buffer()).contains("No agents configured yet."));
+    }
+
+    #[test]
+    fn runner_rows_reject_mismatch_outside_and_nonprimary_activation() {
+        let view = RunnerManagerView::new(vec![row(0, None, 0), row(1, None, 0)]);
+        let mut session = RunnerManagerSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+            .unwrap();
+        let first = session.row_areas[0].1;
+        let second = session.row_areas[1].1;
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Down(MouseButton::Left), first.x, first.y),
+                &view,
+            ),
+            RunnerManagerEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Up(MouseButton::Left), second.x, second.y),
+                &view,
+            ),
+            RunnerManagerEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Down(MouseButton::Right), first.x, first.y),
+                &view,
+            ),
+            RunnerManagerEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Up(MouseButton::Left), first.x, first.y),
+                &view,
+            ),
+            RunnerManagerEventHandling::Ignored
+        );
+    }
+
+    #[test]
+    fn health_issues_reject_mismatch_and_nonprimary_activation() {
+        let view = health();
+        let mut session = HealthScreenSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(100, 25)).unwrap();
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+            .unwrap();
+        let first = session.issue_areas[0].1;
+        let second = session.issue_areas[1].1;
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Down(MouseButton::Right), first.x, first.y),
+                &view,
+            ),
+            HealthEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Up(MouseButton::Left), first.x, first.y),
+                &view,
+            ),
+            HealthEventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Down(MouseButton::Left), first.x, first.y),
+                &view,
+            ),
+            HealthEventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_event(MouseEventKind::Up(MouseButton::Left), second.x, second.y),
+                &view,
+            ),
+            HealthEventHandling::Ignored
+        );
     }
 
     #[test]
@@ -1553,19 +2009,19 @@ mod tests {
         ] {
             let (x, y) = text_position(terminal.backend().buffer(), needle);
             assert_eq!(
-                session.handle_event(mouse(x, y), &view),
+                editor_click(&mut session, &view, x, y),
                 RunnerEditorEventHandling::Action(expected),
                 "visible editor chip must be clickable: {needle}"
             );
         }
         let save = text_position(terminal.backend().buffer(), "Enter Save");
         assert_eq!(
-            session.handle_event(mouse(save.0, save.1), &view),
+            editor_click(&mut session, &view, save.0, save.1),
             RunnerEditorEventHandling::Action(RunnerEditorAction::Submit)
         );
         let cancel = text_position(terminal.backend().buffer(), "Esc Cancel");
         assert_eq!(
-            session.handle_event(mouse(cancel.0, cancel.1), &view),
+            editor_click(&mut session, &view, cancel.0, cancel.1),
             RunnerEditorEventHandling::Action(RunnerEditorAction::Cancel)
         );
         for (code, expected) in [
@@ -1579,6 +2035,36 @@ mod tests {
                 RunnerEditorEventHandling::Action(expected)
             );
         }
+    }
+
+    #[test]
+    fn runner_editor_line_input_click_places_each_caret_before_typing() {
+        let mut view = RunnerEditorView::new();
+        view.reduce(RunnerEditorAction::SetName("abcdef".to_owned()));
+        let mut session = RunnerEditorSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+            .unwrap();
+        let (x, y) = text_position(terminal.backend().buffer(), "abcdef");
+        let _ = editor_click(&mut session, &view, x.saturating_add(2), y);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('X')), &view),
+            RunnerEditorEventHandling::Action(RunnerEditorAction::SetName("abXcdef".to_owned()))
+        );
+
+        view.reduce(RunnerEditorAction::SetName("name".to_owned()));
+        view.reduce(RunnerEditorAction::SetCommand("abcdef".to_owned()));
+        view.reduce(RunnerEditorAction::Focus(RunnerEditorField::Command));
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+            .unwrap();
+        let (x, y) = text_position(terminal.backend().buffer(), "abcdef");
+        let _ = editor_click(&mut session, &view, x.saturating_add(2), y);
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('X')), &view),
+            RunnerEditorEventHandling::Action(RunnerEditorAction::SetCommand("abXcdef".to_owned()))
+        );
     }
 
     #[test]
@@ -1618,7 +2104,7 @@ mod tests {
         ] {
             let (x, y) = text_position(terminal.backend().buffer(), needle);
             assert_eq!(
-                session.handle_event(mouse(x, y), &view),
+                manager_click(&mut session, &view, x, y),
                 RunnerManagerEventHandling::Action(expected),
                 "visible row-action chip must be clickable: {needle}"
             );
@@ -1643,7 +2129,7 @@ mod tests {
         ] {
             let (x, y) = text_position(terminal.backend().buffer(), needle);
             assert_eq!(
-                session.handle_event(mouse(x, y), &view),
+                manager_click(&mut session, &view, x, y),
                 RunnerManagerEventHandling::Action(expected),
                 "visible confirmation chip must be clickable: {needle}"
             );
@@ -1666,7 +2152,7 @@ mod tests {
         ] {
             let (x, y) = text_position(terminal.backend().buffer(), needle);
             assert_eq!(
-                session.handle_event(mouse(x, y), &view),
+                manager_click(&mut session, &view, x, y),
                 RunnerManagerEventHandling::Action(expected),
                 "visible manager chip must be clickable: {needle}"
             );
@@ -1940,6 +2426,306 @@ mod tests {
     }
 
     #[test]
+    fn runner_action_overlay_ignores_release_and_accepts_each_pressed_key() {
+        let mut view = RunnerManagerView::new(vec![row(0, None, 0)]);
+        view.reduce(RunnerManagerAction::ActivateSelected);
+        let mut session = RunnerManagerSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        terminal
+            .draw(|frame| session.render(frame, frame.area(), &view, Locale::En))
+            .unwrap();
+        let rendered = lines(terminal.backend().buffer());
+        for (code, label, expected) in [
+            (
+                KeyCode::Char('e'),
+                "e Edit",
+                RunnerManagerAction::EditSelected,
+            ),
+            (
+                KeyCode::Char('d'),
+                "d Remove",
+                RunnerManagerAction::RemoveSelected,
+            ),
+            (KeyCode::Esc, "Esc Back", RunnerManagerAction::CloseActions),
+        ] {
+            assert!(rendered.contains(label), "missing visible owner: {label}");
+            assert_eq!(
+                session.handle_event(
+                    Event::Key(KeyEvent::new_with_kind(
+                        code,
+                        KeyModifiers::NONE,
+                        KeyEventKind::Release,
+                    )),
+                    &view,
+                ),
+                RunnerManagerEventHandling::Ignored,
+                "a released {code:?} key must not activate the action overlay"
+            );
+            assert_eq!(
+                session.handle_event(key(code), &view),
+                RunnerManagerEventHandling::Action(expected),
+                "a pressed {code:?} key must keep its visible action"
+            );
+        }
+    }
+
+    #[test]
+    fn every_runner_reason_renders_its_localized_text_on_its_own_row() {
+        let cases = [
+            (
+                "prompt-section-not-table",
+                "the prompt value is not a table; repair it before runner management",
+            ),
+            (
+                "runners-not-list",
+                "the prompt.runners value is not a list; repair it before runner management",
+            ),
+            (
+                "empty",
+                "Type the agent's command, e.g. mycli run {{prompt}}",
+            ),
+            (
+                "prompt-slot-count",
+                "The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+            ),
+            (
+                "prompt-in-binary",
+                "{{prompt}} can't be the command itself — the first word must be the program to run.",
+            ),
+            (
+                "stray-hole",
+                "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",
+            ),
+            ("name", "A name is required."),
+            ("argv-type", "The command must be a list of text arguments."),
+            ("row-not-table", "This runner row isn't a table."),
+            ("duplicate", "Another row already uses this runner name."),
+            ("future-code", "This runner row is malformed."),
+        ];
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+            for (code, source) in cases {
+                let view = RunnerManagerView::new(vec![row(0, Some(code), 0)]);
+                let mut session = RunnerManagerSession::default();
+                let mut terminal = Terminal::new(TestBackend::new(240, 10)).unwrap();
+                terminal
+                    .draw(|frame| session.render(frame, frame.area(), &view, locale))
+                    .unwrap();
+                let area = session.row_areas[0].1;
+                let buffer = terminal.backend().buffer();
+                let rendered = row_text(buffer, area);
+                let expected = text(locale, source);
+                assert!(
+                    rendered.contains(expected.as_ref()),
+                    "reason={code:?}, locale={locale:?}, row={rendered:?}, expected={expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_runner_editor_error_renders_exact_localized_red_text() {
+        let cases = [
+            (
+                "",
+                "agent {{prompt}}",
+                RunnerEditorError::NameRequired,
+                "A name is required.",
+            ),
+            (
+                "name",
+                "\"",
+                RunnerEditorError::UnbalancedQuotes,
+                "Unbalanced quotes in the command.",
+            ),
+            (
+                "name",
+                "",
+                RunnerEditorError::EmptyCommand,
+                "Type the agent's command, e.g. mycli run {{prompt}}",
+            ),
+            (
+                "name",
+                "agent",
+                RunnerEditorError::PromptSlotCount,
+                "The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+            ),
+            (
+                "name",
+                "{{prompt}}",
+                RunnerEditorError::PromptInProgram,
+                "{{prompt}} can't be the command itself — the first word must be the program to run.",
+            ),
+            (
+                "name",
+                "agent {{other}} {{prompt}}",
+                RunnerEditorError::UnsupportedHole,
+                "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",
+            ),
+        ];
+        for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+            for (name, command, error, source) in &cases {
+                let mut view = RunnerEditorView::new();
+                view.reduce(RunnerEditorAction::SetName((*name).to_owned()));
+                view.reduce(RunnerEditorAction::SetCommand((*command).to_owned()));
+                view.reduce(RunnerEditorAction::Submit);
+                assert_eq!(view.error(), Some(error));
+                assert_eq!(view.host_error(), None);
+
+                let mut session = RunnerEditorSession::default();
+                let mut terminal = Terminal::new(TestBackend::new(100, 18)).unwrap();
+                terminal
+                    .draw(|frame| session.render(frame, frame.area(), &view, locale))
+                    .unwrap();
+                let expected = text(locale, source);
+                let red_area = styled_area(terminal.backend().buffer(), Color::Red)
+                    .expect("a validation error owns a visible red band");
+                let actual = row_text(terminal.backend().buffer(), red_area);
+                let mut expected_terminal =
+                    Terminal::new(TestBackend::new(red_area.width, red_area.height)).unwrap();
+                expected_terminal
+                    .draw(|frame| {
+                        frame.render_widget(
+                            Paragraph::new(expected.as_ref())
+                                .wrap(Wrap { trim: false })
+                                .style(Style::default().fg(Color::Red)),
+                            frame.area(),
+                        );
+                    })
+                    .unwrap();
+                let expected_grid = row_text(
+                    expected_terminal.backend().buffer(),
+                    expected_terminal.backend().buffer().area,
+                );
+                assert_eq!(
+                    actual, expected_grid,
+                    "error={error:?}, locale={locale:?}, expected={expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runner_manager_recompose_cancels_changed_row_and_action_owners() {
+        let mut alpha_row = row(0, None, 0);
+        alpha_row.name = Some("alpha".to_owned());
+        alpha_row.identity.snapshot_token = "alpha-row".to_owned();
+        let mut beta_row = row(0, None, 0);
+        beta_row.name = Some("beta".to_owned());
+        beta_row.identity.snapshot_token = "beta-row".to_owned();
+        let alpha = RunnerManagerView::new(vec![alpha_row.clone()]);
+        let beta = RunnerManagerView::new(vec![beta_row.clone()]);
+
+        let mut changed = RunnerManagerSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        terminal
+            .draw(|frame| changed.render(frame, frame.area(), &alpha, Locale::En))
+            .unwrap();
+        let row_area = changed.row_areas[0].1;
+        assert_eq!(
+            changed.handle_event(mouse(row_area.x, row_area.y), &alpha),
+            RunnerManagerEventHandling::Consumed
+        );
+        terminal
+            .draw(|frame| changed.render(frame, frame.area(), &beta, Locale::En))
+            .unwrap();
+        assert_eq!(
+            changed.handle_event(
+                mouse_event(
+                    MouseEventKind::Up(MouseButton::Left),
+                    row_area.x,
+                    row_area.y,
+                ),
+                &beta,
+            ),
+            RunnerManagerEventHandling::Ignored,
+            "a press on alpha must not activate beta after the row identity changes"
+        );
+
+        let mut equal = RunnerManagerSession::default();
+        terminal
+            .draw(|frame| equal.render(frame, frame.area(), &alpha, Locale::En))
+            .unwrap();
+        let row_area = equal.row_areas[0].1;
+        assert_eq!(
+            equal.handle_event(mouse(row_area.x, row_area.y), &alpha),
+            RunnerManagerEventHandling::Consumed
+        );
+        terminal
+            .draw(|frame| equal.render(frame, frame.area(), &alpha, Locale::En))
+            .unwrap();
+        assert_eq!(
+            equal.handle_event(
+                mouse_event(
+                    MouseEventKind::Up(MouseButton::Left),
+                    row_area.x,
+                    row_area.y,
+                ),
+                &alpha,
+            ),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::ActivateRow(0))
+        );
+
+        let mut alpha_actions = RunnerManagerView::new(vec![alpha_row]);
+        alpha_actions.reduce(RunnerManagerAction::ActivateSelected);
+        let mut beta_actions = RunnerManagerView::new(vec![beta_row]);
+        beta_actions.reduce(RunnerManagerAction::ActivateSelected);
+        let mut action_session = RunnerManagerSession::default();
+        terminal
+            .draw(|frame| {
+                action_session.render(frame, frame.area(), &alpha_actions, Locale::En);
+            })
+            .unwrap();
+        let edit = text_position(terminal.backend().buffer(), "e Edit");
+        assert_eq!(
+            action_session.handle_event(mouse(edit.0, edit.1), &alpha_actions),
+            RunnerManagerEventHandling::Consumed
+        );
+        terminal
+            .draw(|frame| {
+                action_session.render(frame, frame.area(), &beta_actions, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            action_session.handle_event(
+                mouse_event(MouseEventKind::Up(MouseButton::Left), edit.0, edit.1),
+                &beta_actions,
+            ),
+            RunnerManagerEventHandling::Ignored,
+            "an alpha action-footer press must not edit beta after owner replacement"
+        );
+    }
+
+    #[test]
+    fn runner_removal_overlay_confirms_only_on_a_live_command_event() {
+        let mut view = RunnerManagerView::new(vec![row(0, None, 0)]);
+        view.reduce(RunnerManagerAction::RemoveSelected);
+        assert!(view.removal().is_some());
+        let mut session = RunnerManagerSession::default();
+
+        assert_eq!(
+            session.handle_event(key(KeyCode::Char('y')), &view),
+            RunnerManagerEventHandling::Action(RunnerManagerAction::ConfirmRemove)
+        );
+        for event in [
+            Event::FocusGained,
+            Event::FocusLost,
+            mouse_event(MouseEventKind::Moved, 0, 0),
+            Event::Paste("ignored".to_owned()),
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Char('y'),
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            )),
+            Event::Resize(1, 1),
+        ] {
+            assert_eq!(
+                session.handle_event(event, &view),
+                RunnerManagerEventHandling::Ignored
+            );
+        }
+    }
+
+    #[test]
     fn remaining_management_variants_keep_real_render_and_event_ownership() {
         let mut snapshot = health().snapshot().clone();
         snapshot.entry_count = 2;
@@ -2157,7 +2943,7 @@ mod tests {
         );
         let name = text_position(editor_terminal.backend().buffer(), "Name, e.g. aider");
         assert_eq!(
-            editor_session.handle_event(mouse(name.0, name.1), &editor_view),
+            editor_click(&mut editor_session, &editor_view, name.0, name.1),
             RunnerEditorEventHandling::Action(RunnerEditorAction::Focus(RunnerEditorField::Name))
         );
         editor_view.reduce(RunnerEditorAction::Focus(RunnerEditorField::Command));

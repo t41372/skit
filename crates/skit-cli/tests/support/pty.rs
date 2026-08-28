@@ -31,15 +31,13 @@
 //!    then reports an end of input the child never sent.
 //! 5. **The reader thread fills a channel and is never joined on end-of-input.** The drain is
 //!    detached; nothing downstream depends on it finishing.
-//! 6. **Read the visible text, never the control stream.** A pseudo-console writes its own
-//!    sequences into the same stream as the child's output: Windows opens a session with a
-//!    cursor question, mode switches, and a window title carrying the whole binary path
-//!    (`\x1b]0;D:\a\...\skit.exe\x07`). An assertion that measures or matches raw bytes reads
-//!    that chrome as if the product had printed it. [`strip_terminal_control`] gives the text a
-//!    person sees (wave 4 fold owners). An assertion about colour cannot drop every sequence, so
-//!    [`visible_with_styles`] and [`styles_over`] read the same stream one layer up: the visible
-//!    lines, each with the styles the terminal painted over its own characters (round 5 colour
-//!    owner).
+//! 6. **Use the correct view of terminal output.** A pseudo-console writes its own sequences into
+//!    the same stream as the child's output. Windows opens a session with a cursor question, mode
+//!    switches, and a window title that contains the binary path
+//!    (`\x1b]0;D:\a\...\skit.exe\x07`). [`strip_terminal_control`] gives a text history for a
+//!    line-oriented assertion. It does not apply cursor movement or erase commands. A full-screen
+//!    assertion must use [`final_terminal_screen`]. A color assertion uses
+//!    [`visible_with_styles`] and [`styles_over`] to read the styles over each history line.
 //!
 //! Two harness families share these rules. [`PtyChild`] is the full channel-driven harness.
 //! The free functions ([`keystrokes`], [`settle_buffer`], [`wait_for_exit`]) serve the bespoke
@@ -296,6 +294,11 @@ impl PtyChild {
         let _ = self.writer.flush();
     }
 
+    /// Change the terminal window size while the child owns it.
+    pub(crate) fn resize(&mut self, size: PtySize) {
+        self.master.resize(size).unwrap();
+    }
+
     /// Wait for `prompt`, then type `answer` (invariants 1 and 2 together).
     pub(crate) fn send_after_prompt(&mut self, prompt: &str, answer: &[u8]) {
         self.expect(prompt);
@@ -483,12 +486,12 @@ pub(crate) fn wait_for_exit(child: &mut Box<dyn portable_pty::Child + Send + Syn
     }
 }
 
-/// The text a person sees, with the terminal's own sequences removed (invariant 6).
+/// The terminal text history, with control sequences removed (invariant 6).
 ///
 /// Drops CSI sequences (`ESC [` up to a final byte), OSC sequences (`ESC ]` up to `BEL` or
 /// `ESC \`), any other single escape, and the carriage returns a terminal uses to return to the
-/// left margin. What remains is the child's printable output, which an assertion can measure or
-/// match.
+/// left margin. What remains can include cells that a later frame replaced. Do not use it to
+/// assert the final state of a full-screen interface.
 pub(crate) fn strip_terminal_control(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
@@ -534,6 +537,16 @@ pub(crate) fn strip_terminal_control(input: &str) -> String {
         }
     }
     String::from_utf8_lossy(&output).into_owned()
+}
+
+/// Replay terminal output and return only the current terminal grid.
+///
+/// This applies cursor movement, erase commands, and alternate-screen changes. Use it for a
+/// full-screen assertion. [`strip_terminal_control`] is only a history view.
+pub(crate) fn final_terminal_screen(input: &[u8], rows: u16, columns: u16) -> String {
+    let mut terminal = vt100::Parser::new(rows, columns, 0);
+    terminal.process(input);
+    terminal.screen().contents()
 }
 
 /// One line a terminal showed, with the styles it painted over that line's own characters.

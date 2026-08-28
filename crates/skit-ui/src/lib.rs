@@ -1807,6 +1807,7 @@ impl LibraryState {
             Action::SelectVisible(index) => {
                 if index < self.visible.len() {
                     self.selected = Some(index);
+                    self.input_mode = InputMode::Browse;
                 }
             }
             Action::BeginSearch => self.input_mode = InputMode::Search,

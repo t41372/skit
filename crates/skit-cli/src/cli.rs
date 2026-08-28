@@ -2724,8 +2724,21 @@ fn colour_is_welcome_for(
 /// A stream that is not a terminal keeps the plain text, which is why every recorded output in
 /// this repository is unchanged: those runs are redirected.
 fn paint_for_output(text: &str, style: HumanStyle, width: Option<usize>) -> String {
+    paint_for_output_with_colour(text, style, width, colour_is_welcome())
+}
+
+/// The same formatter for a caller that already knows if colour is available.
+///
+/// Keeping this input explicit lets tests own the terminal capability without changing the
+/// process environment that concurrent tests share.
+fn paint_for_output_with_colour(
+    text: &str,
+    style: HumanStyle,
+    width: Option<usize>,
+    colour_is_welcome: bool,
+) -> String {
     let folded = fold_for_output(text, width);
-    if width.is_none() || style == HumanStyle::Plain || !colour_is_welcome() {
+    if width.is_none() || style == HumanStyle::Plain || !colour_is_welcome {
         return folded;
     }
     format!("{}{folded}\x1b[0m", style.prefix())

@@ -18,7 +18,11 @@ use skit_i18n::{Locale, format_text, render as localize, text};
 use skit_ui::{CommandContext, LibraryState, Screen, UiCommand, UiKey, command_specs};
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::{HitRegion, HitTarget};
+use crate::{
+    HitRegion, HitTarget,
+    layout::ViewportProfile,
+    pointer::{ClickDispatch, ClickOutcome, ClickTracker},
+};
 
 const PILL_BACKGROUND: Color = Color::Rgb(0x2A, 0x21, 0x1C);
 const PILL_FOREGROUND: Color = Color::Rgb(0xD9, 0x77, 0x57);
@@ -90,6 +94,8 @@ impl Default for ActionFooterStyle {
 pub(crate) enum ActionFooterMouse<A> {
     /// The user clicked a visible command chip.
     Action(A),
+    /// A primary press armed a command and needs a repaint-free consume.
+    Armed,
     /// The footer scrolled to another row of commands.
     Scrolled,
     /// The event was outside the footer or had no effect.
@@ -98,25 +104,32 @@ pub(crate) enum ActionFooterMouse<A> {
 
 /// Persistent mature scroll and click state for a typed local action footer.
 #[derive(Debug)]
-pub(crate) struct ActionFooterSession<A: Clone> {
+pub(crate) struct ActionFooterSession<A: Clone + Eq> {
     scroll: ScrollableContentState,
     viewport: Rect,
     visible_height: usize,
     clicks: ratatui_interact::traits::ClickRegionRegistry<A>,
+    click: ClickTracker<A>,
 }
 
-impl<A: Clone> Default for ActionFooterSession<A> {
+impl<A: Clone + Eq> Default for ActionFooterSession<A> {
     fn default() -> Self {
         Self {
             scroll: ScrollableContentState::default(),
             viewport: Rect::default(),
             visible_height: 0,
             clicks: ratatui_interact::traits::ClickRegionRegistry::default(),
+            click: ClickTracker::default(),
         }
     }
 }
 
-impl<A: Clone> ActionFooterSession<A> {
+impl<A: Clone + Eq> ActionFooterSession<A> {
+    /// Cancel an armed command before an owner or layout transition.
+    pub(crate) fn cancel_click(&mut self) {
+        self.click.cancel();
+    }
+
     /// Render all commands with wrapping and vertical scrolling.
     pub(crate) fn render(
         &mut self,
@@ -132,9 +145,8 @@ impl<A: Clone> ActionFooterSession<A> {
         let (chips, rows) = action_footer_chips(items, content_width);
         self.scroll.set_lines(vec![String::new(); rows]);
         let maximum_offset = rows.saturating_sub(self.visible_height);
-        if self.scroll.scroll_offset() > maximum_offset {
-            self.scroll.set_scroll_offset(maximum_offset);
-        }
+        self.scroll
+            .set_scroll_offset(self.scroll.scroll_offset().min(maximum_offset));
 
         let offset = self.scroll.scroll_offset();
         let end = offset.saturating_add(self.visible_height);
@@ -178,17 +190,31 @@ impl<A: Clone> ActionFooterSession<A> {
 
     /// Dispatch a click or wheel event through the footer's mature state.
     pub(crate) fn handle_mouse(&mut self, mouse: &MouseEvent) -> ActionFooterMouse<A> {
-        if matches!(mouse.kind, MouseEventKind::Down(_)) {
-            return self
-                .clicks
-                .handle_click(mouse.column, mouse.row)
-                .cloned()
-                .map_or(ActionFooterMouse::Ignored, ActionFooterMouse::Action);
+        if matches!(
+            mouse.kind,
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+        ) {
+            self.click.cancel();
+            return if handle_footer_scroll(
+                &mut self.scroll,
+                mouse,
+                self.viewport,
+                self.visible_height,
+            ) {
+                ActionFooterMouse::Scrolled
+            } else {
+                ActionFooterMouse::Ignored
+            };
         }
-        if handle_footer_scroll(&mut self.scroll, mouse, self.viewport, self.visible_height) {
-            return ActionFooterMouse::Scrolled;
+        let target = self.clicks.handle_click(mouse.column, mouse.row);
+        match self.click.dispatch(mouse, target) {
+            ClickDispatch::Captured(outcome) => match outcome {
+                ClickOutcome::Activated(action) => ActionFooterMouse::Action(action),
+                ClickOutcome::Armed => ActionFooterMouse::Armed,
+                ClickOutcome::Ignored => ActionFooterMouse::Ignored,
+            },
+            ClickDispatch::Unowned => ActionFooterMouse::Ignored,
         }
-        ActionFooterMouse::Ignored
     }
 }
 
@@ -229,7 +255,7 @@ fn action_footer_chips<A>(
         )
         .unwrap_or(u16::MAX)
         .min(width);
-        if x > 0 && x.saturating_add(chip_width) > width {
+        if x.saturating_add(chip_width) > width {
             row = row.saturating_add(1);
             x = 0;
         }
@@ -270,38 +296,65 @@ struct Chip {
 }
 
 pub(crate) fn required_height(
-    width: u16,
-    terminal_height: u16,
-    header_height: u16,
+    profile: ViewportProfile,
     state: &LibraryState,
     locale: Locale,
 ) -> u16 {
-    if is_suppressed(state) {
+    if is_suppressed(state) || profile.width() == 0 || profile.height() == 0 {
         return 0;
     }
-    let available = terminal_height
-        .saturating_sub(header_height)
-        .saturating_sub(u16::from(terminal_height > header_height));
-    if available == 0 {
-        return 0;
-    }
-    let inner_width = width.saturating_sub(2);
+    let decorated = !profile.is_short_or_tiny();
+    let inner_width = profile
+        .width()
+        .saturating_sub(if decorated { 2 } else { 0 });
     if inner_width == 0 {
-        return 2.min(available);
+        return 0;
     }
     let (_, rows) = chips(state, locale, inner_width);
-    let tiny = terminal_height <= 6;
-    let visible_rows = rows.min(if tiny {
-        1
-    } else {
-        row_budget(terminal_height, state.command_context())
-    });
-    let border_rows = if tiny || available <= 2 { 0 } else { 2 };
-    let desired = u16::try_from(visible_rows)
+    let library = matches!(
+        state.command_context(),
+        CommandContext::LibraryBrowse | CommandContext::LibrarySearch
+    );
+    let visible_rows = rows.min(profile.footer_row_budget(library));
+    u16::try_from(visible_rows)
         .unwrap_or(u16::MAX)
         .saturating_add(u16::from(has_note(state, inner_width)))
-        .saturating_add(border_rows);
-    desired.min(available).max(1)
+        .saturating_add(if decorated { 2 } else { 0 })
+        .max(1)
+}
+
+/// Return the smallest footer that can show one command row and its note without overlap.
+pub(crate) fn minimum_height(
+    profile: ViewportProfile,
+    state: &LibraryState,
+    locale: Locale,
+) -> u16 {
+    if is_suppressed(state) || profile.width() == 0 || profile.height() == 0 {
+        return 0;
+    }
+    minimum_content_height(state, locale, profile.width())
+}
+
+/// Return the smallest complete bordered footer, or zero when decoration is unavailable.
+pub(crate) fn decorated_minimum_height(
+    profile: ViewportProfile,
+    state: &LibraryState,
+    locale: Locale,
+) -> u16 {
+    if is_suppressed(state)
+        || profile.is_short_or_tiny()
+        || profile.width() <= 2
+        || profile.height() == 0
+    {
+        return 0;
+    }
+    let inner_width = profile.width().saturating_sub(2);
+    minimum_content_height(state, locale, inner_width).saturating_add(2)
+}
+
+fn minimum_content_height(state: &LibraryState, locale: Locale, inner_width: u16) -> u16 {
+    let (_, rows) = chips(state, locale, inner_width);
+    u16::from(rows > 0).saturating_add(u16::from(has_note(state, inner_width)))
 }
 
 pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
@@ -310,11 +363,16 @@ pub(crate) fn is_suppressed(state: &LibraryState) -> bool {
         Screen::Add(_) | Screen::Health(_) | Screen::Runners(_)
     ) || matches!(
         state.modal(),
-        Some(skit_ui::ModalState::RunnerEditor { .. })
+        Some(
+            skit_ui::ModalState::ConfirmRemove { .. }
+                | skit_ui::ModalState::ConfirmDiscardChanges
+                | skit_ui::ModalState::RunnerEditor { .. }
+        )
     )
 }
 
 impl FooterSession {
+    #[cfg(test)]
     pub(crate) fn render(
         &mut self,
         frame: &mut Frame,
@@ -322,7 +380,23 @@ impl FooterSession {
         state: &LibraryState,
         locale: Locale,
     ) -> Vec<HitRegion> {
-        let compact = area.height <= 2;
+        self.render_with_decoration(frame, area, state, locale, area.height > 2)
+    }
+
+    pub(crate) fn render_with_decoration(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        state: &LibraryState,
+        locale: Locale,
+        decorated: bool,
+    ) -> Vec<HitRegion> {
+        if area.width == 0 || area.height == 0 {
+            self.viewport = area;
+            self.visible_height = 0;
+            return Vec::new();
+        }
+        let compact = !decorated;
         let base_block = Block::default()
             .borders(if compact { Borders::NONE } else { Borders::ALL })
             .border_type(BorderType::Rounded);
@@ -343,9 +417,8 @@ impl FooterSession {
         );
         self.scroll.set_lines(vec![String::new(); rows]);
         let maximum_offset = rows.saturating_sub(self.visible_height);
-        if self.scroll.scroll_offset() > maximum_offset {
-            self.scroll.set_scroll_offset(maximum_offset);
-        }
+        self.scroll
+            .set_scroll_offset(self.scroll.scroll_offset().min(maximum_offset));
         let indicator = match (
             self.scroll.is_at_top(),
             self.scroll.is_at_bottom(self.visible_height),
@@ -476,7 +549,7 @@ fn chips(state: &LibraryState, locale: Locale, inner_width: u16) -> (Vec<Chip>, 
             let width = u16::try_from(key.width().saturating_add(label.width()).saturating_add(3))
                 .unwrap_or(u16::MAX)
                 .min(inner_width);
-            if x > 0 && x.saturating_add(width) > inner_width {
+            if x.saturating_add(width) > inner_width {
                 row = row.saturating_add(1);
                 x = 0;
             }
@@ -508,8 +581,7 @@ fn footer_groups(state: &LibraryState, locale: Locale) -> Vec<Vec<(String, Strin
             if matches!(
                 spec.command,
                 UiCommand::FocusNext | UiCommand::FocusPrevious
-            ) && spec.bindings.len() > 1
-            {
+            ) {
                 let keys = spec
                     .bindings
                     .iter()
@@ -553,20 +625,6 @@ fn has_note(state: &LibraryState, _inner_width: u16) -> bool {
     matches!(state.screen(), Screen::Library) || state.status().is_some()
 }
 
-fn row_budget(terminal_height: u16, context: CommandContext) -> usize {
-    let library = matches!(
-        context,
-        CommandContext::LibraryBrowse | CommandContext::LibrarySearch
-    );
-    match (terminal_height, library) {
-        (28.., _) => usize::MAX,
-        (16..=27, true) => 6,
-        (16..=27, false) => 3,
-        (10..=15, true) => 2,
-        _ => 1,
-    }
-}
-
 fn default_library_status(state: &LibraryState, locale: Locale) -> String {
     if state.entry_count() == 0 {
         return text(locale, "Your entries will appear here.").into_owned();
@@ -591,8 +649,12 @@ mod tests {
     use ratatui_crossterm::crossterm::event::{
         KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
-    use skit_domain::parameters::{ParamDecl, ParameterValue};
-    use skit_ui::{Action, RunFormView};
+    use skit_application::{Diagnostic, DiagnosticCode, LibraryScan};
+    use skit_domain::{
+        EntryKind, EntrySummary, Slug, StorageMode,
+        parameters::{ParamDecl, ParameterValue},
+    };
+    use skit_ui::{Action, AddWorkflowState, RunFormView, Screen};
 
     use super::*;
     use crate::screens::management::{
@@ -617,6 +679,15 @@ mod tests {
         }
     }
 
+    fn release(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
     fn scroll_down(column: u16, row: u16) -> MouseEvent {
         MouseEvent {
             kind: MouseEventKind::ScrollDown,
@@ -624,6 +695,73 @@ mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         }
+    }
+
+    fn command_library(diagnostics: Vec<Diagnostic>) -> LibraryState {
+        LibraryState::from_scan(LibraryScan {
+            entries: vec![EntrySummary {
+                slug: Slug::parse("alpha").unwrap(),
+                name: "Alpha".to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Copy,
+                description: String::new(),
+                target: None,
+            }],
+            diagnostics,
+        })
+    }
+
+    fn row_text(terminal: &Terminal<TestBackend>, row: u16) -> String {
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.width)
+            .map(|column| buffer[(column, row)].symbol())
+            .collect()
+    }
+
+    #[test]
+    fn zero_height_footer_clears_geometry_without_painting_a_status_row() {
+        let mut session = FooterSession {
+            viewport: Rect::new(2, 1, 8, 1),
+            visible_height: 1,
+            ..FooterSession::default()
+        };
+        session.scroll.set_lines(vec![String::new(); 3]);
+        session.scroll.set_scroll_offset(2);
+        let state = LibraryState::default();
+        let mut terminal = Terminal::new(TestBackend::new(20, 2)).unwrap();
+
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(
+                    Paragraph::new("BODY-SENTINEL"),
+                    Rect::new(0, 0, frame.area().width, 1),
+                );
+                hits = session.render_with_decoration(
+                    frame,
+                    Rect::new(0, 1, 20, 0),
+                    &state,
+                    Locale::En,
+                    false,
+                );
+            })
+            .unwrap();
+
+        assert!(hits.is_empty());
+        assert_eq!(session.viewport, Rect::new(0, 1, 20, 0));
+        assert_eq!(session.visible_height, 0);
+        assert_eq!(session.scroll.scroll_offset(), 2);
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .starts_with("BODY-SENTINEL")
+        );
+        assert!(!session.handle_mouse(&scroll_down(2, 1)));
     }
 
     #[test]
@@ -648,8 +786,12 @@ mod tests {
             .into_iter()
             .enumerate()
         {
-            assert_eq!(
+            assert_ne!(
                 session.handle_mouse(&click(1, u16::try_from(row).unwrap())),
+                ActionFooterMouse::Action(action.clone())
+            );
+            assert_eq!(
+                session.handle_mouse(&release(1, u16::try_from(row).unwrap())),
                 ActionFooterMouse::Action(action)
             );
         }
@@ -726,8 +868,12 @@ mod tests {
                 session.render(frame, frame.area(), &items, ActionFooterStyle::default());
             })
             .unwrap();
-        assert_eq!(
+        assert_ne!(
             session.handle_mouse(&click(1, 0)),
+            ActionFooterMouse::Action(TestAction::Fourth)
+        );
+        assert_eq!(
+            session.handle_mouse(&release(1, 0)),
             ActionFooterMouse::Action(TestAction::Fourth)
         );
 
@@ -737,6 +883,138 @@ mod tests {
         })
         .unwrap();
         assert_eq!(session.scroll.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn action_footer_never_paints_or_owns_the_row_after_its_half_open_area() {
+        let items = [
+            ActionFooterItem::new("1", "First action", TestAction::First),
+            ActionFooterItem::new("2", "Second action", TestAction::Second),
+        ];
+        assert_eq!(action_footer_required_height(22, &items), 2);
+
+        let mut terminal = Terminal::new(TestBackend::new(22, 2)).unwrap();
+        let mut session = ActionFooterSession::default();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new("BODY-SENTINEL"), Rect::new(0, 1, 22, 1));
+                session.render(
+                    frame,
+                    Rect::new(0, 0, 22, 1),
+                    &items,
+                    ActionFooterStyle::default(),
+                );
+            })
+            .unwrap();
+
+        assert!(row_text(&terminal, 1).starts_with("BODY-SENTINEL"));
+        assert_eq!(session.handle_mouse(&click(1, 0)), ActionFooterMouse::Armed);
+        assert_eq!(
+            session.handle_mouse(&release(1, 0)),
+            ActionFooterMouse::Action(TestAction::First)
+        );
+        assert_eq!(
+            session.handle_mouse(&click(1, 1)),
+            ActionFooterMouse::Ignored
+        );
+        assert_eq!(
+            session.handle_mouse(&release(1, 1)),
+            ActionFooterMouse::Ignored
+        );
+    }
+
+    #[test]
+    fn action_footer_release_outside_cancels_the_arm_before_a_late_release() {
+        let items = [ActionFooterItem::new(
+            "1",
+            "First action",
+            TestAction::First,
+        )];
+        let mut terminal = Terminal::new(TestBackend::new(22, 2)).unwrap();
+        let mut session = ActionFooterSession::default();
+        terminal
+            .draw(|frame| {
+                session.render(
+                    frame,
+                    Rect::new(0, 0, 22, 1),
+                    &items,
+                    ActionFooterStyle::default(),
+                );
+            })
+            .unwrap();
+
+        assert_eq!(session.handle_mouse(&click(1, 0)), ActionFooterMouse::Armed);
+        assert_eq!(
+            session.handle_mouse(&release(1, 1)),
+            ActionFooterMouse::Ignored
+        );
+        assert_eq!(
+            session.handle_mouse(&release(1, 0)),
+            ActionFooterMouse::Ignored,
+            "a late release resurrected an action cancelled outside the footer"
+        );
+    }
+
+    #[test]
+    fn action_footer_keeps_a_chip_that_ends_exactly_at_the_content_boundary() {
+        let items = [
+            ActionFooterItem::new("1", "A", TestAction::First),
+            ActionFooterItem::new("2", "B", TestAction::Second),
+        ];
+        assert_eq!(action_footer_required_height(14, &items), 1);
+
+        let mut terminal = Terminal::new(TestBackend::new(14, 1)).unwrap();
+        let mut session = ActionFooterSession::default();
+        terminal
+            .draw(|frame| {
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+            })
+            .unwrap();
+        assert_eq!(session.handle_mouse(&click(8, 0)), ActionFooterMouse::Armed);
+        assert_eq!(
+            session.handle_mouse(&release(8, 0)),
+            ActionFooterMouse::Action(TestAction::Second)
+        );
+    }
+
+    #[test]
+    fn action_footer_indicator_reports_top_middle_bottom_and_no_overflow() {
+        let items = [
+            ActionFooterItem::new("1", "First action", TestAction::First),
+            ActionFooterItem::new("2", "Second action", TestAction::Second),
+            ActionFooterItem::new("3", "Third action", TestAction::Third),
+            ActionFooterItem::new("4", "Fourth action", TestAction::Fourth),
+        ];
+        let mut terminal = Terminal::new(TestBackend::new(22, 1)).unwrap();
+        let mut session = ActionFooterSession::default();
+        let mut render = |session: &mut ActionFooterSession<TestAction>| {
+            terminal
+                .draw(|frame| {
+                    session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+                })
+                .unwrap();
+            terminal.backend().buffer()[(20, 0)].symbol().to_owned()
+        };
+
+        assert_eq!(render(&mut session), "↓");
+        assert_eq!(
+            session.handle_mouse(&scroll_down(1, 0)),
+            ActionFooterMouse::Scrolled
+        );
+        assert_eq!(render(&mut session), "↕");
+        for _ in 0..8 {
+            let _ = session.handle_mouse(&scroll_down(1, 0));
+        }
+        assert_eq!(render(&mut session), "↑");
+
+        let mut grown = Terminal::new(TestBackend::new(22, 4)).unwrap();
+        grown
+            .draw(|frame| {
+                session.render(frame, frame.area(), &items, ActionFooterStyle::default());
+            })
+            .unwrap();
+        assert_eq!(session.scroll.scroll_offset(), 0);
+        assert_eq!(grown.backend().buffer()[(20, 0)].symbol(), " ");
     }
 
     #[test]
@@ -773,8 +1051,10 @@ mod tests {
                     .unwrap();
                 for y in 0..height {
                     for x in 0..width {
-                        if let ActionFooterMouse::Action(action) =
-                            session.handle_mouse(&click(x, y))
+                        let pressed = session.handle_mouse(&click(x, y));
+                        if pressed == ActionFooterMouse::Armed
+                            && let ActionFooterMouse::Action(action) =
+                                session.handle_mouse(&release(x, y))
                             && !seen.contains(&action)
                         {
                             seen.push(action);
@@ -876,20 +1156,7 @@ mod tests {
 
     #[test]
     fn complete_footer_wheel_clamps_when_the_terminal_grows() {
-        use skit_application::LibraryScan;
-        use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
-
-        let state = LibraryState::from_scan(LibraryScan {
-            entries: vec![EntrySummary {
-                slug: Slug::parse("alpha").unwrap(),
-                name: "Alpha".to_owned(),
-                kind: EntryKind::parse("command").unwrap(),
-                mode: StorageMode::Copy,
-                description: String::new(),
-                target: None,
-            }],
-            diagnostics: Vec::new(),
-        });
+        let state = command_library(Vec::new());
         let mut session = FooterSession::default();
         let mut terminal = Terminal::new(TestBackend::new(20, 4)).unwrap();
         terminal
@@ -920,6 +1187,189 @@ mod tests {
             row: 1,
             modifiers: KeyModifiers::NONE,
         }));
+    }
+
+    #[test]
+    fn compact_footer_reserves_the_indicator_column_and_clips_wheel_ownership() {
+        let mut state = command_library(Vec::new());
+        state.update(Action::BeginSearch);
+        let mut session = FooterSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(5, 2)).unwrap();
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                hits =
+                    session.render_with_decoration(frame, frame.area(), &state, Locale::En, false);
+            })
+            .unwrap();
+
+        assert_eq!(terminal.backend().buffer()[(4, 0)].symbol(), "↓");
+        assert!(hits.iter().all(|hit| hit.rect.right() <= 4));
+        assert!(session.handle_mouse(&scroll_down(3, 0)));
+        assert!(!session.handle_mouse(&scroll_down(4, 0)));
+    }
+
+    #[test]
+    fn compact_footer_keeps_a_global_chip_at_its_exact_width_boundary() {
+        let mut state = command_library(Vec::new());
+        state.update(Action::BeginSearch);
+        let (_, rows) = chips(&state, Locale::En, 31);
+        assert_eq!(rows, 1);
+
+        let mut session = FooterSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(31, 2)).unwrap();
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                hits =
+                    session.render_with_decoration(frame, frame.area(), &state, Locale::En, false);
+            })
+            .unwrap();
+
+        assert!(hits.iter().any(|hit| {
+            matches!(hit.action, HitTarget::Command(UiCommand::LeaveSearch)) && hit.rect.y == 0
+        }));
+    }
+
+    #[test]
+    fn footer_diagnostic_note_uses_the_documented_strict_width_breakpoint() {
+        let diagnostic = Diagnostic::plain(
+            DiagnosticCode::CorruptMetadata,
+            Some("bad".to_owned()),
+            "bad TOML".to_owned(),
+        );
+        for (width, expected) in [(50, false), (51, true)] {
+            let state = command_library(vec![diagnostic.clone()]);
+            let mut session = FooterSession::default();
+            let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let _ = session.render_with_decoration(
+                        frame,
+                        frame.area(),
+                        &state,
+                        Locale::En,
+                        false,
+                    );
+                })
+                .unwrap();
+            assert_eq!(
+                row_text(&terminal, 1).contains("damaged entries hidden"),
+                expected
+            );
+        }
+
+        let state = command_library(Vec::new());
+        let mut session = FooterSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(51, 2)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ =
+                    session.render_with_decoration(frame, frame.area(), &state, Locale::En, false);
+            })
+            .unwrap();
+        assert!(!row_text(&terminal, 1).contains("damaged entries hidden"));
+    }
+
+    #[test]
+    fn footer_scroll_owns_only_its_half_open_viewport() {
+        let mut scroll = ScrollableContentState::default();
+        scroll.set_lines(vec![String::new(); 10]);
+        scroll.set_scroll_offset(2);
+        let viewport = Rect::new(2, 3, 4, 2);
+
+        for (column, row) in [(1, 3), (6, 3), (2, 2), (2, 5)] {
+            assert!(!handle_footer_scroll(
+                &mut scroll,
+                &scroll_down(column, row),
+                viewport,
+                2
+            ));
+            assert_eq!(scroll.scroll_offset(), 2);
+        }
+        assert!(handle_footer_scroll(
+            &mut scroll,
+            &scroll_down(2, 3),
+            viewport,
+            2
+        ));
+        assert_eq!(scroll.scroll_offset(), 4);
+    }
+
+    #[test]
+    fn footer_minimums_distinguish_suppression_geometry_and_command_content() {
+        let state = command_library(Vec::new());
+        let normal = ViewportProfile::new(Rect::new(0, 0, 100, 16));
+        assert_eq!(minimum_height(normal, &state, Locale::En), 2);
+        assert_eq!(decorated_minimum_height(normal, &state, Locale::En), 4);
+        assert!(required_height(normal, &state, Locale::En) >= 4);
+
+        for area in [Rect::new(0, 0, 0, 16), Rect::new(0, 0, 100, 0)] {
+            let profile = ViewportProfile::new(area);
+            assert_eq!(required_height(profile, &state, Locale::En), 0);
+            assert_eq!(minimum_height(profile, &state, Locale::En), 0);
+            assert_eq!(decorated_minimum_height(profile, &state, Locale::En), 0);
+        }
+        for area in [
+            Rect::new(0, 0, 100, 15),
+            Rect::new(0, 0, 2, 16),
+            Rect::new(0, 0, 100, 0),
+        ] {
+            assert_eq!(
+                decorated_minimum_height(ViewportProfile::new(area), &state, Locale::En),
+                0
+            );
+        }
+
+        let mut suppressed = LibraryState::default();
+        suppressed.update(Action::Present(Screen::Add(Box::new(
+            AddWorkflowState::new(Vec::new()),
+        ))));
+        for minimum in [
+            required_height(normal, &suppressed, Locale::En),
+            minimum_height(normal, &suppressed, Locale::En),
+            decorated_minimum_height(normal, &suppressed, Locale::En),
+        ] {
+            assert_eq!(minimum, 0);
+        }
+        assert_eq!(minimum_content_height(&suppressed, Locale::En, 80), 0);
+        suppressed.update(Action::SetStatus("Saved".to_owned()));
+        assert_eq!(minimum_content_height(&suppressed, Locale::En, 80), 1);
+    }
+
+    #[test]
+    fn normal_height_non_library_footer_uses_its_three_command_row_budget() {
+        let mut declaration = ParamDecl::new("name");
+        declaration.default = Some(ParameterValue::String("World".to_owned()));
+        let form = RunFormView::from_declarations(
+            "greet",
+            "greet",
+            &[declaration],
+            &BTreeMap::new(),
+            &[],
+            "",
+            &BTreeMap::new(),
+            "",
+        );
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Run(Box::new(form))));
+        let profile = ViewportProfile::new(Rect::new(0, 0, 20, 16));
+        assert_eq!(required_height(profile, &state, Locale::En), 5);
+
+        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+        let mut session = FooterSession::default();
+        let mut hits = Vec::new();
+        terminal
+            .draw(|frame| {
+                hits =
+                    session.render_with_decoration(frame, frame.area(), &state, Locale::En, true);
+            })
+            .unwrap();
+        let rows = hits
+            .iter()
+            .map(|hit| hit.rect.y)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rows.len(), 3);
     }
 
     #[test]

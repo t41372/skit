@@ -7,11 +7,12 @@ use ratatui_core::{
     text::{Line, Span},
 };
 use ratatui_crossterm::crossterm::event::{
-    Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use ratatui_interact::components::{
-    Button, ButtonState, ButtonStyle, ButtonVariant, DialogConfig, DialogState, PopupDialog,
-    ScrollableContentState, handle_scrollable_content_key, handle_scrollable_content_mouse,
+    Button, ButtonState, ButtonStyle, ButtonVariant, DialogConfig, DialogFocusTarget, DialogState,
+    PopupDialog, ScrollableContentState, handle_scrollable_content_key,
+    handle_scrollable_content_mouse,
 };
 use ratatui_interact::traits::{ContainerAction, EventResult};
 use ratatui_widgets::{
@@ -25,6 +26,7 @@ use unicode_width::UnicodeWidthStr as _;
 
 use crate::{
     HitRegion, HitTarget, ViewGeometry,
+    pointer::{ClickOutcome, ClickTracker},
     theme::{ACCENT, BOX_DIM, padded_panel},
 };
 
@@ -43,6 +45,8 @@ pub(crate) struct ConfirmRemoveSession {
     dialog: DialogState<()>,
     config: Option<DialogConfig>,
     screen: Rect,
+    click: ClickTracker<DialogFocusTarget>,
+    identity: Option<(String, bool)>,
 }
 
 impl ConfirmRemoveSession {
@@ -53,6 +57,11 @@ impl ConfirmRemoveSession {
         original_file_preserved: bool,
         locale: Locale,
     ) -> ViewGeometry {
+        let identity = (name.to_owned(), original_file_preserved);
+        if self.identity.as_ref() != Some(&identity) {
+            self.click.cancel();
+            self.identity = Some(identity);
+        }
         if self.dialog.focus.is_empty() {
             self.dialog.register_button(1);
             self.dialog.register_button(0);
@@ -94,15 +103,47 @@ impl ConfirmRemoveSession {
         let Some(config) = self.config.as_ref() else {
             return ConfirmRemoveEvent::Ignored;
         };
-        let mut popup = PopupDialog::new(config, &mut self.dialog, |_, _, ()| {});
+        if matches!(
+            event,
+            Event::FocusGained
+                | Event::FocusLost
+                | Event::Key(_)
+                | Event::Paste(_)
+                | Event::Resize(_, _)
+                | Event::Mouse(ratatui_crossterm::crossterm::event::MouseEvent {
+                    kind: MouseEventKind::ScrollUp
+                        | MouseEventKind::ScrollDown
+                        | MouseEventKind::ScrollLeft
+                        | MouseEventKind::ScrollRight,
+                    ..
+                })
+        ) {
+            self.click.cancel();
+        }
         let result = match event {
             Event::Key(key)
                 if key.kind != KeyEventKind::Release
                     && matches!(key.code, KeyCode::Tab | KeyCode::BackTab) =>
             {
+                let mut popup = PopupDialog::new(config, &mut self.dialog, |_, _, ()| {});
                 popup.handle_key(*key)
             }
-            Event::Mouse(mouse) => popup.handle_mouse_with_screen(*mouse, self.screen),
+            Event::Mouse(mouse) => {
+                let target = self
+                    .dialog
+                    .click_regions
+                    .handle_click(mouse.column, mouse.row);
+                match self.click.update(mouse, target) {
+                    ClickOutcome::Armed => EventResult::Consumed,
+                    ClickOutcome::Activated(_) => {
+                        let mut activation = *mouse;
+                        activation.kind = MouseEventKind::Down(MouseButton::Left);
+                        let mut popup = PopupDialog::new(config, &mut self.dialog, |_, _, ()| {});
+                        popup.handle_mouse_with_screen(activation, self.screen)
+                    }
+                    ClickOutcome::Ignored => EventResult::NotHandled,
+                }
+            }
             Event::FocusGained
             | Event::FocusLost
             | Event::Key(_)
@@ -159,9 +200,8 @@ impl HelpScreenSession {
         let line_count = paragraph.line_count(self.viewport.width);
         self.scroll.set_lines(vec![String::new(); line_count]);
         let maximum = line_count.saturating_sub(self.visible_height);
-        if self.scroll.scroll_offset() > maximum {
-            self.scroll.set_scroll_offset(maximum);
-        }
+        self.scroll
+            .set_scroll_offset(self.scroll.scroll_offset().min(maximum));
         let indicator = match (
             self.scroll.is_at_top(),
             self.scroll.is_at_bottom(self.visible_height),
@@ -211,24 +251,16 @@ impl HelpScreenSession {
             {
                 handle_scrollable_content_key(&mut self.scroll, key, self.visible_height).is_some()
             }
-            Event::Mouse(mouse)
-                if matches!(
-                    mouse.kind,
-                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                ) =>
-            {
-                handle_scrollable_content_mouse(
-                    &mut self.scroll,
-                    mouse,
-                    self.viewport,
-                    self.visible_height,
-                )
-                .is_some()
-            }
+            Event::Mouse(mouse) => handle_scrollable_content_mouse(
+                &mut self.scroll,
+                mouse,
+                self.viewport,
+                self.visible_height,
+            )
+            .is_some(),
             Event::FocusGained
             | Event::FocusLost
             | Event::Key(_)
-            | Event::Mouse(_)
             | Event::Paste(_)
             | Event::Resize(_, _) => false,
         }
@@ -354,15 +386,22 @@ mod tests {
         }
         assert_eq!(
             session.handle_event(&mouse(remove, MouseEventKind::Down(MouseButton::Left))),
+            ConfirmRemoveEvent::Consumed
+        );
+        assert_eq!(
+            session.handle_event(&mouse(remove, MouseEventKind::Up(MouseButton::Left))),
             ConfirmRemoveEvent::Submit
         );
         assert_eq!(
             session.handle_event(&mouse(keep, MouseEventKind::Down(MouseButton::Left))),
+            ConfirmRemoveEvent::Consumed
+        );
+        assert_eq!(
+            session.handle_event(&mouse(keep, MouseEventKind::Up(MouseButton::Left))),
             ConfirmRemoveEvent::Close
         );
         for event in [
             mouse(remove, MouseEventKind::Moved),
-            mouse(remove, MouseEventKind::Up(MouseButton::Left)),
             key(KeyCode::Enter),
             Event::Paste("ignored".to_owned()),
             Event::FocusGained,
@@ -386,6 +425,110 @@ mod tests {
     }
 
     #[test]
+    fn confirm_remove_leaves_non_navigation_keys_and_releases_to_the_root_owner() {
+        let mut session = ConfirmRemoveSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, "Alpha", true, Locale::En);
+            })
+            .unwrap();
+
+        assert_eq!(
+            session.handle_event(&key(KeyCode::Enter)),
+            ConfirmRemoveEvent::Ignored,
+            "Enter belongs to the root confirmation command, not the focus navigator",
+        );
+        assert_eq!(
+            session.handle_event(&Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Tab,
+                KeyModifiers::NONE,
+                KeyEventKind::Release,
+            ))),
+            ConfirmRemoveEvent::Ignored,
+            "a key release must not move dialog focus",
+        );
+        assert_eq!(
+            session.handle_event(&key(KeyCode::Tab)),
+            ConfirmRemoveEvent::Consumed,
+            "a Tab press must still move dialog focus",
+        );
+    }
+
+    #[test]
+    fn confirm_remove_cancels_a_press_when_another_event_owner_intervenes() {
+        let mut session = ConfirmRemoveSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, "Alpha", true, Locale::En);
+            })
+            .unwrap();
+        let remove = find_text(terminal.backend().buffer(), "Remove");
+
+        for (interrupt, expected) in [
+            (Event::Resize(40, 10), ConfirmRemoveEvent::Ignored),
+            (
+                mouse(remove, MouseEventKind::ScrollDown),
+                ConfirmRemoveEvent::Ignored,
+            ),
+            (key(KeyCode::Tab), ConfirmRemoveEvent::Consumed),
+        ] {
+            assert_eq!(
+                session.handle_event(&mouse(remove, MouseEventKind::Down(MouseButton::Left))),
+                ConfirmRemoveEvent::Consumed
+            );
+            assert_eq!(session.handle_event(&interrupt), expected);
+            assert_eq!(
+                session.handle_event(&mouse(remove, MouseEventKind::Up(MouseButton::Left))),
+                ConfirmRemoveEvent::Ignored,
+                "{interrupt:?} left a stale Remove press armed",
+            );
+        }
+    }
+
+    #[test]
+    fn confirm_remove_cancels_an_armed_button_when_the_entry_identity_changes() {
+        let mut session = ConfirmRemoveSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, "Alpha", true, Locale::En);
+            })
+            .unwrap();
+        let remove = find_text(terminal.backend().buffer(), "Remove");
+        assert_eq!(
+            session.handle_event(&mouse(remove, MouseEventKind::Down(MouseButton::Left))),
+            ConfirmRemoveEvent::Consumed
+        );
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, "Beta", false, Locale::En);
+            })
+            .unwrap();
+        let replacement = find_text(terminal.backend().buffer(), "Remove");
+        assert_eq!(replacement, remove);
+        assert_eq!(
+            session.handle_event(&mouse(replacement, MouseEventKind::Up(MouseButton::Left))),
+            ConfirmRemoveEvent::Ignored
+        );
+
+        assert_eq!(
+            session.handle_event(&mouse(replacement, MouseEventKind::Down(MouseButton::Left))),
+            ConfirmRemoveEvent::Consumed
+        );
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, "Beta", false, Locale::En);
+            })
+            .unwrap();
+        assert_eq!(
+            session.handle_event(&mouse(replacement, MouseEventKind::Up(MouseButton::Left))),
+            ConfirmRemoveEvent::Submit
+        );
+    }
+
+    #[test]
     fn help_scrolls_by_every_advertised_key_and_wheel_then_clamps_on_growth() {
         let mut session = HelpScreenSession::default();
         let mut terminal = Terminal::new(TestBackend::new(38, 6)).unwrap();
@@ -406,6 +549,12 @@ mod tests {
         }
         let viewport = session.viewport;
         assert!(session.handle_event(&mouse(viewport, MouseEventKind::ScrollDown)));
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), Locale::ZhCn);
+            })
+            .unwrap();
+        assert!(!find_text(terminal.backend().buffer(), "↑↓").is_empty());
         assert!(session.handle_event(&mouse(viewport, MouseEventKind::ScrollUp)));
         for event in [
             mouse(viewport, MouseEventKind::Moved),
@@ -425,6 +574,44 @@ mod tests {
                 assert_eq!(geometry.first_visible, 0);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn help_assigns_the_double_interrupt_hint_only_to_the_quit_row() {
+        let mut session = HelpScreenSession::default();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = session.render(frame, frame.area(), Locale::En);
+            })
+            .unwrap();
+
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(120)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let quit_label = command_specs(CommandContext::LibraryBrowse)
+            .find(|spec| spec.command == UiCommand::Quit)
+            .map(|spec| text(Locale::En, spec.label).into_owned())
+            .expect("Help has a Quit command");
+        let other_label = command_specs(CommandContext::LibraryBrowse)
+            .find(|spec| spec.help && spec.command != UiCommand::Quit)
+            .map(|spec| text(Locale::En, spec.label).into_owned())
+            .expect("Help has a non-Quit command");
+        let quit_row = rows
+            .iter()
+            .find(|row| row.contains(&quit_label))
+            .expect("Quit is visible in the tall Help viewport");
+        let other_row = rows
+            .iter()
+            .find(|row| row.contains(&other_label))
+            .expect("a non-Quit command is visible");
+
+        assert!(quit_row.contains("Ctrl+C Ctrl+C / Esc"), "{quit_row}");
+        assert!(!other_row.contains("Ctrl+C Ctrl+C / Esc"), "{other_row}");
     }
 
     #[test]

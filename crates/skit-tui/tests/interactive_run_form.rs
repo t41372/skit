@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use ratatui_core::{
-    backend::TestBackend, buffer::Buffer, layout::Rect, style::Color, terminal::Terminal,
-};
+use ratatui_core::{backend::TestBackend, buffer::Buffer, style::Color, terminal::Terminal};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
@@ -11,17 +9,21 @@ use skit_application::tokens::TokenContext;
 use skit_domain::parameters::{ParamDecl, ParameterType, ParameterValue};
 use skit_i18n::Locale;
 use skit_tui::{
-    EventHandling, FilePickerEvent, FilePickerHit, FilePickerSession, HitTarget, TuiSession,
-    ViewGeometry, render_file_picker, render_with_session,
+    EventHandling, FilePickerEvent, FilePickerHit, FilePickerSession, HitTarget, RunFieldCommand,
+    TuiSession, ViewGeometry, render_file_picker, render_with_session,
 };
 use skit_ui::{
     Action, Effect, FormControl, FormField, FormPurpose, FormView, LibraryState, ModalState,
     PathOutputPolicy, PathPickerState, PathSelectionMode, PickerPurpose, RunFormContext,
-    RunFormView, RunPathContext, Screen, UiCommand,
+    RunFormView, RunPathContext, Screen, SettingsInputs, SettingsView, UiCommand,
 };
+use unicode_width::UnicodeWidthStr as _;
 
 const ACCENT: Color = Color::Rgb(0xD9, 0x77, 0x57);
 const BOX_MAROON: Color = Color::Rgb(0x92, 0x35, 0x35);
+const BOX_DIM: Color = Color::Rgb(0x3A, 0x3A, 0x3A);
+const SELECT_BG: Color = Color::Rgb(0x5A, 0x2D, 0x1E);
+const SELECT_FG: Color = Color::Rgb(0xEE, 0xEE, 0xEE);
 
 fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
     Event::Key(KeyEvent::new(code, modifiers))
@@ -83,6 +85,59 @@ fn drive(
         state.update(action.clone());
     }
     handling
+}
+
+fn session_click(
+    session: &mut TuiSession,
+    state: &LibraryState,
+    geometry: &ViewGeometry,
+    column: u16,
+    row: u16,
+) -> EventHandling {
+    assert_eq!(
+        session.handle_event(mouse(column, row), state, geometry),
+        EventHandling::Consumed
+    );
+    session.handle_event(
+        mouse_with_kind(MouseEventKind::Up(MouseButton::Left), column, row),
+        state,
+        geometry,
+    )
+}
+
+fn drive_click(
+    session: &mut TuiSession,
+    state: &mut LibraryState,
+    geometry: &ViewGeometry,
+    column: u16,
+    row: u16,
+) -> EventHandling {
+    assert_eq!(
+        drive(session, state, geometry, mouse(column, row)),
+        EventHandling::Consumed
+    );
+    drive(
+        session,
+        state,
+        geometry,
+        mouse_with_kind(MouseEventKind::Up(MouseButton::Left), column, row),
+    )
+}
+
+fn file_click(
+    session: &mut FilePickerSession,
+    geometry: &skit_tui::FilePickerGeometry,
+    column: u16,
+    row: u16,
+) -> Option<FilePickerEvent> {
+    assert_eq!(
+        session.handle_event(mouse(column, row), geometry),
+        Some(FilePickerEvent::Changed)
+    );
+    session.handle_event(
+        mouse_with_kind(MouseEventKind::Up(MouseButton::Left), column, row),
+        geometry,
+    )
 }
 
 fn form() -> RunFormView {
@@ -185,21 +240,51 @@ fn complete_surface_form() -> RunFormView {
 fn row_containing(buffer: &Buffer, needle: &str) -> u16 {
     (0..buffer.area.height)
         .find(|row| {
-            (0..buffer.area.width)
-                .map(|column| buffer[(column, *row)].symbol())
-                .collect::<String>()
-                .contains(needle)
+            let mut visible = String::new();
+            let mut continuation_cells = 0;
+            for column in 0..buffer.area.width {
+                if continuation_cells > 0 {
+                    continuation_cells -= 1;
+                    continue;
+                }
+                let symbol = buffer[(column, *row)].symbol();
+                visible.push_str(symbol);
+                continuation_cells = symbol.width().saturating_sub(1);
+            }
+            visible.contains(needle)
         })
         .expect("expected rendered row")
 }
 
+fn visible_buffer_text(buffer: &Buffer) -> String {
+    (0..buffer.area.height)
+        .map(|row| {
+            let mut visible = String::new();
+            let mut continuation_cells = 0;
+            for column in 0..buffer.area.width {
+                if continuation_cells > 0 {
+                    continuation_cells -= 1;
+                    continue;
+                }
+                let symbol = buffer[(column, row)].symbol();
+                visible.push_str(symbol);
+                continuation_cells = symbol.width().saturating_sub(1);
+            }
+            visible
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn buffer_position(buffer: &Buffer, needle: &str) -> (u16, u16) {
     for row in 0..buffer.area.height {
-        let line = (0..buffer.area.width)
+        let cells = (0..buffer.area.width)
             .map(|column| buffer[(column, row)].symbol())
-            .collect::<String>();
-        if let Some(column) = line.find(needle) {
-            return (u16::try_from(column).unwrap(), row);
+            .collect::<Vec<_>>();
+        for column in 0..cells.len() {
+            if cells[column..].concat().starts_with(needle) {
+                return (u16::try_from(column).unwrap(), row);
+            }
         }
     }
     panic!("expected rendered text: {needle}");
@@ -271,6 +356,129 @@ fn mature_input_edits_unicode_at_the_cursor_and_renders_focus_style() {
 }
 
 #[test]
+fn clicking_single_line_run_and_form_inputs_places_the_cursor_before_typing() {
+    let mut run = state_with_form(text_run_form("abcdef"));
+    let mut run_session = TuiSession::default();
+    let (terminal, geometry) = draw(&mut run_session, &run, 80, 18);
+    let (start, row) = buffer_position(terminal.backend().buffer(), "abcdef");
+    assert_eq!(
+        run_session.handle_event(mouse(start + 2, row), &run, &geometry),
+        EventHandling::Consumed
+    );
+    let _ = drive(
+        &mut run_session,
+        &mut run,
+        &geometry,
+        key(KeyCode::Char('X'), KeyModifiers::NONE),
+    );
+    assert_eq!(
+        run.run_form().unwrap().fields()[0].control.value(),
+        "abXcdef"
+    );
+
+    let mut form = LibraryState::default();
+    form.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Edit".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: vec![FormField::text("value", "Value", "abcdef")],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    let mut form_session = TuiSession::default();
+    let (terminal, geometry) = draw(&mut form_session, &form, 80, 18);
+    let (start, row) = buffer_position(terminal.backend().buffer(), "abcdef");
+    assert_eq!(
+        form_session.handle_event(mouse(start + 2, row), &form, &geometry),
+        EventHandling::Consumed
+    );
+    let _ = drive(
+        &mut form_session,
+        &mut form,
+        &geometry,
+        key(KeyCode::Char('X'), KeyModifiers::NONE),
+    );
+    assert_eq!(form.form().unwrap().fields[0].value, "abXcdef");
+}
+
+#[test]
+fn clicking_a_run_textarea_places_its_logical_cursor() {
+    let mut state = state_with_form(with_multiline_run_field(
+        text_run_form("first\nabcdef\nlast"),
+        0,
+    ));
+    let mut session = TuiSession::default();
+    let (terminal, geometry) = draw(&mut session, &state, 80, 18);
+    let (start, row) = buffer_position(terminal.backend().buffer(), "abcdef");
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Down(MouseButton::Left), start + 2, row),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), start + 2, row),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let _ = drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        key(KeyCode::Char('X'), KeyModifiers::NONE),
+    );
+    assert_eq!(
+        state.run_form().unwrap().fields()[0].control.value(),
+        "first\nabXcdef\nlast"
+    );
+}
+
+#[test]
+fn textarea_click_uses_the_rendered_vertical_and_horizontal_viewport() {
+    let value = "row0\nrow1\nrow2\nrow3\nrow4\nrow5\n0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut state = state_with_form(with_multiline_run_field(text_run_form(value), 0));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 30, 12);
+    assert_eq!(
+        session.handle_event(key(KeyCode::End, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed
+    );
+
+    let (terminal, geometry) = draw(&mut session, &state, 30, 12);
+    let (start, row) = buffer_position(terminal.backend().buffer(), "wxyz");
+    assert_eq!(
+        session.handle_event(mouse(start + 1, row), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), start + 1, row),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let _ = drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        key(KeyCode::Char('X'), KeyModifiers::NONE),
+    );
+
+    assert_eq!(
+        state.run_form().unwrap().fields()[0].control.value(),
+        "row0\nrow1\nrow2\nrow3\nrow4\nrow5\n0123456789abcdefghijklmnopqrstuvwXxyz"
+    );
+}
+
+#[test]
 fn run_surface_renders_main_banners_field_affordances_feedback_and_errors() {
     let mut state = state_with_form(complete_surface_form());
     state.update(Action::SetRunGlobCount {
@@ -281,7 +489,7 @@ fn run_surface_renders_main_banners_field_affordances_feedback_and_errors() {
     assert_eq!(state.update(Action::Submit), Effect::None);
     let mut session = TuiSession::default();
     let (terminal, _) = draw(&mut session, &state, 120, 44);
-    let rendered = buffer_text(terminal.backend().buffer());
+    let rendered = visible_buffer_text(terminal.backend().buffer());
 
     for expected in [
         "The stored field moved in the source.",
@@ -324,9 +532,9 @@ fn every_visible_run_field_affordance_has_a_typed_mouse_action() {
     let (_, geometry) = draw(&mut session, &state, 120, 44);
 
     for (command, expected) in [
-        (UiCommand::BrowsePath, Action::OpenRunFilePicker(2)),
-        (UiCommand::InsertValue, Action::OpenRunTokenMenuFor(2)),
-        (UiCommand::ResetDefault, Action::ResetRunField(2)),
+        (RunFieldCommand::BrowsePath, Action::OpenRunFilePicker(2)),
+        (RunFieldCommand::InsertValue, Action::OpenRunTokenMenuFor(2)),
+        (RunFieldCommand::ResetDefault, Action::ResetRunField(2)),
     ] {
         let area = geometry
             .hits
@@ -336,42 +544,16 @@ fn every_visible_run_field_affordance_has_a_typed_mouse_action() {
             })
             .expect("the visible field chip must expose its typed click region");
         assert_eq!(
-            session.handle_event(mouse(area.x, area.y), &state, &geometry),
+            session_click(&mut session, &state, &geometry, area.x, area.y),
             EventHandling::Action(expected.clone())
-        );
-        assert_eq!(
-            skit_tui::map_event(mouse(area.x, area.y), &state, &geometry),
-            Some(expected)
         );
         for kind in [MouseEventKind::Moved, MouseEventKind::Up(MouseButton::Left)] {
             assert_eq!(
-                skit_tui::map_event(
-                    Event::Mouse(MouseEvent {
-                        kind,
-                        column: area.x,
-                        row: area.y,
-                        modifiers: KeyModifiers::NONE,
-                    }),
-                    &state,
-                    &geometry,
-                ),
-                None
+                session.handle_event(mouse_with_kind(kind, area.x, area.y), &state, &geometry,),
+                EventHandling::Ignored
             );
         }
     }
-
-    let mut stale = geometry.clone();
-    stale.hits.push(skit_tui::HitRegion {
-        rect: Rect::new(0, 0, 1, 1),
-        action: HitTarget::RunFieldCommand {
-            field: 7,
-            command: UiCommand::Back,
-        },
-    });
-    assert_eq!(
-        skit_tui::map_event(mouse(0, 0), &state, &stale),
-        Some(Action::Back)
-    );
 
     let area = geometry
         .hits
@@ -381,7 +563,7 @@ fn every_visible_run_field_affordance_has_a_typed_mouse_action() {
         })
         .expect("the runner picker must show its New agent mouse door");
     assert_eq!(
-        session.handle_event(mouse(area.x, area.y), &state, &geometry),
+        session_click(&mut session, &state, &geometry, area.x, area.y),
         EventHandling::Action(Action::OpenRunRunnerEditor)
     );
 }
@@ -397,11 +579,12 @@ fn checkbox_radio_and_picker_have_keyboard_and_mouse_paths() {
         .iter()
         .find(|hit| hit.action == HitTarget::FocusField(2))
         .unwrap();
-    drive(
+    drive_click(
         &mut session,
         &mut state,
         &geometry,
-        mouse(checkbox.rect.x, checkbox.rect.y),
+        checkbox.rect.x,
+        checkbox.rect.y,
     );
     assert!(matches!(
         state.run_form().unwrap().fields()[2].control,
@@ -454,6 +637,130 @@ fn checkbox_radio_and_picker_have_keyboard_and_mouse_paths() {
 }
 
 #[test]
+fn run_checkbox_toggles_only_after_a_primary_press_and_release() {
+    let mut state = state_with_form(form());
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 100, 28);
+    let checkbox = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(2))
+        .expect("the checkbox has a visible hit")
+        .rect;
+
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(
+                MouseEventKind::Down(MouseButton::Left),
+                checkbox.x,
+                checkbox.y,
+            ),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed,
+        "primary Down must arm the checkbox without toggling it"
+    );
+    assert!(matches!(
+        state.run_form().unwrap().fields()[2].control,
+        FormControl::Checkbox { checked: false }
+    ));
+    let release = session.handle_event(
+        mouse_with_kind(
+            MouseEventKind::Up(MouseButton::Left),
+            checkbox.x,
+            checkbox.y,
+        ),
+        &state,
+        &geometry,
+    );
+    assert_eq!(release, EventHandling::Action(Action::ToggleField(2)));
+    let EventHandling::Action(action) = release else {
+        unreachable!();
+    };
+    state.update(action);
+    assert!(matches!(
+        state.run_form().unwrap().fields()[2].control,
+        FormControl::Checkbox { checked: true }
+    ));
+}
+
+#[test]
+fn a_global_footer_click_cancels_an_armed_run_control() {
+    let state = state_with_form(form());
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 100, 28);
+    let checkbox = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(2))
+        .expect("the checkbox has a visible hit")
+        .rect;
+    let footer = geometry
+        .hits
+        .iter()
+        .find(|hit| matches!(hit.action, HitTarget::Command(_)))
+        .expect("the global footer has a visible command")
+        .rect;
+
+    assert_eq!(
+        session.handle_event(mouse(checkbox.x, checkbox.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(mouse(footer.x, footer.y), &state, &geometry),
+        EventHandling::Consumed,
+        "a new top-level press must replace the armed content target"
+    );
+    assert!(matches!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), footer.x, footer.y),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(_)
+    ));
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(
+                MouseEventKind::Up(MouseButton::Left),
+                checkbox.x,
+                checkbox.y,
+            ),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored,
+        "the earlier Run press stayed armed after another owner completed a click"
+    );
+
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 100, 28);
+    assert_eq!(
+        session.handle_event(mouse(footer.x, footer.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(mouse(checkbox.x, checkbox.y), &state, &geometry),
+        EventHandling::Consumed,
+        "a new content press must replace the armed top-level target"
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(
+                MouseEventKind::Up(MouseButton::Left),
+                checkbox.x,
+                checkbox.y,
+            ),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(Action::ToggleField(2)),
+        "the replacement content press was swallowed by the old owner"
+    );
+}
+
+#[test]
 fn run_and_generic_form_hits_require_a_mouse_button_press() {
     let run = state_with_form(form());
     let mut session = TuiSession::default();
@@ -481,6 +788,18 @@ fn run_and_generic_form_hits_require_a_mouse_button_press() {
     }
     assert_eq!(
         session.handle_event(mouse(run_hit.rect.x, run_hit.rect.y), &run, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(
+                MouseEventKind::Up(MouseButton::Left),
+                run_hit.rect.x,
+                run_hit.rect.y,
+            ),
+            &run,
+            &geometry,
+        ),
         EventHandling::Action(Action::ToggleField(2))
     );
 
@@ -522,7 +841,747 @@ fn run_and_generic_form_hits_require_a_mouse_button_press() {
     }
     assert_eq!(
         session.handle_event(mouse(form_hit.rect.x, form_hit.rect.y), &form, &geometry),
+        EventHandling::Consumed,
+        "generic Form Down must only arm the field"
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(
+                MouseEventKind::Up(MouseButton::Left),
+                form_hit.rect.x,
+                form_hit.rect.y,
+            ),
+            &form,
+            &geometry,
+        ),
         EventHandling::Action(Action::FocusField(1))
+    );
+
+    let first_hit = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(0))
+        .expect("the first form field must expose its mouse hit area");
+    for (cancel, label) in [
+        (MouseEventKind::Down(MouseButton::Right), "right click"),
+        (MouseEventKind::Down(MouseButton::Middle), "middle click"),
+    ] {
+        assert_eq!(
+            session.handle_event(mouse(form_hit.rect.x, form_hit.rect.y), &form, &geometry),
+            EventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_with_kind(cancel, form_hit.rect.x, form_hit.rect.y),
+                &form,
+                &geometry,
+            ),
+            EventHandling::Ignored,
+            "generic Form accepted {label}"
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_with_kind(
+                    MouseEventKind::Up(MouseButton::Left),
+                    form_hit.rect.x,
+                    form_hit.rect.y,
+                ),
+                &form,
+                &geometry,
+            ),
+            EventHandling::Ignored,
+            "{label} did not cancel the armed field"
+        );
+    }
+
+    for (column, row, label) in [
+        (first_hit.rect.x, first_hit.rect.y, "a different field"),
+        (0, 0, "outside the form"),
+    ] {
+        assert_eq!(
+            session.handle_event(mouse(form_hit.rect.x, form_hit.rect.y), &form, &geometry),
+            EventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_with_kind(MouseEventKind::Up(MouseButton::Left), column, row),
+                &form,
+                &geometry,
+            ),
+            EventHandling::Ignored,
+            "generic Form release over {label} activated the pressed field"
+        );
+        assert_eq!(
+            session.handle_event(
+                mouse_with_kind(
+                    MouseEventKind::Up(MouseButton::Left),
+                    form_hit.rect.x,
+                    form_hit.rect.y,
+                ),
+                &form,
+                &geometry,
+            ),
+            EventHandling::Ignored,
+            "a cancelled field accepted a later release"
+        );
+    }
+}
+
+#[test]
+fn settings_and_global_footer_clicks_cancel_the_previous_owner() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Settings(Box::new(
+        SettingsView::from_inputs(&SettingsInputs {
+            selector: "settings-owner".to_owned(),
+            kind: "python".to_owned(),
+            name: "Settings owner".to_owned(),
+            description: "SETTINGS_CONTROL_SENTINEL".to_owned(),
+            source: "/tmp/settings-owner.py".to_owned(),
+            supports_modes: true,
+            has_stored_name: true,
+            ..SettingsInputs::default()
+        }),
+    ))));
+
+    let targets = |session: &mut TuiSession| {
+        let (terminal, geometry) = draw(session, &state, 100, 40);
+        let control = buffer_position(terminal.backend().buffer(), "SETTINGS_CONTROL_SENTINEL");
+        let footer = geometry
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, HitTarget::Command(_)))
+            .expect("Settings must keep one global footer action visible")
+            .rect;
+        (geometry, control, footer)
+    };
+
+    let mut control_first = TuiSession::default();
+    let (geometry, control, footer) = targets(&mut control_first);
+    assert_eq!(
+        control_first.handle_event(mouse(control.0, control.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        control_first.handle_event(mouse(footer.x, footer.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert!(matches!(
+        control_first.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), footer.x, footer.y),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(_)
+    ));
+    assert_eq!(
+        control_first.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), control.0, control.1,),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored,
+        "a late Settings Up survived a completed global-footer click"
+    );
+
+    let mut footer_first = TuiSession::default();
+    let (geometry, control, footer) = targets(&mut footer_first);
+    assert_eq!(
+        footer_first.handle_event(mouse(footer.x, footer.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        footer_first.handle_event(mouse(control.0, control.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert!(matches!(
+        footer_first.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), control.0, control.1,),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Settings(_))
+    ));
+    assert_eq!(
+        footer_first.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), footer.x, footer.y),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored,
+        "a late global-footer Up survived the Settings control's click"
+    );
+
+    let mut resized = TuiSession::default();
+    let (geometry, control, _) = targets(&mut resized);
+    assert_eq!(
+        resized.handle_event(mouse(control.0, control.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        resized.handle_event(Event::Resize(90, 32), &state, &geometry),
+        EventHandling::Ignored
+    );
+    let (terminal, geometry) = draw(&mut resized, &state, 90, 32);
+    let control = buffer_position(terminal.backend().buffer(), "SETTINGS_CONTROL_SENTINEL");
+    assert_eq!(
+        resized.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), control.0, control.1),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored,
+        "a resize must cancel the Settings control arm"
+    );
+}
+
+#[test]
+fn moving_over_a_global_hit_does_not_cancel_an_armed_settings_control() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Settings(Box::new(
+        SettingsView::from_inputs(&SettingsInputs {
+            selector: "settings-move".to_owned(),
+            kind: "python".to_owned(),
+            name: "Settings move".to_owned(),
+            description: "SETTINGS_MOVE_SENTINEL".to_owned(),
+            source: "/tmp/settings-move.py".to_owned(),
+            supports_modes: true,
+            has_stored_name: true,
+            ..SettingsInputs::default()
+        }),
+    ))));
+    let mut session = TuiSession::default();
+    let (terminal, geometry) = draw(&mut session, &state, 100, 40);
+    let control = buffer_position(terminal.backend().buffer(), "SETTINGS_MOVE_SENTINEL");
+    let footer = geometry
+        .hits
+        .iter()
+        .find(|hit| matches!(hit.action, HitTarget::Command(_)))
+        .expect("Settings keeps a global footer target")
+        .rect;
+
+    assert_eq!(
+        session.handle_event(mouse(control.0, control.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Moved, footer.x, footer.y),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored
+    );
+    assert!(matches!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), control.0, control.1),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Settings(_))
+    ));
+}
+
+#[test]
+fn run_and_generic_form_ignore_key_release_events() {
+    let run = state_with_form(text_run_form("abc"));
+    let mut run_session = TuiSession::default();
+    let (_, run_geometry) = draw(&mut run_session, &run, 80, 18);
+    let released = |character| {
+        Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char(character),
+            KeyModifiers::CONTROL,
+            ratatui_crossterm::crossterm::event::KeyEventKind::Release,
+        ))
+    };
+    assert_eq!(
+        run_session.handle_event(released('r'), &run, &run_geometry),
+        EventHandling::Ignored
+    );
+
+    let mut form = LibraryState::default();
+    form.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Edit".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: vec![FormField::text("name", "Name", "abc")],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    let mut form_session = TuiSession::default();
+    let (_, form_geometry) = draw(&mut form_session, &form, 80, 18);
+    assert_eq!(
+        form_session.handle_event(released('s'), &form, &form_geometry),
+        EventHandling::Ignored
+    );
+}
+
+#[test]
+fn run_control_shortcuts_require_control_and_bare_letters_edit_the_input() {
+    for (character, expected) in [
+        ('r', Action::Submit),
+        ('s', Action::OpenRunPresetSave),
+        ('t', Action::OpenRunTokenMenu),
+        ('o', Action::ResetFocusedRunField),
+        ('n', Action::OpenRunRunnerEditor),
+    ] {
+        let state = state_with_form(text_run_form(""));
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw(&mut session, &state, 80, 18);
+        assert_eq!(
+            session.handle_event(
+                key(KeyCode::Char(character), KeyModifiers::CONTROL),
+                &state,
+                &geometry,
+            ),
+            EventHandling::Action(expected),
+            "Ctrl+{character} did not dispatch its Run command"
+        );
+
+        let state = state_with_form(text_run_form(""));
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw(&mut session, &state, 80, 18);
+        assert_eq!(
+            session.handle_event(
+                key(KeyCode::Char(character), KeyModifiers::NONE),
+                &state,
+                &geometry,
+            ),
+            EventHandling::Action(Action::SetFieldValue {
+                field: 0,
+                value: character.to_string(),
+            }),
+            "bare {character} triggered a Run command"
+        );
+    }
+}
+
+#[test]
+fn run_checkbox_owns_space_enter_down_and_up() {
+    for (code, expected) in [
+        (KeyCode::Char(' '), Action::ToggleField(2)),
+        (KeyCode::Enter, Action::Submit),
+        (KeyCode::Down, Action::FocusField(3)),
+        (KeyCode::Up, Action::FocusField(1)),
+    ] {
+        let mut state = state_with_form(form());
+        state.update(Action::FocusField(2));
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw(&mut session, &state, 80, 18);
+        assert_eq!(
+            session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry),
+            EventHandling::Action(expected),
+            "the focused checkbox ignored {code:?}"
+        );
+    }
+}
+
+#[test]
+fn run_radio_and_closed_picker_own_their_navigation_keys() {
+    for (code, expected) in [
+        (KeyCode::Enter, Action::Submit),
+        (KeyCode::Down, Action::FocusField(4)),
+        (KeyCode::Up, Action::FocusField(2)),
+    ] {
+        let mut state = state_with_form(form());
+        state.update(Action::FocusField(3));
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw(&mut session, &state, 80, 18);
+        assert_eq!(
+            session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry),
+            EventHandling::Action(expected),
+            "the focused radio control ignored {code:?}"
+        );
+    }
+
+    for code in [KeyCode::Enter, KeyCode::Char(' '), KeyCode::Down] {
+        let mut state = state_with_form(form());
+        state.update(Action::FocusField(0));
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw(&mut session, &state, 80, 18);
+        assert_eq!(
+            session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry),
+            EventHandling::Consumed,
+            "the closed runner picker ignored {code:?}"
+        );
+    }
+}
+
+#[test]
+fn open_run_picker_does_not_own_wheel_outside_its_dropdown() {
+    let mut state = state_with_form(form());
+    state.update(Action::FocusField(0));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 80, 18);
+    assert_eq!(
+        session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Consumed
+    );
+    let (_, geometry) = draw(&mut session, &state, 80, 18);
+
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::ScrollDown, 0, 0),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored
+    );
+}
+
+#[test]
+fn run_textarea_paste_groups_selection_replacement_but_not_empty_deletion() {
+    let make_state = || state_with_form(with_multiline_run_field(text_run_form("a界b"), 0));
+
+    let mut replaced = make_state();
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &replaced, 80, 18);
+    for event in [
+        key(KeyCode::End, KeyModifiers::NONE),
+        key(KeyCode::Left, KeyModifiers::SHIFT),
+    ] {
+        let _ = session.handle_event(event, &replaced, &geometry);
+    }
+    assert!(matches!(
+        drive(
+            &mut session,
+            &mut replaced,
+            &geometry,
+            Event::Paste("🙂".to_owned()),
+        ),
+        EventHandling::Action(Action::SetFieldValue { .. })
+    ));
+    assert_eq!(
+        replaced.run_form().unwrap().fields()[0].control.value(),
+        "a界🙂"
+    );
+    let _ = drive(
+        &mut session,
+        &mut replaced,
+        &geometry,
+        key(KeyCode::Char('z'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(
+        replaced.run_form().unwrap().fields()[0].control.value(),
+        "a界b"
+    );
+
+    let mut deleted = make_state();
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &deleted, 80, 18);
+    let _ = drive(
+        &mut session,
+        &mut deleted,
+        &geometry,
+        key(KeyCode::End, KeyModifiers::NONE),
+    );
+    let _ = drive(
+        &mut session,
+        &mut deleted,
+        &geometry,
+        key(KeyCode::Char('Q'), KeyModifiers::NONE),
+    );
+    let _ = session.handle_event(key(KeyCode::Left, KeyModifiers::SHIFT), &deleted, &geometry);
+    let _ = drive(
+        &mut session,
+        &mut deleted,
+        &geometry,
+        Event::Paste(String::new()),
+    );
+    assert_eq!(
+        deleted.run_form().unwrap().fields()[0].control.value(),
+        "a界b"
+    );
+    let _ = drive(
+        &mut session,
+        &mut deleted,
+        &geometry,
+        key(KeyCode::Char('z'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(
+        deleted.run_form().unwrap().fields()[0].control.value(),
+        "a界bQ"
+    );
+}
+
+#[test]
+fn generic_form_shortcut_focus_and_page_keys_keep_distinct_meanings() {
+    let make_state = |focused| {
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Form(FormView {
+            purpose: FormPurpose::Settings,
+            title: "Edit".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: None,
+            fields: vec![
+                FormField::text("first", "First", ""),
+                FormField::text("second", "Second", ""),
+            ],
+            focused,
+            submit_label: "Save".to_owned(),
+        })));
+        state
+    };
+
+    for (code, focused, expected) in [
+        (
+            KeyCode::Enter,
+            0,
+            EventHandling::Action(Action::FocusField(1)),
+        ),
+        (
+            KeyCode::Down,
+            0,
+            EventHandling::Action(Action::FocusField(1)),
+        ),
+        (KeyCode::Up, 1, EventHandling::Action(Action::FocusField(0))),
+        (KeyCode::PageUp, 0, EventHandling::Consumed),
+        (KeyCode::PageDown, 0, EventHandling::Consumed),
+    ] {
+        let state = make_state(focused);
+        let mut session = TuiSession::default();
+        let (_, geometry) = draw(&mut session, &state, 24, 8);
+        assert_eq!(
+            session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry),
+            expected,
+            "generic Form ignored {code:?}"
+        );
+    }
+
+    let state = make_state(0);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 80, 18);
+    assert_eq!(
+        session.handle_event(
+            key(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Submit)
+    );
+    let state = make_state(0);
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 80, 18);
+    assert_eq!(
+        session.handle_event(
+            key(KeyCode::Char('s'), KeyModifiers::NONE),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(Action::SetFieldValue {
+            field: 0,
+            value: "s".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn generic_form_paste_keeps_cursor_selection_and_scroll_state_exact() {
+    let make_form = |field| {
+        let mut state = LibraryState::default();
+        state.update(Action::Present(Screen::Form(FormView {
+            purpose: FormPurpose::Settings,
+            title: "Edit".to_owned(),
+            title_arguments: Vec::new(),
+            translate_title: false,
+            selector: None,
+            fields: vec![field],
+            focused: 0,
+            submit_label: "Save".to_owned(),
+        })));
+        state
+    };
+
+    let mut line = make_form(FormField::text("name", "Name", "a界b"));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &line, 80, 18);
+    let _ = session.handle_event(key(KeyCode::Left, KeyModifiers::NONE), &line, &geometry);
+    let _ = drive(
+        &mut session,
+        &mut line,
+        &geometry,
+        Event::Paste("🙂".to_owned()),
+    );
+    assert_eq!(line.form().unwrap().fields[0].value, "a界🙂b");
+
+    let mut textarea = make_form(FormField::multiline("body", "Body", "a界b"));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &textarea, 80, 18);
+    for event in [
+        key(KeyCode::End, KeyModifiers::NONE),
+        key(KeyCode::Left, KeyModifiers::SHIFT),
+    ] {
+        let _ = session.handle_event(event, &textarea, &geometry);
+    }
+    let _ = drive(
+        &mut session,
+        &mut textarea,
+        &geometry,
+        Event::Paste("🙂".to_owned()),
+    );
+    assert_eq!(textarea.form().unwrap().fields[0].value, "a界🙂");
+    let _ = drive(
+        &mut session,
+        &mut textarea,
+        &geometry,
+        key(KeyCode::Char('z'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(textarea.form().unwrap().fields[0].value, "a界b");
+
+    let mut appended = make_form(FormField::multiline("body", "Body", "ab"));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &appended, 80, 18);
+    let _ = drive(
+        &mut session,
+        &mut appended,
+        &geometry,
+        key(KeyCode::End, KeyModifiers::NONE),
+    );
+    let _ = drive(
+        &mut session,
+        &mut appended,
+        &geometry,
+        key(KeyCode::Char('Q'), KeyModifiers::NONE),
+    );
+    let _ = drive(
+        &mut session,
+        &mut appended,
+        &geometry,
+        Event::Paste("X".to_owned()),
+    );
+    assert_eq!(appended.form().unwrap().fields[0].value, "abQX");
+    let _ = drive(
+        &mut session,
+        &mut appended,
+        &geometry,
+        key(KeyCode::Char('z'), KeyModifiers::CONTROL),
+    );
+    assert_eq!(
+        appended.form().unwrap().fields[0].value,
+        "abQ",
+        "undo after an unselected paste also removed the preceding edit"
+    );
+
+    let mut scrolled = make_form(FormField::multiline("body", "Body", "top"));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &scrolled, 24, 5);
+    let _ = drive(
+        &mut session,
+        &mut scrolled,
+        &geometry,
+        Event::Paste("\none\ntwo\nthree\nfour\nPASTE_SENTINEL".to_owned()),
+    );
+    let (terminal, _) = draw(&mut session, &scrolled, 24, 5);
+    assert!(
+        buffer_text(terminal.backend().buffer()).contains("PASTE_SENTINEL"),
+        "the Form did not follow the cursor after a multiline paste"
+    );
+}
+
+#[test]
+fn generic_form_arm_cannot_survive_a_release_owned_by_the_global_footer() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Edit entry".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: vec![
+            FormField::text("name", "Name", "demo"),
+            FormField::text("description", "Description", ""),
+        ],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 80, 18);
+    let field = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(1))
+        .expect("the second Form field must have a hit")
+        .rect;
+    let footer = geometry
+        .hits
+        .iter()
+        .find(|hit| matches!(hit.action, HitTarget::Command(_)))
+        .expect("the global footer must have a hit")
+        .rect;
+
+    assert_eq!(
+        session.handle_event(mouse(field.x, field.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), footer.x, footer.y),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored
+    );
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), field.x, field.y),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored,
+        "a release in another owner must cancel the Form arm"
+    );
+}
+
+#[test]
+fn resize_cancels_a_generic_form_arm_before_the_release() {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Edit entry".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: vec![
+            FormField::text("name", "Name", "demo"),
+            FormField::text("description", "Description", ""),
+        ],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    let mut session = TuiSession::default();
+    let (_, geometry) = draw(&mut session, &state, 80, 18);
+    let field = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(1))
+        .unwrap()
+        .rect;
+    assert_eq!(
+        session.handle_event(mouse(field.x, field.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        session.handle_event(Event::Resize(70, 16), &state, &geometry),
+        EventHandling::Ignored
+    );
+
+    let (_, resized) = draw(&mut session, &state, 70, 16);
+    let field = resized
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(1))
+        .unwrap()
+        .rect;
+    assert_eq!(
+        session.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), field.x, field.y),
+            &state,
+            &resized,
+        ),
+        EventHandling::Ignored,
+        "a resize must cancel a pointer arm from the old geometry"
     );
 }
 
@@ -566,6 +1625,73 @@ fn focus_auto_scrolls_a_long_form_and_wheel_scroll_uses_the_shared_viewport() {
     assert_eq!(handling, EventHandling::Consumed);
     let (_, after) = draw(&mut session, &state, 70, 18);
     assert!(after.first_visible < geometry.first_visible);
+}
+
+#[test]
+fn resize_only_keeps_the_focused_run_control_visible() {
+    let declarations = (0..16)
+        .map(|index| ParamDecl::new(format!("run-field-{index}")))
+        .collect::<Vec<_>>();
+    let form = RunFormView::from_declarations(
+        "resize-run",
+        "Resize run",
+        &declarations,
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    );
+    let mut state = state_with_form(form);
+    state.update(Action::FocusField(15));
+    let mut session = TuiSession::default();
+    let (large, large_geometry) = draw(&mut session, &state, 70, 100);
+    assert_eq!(large_geometry.first_visible, 0);
+    assert!(buffer_text(large.backend().buffer()).contains("run-field-15"));
+
+    let (small, small_geometry) = draw(&mut session, &state, 70, 18);
+    let rendered = buffer_text(small.backend().buffer());
+    assert!(
+        small_geometry.first_visible > 0 && rendered.contains("run-field-15"),
+        "resize-only reflow hid the focused Run control: offset={} {rendered}",
+        small_geometry.first_visible
+    );
+}
+
+#[test]
+fn resize_only_keeps_the_focused_generic_form_control_visible() {
+    let fields = (0..16)
+        .map(|index| {
+            FormField::text(
+                format!("generic-field-{index}"),
+                format!("Generic field {index}"),
+                "",
+            )
+        })
+        .collect();
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Resize form".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields,
+        focused: 15,
+        submit_label: "Save".to_owned(),
+    })));
+    let mut session = TuiSession::default();
+    let (large, large_geometry) = draw(&mut session, &state, 70, 100);
+    assert_eq!(large_geometry.first_visible, 0);
+    assert!(buffer_text(large.backend().buffer()).contains("Generic field 15"));
+
+    let (small, small_geometry) = draw(&mut session, &state, 70, 18);
+    let rendered = buffer_text(small.backend().buffer());
+    assert!(
+        small_geometry.first_visible > 0 && rendered.contains("Generic field 15"),
+        "resize-only reflow hid the focused generic Form control: offset={} {rendered}",
+        small_geometry.first_visible
+    );
 }
 
 #[test]
@@ -674,7 +1800,7 @@ fn ctrl_t_token_menu_localizes_every_row_in_simplified_chinese() {
     );
 
     let (terminal, _) = draw_in_locale(&mut session, &state, 100, 24, Locale::ZhCn);
-    let rendered = buffer_text(terminal.backend().buffer());
+    let rendered = visible_buffer_text(terminal.backend().buffer());
     // Ratatui's TestBackend exposes the continuation cell of each wide glyph as a space.
     let compact = rendered.replace(' ', "");
     for translated in [
@@ -804,7 +1930,7 @@ fn token_list_picker_has_keyboard_and_mouse_insertion_paths() {
         "Directory at run time (changes with where you run)",
     );
     assert_eq!(
-        drive(&mut session, &mut state, &geometry, mouse(10, row)),
+        drive_click(&mut session, &mut state, &geometry, 10, row),
         EventHandling::Action(Action::SetRunFieldValueAndCloseModal {
             field: 0,
             value: "prefix {cwd}".to_owned(),
@@ -830,6 +1956,126 @@ fn token_list_picker_has_keyboard_and_mouse_insertion_paths() {
             field: 0,
             value: "prefix {cwd}{cwd}".to_owned(),
         })
+    );
+}
+
+#[test]
+fn run_modal_and_global_footer_clicks_cancel_the_previous_owner() {
+    let form = text_run_form("prefix ").with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: Some("/home/alice".to_owned()),
+            env: BTreeMap::new(),
+            today: "2026-08-08".to_owned(),
+            now: "12-00-00".to_owned(),
+        },
+    });
+    let mut state = state_with_form(form);
+    state.update(Action::OpenRunTokenMenuFor(0));
+
+    let targets = |session: &mut TuiSession| {
+        let (terminal, geometry) = draw(session, &state, 100, 28);
+        let modal = buffer_position(
+            terminal.backend().buffer(),
+            "Directory at run time (changes with where you run)",
+        );
+        let footer = geometry
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, HitTarget::Command(_)))
+            .expect("the token modal must keep one global footer action visible")
+            .rect;
+        (geometry, modal, footer)
+    };
+
+    let mut modal_first = TuiSession::default();
+    let (geometry, modal, footer) = targets(&mut modal_first);
+    assert_eq!(
+        modal_first.handle_event(mouse(modal.0, modal.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        modal_first.handle_event(mouse(footer.x, footer.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert!(matches!(
+        modal_first.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), footer.x, footer.y),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(_)
+    ));
+    assert_eq!(
+        modal_first.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), modal.0, modal.1),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored,
+        "a late token-modal Up survived a completed global-footer click"
+    );
+
+    let mut footer_first = TuiSession::default();
+    let (geometry, modal, footer) = targets(&mut footer_first);
+    assert_eq!(
+        footer_first.handle_event(mouse(footer.x, footer.y), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        footer_first.handle_event(mouse(modal.0, modal.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert!(matches!(
+        footer_first.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), modal.0, modal.1),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Action(Action::SetRunFieldValueAndCloseModal { field: 0, .. })
+    ));
+    assert_eq!(
+        footer_first.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), footer.x, footer.y),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored,
+        "a late global-footer Up survived the token modal's click"
+    );
+
+    let mut wheeled = TuiSession::default();
+    let (geometry, modal, _) = targets(&mut wheeled);
+    assert_eq!(
+        wheeled.handle_event(mouse(modal.0, modal.1), &state, &geometry),
+        EventHandling::Consumed
+    );
+    assert_eq!(
+        wheeled.handle_event(
+            mouse_with_kind(MouseEventKind::ScrollDown, modal.0, modal.1),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Consumed
+    );
+    let (terminal, geometry) = draw(&mut wheeled, &state, 100, 28);
+    let modal = buffer_position(
+        terminal.backend().buffer(),
+        "Directory at run time (changes with where you run)",
+    );
+    assert_eq!(
+        wheeled.handle_event(
+            mouse_with_kind(MouseEventKind::Up(MouseButton::Left), modal.0, modal.1),
+            &state,
+            &geometry,
+        ),
+        EventHandling::Ignored,
+        "wheel input must cancel the token-modal arm"
     );
 }
 
@@ -897,7 +2143,7 @@ fn environment_picker_fuzzy_filters_and_accepts_keyboard_or_mouse_values() {
     ));
     let (terminal, geometry) = draw(&mut session, &state, 80, 24);
     let home_row = row_containing(terminal.backend().buffer(), "HOME");
-    drive(&mut session, &mut state, &geometry, mouse(12, home_row));
+    drive_click(&mut session, &mut state, &geometry, 12, home_row);
     assert_eq!(
         state.run_form().unwrap().fields()[0].control.value(),
         "{env:HOME}"
@@ -1046,7 +2292,7 @@ fn run_file_picker_uses_the_shared_explorer_for_keyboard_mouse_and_missing_roots
     );
     let (terminal, geometry) = draw(&mut session, &state, 84, 26);
     let beta_row = row_containing(terminal.backend().buffer(), "beta file[1].txt");
-    drive(&mut session, &mut state, &geometry, mouse(12, beta_row));
+    drive_click(&mut session, &mut state, &geometry, 12, beta_row);
     assert_eq!(
         state.run_form().unwrap().fields()[0].control.value(),
         "beta file[1].txt"
@@ -1236,8 +2482,12 @@ fn every_visible_file_picker_footer_action_has_a_key_and_mouse_twin_at_every_siz
                     .iter()
                     .find(|candidate| candidate.target == hit.target)
                     .expect("the same typed target is visible on the same footer page");
-                let mouse_result = mouse_session
-                    .handle_event(mouse(mouse_hit.area.x, mouse_hit.area.y), &mouse_geometry);
+                let mouse_result = file_click(
+                    &mut mouse_session,
+                    &mouse_geometry,
+                    mouse_hit.area.x,
+                    mouse_hit.area.y,
+                );
                 assert_eq!(
                     mouse_result, key_result,
                     "file-picker {:?} key and mouse diverged at {width}x{height}",
@@ -1438,6 +2688,719 @@ fn a_short_run_form_window_renders_a_scroll_affordance() {
     );
 }
 
+#[test]
+fn run_exact_fit_and_one_row_overflow_own_only_a_real_scrollbar_column() {
+    let state = state_with_form(text_run_form("abcdef"));
+
+    // This two-field form takes ten content rows at this width. At 80x13, the Run panel has
+    // exactly ten inner rows. It must keep the full 78-column inner width.
+    let mut exact_session = TuiSession::default();
+    let (exact, exact_geometry) = draw(&mut exact_session, &state, 80, 13);
+    assert_eq!(
+        (
+            exact_geometry.rows.x,
+            exact_geometry.rows.y,
+            exact_geometry.rows.width,
+            exact_geometry.rows.height,
+        ),
+        (1, 1, 78, 10),
+    );
+    let exact_fields = exact_geometry
+        .hits
+        .iter()
+        .filter(|hit| matches!(hit.action, HitTarget::FocusField(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(exact_fields.len(), 2, "an exact fit clipped a field");
+    assert!(
+        exact_fields
+            .iter()
+            .all(|hit| hit.rect.width == 78 && hit.rect.height == 3),
+        "an exact fit reserved a ghost scrollbar column: {exact_fields:?}",
+    );
+    assert!(
+        exact_fields[0]
+            .rect
+            .contains(exact.backend().cursor_position()),
+        "the exact-fit input lost its terminal cursor",
+    );
+    let exact_right_edge = (exact_geometry.rows.y..exact_geometry.rows.bottom())
+        .map(|row| {
+            exact.backend().buffer()[(exact_geometry.rows.right() - 1, row)]
+                .symbol()
+                .to_owned()
+        })
+        .collect::<String>();
+    assert!(
+        !exact_right_edge.contains('█')
+            && !exact_right_edge.contains('▲')
+            && !exact_right_edge.contains('▼'),
+        "an exact fit painted a ghost scrollbar: {exact_right_edge:?}",
+    );
+    let focused_right = exact_fields[0].rect.right() - 1;
+    let focused_edge = (exact_fields[0].rect.y..exact_fields[0].rect.bottom())
+        .map(|row| &exact.backend().buffer()[(focused_right, row)])
+        .collect::<Vec<_>>();
+    assert_eq!(
+        focused_edge
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>(),
+        vec!["┐", "│", "┘"],
+        "the exact-fit scrollbar call changed the focused input edge",
+    );
+    assert!(
+        focused_edge.iter().all(|cell| cell.fg == ACCENT),
+        "the exact-fit scrollbar call patched the focused input style: {focused_edge:?}",
+    );
+
+    // One fewer terminal row leaves nine inner rows. The final three-row control is clipped by
+    // one row, so it must have no painted control or pointer hit. A real scrollbar owns column 78.
+    let mut overflow_session = TuiSession::default();
+    let (overflow, overflow_geometry) = draw(&mut overflow_session, &state, 80, 12);
+    assert_eq!(
+        (
+            overflow_geometry.rows.x,
+            overflow_geometry.rows.y,
+            overflow_geometry.rows.width,
+            overflow_geometry.rows.height,
+        ),
+        (1, 1, 77, 9),
+    );
+    let overflow_fields = overflow_geometry
+        .hits
+        .iter()
+        .filter(|hit| matches!(hit.action, HitTarget::FocusField(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        overflow_fields.len(),
+        1,
+        "a clipped control published a ghost pointer hit: {overflow_fields:?}",
+    );
+    assert_eq!(overflow_fields[0].rect.width, 77);
+    assert!(
+        overflow_fields[0]
+            .rect
+            .contains(overflow.backend().cursor_position()),
+        "the overflowing form moved its cursor into the scrollbar column",
+    );
+    let scrollbar = (overflow_geometry.rows.y..overflow_geometry.rows.bottom())
+        .map(|row| {
+            overflow.backend().buffer()[(overflow_geometry.rows.right(), row)]
+                .symbol()
+                .to_owned()
+        })
+        .collect::<String>();
+    assert!(
+        scrollbar.contains('█') || scrollbar.contains('▲') || scrollbar.contains('▼'),
+        "the reserved column has no scroll affordance: {scrollbar:?}",
+    );
+    assert!(
+        (overflow_geometry.rows.y..overflow_geometry.rows.bottom()).any(|row| {
+            let cell = &overflow.backend().buffer()[(overflow_geometry.rows.right(), row)];
+            matches!(cell.symbol(), "█" | "▲" | "▼") && cell.fg == Color::DarkGray
+        }),
+        "the scrollbar lost its muted visual role",
+    );
+}
+
+#[test]
+fn run_field_chips_that_exactly_fit_stay_on_the_label_row_and_keep_hits() {
+    let mut source = ParamDecl::new("src");
+    source.parameter_type = ParameterType::Path;
+    source.default = Some(ParameterValue::String("default.txt".to_owned()));
+    let form = RunFormView::from_declarations(
+        "paths",
+        "Paths",
+        &[source],
+        &BTreeMap::from([("src".to_owned(), "chosen.txt".to_owned())]),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: None,
+            env: BTreeMap::new(),
+            today: "2026-08-28".to_owned(),
+            now: "12-00-00".to_owned(),
+        },
+    });
+    let state = state_with_form(form);
+    let mut session = TuiSession::default();
+    let (terminal, geometry) = draw(&mut session, &state, 47, 40);
+    assert_eq!(geometry.rows.width, 45);
+    let label_row = row_containing(terminal.backend().buffer(), "src");
+    let chip_hits = geometry
+        .hits
+        .iter()
+        .filter(|hit| {
+            matches!(
+                hit.action,
+                HitTarget::RunFieldCommand {
+                    field: 0,
+                    command: RunFieldCommand::BrowsePath
+                        | RunFieldCommand::InsertValue
+                        | RunFieldCommand::ResetDefault,
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(chip_hits.len(), 3, "a field chip lost its pointer hit");
+    assert!(
+        chip_hits
+            .iter()
+            .all(|hit| hit.rect.height == 1 && hit.rect.y == label_row),
+        "an exactly fitting chip wrapped off the label row: {chip_hits:?}",
+    );
+    assert!(
+        chip_hits.iter().all(|hit| {
+            (hit.rect.x..hit.rect.right()).any(|column| {
+                let cell = &terminal.backend().buffer()[(column, hit.rect.y)];
+                cell.fg == ACCENT && cell.bg == SELECT_BG
+            })
+        }),
+        "a Run chip lost its interactive color: {chip_hits:?}"
+    );
+    let reset = chip_hits
+        .iter()
+        .find(|hit| {
+            matches!(
+                hit.action,
+                HitTarget::RunFieldCommand {
+                    command: RunFieldCommand::ResetDefault,
+                    ..
+                }
+            )
+        })
+        .expect("reset chip hit");
+    assert_eq!(
+        reset.rect.right(),
+        geometry.rows.right(),
+        "the exact-fit contract must exercise the right boundary",
+    );
+
+    let mut overflow_session = TuiSession::default();
+    let (overflow, overflow_geometry) = draw(&mut overflow_session, &state, 46, 40);
+    let label_row = row_containing(overflow.backend().buffer(), "src");
+    let overflow_hits = overflow_geometry
+        .hits
+        .iter()
+        .filter(|hit| matches!(hit.action, HitTarget::RunFieldCommand { field: 0, .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(overflow_hits.len(), 3);
+    assert!(
+        overflow_hits.iter().any(|hit| hit.rect.y == label_row)
+            && overflow_hits.iter().any(|hit| hit.rect.y == label_row + 1),
+        "one overflowing chip did not wrap after the first row: {overflow_hits:?}",
+    );
+
+    let mut zero_session = TuiSession::default();
+    let (_, zero_geometry) = draw(&mut zero_session, &state, 2, 40);
+    assert_eq!(zero_geometry.rows.width, 0);
+    assert!(
+        zero_geometry.hits.iter().all(|hit| !matches!(
+            hit.action,
+            HitTarget::FocusField(_) | HitTarget::RunFieldCommand { .. }
+        )),
+        "a zero-width Run row fabricated a control hit",
+    );
+}
+
+#[test]
+fn a_first_run_chip_wraps_intact_after_a_long_cjk_label() {
+    let mut source = ParamDecl::new("source");
+    source.prompt = "非常非常長的來源檔案路徑".to_owned();
+    source.parameter_type = ParameterType::Path;
+    let form = RunFormView::from_declarations(
+        "cjk-path",
+        "CJK path",
+        &[source],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_context(RunFormContext {
+        entry_kind: "python".to_owned(),
+        path: Some(RunPathContext {
+            workdir: "/work".to_owned(),
+            invoke_cwd: "/invoke".to_owned(),
+        }),
+        tokens: TokenContext {
+            cwd: "/invoke".to_owned(),
+            home: None,
+            env: BTreeMap::new(),
+            today: "2026-08-28".to_owned(),
+            now: "12-00-00".to_owned(),
+        },
+    });
+    let state = state_with_form(form);
+    let mut session = TuiSession::default();
+    let (terminal, geometry) = draw_in_locale(&mut session, &state, 24, 30, Locale::ZhTw);
+    let rendered = visible_buffer_text(terminal.backend().buffer());
+    assert!(
+        rendered.contains("非常非常長"),
+        "the CJK field label was not visible: {rendered:?}"
+    );
+    assert!(
+        rendered.contains("瀏覽"),
+        "the CJK browse chip was not visible: {rendered:?}"
+    );
+    let label_row = row_containing(terminal.backend().buffer(), "非常非常長");
+    let browse_row = row_containing(terminal.backend().buffer(), "瀏覽");
+    assert_eq!(
+        browse_row,
+        label_row + 1,
+        "the first chip was clipped on the long label row"
+    );
+    let browse = geometry
+        .hits
+        .iter()
+        .find(|hit| {
+            matches!(
+                hit.action,
+                HitTarget::RunFieldCommand {
+                    field: 0,
+                    command: RunFieldCommand::BrowsePath,
+                }
+            )
+        })
+        .expect("browse chip hit");
+    assert_eq!(browse.rect.y, browse_row);
+    assert!(
+        browse.rect.width >= 9,
+        "the browse hit was clipped: {browse:?}"
+    );
+}
+
+#[test]
+fn preset_empty_state_appears_only_for_parameter_forms_without_saved_presets() {
+    let hint = "none yet — fill the form and press Ctrl+S to save one";
+
+    let no_parameters = RunFormView::from_declarations(
+        "empty",
+        "Empty",
+        &[],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    );
+    let mut empty_session = TuiSession::default();
+    let empty = state_with_form(no_parameters);
+    let (terminal, _) = draw(&mut empty_session, &empty, 100, 30);
+    assert!(
+        !buffer_text(terminal.backend().buffer()).contains(hint),
+        "a form without parameters advertised parameter presets",
+    );
+
+    let declaration = ParamDecl::new("value");
+    let presets = BTreeMap::from([(
+        "saved".to_owned(),
+        BTreeMap::from([("value".to_owned(), "preset value".to_owned())]),
+    )]);
+    let with_saved = RunFormView::from_declarations(
+        "saved",
+        "Saved",
+        core::slice::from_ref(&declaration),
+        &BTreeMap::new(),
+        &[],
+        "",
+        &presets,
+        "",
+    );
+    let mut saved_session = TuiSession::default();
+    let saved = state_with_form(with_saved);
+    let (terminal, _) = draw(&mut saved_session, &saved, 100, 30);
+    let rendered = buffer_text(terminal.backend().buffer());
+    assert!(
+        rendered.contains("Preset"),
+        "the form with saved presets lost its picker label: {rendered:?}",
+    );
+    assert!(
+        !rendered.contains(hint),
+        "a real preset picker also painted the empty-preset notice",
+    );
+
+    let without_saved = RunFormView::from_declarations(
+        "new",
+        "New",
+        &[declaration],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    );
+    let mut new_session = TuiSession::default();
+    let new = state_with_form(without_saved);
+    let (terminal, _) = draw(&mut new_session, &new, 100, 30);
+    assert!(buffer_text(terminal.backend().buffer()).contains(hint));
+}
+
+#[test]
+fn run_control_height_tracks_typed_multiline_and_packed_radio_content() {
+    let multiline = with_multiline_run_field(text_run_form("first\nsecond"), 0);
+    let mut multiline_session = TuiSession::default();
+    let multiline = state_with_form(multiline);
+    let (_, geometry) = draw(&mut multiline_session, &multiline, 40, 40);
+    let field = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(0))
+        .expect("multiline field hit");
+    assert_eq!(field.rect.height, 6);
+
+    let mut secret_value = serde_json::to_value(text_run_form("first\nsecond")).unwrap();
+    secret_value["fields"][0]["control"]["text"]["multiline"] = true.into();
+    secret_value["fields"][0]["control"]["text"]["secret"] = true.into();
+    let secret_form: RunFormView = serde_json::from_value(secret_value).unwrap();
+    let mut secret_session = TuiSession::default();
+    let secret = state_with_form(secret_form);
+    let (_, geometry) = draw(&mut secret_session, &secret, 40, 40);
+    let field = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(0))
+        .expect("secret field hit");
+    assert_eq!(field.rect.height, 3, "a secret field became a textarea");
+
+    let state = state_with_form(form());
+    let mut exact_session = TuiSession::default();
+    let (_, exact) = draw(&mut exact_session, &state, 15, 40);
+    let radio = exact
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(3))
+        .expect("radio field hit");
+    assert_eq!(radio.rect.height, 1);
+    let mut wrapped_session = TuiSession::default();
+    let (_, wrapped) = draw(&mut wrapped_session, &state, 14, 40);
+    let radio = wrapped
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(3))
+        .expect("wrapped radio field hit");
+    assert_eq!(radio.rect.height, 2);
+}
+
+#[test]
+fn a_focused_run_textarea_keeps_its_cursor_and_last_row_in_a_short_viewport() {
+    let value = (0..24)
+        .map(|index| format!("line-{index}"))
+        .chain(core::iter::once("TAIL".to_owned()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let form = RunFormView::from_declarations(
+        "textarea",
+        "Textarea",
+        &[ParamDecl::new("prefix"), ParamDecl::new("body")],
+        &BTreeMap::from([
+            ("prefix".to_owned(), "fixed".to_owned()),
+            ("body".to_owned(), value),
+        ]),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    );
+    let form = with_multiline_run_field(form, 1);
+    let mut state = state_with_form(form);
+    state.update(Action::FocusField(1));
+    let mut session = TuiSession::default();
+    let (terminal, geometry) = draw(&mut session, &state, 30, 6);
+    assert!(
+        geometry.rows.height < 6,
+        "the fixture must clip the six-row textarea: {:?}",
+        geometry.rows
+    );
+    let field = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(1))
+        .expect("the clipped focused textarea must keep a visible hit");
+    assert!(
+        field.rect.height > 0 && field.rect.height < 6,
+        "the textarea did not publish its real visible band: {field:?}"
+    );
+    assert!(
+        buffer_text(terminal.backend().buffer()).contains("TAIL"),
+        "cursor alignment hid the textarea's last row"
+    );
+    assert!(
+        (field.rect.y..field.rect.bottom()).any(|row| {
+            (field.rect.x..field.rect.right()).any(|column| {
+                let cell = &terminal.backend().buffer()[(column, row)];
+                cell.fg == Color::Black && cell.bg == ACCENT
+            })
+        }),
+        "the clipped textarea lost its visible caret cell"
+    );
+
+    for _ in 0..25 {
+        assert_eq!(
+            session.handle_event(key(KeyCode::Up, KeyModifiers::NONE), &state, &geometry,),
+            EventHandling::Consumed,
+        );
+    }
+    let (top, top_geometry) = draw(&mut session, &state, 30, 6);
+    let top_field = top_geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(1))
+        .expect("the top-aligned textarea must keep a visible hit");
+    assert!(
+        buffer_text(top.backend().buffer()).contains("line-0"),
+        "cursor movement did not realign the outer textarea band"
+    );
+    assert!(
+        (top_field.rect.y..top_field.rect.bottom()).any(|row| {
+            (top_field.rect.x..top_field.rect.right()).any(|column| {
+                let cell = &top.backend().buffer()[(column, row)];
+                cell.fg == Color::Black && cell.bg == ACCENT
+            })
+        }),
+        "the top-aligned textarea lost its visible caret cell"
+    );
+
+    for _ in 0..25 {
+        assert_eq!(
+            session.handle_event(
+                key(KeyCode::Down, KeyModifiers::NONE),
+                &state,
+                &top_geometry,
+            ),
+            EventHandling::Consumed,
+        );
+    }
+    let (bottom, bottom_geometry) = draw(&mut session, &state, 30, 6);
+    let bottom_field = bottom_geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(1))
+        .expect("the bottom-aligned textarea must keep a visible hit");
+    assert!(
+        buffer_text(bottom.backend().buffer()).contains("TAIL"),
+        "reverse cursor movement did not realign the outer textarea band"
+    );
+    assert!(
+        (bottom_field.rect.y..bottom_field.rect.bottom()).any(|row| {
+            (bottom_field.rect.x..bottom_field.rect.right()).any(|column| {
+                let cell = &bottom.backend().buffer()[(column, row)];
+                cell.fg == Color::Black && cell.bg == ACCENT
+            })
+        }),
+        "the bottom-realigned textarea lost its visible caret cell"
+    );
+}
+
+#[test]
+fn a_form_textarea_beyond_terminal_coordinates_renders_only_its_visible_tail() {
+    let mut value = "row\n".repeat(65_536);
+    value.push_str("VISIBLE-TAIL");
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Large form".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: vec![FormField::multiline("body", "Body", value.clone())],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    let mut session = TuiSession::default();
+
+    let (terminal, geometry) = draw(&mut session, &state, 36, 10);
+    let field = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(0))
+        .expect("the visible textarea band must remain clickable");
+    let buffer = terminal.backend().buffer();
+
+    assert!(
+        buffer_text(buffer).contains("VISIBLE-TAIL"),
+        "the tail at a virtual row above u16::MAX is not visible"
+    );
+    assert!(
+        field.rect.height > 0
+            && field.rect.y >= geometry.rows.y
+            && field.rect.bottom() <= geometry.rows.bottom(),
+        "the textarea published a ghost hit outside its viewport: {field:?}"
+    );
+    assert!(
+        (field.rect.y..field.rect.bottom()).any(|row| {
+            (field.rect.x..field.rect.right()).any(|column| {
+                let cell = &buffer[(column, row)];
+                cell.fg == Color::Black && cell.bg == ACCENT
+            })
+        }),
+        "the visible tail lost its focused caret style"
+    );
+    assert_eq!(
+        state.form().unwrap().fields[0].value,
+        value,
+        "rendering must not truncate the model value"
+    );
+}
+
+#[test]
+fn a_fixed_height_run_textarea_can_show_a_tail_beyond_terminal_coordinates() {
+    let mut value = "row\n".repeat(65_536);
+    value.push_str("RUN-VISIBLE-TAIL");
+    let form = with_multiline_run_field(text_run_form(&value), 0);
+    let state = state_with_form(form);
+    let mut session = TuiSession::default();
+
+    let (terminal, geometry) = draw(&mut session, &state, 36, 10);
+    let field = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(0))
+        .expect("the fixed-height textarea must remain clickable");
+    let buffer = terminal.backend().buffer();
+
+    assert!(
+        buffer_text(buffer).contains("RUN-VISIBLE-TAIL"),
+        "the fixed-height editor did not expose its large virtual tail"
+    );
+    assert!(
+        field.rect.height > 0
+            && field.rect.y >= geometry.rows.y
+            && field.rect.bottom() <= geometry.rows.bottom(),
+        "the fixed-height editor published a ghost hit: {field:?}"
+    );
+    assert!(
+        (field.rect.y..field.rect.bottom()).any(|row| {
+            (field.rect.x..field.rect.right()).any(|column| {
+                let cell = &buffer[(column, row)];
+                cell.fg == Color::Black && cell.bg == ACCENT
+            })
+        }),
+        "the large fixed-height editor lost its focused caret style"
+    );
+}
+
+#[test]
+fn run_radio_options_wrap_only_after_the_exact_right_boundary() {
+    let state = state_with_form(form());
+    let mut exact_session = TuiSession::default();
+    let (exact, exact_geometry) = draw(&mut exact_session, &state, 15, 40);
+    assert_eq!(exact_geometry.rows.width, 13);
+    let (_json_column, json_row) = buffer_position(exact.backend().buffer(), "json");
+    let (yaml_column, yaml_row) = buffer_position(exact.backend().buffer(), "yaml");
+    assert_eq!(json_row, yaml_row, "an exactly fitting option wrapped");
+    let json = &exact.backend().buffer()[(_json_column, json_row)];
+    assert_eq!((json.fg, json.bg), (SELECT_FG, SELECT_BG));
+    assert_eq!(
+        yaml_column.saturating_sub(1) + 6,
+        exact_geometry.rows.right(),
+        "the exact-fit contract must exercise the right boundary",
+    );
+    assert_eq!(
+        session_click(
+            &mut exact_session,
+            &state,
+            &exact_geometry,
+            yaml_column,
+            yaml_row,
+        ),
+        EventHandling::Action(Action::SelectFieldOption {
+            field: 3,
+            value: "yaml".to_owned(),
+        }),
+    );
+
+    let mut wrapped_session = TuiSession::default();
+    let (wrapped, wrapped_geometry) = draw(&mut wrapped_session, &state, 14, 40);
+    assert_eq!(wrapped_geometry.rows.width, 12);
+    let (_, json_row) = buffer_position(wrapped.backend().buffer(), "json");
+    let (yaml_column, yaml_row) = buffer_position(wrapped.backend().buffer(), "yaml");
+    assert_eq!(yaml_row, json_row + 1, "an overflowing option did not wrap");
+    assert_eq!(
+        session_click(
+            &mut wrapped_session,
+            &state,
+            &wrapped_geometry,
+            yaml_column,
+            yaml_row,
+        ),
+        EventHandling::Action(Action::SelectFieldOption {
+            field: 3,
+            value: "yaml".to_owned(),
+        }),
+    );
+}
+
+#[test]
+fn run_select_uses_distinct_unfocused_focused_and_open_styles() {
+    let mut state = state_with_form(form());
+    let mut session = TuiSession::default();
+    let (unfocused, geometry) = draw(&mut session, &state, 60, 30);
+    let runner = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(0))
+        .expect("runner picker hit")
+        .rect;
+    assert!(
+        (runner.x..runner.right()).any(|column| {
+            let cell = &unfocused.backend().buffer()[(column, runner.y)];
+            matches!(cell.symbol(), "╭" | "┌" | "─" | "╮" | "┐") && cell.fg == BOX_DIM
+        }),
+        "the unfocused picker lost its dim border"
+    );
+
+    state.update(Action::FocusField(0));
+    let (focused, geometry) = draw(&mut session, &state, 60, 30);
+    let runner = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::FocusField(0))
+        .expect("focused runner picker hit")
+        .rect;
+    assert!(
+        (runner.x..runner.right()).any(|column| {
+            let cell = &focused.backend().buffer()[(column, runner.y)];
+            matches!(cell.symbol(), "╭" | "┌" | "─" | "╮" | "┐") && cell.fg == ACCENT
+        }),
+        "the focused picker lost its accent border"
+    );
+    assert_eq!(
+        drive(
+            &mut session,
+            &mut state,
+            &geometry,
+            key(KeyCode::Enter, KeyModifiers::NONE),
+        ),
+        EventHandling::Consumed
+    );
+    let (open, _) = draw(&mut session, &state, 60, 30);
+    let dropdown_corner = &open.backend().buffer()[(runner.x, runner.bottom())];
+    assert_eq!(dropdown_corner.symbol(), "┌");
+    assert_eq!(dropdown_corner.fg, ACCENT);
+    let highlighted = &open.backend().buffer()[(runner.x + 1, runner.bottom() + 1)];
+    assert_eq!((highlighted.fg, highlighted.bg), (SELECT_FG, SELECT_BG));
+    assert!(
+        open.backend()
+            .buffer()
+            .content()
+            .iter()
+            .any(|cell| cell.fg == SELECT_FG && cell.bg == SELECT_BG),
+        "the open picker lost its highlighted option"
+    );
+}
+
 /// The footer must advertise the arrow keys, which already move between fields.
 ///
 /// Version 0.4's shared nav chip is two key-only pills, `Tab/↓` and `Shift+Tab/↑`
@@ -1615,7 +3578,7 @@ fn central_session_run_control_event_matrix_keeps_widget_priority() {
         &geometry,
     );
     for hit in &geometry.hits {
-        let _ = session.handle_event(mouse(hit.rect.x, hit.rect.y), &state, &geometry);
+        let _ = session_click(&mut session, &state, &geometry, hit.rect.x, hit.rect.y);
     }
 }
 
@@ -1660,7 +3623,7 @@ fn central_session_picker_textarea_and_generic_form_matrix_uses_public_screens()
     }
     let (_, open) = draw(&mut session, &state, 54, 16);
     for hit in &open.hits {
-        let _ = session.handle_event(mouse(hit.rect.x, hit.rect.y), &state, &open);
+        let _ = session_click(&mut session, &state, &open, hit.rect.x, hit.rect.y);
     }
     state.update(Action::FocusField(0));
     let (_, picker_geometry) = draw(&mut session, &state, 54, 16);
@@ -1690,6 +3653,15 @@ fn central_session_picker_textarea_and_generic_form_matrix_uses_public_screens()
             &picker_geometry,
         ),
         EventHandling::Consumed
+    );
+    let _ = session.handle_event(
+        mouse_with_kind(
+            MouseEventKind::Up(MouseButton::Left),
+            picker_hit.rect.x,
+            picker_hit.rect.y,
+        ),
+        &state,
+        &picker_geometry,
     );
     assert!(buffer_text(terminal.backend().buffer()).contains('a'));
     state.update(Action::FocusField(1));
@@ -1770,6 +3742,15 @@ fn central_session_picker_textarea_and_generic_form_matrix_uses_public_screens()
     }
     for hit in &generic_geometry.hits {
         let _ = session.handle_event(mouse(hit.rect.x, hit.rect.y), &generic, &generic_geometry);
+        let _ = session.handle_event(
+            mouse_with_kind(
+                MouseEventKind::Up(MouseButton::Left),
+                hit.rect.x,
+                hit.rect.y,
+            ),
+            &generic,
+            &generic_geometry,
+        );
     }
     generic.update(Action::FocusField(1));
     let (_, generic_textarea_geometry) = draw(&mut session, &generic, 24, 8);
@@ -1933,7 +3914,7 @@ fn central_session_serialized_run_contract_covers_notes_validation_and_tiny_layo
     }
     let (radio_x, radio_y) = buffer_position(terminal.backend().buffer(), "first-long-label");
     assert!(matches!(
-        session.handle_event(mouse(radio_x, radio_y), &state, &geometry),
+        session_click(&mut session, &state, &geometry, radio_x, radio_y),
         EventHandling::Action(Action::SelectFieldOption { .. })
     ));
     assert_eq!(
