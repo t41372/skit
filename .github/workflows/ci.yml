@@ -95,7 +95,7 @@ jobs:
         shell: bash
         run: echo "SKIT_REQUIRE_FISH_RUNTIME=1" >> "$GITHUB_ENV"
       - name: Run all tests
-        run: cargo test --locked --workspace --all-targets --all-features
+        run: cargo test --locked --workspace --all-targets --all-features --no-fail-fast
       - name: Run the native Windows uv durability gate
         if: runner.os == 'Windows'
         run: |

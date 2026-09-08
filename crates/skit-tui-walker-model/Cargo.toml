@@ -1,0 +1,28 @@
+[package]
+name = "skit-tui-walker-model"
+description = "Product-coupled oracles for the skit TUI model walker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+proptest.workspace = true
+ratatui-core.workspace = true
+ratatui-crossterm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+skit-i18n.workspace = true
+skit-tui.workspace = true
+skit-ui.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+skit-application.workspace = true
+skit-domain.workspace = true
+
+[lints]
+workspace = true

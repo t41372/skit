@@ -1,13 +1,16 @@
 //! Linux system-call census of the warm JSON list path.
 
+#[cfg(target_os = "linux")]
 use std::{collections::BTreeMap, fs};
 
+#[cfg(target_os = "linux")]
 use crate::{
-    Metric, SuiteKind, SuiteOutput, SuitePlan,
+    Metric,
     parsers::{FILE_OP_SYSCALLS, NETWORK_SYSCALLS, count_group, strace_counts},
     process::{ProcessSpec, run as run_process},
-    runner::{PROBE_TIMEOUT, RunContext, path_arg},
+    runner::{PROBE_TIMEOUT, path_arg},
 };
+use crate::{SuiteKind, SuiteOutput, SuitePlan, runner::RunContext};
 
 use super::SuiteError;
 
@@ -15,7 +18,7 @@ pub(super) fn run(context: &RunContext, plan: &SuitePlan) -> Result<SuiteOutput,
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (context, plan);
-        return Ok(SuiteOutput::skip_all(SuiteKind::Syscalls, "not Linux"));
+        Ok(SuiteOutput::skip_all(SuiteKind::Syscalls, "not Linux"))
     }
     #[cfg(target_os = "linux")]
     run_linux(context, plan)

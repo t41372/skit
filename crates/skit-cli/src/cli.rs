@@ -135,6 +135,18 @@ macro_rules! humanerrln {
 #[cfg(test)]
 mod tests;
 mod tui_host;
+#[cfg(test)]
+mod tui_real_host;
+#[cfg(test)]
+mod tui_real_random_walk;
+#[cfg(test)]
+mod tui_real_sandbox_fs;
+#[cfg(test)]
+mod tui_real_walker;
+#[cfg(test)]
+mod tui_walker_bundle;
+#[cfg(test)]
+mod tui_walker_corpus_tests;
 
 use self::tui_host::{
     EditorLauncher, PreferenceFiles, PrivateDirectoryPurpose, SYSTEM_EDITOR,

@@ -25,7 +25,7 @@ progress` is a release blocker; it is not a permitted behavior change.
 | Add lanes, drafts, kind picker, analysis review, edit/reanalyse, and atomic commit | Complete | application/UI/TUI workflow, transaction, editor, and pinned-main add-lane/review owners |
 | Run, preset, token, environment, file, runner, and default form commands | Complete | application/form/UI/TUI, real PTY, picker, and pinned-main form/prompt owners |
 | Settings, preferences, health, runner manager, Agent Skill, and dirty guards | Complete | application/UI/TUI transaction and responsive-management owners plus pinned-main manifests |
-| Every advertised TUI command has positive keyboard and mouse owners at every documented responsive size tier | Complete | shared command-registry and local-action inventories at `120x30`, `46x12`, and `24x6`, plus reducer, `TestBackend`, and real PTY owners |
+| Every advertised TUI command has positive keyboard and mouse owners at every documented responsive size tier | Complete | The shared layout contracts pin the width boundary at 80 columns and the height boundaries at 10, 16, and 28 rows. Boundary, zero-size, three-locale, command-registry, and local-action owners use the reducer and `TestBackend`. Pointer owners require primary Down and a matching semantic Up, keep Unicode caret placement on grapheme boundaries, contain wheel input in the topmost visible owner, and cancel stale presses. A real 46x12 PTY sends SGR mouse input, checks selective redraws, and uses a `vt100` final-grid oracle to reject stale history text |
 | Complete en/zh-CN/zh-TW catalog and stable machine English | Complete | `skit-i18n/tests/catalog.rs`, crate localization tests, English/tooling gates, and three-locale PTY/TestBackend owners |
 | PyPI/Maturin wheel, `uv tool`, archives, security, coverage, docs, benchmarks | Complete | Local wheel/sdist installs, embedded-Skill and real-run smoke, corpus/manifest checks, deny/audit/Zizmor, 100% LCOV, docs build/link check, 112 metrics with 8/8 evaluated enforced budgets, and 23 Criterion estimates pass; three-platform native CI, coverage, and supply-chain workflows are green at the release head. The owner moved full mutation adjudication to issue #47: the pipeline fix is in this tree, and the follow-up runs the 64-shard matrix to zero survivors |
 | Future Tauri uses the same application/form/UI state and command registry | Complete | serializable `skit-ui` round-trip, frontend-neutral effects, typed application/form ports, and frontend-parity tests |
@@ -35,16 +35,6 @@ progress` is a release blocker; it is not a permitted behavior change.
 Version 0.5 keeps the behavior of the pinned oracle. Where it says something differently on
 purpose, the change is recorded here with both spellings, so a reader never has to guess whether a
 difference is a decision or a defect.
-
-### The discard confirmation also names its surface
-
-Version 0.4 shows `Discard unsaved changes?` once inside an untitled border
-(`src/skit/tui_settings.py:42-65`). Version 0.5 shows the question in that body and in the shared
-screen header, so it appears twice.
-
-The port names every surface in the header. Examples include `Help`, `Confirm removal`, and `Save
-as preset`. The second question keeps this surface-naming convention and uses the existing
-localized copy.
 
 ### The library item is an "entry", not a "script"
 

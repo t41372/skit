@@ -45,6 +45,9 @@ A	1	crates/skit-cli/src/cli/tests.rs	"npm is needed to install this script's dep
 A	1	crates/skit-cli/src/cli/tests.rs	.starts_with(&format!("Can't read {}: ", directory.display()))	exact owner for frozen user-visible copy
 A	1	crates/skit-cli/src/cli/tests.rs	UiAction::SetStatus(message) if message.contains("hasn't run yet")	exact owner for frozen user-visible copy
 A	1	crates/skit-cli/src/cli/tests.rs	assert!(!question.contains("can't tell from the name"));	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests/legacy_walker_rules.rs	"@@@ isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\").",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests/legacy_walker_rules.rs	"not-a-version isn't a Python version constraint (e.g. \">=3.11\" or \">=3.12,<3.13\").",	exact owner for frozen user-visible copy
+A	1	crates/skit-cli/src/cli/tests/legacy_walker_rules.rs	assert_eq!(opening, "The runner missing isn't configured ");	exact owner for frozen user-visible copy
 A	1	crates/skit-cli/src/run/command.rs	"The runner {name} isn't configured (known: {known}). Manage runners with: skit runner list"	oracle msgid production/catalog copy
 A	1	crates/skit-cli/src/run/command.rs	"The runner {} isn't configured (known: {}). Manage runners with: skit runner list",	oracle msgid production/catalog copy
 A	1	crates/skit-cli/src/run/command.rs	"The script and its form definitions don't match anymore: source changed after semantic edit planning. Run `skit params demo --resync` to fix it.",	oracle msgid production/catalog copy
@@ -221,11 +224,17 @@ A	2	crates/skit-tui/src/screens/management.rs	"Runner commands take only the {{p
 A	2	crates/skit-tui/src/screens/management.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands."	oracle msgid production/catalog copy
 A	1	crates/skit-tui/src/screens/management.rs	"row-not-table" => "This runner row isn't a table.",	oracle msgid production/catalog copy
 A	2	crates/skit-tui/src/screens/management.rs	"{{prompt}} can't be the command itself — the first word must be the program to run."	oracle msgid production/catalog copy
+A	2	crates/skit-tui/src/screens/management.rs	"Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",	exact owner for frozen user-visible copy
+A	2	crates/skit-tui/src/screens/management.rs	"The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",	exact owner for frozen user-visible copy
+A	2	crates/skit-tui/src/screens/management.rs	"{{prompt}} can't be the command itself — the first word must be the program to run.",	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/src/screens/management.rs	("row-not-table", "This runner row isn't a table."),	exact owner for frozen user-visible copy
 A	1	crates/skit-tui/src/screens/settings.rs	"skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly."	oracle msgid production/catalog copy
 A	1	crates/skit-tui/src/screens/settings.rs	assert!(frame.contains("skit doesn't write to this file"), "{frame}");	exact owner for frozen user-visible copy
 A	1	crates/skit-tui/src/session.rs	"The environment variable {} isn't set (needed by {}).",	oracle msgid production/catalog copy
 A	1	crates/skit-tui/src/session.rs	"This script has subcommands skit can't model — type everything into the extra-arguments field."	oracle msgid production/catalog copy
 A	1	crates/skit-tui/src/session.rs	"skit couldn't read this script's argument declarations — type everything into the extra-arguments field."	oracle msgid production/catalog copy
+A	1	crates/skit-tui/tests/add_workflow.rs	!zero_rendered.contains("couldn't model them statically"),	exact owner for frozen user-visible copy
+A	1	crates/skit-tui/tests/add_workflow.rs	"Link the original — edits take effect immediately, but skit won't write",	exact owner for frozen user-visible copy
 A	1	crates/skit-tui/tests/interactive_run_form.rs	"This script has subcommands skit can't model",	exact owner for frozen user-visible copy
 A	1	crates/skit-tui/tests/interactive_run_form.rs	"couldn't read",	exact owner for frozen user-visible copy
 A	1	crates/skit-tui/tests/port_test_add_review_contracts.rs	.contains("What is foo.xyz? skit can't tell from the name.")	exact owner for frozen user-visible copy
