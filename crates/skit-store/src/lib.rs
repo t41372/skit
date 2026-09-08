@@ -23,10 +23,8 @@ pub use config::{
 };
 pub use mutations::{
     AgentSkillInstallPoint, FileAgentSkillStore, FileRunnerManagementStore,
-    LaunchSnapshotAllocator, LaunchSnapshotAttempt, LaunchSnapshotAttemptOutcome,
-    LaunchSnapshotRequest, LaunchSnapshotStem, PreparedExternalCopyEdit, PreparedLaunch,
-    RegistryRebuildProblem, RegistryRebuildReport, RunnerManagementStoreError, RunnerRemovalCas,
-    SystemLaunchSnapshotAllocator, content_hash,
+    PreparedExternalCopyEdit, PreparedLaunch, RegistryRebuildProblem, RegistryRebuildReport,
+    RunnerManagementStoreError, RunnerRemovalCas, content_hash,
 };
 pub use path_completion::SystemDirectoryReader;
 pub use path_glob::FileGlobExpander;

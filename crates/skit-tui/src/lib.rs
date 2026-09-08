@@ -19,6 +19,7 @@ use ratatui_core::{layout::Rect, terminal::Frame};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
 };
+use ratatui_widgets::clear::Clear;
 use skit_i18n::{Locale, format_text};
 use skit_ui::{
     Action, CommandContext, FormField, FormView, InputMode, LibraryState, ModalState, Screen,
@@ -176,7 +177,9 @@ pub fn render_with_session(
             name,
             original_file_preserved,
             ..
-        }) => session.render_confirm_remove(frame, name, *original_file_preserved, locale),
+        }) => {
+            session.render_confirm_remove(frame, areas.body, name, *original_file_preserved, locale)
+        }
         Some(ModalState::ConfirmDiscardChanges) => {
             screens::modal::discard_changes(frame, areas.body, locale)
         }
@@ -187,7 +190,7 @@ pub fn render_with_session(
             | ModalState::RunFilePicker { .. }),
         ) => session.render_run_modal(frame, areas.body, modal, locale),
         Some(ModalState::RunnerEditor { view, .. }) => {
-            let _ = render_screen(frame, areas.body, state, locale, session);
+            frame.render_widget(Clear, areas.body);
             session.render_runner_editor(frame, areas.body, view, locale);
             // The modal owns input. Do not publish blocked hits from the screen below it.
             ViewGeometry::default()
@@ -513,16 +516,13 @@ pub(crate) fn command_action(
     context: CommandContext,
     geometry: &ViewGeometry,
 ) -> Action {
-    match (context, command) {
-        (CommandContext::Settings, UiCommand::NewRunner) => {
-            Action::Settings(skit_ui::SettingsAction::NewRunner)
-        }
-        (_, UiCommand::ToggleDetail) => Action::ToggleDetail {
+    match command {
+        UiCommand::ToggleDetail => Action::ToggleDetail {
             currently_visible: geometry.detail_pane_visible,
         },
         _ => command
-            .direct_action()
-            .expect("only detail commands need rendered state"),
+            .action_for_context(context)
+            .expect("the active command context owns this visible command"),
     }
 }
 

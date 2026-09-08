@@ -24,37 +24,14 @@
 //! yields an EMPTY `inject_values` for the no-value case, identical to the python const. The
 //! injection DECISION is faithful; only the previous observable was wrong (see below).
 //!
-//! OBSERVABLE MAPPING. The oracle intercepts `launcher.run_entry` and reads its `script_override`
-//! kwarg — `None` when the stored copy runs as-is, a path when an injected temp copy runs. A
-//! black-box binary port cannot see that kwarg, and `$0` CANNOT stand in for it: the Rust store
-//! snapshots EVERY copy-mode launch to a `.run-<id>` working copy in `prepare_launch`
-//! (`crates/skit-store/src/mutations.rs`, the `write_launch_snapshot` call), so `$0` holds a
-//! `.run-` path on every run — injected or not — and has zero discriminating power.
+//! The binary prints the injection receipt and the child's output. For these managed-constant
+//! fixtures, the receipt and the injected value show that an injected source ran. With no value,
+//! or with `--raw`, the stored source runs at its stable path. `run_identity_races.rs` checks that
+//! path with real shell, Python, and JavaScript processes.
 //!
-//! The faithful, discriminating signal is the `→ inject:` transparency line. In BOTH impls it is
-//! emitted on exactly the predicate that produces the injected copy:
-//! - oracle `flows.transparency_lines` appends `→ inject: %(pairs)s` iff `asm.inject_values`
-//!   (`src/skit/flows.py`), the same condition that sets `injected` / `script_override`;
-//! - Rust `skit_application::delivery::assemble` pushes the display pair (rendered as
-//!   `→ inject: {}`) in the same branch that fills `inject_values`
-//!   (`crates/skit-application/src/delivery.rs`), the same map `stage_injected_source` gates on.
-//!
-//! So `→ inject:` present <-> `script_override is not None`, and absent <-> `script_override is
-//! None`. (Precisely, `script_override` also requires an inject plan + a language injector, while
-//! the line keys on values alone; the two coincide for this module's fixture — a managed const on
-//! a kind that has both an analyzer and an injector — so the equivalence holds here and should not
-//! be over-generalized.) `SKIT_LANG=en` pins the English string; the zh catalog uses `→ 注入：`.
-//!
-//! The `→ inject:` line and the run's transparency go to stdout, exactly like the launched
-//! script's own output, so `assert_cmd`'s `.stdout(...)` observes both together. The injected
-//! VALUE reaching the script is a second, independent witness of the same decision: the source
-//! constant is `Taipei`, and a run that injects the saved `Kaohsiung` prints `Kaohsiung`, while a
-//! run that injects nothing prints the un-replaced `Taipei`.
-//!
-//! Python `entry.dir.glob(".injected*")` (no injected artifact left behind) <-> no `.run-*` file
-//! in the entry directory: Rust names both its launch snapshot and its injected copy `.run-<id>`
-//! and removes them after the run, so an empty entry directory verifies the same "no leftover"
-//! claim (and now also covers snapshot cleanup for free).
+//! Each subprocess uses the test's state directory as its system temporary directory. Cleanup
+//! checks both that directory and the entry directory for `.injected-*` files. A normal cleanup
+//! case supplies a saved value, so it creates and removes an actual injected source.
 //!
 //! Buckets: all five are REAL asserting `#[test]`s (API EXISTS). None is cross-crate, absent, or
 //! divergent — the injection decision reproduces the oracle exactly for every fixture.
@@ -137,7 +114,8 @@ fn skit(data: &TempDir, state: &TempDir) -> assert_cmd::Command {
         .env("SKIT_DATA_DIR", data.path())
         .env("SKIT_STATE_DIR", state.path())
         .env("SKIT_CONFIG_DIR", state.path())
-        .env("SKIT_LANG", "en");
+        .env("SKIT_LANG", "en")
+        .env("TMPDIR", state.path());
     command
 }
 
@@ -146,7 +124,7 @@ fn has_staged_artifact(dir: &Path) -> bool {
     fs::read_dir(dir)
         .unwrap()
         .flatten()
-        .any(|item| item.file_name().to_string_lossy().starts_with(".run-"))
+        .any(|item| item.file_name().to_string_lossy().starts_with(".injected-"))
 }
 
 #[test]
@@ -195,23 +173,26 @@ fn test_no_values_runs_copy_directly() {
 fn test_raw_does_not_leave_injected_artifact() {
     // --raw stages no injected copy, so nothing is left in the entry directory. (The oracle's own
     // setup injects nothing either — the run injects only when a value exists — so this is a
-    // faithful clean-directory check; Rust also removes its per-run launch snapshot.)
+    // faithful clean-directory check.)
     let (data, state, dir) = entry_with_params();
     skit(&data, &state)
         .args(["run", "demo", "--raw", "--no-input"])
         .assert()
         .success();
     assert!(!has_staged_artifact(&dir));
+    assert!(!has_staged_artifact(state.path()));
 }
 
 #[test]
 fn test_normal_run_cleans_injected_artifact() {
-    // A normal run leaves no staged copy behind in the entry directory (same faithful
-    // clean-directory check as the raw case; the oracle's fixture carries no value to inject).
+    // A saved value requires an injected source. Both temporary locations are clean afterwards.
     let (data, state, dir) = entry_with_params();
+    save_last_city(&state, "Kaohsiung");
     skit(&data, &state)
         .args(["run", "demo", "--no-input"])
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains(INJECT_MARKER));
     assert!(!has_staged_artifact(&dir));
+    assert!(!has_staged_artifact(state.path()));
 }

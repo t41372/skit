@@ -3557,32 +3557,51 @@ fn test_edit_non_prompt_keeps_the_generic_drift_hint() {
 fn test_params_while_insertion_is_off_keeps_the_managed_schema() {
     // The oracle writes no parameters while a prompt's insertion is off
     // (`src/skit/tui_settings.py:952-954`, `src/skit/cli.py:4229-4246`), so an unrelated params
-    // op cannot erase the managed list. Turning insertion on again shows the same fields.
-    for later in [
-        ["params", "p", "--workdir", "store"],
-        ["params", "p", "--runner", ""],
+    // op cannot erase the managed list. Insertion on again shows the same fields, with the
+    // declared text each row carried. The third case repeats the reported defect with its names.
+    for (body, name, declare, declared_line, later) in [
+        (
+            "Do {{a}}\n",
+            "a",
+            ["--prompt", "a=Ask a"],
+            "prompt = \"Ask a\"",
+            ["--workdir", "store"],
+        ),
+        (
+            "Do {{a}}\n",
+            "a",
+            ["--prompt", "a=Ask a"],
+            "prompt = \"Ask a\"",
+            ["--runner", ""],
+        ),
+        (
+            "Write about {{TOPIC}}\n",
+            "TOPIC",
+            ["--help-text", "TOPIC=x"],
+            "help = \"x\"",
+            ["--workdir", "store"],
+        ),
     ] {
         let sandbox = Sandbox::new();
-        sandbox.added("Do {{a}}\n", "p");
-        sandbox.ok(&["params", "p", "--prompt", "a=Ask a"]);
-        let declared = sandbox.meta("p");
-        assert!(declared.contains("params = [\"a\"]"), "{declared}");
-        assert!(declared.contains("[[parameters]]"), "{declared}");
+        sandbox.added(body, "p");
+        sandbox.ok(&["params", "p", declare[0], declare[1]]);
+        let managed_line = format!("params = [\"{name}\"]");
+        let check = |stage: &str, meta: &str| {
+            assert!(meta.contains(&managed_line), "{stage}: {meta}");
+            assert!(meta.contains("[[parameters]]"), "{stage}: {meta}");
+            assert!(meta.contains(declared_line), "{stage}: {meta}");
+        };
+        check("declared", &sandbox.meta("p"));
 
         sandbox.ok(&["params", "p", "--no-interpolate"]);
-        let off = sandbox.meta("p");
-        assert!(off.contains("params = [\"a\"]"), "{off}");
-        assert!(off.contains("[[parameters]]"), "{off}");
+        check("insertion off", &sandbox.meta("p"));
 
-        sandbox.ok(&later);
-        let unrelated = sandbox.meta("p");
-        assert!(unrelated.contains("params = [\"a\"]"), "{unrelated}");
-        assert!(unrelated.contains("[[parameters]]"), "{unrelated}");
+        sandbox.ok(&["params", "p", later[0], later[1]]);
+        check("unrelated op while off", &sandbox.meta("p"));
 
         sandbox.ok(&["params", "p", "--interpolate"]);
         let on = sandbox.meta("p");
-        assert!(on.contains("params = [\"a\"]"), "{on}");
-        assert!(on.contains("[[parameters]]"), "{on}");
+        check("insertion on again", &on);
         assert_eq!(
             sandbox.json(&["show", "p", "--json"])["fields"]
                 .as_array()
@@ -3592,4 +3611,32 @@ fn test_params_while_insertion_is_off_keeps_the_managed_schema() {
             "{on}"
         );
     }
+}
+
+#[test]
+fn test_interpolation_flip_writes_only_the_flag() {
+    // The oracle's interpolation op returns before it touches parameters
+    // (`src/skit/cli.py:4229-4246`), so the flip writes the flag and nothing else. A reference
+    // entry gives two witnesses. The user reorders the body, so the stored placeholder order stops
+    // matching the body order. One row also carries an environment delivery and a prompt text that
+    // a rewrite from the body drops.
+    let sandbox = Sandbox::new();
+    let path = sandbox.write_file("p.prompt.md", b"Do {{a}} then {{b}}\n");
+    sandbox.ok(&["add", &path, "-n", "p", "--no-input", "--ref"]);
+    sandbox.ok(&["params", "p", "--prompt", "a=Ask a"]);
+    sandbox.ok(&["params", "p", "--deliver", "a=env"]);
+    fs::write(&path, b"Do {{b}} then {{a}}\n").unwrap();
+
+    let before = sandbox.meta("p");
+    assert!(before.contains("\"a\",\n    \"b\","), "{before}");
+    assert!(before.contains("delivery = \"env\""), "{before}");
+    assert!(before.contains("prompt = \"Ask a\""), "{before}");
+
+    sandbox.ok(&["params", "p", "--no-interpolate"]);
+    let off = sandbox.meta("p");
+    assert!(off.contains("interpolate = false"), "{off}");
+    assert_eq!(off.replace("interpolate = false\n", ""), before);
+
+    sandbox.ok(&["params", "p", "--interpolate"]);
+    assert_eq!(sandbox.meta("p"), before);
 }

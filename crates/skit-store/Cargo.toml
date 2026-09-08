@@ -27,8 +27,6 @@ skit-application.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 fs-id.workspace = true
-winapi-util.workspace = true
-windows-sys.workspace = true
 
 [dev-dependencies]
 skit-i18n.workspace = true

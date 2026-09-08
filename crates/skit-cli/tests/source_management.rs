@@ -840,9 +840,8 @@ fn test_cli_normalized_param_runs_through_the_environment() {
     );
     assert!(text.contains("w=1200"), "{text}");
     assert!(text.contains("WIDTH=1200"), "{text}");
-    // Rust launches every copy entry from an identity-checked `.run-*` snapshot. The important
-    // normalization contract is that parameter delivery needs no second injected source rewrite.
-    assert!(text.contains("scripts/runner/.run-"), "{text}");
+    // Normalized environment delivery runs the stored source without an injected rewrite.
+    assert!(text.contains("scripts/runner/script.sh"), "{text}");
     assert!(!text.contains(".injected-"), "{text}");
 }
 

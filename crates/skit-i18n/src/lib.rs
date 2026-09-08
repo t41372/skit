@@ -2088,6 +2088,17 @@ const CATALOG: &[Translation] = &[
     row!("{} repeats its flag", "{} 重复其标志", "{} 重複其旗標"),
     row!("{} prompt", "{} 提示", "{} 提示"),
     row!("{} help", "{} 帮助", "{} 說明"),
+    row!("Form label:", "字段提示：", "欄位提示："),
+    row!(
+        "secret (never saved to disk)",
+        "机密（不会存盘）",
+        "機密（不會存檔）",
+    ),
+    row!(
+        "env variable to read it from (optional)",
+        "从哪个环境变量读取（选填）",
+        "從哪個環境變數讀取（選填）",
+    ),
     row!("{} is secret", "{} 为敏感值", "{} 為機密值"),
     row!(
         "{} secret environment source",

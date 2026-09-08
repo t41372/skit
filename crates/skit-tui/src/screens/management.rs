@@ -1615,12 +1615,8 @@ pub(crate) fn health_footer_items(locale: Locale) -> Vec<ActionFooterItem<Health
 pub(crate) fn runner_editor_footer_items(
     locale: Locale,
 ) -> Vec<ActionFooterItem<RunnerEditorAction>> {
-    let next_label = text(locale, "Next field");
-    let next_action = RunnerEditorAction::FocusNext;
-    let previous_label = text(locale, "Previous field");
-    let previous_action = RunnerEditorAction::FocusPrevious;
     vec![
-        ActionFooterItem::new(
+        ActionFooterItem::new_group(
             LocalKey::Enter,
             text(locale, "Save"),
             RunnerEditorAction::Submit,
@@ -1630,8 +1626,16 @@ pub(crate) fn runner_editor_footer_items(
             text(locale, "Cancel"),
             RunnerEditorAction::Cancel,
         ),
-        ActionFooterItem::new_group(LocalKey::NextField, next_label, next_action),
-        ActionFooterItem::new(LocalKey::PreviousField, previous_label, previous_action),
+        ActionFooterItem::new(
+            LocalKey::NextField,
+            text(locale, "Next field"),
+            RunnerEditorAction::FocusNext,
+        ),
+        ActionFooterItem::new(
+            LocalKey::PreviousField,
+            text(locale, "Previous field"),
+            RunnerEditorAction::FocusPrevious,
+        ),
     ]
 }
 
@@ -2544,11 +2548,6 @@ mod tests {
 
     #[test]
     fn critical_runner_editor_actions_start_visible_in_every_review_profile() {
-        assert_eq!(
-            action_footer_required_height(240, &runner_editor_footer_items(Locale::En)),
-            2,
-            "save/cancel and field navigation must remain separate footer groups",
-        );
         for (locale, width, height) in [
             (Locale::En, 80, 24),
             (Locale::ZhCn, 120, 30),

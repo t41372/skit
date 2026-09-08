@@ -499,7 +499,7 @@ fn test_set_secret_never_persisted_and_masked_in_dry_run() {
         fs::read_dir(&entry_dir)
             .unwrap()
             .flatten()
-            .all(|item| !item.file_name().to_string_lossy().starts_with(".run-")),
+            .all(|item| !item.file_name().to_string_lossy().starts_with(".injected-")),
         "dry run wrote a staged source"
     );
     skit(&root)

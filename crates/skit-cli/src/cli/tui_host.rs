@@ -14,11 +14,7 @@ use skit_application::{
 };
 use skit_i18n::{Locale, format_text, requested_locale, system_locale, text};
 use skit_runtime::{InterpreterPlatform, InterpreterPolicy};
-use skit_store::{
-    AgentSkillInstallPoint, FileFormStateStore, FileGlobExpander, FileStore,
-    LaunchSnapshotAllocator, LaunchSnapshotAttempt, LaunchSnapshotRequest, LaunchSnapshotStem,
-    SystemLaunchSnapshotAllocator,
-};
+use skit_store::{AgentSkillInstallPoint, FileFormStateStore, FileGlobExpander, FileStore};
 use skit_ui::{Action as UiAction, Effect as UiEffect, HealthAction, LibraryState, Screen};
 use time::{OffsetDateTime, UtcOffset};
 
@@ -158,7 +154,7 @@ impl PrivateDirectoryPurpose {
 }
 
 /// Allocate raw files and directories for fixed product-owned name patterns.
-pub(crate) trait FileAllocator: std::fmt::Debug + LaunchSnapshotAllocator {
+pub(crate) trait FileAllocator: std::fmt::Debug {
     fn temporary_file(
         &self,
         purpose: TemporaryFilePurpose,
@@ -229,20 +225,6 @@ impl FileAllocator for SystemFileAllocator {
             .tempdir_in(location)?;
         set_private_directory_mode(temporary.path())?;
         Ok(temporary.keep())
-    }
-}
-
-impl LaunchSnapshotAllocator for SystemFileAllocator {
-    fn next_stem(&self, request: LaunchSnapshotRequest<'_>) -> io::Result<LaunchSnapshotStem> {
-        SystemLaunchSnapshotAllocator.next_stem(request)
-    }
-
-    fn record_attempt(&self, evidence: LaunchSnapshotAttempt<'_>) {
-        SystemLaunchSnapshotAllocator.record_attempt(evidence);
-    }
-
-    fn retry_collisions(&self) -> bool {
-        SystemLaunchSnapshotAllocator.retry_collisions()
     }
 }
 
@@ -3237,16 +3219,16 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
-        let copied_snapshot = PathBuf::from(&plans[0].args[3]);
-        assert!(copied_snapshot.starts_with(store.entry_dir_path(&copied.slug)));
-        assert_ne!(copied_snapshot, store.payload_path(&copied).unwrap());
-        assert!(!copied_snapshot.exists());
-        assert!(!stale_snapshot.exists());
+        let copied_payload = PathBuf::from(&plans[0].args[3]);
+        assert!(copied_payload.starts_with(store.entry_dir_path(&copied.slug)));
+        assert_eq!(copied_payload, store.payload_path(&copied).unwrap());
+        assert!(copied_payload.exists());
+        assert!(stale_snapshot.exists());
         assert_eq!(PathBuf::from(&plans[1].args[3]), reference_source);
         assert_eq!(
             launch.source_files.borrow().as_slice(),
             [
-                (copied_snapshot, b"print('before')\n".to_vec()),
+                (copied_payload, b"print('before')\n".to_vec()),
                 (reference_source.clone(), b"print('reference')\n".to_vec()),
             ]
         );
@@ -3394,8 +3376,8 @@ mod tests {
         ));
         assert_eq!(launch.plans.borrow().len(), 1);
         assert_eq!(launch.source_files.borrow().len(), 1);
-        let failed_snapshot = launch.source_files.borrow()[0].0.clone();
-        assert!(!failed_snapshot.exists());
+        let failed_source = launch.source_files.borrow()[0].0.clone();
+        assert_eq!(failed_source, source_path);
         assert!(std::fs::read_dir(&entry_dir).unwrap().all(|item| {
             !item
                 .unwrap()
@@ -3415,7 +3397,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn completed_state_write_failure_keeps_old_bytes_and_cleans_the_copy_snapshot() {
+    fn completed_state_write_failure_keeps_old_state_and_stored_source() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let sandbox = TempDir::new().unwrap();
@@ -3486,8 +3468,8 @@ mod tests {
         ));
         assert_eq!(launch.plans.borrow().len(), 1);
         assert_eq!(launch.source_files.borrow().len(), 1);
-        let completed_snapshot = launch.source_files.borrow()[0].0.clone();
-        assert!(!completed_snapshot.exists());
+        let completed_source = launch.source_files.borrow()[0].0.clone();
+        assert_eq!(completed_source, source_path);
         assert!(std::fs::read_dir(&entry_dir).unwrap().all(|item| {
             !item
                 .unwrap()
@@ -3630,7 +3612,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_uv_uses_the_injected_no_network_fetcher_and_cleans_the_launch_snapshot() {
+    fn missing_uv_uses_the_injected_no_network_fetcher_without_launch_files() {
         let sandbox = TempDir::new().unwrap();
         let roots = roots(sandbox.path());
         std::fs::create_dir_all(&roots.cwd).unwrap();

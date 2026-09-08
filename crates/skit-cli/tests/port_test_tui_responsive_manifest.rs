@@ -1,6 +1,6 @@
 //! Completeness guard for Python `tests/test_tui_responsive.py` at `main@206f9ef`.
 //!
-//! Seventeen contracts have executable terminal-geometry equivalents. Three Rust-only contracts
+//! Seventeen contracts have executable terminal-geometry equivalents. Four Rust-only contracts
 //! cover frontend adapter invariants. Two Python contracts assert widget structures that do not
 //! exist in the Ratatui frontend and stay architecture-closed rather than being represented by a
 //! weaker test of a different widget.
@@ -35,6 +35,7 @@ const RUST_ADDITIVE: &[&str] = &[
     "test_growing_across_height_tiers_never_shrinks_the_primary_viewport",
     "test_footer_minimum_structure_is_monotonic_and_keeps_status_out_of_hits",
     "test_root_hit_rectangles_stay_inside_every_boundary_viewport",
+    "compact_confirm_remove_keeps_central_keyboard_paths_at_tiny_boundaries",
 ];
 
 const ARCHITECTURE_CLOSED: &[(&str, &str)] = &[

@@ -5948,8 +5948,10 @@ fn params(
             )
         } else {
             // Seed from the stored schema, not from the effective plan. A prompt with insertion
-            // off has an empty effective plan and still owns every declaration it stored
-            // (`src/skit/tui_settings.py:344`).
+            // off has an empty effective plan. Its stored declarations are still there, and this
+            // read must show them (`src/skit/tui_settings.py:344`). `skit params --json` therefore
+            // lists the stored rows while insertion is off. `skit show --json` keeps `fields`
+            // empty in that state, because that key describes the run form, not the stored schema.
             let plan = form_plan(
                 held.meta.kind.as_str(),
                 &source,
@@ -5964,17 +5966,6 @@ fn params(
                 plan.has_injectable_const,
             )
         };
-    let template_placeholder_order = match held.meta.kind.as_str() {
-        "command" => placeholder_params("command", &settings.template)
-            .into_iter()
-            .map(|item| item.name)
-            .collect::<Vec<_>>(),
-        "prompt" => placeholder_params("prompt", &source)
-            .into_iter()
-            .map(|item| item.name)
-            .collect(),
-        _ => Vec::new(),
-    };
     let explicit_names = settings
         .parameters
         .iter()
@@ -6059,43 +6050,40 @@ fn params(
             held = commit_source_management_copy_edit(service, &held, source.as_bytes())?;
         }
     } else if changed {
-        // A prompt keeps its stored schema while insertion is off. No params op writes parameters
-        // in that state (`src/skit/cli.py:4229-4246`).
-        let prompt_schema_hidden = prompt && !settings.interpolate;
-        if !prompt_schema_hidden {
+        // A prompt writes no parameters here, in either interpolation state. Version 0.4 handles
+        // the launch, runner, and interpolation ops before the schema pass and returns from each
+        // one (`src/skit/cli.py:4229-4246`), so the stored `params` order and every stored row
+        // stay as the user left them. Only a schema op edits a prompt's declarations.
+        if !prompt {
             settings.parameters = declarations
                 .iter()
                 .filter(|item| explicit_names.contains(&item.name))
                 .cloned()
                 .collect();
-        }
-        if matches!(held.meta.kind.as_str(), "command" | "prompt") && !prompt_schema_hidden {
-            let current_order = if held.meta.kind.as_str() == "command" {
-                placeholder_params("command", &settings.template)
+            if held.meta.kind.as_str() == "command" {
+                let current_order = placeholder_params("command", &settings.template)
                     .into_iter()
                     .map(|item| item.name)
-                    .collect::<Vec<_>>()
-            } else {
-                template_placeholder_order.clone()
-            };
-            let placeholder_names = declarations
-                .iter()
-                .filter(|item| item.delivery == ParameterDelivery::Placeholder)
-                .map(|item| item.name.clone())
-                .collect::<BTreeSet<_>>();
-            settings.params = current_order
-                .into_iter()
-                .filter(|name| placeholder_names.contains(name))
-                .collect();
-            let remaining = declarations
-                .iter()
-                .filter(|item| {
-                    item.delivery == ParameterDelivery::Placeholder
-                        && !settings.params.contains(&item.name)
-                })
-                .map(|item| item.name.clone())
-                .collect::<Vec<_>>();
-            settings.params.extend(remaining);
+                    .collect::<Vec<_>>();
+                let placeholder_names = declarations
+                    .iter()
+                    .filter(|item| item.delivery == ParameterDelivery::Placeholder)
+                    .map(|item| item.name.clone())
+                    .collect::<BTreeSet<_>>();
+                settings.params = current_order
+                    .into_iter()
+                    .filter(|name| placeholder_names.contains(name))
+                    .collect();
+                let remaining = declarations
+                    .iter()
+                    .filter(|item| {
+                        item.delivery == ParameterDelivery::Placeholder
+                            && !settings.params.contains(&item.name)
+                    })
+                    .map(|item| item.name.clone())
+                    .collect::<Vec<_>>();
+                settings.params.extend(remaining);
+            }
         }
         let claimed = service.claim_identity(&held)?;
         held = service.update_settings(&claimed, &settings, &workdir)?;
@@ -8146,18 +8134,32 @@ fn settings_parameter_context(store: &FileStore, entry: &Entry) -> SettingsParam
         });
     let text = source.clone().unwrap_or_default();
     let managed = if declared_schema {
-        if matches!(kind, "command" | "prompt") {
-            let mut effective = form_params(kind, &text, &settings);
-            for explicit in &settings.parameters {
-                if let Some(row) = effective.iter_mut().find(|row| row.name == explicit.name) {
-                    *row = explicit.clone();
-                } else {
-                    effective.push(explicit.clone());
+        match kind {
+            // Version 0.4 seeds a prompt's rows from the stored schema
+            // (`src/skit/tui_settings.py:344`), which is what both save paths do here. A prompt
+            // with insertion off has an empty effective plan, and its stored placeholders stay
+            // managed rows. The view keeps them off the keyboard while insertion is off. They must
+            // not come back as detections: the save refuses a name it already declares.
+            "prompt" => form_params(
+                kind,
+                &text,
+                &EntrySettings {
+                    interpolate: true,
+                    ..settings.clone()
+                },
+            ),
+            "command" => {
+                let mut effective = form_params(kind, &text, &settings);
+                for explicit in &settings.parameters {
+                    if let Some(row) = effective.iter_mut().find(|row| row.name == explicit.name) {
+                        *row = explicit.clone();
+                    } else {
+                        effective.push(explicit.clone());
+                    }
                 }
+                effective
             }
-            effective
-        } else {
-            settings.parameters.clone()
+            _ => settings.parameters.clone(),
         }
     } else if source_owned {
         settings_managed_params(kind, &text)
@@ -10910,7 +10912,7 @@ fn tui_submit_run_with_services(
             state_dir,
             config_dir,
             run_services.now_utc(),
-            &format!("Run finished with exit status {exit}"),
+            &format_text(locale, "Run finished with exit status {}", &[&exit]),
         )
     }
 }
@@ -11089,8 +11091,8 @@ fn tui_submit_settings_at(
         .map(|item| item.name.clone())
         .collect::<BTreeSet<_>>();
     // Seed from the stored schema, not from the effective plan. A prompt with insertion off has
-    // an empty effective plan and still owns every declaration it stored
-    // (`src/skit/tui_settings.py:344`).
+    // an empty effective plan. Its stored declarations are still there, and this save must keep
+    // them (`src/skit/tui_settings.py:344`).
     let mut declarations = if placeholder_kind {
         form_params(
             entry.meta.kind.as_str(),
@@ -11146,23 +11148,17 @@ fn tui_submit_settings_at(
         declarations = reconcile_template_parameters(&settings.template, &declarations);
     }
     // A prompt with insertion off shows no parameter rows, so its save carries none and writes
-    // none. The stored schema waits for insertion to come back on
+    // none. The stored schema stays until insertion is on again
     // (`src/skit/tui_settings.py:952-954`, `:1090-1095`).
     let prompt_schema_hidden = entry.meta.kind.as_str() == "prompt" && !settings.interpolate;
-    // No submit-time filter. A source-owned row is never offered as an editable declaration, so
-    // there is nothing here to take back out — and with it go both races the filter carried: a
-    // concurrent source edit changing which rows survive, and an unreadable source silently
-    // widening the set that does.
-    if !prompt_schema_hidden {
-        settings.parameters = if source_owned_schema(entry.meta.kind.as_str()) {
-            Vec::new()
-        } else {
-            declarations
-                .iter()
-                .filter(|item| explicit_names.contains(&item.name))
-                .cloned()
-                .collect()
-        };
+    // Source-owned controls update the source block below. Keep the metadata declarations
+    // that this screen does not edit, as version 0.4 does for its non-declared branch.
+    if !prompt_schema_hidden && !source_owned_schema(entry.meta.kind.as_str()) {
+        settings.parameters = declarations
+            .iter()
+            .filter(|item| explicit_names.contains(&item.name))
+            .cloned()
+            .collect();
     }
     if placeholder_kind && !prompt_schema_hidden {
         let placeholder_names = declarations

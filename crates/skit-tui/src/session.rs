@@ -2623,12 +2623,13 @@ impl TuiSession {
     pub(crate) fn render_confirm_remove(
         &mut self,
         frame: &mut Frame,
+        area: Rect,
         name: &str,
         original_file_preserved: bool,
         locale: Locale,
     ) -> ViewGeometry {
         self.confirm_remove
-            .render(frame, name, original_file_preserved, locale)
+            .render(frame, area, name, original_file_preserved, locale)
     }
 
     pub(crate) fn render_run(
@@ -3104,9 +3105,6 @@ impl TuiSession {
     }
 
     fn handle_run_key(&mut self, key: KeyEvent, form: &RunFormView) -> EventHandling {
-        let focused = form
-            .focused()
-            .min(self.run.controls.len().saturating_sub(1));
         match (key.code, key.modifiers) {
             (KeyCode::Char('r'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 return EventHandling::Action(Action::Submit);
@@ -3125,7 +3123,10 @@ impl TuiSession {
             }
             _ => {}
         }
-        if let Some(handling) = self.handle_open_select_key(focused, &key, form) {
+        let focused = self.run.clamped_focus(form);
+        if let Some(focused) = focused
+            && let Some(handling) = self.handle_open_select_key(focused, &key, form)
+        {
             return handling;
         }
         match (key.code, key.modifiers) {
@@ -3138,6 +3139,13 @@ impl TuiSession {
             }
             _ => {}
         }
+        // A form with no controls keeps the form-level keys above and the advertised Enter.
+        let Some(focused) = focused else {
+            return match key.code {
+                KeyCode::Enter => EventHandling::Action(Action::Submit),
+                _ => EventHandling::Ignored,
+            };
+        };
 
         match &mut self.run.controls[focused] {
             WidgetControl::Input { state, .. } => {
@@ -3289,9 +3297,9 @@ impl TuiSession {
     }
 
     fn handle_run_paste(&mut self, value: &str, form: &RunFormView) -> EventHandling {
-        let focused = form
-            .focused()
-            .min(self.run.controls.len().saturating_sub(1));
+        let Some(focused) = self.run.clamped_focus(form) else {
+            return EventHandling::Ignored;
+        };
         match &mut self.run.controls[focused] {
             WidgetControl::Input { state, .. } => {
                 for character in value.chars() {
@@ -3464,7 +3472,7 @@ impl TuiSession {
                     if let Some(WidgetControl::Choice { state, .. }) =
                         self.run.controls.get_mut(index)
                     {
-                        state.open();
+                        state.toggle();
                     }
                     if form.focused() == index {
                         EventHandling::Consumed
@@ -3473,6 +3481,11 @@ impl TuiSession {
                     }
                 }
                 RunClickTarget::SelectOption { field, value } => {
+                    if let Some(WidgetControl::Choice { state, .. }) =
+                        self.run.controls.get_mut(field)
+                    {
+                        state.close();
+                    }
                     EventHandling::Action(Action::SelectFieldOption { field, value })
                 }
                 RunClickTarget::RadioOption { field, value } => {
@@ -3506,7 +3519,6 @@ impl TuiSession {
     }
 
     fn handle_form_key(&mut self, key: KeyEvent, form: &FormView) -> EventHandling {
-        let focused = form.focused.min(self.form.controls.len().saturating_sub(1));
         match (key.code, key.modifiers) {
             (KeyCode::Char('s'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
                 return EventHandling::Action(Action::Submit);
@@ -3516,6 +3528,10 @@ impl TuiSession {
             (KeyCode::BackTab, _) => return self.move_form_focus(false),
             _ => {}
         }
+        // A form with no controls keeps only the form-level keys above.
+        let Some(focused) = self.form.clamped_focus(form) else {
+            return EventHandling::Ignored;
+        };
 
         match &mut self.form.controls[focused] {
             FormWidgetControl::Input { state, .. } => {
@@ -3570,7 +3586,9 @@ impl TuiSession {
     }
 
     fn handle_form_paste(&mut self, value: &str, form: &FormView) -> EventHandling {
-        let focused = form.focused.min(self.form.controls.len().saturating_sub(1));
+        let Some(focused) = self.form.clamped_focus(form) else {
+            return EventHandling::Ignored;
+        };
         match &mut self.form.controls[focused] {
             FormWidgetControl::Input { state, .. } => {
                 for character in value.chars() {
@@ -3978,6 +3996,14 @@ impl RunWidgetSession {
         }
     }
 
+    /// Return the focused control index, clamped to the control list.
+    ///
+    /// The result is `None` when the form has no controls at all.
+    fn clamped_focus(&self, form: &RunFormView) -> Option<usize> {
+        let last = self.controls.len().checked_sub(1)?;
+        Some(form.focused().min(last))
+    }
+
     fn sync(&mut self, form: &RunFormView) {
         let signature = RunSignature {
             selector: form.selector().to_owned(),
@@ -4228,6 +4254,14 @@ impl FormWidgetSession {
                 ("alignment", serde_json::json!(alignment)),
             ],
         ))
+    }
+
+    /// Return the focused control index, clamped to the control list.
+    ///
+    /// The result is `None` when the form has no controls at all.
+    fn clamped_focus(&self, form: &FormView) -> Option<usize> {
+        let last = self.controls.len().checked_sub(1)?;
+        Some(form.focused.min(last))
     }
 
     fn sync(&mut self, form: &FormView) {
@@ -5829,6 +5863,14 @@ mod textarea_band_tests {
                 value: "option-00".to_owned(),
             })
         );
+        assert_eq!(
+            session.handle_open_select_key(
+                index,
+                &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+                &form
+            ),
+            Some(EventHandling::Consumed)
+        );
         for _ in 0..30 {
             assert_eq!(
                 session.handle_run_mouse(
@@ -6640,6 +6682,36 @@ mod textarea_band_tests {
             form_widget_control(&secret_multiline),
             FormWidgetControl::Input { secret: true, .. }
         ));
+    }
+
+    #[test]
+    fn a_generic_form_without_fields_keeps_its_form_keys_and_ignores_text_and_paste() {
+        let form = generic_form(Vec::new(), 0);
+        let mut session = TuiSession::default();
+        session.form.sync(&form);
+        assert_eq!(
+            session.handle_form_key(KeyEvent::new(KeyCode::Char('X'), KeyModifiers::NONE), &form),
+            EventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_form_paste("pasted", &form),
+            EventHandling::Ignored
+        );
+        assert_eq!(
+            session.handle_form_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), &form),
+            EventHandling::Consumed
+        );
+        assert_eq!(
+            session.handle_form_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), &form),
+            EventHandling::Action(Action::Back)
+        );
+        assert_eq!(
+            session.handle_form_key(
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                &form
+            ),
+            EventHandling::Action(Action::Submit)
+        );
     }
 
     #[test]

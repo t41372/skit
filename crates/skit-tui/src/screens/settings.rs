@@ -1721,11 +1721,21 @@ mod tests {
         width: u16,
         height: u16,
     ) -> (Terminal<TestBackend>, SettingsScreenGeometry) {
+        draw_locale(session, view, width, height, Locale::En)
+    }
+
+    fn draw_locale(
+        session: &mut SettingsScreenSession,
+        view: &SettingsView,
+        width: u16,
+        height: u16,
+        locale: Locale,
+    ) -> (Terminal<TestBackend>, SettingsScreenGeometry) {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         let mut geometry = SettingsScreenGeometry::default();
         terminal
             .draw(|frame| {
-                geometry = render_settings(frame, frame.area(), view, session, Locale::En);
+                geometry = render_settings(frame, frame.area(), view, session, locale);
             })
             .unwrap();
         (terminal, geometry)
@@ -1954,6 +1964,64 @@ mod tests {
             view.submitted_values().get("parameter:GREETING:keep"),
             Some(&FieldValue::boolean(false))
         );
+    }
+
+    #[test]
+    fn parameter_editor_axes_render_the_complete_chinese_catalog_copy() {
+        let mut token = ParamDecl::new("TOKEN");
+        token.prompt = "Token prompt".to_owned();
+        token.secret = true;
+        token.env_source = "TOKEN_ENV".to_owned();
+        let view = SettingsView::from_inputs(&SettingsInputs {
+            selector: "tool".to_owned(),
+            kind: "python".to_owned(),
+            name: "Tool".to_owned(),
+            workdir: "invoke".to_owned(),
+            has_original_file: true,
+            has_stored_name: true,
+            has_analyzer: true,
+            managed: vec![token],
+            ..SettingsInputs::default()
+        });
+
+        for (locale, expected) in [
+            (
+                Locale::ZhCn,
+                [
+                    "字段提示：",
+                    "机密（不会存盘）",
+                    "从哪个环境变量读取（选填）",
+                ],
+            ),
+            (
+                Locale::ZhTw,
+                [
+                    "欄位提示：",
+                    "機密（不會存檔）",
+                    "從哪個環境變數讀取（選填）",
+                ],
+            ),
+        ] {
+            let (terminal, _) = draw_locale(
+                &mut SettingsScreenSession::default(),
+                &view,
+                DEMO_WIDTH,
+                120,
+                locale,
+            );
+            let frame = rendered(terminal.backend().buffer());
+            let compact = frame.replace(' ', "");
+            for label in expected {
+                assert!(compact.contains(label), "missing {label}: {frame}");
+            }
+            for source in [
+                "Form label:",
+                "secret (never saved to disk)",
+                "env variable to read it from (optional)",
+            ] {
+                assert!(!frame.contains(source), "untranslated {source}: {frame}");
+            }
+        }
     }
 
     /// A focused control cut by a tiny viewport still places the cursor.

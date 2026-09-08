@@ -541,3 +541,38 @@ fn runner_manager_and_shared_modal_use_typed_mature_widget_sessions() {
     let (terminal, _) = draw(&mut session, &editing);
     assert!(rendered_text(terminal.backend().buffer()).contains("Edit agent (runner)"));
 }
+
+#[test]
+fn short_runner_editor_clears_the_underlying_run_body() {
+    let mut state = LibraryState::default();
+    let run = RunFormView::from_declarations(
+        "prompt",
+        "Prompt",
+        &[],
+        &BTreeMap::new(),
+        &["codex".to_owned()],
+        "codex",
+        &BTreeMap::new(),
+        "",
+    );
+    state.update(Action::Present(Screen::Run(Box::new(run))));
+    state.update(Action::OpenRunRunnerEditor);
+    let mut session = TuiSession::default();
+    let (terminal, geometry) = draw_sized(&mut session, &state, 120, 12);
+    let buffer = terminal.backend().buffer();
+
+    assert!(geometry.hits.is_empty());
+    for y in 0..12 {
+        for x in (0..24).chain(96..120) {
+            assert_eq!(
+                buffer[(x, y)].symbol(),
+                " ",
+                "the modal leaked its Run underlay at ({x}, {y})"
+            );
+        }
+    }
+    assert_eq!(
+        rendered_text(buffer).matches("New agent (runner)").count(),
+        1
+    );
+}

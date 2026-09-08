@@ -41,8 +41,7 @@ use skit_runtime::{
 };
 use skit_store::{
     ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FilePromptSelectionStore,
-    FileStore, content_hash, is_launch_snapshot_name, override_directory, platform_config_dir,
-    platform_state_dir,
+    FileStore, content_hash, override_directory, platform_config_dir, platform_state_dir,
 };
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset};
@@ -722,11 +721,7 @@ pub(crate) fn run_with_services(
     let prepared = if args.dry_run {
         None
     } else {
-        Some(data_store.prepare_launch_with_snapshot_allocator(
-            &held,
-            expected_source_hash.as_deref(),
-            services.allocator,
-        )?)
+        Some(data_store.prepare_launch(&held, expected_source_hash.as_deref())?)
     };
 
     if entry.meta.kind.as_str() == "python"
@@ -811,14 +806,6 @@ pub(crate) fn run_with_services(
         let entry_dir = data_store.entry_dir_path(&entry.slug);
         let cleanup_now = system_time_from_utc(services.clock.now_utc());
         sweep_injected_launch_sources(data_store, &entry, cleanup_now);
-        sweep_stale_launch_snapshots(
-            data_store,
-            &entry,
-            prepared
-                .as_ref()
-                .and_then(skit_store::PreparedLaunch::payload_path),
-            cleanup_now,
-        );
         if matches!(entry.meta.kind.as_str(), "js" | "ts")
             && entry.meta.mode == skit_domain::StorageMode::Copy
         {
@@ -1434,36 +1421,6 @@ fn pin_interpreter(settings: &mut EntrySettings, entry: &mut Entry, path: &Path)
     settings.write_to_meta(&mut entry.meta);
 }
 
-fn sweep_stale_launch_snapshots(
-    store: &FileStore,
-    entry: &Entry,
-    current: Option<&Path>,
-    now: SystemTime,
-) {
-    let entry_dir = store.entry_dir_path(&entry.slug);
-    // A directory skit cannot list holds nothing skit owns.
-    let items = fs::read_dir(entry_dir).into_iter().flatten();
-    let cutoff = now
-        .checked_sub(Duration::from_secs(24 * 60 * 60))
-        .unwrap_or(SystemTime::UNIX_EPOCH);
-    for item in items.flatten() {
-        let path = item.path();
-        let is_staged = item
-            .file_name()
-            .to_str()
-            .is_some_and(is_launch_snapshot_name);
-        let is_stale_file = item
-            .metadata()
-            .ok()
-            .filter(|metadata| metadata.is_file())
-            .and_then(|metadata| metadata.modified().ok())
-            .is_some_and(|modified| modified <= cutoff);
-        if is_staged && is_stale_file && current != Some(path.as_path()) {
-            let _ = store.remove_stale_launch_snapshot(entry, &path);
-        }
-    }
-}
-
 #[derive(Debug)]
 struct StagedSource {
     path: PathBuf,
@@ -1855,23 +1812,10 @@ mod tests {
         fs::write(directory.join("script.sh"), "NAME=old\n").unwrap();
         let stale = directory.join(".injected-stale.sh");
         let live = directory.join(".injected-live.sh");
-        let stale_launch_snapshot = directory.join(".run-stale.sh");
         fs::write(&stale, "stale secret").unwrap();
         fs::write(&live, "live secret").unwrap();
-        fs::write(&stale_launch_snapshot, "stale launch bytes").unwrap();
         let stale_file = fs::File::options().write(true).open(&stale).unwrap();
         stale_file
-            .set_times(
-                fs::FileTimes::new()
-                    .set_modified(SystemTime::UNIX_EPOCH)
-                    .set_accessed(SystemTime::UNIX_EPOCH),
-            )
-            .unwrap();
-        let stale_launch_file = fs::File::options()
-            .write(true)
-            .open(&stale_launch_snapshot)
-            .unwrap();
-        stale_launch_file
             .set_times(
                 fs::FileTimes::new()
                     .set_modified(SystemTime::UNIX_EPOCH)
@@ -1884,7 +1828,6 @@ mod tests {
         declaration.delivery = ParameterDelivery::Inject;
         let cleanup_now = SystemTime::now();
         sweep_injected_launch_sources(&store, &shell, cleanup_now);
-        sweep_stale_launch_snapshots(&store, &shell, None, cleanup_now);
         let staged = stage_injected_source(
             &store,
             &shell,
@@ -1898,7 +1841,6 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(!stale.exists());
-        assert!(!stale_launch_snapshot.exists());
         assert!(live.exists());
         assert!(!staged.path.starts_with(&directory));
         assert!(
@@ -2052,36 +1994,6 @@ mod tests {
             read_bytes(&directory.join("missing")),
             Err(RunError::Read { .. })
         ));
-    }
-
-    #[test]
-    fn no_injection_copy_sweep_removes_old_snapshot_and_skips_current() {
-        let root = TempDir::new().unwrap();
-        let store = FileStore::new(root.path());
-        let entry = entry("shell", "bash");
-        let directory = store.entry_dir_path(&entry.slug);
-        fs::create_dir_all(&directory).unwrap();
-        let stale = directory.join(".run-stale.sh");
-        let current = directory.join(".run-current.sh");
-        fs::write(&stale, b"stale").unwrap();
-        fs::write(&current, b"current").unwrap();
-        for path in [&stale, &current] {
-            fs::File::options()
-                .write(true)
-                .open(path)
-                .unwrap()
-                .set_times(
-                    fs::FileTimes::new()
-                        .set_modified(SystemTime::UNIX_EPOCH)
-                        .set_accessed(SystemTime::UNIX_EPOCH),
-                )
-                .unwrap();
-        }
-
-        sweep_stale_launch_snapshots(&store, &entry, Some(&current), SystemTime::now());
-
-        assert!(!stale.exists());
-        assert_eq!(fs::read(current).unwrap(), b"current");
     }
 
     #[test]

@@ -848,7 +848,7 @@ fn a_run_with_injected_values_uses_a_private_staged_source() {
     let leftovers = fs::read_dir(sandbox.data.path().join("scripts/greet"))
         .unwrap()
         .filter_map(Result::ok)
-        .filter(|item| item.file_name().to_string_lossy().starts_with(".run-"))
+        .filter(|item| item.file_name().to_string_lossy().starts_with(".injected-"))
         .count();
     assert_eq!(leftovers, 0);
 }

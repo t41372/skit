@@ -15,7 +15,8 @@ use skit_tui::{
 use skit_ui::{
     Action, Effect, FormControl, FormField, FormPurpose, FormView, LibraryState, ModalState,
     PathOutputPolicy, PathPickerState, PathSelectionMode, PickerPurpose, RunFormContext,
-    RunFormView, RunPathContext, Screen, SettingsInputs, SettingsView, UiCommand, UiKey,
+    RunFormOptions, RunFormView, RunPathContext, Screen, SettingsInputs, SettingsView, UiCommand,
+    UiKey,
 };
 use unicode_width::UnicodeWidthStr as _;
 
@@ -675,6 +676,65 @@ fn checkbox_radio_and_picker_have_keyboard_and_mouse_paths() {
     );
 
     assert!(buffer_text(terminal.backend().buffer()).contains("Enable upload?"));
+}
+
+#[test]
+fn selecting_a_run_picker_option_closes_it_for_keyboard_and_mouse() {
+    for use_mouse in [false, true] {
+        for option in [0, 1] {
+            let mut state = state_with_form(form());
+            let mut session = TuiSession::default();
+            state.update(Action::FocusField(0));
+            let (_, geometry) = draw(&mut session, &state, 100, 28);
+            let anchor = geometry
+                .hits
+                .iter()
+                .find(|hit| hit.action == HitTarget::FocusField(0))
+                .unwrap()
+                .rect;
+            drive(
+                &mut session,
+                &mut state,
+                &geometry,
+                key(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            let (_, geometry) = draw(&mut session, &state, 100, 28);
+            if use_mouse {
+                drive_click(
+                    &mut session,
+                    &mut state,
+                    &geometry,
+                    anchor.x + 2,
+                    anchor.bottom() + 1 + option,
+                );
+            } else {
+                if option == 1 {
+                    drive(
+                        &mut session,
+                        &mut state,
+                        &geometry,
+                        key(KeyCode::Down, KeyModifiers::NONE),
+                    );
+                }
+                drive(
+                    &mut session,
+                    &mut state,
+                    &geometry,
+                    key(KeyCode::Enter, KeyModifiers::NONE),
+                );
+            }
+            let (_, geometry) = draw(&mut session, &state, 100, 28);
+            assert_eq!(
+                state.run_form().unwrap().fields()[0].control.value(),
+                if option == 0 { "claude" } else { "codex" },
+            );
+            assert_eq!(
+                session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &state, &geometry),
+                EventHandling::Action(Action::Back),
+                "selection must close the picker: mouse={use_mouse}, option={option}",
+            );
+        }
+    }
 }
 
 #[test]
@@ -4158,4 +4218,60 @@ fn central_session_modal_insertion_preserves_serialized_control_boundaries() {
             EventHandling::Ignored
         );
     }
+}
+
+#[test]
+fn run_form_without_fields_ignores_text_and_paste() {
+    // A form with no parameters, no runner, and hidden extra arguments has no
+    // widget controls. A stray key, such as a late cursor-position reply, must
+    // be ignored, not index an empty control list. The keys the footer still
+    // advertises keep working: Enter runs, Esc leaves, and Tab is consumed.
+    let mut session = TuiSession::default();
+    let form = RunFormView::from_declarations(
+        "demo",
+        "Demo",
+        &[],
+        &BTreeMap::new(),
+        &[],
+        "",
+        &BTreeMap::new(),
+        "",
+    )
+    .with_options(RunFormOptions {
+        include_extra: false,
+        ..RunFormOptions::default()
+    });
+    assert!(form.fields().is_empty());
+    let mut state = state_with_form(form);
+    let geometry = ViewGeometry::default();
+
+    let typed = drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        key(KeyCode::Char('R'), KeyModifiers::NONE),
+    );
+    assert!(matches!(typed, EventHandling::Ignored), "{typed:?}");
+
+    let pasted = drive(
+        &mut session,
+        &mut state,
+        &geometry,
+        Event::Paste("pasted".to_owned()),
+    );
+    assert!(matches!(pasted, EventHandling::Ignored));
+    assert!(matches!(state.screen(), Screen::Run(_)));
+
+    for code in [KeyCode::Tab, KeyCode::BackTab, KeyCode::PageDown] {
+        let handling = session.handle_event(key(code, KeyModifiers::NONE), &state, &geometry);
+        assert_eq!(handling, EventHandling::Consumed, "{code:?}");
+    }
+    assert_eq!(
+        session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Action(Action::Submit)
+    );
+    assert_eq!(
+        session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &state, &geometry),
+        EventHandling::Action(Action::Back)
+    );
 }
