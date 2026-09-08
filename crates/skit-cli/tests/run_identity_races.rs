@@ -88,7 +88,7 @@ fn wait_until_ready(ready: &std::path::Path) -> bool {
 }
 
 #[test]
-fn a_delayed_interpreter_reads_the_identity_checked_snapshot() {
+fn a_delayed_interpreter_reads_the_current_stored_source() {
     let data = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();
     let config = TempDir::new().unwrap();
@@ -128,15 +128,15 @@ fn a_delayed_interpreter_reads_the_identity_checked_snapshot() {
     assert!(output.status.success(), "{output:?}");
     // A run prints one transparency line on stdout before the child writes anything
     // (`src/skit/flows.py:931` appends `"→ " + env_prefix + described`, and
-    // `src/skit/cli.py:3218` emits it with the stdout console). The line names the private
-    // staged snapshot, and everything after it is the child's own output.
+    // `src/skit/cli.py:3218` emits it with the stdout console). The line names the stored
+    // source, and everything after it is the child's own output.
     let stdout = String::from_utf8(output.stdout).unwrap();
     let (transparency, child_output) = stdout
         .split_once('\n')
         .unwrap_or_else(|| panic!("no transparency line in {stdout:?}"));
     assert!(transparency.starts_with("→ "), "{stdout:?}");
-    assert!(transparency.contains("/.run-"), "{stdout:?}");
-    assert_eq!(child_output, "OLD", "{stdout:?}");
+    assert!(transparency.contains("/script.sh"), "{stdout:?}");
+    assert_eq!(child_output, "NEW", "{stdout:?}");
     assert_eq!(
         fs::read(store.payload_path(&store.resolve("demo").unwrap()).unwrap()).unwrap(),
         b"printf NEW"
@@ -253,4 +253,74 @@ fn a_run_that_started_public_cannot_restore_plaintext_after_the_field_becomes_se
     let state = fs::read_to_string(&state_path).unwrap();
     assert!(!state.contains("TOKEN"), "{state}");
     assert!(!state.contains("plaintext-race-value"), "{state}");
+}
+
+fn assert_stored_script_identity(kind: &str, interpreter: &str, filename: &str, source: &str) {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let data_root = fs::canonicalize(data.path()).unwrap();
+    let store = FileStore::new(&data_root);
+    let interpreter = if kind == "python" {
+        // Run real Python through a local uv adapter, without downloads or cache writes.
+        let path = data_root.join("uv");
+        fs::write(&path, "#!/bin/sh\n[ \"$1 $2 $3\" = 'run --no-project --script' ] || exit 1\nshift 3\nexec python3 \"$@\"\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        path.display().to_string()
+    } else {
+        interpreter.to_owned()
+    };
+    let entry = store
+        .create(CreateEntry {
+            name: format!("Identity {kind}"),
+            kind: EntryKind::parse(kind).unwrap(),
+            mode: StorageMode::Copy,
+            source: format!("/original/{filename}"),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: source.as_bytes().to_vec(),
+                stored_name: Some(filename.to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                interpreter: interpreter.to_owned(),
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let stored = store.payload_path(&entry).unwrap();
+    for raw in [false, true] {
+        let mut command = run_command(&data_root, state.path(), config.path());
+        command.args(["run", entry.slug.as_str(), "--no-input"]);
+        if raw {
+            command.arg("--raw");
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{kind} raw={raw}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let (_, child) = stdout.split_once('\n').unwrap();
+        assert_eq!(child, stored.to_str().unwrap(), "{kind} raw={raw}");
+        assert_eq!(fs::read(&stored).unwrap(), source.as_bytes());
+    }
+}
+
+#[test]
+fn shell_copy_launch_keeps_the_stored_script_identity() {
+    assert_stored_script_identity("shell", "sh", "script.sh", "printf '%s' \"$0\"");
+}
+
+#[test]
+fn python_copy_launch_keeps_the_stored_script_identity() {
+    assert_stored_script_identity("python", "python3", "script.py", "print(__file__, end='')");
+}
+
+#[test]
+fn javascript_copy_launch_keeps_the_stored_script_identity() {
+    assert_stored_script_identity(
+        "js",
+        "node",
+        "script.mjs",
+        "import { fileURLToPath } from 'node:url'; process.stdout.write(fileURLToPath(import.meta.url));",
+    );
 }

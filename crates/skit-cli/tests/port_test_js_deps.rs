@@ -2440,12 +2440,11 @@ fn test_install_subprocess_contract_and_marker_dir_reuse() {
     let first = run();
     assert_eq!(first.status.code(), Some(0), "{}", combine(&first));
     let first_stdout = String::from_utf8(first.stdout).unwrap();
-    let launch_prefix = format!("→ {} {}/.run-", node.display(), entry_dir.display());
-    assert!(first_stdout.starts_with(&launch_prefix), "{first_stdout}");
-    assert!(first_stdout.trim_end().ends_with(".js"), "{first_stdout}");
-    assert_eq!(first_stdout.lines().count(), 1, "{first_stdout}");
-    assert!(!first_stdout.contains("INSTALLER-STDOUT-MUST-BE-CAPTURED"));
-    assert!(!first_stdout.contains("INSTALLER-STDERR-MUST-BE-CAPTURED"));
+    let stored = fs::canonicalize(&stored).unwrap();
+    assert_eq!(
+        first_stdout,
+        format!("→ {} {}\n", node.display(), stored.display())
+    );
     assert_eq!(
         String::from_utf8(first.stderr).unwrap(),
         "Installing dependencies (npm)…\n",
@@ -2496,11 +2495,7 @@ fn test_install_subprocess_contract_and_marker_dir_reuse() {
     let second = run();
     assert_eq!(second.status.code(), Some(0), "{}", combine(&second));
     let second_stdout = String::from_utf8(second.stdout).unwrap();
-    assert!(second_stdout.starts_with(&launch_prefix), "{second_stdout}");
-    assert!(second_stdout.trim_end().ends_with(".js"), "{second_stdout}");
-    assert_eq!(second_stdout.lines().count(), 1, "{second_stdout}");
-    assert!(!second_stdout.contains("INSTALLER-STDOUT-MUST-BE-CAPTURED"));
-    assert!(!second_stdout.contains("INSTALLER-STDERR-MUST-BE-CAPTURED"));
+    assert_eq!(second_stdout, first_stdout);
     assert!(second.stderr.is_empty(), "fresh launch must stay silent");
     assert_eq!(
         fs::read_to_string(&receipt).unwrap(),

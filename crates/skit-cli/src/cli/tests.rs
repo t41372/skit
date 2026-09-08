@@ -7708,6 +7708,97 @@ fn source_edit_warning_renderer_is_total_and_localized() {
 }
 
 #[test]
+fn source_owned_settings_saves_keep_stored_flag_and_environment_declarations() {
+    for (kind, extension, source) in [
+        ("python", "py", "print('ok')\n"),
+        ("shell", "sh", "#!/bin/sh\nprintf '%s\\n' \"$1\"\n"),
+        ("js", "js", "console.log('ok');\n"),
+        ("ts", "ts", "console.log('ok');\n"),
+        ("fish", "fish", "echo $argv[1]\n"),
+    ] {
+        for mode in [StorageMode::Copy, StorageMode::Reference] {
+            let root = TempDir::new().unwrap();
+            let state_dir = root.path().join("state");
+            let store = FileStore::new(root.path().join("data"));
+            let service = LibraryService::new(store.clone());
+            let external = root.path().join(format!("source.{extension}"));
+            fs::write(&external, source).unwrap();
+            let mut flag = ParamDecl::new("pattern");
+            flag.multiple = true;
+            flag.default = Some(ParameterValue::String("*.py".to_owned()));
+            flag.help = "Select files.".to_owned();
+            let mut environment = ParamDecl::new("API_TOKEN");
+            environment.delivery = ParameterDelivery::Env;
+            environment.secret = true;
+            let declarations = vec![flag, environment];
+            let entry = service
+                .add(CreateEntry {
+                    name: "Stored declarations".to_owned(),
+                    kind: EntryKind::parse(kind).unwrap(),
+                    mode,
+                    source: external.display().to_string(),
+                    workdir: "store".to_owned(),
+                    description: String::new(),
+                    payload: (mode == StorageMode::Copy).then(|| EntryPayload {
+                        bytes: source.as_bytes().to_vec(),
+                        stored_name: Some(format!("script.{extension}")),
+                        permissions: SourcePermissions::default(),
+                    }),
+                    settings: EntrySettings {
+                        params: vec!["pattern".to_owned()],
+                        parameters: declarations.clone(),
+                        ..EntrySettings::default()
+                    },
+                })
+                .unwrap();
+            let path = source_path(&store, &entry).unwrap();
+            let meta_path = store.entry_dir_path(&entry.slug).join("meta.toml");
+            let meta_before = fs::read(&meta_path).unwrap();
+            let source_before = fs::read(&path).unwrap();
+            assert_eq!(
+                entry_parameters(&store, &entry),
+                declarations,
+                "{kind} {mode:?}"
+            );
+            let unchanged = settings_edits(&service, &store, &state_dir, entry.slug.as_str(), &[]);
+            assert!(unchanged.is_empty());
+            tui_submit_settings(
+                &service,
+                &store,
+                &state_dir,
+                entry.slug.as_str(),
+                &unchanged,
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read(&meta_path).unwrap(),
+                meta_before,
+                "{kind} {mode:?}"
+            );
+            let edits = settings_edits(
+                &service,
+                &store,
+                &state_dir,
+                entry.slug.as_str(),
+                &[("description", "Updated description.")],
+            );
+            tui_submit_settings(&service, &store, &state_dir, entry.slug.as_str(), &edits).unwrap();
+            let saved = service.show(entry.slug.as_str()).unwrap();
+            assert_eq!(saved.meta.description, "Updated description.");
+            let settings = EntrySettings::from_meta(&saved.meta);
+            assert_eq!(settings.parameters, declarations, "{kind} {mode:?}");
+            assert_eq!(settings.params, ["pattern"]);
+            assert_eq!(
+                entry_parameters(&store, &saved),
+                declarations,
+                "{kind} {mode:?}"
+            );
+            assert_eq!(fs::read(path).unwrap(), source_before, "{kind} {mode:?}");
+        }
+    }
+}
+
+#[test]
 fn tui_settings_manage_source_parameters_without_losing_non_utf8_bytes() {
     let root = TempDir::new().unwrap();
     let data_dir = root.path().join("data");
@@ -11614,6 +11705,94 @@ fn settings_host_updates_prompt_javascript_reference_python_and_source_managemen
     let after = fs::read(&updated_payload).unwrap();
     assert_ne!(after, before);
     assert!(String::from_utf8(after).unwrap().contains("updated"));
+}
+
+#[test]
+fn settings_host_keeps_a_stored_prompt_placeholder_managed_while_insertion_is_off() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    let prompt = service
+        .add(CreateEntry {
+            name: "Off prompt".to_owned(),
+            kind: EntryKind::parse("prompt").unwrap(),
+            mode: StorageMode::Copy,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"Write about {{TOPIC}}.\n".to_vec(),
+                stored_name: Some("prompt.md".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings {
+                params: vec!["TOPIC".to_owned()],
+                interpolate: false,
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+
+    // The screen seeds its rows from the stored schema, exactly as both save paths do
+    // (`src/skit/tui_settings.py:344`). A stored placeholder is therefore a managed row, and it is
+    // never offered again as a detection.
+    let context = settings_parameter_context(&store, &prompt);
+    assert!(context.managed.iter().any(|row| row.name == "TOPIC"));
+    assert!(!context.candidates.iter().any(|name| name == "TOPIC"));
+
+    // The save takes the offer the screen made. A second TOPIC in that offer would refuse the
+    // save with "parameter already exists: TOPIC".
+    let mut values = SubmittedValues::new();
+    values.insert("interpolate".to_owned(), FieldValue::boolean(true));
+    values.insert(
+        PROMPT_CANDIDATES_KEY.to_owned(),
+        FieldValue::Explicit(TypedValue::Choices(context.candidates.clone())),
+    );
+    tui_submit_settings(&service, &store, &state_dir, prompt.slug.as_str(), &values).unwrap();
+    let saved = EntrySettings::from_meta(&service.show(prompt.slug.as_str()).unwrap().meta);
+    assert!(saved.interpolate);
+    assert_eq!(saved.params, ["TOPIC"]);
+}
+
+#[test]
+fn command_params_read_the_placeholder_order_back_from_the_template() {
+    // The same `changed` branch serves the command lane. Version 0.4 rebuilds `params` from the
+    // template (`src/skit/store.py:700-708`: `params_value = extract_placeholders(template)`), so
+    // the template order is the stored order. A declared environment rider is not a placeholder,
+    // and it must not take a place in that list.
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path().join("data"));
+    let service = LibraryService::new(store.clone());
+    let entry = service
+        .add(CreateEntry {
+            name: "Cmd".to_owned(),
+            kind: EntryKind::parse("command").unwrap(),
+            mode: StorageMode::Reference,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings {
+                template: "echo {a}".to_owned(),
+                params: vec!["a".to_owned()],
+                ..EntrySettings::default()
+            },
+        })
+        .unwrap();
+    let selector = entry.slug.as_str().to_owned();
+    let run = |argv: &[&str]| {
+        let parsed = Cli::parse_from(std::iter::once("skit").chain(argv.iter().copied()));
+        let Some(Command::Params(args)) = parsed.command else {
+            panic!("not a params command: {argv:?}");
+        };
+        params(&service, &store, *args).unwrap();
+    };
+    run(&["params", &selector, "--add", "b"]);
+    run(&["params", &selector, "--template", "echo {a} {b}"]);
+    let saved = EntrySettings::from_meta(&service.show(&selector).unwrap().meta);
+    assert_eq!(saved.params, ["a", "b"]);
 }
 
 #[test]

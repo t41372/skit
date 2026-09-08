@@ -678,6 +678,65 @@ fn checkbox_radio_and_picker_have_keyboard_and_mouse_paths() {
 }
 
 #[test]
+fn selecting_a_run_picker_option_closes_it_for_keyboard_and_mouse() {
+    for use_mouse in [false, true] {
+        for option in [0, 1] {
+            let mut state = state_with_form(form());
+            let mut session = TuiSession::default();
+            state.update(Action::FocusField(0));
+            let (_, geometry) = draw(&mut session, &state, 100, 28);
+            let anchor = geometry
+                .hits
+                .iter()
+                .find(|hit| hit.action == HitTarget::FocusField(0))
+                .unwrap()
+                .rect;
+            drive(
+                &mut session,
+                &mut state,
+                &geometry,
+                key(KeyCode::Enter, KeyModifiers::NONE),
+            );
+            let (_, geometry) = draw(&mut session, &state, 100, 28);
+            if use_mouse {
+                drive_click(
+                    &mut session,
+                    &mut state,
+                    &geometry,
+                    anchor.x + 2,
+                    anchor.bottom() + 1 + option,
+                );
+            } else {
+                if option == 1 {
+                    drive(
+                        &mut session,
+                        &mut state,
+                        &geometry,
+                        key(KeyCode::Down, KeyModifiers::NONE),
+                    );
+                }
+                drive(
+                    &mut session,
+                    &mut state,
+                    &geometry,
+                    key(KeyCode::Enter, KeyModifiers::NONE),
+                );
+            }
+            let (_, geometry) = draw(&mut session, &state, 100, 28);
+            assert_eq!(
+                state.run_form().unwrap().fields()[0].control.value(),
+                if option == 0 { "claude" } else { "codex" },
+            );
+            assert_eq!(
+                session.handle_event(key(KeyCode::Esc, KeyModifiers::NONE), &state, &geometry),
+                EventHandling::Action(Action::Back),
+                "selection must close the picker: mouse={use_mouse}, option={option}",
+            );
+        }
+    }
+}
+
+#[test]
 fn run_checkbox_toggles_only_after_a_primary_press_and_release() {
     let mut state = state_with_form(form());
     let mut session = TuiSession::default();

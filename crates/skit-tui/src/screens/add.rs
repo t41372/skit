@@ -25,7 +25,10 @@ use ratatui_interact::{
     },
     state::FocusManager,
 };
-use ratatui_widgets::paragraph::{Paragraph, Wrap};
+use ratatui_widgets::{
+    clear::Clear,
+    paragraph::{Paragraph, Wrap},
+};
 use skit_domain::StorageMode;
 use skit_i18n::{Locale, format_text, kind_choice_label, text};
 use skit_ui::{
@@ -672,6 +675,9 @@ impl AddScreenSession {
             return self.activate(target, state);
         }
         if let Event::Paste(value) = event {
+            if value.is_empty() {
+                return None;
+            }
             let Some(AddControlId::Text(field)) = self.focus.current().cloned() else {
                 return None;
             };
@@ -1621,17 +1627,24 @@ pub fn render_add(
         );
     }
     hits.extend(render_footer(frame, chunks[1], state, session, locale));
-    for select in [AddSelectControl::Storage, AddSelectControl::Runner] {
-        let Some(area) = hits
-            .iter()
-            .find(|hit| &hit.target == select.control_id())
-            .map(|hit| hit.area)
-        else {
-            continue;
-        };
-        hits.extend(render_select_overlay(
-            frame, area, select, state, session, locale,
-        ));
+    let select_anchors = [AddSelectControl::Storage, AddSelectControl::Runner]
+        .into_iter()
+        .filter_map(|select| {
+            hits.iter()
+                .find(|hit| &hit.target == select.control_id())
+                .map(|hit| (select, hit.area))
+        })
+        .collect::<Vec<_>>();
+    for (select, anchor) in select_anchors {
+        render_select_overlay(
+            frame,
+            chunks[0],
+            (select, anchor),
+            state,
+            session,
+            locale,
+            &mut hits,
+        );
     }
     AddScreenGeometry {
         body,
@@ -2197,18 +2210,10 @@ fn render_row(
             }
         }
         RenderRow::Select(select, label) => {
-            let (options, select_state) = match select {
-                AddSelectControl::Storage => (storage_options(state, locale), &session.storage),
-                AddSelectControl::Runner => {
-                    let mut options = vec![text(locale, "ask on the run form").into_owned()];
-                    options.extend(
-                        state
-                            .review()
-                            .into_iter()
-                            .flat_map(|review| review.runner_names().iter().cloned()),
-                    );
-                    (options, &session.runner)
-                }
+            let options = select_options(*select, state, locale);
+            let select_state = match select {
+                AddSelectControl::Storage => &session.storage,
+                AddSelectControl::Runner => &session.runner,
             };
             if clip.is_full() {
                 let select = Select::new(&options, select_state).label(label);
@@ -2247,20 +2252,13 @@ fn render_row(
     }
 }
 
-fn render_select_overlay(
-    frame: &mut Frame,
-    area: Rect,
+fn select_options(
     select: AddSelectControl,
     state: &AddWorkflowState,
-    session: &AddScreenSession,
     locale: Locale,
-) -> Vec<AddHitRegion> {
-    let (options, select_state, label) = match select {
-        AddSelectControl::Storage => (
-            storage_options(state, locale),
-            &session.storage,
-            text(locale, "Storage mode").into_owned(),
-        ),
+) -> Vec<String> {
+    match select {
+        AddSelectControl::Storage => storage_options(state, locale),
         AddSelectControl::Runner => {
             let mut options = vec![text(locale, "ask on the run form").into_owned()];
             options.extend(
@@ -2269,27 +2267,128 @@ fn render_select_overlay(
                     .into_iter()
                     .flat_map(|review| review.runner_names().iter().cloned()),
             );
-            (
-                options,
-                &session.runner,
-                text(locale, "Prompt runner").into_owned(),
-            )
+            options
         }
+    }
+}
+
+fn render_select_overlay(
+    frame: &mut Frame,
+    screen: Rect,
+    overlay: (AddSelectControl, Rect),
+    state: &AddWorkflowState,
+    session: &mut AddScreenSession,
+    locale: Locale,
+    hits: &mut Vec<AddHitRegion>,
+) {
+    let (select, anchor) = overlay;
+    let options = select_options(select, state, locale);
+    let select_state = match select {
+        AddSelectControl::Storage => &session.storage,
+        AddSelectControl::Runner => &session.runner,
     };
     if !select_state.is_open {
-        return Vec::new();
+        return;
     }
-    let first_visible = usize::from(select_state.scroll_offset);
-    Select::new(&options, select_state)
-        .label(&label)
-        .render_dropdown(frame, area, frame.area())
-        .into_iter()
-        .zip(first_visible..)
-        .map(|(region, index)| AddHitRegion {
+    let dropdown_area = select_dropdown_area(
+        anchor,
+        screen,
+        options.len(),
+        SelectStyle::default().max_visible_options,
+    );
+    if dropdown_area.height < 3 {
+        render_flat_select_option(
+            frame,
+            dropdown_area,
+            select,
+            &options,
+            select_state,
+            hits,
+            &mut session.advertised,
+        );
+        return;
+    }
+    let regions = Select::new(&options, select_state).render_dropdown(frame, anchor, screen);
+    hits.retain(|hit| !rects_intersect(hit.area, dropdown_area));
+    session
+        .advertised
+        .retain(|(area, ..)| !rects_intersect(*area, dropdown_area));
+    for region in regions {
+        let index = (0..options.len())
+            .find(|index| region.data == SelectAction::Select(*index))
+            .expect("a dropdown region owns one rendered option");
+        hits.push(AddHitRegion {
             area: region.area,
             target: select.option_id(index),
-        })
-        .collect()
+        });
+    }
+}
+
+fn render_flat_select_option(
+    frame: &mut Frame,
+    area: Rect,
+    select: AddSelectControl,
+    options: &[String],
+    state: &SelectState,
+    hits: &mut Vec<AddHitRegion>,
+    advertised: &mut Vec<(Rect, LocalKey, AddControlId, AddScreenEvent)>,
+) {
+    if area.is_empty() || options.is_empty() {
+        return;
+    }
+    let index = state.highlighted_index.min(options.len().saturating_sub(1));
+    let style = SelectStyle::default();
+    let prefix = if state.selected_index == Some(index) {
+        style.selected_indicator
+    } else {
+        style.unselected_indicator
+    };
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(format!("{prefix}{}", options[index])).style(style.highlight_style),
+        area,
+    );
+    hits.retain(|hit| !rects_intersect(hit.area, area));
+    advertised.retain(|(hit, ..)| !rects_intersect(*hit, area));
+    hits.push(AddHitRegion {
+        area,
+        target: select.option_id(index),
+    });
+}
+
+fn select_dropdown_area(
+    anchor: Rect,
+    screen: Rect,
+    option_count: usize,
+    maximum_visible: u16,
+) -> Rect {
+    let visible = u16::try_from(option_count)
+        .unwrap_or(u16::MAX)
+        .min(maximum_visible);
+    let desired_height = visible.saturating_add(2);
+    let space_below = screen.bottom().saturating_sub(anchor.bottom());
+    let space_above = anchor.y.saturating_sub(screen.y);
+    let (y, available) = if space_below >= desired_height {
+        (anchor.y + anchor.height, space_below)
+    } else if space_above >= desired_height {
+        (anchor.y.saturating_sub(desired_height), space_above)
+    } else if space_below > 0 {
+        (anchor.y + anchor.height, 1)
+    } else if space_above > 0 {
+        (anchor.y.saturating_sub(1), 1)
+    } else {
+        (anchor.y, 0)
+    };
+    Rect::new(anchor.x, y, anchor.width, desired_height.min(available))
+}
+
+fn rects_intersect(left: Rect, right: Rect) -> bool {
+    !left.is_empty()
+        && !right.is_empty()
+        && left.x < right.right()
+        && right.x < left.right()
+        && left.y < right.bottom()
+        && right.y < left.bottom()
 }
 
 fn has_more_prompt_candidates(review: &skit_ui::ReviewState) -> bool {
@@ -3243,6 +3342,11 @@ mod tests {
             session.focused(),
             Some(&AddControlId::Text(AddTextField::ReviewName))
         );
+        assert_eq!(
+            session.handle_event(Event::Paste(String::new()), &state, &geometry),
+            None,
+            "an empty paste must not clear derived Add provenance",
+        );
 
         let cleared = session.handle_event(
             key(KeyCode::Char('u'), KeyModifiers::CONTROL),
@@ -3991,23 +4095,100 @@ mod tests {
             None
         );
         let _ = prompt_session.activate(AddControlId::Runner, &prompt);
-        let (_, open) = draw(&prompt, &mut prompt_session, 76, 30);
-        for option in open
+        let (terminal, open) = draw(&prompt, &mut prompt_session, 76, 30);
+        let runner = open
             .hits
             .iter()
-            .filter(|hit| matches!(hit.target, AddControlId::RunnerOption(_)))
-        {
-            assert!(
+            .find(|hit| hit.target == AddControlId::Runner)
+            .unwrap();
+        let [popup_screen, _] =
+            crate::viewport::Viewport::split_footer(terminal.backend().buffer().area, 2);
+        let options = select_options(AddSelectControl::Runner, &prompt, Locale::En);
+        let popup = select_dropdown_area(
+            runner.area,
+            popup_screen,
+            options.len(),
+            SelectStyle::default().max_visible_options,
+        );
+        let mut expected = Terminal::new(TestBackend::new(76, 30)).unwrap();
+        expected
+            .draw(|frame| {
+                let _ = Select::new(&options, &prompt_session.runner).render_dropdown(
+                    frame,
+                    runner.area,
+                    popup_screen,
+                );
+            })
+            .unwrap();
+        for y in popup.y..popup.bottom() {
+            for x in popup.x..popup.right() {
+                assert_eq!(
+                    terminal.backend().buffer()[(x, y)],
+                    expected.backend().buffer()[(x, y)],
+                    "the Add rows overwrote the dropdown at ({x}, {y})"
+                );
+            }
+        }
+        for (index, name) in ["", "alpha", "beta"].into_iter().enumerate() {
+            let option = open
+                .hits
+                .iter()
+                .find(|hit| hit.target == AddControlId::RunnerOption(index))
+                .unwrap();
+            assert!(open.hits.iter().all(|hit| {
+                matches!(&hit.target, AddControlId::RunnerOption(_))
+                    || !rects_intersect(hit.area, option.area)
+            }));
+            let mut mouse_session = prompt_session.clone();
+            assert_eq!(
                 click_control(
-                    &mut prompt_session,
+                    &mut mouse_session,
                     &prompt,
                     &open,
                     option.area.x,
                     option.area.y,
-                )
-                .is_some()
+                ),
+                Some(AddScreenEvent::Action(AddAction::SetPromptRunner {
+                    name: name.to_owned(),
+                    picked: true,
+                }))
             );
         }
+        let (_, tiny) = draw(&prompt, &mut prompt_session, 24, 6);
+        let option = tiny
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.target, AddControlId::RunnerOption(_)))
+            .unwrap();
+        assert!(option.area.bottom() <= 5);
+        assert!(!prompt_session.advertised.is_empty());
+        assert!(
+            prompt_session
+                .advertised
+                .iter()
+                .all(|(area, ..)| area.y >= 5 && !rects_intersect(*area, option.area))
+        );
+        let index = runner_option_index(&option.target)
+            .expect("the compact prompt review must advertise one runner option");
+        let expected_name = index
+            .checked_sub(1)
+            .and_then(|index| prompt.review().unwrap().runner_names().get(index))
+            .cloned()
+            .unwrap_or_default();
+        let mut mouse_session = prompt_session.clone();
+        assert_eq!(
+            click_control(
+                &mut mouse_session,
+                &prompt,
+                &tiny,
+                option.area.x,
+                option.area.y,
+            ),
+            Some(AddScreenEvent::Action(AddAction::SetPromptRunner {
+                name: expected_name,
+                picked: true,
+            }))
+        );
 
         let mut cancelled = AddWorkflowState::new(Vec::new());
         let _ = cancelled.reduce(AddAction::Cancel);
@@ -4860,5 +5041,91 @@ mod tests {
     #[test]
     fn the_runner_option_reader_refuses_another_control() {
         assert!(runner_option_index(&AddControlId::Continue).is_none());
+    }
+
+    #[test]
+    fn the_select_dropdown_area_uses_every_side_that_the_screen_leaves() {
+        let tall = Rect::new(0, 0, 20, 10);
+        assert_eq!(
+            select_dropdown_area(Rect::new(0, 0, 8, 1), tall, 3, 5),
+            Rect::new(0, 1, 8, 5)
+        );
+        assert_eq!(
+            select_dropdown_area(Rect::new(0, 7, 8, 1), tall, 3, 5),
+            Rect::new(0, 2, 8, 5)
+        );
+        let short = Rect::new(0, 0, 20, 6);
+        assert_eq!(
+            select_dropdown_area(Rect::new(0, 3, 8, 1), short, 3, 5),
+            Rect::new(0, 4, 8, 1)
+        );
+        assert_eq!(
+            select_dropdown_area(Rect::new(0, 5, 8, 1), short, 4, 5),
+            Rect::new(0, 4, 8, 1)
+        );
+        assert_eq!(
+            select_dropdown_area(Rect::new(0, 0, 8, 6), short, 3, 5),
+            Rect::new(0, 0, 8, 0)
+        );
+    }
+
+    #[test]
+    fn the_flat_select_option_skips_an_empty_row_and_marks_an_unselected_option() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 3)).unwrap();
+        let mut hits = Vec::new();
+        let mut advertised = Vec::new();
+        let options = vec!["Copy".to_owned(), "Reference".to_owned()];
+        let state = SelectState {
+            selected_index: Some(0),
+            highlighted_index: 1,
+            ..SelectState::new(options.len())
+        };
+
+        terminal
+            .draw(|frame| {
+                render_flat_select_option(
+                    frame,
+                    Rect::new(0, 0, 20, 0),
+                    AddSelectControl::Storage,
+                    &options,
+                    &state,
+                    &mut hits,
+                    &mut advertised,
+                );
+                render_flat_select_option(
+                    frame,
+                    Rect::new(0, 1, 20, 1),
+                    AddSelectControl::Storage,
+                    &[],
+                    &state,
+                    &mut hits,
+                    &mut advertised,
+                );
+                render_flat_select_option(
+                    frame,
+                    Rect::new(0, 2, 20, 1),
+                    AddSelectControl::Storage,
+                    &options,
+                    &state,
+                    &mut hits,
+                    &mut advertised,
+                );
+            })
+            .unwrap();
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].target, AddSelectControl::Storage.option_id(1));
+        assert_eq!(hits[0].area, Rect::new(0, 2, 20, 1));
+        let buffer = terminal.backend().buffer().clone();
+        let row = |y: u16| {
+            (0..20)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_owned()
+        };
+        assert_eq!(row(0), "");
+        assert_eq!(row(1), "");
+        assert_eq!(row(2), "  Reference");
     }
 }

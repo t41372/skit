@@ -796,14 +796,6 @@ impl PreferencesWidgetSession {
             return handling;
         }
         if let Event::Mouse(mouse) = &event {
-            if is_primary_down(mouse)
-                && let Some(PreferencesHit::Control(id)) =
-                    self.clicks.handle_click(mouse.column, mouse.row).cloned()
-                && let Some(editable) = self.editables.get(&id).copied()
-                && let Some(PreferencesWidget::Input(input)) = self.widgets.get_mut(&id)
-            {
-                let _ = editable.place_cursor(input, mouse.column, mouse.row);
-            }
             if matches!(
                 mouse.kind,
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
@@ -852,6 +844,7 @@ impl PreferencesWidgetSession {
                     state,
                     presentation: ChoicePresentation::Picker,
                     dropdown_regions,
+                    dropdown_panel,
                     ..
                 } = widget
                 else {
@@ -868,9 +861,22 @@ impl PreferencesWidgetSession {
                         }
                         SelectAction::Focus | SelectAction::Open | SelectAction::Close => None,
                     })
+                    .or_else(|| {
+                        let in_panel = dropdown_panel
+                            .is_some_and(|panel| panel.contains((mouse.column, mouse.row).into()));
+                        (in_panel || self.clicks.handle_click(mouse.column, mouse.row).is_none())
+                            .then_some(PreferencesHit::Control(*id))
+                    })
             });
             let target =
                 dropdown.or_else(|| self.clicks.handle_click(mouse.column, mouse.row).cloned());
+            if is_primary_down(mouse)
+                && let Some(PreferencesHit::Control(id)) = target.as_ref()
+                && let Some(editable) = self.editables.get(id).copied()
+                && let Some(PreferencesWidget::Input(input)) = self.widgets.get_mut(id)
+            {
+                let _ = editable.place_cursor(input, mouse.column, mouse.row);
+            }
             return match self.click.update(mouse, target.as_ref()) {
                 ClickOutcome::Armed => PreferencesEventHandling::Consumed,
                 ClickOutcome::Activated(PreferencesHit::Dropdown { id, option }) => self
@@ -1501,7 +1507,7 @@ impl PreferencesWidgetSession {
                     presentation: ChoicePresentation::Picker,
                     ..
                 }) => {
-                    state.open();
+                    state.toggle();
                     if view.focused() == id {
                         PreferencesEventHandling::Consumed
                     } else {
@@ -2295,6 +2301,52 @@ mod tests {
             .join("\n")
     }
 
+    #[test]
+    fn language_picker_mouse_dismissal_owns_the_anchor_panel_and_outside() {
+        for target in ["anchor", "panel", "outside"] {
+            let mut session = PreferencesWidgetSession::default();
+            let view = view();
+            let _ = draw(&mut session, &view, 80, 30, Locale::En);
+            let anchor = session
+                .control_area(PreferencesControlId::Language)
+                .unwrap();
+            for kind in [
+                MouseEventKind::Down(MouseButton::Left),
+                MouseEventKind::Up(MouseButton::Left),
+            ] {
+                assert_eq!(
+                    session.handle_event(mouse(anchor, kind), &view),
+                    PreferencesEventHandling::Consumed
+                );
+            }
+            let _ = draw(&mut session, &view, 80, 30, Locale::En);
+            assert!(!language_picker_snapshot(&session).0.is_empty());
+            let area = match target {
+                "anchor" => anchor,
+                "panel" => language_picker_panel(&session),
+                _ => Rect::new(79, 29, 1, 1),
+            };
+            assert_eq!(
+                session.handle_event(mouse(area, MouseEventKind::Down(MouseButton::Left)), &view),
+                PreferencesEventHandling::Consumed
+            );
+            let _ = draw(&mut session, &view, 80, 30, Locale::En);
+            assert!(
+                !language_picker_snapshot(&session).0.is_empty(),
+                "press alone must not close the picker"
+            );
+            assert_eq!(
+                session.handle_event(mouse(area, MouseEventKind::Up(MouseButton::Left)), &view),
+                PreferencesEventHandling::Consumed
+            );
+            let _ = draw(&mut session, &view, 80, 30, Locale::En);
+            assert!(
+                language_picker_snapshot(&session).0.is_empty(),
+                "{target} must dismiss the picker without activating another control"
+            );
+        }
+    }
+
     fn open_language_picker(session: &mut PreferencesWidgetSession) {
         let widget = session
             .widgets
@@ -2693,7 +2745,12 @@ mod tests {
         session.clicks.clear();
         assert_eq!(
             session.handle_event(mouse(area, MouseEventKind::Down(MouseButton::Left)), &view,),
-            PreferencesEventHandling::Ignored
+            PreferencesEventHandling::Consumed
+        );
+
+        assert_eq!(
+            session.handle_event(mouse(area, MouseEventKind::Up(MouseButton::Left)), &view),
+            PreferencesEventHandling::Consumed
         );
 
         if let Some(PreferencesWidget::Choice {
@@ -3598,6 +3655,12 @@ mod tests {
                 mouse(language, MouseEventKind::Up(MouseButton::Left)),
                 &view,
             ),
+            PreferencesEventHandling::Consumed
+        );
+        let _ = draw(&mut session, &view, 90, 120, Locale::ZhCn);
+        assert!(language_picker_snapshot(&session).0.is_empty());
+        assert_eq!(
+            session.handle_event(key(KeyCode::Enter, KeyModifiers::NONE), &view),
             PreferencesEventHandling::Consumed
         );
         let _ = draw(&mut session, &view, 90, 120, Locale::ZhCn);

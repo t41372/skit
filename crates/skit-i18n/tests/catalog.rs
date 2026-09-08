@@ -88,6 +88,26 @@ fn every_catalog_row_has_two_complete_translations() {
 }
 
 #[test]
+fn settings_parameter_editor_keeps_the_version_04_chinese_labels() {
+    for (source, simplified, traditional) in [
+        ("Form label:", "字段提示：", "欄位提示："),
+        (
+            "secret (never saved to disk)",
+            "机密（不会存盘）",
+            "機密（不會存檔）",
+        ),
+        (
+            "env variable to read it from (optional)",
+            "从哪个环境变量读取（选填）",
+            "從哪個環境變數讀取（選填）",
+        ),
+    ] {
+        assert_eq!(text(Locale::ZhCn, source), simplified);
+        assert_eq!(text(Locale::ZhTw, source), traditional);
+    }
+}
+
+#[test]
 fn run_time_value_menu_matches_the_oracle_in_both_chinese_locales() {
     for (source, simplified, traditional) in [
         (
